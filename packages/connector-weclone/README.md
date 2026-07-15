@@ -24,8 +24,15 @@ avatar remembers what happened yesterday and sounds like you while doing it.
 
 ## Install
 
-The proxy ships as part of the Remnic monorepo and is wired into the `remnic`
-CLI. The recommended install path is:
+`@remnic/connector-weclone` is an **optional companion** package, installed
+separately from the base Remnic install. It provides the `remnic-weclone-proxy`
+binary:
+
+```bash
+npm install -g @remnic/connector-weclone
+```
+
+Then register the connector and write its config through the `remnic` CLI:
 
 ```bash
 remnic connectors install weclone \
@@ -35,8 +42,10 @@ remnic connectors install weclone \
 
 This writes two files:
 
-- `~/.config/engram/.engram-connectors/connectors/weclone.json` — connector
+- `~/.config/remnic/.remnic-connectors/connectors/weclone.json` — connector
   registry entry (tracked by `remnic connectors list / remove / doctor`).
+  Pre-rename installs keep reading the legacy
+  `~/.config/engram/.engram-connectors/` layout until they migrate.
 - `~/.remnic/connectors/weclone.json` — proxy config read by
   `remnic-weclone-proxy` at startup.
 
@@ -145,6 +154,11 @@ Callers wiring up a Discord bot should pass the Discord user ID as
   upstream or downstream.
 - Multimodal content (image parts, etc.) is preserved verbatim; only the text
   parts of the last user message are used for recall.
+
+## Further reading
+
+- Connector guide: [docs/integration/connector-setup.md](https://github.com/joshuaswarren/remnic/blob/main/docs/integration/connector-setup.md)
+- Monorepo: [github.com/joshuaswarren/remnic](https://github.com/joshuaswarren/remnic)
 
 ## License
 

@@ -1,8 +1,8 @@
-# Lossless Context Management (LCM)
+# Lossless context management (LCM)
 
 When AI agents hit their context window limit, the runtime compresses older messages to make room. This is called **compaction**, and it permanently discards the original content. LCM prevents information loss by proactively archiving every message and building a hierarchical summary structure that can be injected back into recall.
 
-## How It Works
+## How it works
 
 LCM operates as a complement to native compaction — it does not replace it. Instead, it observes, archives, summarizes, and provides expansion tools.
 
@@ -41,7 +41,7 @@ Summaries are organized in a hierarchical directed acyclic graph:
 
 The **fresh tail** (most recent N turns, default 16) always uses leaf-level summaries for maximum detail. Older portions use the deepest available nodes for maximum compression.
 
-### Three-Level Summarization
+### Three-level summarization
 
 When creating summaries, LCM uses a three-level escalation strategy:
 
@@ -59,7 +59,7 @@ Add to your `openclaw.json`:
 {
   "plugins": {
     "entries": {
-      "openclaw-engram": {
+      "openclaw-remnic": {
         "config": {
           "lcmEnabled": true
         }
@@ -77,7 +77,7 @@ All LCM settings have sensible defaults. Override only what you need:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `lcmEnabled` | `false` | Enable LCM |
+| `lcmEnabled` | `false` | Enable LCM (the `research-max` preset turns this on) |
 | `lcmLeafBatchSize` | `8` | Number of turns per leaf summary node |
 | `lcmRollupFanIn` | `4` | Number of child nodes merged into one parent |
 | `lcmFreshTailTurns` | `16` | Recent turns that always use leaf-level (most detailed) summaries |
@@ -86,11 +86,11 @@ All LCM settings have sensible defaults. Override only what you need:
 | `lcmDeterministicMaxTokens` | `512` | Token limit for the deterministic (no-LLM) fallback summarizer |
 | `lcmArchiveRetentionDays` | `90` | Days to retain raw archived messages before pruning |
 
-## MCP Tools
+## MCP tools
 
-LCM registers three tools that agents can use to explore conversation history:
+LCM registers three tools that agents can use to explore conversation history. Each is registered remnic-first with a legacy `engram_context_*` alias retained during the compatibility window:
 
-### `engram_context_search`
+### `remnic_context_search`
 
 Full-text search across all archived conversation messages.
 
@@ -102,7 +102,7 @@ SessionId: (optional) filter to a specific session
 
 Returns matching messages with turn index, role, snippet, and session ID.
 
-### `engram_context_describe`
+### `remnic_context_describe`
 
 Get a compressed summary of a turn range. Uses the best available summary node from the DAG.
 
@@ -114,7 +114,7 @@ ToTurn: 50
 
 Returns the summary text, turn count, and depth of the covering node.
 
-### `engram_context_expand`
+### `remnic_context_expand`
 
 Retrieve raw lossless messages for a turn range. This is the "zoom in" tool — when a summary isn't detailed enough, the agent can expand to the original messages.
 
@@ -127,7 +127,7 @@ MaxTokens: 2000
 
 Returns the original messages with role and content, truncated to fit the token budget (preserving first and last messages).
 
-## How It Complements Native Compaction
+## How it complements native compaction
 
 LCM sits in the **memory plugin slot**, not the context engine slot. It cannot prevent or replace compaction — the runtime controls that. Instead:
 

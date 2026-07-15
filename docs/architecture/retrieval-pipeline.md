@@ -99,8 +99,8 @@ Recall uses `QmdClient.search()` first (shared stdio MCP session when healthy, s
 
 - `qmdCollection` specifies which QMD collection to search.
 - `qmdMaxResults` caps the number of candidates returned.
-- `qmdIntentHintsEnabled` passes Engram's inferred recall intent into QMD unified search when supported.
-- When an intent hint is active, Engram skips its own hybrid top-up so QMD's unified `query` path remains authoritative.
+- `qmdIntentHintsEnabled` passes Remnic's inferred recall intent into QMD unified search when supported.
+- When an intent hint is active, Remnic skips its own hybrid top-up so QMD's unified `query` path remains authoritative.
 - `qmdExplainEnabled` requests QMD explain traces and persists them to `state/last_qmd_recall.json` for operator inspection.
 - Optional `rerankEnabled` runs an additional LLM reranking pass over the merged candidates. This adds latency — enable only if QMD's built-in scoring is insufficient.
 
@@ -166,7 +166,7 @@ Retrieval debug artifacts (`state/last_graph_recall.json`, `state/last_intent.js
 - `memory_qmd_debug` reads `state/last_qmd_recall.json` when QMD recall snapshots are available
 - `last_intent.json` is the planner-side snapshot: query text, inferred intent, selected recall mode, and any classifier reasons the runtime records
 - `last_graph_recall.json` is the graph-side snapshot: mode, namespaces, seed paths, expanded paths, and graph provenance for each expansion
-- `last_qmd_recall.json` is the QMD-side snapshot: fetch limits, intent hint, explain capture state, top ranked results, and whether Engram used or skipped hybrid top-up
+- `last_qmd_recall.json` is the QMD-side snapshot: fetch limits, intent hint, explain capture state, top ranked results, and whether Remnic used or skipped hybrid top-up
 - richer graph snapshots may also include skip or fallback metadata and final ranked result summaries; explain tooling should tolerate those extra fields even when older builds only emit the core seed/expanded schema
 
 ## Namespace Routing (v3.0)

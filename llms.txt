@@ -1,221 +1,223 @@
 Remnic (formerly Engram)
-Persistent, private, local-first memory for AI agents.
-Open source, MIT licensed. https://github.com/joshuaswarren/remnic
+Open-source, local-first memory and context layer for AI agents.
+MIT licensed. https://github.com/joshuaswarren/remnic
+
+One memory store, every agent. Tell one tool a preference and every other
+tool remembers it: OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT
+(developer mode), Hermes, Replit, Pi, omp, and any MCP client.
 
 All data stays on the user's machine as plain markdown files with YAML
-frontmatter. No cloud services, no external databases, no subscriptions.
+frontmatter. No cloud service, no external database, no subscription. The
+canonical store is a directory you own and can read, grep, and back up.
 
-Works with OpenClaw, Claude Code, Codex CLI, Hermes Agent, Replit, Cursor,
-and any MCP-compatible client. Tell one agent a preference — every agent
-remembers it.
+Remnic is universal/standalone-first (`npm install -g @remnic/cli`), with
+OpenClaw as the deepest native integration. "Engram" survives only as an
+intentional compatibility surface (HTTP `/engram/v1/...`, the `openclaw
+engram` command namespace, the `openclaw-engram` legacy plugin id, `engram`
+bin aliases, `ENGRAM_*` env fallbacks, `X-Engram-*` headers). Prefer the
+`remnic` equivalent wherever one exists.
+
 
 ARCHITECTURE
 
-TypeScript ESM monorepo. pnpm workspaces. Node 22+.
+TypeScript ESM monorepo. pnpm workspaces (pnpm 10.x). Node >= 22.12.
+27 package directories: 25 published to npm, one private dashboard, one
+PyPI-only Python plugin.
 
-Packages:
-  @remnic/core            Engine (orchestrator, storage, search, extraction,
-                          graph, trust zones, LCM). Framework-agnostic.
-  @remnic/cli             Standalone CLI binary, 20+ commands.
-  @remnic/server          HTTP + MCP server with multi-token auth, daemon mode.
-  @remnic/bench           Latency benchmarks with CI regression gates.
-  @remnic/plugin-openclaw OpenClaw adapter (embedded or delegate mode).
-  @remnic/plugin-codex    Codex CLI adapter (hooks + MCP + memory extension).
-  @remnic/hermes-provider TypeScript HTTP client for remote Remnic instances.
-  @remnic/import-supermemory Optional Supermemory JSON importer for
-                          `remnic import --adapter supermemory`.
-  remnic-hermes           Python PyPI package, MemoryProvider for Hermes Agent.
+Published npm packages:
+  @remnic/core             Memory engine: orchestrator, storage, extraction,
+                           search, entity graph, trust zones, LCM.
+                           Framework-agnostic; every adapter builds on it.
+  @remnic/cli              Standalone `remnic` CLI (36 top-level commands).
+                           Ships `remnic` and legacy `engram` bins.
+  @remnic/server           Standalone HTTP + MCP server. Multi-token auth,
+                           daemon mode, OAuth facade. Ships `remnic-server`
+                           and legacy `engram-server` bins.
+  @remnic/coding-graph     web-tree-sitter symbol extraction + SQLite code
+                           knowledge graph. Optional companion of core.
+  @remnic/belief-ledger    Belief and prediction ledger on Remnic primitives.
+  @remnic/bench            Published memory-benchmark harness + CI regression
+                           gates.
+  @remnic/plugin-openclaw  OpenClaw memory-slot adapter with bundled core
+                           runtime. Deepest integration.
+  @remnic/plugin-codex     Codex CLI plugin (hooks + MCP + memory extension).
+  @remnic/plugin-claude-code  Claude Code plugin (hooks, skills, agents, MCP).
+                           Files-only, zero dependencies.
+  @remnic/plugin-pi        Remnic memory extension for the Pi Coding Agent.
+  @remnic/replit           Replit Agent MCP connector.
+  @remnic/connector-limitless  Limitless Pendant wearable connector.
+  @remnic/connector-bee    Bee wearable connector.
+  @remnic/connector-omi    Omi necklace connector.
+  @remnic/connector-weclone  OpenAI-compatible proxy adding Remnic memory to
+                           WeClone avatars. Ships `remnic-weclone-proxy`.
+  @remnic/export-weclone   Export memories as WeClone/Alpaca fine-tuning sets.
+  @remnic/hermes-provider  Typed TypeScript HTTP client for the memory API.
+  @remnic/import-chatgpt   ChatGPT data-export importer.
+  @remnic/import-claude    Claude.ai data-export importer.
+  @remnic/import-gemini    Google Takeout Gemini Apps importer.
+  @remnic/import-mem0      mem0.ai REST importer.
+  @remnic/import-supermemory  Supermemory JSON export importer.
+  @remnic/import-weclone   WeClone-preprocessed chat export importer.
+  @remnic/import-lossless-claw  lossless-claw (LCM) SQLite importer.
+  @joshuaswarren/openclaw-engram  Deprecated compatibility shim; re-exports
+                           @remnic/plugin-openclaw and forwards `engram-access`.
 
-OpenClaw adapter note:
-  The OpenClaw plugin registers `before_prompt_build` with Remnic's
-  `initGateTimeoutMs` as the per-hook timeout on SDKs that support hook
-  options. The same config bounds Remnic's internal cold-start init gate for
-  recall and day summaries. Default: 30000ms; accepted range: 1000-120000ms.
-  Current OpenClaw compatibility target: reviewed npm build 2026.6.11-beta.1,
-  with 2026.6.5-beta.3, 2026.6.5-beta.5, 2026.6.5-beta.6, 2026.6.7-beta.1,
-  2026.6.8-beta.1, 2026.6.8-beta.2, 2026.6.9-beta.1, 2026.6.10-beta.1,
-  2026.6.10-beta.2, and 2026.6.11-beta.1 retained in the explicit prerelease
-  peer range and package metadata floor >=2026.4.1. As of June 26, 2026 the
-  active 60-day floor is April 27, 2026; keep the
-  more-permissive 2026.4.1 floor unless an upstream breaking change makes it
-  impossible. Keep openclaw.install.minHostVersion AND openclaw.compat.pluginApi
-  as a single >=x.y.z comparator (never a || list): OpenClaw's installer
-  AND-evaluates whitespace tokens and normalizes the host prerelease suffix, so
-  the floor already admits stable and prerelease hosts (issue #1450). Put
-  explicit reviewed prerelease versions ONLY in peerDependencies.openclaw,
-  which is resolved by npm/node-semver (supports ||, but excludes prereleases
-  from a bare >= range). Keep the manifest on current native
-  fields: kind="memory", contracts.tools, commandAliases, activation,
-  setup.requiresRuntime=false, setup.providers[].envVars for optional
-  OPENAI_API_KEY, and providerAuthChoices. Also keep providerAuthEnvVars and
-  supports mirrored for older OpenClaw hosts. Do not restore unsupported
-  top-level securityDisclosure; document privacy/provider behavior in docs
-  instead.
+Also published:
+  remnic-hermes            Python (PyPI) MemoryProvider plugin for Hermes
+                           Agent. Talks to the daemon over HTTP.
+Not published:
+  @remnic/bench-ui         Private Vite dashboard for benchmark summaries.
 
-Three-phase flow:
-  1. Recall   Before each agent turn, inject relevant memories into context.
-  2. Buffer   After each turn, accumulate content until a trigger fires.
-  3. Extract  Periodically, extract structured memories via an LLM call.
+Adapters never leak host-specific contracts back into `@remnic/core`. Core
+owns memory behavior; each adapter maps that behavior onto its host's plugin
+SDK, hooks, and manifest. Core never imports a host package.
 
-Storage: plain markdown + YAML frontmatter. Categories include fact,
-decision, preference, correction, relationship, principle, commitment,
-moment, skill, rule, entity, and more.
 
-Search: hybrid BM25 + vector + reranking via QMD. Six backend options:
-QMD (default), Orama (embedded JS), LanceDB (embedded native Arrow),
-Meilisearch (server), Remote (HTTP REST), Noop (extraction only).
-Current QMD target: @tobilu/qmd 2.5.3. Remnic probes qmd --version and gates
-newer flags; QMD 2.5.3+ uses --format json for query/search subprocess output,
-while older supported QMD installs keep legacy --json.
+THREE-PHASE FLOW
+
+  1. Recall   Before an agent turn, inject relevant memories into context.
+  2. Buffer   After a turn, accumulate content until a trigger fires.
+  3. Extract  Periodically, distill structured memories via an LLM call.
+
+Importance gating keeps trivial content off disk. Recall runs three
+specialized retrievers in parallel (latency = max, not sum), with graceful
+per-retriever degradation and zero extra LLM cost:
+  DirectFact   Entity-filename keyword overlap (single-digit ms).
+  Contextual   Hybrid BM25 + vector search.
+  Temporal     Date index with recency-decay scoring.
+
+
+STORAGE FORMAT
+
+Plain markdown + YAML frontmatter, one file per memory. Categories include
+fact, decision, preference, correction, relationship, principle, commitment,
+moment, skill, rule, and entity. Lifecycle: active -> validated -> stale ->
+archived. Episode/note model separates time-specific events from stable
+beliefs. Inline provenance tags carry source attribution in the fact body.
+
+
+SEARCH BACKENDS
+
+Six backends, selected by `searchBackend`:
+  qmd          Default. Hybrid BM25 + vector + reranking via QMD.
+  orama        Embedded JavaScript index.
+  lancedb      Embedded native Arrow index.
+  meilisearch  External Meilisearch server.
+  remote       HTTP REST backend.
+  noop         Extraction only, no search.
+
+QMD target: @tobilu/qmd 2.5.3. Remnic probes `qmd --version` and gates newer
+flags: 2.5.3+ uses `--format json` for query/search subprocess output; older
+supported QMD installs keep legacy `--json`. Default query strategy is
+`hybrid` and the default subprocess strategy is `query` (both BY DESIGN; do
+not present BM25-only as the recommended default). Daemon timeout 8000 ms;
+query-time rerank on.
+
 
 KEY FEATURES
 
-Core (enabled by default):
-  - Automatic extraction and recall injection
-  - Entity tracking and relationship graph
-  - Memory lifecycle (active -> validated -> stale -> archived)
-  - Episode/note model (time-specific events vs stable beliefs)
-  - Importance-gated extraction (trivial content never hits disk)
-  - Inline source attribution (provenance tags in fact body)
+Core (on by default):
+  - Automatic extraction and recall injection.
+  - Entity tracking (basic relationship links).
+  - Memory lifecycle policy (retention/tiering light-sleep phase).
+  - Importance-gated extraction.
+  - Inline source attribution.
+  - Procedural memory mining (default-on; conservative preset pins it off).
+  - Trust zones: quarantine -> working -> trusted provenance tiers with
+    promotion rules and poisoning defense.
 
-Lossless Context Management (LCM):
-  Proactive session archive into local SQLite + hierarchical summary DAG.
-  When context gets compacted, LCM injects compressed history back into
-  recall. Three-level summarization with guaranteed convergence. Full-text
-  search over archived messages. Zero data loss.
+Opt-in (default off unless noted):
+  - Lossless Context Management (LCM): proactive SQLite session archive +
+    hierarchical summary DAG re-injected on compaction. On in research-max.
+  - Extraction judge: LLM-as-judge durability filter, shadow mode available.
+  - Semantic chunking: topic-boundary detection via sentence embeddings.
+  - Semantic consolidation: cluster + synthesize canonical memories.
+  - Page versioning: numbered snapshots per overwrite; list/diff/revert.
+  - MECE taxonomy: deterministic categorization decision tree.
+  - Enrichment pipeline: importance-tiered external entity enrichment.
+  - Binary lifecycle: mirror/redirect/clean stages for binary files.
+  - Namespaces: per-principal isolation with read/write ACLs.
+  - Secure store: at-rest encryption (encrypt-on-write; unlock to read).
+  - Wearables: Limitless / Bee / Omi transcript capture and fusion.
+  - Graph recall / multi-graph memory + graph edge decay.
+  - Recall direct-answer: observation-only tier annotation (never
+    short-circuits QMD).
+  - Dreams pipeline: lightSleep on; rem and deepSleep off by default.
+  - Coding graph: code-symbol knowledge graph for coding agents.
 
-Parallel Specialized Retrieval:
-  Three agents run in parallel (latency = max, not sum):
-    DirectFact  Scans entity filenames for keyword overlap (<5ms).
-    Contextual  Existing hybrid BM25+vector search.
-    Temporal    Reads date index with recency decay scoring (<10ms).
-  Zero additional LLM cost. Graceful per-agent degradation.
+Verify any default in packages/remnic-core/src/config.ts or the
+openclaw.plugin.json configSchema before relying on it.
 
-Semantic Consolidation:
-  Finds clusters of similar memories via token overlap, synthesizes a
-  canonical version via LLM, archives originals. Conservative threshold
-  (80%+), corrections and commitments excluded by default.
-
-Trust Zones:
-  Quarantine -> working -> trusted tiers with promotion rules and
-  poisoning defense. Provenance tracking and corroboration scoring.
-
-Extraction Judge (issue #376):
-  LLM-as-judge post-extraction durability filter. Shadow mode available
-  for calibration before enabling gating.
-
-Semantic Chunking (issue #368):
-  Topic-boundary detection via sentence embeddings and cosine similarity
-  with smoothing. Alternative to recursive chunking.
-
-Page Versioning (issue #371):
-  Snapshot-based history for memory files. Every overwrite saves a
-  numbered snapshot. List, inspect, diff, and revert via CLI or API.
-
-OAI-mem-citation Blocks (issue #379):
-  Recall responses emit <oai-mem-citation> blocks matching the Codex
-  citation format for memory attribution and usage tracking.
-
-Memory Extension Publisher Contract (issue #381):
-  Pluggable contract for installing host-specific instruction files into
-  any AI agent host's extension directory. Generalizes Codex extension
-  pattern.
-
-Memory Extension Discovery (issue #382):
-  Third-party memory extensions provide structured instructions that
-  influence consolidation, auto-discovered from extension directories.
-
-MECE Taxonomy (issue #366):
-  Mutually Exclusive, Collectively Exhaustive knowledge directory with
-  resolver decision tree for deterministic memory categorization.
-
-Enrichment Pipeline (issue #365):
-  Importance-tiered API spend for entity enrichment from external sources
-  with a provider registry.
-
-Binary Lifecycle (issue #367):
-  Three-stage pipeline (mirror, redirect, clean) for binary files in the
-  memory directory with configurable storage backends.
-
-Codex Marketplace (issue #418):
-  Install via: codex marketplace add joshuaswarren/remnic
-
-Memory OS (progressive opt-in):
-  Memory boxes, graph recall, compounding (weekly synthesis), shared
-  context (cross-agent), identity continuity, hot/cold tiering, native
-  knowledge search, behavior loop tuning.
-
-Advanced (opt-in):
-  Objective-state recall, causal trajectories, harmonic retrieval,
-  verified recall, semantic rule promotion, creation memory, commitment
-  lifecycle.
-
-BUILD / TEST / DEVELOP
-
-  Build:        pnpm run build
-  Test:         npm run test        (node:test with tsx, 672+ tests)
-  Typecheck:    pnpm run check-types
-  Quality gate: npm run preflight:quick
-  Eval suite:   npm run eval:run
 
 ACCESS LAYER
 
-HTTP API:
-  Most routes under /engram/v1/... (v1.x compatibility window).
-  Bearer-token auth, binds to loopback by default.
-  Routes: health, recall, recall/explain, memories (CRUD), entities,
-  observe, lcm/search, lcm/status, trust-zones/status, trust-zones/records,
-  trust-zones/promote, review-queue, maintenance, suggestions,
-  review-disposition.
-  Exception: POST /v1/citations/observed (no /engram prefix).
+HTTP API (@remnic/server, or embedded in the OpenClaw host):
+  Bearer-token auth (constant-time compare), binds to loopback by default.
+  REST routes under /engram/v1/... (compatibility prefix): health, recall,
+  recall/explain, memories (CRUD), entities, observe, lcm/search, lcm/status,
+  trust-zones/status, trust-zones/records, trust-zones/promote, review-queue,
+  maintenance, suggestions, review-disposition. Single MCP transport at
+  POST /mcp. Exception route: POST /v1/citations/observed (no /engram prefix).
 
 MCP tools:
-  Exposed via stdio and HTTP transports. 14+ tools covering recall, store,
-  entity lookup, memory search, LCM expansion, trust zone inspection, and
-  observation.
+  Over 100 tools, exposed over stdio and HTTP. Each canonical `remnic.*` name
+  is paired with an `engram.*` legacy alias. Covers recall (with X-ray and
+  tier-explain), store, memory search, entity lookup, LCM search, trust-zone
+  inspection, observation, correction planning, peers, wearables, and
+  maintenance. Every MCP tool ships an outputSchema.
 
-Standalone CLI (20+ commands):
-  init, status, query, doctor, config, daemon, tree, onboard, curate,
-  review, sync, dedup, connectors, space, benchmark, versions, taxonomy,
-  enrich, binary.
+Standalone CLI (`remnic`, 36 top-level commands):
+  init, migrate, status, query, action-confidence, xray, doctor, config,
+  daemon, token, tree, onboard, curate, review, sync, offline, oauth, dedup,
+  connectors, space, bench (alias benchmark), briefing, versions, binary,
+  taxonomy, enrich, procedural, openclaw, extensions, training:export, import,
+  import-lossless-claw, wearables, capsule.
+  Full reference: docs/cli.md.
 
-Operator UI:
-  http://127.0.0.1:4318/engram/ui/
+OpenClaw-hosted surface (`openclaw engram <command>`):
+  Roughly 100 subcommands registered by core inside the OpenClaw host for
+  operators (tier, forget/purge, namespaces, capsule, secure-store, peer,
+  dreams, governance, benchmark, and more). There is no `openclaw remnic`
+  shell namespace; the in-chat session command is `/remnic <on|off|status|
+  clear|stats|flush>`. See docs/api.md.
 
-DOCUMENTATION
+Operator UI: http://127.0.0.1:4318/engram/ui/
 
-  README.md                    Full installation guide, feature list, architecture
-  CLAUDE.md                    Project instructions and privacy policy
-  AGENTS.md                    Agent guide with 43 review prevention patterns
-  docs/config-reference.md     90+ configuration properties
-  docs/api.md                  HTTP, MCP, and CLI reference
-  docs/architecture/           Per-feature architecture docs
-  docs/guides/                 Standalone, Codex, Claude Code, local LLM, etc.
-  docs/guides/openclaw-engram-to-remnic.md
-                               Legacy OpenClaw Engram -> Remnic migration:
-                               package rename, config keys, backups, patches
-  docs/getting-started.md      Quick start
-  docs/operations.md           Operations guide
-  docs/search-backends.md      Search backend comparison
-  docs/namespaces.md           Namespace isolation
-  docs/import-export.md        Data portability
 
 CONFIGURATION
 
-Config resolved from: REMNIC_CONFIG_PATH env var -> ./remnic.config.json ->
-~/.config/remnic/config.json. Presets: conservative, balanced, research-max,
-local-llm-heavy. 90+ properties. LLM routing: OpenAI API, local LLM (Ollama,
-LM Studio), or gateway model chain with multi-provider fallback.
+Standalone resolution order: `--config` > REMNIC_CONFIG_PATH (legacy
+ENGRAM_CONFIG_PATH) > ./remnic.config.json > ./engram.config.json >
+~/.config/remnic/config.json > ~/.config/engram/config.json. The standalone
+file has a top-level `remnic` block plus a separate `server` block
+(host/port/authToken/principal). Under OpenClaw, config lives at
+plugins.entries.openclaw-remnic.config (legacy openclaw-engram fallback),
+schema-validated with additionalProperties:false.
+
+Hundreds of options across the schema, four presets (`memoryOsPreset`):
+  conservative     Minimal footprint; pins procedural memory off.
+  balanced         Query-aware indexing, verbatim artifacts, local rerank.
+  research-max     Graph recall, proactive extraction, compression, LCM on.
+  local-llm-heavy  Local LLM + fast local path, local embedding fallback.
+(`research` is an alias for `research-max`.) User keys win over the preset;
+the `procedural` block is deep-merged so a partial override cannot discard a
+preset's pinned value.
+
+LLM routing: OpenAI API, local LLM (Ollama, LM Studio), or a gateway model
+chain with multi-provider fallback. For the exact option count run
+`npm run check-config-contract`; full reference in docs/config-reference.md.
+
 
 QUICK START (STANDALONE)
 
   npm install -g @remnic/cli
   remnic init
-  export OPENAI_API_KEY=sk-...
+  export OPENAI_API_KEY=<your-key>
   export REMNIC_AUTH_TOKEN=$(openssl rand -hex 32)
   remnic daemon start
   remnic status
   remnic query "hello" --explain
+
 
 QUICK START (OPENCLAW)
 
@@ -224,84 +226,9 @@ QUICK START (OPENCLAW)
   launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
   remnic doctor
 
-  OpenClaw 2026.5.30-beta.1 may resolve bare plugin package names through npm
-  first during the launch cutover. Remnic is published on ClawHub as
-  @remnic/plugin-openclaw; use explicit clawhub:@remnic/plugin-openclaw for
-  deterministic installs, and explicit npm:@remnic/plugin-openclaw@<version>
-  for npm-only fallback or rollback versions.
+Use the explicit `clawhub:` source for deterministic installs;
+`npm:@remnic/plugin-openclaw@<version>` for npm-only fallback or rollback.
 
-  ClawHub publish note: publish @remnic/plugin-openclaw from the built
-  ClawPack/npm tarball, not from the raw GitHub source folder. Run
-  pnpm --filter @remnic/plugin-openclaw build, pnpm run verify:openclaw-clawpack,
-  clawhub package pack packages/plugin-openclaw, then clawhub package publish
-  the generated remnic-plugin-openclaw-<version>.tgz with source metadata.
-
-OPENCLAW PLUGIN COMPATIBILITY
-
-  Policy: Remnic supports OpenClaw releases from at least the previous 60 days.
-  Recalculate the floor from the current date before changing package metadata.
-  As of June 3, 2026, the active floor is April 4, 2026. Remnic intentionally
-  keeps OpenClaw 2026.4.1 as a more-permissive package metadata floor.
-
-  Current manifest shape for OpenClaw 2026.5.31+:
-  kind: "memory" selects the exclusive memory slot.
-  setup.providers[].envVars advertises optional plugin-mode OPENAI_API_KEY
-  discovery. providerAuthChoices keeps the custom onboarding/CLI metadata.
-  providerAuthEnvVars must remain mirrored for older pre-runtime auth probes.
-
-  June 2, 2026 sweep: issues #1258, #1259, #1266, and #1271 were reviewed
-  against OpenClaw tags through v2026.6.2-alpha.2. The manifest, SDK overview,
-  and SDK entrypoint docs remained compatible; Remnic's SDK snapshot still
-  matched every reviewed tag. New additive OpenClaw surfaces are consumed only
-  through gates: host embedding providers via
-  hostEmbeddingProviderEnabled, inbound transcript capture via
-  openclawMessageReceivedCaptureEnabled, bounded reply/thread metadata via
-  openclawReplyMetadataCaptureEnabled, opt-in quoted-reply extraction context
-  via openclawReplyMetadataExtractionHintsEnabled, and canonical channel
-  envelope prefixes via openclawChannelEnvelopeCleaningEnabled. Never make
-  these static imports or required paths; older OpenClaw hosts must keep using
-  Remnic's existing embedding, agent_end, and legacy envelope-cleaning paths.
-  v2026.6.2-alpha.1 and v2026.6.2-alpha.2 are source tags but were not GitHub
-  release pages or npm packages during that sweep.
-
-  June 3, 2026 sweep: issue #1312 was reviewed against OpenClaw source tags
-  v2026.6.1-beta.3 and v2026.6.3-alpha.1. v2026.6.3-alpha.1 exists upstream,
-  but it was not a GitHub release page at review time. The diff from
-  v2026.6.2-alpha.2 touched OpenClaw policy/workboard docs and
-  provider/exec/runtime internals; the v2026.6.1-beta.3 diff from
-  v2026.6.1-beta.2 did not touch plugin docs or src/plugins. Optional surfaces
-  confirmed in this window are resolve_exec_env, CLI backend
-  ownsNativeCompaction, and ProviderNormalizeTransportContext.modelId. Remnic
-  does not register an exec-environment hook, does not provide a CLI backend,
-  and does not implement provider transport normalization, so no runtime
-  behavior change is needed. Keep these surfaces optional and gated if a future
-  feature uses them.
-  supports must remain for OpenClaw 2026.4 / early 2026.5 slot and lifecycle
-  routing. Top-level securityDisclosure is not a current native manifest field
-  and must stay omitted.
-  contracts.tools: required by OpenClaw 2026.5+ plugin descriptor planning and
-  tool ownership validation. Add every Remnic-owned registerTool name here when
-  adding OpenClaw tools, including conditional LCM aliases.
-
-  Source of truth: packages/plugin-openclaw/openclaw.plugin.json.
-  Synced copies: openclaw.plugin.json and
-  packages/shim-openclaw-engram/openclaw.plugin.json.
-  Guard test: tests/openclaw-plugin-runtime-surfaces.test.ts.
-
-LEGACY OPENCLAW ENGRAM MIGRATION
-
-  Use this for @joshuaswarren/openclaw-engram 9.2.x -> @remnic/plugin-openclaw.
-  Canonical OpenClaw plugin id: openclaw-remnic.
-  Legacy plugin id: openclaw-engram.
-  Do not use remnic-workspace as an OpenClaw plugin id; it is the npm workspace
-  root package name, not the OpenClaw runtime id.
-
-  remnic openclaw migrate-engram --yes
-
-  This backs up openclaw.json, backs up the legacy openclaw-engram extension
-  directory, installs @remnic/plugin-openclaw into openclaw-remnic, writes
-  plugins.entries["openclaw-remnic"], sets plugins.slots.memory to
-  "openclaw-remnic", and preserves the memoryDir.
 
 CONNECTING OTHER AGENTS
 
@@ -310,26 +237,93 @@ CONNECTING OTHER AGENTS
   remnic connectors install replit
   pip install remnic-hermes
 
-CHATGPT DEVELOPER MODE (headline integration):
-  ChatGPT can now persist memories across conversations using YOUR
-  infrastructure as the source of truth. OpenAI no longer disables built-in
-  memory/tools when you connect a custom MCP server. Remnic plugs into
-  that gap as an MCP + OAuth 2.1 integration, giving ChatGPT a persistent,
-  governed, local-first memory store. The canonical store stays on your
-  disk; when ChatGPT calls Remnic's tools, those tool inputs/outputs are
-  processed by OpenAI. Remnic is available only in chats where the
-  app/tools are enabled. Native ChatGPT memory is OFF by default for
-  apps and must be enabled per app; Remnic's own store/recall work
-  regardless (https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
+Built-in connector ids: claude-code, codex-cli, cursor, cline,
+github-copilot, roo-code, windsurf, amp, pi, omp, replit, generic-mcp,
+weclone, hermes.
 
-  docs/integration/chatgpt.md     Full setup guide with Quick Start,
-                                  Overview, Requirements, step-by-step OAuth
-                                  flow, troubleshooting, and security notes.
-                                  chatgpt.com developer mode -> Remnic via
-                                  Tailscale Funnel or Cloudflare Tunnel, with
-                                  server.oauth config and local operator
-                                  approval (`remnic oauth pending|approve|deny`).
-                                  The OAuth facade in @remnic/server is the
-                                  authorization server; the connector id is
-                                  `chatgpt` (token prefix remnic_cg_).
-                                  Every MCP tool ships an outputSchema (PR #1844).
+
+CHATGPT DEVELOPER MODE
+
+ChatGPT can persist memory across conversations using your own infrastructure
+as the source of truth. OpenAI no longer disables built-in memory when you
+connect a custom MCP server, so Remnic plugs in as an MCP + OAuth 2.1
+integration. The canonical store stays on your disk; when ChatGPT calls
+Remnic's tools, those tool inputs/outputs are processed by OpenAI. The OAuth
+authorization server is the facade in @remnic/server; the connector id is
+`chatgpt` (token prefix remnic_cg_). Reach it via Tailscale Funnel or
+Cloudflare Tunnel with local operator approval (`remnic oauth
+pending|approve|deny`). Setup guide: docs/integration/chatgpt.md.
+
+
+OPENCLAW PLUGIN COMPATIBILITY
+
+Policy: Remnic supports OpenClaw releases from at least the previous 60 days.
+Recalculate the floor from the current date before changing package metadata;
+only raise it when an upstream breaking change makes an older host impossible
+to support.
+
+`openclaw.compat.pluginApi` and `openclaw.install.minHostVersion` use one
+`>=2026.4.1` comparator, never a `||` list: OpenClaw's installer splits the
+range on whitespace and AND-evaluates every token (a `||` fails entirely) and
+normalizes away the host prerelease suffix, so a single floor admits both
+stable and prerelease hosts (issue #1450). Reviewed prereleases are listed
+ONLY in `peerDependencies.openclaw` (a `||` list), because npm/node-semver
+resolves that field and drops prereleases from a bare `>=` range.
+
+Manifest stays on current native fields: kind="memory", contracts.tools
+(every Remnic-owned tool name, including conditional LCM aliases),
+commandAliases, activation, setup.requiresRuntime=false, and
+setup.providers[].envVars for optional OPENAI_API_KEY. Keep providerAuthChoices
+and mirror providerAuthEnvVars/supports for older hosts. Do not add top-level
+securityDisclosure. Source of truth:
+packages/plugin-openclaw/openclaw.plugin.json. Compatibility sweeps and
+ClawHub publish mechanics live in docs/plugins/openclaw.md.
+
+
+LEGACY ENGRAM MIGRATION
+
+For @joshuaswarren/openclaw-engram 9.2.x -> @remnic/plugin-openclaw:
+
+  remnic openclaw migrate-engram --yes
+
+Canonical OpenClaw plugin id is openclaw-remnic; the legacy id is
+openclaw-engram. `remnic-workspace` is the npm workspace root, never an
+OpenClaw plugin id. The migration backs up openclaw.json and the legacy
+extension dir, installs the new plugin, rewrites plugins.entries and
+plugins.slots.memory, and preserves memoryDir. Guide:
+docs/guides/openclaw-engram-to-remnic.md.
+
+
+DOCUMENTATION
+
+  README.md                     Overview, install, feature list, architecture.
+  docs/README.md                Docs hub, organized by journey.
+  docs/guides/quickstart.md     Five-minute universal path.
+  docs/getting-started.md       Comprehensive install and first-run guide.
+  docs/cli.md                   Full standalone `remnic` CLI reference.
+  docs/config-reference.md      Every configuration option.
+  docs/api.md                   HTTP, MCP, and `openclaw engram` reference.
+  docs/search-backends.md       Backend comparison + QMD version gating.
+  docs/namespaces.md            Namespace isolation and principals.
+  docs/import-export.md         Data portability.
+  docs/operations.md            Day-two operations.
+  docs/architecture/            Per-subsystem architecture docs.
+  docs/plugins/openclaw.md      OpenClaw adapter, compat policy, publishing.
+  docs/integration/             Per-host connector setup guides.
+  docs/security/                Threat models and security notes.
+  SECURITY.md                   Vulnerability reporting and disclosure.
+  AGENTS.md / CLAUDE.md         Agent operating rules and privacy policy.
+
+
+BUILD / TEST / DEVELOP
+
+  Install:      pnpm install
+  Build:        pnpm run build
+  Test:         pnpm test
+  Typecheck:    pnpm run check-types
+  Quality gate: pnpm run preflight:quick
+  Config check: npm run check-config-contract
+  Docs parity:  npm run check:docs-parity
+  Eval suite:   npm run eval:run
+
+Contributor guide: docs/development/contributing.md.

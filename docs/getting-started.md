@@ -1,102 +1,182 @@
-# Getting Started
+# Getting started
+
+The complete install and first-run guide. Pick an install path, drop in a minimal
+config, and verify that memory is flowing. If you only want the fastest happy path,
+read the [Quickstart](guides/quickstart.md) first and come back here for the details.
+
+Remnic runs two ways: **standalone**, where a local daemon serves every MCP-capable
+tool, and as a **native OpenClaw plugin**, where OpenClaw hosts Remnic in-process.
+Most tools use the standalone path; OpenClaw gets the deepest integration.
 
 ## Prerequisites
 
-- [OpenClaw](https://github.com/openclaw/openclaw) gateway running
-- OpenAI API key (for extraction; retrieval-only mode works without one)
-- [QMD](https://github.com/tobi/qmd) installed (recommended)
+- **Node.js 22.12 or newer** ([nodejs.org](https://nodejs.org/)).
+- **An OpenAI API key** for memory extraction. Retrieval-only mode works without one —
+  you just won't get new memories extracted from conversations.
+- **QMD (optional, recommended)** for the highest-quality search. Remnic falls back to
+  embedding search and recency-ordered reads without it. See [Set up QMD](#set-up-qmd-optional-recommended).
 
-## Installation
+## Install
 
-### Option A: npm (recommended)
+### Option A: Standalone (npm)
+
+The universal path. Works with Claude Code, Codex CLI, Cursor, and any other MCP
+client through the local daemon.
 
 ```bash
-openclaw plugins install clawhub:@remnic/plugin-openclaw
+npm install -g @remnic/cli
 ```
 
-### Option B: Developer install (from Git)
+This installs the `remnic` command and the bundled `@remnic/server` the daemon runs.
+A legacy `engram` binary is installed alongside as a forwarder during the v1.x rename
+window.
+
+Create the daemon's config, set your secrets, then install the background service:
 
 ```bash
-git clone https://github.com/joshuaswarren/remnic.git \
-  ~/.openclaw/extensions/remnic
-cd ~/.openclaw/extensions/remnic
-pnpm install && pnpm run build
-```
-
-### Option C: Standalone (no OpenClaw)
-
-Use Remnic as a standalone memory system without OpenClaw. Requires [Node.js](https://nodejs.org/) 22.12+ and [tsx](https://github.com/privatenumber/tsx) (`npm install -g tsx`).
-
-Build from source and use the standalone CLI:
-
-```bash
-npm install -g tsx               # Required — CLI entry point is TypeScript
-git clone https://github.com/joshuaswarren/remnic.git
-cd remnic && pnpm install && pnpm run build
-cd packages/remnic-cli && npm link # Makes `remnic` available on PATH
-cd ../..
-remnic init                      # Create config in current directory
+mkdir -p ~/.config/remnic
+remnic init                                  # scaffold a config to copy from
+cp remnic.config.json ~/.config/remnic/config.json
 export OPENAI_API_KEY=sk-...
 export REMNIC_AUTH_TOKEN=$(openssl rand -hex 32)
-remnic daemon start              # Start background server (requires source build)
-remnic status                    # Verify it's running
-remnic query "hello" --explain   # Test with tier breakdown
+remnic daemon install                        # write service file, enable, start
+remnic status                                # confirm it is running
 ```
 
-> **Note:** The canonical CLI is `remnic`. The legacy `engram` binary remains as a forwarder during the rename window. Running `npm link` from `packages/remnic-cli/` (not the repo root) makes the CLI globally available — the root package only exposes `engram-access`. Alternatively, invoke directly: `npx tsx packages/remnic-cli/src/index.ts <command>`.
+`remnic init` writes a starter `remnic.config.json` in the current directory. The
+managed daemon looks for config at `~/.config/remnic/config.json` (it runs outside your
+shell's working directory), so copy it there — or point the service at any path with
+`REMNIC_CONFIG_PATH`. See [Configure](#configure) for the file shape.
 
-Standalone mode provides 15+ CLI commands for querying, onboarding projects, curating files, managing spaces, running benchmarks, and more. See the [Platform Migration Guide](guides/platform-migration.md) for standalone adoption details.
+### Option B: OpenClaw plugin
 
-OpenClaw remains the recommended installation path for most users.
+If you run the [OpenClaw](https://github.com/openclaw/openclaw) gateway, install Remnic
+as its memory plugin. One command configures everything:
 
-## Minimal Config
+```bash
+remnic openclaw install
+```
 
-Add to `openclaw.json` under `plugins.entries.openclaw-engram.config`:
+This sets both `plugins.entries."openclaw-remnic"` and `plugins.slots.memory` in
+`~/.openclaw/openclaw.json` (or `$OPENCLAW_CONFIG_PATH`), then restarts the gateway.
+Use `--dry-run` first to preview the config diff, or `--yes` to skip prompts.
+
+Migrating from the old `@joshuaswarren/openclaw-engram` plugin? Run
+`remnic openclaw migrate-engram`, which backs up the legacy extension before switching
+you to `@remnic/plugin-openclaw`. To pull a newer published package and re-apply the
+config, run `remnic openclaw upgrade`.
+
+### Option C: From source
+
+For contributors and adapter authors. Remnic is a pnpm monorepo.
+
+```bash
+git clone https://github.com/joshuaswarren/remnic.git
+cd remnic
+pnpm install && pnpm run build
+cd packages/remnic-cli && npm link          # put `remnic` on your PATH
+cd ../..
+remnic init
+remnic daemon start                          # manual foreground-style start
+remnic status
+remnic query "hello" --explain               # test recall with a tier breakdown
+```
+
+Run `npm link` from `packages/remnic-cli/`, not the repo root — the root package only
+exposes the `engram-access` bin. You can also invoke the CLI directly without linking:
+`npx tsx packages/remnic-cli/src/index.ts <command>`.
+
+## Configure
+
+Remnic's two run modes use two different config shapes. Both accept the same underlying
+plugin settings.
+
+### Standalone: `remnic.config.json`
+
+A top-level file with `remnic` (plugin settings) and `server` (bind + auth) blocks.
+This is what `remnic init` scaffolds:
 
 ```jsonc
 {
-  "openaiApiKey": "${OPENAI_API_KEY}",
-  "recallBudgetChars": 64000
+  "remnic": {
+    "openaiApiKey": "${OPENAI_API_KEY}",
+    "memoryDir": "~/.remnic/memory",
+    "memoryOsPreset": "balanced",
+    "recallBudgetChars": 64000
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4318,
+    "authToken": "${REMNIC_AUTH_TOKEN}"
+  }
 }
 ```
 
-**Important:** The `recallBudgetChars` setting controls how much memory context is injected into agent prompts. The default (8,000 chars) is too small for most deployments — profile and shared context alone can exhaust it, leaving no room for actual memories. Set it to 64,000 for large-context models (Claude, GPT-5) or 32,000 for smaller models. See [Recall Budget Tuning](config-reference.md#recall-budget-tuning).
+Discovery order: `--config <path>` → `REMNIC_CONFIG_PATH` (or `ENGRAM_CONFIG_PATH`) →
+`./remnic.config.json` → `./engram.config.json` → `~/.config/remnic/config.json` →
+`~/.config/engram/config.json`. The managed daemon defaults to
+`~/.config/remnic/config.json`.
 
-All other settings have sensible defaults. Config changes require a full gateway restart (hot reload via `SIGUSR1` does not fire `gateway_start`):
+### OpenClaw: `openclaw.json`
+
+Plugin settings live inline in the gateway config under
+`plugins.entries."openclaw-remnic".config` (installs upgraded from the old plugin id
+keep working under the legacy `openclaw-engram` fallback):
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "openclaw-remnic": {
+        "config": {
+          "openaiApiKey": "${OPENAI_API_KEY}",
+          "recallBudgetChars": 64000
+        }
+      }
+    },
+    "slots": {
+      "memory": "openclaw-remnic"
+    }
+  }
+}
+```
+
+Both `entries."openclaw-remnic"` and `slots.memory = "openclaw-remnic"` are required —
+OpenClaw only loads the plugin bound to the `memory` slot. Config changes need a full
+gateway restart (`SIGUSR1` hot reload does not re-fire `gateway_start`):
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
-Verify startup:
+Override the config path with `OPENCLAW_ENGRAM_CONFIG_PATH` (falling back to
+`OPENCLAW_CONFIG_PATH`) for service environments.
 
-```bash
-grep '\[engram\]' ~/.openclaw/logs/gateway.log | tail -5
-# Should see the memory service start line (the log prefix remains [engram] during v1.x)
-```
+### Tune `recallBudgetChars`
 
-## Set Up QMD (Recommended)
+`recallBudgetChars` caps how much memory context is injected into each prompt. The
+default (8,000 chars) is small — your profile and shared context alone can exhaust it,
+leaving no room for actual memories. Set it to **64,000** for large-context models
+(Claude, GPT-5) or **32,000** for smaller ones. This is the single highest-impact
+setting for recall quality. See
+[Recall budget tuning](config-reference.md#recall-budget-tuning).
 
-[QMD](https://github.com/tobi/qmd) provides hybrid BM25 + vector + reranking search. Without it, Remnic falls back to semantic embedding search (using your OpenAI key when available) and then recency-ordered file reads.
+Everything else has sensible defaults. For a curated starting point, set
+`memoryOsPreset` to `conservative`, `balanced`, `research-max`, or `local-llm-heavy`.
 
-**QMD 2.5.3 is the current supported target.** QMD 1.x still works, but 2.0+
-resolves several known issues natively (session ID crash, model override env
-vars, join performance), 2.5.0 adds runtime diagnostics, structured MCP
-searches, safer indexing, model/GPU env controls, and absolute snippet line
-numbers, and 2.5.3 adds the preferred `--format` selector plus line-range,
-docid-header, full-path, launcher, and Metal-teardown fixes. Remnic detects the
-installed QMD version and only uses newer flags when available. Install via npm
-or bun:
+## Set up QMD (optional, recommended)
+
+[QMD](https://github.com/tobi/qmd) gives Remnic hybrid BM25 + vector + reranking
+search — the highest-quality backend. Remnic supports QMD **2.5.3** and detects the
+installed version at runtime, enabling newer capabilities only when the binary has them.
 
 ```bash
 npm install -g @tobilu/qmd@2.5.3
 # or: bun install -g @tobilu/qmd@2.5.3
-
-# Verify
-qmd --version  # should show 2.5.3
+qmd --version                                 # confirm 2.5.3
 ```
 
-Add to `~/.config/qmd/index.yml`:
+Register your memory directory in `~/.config/qmd/index.yml`:
 
 ```yaml
 openclaw-engram:
@@ -104,13 +184,14 @@ openclaw-engram:
   extensions: [.md]
 ```
 
-Index the collection:
+The `openclaw-engram` collection name is a stable compatibility identifier — keep it as
+is. Then index and embed:
 
 ```bash
 qmd update && qmd embed
 ```
 
-Enable in your plugin config:
+Enable it in your Remnic config:
 
 ```jsonc
 {
@@ -119,136 +200,66 @@ Enable in your plugin config:
 }
 ```
 
-### Upgrading QMD
+For version gates, the upgrade procedure, alternative backends (Orama, LanceDB,
+Meilisearch, remote, noop), and CPU-latency tuning, see
+[Search backends](search-backends.md).
 
-QMD 2.5.3 is a drop-in upgrade from older 2.x installs. Existing collections,
-indexes, and config files work without changes. Remnic detects the installed
-version at startup and enables newer features only when the installed binary
-supports them.
+## Verify it works
 
-**What changed:**
-- QMD `2.5.3`: `qmd query`/`qmd search` prefer `--format json`; Remnic uses that
-  form only for 2.5.3+ and keeps legacy `--json` for older QMD installs.
-- QMD `2.5.3`: `qmd get`/`qmd multi-get` output is line-numbered by default,
-  includes `#docid` headers, accepts `:from:count` line ranges, and supports
-  `--full-path` for direct filesystem paths. These are useful for humans and
-  agents reading QMD directly; Remnic's search path keeps JSON output with
-  docids for provenance and dedupe.
-- QMD `2.5.2`/`2.5.3`: global launcher fixes improve Windows, pnpm-global,
-  Node/Bun source-mode selection, and macOS Metal teardown behavior.
-- Unified `search()` replaces the old query/search/structuredSearch split internally
-- MCP server rewritten as a clean SDK consumer (same external contract)
-- Source reorganized into `src/cli/` and `src/mcp/` subdirectories
-- New programmatic SDK: `import { createStore } from '@tobilu/qmd'`
-- `better-sqlite3` bumped to ^12.4.5 (Node 25 support)
-
-**Patches no longer needed:** The following QMD 1.x patches are resolved natively in 2.0:
-- PR #166 (MCP session ID crash) — built-in `sessionIdGenerator`
-- PR #112 (model override env vars) — `QMD_EMBED_MODEL`, `QMD_GENERATE_MODEL`, `QMD_RERANK_MODEL` supported
-- PR #117 (CROSS JOIN fix) — vector search uses two-step query pattern
-
-**Upgrade steps:**
+**Standalone.** Confirm the daemon is healthy and recall responds:
 
 ```bash
-# 1. Install the supported QMD target
-npm install -g @tobilu/qmd@2.5.3
-# or: bun install -g @tobilu/qmd@2.5.3
-
-# 2. If native bindings need repair, rebuild better-sqlite3 manually
-cd ~/.bun/install/global/node_modules/better-sqlite3
-npm rebuild better-sqlite3
-
-# 3. Verify
-qmd --version       # 2.5.3
-qmd doctor          # available on QMD 2.5+
-qmd status           # should show existing collections
-
-# 4. Restart the gateway
-launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
-
-# 5. Verify Remnic picked up the new QMD version
-grep "cliVersion" ~/.openclaw/logs/gateway.log | tail -1
-# Should show: cliVersion=qmd 2.5.3
+remnic status
+remnic doctor
+remnic query "your query" --explain
 ```
 
-To let Remnic perform this upgrade for PATH/fallback installs, set
-`qmdAutoUpgradeEnabled: true`. Remnic will install
-`@tobilu/qmd@qmdSupportedVersion` at most once per
-`qmdAutoUpgradeCheckIntervalMs`. Explicit `qmdPath` installs are never
-auto-upgraded.
-
-**Note:** If you used the OpenClaw patcher for QMD patches, those patches target QMD 1.x source paths that no longer exist in 2.0. The patcher will harmlessly skip them. You can remove old QMD patch entries from the patcher config.
-
-## Five-Minute Config
-
-Enable the most impactful features incrementally:
-
-```jsonc
-{
-  "openaiApiKey": "${OPENAI_API_KEY}",
-  "recallBudgetChars": 64000,
-  "qmdEnabled": true,
-  "qmdCollection": "openclaw-engram",
-
-  // v8.0: Recall Planner (enabled by default)
-  "recallPlannerEnabled": true,
-
-  // v8.0: Episode/Note dual store (opt-in)
-  "episodeNoteModeEnabled": true,
-
-  // v8.0: Memory Boxes (opt-in)
-  "memoryBoxesEnabled": true,
-  "traceWeaverEnabled": true
-}
-```
-
-## Verify It Works
-
-Start a conversation with OpenClaw. After a few turns, check:
+**OpenClaw.** Start a conversation, then after a few turns check the setup and
+extracted memories:
 
 ```bash
-openclaw engram setup --json
-openclaw engram config-review --json
 openclaw engram doctor --json
 openclaw engram inventory --json
-
-# See extracted memories
-ls ~/.openclaw/workspace/memory/local/facts/
-
-# Search memories from CLI
+ls ~/.openclaw/workspace/memory/local/facts/   # extracted facts land here
 openclaw engram search "your query"
 ```
 
-## Config Override (Service Environments)
+## Troubleshooting: hooks aren't firing (OpenClaw)
 
-Override the config file path via environment variable:
+**Symptom:** Remnic looks installed, but no memories are created and the gateway log
+shows no `[engram]`/`[remnic]` lines after conversations.
+
+**Cause:** OpenClaw gates memory plugins on `plugins.slots.memory`. If that slot does
+not name the plugin id, OpenClaw never calls `register(api)` — no hooks fire, nothing is
+stored or recalled.
+
+**Fix:** run the installer, which sets the slot for you, then restart the gateway:
 
 ```bash
-OPENCLAW_ENGRAM_CONFIG_PATH=/absolute/path/to/openclaw.json
+remnic openclaw install
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
-Fallback: `OPENCLAW_CONFIG_PATH`.
+**Verify the hooks fired.** After restart, look for the activation line in the gateway
+log (`~/.openclaw/logs/gateway.log`), whose prefix stays `[engram]` during the v1.x
+window:
 
-## Alternative Search Backends (v9.0)
-
-QMD provides the highest quality retrieval, but Engram v9 supports five other backends. To use an alternative, set `searchBackend` in your config:
-
-```jsonc
-{
-  "searchBackend": "orama"   // or "lancedb", "meilisearch", "remote", "noop"
-}
+```bash
+grep "gateway_start fired" ~/.openclaw/logs/gateway.log
 ```
 
-Orama requires zero setup — no external server, no native dependencies. Just set the config and restart.
+If it is absent, `remnic doctor` reports which check failed — config file validity,
+`plugins.entries`, the plugin entry, `plugins.slots.memory`, and the memory directory —
+each with a remediation hint. To wire it by hand, ensure both
+`entries."openclaw-remnic"` and `slots.memory = "openclaw-remnic"` exist; the full
+design note is in
+[Plugin id and memory namespaces](integration/plugin-id-and-memory-namespaces.md).
 
-See [Search Backends](search-backends.md) for a full comparison and configuration guide.
+## Next steps
 
-## Next Steps
-
-- [Search Backends](search-backends.md) — choose and configure your search engine
-- [Procedural memory](procedural-memory.md) — how-to / runbook memories (issue #519); **default-on** since issue #567 PR 4/5 — set `procedural.enabled` to `false` under the Remnic plugin config to opt out of extraction, mining, and recall-time procedure injection
-- [Enable All Features](enable-all-v8.md) — explicit full-profile config for all feature families
-- [Config Reference](config-reference.md) — full settings list with defaults and recommended values
-- [Operations](operations.md) — backups, exports, hourly summaries
-- [Architecture Overview](architecture/overview.md) — how it all fits together
-- [Writing a Search Backend](writing-a-search-backend.md) — implement your own adapter
+- [Connect your tools](guides/quickstart.md#step-3-connect-your-tool) — per-platform connectors
+- [Search backends](search-backends.md) — choose, tune, and upgrade your search engine
+- [Config reference](config-reference.md) — every setting with defaults and presets
+- [Procedural memory](procedural-memory.md) — how-to/runbook memories, default-on; set `procedural.enabled` to `false` to opt out
+- [Operations](operations.md) — backups, exports, summaries
+- [Architecture overview](architecture/overview.md) — how it all fits together

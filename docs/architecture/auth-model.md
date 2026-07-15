@@ -2,22 +2,22 @@
 
 ## Per-Plugin Tokens
 
-Each plugin/connector gets its own auth token. Tokens are stored at `~/.engram/tokens.json`:
+Each plugin/connector gets its own auth token. Tokens are stored at `~/.remnic/tokens.json` (a legacy `~/.engram/tokens.json` is read as a fallback):
 
 ```json
 {
-  "openclaw": "engram_oc_a1b2c3d4e5f6...",
-  "claude-code": "engram_cc_f6e5d4c3b2a1...",
-  "codex": "engram_cx_1a2b3c4d5e6f...",
-  "hermes": "engram_hm_6f5e4d3c2b1a...",
-  "replit": "engram_rl_b1c2d3e4f5a6..."
+  "openclaw": "remnic_oc_a1b2c3d4e5f6...",
+  "claude-code": "remnic_cc_f6e5d4c3b2a1...",
+  "codex": "remnic_cx_1a2b3c4d5e6f...",
+  "hermes": "remnic_hm_6f5e4d3c2b1a...",
+  "replit": "remnic_rl_b1c2d3e4f5a6..."
 }
 ```
 
 ### Token Format
 
 ```
-engram_<prefix>_<32-char-random-hex>
+remnic_<platform>_<48-char-random-hex>
 ```
 
 | Prefix | Platform |
@@ -26,25 +26,30 @@ engram_<prefix>_<32-char-random-hex>
 | `cc` | Claude Code |
 | `cx` | Codex CLI |
 | `hm` | Hermes Agent |
+| `pi` | Pi Coding Agent |
+| `op` | omp |
 | `rl` | Replit Agent |
-| `uk` | Unknown / generic |
+| `cu` | Cursor |
+| `cg` | ChatGPT |
+| `gm` | Generic MCP client |
+| `xx` | Unknown / fallback |
 
 ### Token Lifecycle
 
 ```bash
-engram token generate claude-code   # creates and stores token
-engram token list                   # shows all tokens (masked)
-engram token revoke claude-code     # removes token
+remnic token generate claude-code   # creates and stores token
+remnic token list                   # shows all tokens (masked)
+remnic token revoke claude-code     # removes token
 ```
 
-Tokens are generated automatically during `engram connectors install <platform>`.
+Tokens are generated automatically during `remnic connectors install <platform>`.
 
 ## How Tokens Are Used
 
 ### HTTP Requests
 
 ```
-Authorization: Bearer engram_cc_f6e5d4c3b2a1...
+Authorization: Bearer remnic_cc_f6e5d4c3b2a1...
 ```
 
 ### MCP Connections
@@ -84,9 +89,9 @@ The token model is designed to extend to multi-user scenarios:
 ```json
 {
   "tokens": {
-    "engram_cc_...": { "user": "joshua", "platform": "claude-code", "scopes": ["read", "write"] },
-    "engram_cx_...": { "user": "joshua", "platform": "codex", "scopes": ["read", "write"] },
-    "engram_cc_...": { "user": "teammate", "platform": "claude-code", "scopes": ["read"] }
+    "remnic_cc_...": { "user": "alice", "platform": "claude-code", "scopes": ["read", "write"] },
+    "remnic_cx_...": { "user": "alice", "platform": "codex", "scopes": ["read", "write"] },
+    "remnic_cc_...": { "user": "bob", "platform": "claude-code", "scopes": ["read"] }
   }
 }
 ```
@@ -95,7 +100,7 @@ Each user's memories would be stored in separate directories, with optional cros
 
 ## Security Considerations
 
-- Tokens are stored in `~/.engram/tokens.json` with `0600` permissions (owner-only read/write)
+- Tokens are stored in `~/.remnic/tokens.json` with `0600` permissions (owner-only read/write)
 - Tokens are never logged in full — only the prefix is shown in logs
 - The file is not committed to git (`.gitignore`)
 - EMO binds to `127.0.0.1` by default (localhost only) — external access requires explicit configuration

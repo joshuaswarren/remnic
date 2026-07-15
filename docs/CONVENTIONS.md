@@ -1,6 +1,6 @@
 # Development Conventions
 
-Conventions and patterns used throughout the openclaw-engram codebase.
+Conventions and patterns used throughout the Remnic codebase. The repo is a pnpm + Turborepo workspace; the memory engine lives in `packages/remnic-core/`.
 
 ## TypeScript
 
@@ -12,16 +12,16 @@ Conventions and patterns used throughout the openclaw-engram codebase.
 
 ## OpenAI Usage
 
-- **Always use the Responses API** — never Chat Completions. See `src/extraction.ts` for the pattern.
+- **Always use the Responses API** — never Chat Completions. See `packages/remnic-core/src/extraction.ts` for the pattern.
 - **Structured outputs** — use `zodTextFormat()` to get typed responses.
-- **Model references** — never hard-code model names; use `src/model-registry.ts`.
+- **Model references** — never hard-code model names; use `packages/remnic-core/src/model-registry.ts`.
 - **Token logging** — log total tokens and latency; never log user prompt content.
 
 ## File Organization
 
 - One logical unit per file where practical.
-- `src/types.ts` is the single source of truth for shared interfaces.
-- `src/config.ts` owns all config parsing and defaults.
+- `packages/remnic-core/src/types.ts` is the single source of truth for shared interfaces (`PluginConfig`).
+- `packages/remnic-core/src/config.ts` owns all config parsing and defaults.
 - New subsystems must register their config properties in `openclaw.plugin.json:configSchema`.
 
 ## Memory Storage
@@ -34,7 +34,7 @@ Conventions and patterns used throughout the openclaw-engram codebase.
 ## Testing
 
 - Tests live in `tests/` and use Node.js's built-in `node:test` runner.
-- Run with `npm test` (executes `tsx --test` against all `tests/*.test.ts` files).
+- Run with `npm test`, which builds `@remnic/core` and then runs the root `node:test` suite via `scripts/run-root-tests.mjs`. Individual packages carry their own tests too.
 - All tests must be deterministic — no network calls, no filesystem writes to real paths.
 - Use `tests/transfer-fixtures.ts` patterns for shared test data.
 - New subsystems require tests for: happy path, zero/empty input, and boundary conditions.
@@ -47,7 +47,7 @@ Conventions and patterns used throughout the openclaw-engram codebase.
 
 ## Adding a New Config Property
 
-1. Add to the interface in `src/config.ts` with a default.
+1. Add the property to `PluginConfig` in `packages/remnic-core/src/types.ts`, with its default in `packages/remnic-core/src/config.ts`.
 2. Add to `openclaw.plugin.json:configSchema` with type and description.
 3. Run `npm run check-config-contract` to verify alignment.
 4. Document in `docs/config-reference.md`.
@@ -56,9 +56,10 @@ Conventions and patterns used throughout the openclaw-engram codebase.
 
 | Script | Purpose |
 |--------|---------|
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run lint` | Type-check without emitting (`tsc --noEmit`) |
-| `npm test` | Run full test suite |
-| `npm run preflight` | Full pre-PR gate (types + contract + tests + build) |
-| `npm run preflight:quick` | Fast gate (types + contract + key tests) |
-| `npm run check-config-contract` | Verify config types match plugin manifest |
+| `npm run build` | Build `@remnic/core`, sync the OpenClaw plugin manifest, then bundle the root plugin with `tsup` |
+| `npm run check-types` | Type-check with `tsc --noEmit` (plus each package's own `check-types`) |
+| `npm run lint` | Lint with Biome (`biome check`) |
+| `npm test` | Build core, then run the root test suite |
+| `npm run preflight` | Full pre-PR gate (`scripts/pr-preflight.sh full`) |
+| `npm run preflight:quick` | Fast pre-PR gate (`scripts/pr-preflight.sh quick`) |
+| `npm run check-config-contract` | Verify config types match the plugin manifest schema |

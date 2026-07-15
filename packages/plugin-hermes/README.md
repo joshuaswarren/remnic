@@ -2,7 +2,7 @@
 
 Remnic MemoryProvider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Automatically injects memories into every LLM call and observes every conversation turn — no agent code changes required.
 
-Current PyPI package: `remnic-hermes` v1.0.2. This release includes automatic MemoryProvider recall/observation, daemon-side LCM recall enrichment, session reset scoping, the full explicit Remnic tool parity surface, and legacy `engram_*` aliases for existing configs.
+The `remnic-hermes` PyPI package provides automatic MemoryProvider recall/observation, daemon-side LCM recall enrichment, session reset scoping, the full explicit Remnic tool parity surface, and legacy `engram_*` aliases for existing configs.
 
 ## Why MemoryProvider
 

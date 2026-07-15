@@ -55,7 +55,7 @@ In your `openclaw.json` (or whatever config file the Remnic plugin reads):
 {
   "plugins": {
     "entries": {
-      "openclaw-engram": {
+      "openclaw-remnic": {
         "config": {
           "lcmEnabled": true
         }
@@ -64,6 +64,9 @@ In your `openclaw.json` (or whatever config file the Remnic plugin reads):
   }
 }
 ```
+
+The plugin entry is `openclaw-remnic`; the legacy id `openclaw-engram` is
+still honored as a fallback for existing installs.
 
 See [`docs/guides/lossless-context-management.md`](guides/lossless-context-management.md)
 for the full LCM configuration reference.

@@ -1,4 +1,4 @@
-# Daily Context Briefing
+# Daily context briefing
 
 The daily briefing produces a focused "here is what matters right now" view of your memory store by cross-referencing:
 
@@ -51,7 +51,7 @@ The response includes both `markdown` and `json` representations along with the 
 {
   "plugins": {
     "entries": {
-      "openclaw-engram": {
+      "openclaw-remnic": {
         "config": {
           "briefing": {
             "enabled": true,

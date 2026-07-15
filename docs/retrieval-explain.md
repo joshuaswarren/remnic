@@ -1,17 +1,51 @@
-# Retrieval Explain
+# Retrieval explain (tier explain)
 
-> Issue #518. **Status: design spec.** The tier-annotation shape, CLI / HTTP / MCP surfaces, and `LastRecallSnapshot.tierExplain` field described below are **not yet shipped** in the current release. This document defines the contract that downstream slices will land against, so operators and plugin authors can review the surface before it arrives. See [advanced-retrieval.md](./advanced-retrieval.md#direct-answer-retrieval-tier-issue-518) for what ships today (pure eligibility function + config keys).
->
-> Orthogonal to the graph-path `POST /engram/v1/recall/explain` operation, which already exists and returns a graph explanation document — this design adds a **per-result tier annotation**, not a new graph explainer.
+After a recall, Remnic can tell you **which retrieval tier would have served
+the query** — `direct-answer`, `hybrid`, and so on — plus the filters that
+narrowed the candidate set. This annotation is called *tier explain*, and it
+rides on the caller's last-recall snapshot.
 
-## What it will surface
+> **Not to be confused with the graph-path `recall/explain` surface.** Two
+> adjacent surfaces have similar names. This page documents the **tier
+> annotation** (issue #518). The separately-shipped graph-path explainer
+> answers "why did the graph subsystem return these memories?" and lives at
+> `POST /engram/v1/recall/explain` / the `remnic.recall_explain` MCP tool. The
+> [distinction table](#two-surfaces-with-similar-names) below spells out which
+> is which. Tier explain is also the block carried inside a
+> [Recall X-ray](./xray.md) snapshot.
 
-After a recall, Remnic records a `LastRecallSnapshot` for the calling session (see `packages/remnic-core/src/recall-state.ts`). A planned slice will extend the snapshot with an optional `tierExplain` field populated when the **direct-answer retrieval tier** is enabled (`recallDirectAnswerEnabled: true`):
+## Enable it
+
+Tier explain is gated behind the direct-answer retrieval tier, which is
+**off by default**. Opt in with a single flag:
+
+```jsonc
+// plugins.entries.openclaw-remnic.config (or the top-level `remnic` block of a
+// standalone remnic.config.json). Legacy plugin key: openclaw-engram.
+{
+  "recallDirectAnswerEnabled": true
+}
+```
+
+`recallDirectAnswerEnabled` defaults to `false` (verified in
+`packages/remnic-core/src/config.ts`). When it is `false`, `tierExplain` is
+never populated and all three surfaces below report "not populated".
+
+## How it works
+
+When `recallDirectAnswerEnabled` is `true`, the orchestrator runs a lightweight
+direct-answer eligibility gate **in observation mode** alongside the normal QMD
+retrieval path (`packages/remnic-core/src/orchestration/recall-introspection.ts`).
+It records *which tier would have served the query* onto the calling session's
+`LastRecallSnapshot.tierExplain` field
+(`packages/remnic-core/src/recall-state.ts`) — it does **not** short-circuit
+QMD or change which memories are returned. A future slice will flip the
+short-circuit bit so the direct-answer winner can be returned before QMD runs;
+until then this is a pure observability annotation.
+
+The recorded shape is `RecallTierExplain` (`packages/remnic-core/src/types.ts`):
 
 ```ts
-// Planned shape — already defined as `RecallTierExplain` in
-// packages/remnic-core/src/types.ts, but not yet attached to
-// LastRecallSnapshot or populated at runtime.
 interface RecallTierExplain {
   tier: "exact-cache" | "fuzzy-cache" | "direct-answer" | "hybrid" | "rerank-graph" | "agentic";
   tierReason: string;        // human-readable summary
@@ -22,22 +56,31 @@ interface RecallTierExplain {
 }
 ```
 
-The first slice that ships runtime behavior will populate `tier: "direct-answer"` only (observation mode). Later slices will populate it for the other tiers.
+The current release populates `tier: "direct-answer"` (the observation-mode
+verdict). Other tiers are reserved for later slices.
 
-## Planned surfaces
+## Surfaces
 
-All three surfaces below are **not yet implemented**. They are documented here as the target contract for the wiring slice. Do not rely on any of them until a subsequent PR lands their implementation; existing `recall/explain` (graph explanation) is unaffected.
+All three surfaces read the same `LastRecallSnapshot.tierExplain` field and are
+shipped in the current release.
 
-### CLI (planned)
+### CLI (hosted)
 
 ```sh
-remnic recall-explain [--session <key>] [--format text|json]
+openclaw engram recall-explain [--session <key>] [--format text|json]
 ```
 
-- **`--session`**: look up a specific session. Omit to read the most recent snapshot across sessions.
-- **`--format`**: `text` (default) for human output, `json` for a stable machine-readable payload. Any other value will be rejected — no silent default.
+- **`--session`** — look up a specific session. Omit to read the most recent
+  snapshot across sessions.
+- **`--format`** — `text` (default) or `json`. Any other value is rejected with
+  a listed-options error rather than silently defaulting.
 
-Planned text output for a direct-answer hit:
+There is no standalone `remnic recall-explain` command; tier explain is exposed
+through the OpenClaw-hosted CLI, the HTTP endpoint, and the MCP tool. Standalone
+callers read the same data over HTTP/MCP, or inline via a
+[Recall X-ray](./xray.md) capture (`remnic xray`).
+
+Text output for a direct-answer hit:
 
 ```
 === Recall Explain ===
@@ -59,15 +102,17 @@ source-anchors:
   - /memory/pm.md:10-14
 ```
 
-When no direct-answer verdict has been recorded the output will still show the snapshot metadata followed by `tier-explain: (not populated — direct-answer tier disabled or did not fire)`.
+When no direct-answer verdict has been recorded, the output shows the snapshot
+metadata followed by
+`tier-explain: (not populated — direct-answer tier disabled or did not fire)`.
 
-### HTTP (planned)
+### HTTP
 
 ```
-GET /engram/v1/recall/tier-explain[?session=<key>]
+GET /engram/v1/recall/tier-explain[?session=<key>][&namespace=<ns>]
 ```
 
-Bearer auth (same as other `/engram/v1/*` routes). Will return JSON matching `toRecallExplainJson()`:
+Bearer auth, same as every other `/engram/v1/*` route. Returns JSON:
 
 ```json
 {
@@ -91,41 +136,68 @@ Bearer auth (same as other `/engram/v1/*` routes). Will return JSON matching `to
 }
 ```
 
-When no snapshot exists yet, `snapshotFound: false`, `hasExplain: false`, and `tierExplain: null`.
+When no snapshot exists yet, `snapshotFound: false`, `hasExplain: false`, and
+`tierExplain: null`.
 
-This endpoint is **orthogonal** to the already-shipped `POST /engram/v1/recall/explain`, which returns a graph-path explanation document (the pre-existing `recallExplain` operation). The two paths will coexist under different verbs and URLs.
+### MCP
 
-### MCP (planned)
+- `remnic.recall_tier_explain` (canonical) / `engram.recall_tier_explain`
+  (legacy alias).
+- Optional `sessionKey` and `namespace` arguments. Omit `sessionKey` to read the
+  most recent snapshot.
+- Returns the same payload as the HTTP endpoint.
 
-Planned new tool:
+## Two surfaces with similar names
 
-- `remnic.recall_tier_explain` (canonical) / `engram.recall_tier_explain` (legacy alias)
-- Optional `sessionKey` argument. Omit to read the most recent snapshot.
-- Will return the same JSON payload as the HTTP endpoint.
+| | Tier explain (this page, #518) | Graph-path recall/explain (#570-era) |
+| --- | --- | --- |
+| **Answers** | "Which retrieval tier would have served this query, and what filtered candidates out?" | "Why did the graph subsystem return these memories?" (graph-path explanation document) |
+| **CLI** | `openclaw engram recall-explain` | (no dedicated CLI) |
+| **HTTP** | `GET /engram/v1/recall/tier-explain` | `POST /engram/v1/recall/explain` |
+| **MCP** | `remnic.recall_tier_explain` / `engram.recall_tier_explain` | `remnic.recall_explain` / `engram.recall_explain` |
+| **Data source** | `LastRecallSnapshot.tierExplain` | `EngramAccessService.recallExplain()` graph traversal |
 
-The existing `engram.recall_explain` MCP tool (graph-path explainer) is unrelated and unchanged.
+The confusing overlap is deliberate history, not a bug: the CLI verb is
+`recall-explain` but it renders **tier** explain, while the `recall_explain`
+MCP tool renders the **graph-path** explanation. When in doubt, match on the
+route/tool name in the table above, not the word "explain".
 
 ## Reading the `filteredBy` list
 
-When populated, labels will identify which gate eliminated at least one candidate on the way to the final verdict. They will be emitted regardless of eligibility so downstream consumers can see the narrowing steps.
+Each label identifies a gate that eliminated at least one candidate on the way
+to the verdict. They are emitted regardless of the final eligibility so
+consumers can see the narrowing steps:
 
-- `non-active-status` — a candidate was filtered because its status wasn't `active`
-- `not-trusted-zone` — candidate's trust zone wasn't `trusted`
-- `ineligible-taxonomy-bucket` — candidate's taxonomy bucket wasn't in the allowlist
-- `below-importance-floor` — candidate's importance was below the floor AND it wasn't `user_confirmed`
-- `entity-ref-mismatch` — caller supplied `queryEntityRefs` and the candidate's `entityRef` wasn't in the set
-- `below-token-overlap-floor` — candidate's query↔memory token overlap was below the floor
+- `non-active-status` — a candidate's status wasn't `active`
+- `not-trusted-zone` — a candidate's trust zone wasn't `trusted`
+- `ineligible-taxonomy-bucket` — a candidate's taxonomy bucket wasn't in the allowlist
+- `below-importance-floor` — a candidate's importance was below the floor AND it wasn't `user_confirmed`
+- `entity-ref-mismatch` — the caller supplied `queryEntityRefs` and the candidate's `entityRef` wasn't in the set
+- `below-token-overlap-floor` — a candidate's query-to-memory token overlap was below the floor
 
 ## Caveats
 
-- Once wired, `tierExplain` will populate only when `recallDirectAnswerEnabled: true` and direct-answer returns a concrete verdict. Disabled-by-default is intentional — see [advanced-retrieval.md](./advanced-retrieval.md) for the rationale.
-- The first runtime slice will run direct-answer in **observation mode** (post-recall, no short-circuit). Recall latency will be the sum of the full retrieval path *plus* the eligibility gate (bounded: small corpus ≈ under 10ms, larger corpora scale linearly with memory count).
-- The payload's `tierExplain` is designed to be deep-copied defensively by the shared renderer so clients can mutate their local copy without tearing the store.
+- `tierExplain` populates only when `recallDirectAnswerEnabled: true` and the
+  direct-answer gate returns a concrete verdict. Off-by-default is intentional
+  (least-privileged recall) — see [Advanced retrieval](./advanced-retrieval.md)
+  for the eligibility ladder and the full `recallDirectAnswer*` config keys.
+- The current release runs direct-answer in **observation mode**: recall
+  latency is the full retrieval path *plus* the eligibility gate (bounded — a
+  small corpus adds under ~10ms; larger corpora scale with memory count). The
+  short-circuit that returns the direct-answer winner before QMD is not yet
+  shipped.
+- The `tierExplain` payload is deep-copied by the shared renderer, so clients
+  can mutate their local copy without tearing the store.
 
 ## Related reading
 
-- [Advanced Retrieval](./advanced-retrieval.md) — sibling tiers (query expansion, re-ranking, feedback loop, procedural recall) and current status of the direct-answer slice.
-- Module: `packages/remnic-core/src/direct-answer.ts` — pure eligibility gate `isDirectAnswerEligible(...)` (shipped).
-- Module: `packages/remnic-core/src/direct-answer-wiring.ts` — source-agnostic wiring function `tryDirectAnswer(...)` (shipped; not yet invoked by the orchestrator).
-- Type: `packages/remnic-core/src/types.ts` → `RecallTierExplain` (shipped as a type; not yet attached to `LastRecallSnapshot`).
-- Bench: a dedicated `retrieval-direct-answer` fixture under `packages/bench/src/benchmarks/remnic/` is planned but **not yet in-tree**. Today's in-tree retrieval benchmarks are `retrieval-personalization` and `retrieval-temporal`.
+- [Recall X-ray](./xray.md) — per-result attribution snapshot that carries this
+  same `tierExplain` block inline (plus filters, score decomposition, and audit
+  correlation).
+- [Advanced retrieval](./advanced-retrieval.md) — the direct-answer tier's
+  eligibility gate, sibling tiers, and current ship status.
+- `packages/remnic-core/src/direct-answer.ts` — pure eligibility gate
+  `isDirectAnswerEligible(...)`.
+- `packages/remnic-core/src/direct-answer-wiring.ts` — source-agnostic
+  `tryDirectAnswer(...)` binding invoked by the orchestrator in observation mode.
+- `packages/remnic-core/src/types.ts` — `RecallTierExplain` interface.

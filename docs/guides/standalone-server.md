@@ -1,4 +1,4 @@
-# Standalone Multi-Tenant Server
+# Standalone multi-tenant server
 
 ## Introduction
 
@@ -47,7 +47,7 @@ Use plugin mode when:
 
 All clients connect to the same Remnic process. Each tenant's memories are isolated in their own namespace, with a shared namespace for cross-tenant knowledge. The server authenticates every request with a bearer token and resolves the caller's principal to enforce namespace read/write policies.
 
-## Quick Start
+## Quick start
 
 Generate a secure token and start the server:
 
@@ -76,7 +76,7 @@ binary, unsupported version, or collection probe problem. The API path remains
 
 To bind to all interfaces (e.g., for LAN access from other machines), use `--host 0.0.0.0`. Only do this on trusted networks or behind a reverse proxy.
 
-## Connecting Agent Harnesses
+## Connecting agent harnesses
 
 ### OpenClaw (plugin mode)
 
@@ -131,7 +131,7 @@ Add Remnic to your `~/.claude.json`:
 
 Claude Code will discover Remnic's tools automatically. Canonical tool names use the `remnic.*` prefix; legacy `engram.*` aliases remain available through v1.x.
 
-### Custom HTTP Agents
+### Custom HTTP agents
 
 Any HTTP client can use the REST API directly. Here are examples in Python and JavaScript.
 
@@ -191,15 +191,15 @@ const data = await resp.json();
 console.log(data.results);
 ```
 
-## Multi-Tenant Namespace Configuration
+## Multi-tenant namespace configuration
 
-Namespaces isolate memory per tenant while allowing controlled sharing. Enable them in your `openclaw.json`:
+Namespaces isolate memory per tenant while allowing controlled sharing. They are opt-in — `namespacesEnabled` defaults to `false`. Enable them in your `openclaw.json`:
 
 ```json
 {
   "plugins": {
     "entries": {
-      "openclaw-engram": {
+      "openclaw-remnic": {
         "config": {
           "namespacesEnabled": true,
           "sharedNamespace": "shared",
@@ -260,7 +260,7 @@ available through `remnic-server` (see [Per-Request Principal Override](#per-req
 
 See the [Namespaces documentation](../namespaces.md) for full details on namespace storage layout, QMD collection configuration, and CLI tooling.
 
-## The Observe Endpoint
+## The observe endpoint
 
 `POST /engram/v1/observe` feeds conversation messages into Remnic's memory pipeline. This is the primary integration point for custom agents that are not using MCP.
 
@@ -315,7 +315,7 @@ See the [Namespaces documentation](../namespaces.md) for full details on namespa
 
 The observe endpoint is rate-limited to **30 requests per minute** per server instance. Dry runs and idempotency replays do not count toward the limit. If the limit is exceeded, the server returns HTTP 429.
 
-## LCM Search
+## LCM search
 
 `POST /engram/v1/lcm/search` performs full-text search over the LCM conversation archive. This searches raw archived messages, not extracted memories.
 
@@ -364,7 +364,7 @@ The observe endpoint is rate-limited to **30 requests per minute** per server in
 
 If `lcmEnabled` is `false`, the response will have an empty `results` array and `lcmEnabled: false`.
 
-### LCM Status
+### LCM status
 
 `GET /engram/v1/lcm/status` returns LCM availability and stats:
 
@@ -378,7 +378,7 @@ If `lcmEnabled` is `false`, the response will have an empty `results` array and 
 }
 ```
 
-## Per-Request Principal Override
+## Per-request principal override
 
 Standalone `remnic-server` does not currently expose a CLI flag to enable
 trusted per-request principal override. In standalone mode, principal resolution
@@ -415,14 +415,14 @@ curl -X POST http://localhost:4318/engram/v1/observe \
 
 The `X-Engram-Principal` header value becomes the authenticated principal for that request, determining namespace read/write access.
 
-### Security Considerations
+### Security considerations
 
 - **Only enable `--trust-principal-header` when the bearer token provides sufficient trust.** Anyone with the token can impersonate any principal.
 - If you run the server behind a reverse proxy, ensure the proxy strips or validates the `X-Engram-Principal` header from untrusted clients.
 - Without `--trust-principal-header`, the header is silently ignored — principal resolution falls back to configured principal or session key rules.
 - For production multi-tenant standalone setups, consider running separate server instances per tenant with different tokens and fixed configured principals, rather than trusting a single token with header-based principal resolution.
 
-## Shared Knowledge Layer
+## Shared knowledge layer
 
 The shared namespace provides cross-tenant knowledge sharing. All tenants can read from it during recall, but only authorized principals can write to it.
 

@@ -1,17 +1,36 @@
-# Graph Edge Confidence Decay
+# Graph edge confidence decay
 
-> Shipped in issue #681 (three PRs). PR 1/3 added the `confidence` schema
-> field to `GraphEdge`. PR 2/3 wired the maintenance job that decays edges
-> over time. PR 3/3 integrated confidence into the recall traversal path and
-> added `--include-low-confidence` for diagnostic queries.
+Graph edge decay keeps Remnic's memory graph focused on connections that still
+matter: every edge carries a `confidence` value that erodes over time unless the
+edge is reinforced, and low-confidence edges drop out of recall traversal. Enable it
+on long-lived graphs where stale associations accumulate and dilute spreading
+activation.
+
+**Opt-in via `graphEdgeDecayEnabled` (default `false`).** Decay only has edges to
+work on when the memory graph is enabled — `multiGraphMemoryEnabled` and
+`graphRecallEnabled` are both `false` by default, so turn the graph on first (or use
+the `research-max` preset).
+
+## Enable it
+
+```json
+{
+  "multiGraphMemoryEnabled": true,
+  "graphRecallEnabled": true,
+  "graphEdgeDecayEnabled": true
+}
+```
+
+With decay off (the default), all edges stay at their initial confidence for the
+lifetime of the graph.
 
 ## Overview
 
-Every edge in Remnic's graph stores carries an optional `confidence ∈ [0, 1]`
-value. Newly written edges start at `1.0`. The maintenance job periodically
-reduces confidence for edges that have not been reinforced recently. Edges that
-remain below the configured floor are pruned from traversal, which focuses
-recall on high-quality, actively reinforced connections.
+Every edge in Remnic's graph stores an optional `confidence ∈ [0, 1]` value. Newly
+written edges start at `1.0`. The maintenance job periodically reduces confidence
+for edges that have not been reinforced recently. Edges that remain below the
+configured floor are pruned from traversal, which focuses recall on high-quality,
+actively reinforced connections.
 
 ## Model
 
@@ -23,25 +42,24 @@ Each edge stores two fields:
 | `lastReinforcedAt` | `string \| undefined` | ISO timestamp of the most recent reinforcement event. Missing means "never reinforced since write". |
 
 Confidence decreases at a fixed fractional rate per **decay window** that has
-elapsed since `lastReinforcedAt`. Edges that span multiple windows are charged
-for all elapsed windows in a single pass, so the job is idempotent — running it
-twice with the same timestamp is a no-op.
+elapsed since `lastReinforcedAt`. Edges that span multiple windows are charged for
+all elapsed windows in a single pass, so the job is idempotent — running it twice
+with the same timestamp is a no-op.
 
 When an edge is observed during extraction (e.g., two memories share a named
-entity), the reinforcement primitive resets `lastReinforcedAt` to `now` and
-bumps `confidence` by the default reinforcement delta (`0.05`), capped at
-`1.0`. Repeated co-occurrence can recover confidence that previously decayed,
-but it cannot push an edge above the confidence ceiling.
+entity), the reinforcement primitive resets `lastReinforcedAt` to `now` and bumps
+`confidence` by the default reinforcement delta (`0.05`), capped at `1.0`. Repeated
+co-occurrence can recover confidence that previously decayed, but it cannot push an
+edge above the ceiling.
 
 **Confidence floor** — edges whose confidence drops to or below the configured
-`graphEdgeDecayFloor` are never decayed further. They remain in the graph but
-will be pruned during recall traversal unless `--include-low-confidence` is
-specified.
+`graphEdgeDecayFloor` are never decayed further. They remain in the graph but will
+be pruned during recall traversal unless `--include-low-confidence` is specified.
 
-## Maintenance Job
+## Maintenance job
 
-The decay job runs on a configurable cadence and processes all three graph
-stores (`entity.jsonl`, `time.jsonl`, `causal.jsonl`).
+The decay job runs on a configurable cadence and processes all three graph stores
+(`entity.jsonl`, `time.jsonl`, `causal.jsonl`).
 
 ### Configuration
 
@@ -53,30 +71,25 @@ stores (`entity.jsonl`, `time.jsonl`, `causal.jsonl`).
 | `graphEdgeDecayPerWindow` | `0.1` | Fraction of confidence lost per elapsed window. Range `[0, 1]`. |
 | `graphEdgeDecayFloor` | `0.1` | Minimum confidence an edge can decay to; decay stops here. Range `[0, 1]`. |
 
-### Tuning Guidance
+### Tuning guidance
 
-- **Aggressive decay** (high-churn environments): lower `graphEdgeDecayWindowMs`
-  to `30d` and raise `graphEdgeDecayPerWindow` to `0.2`–`0.3`. Edges that are
-  not reinforced within a month will lose confidence quickly, keeping the graph
-  lean.
-
+- **Aggressive decay** (high-churn environments): lower `graphEdgeDecayWindowMs` to
+  `30d` and raise `graphEdgeDecayPerWindow` to `0.2`–`0.3`. Edges that are not
+  reinforced within a month lose confidence quickly, keeping the graph lean.
 - **Conservative decay** (stable long-term knowledge): raise
-  `graphEdgeDecayWindowMs` to `180d` and lower `graphEdgeDecayPerWindow` to
-  `0.05`. Edges survive six months of inactivity before losing significant
-  confidence.
-
-- **Disable decay**: set `graphEdgeDecayEnabled` to `false` (the default). All
-  edges remain at their initial confidence for the lifetime of the graph.
-
+  `graphEdgeDecayWindowMs` to `180d` and lower `graphEdgeDecayPerWindow` to `0.05`.
+  Edges survive six months of inactivity before losing significant confidence.
+- **Disable decay**: set `graphEdgeDecayEnabled` to `false` (the default). All edges
+  remain at their initial confidence for the lifetime of the graph.
 - **Raise the floor**: increasing `graphEdgeDecayFloor` keeps old edges visible
-  during traversal even without reinforcement. Lowering it to `0.0` allows edges
-  to decay to zero and be effectively invisible unless `--include-low-confidence`
-  is passed.
+  during traversal even without reinforcement. Lowering it to `0.0` allows edges to
+  decay to zero and be effectively invisible unless `--include-low-confidence` is
+  passed.
 
 ### Telemetry
 
 Each run writes a JSON status file to
-`<memoryDir>/state/graph-edge-decay-status.json` with the following fields:
+`<memoryDir>/state/graph-edge-decay-status.json`:
 
 ```json
 {
@@ -100,60 +113,60 @@ Each run writes a JSON status file to
 }
 ```
 
-`remnic doctor` reads this file and surfaces the last run time and summary
-stats in its health report.
+`remnic doctor` reads this file and surfaces the last run time and summary stats in
+its health report.
 
-## Recall Integration
+## Recall integration
 
-### Confidence-Weighted Spreading Activation
+### Confidence-weighted spreading activation
 
 During graph traversal, each edge's contribution to spreading activation is
 multiplied by its `confidence`:
 
-```
+```text
 score += edge.weight × edge.confidence × decay^hop
 ```
 
-Legacy edges without a `confidence` field are treated as `1.0`, so old graphs
-work unchanged.
+Legacy edges without a `confidence` field are treated as `1.0`, so old graphs work
+unchanged.
 
-### Traversal Pruning
+### Traversal pruning
 
 Edges with `confidence < graphTraversalConfidenceFloor` are excluded from the
-adjacency index before BFS begins. Pruned edges contribute no activation and
-cannot serve as intermediate hops to deeper neighbors.
+adjacency index before BFS begins. Pruned edges contribute no activation and cannot
+serve as intermediate hops to deeper neighbors.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `graphTraversalConfidenceFloor` | `0.2` | Minimum confidence required for traversal. Range `[0, 1]`. Legacy edges (no `confidence` field) are always `1.0`. |
 | `graphTraversalPageRankIterations` | `8` | PageRank refinement iterations on top of BFS. Set `0` to use raw BFS scores. |
 
-### The `--include-low-confidence` Flag
+### The `--include-low-confidence` flag
 
-By default, recall traversal respects `graphTraversalConfidenceFloor` and
-ignores decayed edges. Pass `--include-low-confidence` to a `remnic recall`
-command to override this and include all edges regardless of confidence:
+By default, recall traversal respects `graphTraversalConfidenceFloor` and ignores
+decayed edges. Pass `--include-low-confidence` to a recall command to override this
+and include all edges regardless of confidence:
 
 ```bash
 # Standard recall — low-confidence edges pruned
-remnic recall "what do I know about authentication?"
+openclaw engram recall "what do I know about authentication?"
 
 # Diagnostic recall — all edges included even if heavily decayed
-remnic recall "what do I know about authentication?" --include-low-confidence
+openclaw engram recall "what do I know about authentication?" --include-low-confidence
 ```
 
 This is an **operator / debug tool**, not a tuning knob. Use it when:
 
 - You want to understand what edges exist before decay has cleared them.
-- You suspect a recall is missing results because edges have decayed below
-  the floor.
+- You suspect a recall is missing results because edges have decayed below the
+  floor.
 - You are auditing graph state before or after a decay maintenance run.
 
-The flag threads through the full recall pipeline — both the
-`expandResultsViaGraph` hot path and the `applyColdFallbackPipeline` cold path
-respect it. It is also available via the HTTP API as a query parameter:
+The flag threads through the full recall pipeline — both the `expandResultsViaGraph`
+hot path and the `applyColdFallbackPipeline` cold path respect it. It is also
+available via the HTTP API:
 
-```
+```text
 POST /engram/v1/recall
 { "query": "...", "includeLowConfidence": true }
 
@@ -162,22 +175,38 @@ POST /engram/v1/recall?include_low_confidence=true
 { "query": "..." }
 ```
 
-## X-ray Surfacing
+## X-ray surfacing
 
 When recall X-ray capture is enabled (`remnic xray <query>`), each graph result
 carries an `edgeConfidence` field in the per-result provenance. This is the
-confidence of the highest-confidence edge along the BFS path that landed the
-result. The `graphEdgeConfidences` array in the X-ray snapshot lists one entry
-per edge in the recall path, aligned with `graphPath`.
+confidence of the highest-confidence edge along the BFS path that landed the result.
+The `graphEdgeConfidences` array in the X-ray snapshot lists one entry per edge in
+the recall path, aligned with `graphPath`.
 
-Low-confidence results returned via `--include-low-confidence` will show
-reduced `edgeConfidence` values in the X-ray, making it easy to distinguish
-them from normally-admitted results.
+Low-confidence results returned via `--include-low-confidence` show reduced
+`edgeConfidence` values in the X-ray, making it easy to distinguish them from
+normally-admitted results.
 
-## Cross-References
+## Caveats
 
-- [Graph Reasoning](architecture/graph-reasoning.md) — overall graph architecture,
-  spreading activation model, PageRank refinement, lateral inhibition
-- [Graph Dashboard](graph-dashboard.md) — live graph observability server
-- [Config Reference](config-reference.md) — all `graphEdgeDecay*` and
-  `graphTraversalConfidenceFloor` settings
+- Decay needs a populated graph. With `multiGraphMemoryEnabled` /
+  `graphRecallEnabled` off (the defaults), there are no edges to decay.
+- `--include-low-confidence` is a diagnostic override, not a recall-quality tuning
+  knob — leaving it on defeats the point of pruning.
+- Confidence recovery is bounded: repeated co-occurrence can raise a decayed edge
+  but never above `1.0`.
+
+## Cross-references
+
+- [Graph reasoning](architecture/graph-reasoning.md) — overall graph architecture,
+  spreading activation model, PageRank refinement, lateral inhibition.
+- [Graph dashboard](graph-dashboard.md) — live graph observability server.
+- [Config reference](config-reference.md) — all `graphEdgeDecay*` and
+  `graphTraversalConfidenceFloor` settings.
+
+## Provenance
+
+Graph edge confidence decay shipped in issue
+[#681](https://github.com/joshuaswarren/remnic/issues/681) across three PRs: the
+`confidence` schema field on `GraphEdge`, the decay maintenance job, and confidence
+integration into recall traversal plus `--include-low-confidence`.

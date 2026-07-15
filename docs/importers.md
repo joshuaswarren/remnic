@@ -2,17 +2,30 @@
 
 Issue [#568](https://github.com/joshuaswarren/remnic/issues/568) ships a
 family of optional importer packages that pull personal memory out of
-external platforms and land it in Remnic as first-class memories.
+external platforms and land it in Remnic as first-class memories. Seven
+import packages ship today across three CLI surfaces.
 
-Five sources are supported today:
+**Five plug into the shared `remnic import --adapter <source>` command:**
 
-| Source  | Package                   | Source label | Input                                     |
-|---------|---------------------------|--------------|-------------------------------------------|
-| ChatGPT | `@remnic/import-chatgpt`  | `chatgpt`    | Data-export JSON (memories + conversations) |
-| Claude  | `@remnic/import-claude`   | `claude`     | Data-export JSON (projects + conversations) |
-| Gemini  | `@remnic/import-gemini`   | `gemini`     | Google Takeout `My Activity.json`            |
-| mem0    | `@remnic/import-mem0`     | `mem0`       | REST API (paginated) or offline JSON dump    |
-| Supermemory | `@remnic/import-supermemory` | `supermemory` | JSON export from Supermemory Memories API |
+| Source      | Package                      | Adapter id    | Input                                        |
+|-------------|------------------------------|---------------|----------------------------------------------|
+| ChatGPT     | `@remnic/import-chatgpt`     | `chatgpt`     | Data-export JSON (memories + conversations)  |
+| Claude      | `@remnic/import-claude`      | `claude`      | Data-export JSON (projects + conversations)  |
+| Gemini      | `@remnic/import-gemini`      | `gemini`      | Google Takeout `My Activity.json`            |
+| mem0        | `@remnic/import-mem0`        | `mem0`        | REST API (paginated) or offline JSON dump    |
+| Supermemory | `@remnic/import-supermemory` | `supermemory` | JSON export from Supermemory Memories API    |
+
+**Two ship as their own commands, because their data models differ:**
+
+| Source        | Package                       | Command                                   | Input                                |
+|---------------|-------------------------------|-------------------------------------------|--------------------------------------|
+| lossless-claw | `@remnic/import-lossless-claw`| `remnic import-lossless-claw`             | lossless-claw LCM SQLite database    |
+| WeClone       | `@remnic/import-weclone`      | `openclaw engram bulk-import --source weclone` | WeClone-preprocessed chat export JSON |
+
+`remnic import --adapter` covers only the first five. lossless-claw is a
+SQLite-to-SQLite LCM migration ([details below](#lossless-claw)); WeClone chat
+history flows through the bulk-import pipeline documented in
+[Import / Export / Backup](import-export.md#bulk-import-issue-460).
 
 Each importer is an **à-la-carte optional runtime companion** of the
 `@remnic/cli` package. They are never bundled into the base CLI install,
@@ -124,7 +137,7 @@ instantly even on machines where the memory directory isn't set up.
 Every imported memory carries provenance metadata that flows through the
 orchestrator into recall and attribution:
 
-- `sourceLabel` — the platform name (`chatgpt`, `claude`, `gemini`, `mem0`)
+- `sourceLabel` — the platform name (`chatgpt`, `claude`, `gemini`, `mem0`, `supermemory`)
 - `sourceId` — stable source-side id for idempotent re-imports
 - `sourceTimestamp` — the export's original timestamp (ISO 8601)
 - `importedFromPath` — the file path or API endpoint URL
@@ -193,3 +206,40 @@ remnic import --adapter supermemory --file ./supermemory-memories.json
 ```
 
 If your export spans multiple pages, concatenate them into one object `{ "memories": [...] }` (or one flat array) before import.
+
+## lossless-claw
+
+`@remnic/import-lossless-claw` migrates a lossless-claw LCM database into
+Remnic's own LCM store. It is **not** a `remnic import --adapter` source — its
+data model is turns plus a summary DAG, not facts — so it ships as a dedicated
+top-level command:
+
+```bash
+npm install -g @remnic/import-lossless-claw
+remnic import-lossless-claw --src ~/.openclaw/lcm.db --dry-run
+remnic import-lossless-claw --src ~/.openclaw/lcm.db
+```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--src <path>` | Required. Path to a lossless-claw SQLite database (typically `~/.openclaw/lcm.db`). |
+| `--memory-dir <path>` | Remnic memory directory. Defaults to the resolved `REMNIC_MEMORY_DIR` / config value. |
+| `--dry-run` | Count what would be imported without writing. |
+| `--session-filter <id>` | Restrict to a single resolved session id. Repeatable. |
+
+lossless-claw occupies OpenClaw's `contextEngine` slot while Remnic occupies
+the `memory` slot, so the two run side-by-side; use this importer only when you
+want session history migrated into Remnic's LCM store. Remnic's LCM is
+single-parent, so multi-parent summary nodes collapse to the lowest-ordinal
+parent and the collapse count is reported in the run summary.
+
+## WeClone
+
+`@remnic/import-weclone` bulk-imports WeClone-preprocessed chat exports
+(Telegram, WhatsApp, Discord, Slack). It runs through the bulk-import pipeline
+rather than `remnic import --adapter`, so it is invoked as `openclaw engram
+bulk-import --source weclone`. See
+[Import / Export / Backup](import-export.md#bulk-import-issue-460) for the full
+command, flags, and prerequisites.

@@ -1,6 +1,6 @@
 # Search Backends
 
-Engram v9 supports six search backends through a pluggable port/adapter architecture. Each backend implements the same `SearchBackend` interface, so switching engines requires only a config change — no code modifications.
+Remnic supports six search backends through a pluggable port/adapter architecture. Each backend implements the same `SearchBackend` interface, so switching engines requires only a config change — no code modifications.
 
 ## Choosing a Backend
 
@@ -102,11 +102,47 @@ QMD version coverage:
 | `2.5.0` | Enables doctor/status diagnostics, version-matched skills, structured MCP `lex`/`vec`/`hyde` searches, absolute snippet lines, scoped embed behavior, and QMD model/GPU env controls. |
 | `2.5.3` | Uses QMD's preferred `--format json` selector for `query`/`search` subprocess calls and inherits QMD's line-range, docid-header, full-path, launcher, and Metal-teardown fixes. Remnic keeps legacy `--json` for older QMD versions. |
 
+### Upgrading QMD
+
+QMD `2.5.3` is a drop-in upgrade from any 2.x install — existing collections, indexes,
+and config files work unchanged. Remnic detects the installed version at startup and
+enables newer features only when the binary supports them, so upgrading is low-risk.
+
+```bash
+# 1. Install the supported target
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
+
+# 2. Verify
+qmd --version        # 2.5.3
+qmd doctor           # available on QMD 2.5+
+qmd status           # existing collections should still list
+
+# 3. Restart your host so Remnic re-detects the version.
+#    Standalone:  remnic daemon restart
+#    OpenClaw:    launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+```
+
+If native bindings misbehave after the upgrade, rebuild them with
+`npm rebuild better-sqlite3`.
+
+Moving up from QMD 1.x also resolves three issues that previously required manual
+patches, all fixed natively in 2.0+:
+
+- MCP session-ID crash — built-in `sessionIdGenerator`.
+- Model override env vars — `QMD_EMBED_MODEL`, `QMD_GENERATE_MODEL`, `QMD_RERANK_MODEL`.
+- Vector-search join performance — two-step query pattern.
+
+If you used the OpenClaw patcher for those 1.x patches, it targets source paths that no
+longer exist in 2.x and will harmlessly skip them; remove the stale QMD patch entries.
+To upgrade PATH/fallback installs automatically, set `qmdAutoUpgradeEnabled` (see the
+QMD config table above).
+
 ### QMD Daemon Mode
 
-For lower latency, Engram prefers a shared stdio `qmd mcp` session when QMD is healthy. It does not currently talk to the HTTP daemon endpoint directly, even though the legacy `qmdDaemonUrl` setting is still retained for compatibility.
+For lower latency, Remnic prefers a shared stdio `qmd mcp` session when QMD is healthy. It does not currently talk to the HTTP daemon endpoint directly, even though the legacy `qmdDaemonUrl` setting is still retained for compatibility.
 
-Engram automatically prefers the shared MCP session when available and falls back to subprocess calls on empty results, timeouts, or transport failure.
+Remnic automatically prefers the shared MCP session when available and falls back to subprocess calls on empty results, timeouts, or transport failure.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -192,7 +228,7 @@ Orama is an embedded, pure JavaScript search engine with hybrid FTS + vector sup
 }
 ```
 
-That's all you need. Engram handles database creation, document indexing, and persistence automatically.
+That's all you need. Remnic handles database creation, document indexing, and persistence automatically.
 
 ### How It Works
 
@@ -336,7 +372,7 @@ The Remote backend sends search requests to an HTTP REST endpoint. Use it to int
 
 ## Noop
 
-The Noop backend disables search entirely. Engram still extracts and stores memories, but recall returns no search results. Useful for extraction-only setups or testing.
+The Noop backend disables search entirely. Remnic still extracts and stores memories, but recall returns no search results. Useful for extraction-only setups or testing.
 
 ```jsonc
 {
@@ -350,14 +386,14 @@ Switching backends is a config-only change. Your memory files are always plain m
 
 1. Update `searchBackend` in your config
 2. Add any backend-specific settings
-3. Restart the gateway: `launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway`
-4. Run `openclaw engram stats` to verify the new backend is active
+3. Restart your host — standalone: `remnic daemon restart`; OpenClaw: `launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway`
+4. Verify the active backend — standalone: `remnic doctor`; OpenClaw: `openclaw engram stats`
 
 Embedded backends (Orama, LanceDB) will automatically index your existing memory files on the next update cycle.
 
 ## Global Search
 
-All backends support `searchGlobal()`, which searches across all collections (not just the default one). This is used by Engram's cross-collection recall when hot/cold tiering or conversation indexing is enabled.
+All backends support `searchGlobal()`, which searches across all collections (not just the default one). This is used by Remnic's cross-collection recall when hot/cold tiering or conversation indexing is enabled.
 
 - **QMD**: Searches all configured QMD collections
 - **Orama**: Scans all `.msp` files in the database directory

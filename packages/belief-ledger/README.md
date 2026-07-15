@@ -5,6 +5,15 @@ predictions, and opinions as structured Remnic facts, retrieves prior claims tha
 may conflict, asks a host LLM to classify the relationship, and tracks prediction
 calibration over time.
 
+Part of [Remnic](https://github.com/joshuaswarren/remnic), the open-source,
+local-first memory and context layer for AI agents.
+
+## Install
+
+```bash
+npm install @remnic/belief-ledger
+```
+
 This package is intentionally host-neutral:
 
 - It depends on `@remnic/core` public APIs.
@@ -68,3 +77,7 @@ path. For OpenClaw-backed Remnic runtimes, pass the existing gateway-backed
   verdict source or return a user-verdict prompt.
 - `reflect`: compute calibration summaries, Brier score, flipped claims, and
   dormant topics.
+
+## License
+
+MIT

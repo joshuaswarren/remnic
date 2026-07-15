@@ -1,36 +1,74 @@
 # Architecture
 
-Remnic is a local-first memory plugin for the [OpenClaw](https://github.com/openclaw/openclaw) gateway. For a detailed walkthrough, see the docs below.
+A one-page orientation to how Remnic is built. Remnic is a local-first memory and context layer for AI agents: one memory store on your machine, shared by every agent you connect. This page is the map; each section links into `docs/architecture/` for depth.
 
-## System Overview
+## The shape
 
-See **[docs/architecture/overview.md](architecture/overview.md)** for the full system design, component map, and data model.
+A host-agnostic engine (`@remnic/core`) owns all memory semantics. A standalone daemon (`@remnic/server`) exposes it over HTTP + MCP, and thin adapters connect each agent tool to that one store.
 
-## Key Design Decisions
+```
+        Claude Code   Codex CLI   Cursor   ChatGPT   Hermes   Replit   Pi/omp
+             │           │          │         │         │        │       │
+             └───────────┴──────────┴────┬────┴─────────┴────────┴───────┘
+                                         │ HTTP + MCP (127.0.0.1:4318)
+                                ┌────────▼─────────┐
+                                │  @remnic/server   │  standalone daemon
+                                ├───────────────────┤
+                                │   @remnic/core     │  memory engine
+                                │  orchestrator ·    │
+                                │  extraction ·      │
+                                │  search backends · │
+                                │  graph · lifecycle │
+                                └────────┬──────────┘
+                                         │
+                                ┌────────▼──────────┐
+                                │  markdown + YAML   │  plain files on disk
+                                │  ~/.remnic/memory  │  (no external database)
+                                └───────────────────┘
+```
 
-- **Local-first storage** — all memories live as plain markdown files on disk; no external database required.
-- **Three-phase flow** — *recall* (before each agent session), *buffer* (after each turn), *extract* (periodic LLM call).
+OpenClaw is one adapter (the deepest native integration), not the center. Standalone Remnic must remain correct without any single host.
+
+## The three-phase flow
+
+Every integration drives the same core loop:
+
+```
+Before an agent turn:   Recall   → inject relevant memories into the prompt
+After each turn:        Buffer   → accumulate turns until a trigger fires
+Periodically:           Extract  → one LLM call turns turns into stored memories
+```
+
+Recall runs a planner → candidate generation (artifacts, QMD hybrid search, embedding fallback) → policy filtering → optional rerank → cap → format. See [Retrieval pipeline](architecture/retrieval-pipeline.md). Extraction, consolidation, and expiry are covered in [Memory lifecycle](architecture/memory-lifecycle.md).
+
+## Key design decisions
+
+- **Local-first storage** — every memory is a plain markdown file with YAML frontmatter; no external database.
+- **Host-agnostic core** — `@remnic/core` has zero host imports; adapters translate, they don't own semantics.
 - **OpenAI Responses API** — extraction uses structured outputs via the Responses API, never Chat Completions.
-- **QMD for retrieval** — hybrid BM25 + vector + reranking via an external `qmd` process; degrades gracefully when unavailable.
-- **Plugin architecture** — integrates with OpenClaw via hooks (`gateway_start`, `before_agent_start`, `agent_end`) and registered tools/commands.
+- **Pluggable search** — QMD hybrid (BM25 + vector + rerank) is the default backend, with Orama, LanceDB, Meilisearch, remote, and no-op behind one interface; recall fails open when a backend is unavailable.
+- **À-la-carte packages** — install only the connectors/importers you use; optional peers keep the base install small.
 
-## Component Map
+## Where the code lives
 
-| Component | File | Role |
-|-----------|------|------|
-| Orchestrator | `src/orchestrator.ts` | Coordinates all phases |
-| Storage | `src/storage.ts` | Reads/writes markdown + YAML frontmatter |
-| Buffer | `src/buffer.ts` | Smart turn accumulation with signal-based triggers |
-| Extraction | `src/extraction.ts` | LLM extraction engine (OpenAI Responses API) |
-| QMD client | `src/qmd.ts` | Hybrid search (BM25 + vector + reranking) |
-| Retrieval | `src/retrieval.ts` | Recall pipeline: filter → rerank → cap → format |
-| HiMem | `src/himem.ts` | Episode/Note dual-store classification (v8.0) |
-| Boxes | `src/boxes.ts` | Memory Box builder + Trace Weaver (v8.0) |
-| Tools | `src/tools.ts` | Agent-callable memory tools |
+Remnic is a pnpm + Turborepo monorepo. Core is in `packages/remnic-core/src/`, the standalone runtime in `packages/remnic-server/` and `packages/remnic-cli/`, and each host/connector/importer is its own package. See [Monorepo structure](architecture/monorepo-structure.md) for the full 27-package map, dependency graph, and publish order.
 
-## Further Reading
+| Concern | Where |
+|---------|-------|
+| Orchestration (all phases) | `packages/remnic-core/src/orchestrator.ts` |
+| Storage (markdown + YAML) | `packages/remnic-core/src/storage.ts` |
+| Turn buffering | `packages/remnic-core/src/buffer.ts` |
+| Extraction (Responses API) | `packages/remnic-core/src/extraction.ts` |
+| Search interface + backends | `packages/remnic-core/src/search/` |
+| Standalone HTTP + MCP server | `packages/remnic-server/src/` |
+| OpenClaw adapter | `packages/plugin-openclaw/` + root `src/` wiring |
 
-- [Architecture Overview](architecture/overview.md) — full internals
-- [Retrieval Pipeline](architecture/retrieval-pipeline.md) — how recall works
-- [Procedural memory](procedural-memory.md) — optional `procedure` category, recall gate, miner
-- [Memory Lifecycle](architecture/memory-lifecycle.md) — write, consolidation, expiry
+## Further reading
+
+- [Architecture overview](architecture/overview.md) — full system design, storage layout, and data model
+- [Retrieval pipeline](architecture/retrieval-pipeline.md) — how recall works end to end
+- [Memory lifecycle](architecture/memory-lifecycle.md) — write, consolidation, expiry, and tiering
+- [Graph reasoning](architecture/graph-reasoning.md) — the opt-in graph layer
+- [Monorepo structure](architecture/monorepo-structure.md) — packages, dependencies, and releases
+- [Shared memory](architecture/shared-memory.md) — how one store serves many agents
+- [Config reference](config-reference.md) — every configuration flag

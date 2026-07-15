@@ -19,8 +19,11 @@ pnpm add @remnic/export-weclone
 # or: npm i @remnic/export-weclone
 ```
 
-`@remnic/export-weclone` depends on `@remnic/core` and is intended to be
-used alongside an existing Remnic memory store.
+`@remnic/export-weclone` is an **optional companion** of
+[`@remnic/cli`](https://www.npmjs.com/package/@remnic/cli), installed separately —
+the base install never pulls it in. It depends on `@remnic/core` and is meant to
+run alongside an existing Remnic memory store. `remnic training:export --format
+weclone` loads it lazily and prints an install hint if it is missing.
 
 ## Quick start
 

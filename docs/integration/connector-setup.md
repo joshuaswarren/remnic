@@ -266,7 +266,7 @@ const response = await fetch(`${REMNIC_API_URL}/recall`, {
 
 ## Hermes Agent
 
-Hermes supports MCP servers via `config.yaml`. For deeper integration, Hermes v0.7.0+ also supports a dedicated **MemoryProvider plugin protocol** — see [Hermes setup guide](../guides/hermes-setup.md).
+Hermes supports MCP servers via `config.yaml`. For deeper integration, Hermes v0.7.0+ also supports a dedicated **MemoryProvider plugin protocol** — see [Hermes setup guide](hermes-setup.md).
 
 ### Option A: MCP (quick start)
 

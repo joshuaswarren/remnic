@@ -1,6 +1,11 @@
-# Import / Export / Backup (v2.3)
+# Import, export, and backup
 
-Engram stores memory as plain files. v2.3 adds portable export/import and safe backups via the `openclaw engram` CLI.
+Remnic stores memory as plain markdown + YAML files. This guide covers portable
+export/import and safe backups through the `openclaw engram` gateway CLI, plus
+the bulk-import and training-export pipelines.
+
+> Importing memory *from another platform* (ChatGPT, Claude, Gemini, mem0,
+> Supermemory, lossless-claw, WeClone)? See [Memory importers](importers.md).
 
 ## Export
 
@@ -195,7 +200,7 @@ for the adapter-specific docs and programmatic API.
 
 ## Migration Helpers (v8.16 Task 1)
 
-Engram includes bounded migration helpers under `openclaw engram migrate`:
+Remnic includes bounded migration helpers under `openclaw engram migrate`:
 
 ```bash
 openclaw engram migrate normalize-frontmatter

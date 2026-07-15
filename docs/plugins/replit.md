@@ -45,11 +45,11 @@ Unlike Claude Code, Codex, and Hermes, Replit has no hook system. This means:
 | Session start recall | No | Agent can call recall at conversation start |
 | Per-prompt memory | No | Agent decides when to check memory |
 
-The agent has full access to all 44 MCP tools but must choose to use them.
+The agent has full access to the entire Remnic MCP tool surface but must choose to use the tools.
 
 ## Available MCP Tools
 
-All Remnic MCP tools are available — recall, observe, store, search, entities, governance, work tracking, etc. See [MCP tools reference](../api/mcp-tools.md).
+All Remnic MCP tools are available — recall, observe, store, search, entities, governance, work tracking, and more. See the [MCP tools reference](../api.md).
 
 ## Troubleshooting
 

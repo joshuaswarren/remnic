@@ -1,6 +1,6 @@
 # Graph Reasoning
 
-Engram's graph layer is opt-in. It adds explicit graph storage plus bounded traversal on top of the normal recall pipeline; it does not replace the standard retrieval contract.
+Remnic's graph layer is opt-in. It adds explicit graph storage plus bounded traversal on top of the normal recall pipeline; it does not replace the standard retrieval contract.
 
 ## Runtime Shape
 

@@ -19,7 +19,7 @@ OpenClaw Gateway (single process)
 
 ### When to use
 
-- You're an existing OpenClaw user upgrading to the new Engram
+- You're an existing OpenClaw user upgrading to the new Remnic
 - You want a single process managing everything
 - You don't need the EMO daemon running independently
 
@@ -54,19 +54,19 @@ EMO daemon (:4318)          ← standalone process
 ### Behavior
 
 - EMO daemon runs independently via launchd/systemd
-- Memory store path configured in EMO's config (defaults to `~/.engram/memory/`)
+- Memory store path configured in EMO's config (defaults to `~/.remnic/memory/`)
 - OpenClaw features still work (OEO proxies memory reads through EMO's HTTP API)
 - If OpenClaw stops, EMO keeps running — other agents unaffected
 
 ## Configuration
 
 ```json
-// In OpenClaw config or engram.config.json
+// In OpenClaw config or remnic.config.json
 {
-  "engram": {
+  "remnic": {
     "mode": "embedded",          // "embedded" or "delegate"
     "delegateUrl": "http://127.0.0.1:4318",  // only for delegate mode
-    "delegateToken": "engram_oc_..."          // only for delegate mode
+    "delegateToken": "remnic_oc_..."          // only for delegate mode
   }
 }
 ```
@@ -75,12 +75,12 @@ EMO daemon (:4318)          ← standalone process
 
 ```bash
 # Switch to delegate mode (requires running daemon)
-engram daemon install           # start daemon on boot
-engram config set mode delegate
+remnic daemon install           # start daemon on boot
+remnic config set mode delegate
 
 # Switch back to embedded mode
-engram config set mode embedded
-engram daemon stop              # optional: stop standalone daemon
+remnic config set mode embedded
+remnic daemon stop              # optional: stop standalone daemon
 ```
 
 ## Port Conflict Prevention

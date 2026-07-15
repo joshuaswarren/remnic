@@ -112,7 +112,7 @@ to Remnic instead of running their own git detection and calling
 
 For sessions that are not inside a git repository (e.g., OpenClaw
 general conversations), the endpoints also accept an optional
-`projectTag` field (string, e.g. `"blend-supply"`). When provided,
+`projectTag` field (string, e.g. `"acme-webshop"`). When provided,
 Remnic creates a `tag:<name>` coding context that scopes the session
 to a project namespace without requiring a git repository on disk.
 This gives OpenClaw and other non-coding agents the same project
@@ -219,7 +219,7 @@ Input schema (option 2 — `projectTag` shorthand):
 ```json
 {
   "sessionKey": "string",
-  "projectTag": "blend-supply"
+  "projectTag": "acme-webshop"
 }
 ```
 
@@ -290,8 +290,8 @@ automatic project resolution as a fallback.
 
 ### Claude Code (ships today)
 
-[`packages/plugin-claude-code/hooks/bin/session-start.sh`](../packages/plugin-claude-code/hooks/bin/session-start.sh)
-(lines 54-150) reads `cwd` from the session-start payload, runs a
+[`packages/plugin-claude-code/hooks/bin/remnic-cc-hook.cjs`](../packages/plugin-claude-code/hooks/bin/remnic-cc-hook.cjs)
+(with `.sh` and `.ps1` variants for other shells) reads `cwd` from the session-start payload, runs a
 short local `git` sequence, and posts an
 `engram.set_coding_context` tool call to the Remnic daemon. The hook
 intentionally mirrors the pure logic of `resolveGitContext` in-shell
@@ -315,7 +315,7 @@ Claude Code, the shipped hooks do not yet send `cwd` on
 
 OpenClaw conversations are typically not inside a per-project git
 repository. The server accepts `projectTag` on `recall` and `observe`
-requests to scope memory to a named project (e.g., `"blend-supply"`),
+requests to scope memory to a named project (e.g., `"acme-webshop"`),
 creating a `tag:<name>` coding context without requiring git. However,
 the OpenClaw runtime does not yet forward `projectTag` automatically —
 operators must wire it into their integration or call

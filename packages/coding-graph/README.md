@@ -4,8 +4,7 @@
 engine: web-tree-sitter grammars, per-language symbol extractors, and the
 neutral `FileIR` intermediate representation that the graph store consumes.
 
-> Part of #1548 (Track B, Phase 1). Package and core wiring for PR1 (#1551
-> step 1 + step 2). The real backend lands in PR2 (#1551 step 3+).
+> Part of Remnic's coding-knowledge layer (issue #1548).
 
 ## Install
 
@@ -15,23 +14,21 @@ npm install @remnic/coding-graph
 pnpm add @remnic/coding-graph
 ```
 
-## Status (PR1)
+## What it provides
 
-This package's public surface is **scaffolded only**:
+- `createCodingGraphEngine()` — returns a working engine backed by a
+  WASM tree-sitter parser. It parses source files into the neutral `FileIR`
+  (symbols plus import edges) for the 15 tier-1 languages.
+- `TIER_1_LANGUAGES` — the supported tier-1 language list.
+- `ENGINE_VERSION` / `CODING_GRAPH_ENGINE_VERSION` — the engine version
+  string. The single source of truth lives in `@remnic/core`; this package
+  re-exports it so every consumer stays in lockstep.
+- `CodingGraphEngine` interface and the `CodingGraphError` tagged error class.
 
-- `ENGINE_VERSION = "0.1.0-pr1"` constant
-- `TIER_1_LANGUAGES` (15 languages)
-- `CodingGraphError` tagged error class (`code: "not_implemented" | "module_load_failed"`)
-- `CodingGraphEngine` interface — the full PR2 contract, no implementation
-- `createCodingGraphEngine()` — throws `CodingGraphError("not_implemented", …)`
-
-Calling `createCodingGraphEngine()` *always* throws a tagged error. There
-is no silent stub and there is no half-working fallback. The runtime
-contract is observable today; PR2 fills the implementation.
-
-`web-tree-sitter` is declared as the parser engine; grammar `.wasm` assets
-will ship in PR2 via the `grammars/` directory listed in the package's
-`files` manifest.
+A per-file parse failure surfaces as a tagged `{ ok: false, code: "parse_failed" }`
+result rather than a thrown exception, so one unparseable file never bricks a
+whole index run. Grammar `.wasm` assets ship in the `grammars/` directory listed
+in the package's `files` manifest.
 
 ## How `@remnic/core` loads this
 
