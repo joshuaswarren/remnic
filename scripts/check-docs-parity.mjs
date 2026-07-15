@@ -140,19 +140,19 @@ const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
   {
     name: "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
     expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
-    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/,
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473(?:[ \t]+#.*)?[ \t]*$/,
   },
   {
     name: "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
     expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
-    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\s*(?:#.*)?$/,
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_RESERVE=473(?:[ \t]+#.*)?[ \t]*$/,
   },
   {
     name: "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
     expected:
       'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
     valid:
-      /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"\s*(?:#.*)?$/,
+      /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"(?:[ \t]+#.*)?[ \t]*$/,
   },
 ]);
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
@@ -522,6 +522,17 @@ function checkBuildWeekCodexDatasetPaths() {
       const usesCodexCli = /\bcodex-cli\b/.test(command);
       if (!blockHasCreditProtocolMutation && !usesCodexCli) continue;
       const commandTokens = command.trim().split(/\s+/);
+      if (
+        commandTokens[0] !== "remnic" ||
+        commandTokens[1] !== "bench" ||
+        commandTokens[2] !== "run"
+      ) {
+        failures.push(
+          `${rel}: Build Week Codex benchmark must execute directly as \`remnic bench run\` ` +
+            "with no shell wrapper or command prefix",
+        );
+        continue;
+      }
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;

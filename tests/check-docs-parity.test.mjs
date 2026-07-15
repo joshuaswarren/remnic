@@ -828,6 +828,85 @@ test("a non-exported credit-budget assignment does not authorize a Codex command
   });
 });
 
+test("credit protocol comments require shell whitespace before the hash", () => {
+  for (const { mutation, expected } of [
+    {
+      mutation: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473#not-a-comment",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    },
+    {
+      mutation: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473#not-a-comment",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    },
+    {
+      mutation:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"#not-a-comment',
+      expected:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    },
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          mutation.includes("BUDGET")
+            ? mutation
+            : "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473 # valid comment",
+          mutation.includes("RESERVE")
+            ? mutation
+            : "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\t# valid comment",
+          mutation.includes("LEDGER")
+            ? mutation
+            : 'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"   ',
+          "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${mutation}: ${result.stderr}`);
+      assert.ok(result.stderr.includes(`exact shell export of \`${expected}\``));
+    });
+  }
+});
+
+test("credit protocol exports accept real shell comments and trailing whitespace", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473 # budget",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\t# reserve",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"   ',
+        "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /1 Build Week Codex dataset command\(s\) pinned/);
+  });
+});
+
 test("a credit-budget export in prose does not authorize a later shell command", () => {
   withFixture((root) => {
     writeFileSync(
@@ -956,29 +1035,13 @@ test("later reserve and ledger mutations invalidate the paid protocol", () => {
   }
 });
 
-test("a same-command credit-budget mutation before the run invalidates an earlier guard", () => {
-  for (const { prefix, expected } of [
-    {
-      prefix: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
-      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
-    },
-    {
-      prefix: "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
-      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
-    },
-    {
-      prefix: "env REMNIC_BENCH_CODEX_CREDIT_BUDGET=3000 ",
-      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
-    },
-    {
-      prefix: "env REMNIC_BENCH_CODEX_CREDIT_RESERVE=300 ",
-      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
-    },
-    {
-      prefix: 'env REMNIC_BENCH_CODEX_CREDIT_LEDGER="/tmp/other-ledger.json" ',
-      expected:
-        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
-    },
+test("a same-command credit mutation or env wrapper before the run is rejected", () => {
+  for (const prefix of [
+    "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
+    "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
+    "env REMNIC_BENCH_CODEX_CREDIT_BUDGET=3000 ",
+    "env REMNIC_BENCH_CODEX_CREDIT_RESERVE=300 ",
+    'env REMNIC_BENCH_CODEX_CREDIT_LEDGER="/tmp/other-ledger.json" ',
   ]) {
     withFixture((root) => {
       writeFileSync(
@@ -1003,7 +1066,8 @@ test("a same-command credit-budget mutation before the run invalidates an earlie
 
       const result = runParity(root);
       assert.equal(result.status, 1, `${prefix}: ${result.stderr}`);
-      assert.ok(result.stderr.includes(`exact shell export of \`${expected}\``));
+      assert.match(result.stderr, /must execute directly as `remnic bench run`/);
+      assert.match(result.stderr, /must contain at least one guarded Build Week Codex benchmark command/);
     });
   }
 });
@@ -1035,6 +1099,37 @@ test("a comment mentioning bench run before the credit guard does not invalidate
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /1 Build Week Codex dataset command\(s\) pinned/);
   });
+});
+
+test("Build Week paid commands must execute directly without shell wrappers", () => {
+  for (const prefix of ["echo ", "printf '%s' ", "true && ", "FOO=bar ", "env "]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+          `${prefix}remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${prefix}: ${result.stderr}`);
+      assert.match(result.stderr, /must execute directly as `remnic bench run`/);
+      assert.match(result.stderr, /must contain at least one guarded Build Week Codex benchmark command/);
+    });
+  }
 });
 
 test("Build Week Codex commands pin the complete paid-run protocol", () => {
