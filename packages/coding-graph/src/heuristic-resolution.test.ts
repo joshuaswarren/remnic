@@ -384,3 +384,41 @@ test("an ambiguous first candidate does not block a later candidate's import bin
   assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
   assert.equal(firstFile(result).edges[0]?.dstPathHint, "main");
 });
+
+test("python dot-style relative imports bind with package-path hints (cursor review)", () => {
+  const ir = fileIR({
+    path: "pkg/app/views.py",
+    language: "python",
+    symbols: [
+      { kind: "function", name: "render", qualifiedName: "render", span: span(30, 110) },
+    ],
+    imports: [
+      { module: ".models", importedNames: ["User"], span: span(0, 25) },
+      { module: "..lib.utils", importedNames: ["helper"], span: span(26, 55) },
+    ],
+    callSites: [
+      { calleeNameCandidates: ["User"], span: span(60, 64) },
+      { calleeNameCandidates: ["helper"], span: span(70, 76) },
+    ],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const hints = firstFile(result).edges.map((e: EdgeIR) => [e.dstQualifiedName, e.dstPathHint]);
+  assert.deepEqual(hints, [
+    ["User", "pkg/app/models"],
+    ["helper", "pkg/lib/utils"],
+  ]);
+});
+
+test("python dot-style import escaping the root never binds", () => {
+  const ir = fileIR({
+    path: "views.py",
+    language: "python",
+    symbols: [
+      { kind: "function", name: "render", qualifiedName: "render", span: span(30, 110) },
+    ],
+    imports: [{ module: "..outside", importedNames: ["thing"], span: span(0, 25) }],
+    callSites: [{ calleeNameCandidates: ["thing"], span: span(60, 65) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(firstFile(result).edges, []);
+});

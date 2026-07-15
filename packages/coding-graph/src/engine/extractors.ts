@@ -208,7 +208,7 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call function: (identifier) @call.callee)
-(call function: (attribute attribute: (identifier) @call.callee))
+(call function: (attribute attribute: (identifier) @call.member))
 `.trim(),
   routesQuery: `
 (decorated_definition
@@ -301,7 +301,8 @@ const JAVA_EXTRACTOR: LanguageExtractor = {
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
-(method_invocation name: (identifier) @call.callee)
+(method_invocation !object name: (identifier) @call.callee)
+(method_invocation object: (_) name: (identifier) @call.member)
 `.trim(),
   routesQuery: ``,
 };
@@ -361,7 +362,7 @@ const CSHARP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (invocation_expression function: (identifier) @call.callee)
-(invocation_expression function: (member_access_expression name: (identifier) @call.callee))
+(invocation_expression function: (member_access_expression name: (identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -381,7 +382,8 @@ const RUBY_EXTRACTOR: LanguageExtractor = {
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
-(call method: (identifier) @call.callee)
+(call !receiver method: (identifier) @call.callee)
+(call receiver: (_) method: (identifier) @call.member)
 `.trim(),
   routesQuery: ``,
 };

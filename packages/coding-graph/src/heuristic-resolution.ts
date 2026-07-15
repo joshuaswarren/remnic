@@ -145,8 +145,21 @@ export function deriveHeuristicEdges(
     // the dst ONLY within the declared target file (#1894 review).
     const importBindings = new Map<string, { exported: string; hint: string }>();
     for (const imp of ir.imports) {
-      if (!imp.module.startsWith("./") && !imp.module.startsWith("../")) continue;
-      const joined = posix.join(posix.dirname(ir.path), imp.module);
+      // Two relative-import spellings bind (cursor review on #1894):
+      //  - path style ("./x", "../x") — JS/TS and friends;
+      //  - Python dot style (".models", "..parent.sub") — one leading dot
+      //    is the current package, each extra dot goes one level up, and
+      //    interior dots are path separators.
+      let specifier: string | undefined;
+      if (imp.module.startsWith("./") || imp.module.startsWith("../")) {
+        specifier = imp.module;
+      } else if (ir.language === "python" && imp.module.startsWith(".")) {
+        const dots = (/^\.+/.exec(imp.module))?.[0].length ?? 1;
+        const rest = imp.module.slice(dots).replace(/\./g, "/");
+        specifier = `${"../".repeat(dots - 1)}${rest}` || ".";
+      }
+      if (specifier === undefined) continue;
+      const joined = posix.join(posix.dirname(ir.path), specifier);
       const hint = joined.replace(/\.[cm]?[jt]sx?$/, "");
       // A normalized hint still starting with "../" escapes the repo root:
       // files.path values are canonical (no ".." segments), so such an

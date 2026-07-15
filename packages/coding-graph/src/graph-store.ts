@@ -138,7 +138,8 @@ export interface EdgeIR {
    * Repo-relative, extension-stripped path the dst must live in (issue
    * #1894 review): derived from a relative import's module specifier. A
    * hinted edge resolves ONLY among nodes whose file path matches the
-   * hint (`<hint>`, `<hint>.<ext>`, or `<hint>/index.<ext>`) — never via
+   * hint (`<hint>`, `<hint>.<ext>`, `<hint>/index.<ext>`, or
+   * `<hint>/__init__.<ext>`) — never via
    * the global bare-name fallback — so `import { foo } from "./missing"`
    * can never bind an unrelated same-named symbol elsewhere in the repo.
    */
@@ -3338,7 +3339,8 @@ function resolveNodeId(
 /**
  * Resolve a dst node constrained to a path hint (issue #1894 review): the
  * node's file path must be the hint verbatim, `<hint>.<ext>`, or
- * `<hint>/index.<ext>`. `substr` prefix comparisons (not LIKE) so hint
+ * `<hint>/index.<ext>`, or `<hint>/__init__.<ext>` (Python packages).
+ * `substr` prefix comparisons (not LIKE) so hint
  * characters are never pattern metacharacters. Zero or multiple matches
  * return `undefined` — the edge is dropped rather than guessed (same
  * conservative policy as {@link resolveNodeId}).
@@ -3355,6 +3357,7 @@ function resolveNodeIdWithPathHint(
           WHERE n.qualified_name = ?
             AND (f.path = ?
               OR substr(f.path, 1, ?) = ?
+              OR substr(f.path, 1, ?) = ?
               OR substr(f.path, 1, ?) = ?)
           ORDER BY f.path, n.id`,
       )
@@ -3365,6 +3368,8 @@ function resolveNodeIdWithPathHint(
         `${pathHint}.`,
         pathHint.length + 7,
         `${pathHint}/index.`,
+        pathHint.length + 10,
+        `${pathHint}/__init__.`,
       ),
     ["id"],
   );
