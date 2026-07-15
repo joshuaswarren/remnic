@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -284,11 +284,7 @@ test("stale dead-process locks are reclaimed but live locks fail closed", async 
   const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
   __codexCreditBudgetTestHooks.resetQueue();
   try {
-    await writeFile(
-      lockPath,
-      JSON.stringify({ pid: 2_147_483_647, phase: "preflight" }),
-      { mode: 0o600 },
-    );
+    await writeTestLock(lockPath, 2_147_483_647, "preflight");
     assert.equal(
       await runWithinCodexCreditBudget({
         config,
@@ -298,11 +294,7 @@ test("stale dead-process locks are reclaimed but live locks fail closed", async 
       "reclaimed",
     );
 
-    await writeFile(
-      lockPath,
-      JSON.stringify({ pid: process.pid, phase: "preflight" }),
-      { mode: 0o600 },
-    );
+    await writeTestLock(lockPath, process.pid, "preflight");
     await assert.rejects(
       runWithinCodexCreditBudget({
         config,
@@ -312,11 +304,8 @@ test("stale dead-process locks are reclaimed but live locks fail closed", async 
       /locked by another benchmark process/,
     );
 
-    await writeFile(
-      lockPath,
-      JSON.stringify({ pid: 2_147_483_647, phase: "in-flight" }),
-      { mode: 0o600 },
-    );
+    await rm(lockPath, { recursive: true, force: true });
+    await writeTestLock(lockPath, 2_147_483_647, "in-flight");
     await assert.rejects(
       runWithinCodexCreditBudget({
         config,
@@ -329,3 +318,16 @@ test("stale dead-process locks are reclaimed but live locks fail closed", async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+async function writeTestLock(
+  lockPath: string,
+  pid: number,
+  phase: "preflight" | "in-flight" | "settled",
+): Promise<void> {
+  await mkdir(path.join(lockPath, "held"), { recursive: true, mode: 0o700 });
+  await writeFile(
+    path.join(lockPath, "owner.json"),
+    JSON.stringify({ pid, phase }),
+    { mode: 0o600 },
+  );
+}

@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface CodexCliNativeUsage {
@@ -203,7 +203,7 @@ export async function runWithinCodexCreditBudget<T>(args: {
           await lock.close();
         } finally {
           if (!dispatchStarted || accountingSettled) {
-            await unlink(lockPath).catch(() => undefined);
+            await removeOwnedLedgerLock(lockPath);
           }
         }
       }
@@ -217,16 +217,9 @@ async function acquireLedgerLock(
   lockPath: string,
 ): Promise<Awaited<ReturnType<typeof open>>> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    let createdLock: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      createdLock = await open(lockPath, "wx", 0o600);
-      await writeLockState(createdLock, "preflight");
-      return createdLock;
+      await mkdir(lockPath, { mode: 0o700 });
     } catch (error) {
-      if (createdLock) {
-        await createdLock.close().catch(() => undefined);
-        await unlink(lockPath).catch(() => undefined);
-      }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const owner = await readLockOwner(lockPath);
       if (
@@ -239,9 +232,22 @@ async function acquireLedgerLock(
             `(${lockPath}); refusing credit spend.`,
         );
       }
-      await unlink(lockPath).catch((unlinkError: NodeJS.ErrnoException) => {
-        if (unlinkError.code !== "ENOENT") throw unlinkError;
-      });
+      await reclaimStaleLedgerLock(lockPath, owner);
+      continue;
+    }
+
+    let createdLock: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      await mkdir(lockHeldPath(lockPath));
+      createdLock = await open(lockOwnerPath(lockPath), "wx", 0o600);
+      await writeLockState(createdLock, "preflight");
+      return createdLock;
+    } catch (error) {
+      await createdLock?.close().catch(() => undefined);
+      await unlink(lockOwnerPath(lockPath)).catch(() => undefined);
+      await rmdir(lockHeldPath(lockPath)).catch(() => undefined);
+      await rmdir(lockPath).catch(() => undefined);
+      throw error;
     }
   }
   throw new Error(`Unable to acquire Codex credit ledger lock (${lockPath})`);
@@ -251,7 +257,7 @@ async function readLockOwner(
   lockPath: string,
 ): Promise<{ pid: number; phase: LedgerLockPhase } | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(lockPath, "utf8")) as {
+    const parsed = JSON.parse(await readFile(lockOwnerPath(lockPath), "utf8")) as {
       pid?: unknown;
       phase?: unknown;
     };
@@ -268,6 +274,51 @@ async function readLockOwner(
   } catch {
     return undefined;
   }
+}
+
+async function reclaimStaleLedgerLock(
+  lockPath: string,
+  expectedOwner: { pid: number; phase: LedgerLockPhase },
+): Promise<void> {
+  try {
+    await rmdir(lockHeldPath(lockPath));
+  } catch (error) {
+    throw new Error(
+      `Codex credit ledger stale-lock reclamation is already claimed or incomplete ` +
+        `(${lockPath}); refusing credit spend: ${safeErrorMessage(error)}`,
+    );
+  }
+
+  const currentOwner = await readLockOwner(lockPath);
+  if (
+    !currentOwner ||
+    currentOwner.pid !== expectedOwner.pid ||
+    currentOwner.phase !== expectedOwner.phase ||
+    isProcessAlive(currentOwner.pid) ||
+    currentOwner.phase === "in-flight"
+  ) {
+    throw new Error(
+      `Codex credit ledger owner changed during stale-lock reclamation ` +
+        `(${lockPath}); refusing credit spend.`,
+    );
+  }
+
+  await unlink(lockOwnerPath(lockPath));
+  await rmdir(lockPath);
+}
+
+async function removeOwnedLedgerLock(lockPath: string): Promise<void> {
+  await rmdir(lockHeldPath(lockPath));
+  await unlink(lockOwnerPath(lockPath));
+  await rmdir(lockPath);
+}
+
+function lockOwnerPath(lockPath: string): string {
+  return path.join(lockPath, "owner.json");
+}
+
+function lockHeldPath(lockPath: string): string {
+  return path.join(lockPath, "held");
 }
 
 async function writeLockState(
