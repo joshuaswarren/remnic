@@ -1272,6 +1272,44 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     details: meta,
   });
 
+  // Extraction resilience (extraction hot-loop hardening). Surfaces the
+  // persisted per-fingerprint retry/backoff state so an operator can see when
+  // the extraction provider is failing without tailing logs. auth/config
+  // failures are an error (misconfigured provider, will not self-heal at the
+  // current cadence); transient backoff is a warn; a clean state is ok. Reads
+  // the already-loaded meta — no extra I/O, cross-process safe (the in-memory
+  // breaker lives in the daemon; this derives from durable state).
+  const retryEntries = meta.extractionRetryState ?? [];
+  const authConfigFailures = retryEntries.filter((entry) => entry.lastFailureClass === "auth_config");
+  const nowMs = Date.now();
+  const parkedFingerprints = retryEntries.filter((entry) => {
+    const eligibleAt = Date.parse(entry.nextEligibleAt);
+    return Number.isFinite(eligibleAt) && eligibleAt > nowMs;
+  });
+  const resilienceStatus: "ok" | "warn" | "error" =
+    authConfigFailures.length > 0 ? "error" : parkedFingerprints.length > 0 ? "warn" : "ok";
+  checks.push({
+    key: "extraction-resilience",
+    status: resilienceStatus,
+    summary:
+      resilienceStatus === "error"
+        ? `Extraction provider has ${authConfigFailures.length} auth/config failure(s); the circuit breaker opens immediately and extraction is suspended.`
+        : resilienceStatus === "warn"
+          ? `${parkedFingerprints.length} extraction fingerprint(s) are in backoff after transient provider failures.`
+          : "No extraction provider failures are currently parked.",
+    remediation:
+      resilienceStatus === "error"
+        ? 'Check the extraction LLM gateway/model configuration (a 401/403 or "no models configured" was seen). Extraction resumes automatically once the provider is reachable.'
+        : resilienceStatus === "warn"
+          ? "Transient provider failures (e.g. 429/5xx). Backoff clears automatically as the provider recovers; no action needed unless it persists."
+          : undefined,
+    details: {
+      backoffFingerprintCount: retryEntries.length,
+      authConfigFailureCount: authConfigFailures.length,
+      parkedFingerprintCount: parkedFingerprints.length,
+    },
+  });
+
   // Memory projection health (issue #1829). Surfaces a present-but-unopenable
   // projection (wrong ABI / corrupt) that previously degraded every memory
   // list to a silent full-corpus scan. Absent and openable are both "ok".

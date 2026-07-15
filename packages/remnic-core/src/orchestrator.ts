@@ -106,7 +106,11 @@ import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinat
 import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
-import { ExtractionRunCoordinator, type ExtractionRunResult } from "./orchestration/extraction-run.js";
+import {
+  ExtractionRunCoordinator,
+  type ExtractionRunResult,
+  type ExtractionResilienceStatus,
+} from "./orchestration/extraction-run.js";
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
@@ -2937,6 +2941,7 @@ export class Orchestrator {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
         result?: ExtractionRunResult,
@@ -3008,6 +3013,12 @@ export class Orchestrator {
     ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult> {
     return this.extractionRunCoordinator.runExtraction(...args);
+  }
+
+  /** Live extraction resilience snapshot (provider circuit breaker + per-
+   *  fingerprint backoff population) for status/doctor surfaces. */
+  getExtractionResilienceStatus(): ExtractionResilienceStatus {
+    return this.extractionRunCoordinator.getExtractionResilienceStatus();
   }
 
   private async recordProcessedExtractionFingerprint(

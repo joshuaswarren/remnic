@@ -68,6 +68,7 @@ export interface TurnIngestionDeps {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
         result?: ExtractionRunResult,
@@ -288,6 +289,7 @@ export class TurnIngestionCoordinator {
           new Promise<void>((resolve, reject) => {
             void this.deps.queueBufferedExtraction(sessionSlice, "trigger_mode", {
               skipDedupeCheck: true,
+              forceExtractionAttempt: true,
               clearBufferAfterExtraction: false,
               skipCharThreshold: true,
               skipUserTurnThreshold: true,
@@ -463,6 +465,7 @@ export class TurnIngestionCoordinator {
           (resolve, reject) => {
             void this.deps.queueBufferedExtraction(sessionSlice, "trigger_mode", {
               skipDedupeCheck: true,
+              forceExtractionAttempt: true,
               clearBufferAfterExtraction: false,
               skipCharThreshold: true,
               skipUserTurnThreshold: true,
@@ -606,6 +609,7 @@ export class TurnIngestionCoordinator {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
         result?: ExtractionRunResult,
@@ -700,6 +704,7 @@ export class TurnIngestionCoordinator {
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
+          forceExtractionAttempt: options.forceExtractionAttempt === true,
         });
         settleTask(undefined, result);
       } catch (err) {

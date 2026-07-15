@@ -280,9 +280,28 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     schema: { parse: (data: unknown) => T },
     options: FallbackLlmOptions = {},
-  ): Promise<{ result: T; modelUsed: string } | null> {
-    const response = await this.chatCompletion(messages, options);
-    if (!response?.content) return null;
+  ): Promise<
+    | { result: T; modelUsed: string }
+    | { result: null; failureReason: "no_models" | "empty" | "http_error" }
+  > {
+    let response: FallbackLlmResponse | null;
+    try {
+      response = await this.chatCompletion(messages, options);
+    } catch (err) {
+      // chatCompletion only throws on caller abort / unexpected fatal errors;
+      // treat as a transient provider failure so the retry layer backs off.
+      log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
+      return { result: null, failureReason: "http_error" };
+    }
+    if (!response?.content) {
+      // chatCompletion returns null both when no models are configured
+      // (auth/config) and when every configured model errored (transient).
+      // Disambiguate via the resolved model chain so the retry layer can pick
+      // the right failure class.
+      const hasModels =
+        this.getModelChain(options.agentId, options.model, options.modelChain).length > 0;
+      return { result: null, failureReason: hasModels ? "http_error" : "no_models" };
+    }
 
     try {
       const candidates = extractJsonCandidates(response.content);
@@ -294,10 +313,10 @@ export class FallbackLlmClient {
           // keep trying other candidates
         }
       }
-      return null;
+      return { result: null, failureReason: "empty" };
     } catch (err) {
       log.warn("fallback LLM: failed to parse structured output:", err);
-      return null;
+      return { result: null, failureReason: "empty" };
     }
   }
 

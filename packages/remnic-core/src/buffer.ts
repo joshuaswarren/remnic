@@ -225,8 +225,20 @@ export class SmartBuffer {
       });
 
     const removableCount = Math.max(0, keys.length - MAX_BUFFER_ENTRY_COUNT);
-    for (const key of removable.slice(0, removableCount)) {
+    const evicted = removable.slice(0, removableCount);
+    for (const key of evicted) {
       delete entries[key];
+    }
+    if (evicted.length > 0) {
+      // Loud degradation (extraction hot-loop hardening, Step 7): during a
+      // prolonged provider outage the breaker holds extraction off and buffered
+      // sessions accumulate. Eviction of the oldest empty session entries past
+      // MAX_BUFFER_ENTRY_COUNT is bounded and expected, but must be observable —
+      // not silent — so operators can see buffer pressure.
+      log.warn(
+        `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
+          `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
+      );
     }
   }
 

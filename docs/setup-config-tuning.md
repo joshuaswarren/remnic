@@ -447,6 +447,14 @@ Reliability / load:
   - `localLlmRetryBackoffMs: 400`
   - `localLlm400TripThreshold: 5`
   - `localLlm400CooldownMs: 120000`
+- Extraction failure damping (retry backoff + circuit breaker):
+  - `extractionRetryEnabled: true` — master gate. Set `false` to fully restore pre-change behavior (extractor called on every triggered observe, no gate); this is the config-only rollback.
+  - `extractionRetryScheduleMs: [60000, 300000, 1800000, 7200000]` — per-fingerprint exponential backoff (1m, 5m, 30m, 2h). A single transient 429 parks that fingerprint for only 1 minute.
+  - `extractionRetryMaxBackoffMs: 21600000` — 6h cap on any backoff interval.
+  - `extractionRetryJitterRatio: 0.2` — ±20% jitter so retries don't synchronize.
+  - `extractionParseEmptyMaxAttempts: 3` — after 3 unparseable responses a fingerprint is long-parked (never marked processed).
+  - `extractionBreakerFailureThreshold: 5` — consecutive provider failures before the process-level breaker opens and short-circuits extraction for all sessions. A 401/403/"no models configured" opens it immediately.
+  - `extractionBreakerCooldownMs: 300000` / `extractionBreakerAuthCooldownMs: 1800000` — breaker open cooldown for transient (5m) vs auth/config (30m) failures. After cooldown a half-open probe closes the breaker on one success and clears retry state. Watch `openclaw remnic doctor` (the `extraction-resilience` check) for a breaker stuck `open` or `auth_config` errors.
 
 Latency:
 - Increase `conversationRecallTimeoutMs` only if your QMD host is consistently fast.

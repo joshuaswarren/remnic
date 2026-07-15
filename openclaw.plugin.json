@@ -2927,6 +2927,47 @@
         "default": 5,
         "description": "Consecutive 400 responses before local LLM enters temporary cooldown."
       },
+      "extractionRetryEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master gate for extraction retry backoff + circuit breaker. When false, restores pre-change behavior (extractor called on every triggered observe, no gate)."
+      },
+      "extractionRetryScheduleMs": {
+        "type": "array",
+        "items": { "type": "number" },
+        "default": [60000, 300000, 1800000, 7200000],
+        "description": "Per-fingerprint exponential extraction backoff schedule (ms), indexed by attempt."
+      },
+      "extractionRetryMaxBackoffMs": {
+        "type": "number",
+        "default": 21600000,
+        "description": "Upper bound (ms) on any single extraction backoff interval and the long-park interval for exhausted parse_empty fingerprints."
+      },
+      "extractionRetryJitterRatio": {
+        "type": "number",
+        "default": 0.2,
+        "description": "Multiplicative jitter ratio (+/-) applied to each extraction backoff interval."
+      },
+      "extractionParseEmptyMaxAttempts": {
+        "type": "number",
+        "default": 3,
+        "description": "Attempts for a parse_empty extraction fingerprint before it is long-parked (still never marked processed)."
+      },
+      "extractionBreakerFailureThreshold": {
+        "type": "number",
+        "default": 5,
+        "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
+      },
+      "extractionBreakerCooldownMs": {
+        "type": "number",
+        "default": 300000,
+        "description": "Extraction circuit-breaker open cooldown (ms) for transient provider failures (429/5xx/network)."
+      },
+      "extractionBreakerAuthCooldownMs": {
+        "type": "number",
+        "default": 1800000,
+        "description": "Extraction circuit-breaker open cooldown (ms) for auth/config failures (401/403 or no models configured)."
+      },
       "localLlmApiKey": {
         "type": "string",
         "description": "Optional API key for authenticated OpenAI-compatible local endpoints"

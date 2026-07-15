@@ -40,7 +40,7 @@ import {
 } from "../capabilities.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 import { log } from "../logger.js";
-import type { PluginConfig, BufferTurn, ExtractionResult } from "../types.js";
+import type { PluginConfig, BufferTurn, ExtractionResult, MetaState, ExtractionFailureClass } from "../types.js";
 import type { TierMigrationCycleSummary } from "../recall-state.js";
 
 export interface ExtractionRunResult {
@@ -130,6 +130,66 @@ export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
   return [...topics].slice(0, 16);
 }
 
+/** Bounded cap on persisted per-fingerprint retry-state entries (per namespace meta). */
+const EXTRACTION_RETRY_STATE_MAX_ENTRIES = 500;
+
+interface ExtractionRetryStateEntry {
+  attempts: number;
+  nextEligibleAtMs: number;
+  firstFailedAtMs: number;
+  lastFailureClass: ExtractionFailureClass;
+}
+
+export interface ExtractionResilienceStatus {
+  breaker: {
+    state: "closed" | "open" | "half_open";
+    openUntilMs: number;
+    consecutiveFailures: number;
+    lastReason: string;
+  };
+  backoffFingerprintCount: number;
+}
+
+/**
+ * Pure backoff scheduler. Returns the absolute ms timestamp at which a
+ * fingerprint that has failed `attempts` times becomes eligible again:
+ * exponential via the configured schedule, clamped to `maxBackoffMs`, with
+ * ±`jitterRatio` multiplicative jitter. `rng` is injectable for deterministic
+ * tests. Never returns a timestamp before `now`.
+ */
+export function computeExtractionRetryNextEligibleMs(
+  attempts: number,
+  scheduleMs: readonly number[],
+  maxBackoffMs: number,
+  jitterRatio: number,
+  now: number,
+  rng: () => number = Math.random,
+): number {
+  const cap = Number.isFinite(maxBackoffMs) && maxBackoffMs > 0 ? maxBackoffMs : 0;
+  if (!Array.isArray(scheduleMs) || scheduleMs.length === 0) {
+    return now + cap;
+  }
+  const idx = Math.min(Math.max(attempts - 1, 0), scheduleMs.length - 1);
+  const step = scheduleMs[idx];
+  const base = Math.min(typeof step === "number" && step > 0 ? step : cap, cap);
+  const jitter = 1 + (rng() * 2 - 1) * jitterRatio;
+  return now + Math.max(0, Math.round(base * jitter));
+}
+
+/**
+ * Cap the persisted retry-state array to the newest `maxEntries` by
+ * firstFailedAt. Guards `maxEntries <= 0` so a zero cap returns [] rather than
+ * `slice(-0)`, which returns ALL entries (AGENTS.md rule 17).
+ */
+export function capExtractionRetryStateEntries<T extends { firstFailedAt: string }>(
+  entries: readonly T[],
+  maxEntries: number,
+): T[] {
+  if (maxEntries <= 0) return [];
+  const sorted = [...entries].sort((a, b) => a.firstFailedAt.localeCompare(b.firstFailedAt));
+  return sorted.slice(-maxEntries);
+}
+
 /**
  * Coordinates the extraction run pipeline. Holds the dedupe fingerprint
  * cache (`recentExtractionFingerprints`) and delegates all side effects
@@ -137,6 +197,21 @@ export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
  */
 export class ExtractionRunCoordinator {
   private readonly recentExtractionFingerprints = new Map<string, number>();
+  // Per-fingerprint extraction retry/backoff state (extraction hot-loop
+  // hardening). Outer key = namespace, inner key = fingerprint. Hydrated lazily
+  // from namespace-scoped meta so the hot path is a Map lookup; persisted back
+  // to meta on change (restart-safe, cross-process coherent via the shared
+  // meta.json). The breaker below is intentionally per-process in-memory
+  // (mirrors local-llm.cooldownUntilMs); a restart clears it but the persisted
+  // backoff still throttles, so a restart can't resurrect the hot loop.
+  private readonly extractionRetryState = new Map<string, Map<string, ExtractionRetryStateEntry>>();
+  private readonly hydratedRetryNamespaces = new Set<string>();
+  private providerBreaker: {
+    consecutiveFailures: number;
+    openUntilMs: number;
+    state: "closed" | "open" | "half_open";
+    lastReason: string;
+  } = { consecutiveFailures: 0, openUntilMs: 0, state: "closed", lastReason: "" };
 
   constructor(private readonly deps: ExtractionRunCoordinatorDeps) {}
 
@@ -239,6 +314,177 @@ export class ExtractionRunCoordinator {
   }
 
   // -------------------------------------------------------------------------
+  // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
+  // -------------------------------------------------------------------------
+
+  /** Lazily hydrate the in-memory retry-state mirror for a namespace from meta.
+   *  One-time per namespace per coordinator; the hot path is then a Map lookup.
+   *  Cross-process coherence: a fresh coordinator hydrates from the shared
+   *  meta.json, so a failure persisted by another process is honored here. */
+  private hydrateRetryStateFromMeta(namespace: string, meta: MetaState): void {
+    if (this.hydratedRetryNamespaces.has(namespace)) return;
+    this.hydratedRetryNamespaces.add(namespace);
+    const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
+    for (const entry of meta.extractionRetryState ?? []) {
+      const nextEligibleAtMs = Date.parse(entry.nextEligibleAt);
+      const firstFailedAtMs = Date.parse(entry.firstFailedAt);
+      nsMap.set(entry.fingerprint, {
+        attempts: entry.attempts,
+        nextEligibleAtMs: Number.isFinite(nextEligibleAtMs) ? nextEligibleAtMs : 0,
+        firstFailedAtMs: Number.isFinite(firstFailedAtMs) ? firstFailedAtMs : Date.now(),
+        lastFailureClass: entry.lastFailureClass,
+      });
+    }
+    this.extractionRetryState.set(namespace, nsMap);
+  }
+
+  private logBreakerTransition(state: "closed" | "open" | "half_open"): void {
+    // Once per state change (not per attempt) — AGENTS.md observability rule.
+    log.warn("extraction: provider circuit breaker transition", {
+      state,
+      consecutiveFailures: this.providerBreaker.consecutiveFailures,
+      lastReason: this.providerBreaker.lastReason,
+      openUntilMs: this.providerBreaker.openUntilMs,
+    });
+  }
+
+  /** True while the breaker suppresses non-forced attempts. Flips an expired
+   *  `open` breaker to `half_open`, which allows exactly one probe (the next
+   *  non-forced attempt) because the extraction queue is a serial drain. */
+  private isProviderBreakerOpen(now: number): boolean {
+    if (now < this.providerBreaker.openUntilMs) return true;
+    if (this.providerBreaker.state === "open") {
+      this.providerBreaker.state = "half_open";
+      this.logBreakerTransition("half_open");
+    }
+    return false;
+  }
+
+  private onProviderFailure(cls: ExtractionFailureClass, now: number): void {
+    this.providerBreaker.consecutiveFailures += 1;
+    const trip =
+      cls === "auth_config" ||
+      this.providerBreaker.consecutiveFailures >= this.config.extractionBreakerFailureThreshold;
+    if (!trip) return;
+    const cooldown =
+      cls === "auth_config"
+        ? this.config.extractionBreakerAuthCooldownMs
+        : this.config.extractionBreakerCooldownMs;
+    this.providerBreaker.openUntilMs = now + Math.max(0, cooldown);
+    this.providerBreaker.lastReason = cls;
+    if (this.providerBreaker.state !== "open") {
+      this.providerBreaker.state = "open";
+      this.logBreakerTransition("open");
+    }
+  }
+
+  private resetProviderBreakerOnSuccess(): void {
+    const wasDisturbed =
+      this.providerBreaker.state !== "closed" ||
+      this.providerBreaker.consecutiveFailures > 0 ||
+      this.providerBreaker.openUntilMs > 0;
+    if (!wasDisturbed) return;
+    const wasOpen = this.providerBreaker.state !== "closed";
+    this.providerBreaker.consecutiveFailures = 0;
+    this.providerBreaker.openUntilMs = 0;
+    this.providerBreaker.lastReason = "";
+    this.providerBreaker.state = "closed";
+    if (wasOpen) this.logBreakerTransition("closed");
+  }
+
+  /** Rebuild `meta.extractionRetryState` from the in-memory namespace mirror,
+   *  bounded to the newest entries, and prune the mirror to match. */
+  private persistRetryStateToMeta(namespace: string, meta: MetaState): void {
+    const nsMap = this.extractionRetryState.get(namespace);
+    const entries = nsMap
+      ? Array.from(nsMap.entries()).map(([fingerprint, st]) => ({
+          fingerprint,
+          attempts: st.attempts,
+          nextEligibleAt: new Date(st.nextEligibleAtMs).toISOString(),
+          firstFailedAt: new Date(st.firstFailedAtMs).toISOString(),
+          lastFailureClass: st.lastFailureClass,
+        }))
+      : [];
+    const capped = capExtractionRetryStateEntries(entries, EXTRACTION_RETRY_STATE_MAX_ENTRIES);
+    meta.extractionRetryState = capped;
+    if (nsMap && capped.length < nsMap.size) {
+      const kept = new Set(capped.map((e) => e.fingerprint));
+      for (const key of Array.from(nsMap.keys())) {
+        if (!kept.has(key)) nsMap.delete(key);
+      }
+    }
+  }
+
+  /** Record an extraction failure into per-fingerprint backoff state + breaker,
+   *  persisting to namespace meta. Fail-open: never throws upward. */
+  private async recordExtractionFailure(
+    storage: StorageManager,
+    namespace: string,
+    fingerprint: string,
+    cls: ExtractionFailureClass,
+    meta: MetaState,
+    now: number,
+  ): Promise<void> {
+    try {
+      this.hydrateRetryStateFromMeta(namespace, meta);
+      const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
+      const prev = nsMap.get(fingerprint);
+      const attempts = (prev?.attempts ?? 0) + 1;
+      const firstFailedAtMs = prev?.firstFailedAtMs ?? now;
+      let nextEligibleAtMs: number;
+      if (cls === "parse_empty" && attempts > this.config.extractionParseEmptyMaxAttempts) {
+        // parse_empty exhausted its attempt budget → long-park (still never
+        // marked processed). A dead gateway also yields unparseable output.
+        nextEligibleAtMs = now + Math.max(0, this.config.extractionRetryMaxBackoffMs);
+      } else {
+        nextEligibleAtMs = computeExtractionRetryNextEligibleMs(
+          attempts,
+          this.config.extractionRetryScheduleMs,
+          this.config.extractionRetryMaxBackoffMs,
+          this.config.extractionRetryJitterRatio,
+          now,
+        );
+      }
+      nsMap.set(fingerprint, { attempts, nextEligibleAtMs, firstFailedAtMs, lastFailureClass: cls });
+      this.extractionRetryState.set(namespace, nsMap);
+      this.onProviderFailure(cls, now);
+      this.persistRetryStateToMeta(namespace, meta);
+      await storage.saveMeta(meta);
+    } catch (err) {
+      // Fail-open: recording failure state must never crash observe/recall.
+      log.warn("runExtraction: failed to record extraction retry state (non-fatal)", err);
+    }
+  }
+
+  /** Delete a fingerprint's retry entry from the mirror + meta. Returns whether
+   *  meta changed (so the caller can decide to persist). Does not touch the
+   *  breaker — callers pair this with `resetProviderBreakerOnSuccess`. */
+  private clearExtractionRetryEntry(namespace: string, fingerprint: string, meta: MetaState): boolean {
+    const nsMap = this.extractionRetryState.get(namespace);
+    if (!nsMap?.has(fingerprint)) return false;
+    nsMap.delete(fingerprint);
+    this.persistRetryStateToMeta(namespace, meta);
+    return true;
+  }
+
+  /** Live in-process resilience snapshot (breaker + backoff population). */
+  getExtractionResilienceStatus(): ExtractionResilienceStatus {
+    let backoffFingerprintCount = 0;
+    for (const nsMap of this.extractionRetryState.values()) {
+      backoffFingerprintCount += nsMap.size;
+    }
+    return {
+      breaker: {
+        state: this.providerBreaker.state,
+        openUntilMs: this.providerBreaker.openUntilMs,
+        consecutiveFailures: this.providerBreaker.consecutiveFailures,
+        lastReason: this.providerBreaker.lastReason,
+      },
+      backoffFingerprintCount,
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Main extraction pipeline
   // -------------------------------------------------------------------------
 
@@ -268,6 +514,14 @@ export class ExtractionRunCoordinator {
        * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
        */
       principalOverride?: string;
+      /**
+       * Force the extractor call, bypassing the retry-backoff / circuit-breaker
+       * gate (extraction hot-loop hardening). Set by explicit flush paths
+       * (before_reset / session flush / replay / bulk import) that already pass
+       * `skipDedupeCheck: true` — AGENTS.md rule 18. A forced attempt still
+       * records its failure into retry-state/breaker.
+       */
+      forceExtractionAttempt?: boolean;
     } = {}
   ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
@@ -463,6 +717,37 @@ export class ExtractionRunCoordinator {
       };
     }
 
+    // Extraction retry/backoff + circuit-breaker gate (extraction hot-loop
+    // hardening). Suppresses re-attempts of a recently-failed fingerprint and
+    // short-circuits every fingerprint while the provider breaker is open, so a
+    // failing LLM endpoint is not hammered once per observe. Forced flushes and
+    // fail-closed callers bypass the gate (rule 18) but still record failures.
+    // On a suppressed attempt the buffer is deliberately NOT cleared, so no
+    // extractable turn is dropped — it is retried after cooldown/nextEligibleAt.
+    const forcedExtractionAttempt =
+      options.failOnExtractionFailure === true || options.forceExtractionAttempt === true;
+    // Resolve the gate through the shared lifecycle capability plan (issue
+    // #1523) rather than reading the raw config flag at each call site.
+    const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
+    if (extractionFingerprint && !forcedExtractionAttempt && extractionRetryEnabled) {
+      try {
+        meta ??= await storage.loadMeta();
+        this.hydrateRetryStateFromMeta(selfNamespace, meta);
+        const nowMs = Date.now();
+        if (this.isProviderBreakerOpen(nowMs)) {
+          return { status: "skipped", reason: "provider_circuit_open", persistedCount: 0, durableOutputCount: 0 };
+        }
+        const nsMap = this.extractionRetryState.get(selfNamespace);
+        const st = nsMap?.get(extractionFingerprint);
+        if (st && nowMs < st.nextEligibleAtMs) {
+          return { status: "skipped", reason: "extraction_backoff", persistedCount: 0, durableOutputCount: 0 };
+        }
+      } catch (err) {
+        // Fail-open: a gate error must never block extraction.
+        log.warn("runExtraction: extraction retry gate check failed; proceeding (fail-open)", err);
+      }
+    }
+
     // Pass existing entity names so the LLM can reuse them instead of inventing variants
     const existingEntities = await storage.listEntityNames();
     const result = await raceRecallAbort(
@@ -517,6 +802,38 @@ export class ExtractionRunCoordinator {
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure
         : undefined;
+    // Record failure into backoff/breaker state, or heal on success. Runs for
+    // every result path (empty and durable), before the fail-closed throw, so a
+    // forced flush still records its failure (rule 18). Gated by
+    // extractionRetryEnabled so a disabled feature restores prior behavior.
+    if (extractionFingerprint && extractionRetryEnabled) {
+      if (extractionFailure) {
+        meta ??= await storage.loadMeta();
+        await this.recordExtractionFailure(
+          storage,
+          selfNamespace,
+          extractionFingerprint,
+          result.extractionFailureClass ?? "provider_retryable",
+          meta,
+          Date.now(),
+        );
+      } else {
+        // Provider responded without failure → breaker heals; clear any
+        // parked backoff for this fingerprint so it proceeds normally.
+        this.resetProviderBreakerOnSuccess();
+        const nsMap = this.extractionRetryState.get(selfNamespace);
+        if (nsMap?.has(extractionFingerprint)) {
+          try {
+            meta ??= await storage.loadMeta();
+            if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
+              await storage.saveMeta(meta);
+            }
+          } catch (err) {
+            log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
+          }
+        }
+      }
+    }
     if (options.failOnExtractionFailure && extractionFailure) {
       throw new Error(`extraction failed: ${extractionFailure}`);
     }

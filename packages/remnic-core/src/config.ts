@@ -2826,6 +2826,26 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
+    // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
+    extractionRetryEnabled: cfg.extractionRetryEnabled !== false,
+    extractionRetryScheduleMs:
+      Array.isArray(cfg.extractionRetryScheduleMs) &&
+      cfg.extractionRetryScheduleMs.length > 0 &&
+      cfg.extractionRetryScheduleMs.every((n) => typeof n === "number" && Number.isFinite(n) && n > 0)
+        ? (cfg.extractionRetryScheduleMs as number[])
+        : [60_000, 300_000, 1_800_000, 7_200_000],
+    extractionRetryMaxBackoffMs:
+      typeof cfg.extractionRetryMaxBackoffMs === "number" ? cfg.extractionRetryMaxBackoffMs : 21_600_000,
+    extractionRetryJitterRatio:
+      typeof cfg.extractionRetryJitterRatio === "number" ? cfg.extractionRetryJitterRatio : 0.2,
+    extractionParseEmptyMaxAttempts:
+      typeof cfg.extractionParseEmptyMaxAttempts === "number" ? cfg.extractionParseEmptyMaxAttempts : 3,
+    extractionBreakerFailureThreshold:
+      typeof cfg.extractionBreakerFailureThreshold === "number" ? cfg.extractionBreakerFailureThreshold : 5,
+    extractionBreakerCooldownMs:
+      typeof cfg.extractionBreakerCooldownMs === "number" ? cfg.extractionBreakerCooldownMs : 300_000,
+    extractionBreakerAuthCooldownMs:
+      typeof cfg.extractionBreakerAuthCooldownMs === "number" ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
     // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
     localLlmFastModel:

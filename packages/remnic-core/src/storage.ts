@@ -110,6 +110,7 @@ import type {
   BufferSurpriseEvent,
   MemorySummary,
   MetaState,
+  ExtractionFailureClass,
   CompressionGuidelineOptimizerState,
   PluginConfig,
   ScoredEntity,
@@ -2261,6 +2262,38 @@ export interface MemoryWriteResult {
   tombstoneBlocked: boolean;
   /** The tombstone id that blocked the write, when `tombstoneBlocked`. */
   blockedBy?: string;
+}
+
+/**
+ * Defensively parse the persisted per-fingerprint extraction retry state from
+ * meta.json. Mirrors the tolerance of the `processedExtractionFingerprints`
+ * loader: unknown/legacy shapes are dropped, never thrown on. Uses `in`/typeof
+ * narrowing (no inline casts) so a malformed entry can't slip through typed.
+ */
+function parseExtractionRetryStateEntries(
+  raw: unknown,
+): NonNullable<MetaState["extractionRetryState"]> {
+  if (!Array.isArray(raw)) return [];
+  const valid: NonNullable<MetaState["extractionRetryState"]> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    if (!("fingerprint" in entry) || typeof entry.fingerprint !== "string") continue;
+    if (!("attempts" in entry) || typeof entry.attempts !== "number" || !Number.isFinite(entry.attempts)) continue;
+    if (!("nextEligibleAt" in entry) || typeof entry.nextEligibleAt !== "string") continue;
+    if (!("firstFailedAt" in entry) || typeof entry.firstFailedAt !== "string") continue;
+    if (!("lastFailureClass" in entry)) continue;
+    const cls = entry.lastFailureClass;
+    if (cls !== "provider_retryable" && cls !== "parse_empty" && cls !== "auth_config") continue;
+    const lastFailureClass: ExtractionFailureClass = cls;
+    valid.push({
+      fingerprint: entry.fingerprint,
+      attempts: entry.attempts,
+      nextEligibleAt: entry.nextEligibleAt,
+      firstFailedAt: entry.firstFailedAt,
+      lastFailureClass,
+    });
+  }
+  return valid;
 }
 
 export class StorageManager {
@@ -4917,6 +4950,7 @@ export class StorageManager {
                 observedAt: (entry as { observedAt: string }).observedAt,
               }))
           : [],
+        extractionRetryState: parseExtractionRetryStateEntries(parsed.extractionRetryState),
       };
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
