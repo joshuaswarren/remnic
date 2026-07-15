@@ -61,6 +61,49 @@ test("prices GPT-5.6 tiers using uncached, cached, and output rates", () => {
   assert.equal(calculateCodexCredits("gpt-5.6-sol", usage), 17.75);
   assert.equal(calculateCodexCredits("gpt-5.6-terra", usage), 8.875);
   assert.equal(calculateCodexCredits("gpt-5.6-luna", usage), 3.55);
+  assert.equal(calculateCodexCredits("gpt-5.5", usage), 17.75);
+  assert.equal(calculateCodexCredits("gpt-5.3-codex", usage), 7.0875);
+});
+
+test("credit pricing fails closed for unlisted model variants", () => {
+  for (const model of [
+    "gpt-5.6-sol-preview",
+    "gpt-5.6-terra-preview",
+    "gpt-5.6-luna-preview",
+    "gpt-5.5-cyber",
+    "gpt-5.4-mini-preview",
+    "gpt-5.4-pro",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+  ]) {
+    assert.throws(
+      () => calculateCodexCredits(model, usage),
+      /No Codex credit rate is configured/,
+      model,
+    );
+  }
+});
+
+test("bounded runs reject unlisted model variants before dispatch", async () => {
+  __codexCreditBudgetTestHooks.resetQueue();
+  let called = false;
+  await assert.rejects(
+    runWithinCodexCreditBudget({
+      config: {
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        ledgerPath: path.join(os.tmpdir(), "unused-variant-codex-ledger.json"),
+        allowSol: false,
+      },
+      model: "gpt-5.3-codex-spark",
+      run: async () => {
+        called = true;
+        return { value: "unexpected", usage };
+      },
+    }),
+    /No Codex credit rate is configured/,
+  );
+  assert.equal(called, false);
 });
 
 test("bounded runs reject Sol unless explicitly opted in", async () => {

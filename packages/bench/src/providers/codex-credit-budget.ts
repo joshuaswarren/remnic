@@ -43,16 +43,16 @@ const ONE_MILLION = 1_000_000;
 // Conservative upper bound for one supported text-model turn. GPT-5.6 Terra's
 // full 1.05M-token context plus 128K output costs well under this amount.
 const MAX_BOUNDED_CALL_CREDITS = 300;
-const SOL_MODEL = /^gpt-5\.6-sol(?:-|$)/i;
+const SOL_MODEL = /^gpt-5\.6-sol$/i;
 const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
-  [/^gpt-5\.6-sol(?:-|$)/i, { input: 125, cachedInput: 12.5, output: 750 }],
-  [/^gpt-5\.6-terra(?:-|$)/i, { input: 62.5, cachedInput: 6.25, output: 375 }],
-  [/^gpt-5\.6-luna(?:-|$)/i, { input: 25, cachedInput: 2.5, output: 150 }],
-  [/^gpt-5\.5(?:-|$)/i, { input: 125, cachedInput: 12.5, output: 750 }],
-  [/^gpt-5\.4-mini(?:-|$)/i, { input: 18.75, cachedInput: 1.875, output: 113 }],
-  [/^gpt-5\.4(?:-|$)/i, { input: 62.5, cachedInput: 6.25, output: 375 }],
-  [/^gpt-5\.3-codex(?:-|$)/i, { input: 43.75, cachedInput: 4.375, output: 350 }],
-  [/^gpt-5\.2(?:-|$)/i, { input: 43.75, cachedInput: 4.375, output: 350 }],
+  [/^gpt-5\.6-sol$/i, { input: 125, cachedInput: 12.5, output: 750 }],
+  [/^gpt-5\.6-terra$/i, { input: 62.5, cachedInput: 6.25, output: 375 }],
+  [/^gpt-5\.6-luna$/i, { input: 25, cachedInput: 2.5, output: 150 }],
+  [/^gpt-5\.5$/i, { input: 125, cachedInput: 12.5, output: 750 }],
+  [/^gpt-5\.4-mini$/i, { input: 18.75, cachedInput: 1.875, output: 113 }],
+  [/^gpt-5\.4$/i, { input: 62.5, cachedInput: 6.25, output: 375 }],
+  [/^gpt-5\.3-codex$/i, { input: 43.75, cachedInput: 4.375, output: 350 }],
+  [/^gpt-5\.2$/i, { input: 43.75, cachedInput: 4.375, output: 350 }],
 ];
 
 let completionQueue: Promise<void> = Promise.resolve();
