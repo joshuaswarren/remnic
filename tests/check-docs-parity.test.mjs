@@ -894,6 +894,41 @@ test("Build Week Codex commands reject benchmark and runtime fan-out selectors",
   }
 });
 
+test("Build Week Codex commands reject every unpinned runtime override", () => {
+  for (const override of [
+    "--adapter mcp --mcp-demo",
+    "--mcp-url http://127.0.0.1:9999/mcp",
+    "--remnic-config ./alternate.json",
+    "--model-source gateway",
+    "--disable-thinking",
+    "--unknown-future-mode enabled",
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          `remnic bench run longmemeval --limit 1 ${override} \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${override}: ${result.stderr}`);
+      assert.match(result.stderr, /must not include unpinned run flag/);
+    });
+  }
+});
+
 test("Build Week Codex bounds reject missing, zero, and negative values", () => {
   for (const [suffix, expected] of [
     ["--limit", /has no value for `--limit`/],

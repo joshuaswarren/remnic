@@ -111,6 +111,25 @@ const BENCH_RUN_BOOLEAN_FLAGS = new Set([
   "-h",
 ]);
 
+const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
+  "--json",
+  "--runtime-profile",
+  "--limit",
+  "--trial-limit",
+  "--dataset-dir",
+  "--results-dir",
+  "--drain-timeout",
+  "--system-provider",
+  "--system-model",
+  "--system-codex-reasoning-effort",
+  "--internal-provider",
+  "--internal-model",
+  "--internal-codex-reasoning-effort",
+  "--judge-provider",
+  "--judge-model",
+  "--judge-codex-reasoning-effort",
+]);
+
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in
 // prose, tables, or list items. Inline code in this repo references
@@ -437,6 +456,21 @@ function checkBuildWeekCodexDatasetPaths() {
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
       checkedInDoc += 1;
+      const remnicAt = commandTokens.indexOf("remnic");
+      const disallowedFlags = [
+        ...new Set(
+          commandTokens
+            .slice(remnicAt + 3)
+            .filter((token) => token.startsWith("--") || token === "-h")
+            .map((token) => token.split("=", 1)[0])
+            .filter((flag) => !BUILD_WEEK_ALLOWED_RUN_FLAGS.has(flag)),
+        ),
+      ];
+      for (const flag of disallowedFlags) {
+        failures.push(
+          `${rel}: Build Week Codex command must not include unpinned run flag \`${flag}\``,
+        );
+      }
       for (const selector of ["--all", "--custom", "--matrix"]) {
         if (commandTokens.some((token) => token === selector || token.startsWith(`${selector}=`))) {
           failures.push(
