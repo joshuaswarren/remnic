@@ -301,6 +301,13 @@ export async function executeLspResolution(
     // Send all definition requests for this file, collecting upgrades.
     const upgrades: EdgeUpgrade[] = [];
     let batchFailed = false;
+    // Track whether EVERY request in this file batch was processed to a
+    // definitive result (resolved or definitively-not-found). A timeout,
+    // request_error, or server-crash mid-batch makes the batch
+    // non-exhaustive: reconciliation must NOT run because the asserted
+    // set would be incomplete, deleting valid lsp edges for call sites
+    // that were never queried (cursor High + codex P1 on #1914).
+    let batchExhaustive = true;
 
     // Open the document with full text before querying definitions (LSP 3.17).
     // The server needs the content to answer definition requests accurately.
@@ -343,6 +350,10 @@ export async function executeLspResolution(
           break;
         }
         // request_timeout / request_error — count as unresolved, continue.
+        // request_timeout / request_error — count as unresolved.
+        // The batch is non-exhaustive: this call site's LSP result is
+        // indeterminate, so reconciliation for this file is suppressed.
+        batchExhaustive = false;
         unresolved++;
         continue;
       }
@@ -386,10 +397,11 @@ export async function executeLspResolution(
         await applyUpgrades(upgrades);
         upgraded += upgrades.length;
       }
-      // Reconcile regardless of upgrade count: an empty upgrade list
-      // still asserts "no lsp edges for this file's current call sites",
-      // so prior lsp rows for removed calls retire.
-      if (options.reconcileLspEdges) {
+      // Reconcile ONLY when the batch was exhaustive (every call site
+      // processed to a definitive result). A partial batch's asserted
+      // set would be incomplete and retire valid edges for unprocessed
+      // call sites (cursor High + codex P1 on #1914).
+      if (batchExhaustive && options.reconcileLspEdges) {
         options.reconcileLspEdges(
           filePath,
           upgrades.map((u) => ({

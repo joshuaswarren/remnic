@@ -964,9 +964,15 @@ export class GraphStore {
       );
       if (nodes.length === 0) return 0;
 
-      // Build srcQualifiedName → nodeId for this file's nodes.
+      // Build srcQualifiedName → nodeId for this file's nodes. Only
+      // include names that appear exactly once (same conservative
+      // ambiguity policy as upsertFileEdges — cursor review on #1914).
+      const nameCount = new Map<string, number>();
+      for (const n of nodes) nameCount.set(n.qualified_name, (nameCount.get(n.qualified_name) ?? 0) + 1);
       const srcMap = new Map<string, string>();
-      for (const n of nodes) srcMap.set(n.qualified_name, n.id);
+      for (const n of nodes) {
+        if (nameCount.get(n.qualified_name) === 1) srcMap.set(n.qualified_name, n.id);
+      }
       const nodeIds = nodes.map((n) => n.id);
 
       // Build the asserted key set (resolved to node IDs).
