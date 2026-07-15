@@ -155,6 +155,16 @@ const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
       /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"(?:[ \t]+#.*)?[ \t]*$/,
   },
 ]);
+const BUILD_WEEK_RESULTS_ENV_CONTRACT = Object.freeze({
+  name: "BUILD_WEEK_RESULTS_DIR",
+  expected: 'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+  valid:
+    /^\s*export\s+BUILD_WEEK_RESULTS_DIR="\$BUILD_WEEK_RUN_ROOT\/results"(?:[ \t]+#.*)?[ \t]*$/,
+});
+const BUILD_WEEK_PAID_ENV_CONTRACTS = Object.freeze([
+  ...BUILD_WEEK_CREDIT_ENV_CONTRACTS,
+  BUILD_WEEK_RESULTS_ENV_CONTRACT,
+]);
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
 
 function containsShellCreditProtocolName(line, name) {
@@ -164,6 +174,15 @@ function containsShellCreditProtocolName(line, name) {
   // valid export is allowlisted below, while any other executable reference
   // to a protected name becomes an invalid later protocol mutation.
   return new RegExp(`\\b${name}\\b`).test(line);
+}
+
+function containsShellResultsDirMutation(line) {
+  // Ordinary reads such as `--results-dir "$BUILD_WEEK_RESULTS_DIR"` must not
+  // invalidate the export. A bare variable name, however, covers direct shell
+  // mutation forms (assignment, export/unset, declarations, arrays,
+  // arithmetic, and `printf -v`) and therefore fails closed unless it is the
+  // exact allowlisted export above.
+  return new RegExp(`(?<![\\$\\{])\\b${BUILD_WEEK_RESULTS_ENV_CONTRACT.name}\\b`).test(line);
 }
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
@@ -428,21 +447,26 @@ function extractLogicalShellCommands(src) {
 }
 
 /**
- * Return document-ordered shell mutations of the credit budget. The last
- * mutation before a command determines whether its child process is guarded.
- * Prose and non-shell fences never affect executable environment state.
+ * Return document-ordered shell mutations of paid-run environment contracts.
+ * The last mutation before a command determines whether its child process is
+ * guarded and writes to the private result store. Prose and non-shell fences
+ * never affect executable environment state.
  *
  * @param {string} src
  * @returns {Array<{ name: string; line: number; valid: boolean }>}
  */
-function extractShellCreditProtocolMutations(src) {
+function extractShellPaidRunEnvMutations(src) {
   const mutations = [];
   for (const block of extractFencedBlocks(src)) {
     if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
     for (const [index, line] of block.text.split("\n").entries()) {
       if (/^\s*#/.test(line)) continue;
-      for (const contract of BUILD_WEEK_CREDIT_ENV_CONTRACTS) {
-        if (!containsShellCreditProtocolName(line, contract.name)) continue;
+      for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
+        const isMutation =
+          contract === BUILD_WEEK_RESULTS_ENV_CONTRACT
+            ? containsShellResultsDirMutation(line)
+            : containsShellCreditProtocolName(line, contract.name);
+        if (!isMutation) continue;
         mutations.push({
           name: contract.name,
           line: block.startLine + 1 + index,
@@ -515,7 +539,7 @@ function checkBuildWeekCodexDatasetPaths() {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
-    const creditProtocolMutations = extractShellCreditProtocolMutations(src);
+    const paidRunEnvMutations = extractShellPaidRunEnvMutations(src);
     let checkedInDoc = 0;
     for (const { command, commandStartLine, blockHasCreditProtocolMutation } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
@@ -539,8 +563,8 @@ function checkBuildWeekCodexDatasetPaths() {
       checkedInDoc += 1;
       const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
       const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
-      for (const contract of BUILD_WEEK_CREDIT_ENV_CONTRACTS) {
-        const lastMutation = creditProtocolMutations.findLast(
+      for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
+        const lastMutation = paidRunEnvMutations.findLast(
           ({ name, line }) => name === contract.name && line < commandStartLine,
         );
         if (!lastMutation?.valid || commandPrefix.includes(contract.name)) {

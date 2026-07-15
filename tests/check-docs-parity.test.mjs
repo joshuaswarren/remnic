@@ -670,6 +670,7 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         "remnic bench run --json longmemeval --limit 1 \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         "  --runtime-profile real --results-dir \"$BUILD_WEEK_RESULTS_DIR\" --drain-timeout 600000 \\",
@@ -890,6 +891,95 @@ test("credit protocol exports accept real shell comments and trailing whitespace
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473 # budget",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\t# reserve",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"   ',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results" # private result store',
+        "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /1 Build Week Codex dataset command\(s\) pinned/);
+  });
+});
+
+test("paid runs require the exact private results-directory export", () => {
+  for (const { label, resultEnvLines } of [
+    { label: "missing", resultEnvLines: [] },
+    {
+      label: "wrong path",
+      resultEnvLines: ['export BUILD_WEEK_RESULTS_DIR="/tmp/build-week-results"'],
+    },
+    {
+      label: "non-exported assignment",
+      resultEnvLines: ['BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"'],
+    },
+    {
+      label: "overridden",
+      resultEnvLines: [
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+        'export BUILD_WEEK_RESULTS_DIR="$HOME/other-results"',
+      ],
+    },
+    {
+      label: "unset",
+      resultEnvLines: [
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+        "unset BUILD_WEEK_RESULTS_DIR",
+      ],
+    },
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+          ...resultEnvLines,
+          "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${label}: ${result.stderr}`);
+      assert.match(
+        result.stderr,
+        /must follow an exact shell export of `export BUILD_WEEK_RESULTS_DIR="\$BUILD_WEEK_RUN_ROOT\/results"`/,
+      );
+    });
+  }
+});
+
+test("a later exact results-directory re-export restores the paid protocol", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$HOME/other-results"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
@@ -1084,6 +1174,7 @@ test("a comment mentioning bench run before the credit guard does not invalidate
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
@@ -1195,6 +1286,7 @@ test("the first command in a two-command paid sequence is exactly a one-item smo
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         `remnic bench run longmemeval --limit 100 ${protocol}`,
         `remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
         "```",
@@ -1233,6 +1325,7 @@ test("a two-command LoCoMo sequence accepts the benchmark-supported trial bound"
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         `remnic bench run locomo --trial-limit 1 ${protocol}`,
         `remnic bench run locomo --trial-limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
         "```",
