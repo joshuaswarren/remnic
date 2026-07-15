@@ -376,7 +376,18 @@ function extractLogicalShellCommands(src) {
   for (const block of extractFencedBlocks(src)) {
     if (!shellLangs.has(block.lang)) continue;
     const guardAt = block.text.search(BUILD_WEEK_CREDIT_GUARD_LINE_RE);
-    const firstRunAt = block.text.search(/\bremnic\s+bench\s+run\b/);
+    let firstRunAt = -1;
+    let offset = 0;
+    for (const line of block.text.split("\n")) {
+      if (!/^\s*#/.test(line)) {
+        const runAt = line.search(/\bremnic\s+bench\s+run\b/);
+        if (runAt >= 0) {
+          firstRunAt = offset + runAt;
+          break;
+        }
+      }
+      offset += line.length + 1;
+    }
     const guardedBuildWeekBlock = guardAt >= 0 && firstRunAt >= 0 && guardAt < firstRunAt;
     const logical = block.text.replace(/\\\s*\n/g, " ");
     for (const line of logical.split("\n")) {
