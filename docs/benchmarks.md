@@ -261,7 +261,7 @@ for each role.
 Configure the guard and run a measured smoke before selecting a task count:
 
 ```bash
-BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
 export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
 umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"

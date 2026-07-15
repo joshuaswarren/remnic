@@ -658,7 +658,7 @@ normal service, not fast mode. Configure the provider's guard before the first
 turn:
 
 ```bash
-BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
 export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
 umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"

@@ -667,6 +667,7 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
         "# Build Week",
         "",
         "```bash",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
@@ -888,6 +889,7 @@ test("credit protocol exports accept real shell comments and trailing whitespace
         "# Build Week",
         "",
         "```bash",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026" # private root',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473 # budget",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\t# reserve",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"   ',
@@ -942,6 +944,7 @@ test("paid runs require the exact private results-directory export", () => {
           "# Build Week",
           "",
           "```bash",
+          'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
           "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
           "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
           'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
@@ -975,10 +978,129 @@ test("a later exact results-directory re-export restores the paid protocol", () 
         "# Build Week",
         "",
         "```bash",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         'export BUILD_WEEK_RESULTS_DIR="$HOME/other-results"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+        "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /1 Build Week Codex dataset command\(s\) pinned/);
+  });
+});
+
+test("paid runs require an exact current root before dependent path exports", () => {
+  const exactRoot = 'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"';
+  const exactLedger =
+    'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"';
+  const exactResults = 'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"';
+  for (const { label, pathEnvLines } of [
+    { label: "missing root", pathEnvLines: [exactLedger, exactResults] },
+    {
+      label: "wrong stale root",
+      pathEnvLines: [
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/old-build-week"',
+        exactLedger,
+        exactResults,
+      ],
+    },
+    {
+      label: "non-exported root",
+      pathEnvLines: [
+        'BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+        exactLedger,
+        exactResults,
+      ],
+    },
+    {
+      label: "root moved below dependents",
+      pathEnvLines: [exactLedger, exactResults, exactRoot],
+    },
+    {
+      label: "root unset after expansion",
+      pathEnvLines: [exactRoot, exactLedger, exactResults, "unset BUILD_WEEK_RUN_ROOT"],
+    },
+    {
+      label: "root overridden after expansion",
+      pathEnvLines: [
+        exactRoot,
+        exactLedger,
+        exactResults,
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/other-run"',
+      ],
+    },
+    {
+      label: "root re-exported without dependent refresh",
+      pathEnvLines: [
+        exactRoot,
+        exactLedger,
+        exactResults,
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/other-run"',
+        exactRoot,
+      ],
+    },
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          ...pathEnvLines,
+          "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${label}: ${result.stderr}`);
+      assert.ok(
+        result.stderr.includes(
+          'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+        ),
+        `${label}: ${result.stderr}`,
+      );
+    });
+  }
+});
+
+test("root recovery requires fresh dependent path exports", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+        'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/other-run"',
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
         "remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
@@ -1171,6 +1293,7 @@ test("a comment mentioning bench run before the credit guard does not invalidate
         "",
         "```bash",
         "# The remnic bench run command below consumes Codex credits.",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
@@ -1283,6 +1406,7 @@ test("the first command in a two-command paid sequence is exactly a one-item smo
         "# Bench",
         "",
         "```bash",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
@@ -1322,6 +1446,7 @@ test("a two-command LoCoMo sequence accepts the benchmark-supported trial bound"
         "# Bench",
         "",
         "```bash",
+        'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',

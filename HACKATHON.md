@@ -193,7 +193,7 @@ also use `--trial-limit`. These flags do not cap credits. The provider has
 separate credit guards. Set them, then choose the task cap from the ledger:
 
 ```bash
-BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
 export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
 umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"

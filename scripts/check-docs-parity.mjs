@@ -155,6 +155,12 @@ const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
       /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"(?:[ \t]+#.*)?[ \t]*$/,
   },
 ]);
+const BUILD_WEEK_RUN_ROOT_ENV_CONTRACT = Object.freeze({
+  name: "BUILD_WEEK_RUN_ROOT",
+  expected: 'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+  valid:
+    /^\s*export\s+BUILD_WEEK_RUN_ROOT="\$HOME\/\.remnic\/bench\/build-week-2026"(?:[ \t]+#.*)?[ \t]*$/,
+});
 const BUILD_WEEK_RESULTS_ENV_CONTRACT = Object.freeze({
   name: "BUILD_WEEK_RESULTS_DIR",
   expected: 'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
@@ -162,8 +168,13 @@ const BUILD_WEEK_RESULTS_ENV_CONTRACT = Object.freeze({
     /^\s*export\s+BUILD_WEEK_RESULTS_DIR="\$BUILD_WEEK_RUN_ROOT\/results"(?:[ \t]+#.*)?[ \t]*$/,
 });
 const BUILD_WEEK_PAID_ENV_CONTRACTS = Object.freeze([
+  BUILD_WEEK_RUN_ROOT_ENV_CONTRACT,
   ...BUILD_WEEK_CREDIT_ENV_CONTRACTS,
   BUILD_WEEK_RESULTS_ENV_CONTRACT,
+]);
+const BUILD_WEEK_ROOT_DEPENDENT_ENV_NAMES = new Set([
+  "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+  "BUILD_WEEK_RESULTS_DIR",
 ]);
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
 
@@ -176,13 +187,13 @@ function containsShellCreditProtocolName(line, name) {
   return new RegExp(`\\b${name}\\b`).test(line);
 }
 
-function containsShellResultsDirMutation(line) {
-  // Ordinary reads such as `--results-dir "$BUILD_WEEK_RESULTS_DIR"` must not
-  // invalidate the export. A bare variable name, however, covers direct shell
-  // mutation forms (assignment, export/unset, declarations, arrays,
-  // arithmetic, and `printf -v`) and therefore fails closed unless it is the
-  // exact allowlisted export above.
-  return new RegExp(`(?<![\\$\\{])\\b${BUILD_WEEK_RESULTS_ENV_CONTRACT.name}\\b`).test(line);
+function containsShellPathVariableMutation(line, contract) {
+  // Ordinary reads such as `--results-dir "$BUILD_WEEK_RESULTS_DIR"` and the
+  // dependent `$BUILD_WEEK_RUN_ROOT` expansions must not invalidate an export.
+  // A bare variable name covers direct shell mutation forms (assignment,
+  // export/unset, declarations, arrays, arithmetic, and `printf -v`) and
+  // therefore fails closed unless it is the exact allowlisted export.
+  return new RegExp(`(?<![\\$\\{])\\b${contract.name}\\b`).test(line);
 }
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
@@ -462,10 +473,12 @@ function extractShellPaidRunEnvMutations(src) {
     for (const [index, line] of block.text.split("\n").entries()) {
       if (/^\s*#/.test(line)) continue;
       for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
-        const isMutation =
-          contract === BUILD_WEEK_RESULTS_ENV_CONTRACT
-            ? containsShellResultsDirMutation(line)
-            : containsShellCreditProtocolName(line, contract.name);
+        const isPathContract =
+          contract === BUILD_WEEK_RUN_ROOT_ENV_CONTRACT ||
+          contract === BUILD_WEEK_RESULTS_ENV_CONTRACT;
+        const isMutation = isPathContract
+          ? containsShellPathVariableMutation(line, contract)
+          : containsShellCreditProtocolName(line, contract.name);
         if (!isMutation) continue;
         mutations.push({
           name: contract.name,
@@ -563,14 +576,34 @@ function checkBuildWeekCodexDatasetPaths() {
       checkedInDoc += 1;
       const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
       const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
+      const lastEnvMutations = new Map(
+        BUILD_WEEK_PAID_ENV_CONTRACTS.map((contract) => [
+          contract.name,
+          paidRunEnvMutations.findLast(
+            ({ name, line }) => name === contract.name && line < commandStartLine,
+          ),
+        ]),
+      );
+      const lastRunRootMutation = lastEnvMutations.get(BUILD_WEEK_RUN_ROOT_ENV_CONTRACT.name);
       for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
-        const lastMutation = paidRunEnvMutations.findLast(
-          ({ name, line }) => name === contract.name && line < commandStartLine,
-        );
-        if (!lastMutation?.valid || commandPrefix.includes(contract.name)) {
+        const lastMutation = lastEnvMutations.get(contract.name);
+        const dependsOnRunRoot = BUILD_WEEK_ROOT_DEPENDENT_ENV_NAMES.has(contract.name);
+        const followsCurrentRunRoot =
+          !dependsOnRunRoot ||
+          (lastRunRootMutation?.valid === true &&
+            lastMutation !== undefined &&
+            lastMutation.line > lastRunRootMutation.line);
+        if (
+          !lastMutation?.valid ||
+          !followsCurrentRunRoot ||
+          commandPrefix.includes(contract.name)
+        ) {
           failures.push(
             `${rel}: Build Week Codex command must follow an exact shell export of ` +
-              `\`${contract.expected}\``,
+              `\`${contract.expected}\`` +
+              (dependsOnRunRoot
+                ? ` after \`${BUILD_WEEK_RUN_ROOT_ENV_CONTRACT.expected}\``
+                : ""),
           );
         }
       }
