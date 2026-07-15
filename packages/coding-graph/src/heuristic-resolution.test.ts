@@ -447,3 +447,39 @@ test("same exported name from two modules yields two hinted edges (codex review)
     ],
   );
 });
+
+test("a bare call inside a method never binds a sibling method (codex review round 8)", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "class", name: "C", qualifiedName: "C", span: span(0, 200) },
+      { kind: "method", name: "run", qualifiedName: "C.run", span: span(10, 100) },
+      { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
+      { kind: "function", name: "helper", qualifiedName: "helper", span: span(210, 260) },
+    ],
+    // bare helper() inside C.run — this.helper() would be memberAccess.
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => [e.srcQualifiedName, e.dstQualifiedName]),
+    [["C.run", "helper"]],
+    "binds the file-level function, never the sibling method C.helper",
+  );
+});
+
+test("with only a sibling method available, a bare call stays unresolved", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "class", name: "C", qualifiedName: "C", span: span(0, 200) },
+      { kind: "method", name: "run", qualifiedName: "C.run", span: span(10, 100) },
+      { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
+    ],
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(firstFile(result).edges, []);
+  assert.equal(stats.skippedUnresolved, 1);
+});

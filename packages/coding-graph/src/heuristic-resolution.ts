@@ -50,14 +50,18 @@ export const HEURISTIC_CONFIDENCE_SAME_FILE = 0.9;
 export const HEURISTIC_CONFIDENCE_IMPORT_BOUND = 0.8;
 
 /**
- * The provenance scope reindex asserts for derived edges: a fresh parse
- * owns its own derivations AND their lsp upgrades (an lsp row is the
- * same source-derived edge, upgraded — when the call disappears from the
- * parse, the upgraded row is stale too). It never owns `trace` (runtime
- * observation) or semantic edges. The store's update guard separately
- * ensures a re-asserted key never DOWNGRADES an lsp row to heuristic.
+ * The provenance scope reindex asserts for derived edges: ONLY its own
+ * heuristic derivations. Each provenance layer owns its lifecycle
+ * (issue #1894 review rounds 3/7/8): `lsp` rows include member-dispatch
+ * resolutions Phase A deliberately never re-asserts, so including `lsp`
+ * here would retire still-valid method-call edges on every edit of their
+ * file. Vanished-call `lsp` rows are the LSP pass's job to retire when it
+ * re-derives from the current parse (its edges die with their src nodes on
+ * symbol pruning regardless). `trace` (runtime observation) and semantic
+ * edges are likewise never this scope's to touch. The store's update guard
+ * separately ensures a re-asserted key never DOWNGRADES an lsp row.
  */
-export const HEURISTIC_PROVENANCE_SCOPE = ["heuristic", "lsp"] as const;
+export const HEURISTIC_PROVENANCE_SCOPE = ["heuristic"] as const;
 
 /** Per-batch resolution counters — surfaced by callers for observability. */
 export interface HeuristicResolutionStats {
@@ -105,6 +109,8 @@ export function deriveHeuristicEdges(
     // parent is the innermost OTHER symbol strictly containing its span;
     // no parent = file level (empty-string key).
     const parentOf = new Map<string, string>();
+    const kindOf = new Map<string, string>();
+    for (const sym of ir.symbols) kindOf.set(sym.qualifiedName, sym.kind);
     for (const sym of ir.symbols) {
       let parent: { qualifiedName: string; size: number } | undefined;
       for (const other of ir.symbols) {
@@ -205,11 +211,18 @@ export function deriveHeuristicEdges(
       // Visible scope levels for this call site, innermost first: the
       // caller's own children, then each ancestor's children, ending at
       // the file level. Symbols nested under unrelated parents are never
-      // consulted.
+      // consulted. Class-like ancestors (class/interface/enum) are NOT
+      // bare-call scopes (codex review round 8): a bare helper() inside a
+      // method cannot mean the sibling method C.helper — that call would
+      // be this.helper()/self.helper(), i.e. a member access Phase A
+      // skips. Function/method/module ancestors DO contribute (nested
+      // functions and module-local functions are bare-callable).
       const scopeLevels: string[] = [src.qualifiedName];
       let cursor: string | undefined = src.qualifiedName;
       while (cursor !== undefined && cursor !== "") {
         cursor = parentOf.get(cursor) ?? "";
+        const kind = cursor === "" ? undefined : kindOf.get(cursor);
+        if (kind === "class" || kind === "interface" || kind === "enum") continue;
         scopeLevels.push(cursor);
       }
 
