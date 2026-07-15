@@ -54,6 +54,12 @@ export interface ProviderConfig {
     retryOnTimeout?: boolean;
     max429WaitMs?: number;
   };
+  /**
+   * Provider transport timeout that must not be interpreted as a benchmark
+   * phase timeout. Runtime profiles use this for safe provider defaults while
+   * reserving retryOptions.timeoutMs for an explicit --request-timeout.
+   */
+  providerRequestTimeoutMs?: number;
   disableThinking?: boolean;
   reasoningEffort?: BenchReasoningEffort;
   responderContextBudgetChars?: number;

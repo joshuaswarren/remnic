@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildBenchBaselineRemnicConfig } from "./adapters/remnic-adapter.ts";
+import { resolveBenchmarkPhaseTimeoutMs } from "./adapters/timeout-guard.ts";
 import {
+  __runtimeProfilesTestHooks,
   createAssistantAgentFromResponder,
   deriveOpenclawRuntimeContext,
   resolveBenchRuntimeProfile,
@@ -24,6 +26,7 @@ test("baseline runtime profile keeps the stripped retrieval-only config", async 
   assert.equal(resolved.remnicConfig.rerankEnabled, false);
   assert.equal(resolved.remnicConfig.verifiedRecallEnabled, false);
   assert.equal(resolved.remnicConfig.knowledgeIndexEnabled, false);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, undefined);
 });
 
 test("runtime profile forwards LCM observe concurrency override", async () => {
@@ -420,15 +423,31 @@ test("provider-backed runtime resolution configures codex-cli with xhigh reasoni
   assert.deepEqual(resolved.systemProvider, {
     provider: "codex-cli",
     model: "gpt-5.5",
+    providerRequestTimeoutMs: 180_000,
     reasoningEffort: "xhigh",
   });
   assert.deepEqual(resolved.judgeProvider, {
     provider: "codex-cli",
     model: "gpt-5.5",
+    providerRequestTimeoutMs: 180_000,
     reasoningEffort: "xhigh",
   });
+  assert.equal(resolved.systemProvider?.retryOptions?.timeoutMs, undefined);
+  assert.equal(resolved.judgeProvider?.retryOptions?.timeoutMs, undefined);
+  assert.equal(
+    resolveBenchmarkPhaseTimeoutMs({
+      systemProvider: resolved.systemProvider,
+      judgeProvider: resolved.judgeProvider,
+    }),
+    undefined,
+  );
+  assert.equal(
+    __runtimeProfilesTestHooks.asProviderFactoryConfig(resolved.systemProvider!).retryOptions?.timeoutMs,
+    180_000,
+  );
   assert.equal(typeof resolved.adapterOptions.responder?.respond, "function");
   assert.equal(typeof resolved.adapterOptions.judge?.score, "function");
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 600_000);
 });
 
 test("provider-backed runtime resolution can override codex-cli reasoning effort", async () => {
@@ -512,6 +531,35 @@ test("runtime profile can route Remnic internal LLM calls through codex-cli", as
   );
 });
 
+test("runtime profile gives Codex CLI internal fast and main tiers a safe default timeout", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    internalProvider: "codex-cli",
+    internalModel: "gpt-5.6-luna",
+  });
+
+  assert.deepEqual(resolved.internalProvider, {
+    provider: "codex-cli",
+    model: "gpt-5.6-luna",
+    baseUrl: "codex-cli://local",
+    providerRequestTimeoutMs: 180_000,
+    reasoningEffort: "xhigh",
+  });
+  assert.equal(resolved.remnicConfig.localLlmTimeoutMs, 180_000);
+  assert.equal(resolved.remnicConfig.localLlmFastTimeoutMs, 180_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 180_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmFastTimeoutMs, 180_000);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 600_000);
+
+  const gatewayConfig = resolved.effectiveRemnicConfig.gatewayConfig as {
+    models?: { providers?: Record<string, { retryOptions?: { timeoutMs?: number } }> };
+  };
+  assert.equal(
+    gatewayConfig.models?.providers?.["remnic-bench-internal"]?.retryOptions?.timeoutMs,
+    180_000,
+  );
+});
+
 test("runtime profile rejects claude-cli as an internal provider (PR #1735 review: no @remnic/core gateway wiring)", async () => {
   await assert.rejects(
     () =>
@@ -539,6 +587,37 @@ test("runtime profile can decouple provider request timeout from drain timeout",
   });
   assert.equal(resolved.remnicConfig.localLlmTimeoutMs, 120_000);
   assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 120_000);
+});
+
+test("runtime profile preserves an explicit drain timeout with the implicit Codex request timeout", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    internalProvider: "codex-cli",
+    internalModel: "gpt-5.6-luna",
+    drainTimeout: 900_000,
+  });
+
+  assert.equal(resolved.internalProvider?.providerRequestTimeoutMs, 180_000);
+  assert.equal(resolved.internalProvider?.retryOptions?.timeoutMs, undefined);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 900_000);
+});
+
+test("runtime profile merges implicit Codex transport timeout with max-429 retry options", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    systemProvider: "codex-cli",
+    systemModel: "gpt-5.6-luna",
+    max429WaitMs: 12_345,
+  });
+
+  assert.deepEqual(resolved.systemProvider?.retryOptions, {
+    max429WaitMs: 12_345,
+  });
+  assert.equal(resolved.systemProvider?.providerRequestTimeoutMs, 180_000);
+  assert.deepEqual(
+    __runtimeProfilesTestHooks.asProviderFactoryConfig(resolved.systemProvider!).retryOptions,
+    { max429WaitMs: 12_345, timeoutMs: 180_000 },
+  );
 });
 
 test("runtime profile can route Remnic internal LLM calls through Ollama native chat", async () => {

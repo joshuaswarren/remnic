@@ -261,12 +261,20 @@ for each role.
 Configure the guard and run a measured smoke before selecting a task count:
 
 ```bash
+BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
+umask 077
+mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
-export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 
 remnic bench run --quick longmemeval \
   --runtime-profile real \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -277,6 +285,8 @@ remnic bench run --quick longmemeval \
 # Replace this only after the smoke ledger establishes observed cost.
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -290,6 +300,20 @@ and MemoryAgentBench. Neither flag is a token-credit budget, so the placeholder
 cannot be replaced with a fixed universal value: derive it from the ledger's
 observed per-task cost and resize after each bounded batch. A limited run is a
 trial artifact and cannot be promoted as a full leaderboard result.
+
+The Codex CLI profile supplies a 180-second transport-only timeout by default.
+Do not add `--request-timeout` to this protocol: an explicit request timeout
+also becomes a whole benchmark-phase guard and can prematurely cap a long
+store, recall, or reset phase. Keep the independent 600-second drain timeout
+for queued internal work.
+
+Keep both the atomic ledger and stored results outside the checkout: results
+may contain questions, answers, and recalled context. The restrictive `umask`
+and explicit directory modes above protect new files; after the ledger is
+created, enforce `chmod 600 "$REMNIC_BENCH_CODEX_CREDIT_LEDGER"`. Preserve the
+exact run ID printed by the CLI, or recover it from only this store with
+`remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`. Use that ID
+for export and promotion rather than selecting an ambiguous latest result.
 
 To build a publishable artifact from a finished run's stored result, see
 `scripts/bench/build-artifact-from-result.ts` (bridges `BenchmarkResult` →
@@ -346,15 +370,20 @@ Before trusting a Tier L judge for regression, run:
 
 ```bash
 remnic bench judge-calibrate --benchmark locomo \
-  --local-lab-manifest packages/bench/profiles/local-lab-3090.json \
+  --local-lab-manifest docs/benchmarks/configs/local-lab-3090.json \
   --judge-provider anthropic --judge-model <frontier-judge-id>
 ```
 
-This scores a fixed 50-question calibration slice with both the local
-and frontier judges and reports **Cohen's kappa**. The kappa is
-persisted (`~/.remnic/bench/calibration/`) and lands in subsequent
-Tier L artifacts as
-`judgeCalibration: { kappa, sampleSize, threshold, warning }`.
+This scores a deterministic, pinned 200-question calibration slice with both
+the local and frontier judges (or every available question when fewer than
+200 exist) and reports **Cohen's kappa** with a deterministic paired-bootstrap
+95% confidence interval. The exact stored-result source, ordered question IDs,
+and answer-set hash are pinned so later calibration runs cannot silently switch
+answer payloads. The kappa and provenance are persisted
+(`~/.remnic/bench/calibration/`) and land in subsequent Tier L artifacts as
+`judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,
+`confidenceInterval`, `bootstrapSamples`, `sourceResultId`, `answerSetHash`,
+and `sliceQuestionIds`.
 A kappa below **0.7** renders a loud "local judge unreliable for this
 benchmark" warning in the report and on the artifact. The calibration
 slice is question-ids-only — no dataset content is committed (per the

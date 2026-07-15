@@ -138,6 +138,8 @@ export interface ResolvedBenchRuntimeProfile {
 
 const REDACTED_CONFIG_VALUE = "[redacted]";
 const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
+const DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS = 180_000;
+const DEFAULT_CODEX_CLI_DRAIN_TIMEOUT_MS = 600_000;
 let codexCliFallbackRegistered = false;
 let codexCliFallbackChain: Promise<void> = Promise.resolve();
 
@@ -199,8 +201,17 @@ export async function resolveBenchRuntimeProfile(
   );
   const lcmObserveConcurrencyOverrides =
     buildLcmObserveConcurrencyOverrides(options.lcmObserveConcurrency);
+  const usesImplicitCodexRequestTimeout =
+    options.requestTimeout === undefined &&
+    [systemProvider, judgeProvider, internalProvider].some(
+      (config) => config?.provider === "codex-cli",
+    );
   const drainTimeoutMs = normalizeDrainTimeoutMs(
-    options.drainTimeout ?? options.requestTimeout,
+    options.drainTimeout ??
+      options.requestTimeout ??
+      (usesImplicitCodexRequestTimeout
+        ? DEFAULT_CODEX_CLI_DRAIN_TIMEOUT_MS
+        : undefined),
   );
   registerCodexCliFallbackRunnerIfNeeded(internalProvider);
   const responderFactoryConfig = systemProvider
@@ -508,6 +519,17 @@ function resolveProviderConfig(
     );
   }
 
+  // A Codex CLI completion is a subprocess-backed model turn, including for
+  // Remnic's fast gateway tier. Without a provider timeout, that tier inherits
+  // core's intentional 15-second local-fast default, which is too short for a
+  // normal Codex turn and can terminate it after dispatch. Keep this default
+  // benchmark-specific and transport-only so core's host-agnostic fast-tier
+  // contract and the harness's store/recall/reset phase guards are unchanged.
+  const providerRequestTimeoutMs =
+    requestTimeout === undefined && provider === "codex-cli"
+      ? DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS
+      : undefined;
+
   return {
     provider,
     model: resolvedModel!.trim(),
@@ -522,6 +544,7 @@ function resolveProviderConfig(
           ...(max429WaitMs != null ? { max429WaitMs } : {}),
         } }
       : {}),
+    ...(providerRequestTimeoutMs !== undefined ? { providerRequestTimeoutMs } : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
     ...(provider === "codex-cli" ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
     ...(responderContextBudgetChars !== undefined
@@ -600,14 +623,17 @@ function buildInternalRemnicConfigOverrides(
     };
   }
 
+  const providerTimeoutMs =
+    config.retryOptions?.timeoutMs ?? config.providerRequestTimeoutMs;
+
   return {
     ...thinkingOverrides,
     modelSource: "gateway",
     localLlmEnabled: false,
-    ...(config.retryOptions?.timeoutMs
+    ...(providerTimeoutMs
       ? {
-          localLlmTimeoutMs: config.retryOptions.timeoutMs,
-          localLlmFastTimeoutMs: config.retryOptions.timeoutMs,
+          localLlmTimeoutMs: providerTimeoutMs,
+          localLlmFastTimeoutMs: providerTimeoutMs,
         }
       : {}),
     gatewayConfig: buildInternalGatewayConfig(config, options),
@@ -622,7 +648,8 @@ function buildInternalGatewayConfig(
 ): GatewayConfig {
   const providerId = INTERNAL_GATEWAY_AGENT_ID;
   const modelRef = `${providerId}/${config.model}`;
-  const timeoutMs = config.retryOptions?.timeoutMs;
+  const timeoutMs =
+    config.retryOptions?.timeoutMs ?? config.providerRequestTimeoutMs;
 
   return {
     agents: {
@@ -888,12 +915,22 @@ export function createAssistantAgentFromResponder(
 }
 
 function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig {
+  const retryOptions =
+    config.retryOptions || config.providerRequestTimeoutMs !== undefined
+      ? {
+          ...config.retryOptions,
+          ...(config.retryOptions?.timeoutMs === undefined &&
+          config.providerRequestTimeoutMs !== undefined
+            ? { timeoutMs: config.providerRequestTimeoutMs }
+            : {}),
+        }
+      : undefined;
   return {
     provider: config.provider,
     model: config.model,
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
     ...(config.apiKey ? { apiKey: config.apiKey } : {}),
-    ...(config.retryOptions ? { retryOptions: config.retryOptions } : {}),
+    ...(retryOptions ? { retryOptions } : {}),
     ...(config.disableThinking ? { disableThinking: config.disableThinking } : {}),
     ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
     ...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
@@ -909,6 +946,10 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
       : {}),
   } as ProviderFactoryConfig;
 }
+
+export const __runtimeProfilesTestHooks = {
+  asProviderFactoryConfig,
+};
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0

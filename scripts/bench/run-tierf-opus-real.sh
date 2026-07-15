@@ -29,6 +29,7 @@ REMNIC_CONFIG="docs/benchmarks/configs/tierf-real-remnic-config.json"
 # CLI flag does not).
 JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
 SEED=1
+CALIBRATION_SAMPLE_SIZE=200
 
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 
@@ -54,11 +55,22 @@ assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: 
 assert d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\"
 assert d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\"
 assert isinstance(d.get('kappa'), (int, float)), f\"kappa: {d.get('kappa')}\"
-assert isinstance(d.get('sampleSize'), int), f\"sampleSize: {d.get('sampleSize')}\"
+expected_sample_size = int(sys.argv[2])
+assert d.get('sampleSize') == expected_sample_size, f\"sampleSize: {d.get('sampleSize')} (expected {expected_sample_size})\"
 assert isinstance(d.get('threshold'), (int, float)), f\"threshold: {d.get('threshold')}\"
 assert isinstance(d.get('warning'), bool), f\"warning: {d.get('warning')}\"
-" "$file" 2>/dev/null; then
-    echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, or scoped to a different judge pair - run the baseline pass first." >&2
+assert isinstance(d.get('sourceResultId'), str) and d['sourceResultId'], 'missing sourceResultId'
+answer_hash = d.get('answerSetHash')
+assert isinstance(answer_hash, str) and len(answer_hash) == 64 and all(c in '0123456789abcdef' for c in answer_hash), 'missing or invalid answerSetHash'
+assert isinstance(d.get('sliceQuestionIds'), list), 'missing sliceQuestionIds'
+assert len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: {len(d['sliceQuestionIds'])}\"
+assert len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates'
+ci = d.get('confidenceInterval')
+assert isinstance(ci, dict), 'missing confidenceInterval'
+assert all(isinstance(ci.get(k), (int, float)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\"
+assert isinstance(d.get('bootstrapSamples'), int) and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\"
+" "$file" "$CALIBRATION_SAMPLE_SIZE" 2>/dev/null; then
+    echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, unpinned, below the ${CALIBRATION_SAMPLE_SIZE}-question contract, or scoped to a different judge pair - rerun judge-calibrate against the pinned answer source." >&2
     exit 3
   fi
 }

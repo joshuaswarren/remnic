@@ -193,13 +193,21 @@ also use `--trial-limit`. These flags do not cap credits. The provider has
 separate credit guards. Set them, then choose the task cap from the ledger:
 
 ```bash
+BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
+umask 077
+mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
-export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 
 # Replace <LEDGER_DERIVED_LIMIT> after a smoke turn establishes actual cost.
 remnic bench run longmemeval --runtime-profile real \
   --limit <LEDGER_DERIVED_LIMIT> \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -210,8 +218,18 @@ remnic bench run longmemeval --runtime-profile real \
 
 The placeholder is on purpose. There is no honest fixed task count until we
 measure this prompt and test mix. Keep the ledger private because it can hold
-local run data. Publish only the safe cost and token totals from the result and
-manifest.
+local run data. The external results directory can also contain questions,
+answers, and recalled context, so keep it private too. After each run, preserve
+the exact ID printed by the CLI; recover it without scanning another results
+store with
+`remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`. Confirm the
+ledger is mode `0600` with
+`chmod 600 "$REMNIC_BENCH_CODEX_CREDIT_LEDGER"` after it is first created.
+Publish only the safe cost and token totals from the result and manifest.
+Codex CLI gets a benchmark-owned 180-second transport timeout automatically;
+do not add `--request-timeout` here because that explicit flag also enables a
+whole-phase benchmark guard. The separate drain timeout stays explicit so
+queued internal work can finish after the last scored task.
 
 ## How to test it in five minutes
 
