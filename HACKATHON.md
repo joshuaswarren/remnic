@@ -193,7 +193,7 @@ also use `--trial-limit`. These flags do not cap credits. The provider has
 separate credit guards. Set them, then choose the task cap from the ledger:
 
 ```bash
-BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
 export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
 umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
@@ -206,6 +206,7 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledge
 # Replace <LEDGER_DERIVED_LIMIT> after a smoke turn establishes actual cost.
 remnic bench run longmemeval --runtime-profile real \
   --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \

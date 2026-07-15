@@ -658,7 +658,7 @@ normal service, not fast mode. Configure the provider's guard before the first
 turn:
 
 ```bash
-BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
 export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
 umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
@@ -693,8 +693,10 @@ bound conservatively. If exact terminal usage is missing, the ledger blocks
 further dispatch until manual account reconciliation:
 
 ```bash
-remnic bench run --quick longmemeval \
+remnic bench run longmemeval \
   --runtime-profile real \
+  --limit 1 \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -706,6 +708,7 @@ remnic bench run --quick longmemeval \
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -734,6 +737,12 @@ flag is omitted. Do not add `--request-timeout` to these commands: an explicit
 value also becomes a whole-phase benchmark guard, which can cut off long
 store/recall/reset phases. The 600-second drain timeout is deliberately
 separate and remains explicit.
+
+Both commands select the staged, gitignored LongMemEval directory explicitly.
+The measured probe uses full mode with `--limit 1`, so a missing or unreadable
+dataset fails before provider dispatch instead of falling back to the bundled
+quick fixture. The larger bounded command uses the same source. Neither command
+can silently auto-select the CLI-managed dataset store.
 
 ---
 

@@ -85,6 +85,117 @@ const SKIPPED_DIR_NAMES = new Set([
   "target",
 ]);
 
+// Build Week's credit-backed commands must use the operator-staged datasets.
+// Without an explicit override, full runs may auto-select the CLI-managed
+// dataset store. Quick mode is unsafe even with an override because an absent
+// or unreadable staged path falls back to a bundled fixture. Either source
+// silently changes the measured workload and invalidates the run receipt.
+const BUILD_WEEK_CODEX_DOCS = Object.freeze([
+  { path: "HACKATHON.md", expectedCommands: 1 },
+  { path: "packages/bench/README.md", expectedCommands: 2 },
+  { path: "docs/benchmarks.md", expectedCommands: 2 },
+  { path: "docs/paper/repro-appendix.md", expectedCommands: 2 },
+]);
+
+const BENCH_RUN_BOOLEAN_FLAGS = new Set([
+  "--mcp-demo",
+  "--quick",
+  "--all",
+  "--json",
+  "--internal-disable-thinking",
+  "--disable-thinking",
+  "--no-judge-cache",
+  "--resume",
+  "--retry-failed",
+  "--help",
+  "-h",
+]);
+
+const BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS = new Set(["--json"]);
+
+const BUILD_WEEK_ALLOWED_RUN_VALUE_FLAGS = new Set([
+  "--runtime-profile",
+  "--limit",
+  "--trial-limit",
+  "--dataset-dir",
+  "--results-dir",
+  "--drain-timeout",
+  "--system-provider",
+  "--system-model",
+  "--system-codex-reasoning-effort",
+  "--internal-provider",
+  "--internal-model",
+  "--internal-codex-reasoning-effort",
+  "--judge-provider",
+  "--judge-model",
+  "--judge-codex-reasoning-effort",
+]);
+
+const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
+  ...BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS,
+  ...BUILD_WEEK_ALLOWED_RUN_VALUE_FLAGS,
+]);
+
+const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473(?:[ \t]+#.*)?[ \t]*$/,
+  },
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_RESERVE=473(?:[ \t]+#.*)?[ \t]*$/,
+  },
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+    expected:
+      'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    valid:
+      /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"(?:[ \t]+#.*)?[ \t]*$/,
+  },
+]);
+const BUILD_WEEK_RUN_ROOT_ENV_CONTRACT = Object.freeze({
+  name: "BUILD_WEEK_RUN_ROOT",
+  expected: 'export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"',
+  valid:
+    /^\s*export\s+BUILD_WEEK_RUN_ROOT="\$HOME\/\.remnic\/bench\/build-week-2026"(?:[ \t]+#.*)?[ \t]*$/,
+});
+const BUILD_WEEK_RESULTS_ENV_CONTRACT = Object.freeze({
+  name: "BUILD_WEEK_RESULTS_DIR",
+  expected: 'export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"',
+  valid:
+    /^\s*export\s+BUILD_WEEK_RESULTS_DIR="\$BUILD_WEEK_RUN_ROOT\/results"(?:[ \t]+#.*)?[ \t]*$/,
+});
+const BUILD_WEEK_PAID_ENV_CONTRACTS = Object.freeze([
+  BUILD_WEEK_RUN_ROOT_ENV_CONTRACT,
+  ...BUILD_WEEK_CREDIT_ENV_CONTRACTS,
+  BUILD_WEEK_RESULTS_ENV_CONTRACT,
+]);
+const BUILD_WEEK_ROOT_DEPENDENT_ENV_NAMES = new Set([
+  "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+  "BUILD_WEEK_RESULTS_DIR",
+]);
+const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
+
+function containsShellCreditProtocolName(line, name) {
+  // Shell offers too many mutation forms to enumerate safely (`+=`, arrays,
+  // declarations, multi-name builtins, arithmetic, `printf -v`, namerefs,
+  // and command lists). Paid-run fences therefore fail closed: the exact
+  // valid export is allowlisted below, while any other executable reference
+  // to a protected name becomes an invalid later protocol mutation.
+  return new RegExp(`\\b${name}\\b`).test(line);
+}
+
+function containsShellPathVariableMutation(line, contract) {
+  // Ordinary reads such as `--results-dir "$BUILD_WEEK_RESULTS_DIR"` and the
+  // dependent `$BUILD_WEEK_RUN_ROOT` expansions must not invalidate an export.
+  // A bare variable name covers direct shell mutation forms (assignment,
+  // export/unset, declarations, arrays, arithmetic, and `printf -v`) and
+  // therefore fails closed unless it is the exact allowlisted export.
+  return new RegExp(`(?<![\\$\\{])\\b${contract.name}\\b`).test(line);
+}
+
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in
 // prose, tables, or list items. Inline code in this repo references
@@ -304,6 +415,366 @@ function extractRemnicInvocations(relPath, src) {
     }
   }
   return out;
+}
+
+/**
+ * Normalize shell-like fenced blocks into logical commands by joining lines
+ * ending in a backslash. This is intentionally small: the Build Week commands
+ * are ordinary multiline shell invocations, not arbitrary shell programs.
+ *
+ * @param {string} src
+ * @returns {Array<{ command: string; commandStartLine: number; blockHasCreditProtocolMutation: boolean }>}
+ */
+function extractLogicalShellCommands(src) {
+  const commands = [];
+  for (const block of extractFencedBlocks(src)) {
+    if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
+    const lines = block.text.split("\n");
+    const blockHasCreditProtocolMutation = lines.some(
+      (line) =>
+        !/^\s*#/.test(line) &&
+        BUILD_WEEK_CREDIT_ENV_CONTRACTS.some(({ name }) => containsShellCreditProtocolName(line, name)),
+    );
+    let logicalParts = [];
+    let logicalStartIndex = 0;
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      if (logicalParts.length === 0) logicalStartIndex = index;
+      const continues = /\\\s*$/.test(line);
+      logicalParts.push(line.replace(/\\\s*$/, ""));
+      if (continues && index + 1 < lines.length) continue;
+      const command = logicalParts.join(" ").trim();
+      if (command.length > 0 && !command.startsWith("#")) {
+        commands.push({
+          command,
+          commandStartLine: block.startLine + 1 + logicalStartIndex,
+          blockHasCreditProtocolMutation,
+        });
+      }
+      logicalParts = [];
+    }
+  }
+  return commands;
+}
+
+/**
+ * Return document-ordered shell mutations of paid-run environment contracts.
+ * The last mutation before a command determines whether its child process is
+ * guarded and writes to the private result store. Prose and non-shell fences
+ * never affect executable environment state.
+ *
+ * @param {string} src
+ * @returns {Array<{ name: string; line: number; valid: boolean }>}
+ */
+function extractShellPaidRunEnvMutations(src) {
+  const mutations = [];
+  for (const block of extractFencedBlocks(src)) {
+    if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
+    for (const [index, line] of block.text.split("\n").entries()) {
+      if (/^\s*#/.test(line)) continue;
+      for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
+        const isPathContract =
+          contract === BUILD_WEEK_RUN_ROOT_ENV_CONTRACT ||
+          contract === BUILD_WEEK_RESULTS_ENV_CONTRACT;
+        const isMutation = isPathContract
+          ? containsShellPathVariableMutation(line, contract)
+          : containsShellCreditProtocolName(line, contract.name);
+        if (!isMutation) continue;
+        mutations.push({
+          name: contract.name,
+          line: block.startLine + 1 + index,
+          valid: contract.valid.test(line),
+        });
+      }
+    }
+  }
+  return mutations;
+}
+
+/**
+ * Read every positional benchmark after `remnic bench run`, skipping options
+ * and their values. This intentionally tokenizes only the simple documented
+ * shell commands handled by extractLogicalShellCommands.
+ *
+ * @param {string} command
+ * @returns {string[] | undefined}
+ */
+function extractRunBenchmarks(command) {
+  const tokens = command.trim().split(/\s+/);
+  const remnicAt = tokens.indexOf("remnic");
+  if (remnicAt < 0 || tokens[remnicAt + 1] !== "bench" || tokens[remnicAt + 2] !== "run") {
+    return undefined;
+  }
+  const benchmarks = [];
+  for (let i = remnicAt + 3; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (BENCH_RUN_BOOLEAN_FLAGS.has(token)) continue;
+    if (token.startsWith("-")) {
+      const next = tokens[i + 1];
+      if (!token.includes("=") && next && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    benchmarks.push(token);
+  }
+  return benchmarks;
+}
+
+/**
+ * Read a simple, space-separated option value from a documented command.
+ * Missing values and another flag in value position both return undefined.
+ *
+ * @param {string} command
+ * @param {string} flag
+ * @returns {string | undefined}
+ */
+function extractShellOptionValue(command, flag) {
+  const tokens = command.trim().split(/\s+/);
+  const at = tokens.indexOf(flag);
+  if (at < 0) return undefined;
+  const value = tokens[at + 1];
+  if (!value || (value.startsWith("-") && !/^-\d/.test(value))) return undefined;
+  return value;
+}
+
+/**
+ * Enforce the staged-dataset contract for every documented Codex CLI
+ * LongMemEval/LoCoMo benchmark command.
+ *
+ * @returns {{ failures: string[]; checked: number }}
+ */
+function checkBuildWeekCodexDatasetPaths() {
+  const failures = [];
+  let checked = 0;
+  const completeProtocolDocSet = BUILD_WEEK_CODEX_DOCS.every(({ path: rel }) =>
+    existsSync(path.join(ROOT, ...rel.split("/"))),
+  );
+  for (const { path: rel, expectedCommands } of BUILD_WEEK_CODEX_DOCS) {
+    const abs = path.join(ROOT, ...rel.split("/"));
+    if (!existsSync(abs)) continue;
+    const src = readFileSync(abs, "utf8");
+    const paidRunEnvMutations = extractShellPaidRunEnvMutations(src);
+    let checkedInDoc = 0;
+    for (const { command, commandStartLine, blockHasCreditProtocolMutation } of extractLogicalShellCommands(src)) {
+      if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
+      const usesCodexCli = /\bcodex-cli\b/.test(command);
+      if (!blockHasCreditProtocolMutation && !usesCodexCli) continue;
+      const commandTokens = command.trim().split(/\s+/);
+      if (
+        commandTokens[0] !== "remnic" ||
+        commandTokens[1] !== "bench" ||
+        commandTokens[2] !== "run"
+      ) {
+        failures.push(
+          `${rel}: Build Week Codex benchmark must execute directly as \`remnic bench run\` ` +
+            "with no shell wrapper or command prefix",
+        );
+        continue;
+      }
+      const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
+      const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
+      checked += 1;
+      checkedInDoc += 1;
+      const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
+      const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
+      const lastEnvMutations = new Map(
+        BUILD_WEEK_PAID_ENV_CONTRACTS.map((contract) => [
+          contract.name,
+          paidRunEnvMutations.findLast(
+            ({ name, line }) => name === contract.name && line < commandStartLine,
+          ),
+        ]),
+      );
+      const lastRunRootMutation = lastEnvMutations.get(BUILD_WEEK_RUN_ROOT_ENV_CONTRACT.name);
+      for (const contract of BUILD_WEEK_PAID_ENV_CONTRACTS) {
+        const lastMutation = lastEnvMutations.get(contract.name);
+        const dependsOnRunRoot = BUILD_WEEK_ROOT_DEPENDENT_ENV_NAMES.has(contract.name);
+        const followsCurrentRunRoot =
+          !dependsOnRunRoot ||
+          (lastRunRootMutation?.valid === true &&
+            lastMutation !== undefined &&
+            lastMutation.line > lastRunRootMutation.line);
+        if (
+          !lastMutation?.valid ||
+          !followsCurrentRunRoot ||
+          commandPrefix.includes(contract.name)
+        ) {
+          failures.push(
+            `${rel}: Build Week Codex command must follow an exact shell export of ` +
+              `\`${contract.expected}\`` +
+              (dependsOnRunRoot
+                ? ` after \`${BUILD_WEEK_RUN_ROOT_ENV_CONTRACT.expected}\``
+                : ""),
+          );
+        }
+      }
+      const remnicAt = commandTokens.indexOf("remnic");
+      const runOptionTokens = commandTokens.slice(remnicAt + 3);
+      const optionCounts = new Map();
+      for (let optionIndex = 0; optionIndex < runOptionTokens.length; optionIndex += 1) {
+        const token = runOptionTokens[optionIndex];
+        if (!token.startsWith("-")) continue;
+        if (!BUILD_WEEK_ALLOWED_RUN_FLAGS.has(token)) {
+          failures.push(
+            token.includes("=")
+              ? `${rel}: Build Week Codex command must use separate option/value tokens; ` +
+                `equals-form option \`${token}\` is not supported by the bench CLI`
+              : `${rel}: Build Week Codex command must not include unpinned run option \`${token}\``,
+          );
+          continue;
+        }
+        const count = (optionCounts.get(token) ?? 0) + 1;
+        optionCounts.set(token, count);
+        if (count > 1) {
+          failures.push(
+            `${rel}: Build Week Codex command must include option \`${token}\` at most once`,
+          );
+        }
+        if (BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS.has(token)) continue;
+        const value = runOptionTokens[optionIndex + 1];
+        if (!value || value.startsWith("-")) {
+          failures.push(
+            `${rel}: Build Week Codex command option \`${token}\` requires a separate non-option value`,
+          );
+          continue;
+        }
+        optionIndex += 1;
+      }
+      for (const selector of ["--all", "--custom", "--matrix"]) {
+        if (commandTokens.some((token) => token === selector || token.startsWith(`${selector}=`))) {
+          failures.push(
+            `${rel}: Build Week Codex command must not include \`${selector}\`; ` +
+              "run exactly one pinned benchmark and runtime profile",
+          );
+        }
+      }
+      if (
+        positionalBenchmarks.length !== 1 ||
+        (positionalBenchmarks[0] !== "longmemeval" && positionalBenchmarks[0] !== "locomo")
+      ) {
+        failures.push(
+          `${rel}: Build Week Codex command must include exactly one positional benchmark, ` +
+            `\`longmemeval\` or \`locomo\`, after \`remnic bench run\``,
+        );
+        continue;
+      }
+      const benchmark = positionalBenchmarks[0];
+      const expected = `./bench-datasets/${benchmark}`;
+      if (datasetFlag !== expected) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must include ` +
+            `\`--dataset-dir ${expected}\`; got ${datasetFlag ?? "no --dataset-dir"}`,
+        );
+      }
+      if (command.includes("evals/datasets")) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not use the CLI-managed evals/datasets store`,
+        );
+      }
+      if (commandTokens.includes("--quick")) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not use \`--quick\`; ` +
+            "use full mode with an explicit item bound so a bad staged path fails before provider dispatch",
+        );
+      }
+      const requiredProtocolOptions = new Map([
+        ["--runtime-profile", "real"],
+        ["--results-dir", '"$BUILD_WEEK_RESULTS_DIR"'],
+        ["--drain-timeout", "600000"],
+        ["--system-provider", "codex-cli"],
+        ["--system-model", "gpt-5.6-luna"],
+        ["--system-codex-reasoning-effort", "medium"],
+        ["--internal-provider", "codex-cli"],
+        ["--internal-model", "gpt-5.6-luna"],
+        ["--internal-codex-reasoning-effort", "medium"],
+        ["--judge-provider", "codex-cli"],
+        ["--judge-model", "gpt-5.6-terra"],
+        ["--judge-codex-reasoning-effort", "high"],
+      ]);
+      for (const [flag, requiredValue] of requiredProtocolOptions) {
+        const actualValue = extractShellOptionValue(command, flag);
+        if (actualValue !== requiredValue) {
+          failures.push(
+            `${rel}: Build Week Codex ${benchmark} command must include ` +
+              `\`${flag} ${requiredValue}\`; got ${actualValue ?? `no ${flag}`}`,
+          );
+        }
+      }
+      if (commandTokens.some((token) => token === "--request-timeout" || token.startsWith("--request-timeout="))) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not include \`--request-timeout\`; ` +
+            "the Codex transport profile owns that timeout",
+        );
+      }
+      if (command.includes("gpt-5.6-sol")) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not use \`gpt-5.6-sol\``,
+        );
+      }
+      const allBoundFlags = ["--limit", "--trial-limit"];
+      const supportedBoundFlags =
+        benchmark === "longmemeval" ? ["--limit"] : allBoundFlags;
+      const unsupportedBoundFlags = allBoundFlags.filter(
+        (flag) =>
+          !supportedBoundFlags.includes(flag) &&
+          commandTokens.some((token) => token === flag || token.startsWith(`${flag}=`)),
+      );
+      for (const flag of unsupportedBoundFlags) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not include \`${flag}\`; ` +
+            "the benchmark CLI does not support that bound",
+        );
+      }
+      const presentBoundFlags = supportedBoundFlags.filter((flag) =>
+        commandTokens.some((token) => token === flag || token.startsWith(`${flag}=`)),
+      );
+      if (presentBoundFlags.length === 0) {
+        failures.push(
+          benchmark === "longmemeval"
+            ? `${rel}: Build Week Codex longmemeval command must include an explicit \`--limit\``
+            : `${rel}: Build Week Codex locomo command must include an explicit \`--limit\` or \`--trial-limit\``,
+        );
+      }
+      for (const flag of presentBoundFlags) {
+        const value = extractShellOptionValue(command, flag);
+        if (value === undefined) {
+          failures.push(`${rel}: Build Week Codex ${benchmark} command has no value for \`${flag}\``);
+          continue;
+        }
+        if (!/^(?:[1-9]\d*|<LEDGER_DERIVED_LIMIT>)$/.test(value)) {
+          failures.push(
+            `${rel}: Build Week Codex ${benchmark} ${flag} must be a positive integer or \`<LEDGER_DERIVED_LIMIT>\`; got ${value}`,
+          );
+        }
+      }
+      if (expectedCommands === 1 || expectedCommands === 2) {
+        const requiredLimit =
+          expectedCommands === 1 || checkedInDoc === 2 ? "<LEDGER_DERIVED_LIMIT>" : "1";
+        const roleBounds = presentBoundFlags.map((flag) => ({
+          flag,
+          value: extractShellOptionValue(command, flag),
+        }));
+        if (roleBounds.length !== 1 || roleBounds[0].value !== requiredLimit) {
+          const acceptedFlags = supportedBoundFlags.map((flag) => `\`${flag} ${requiredLimit}\``);
+          const actualBounds = roleBounds.map(({ flag, value }) => `${flag} ${value ?? "<missing>"}`);
+          failures.push(
+            `${rel}: Build Week Codex command ${checkedInDoc} of ${expectedCommands} must include exactly one of ` +
+              `${acceptedFlags.join(" or ")}; got ${actualBounds.join(", ") || "no supported bound"}`,
+          );
+        }
+      }
+    }
+    if (checkedInDoc === 0) {
+      failures.push(
+        `${rel}: must contain at least one guarded Build Week Codex benchmark command`,
+      );
+    } else if (completeProtocolDocSet && checkedInDoc !== expectedCommands) {
+      failures.push(
+        `${rel}: expected ${expectedCommands} guarded Build Week Codex benchmark command(s); ` +
+          `found ${checkedInDoc}`,
+      );
+    }
+  }
+  return { failures, checked };
 }
 
 // ── Registered-command discovery (TODO: replace with #1532 registrar) ─────
@@ -750,6 +1221,11 @@ function main() {
     );
   }
 
+  // (d) Build Week staged-dataset pinning. This gate is static and makes no
+  // provider, model, network, or dataset call.
+  const buildWeekDatasets = checkBuildWeekCodexDatasetPaths();
+  failures.push(...buildWeekDatasets.failures);
+
   // (c) No-op allowlist. Detect no-op handlers in the CLI, then require every
   // detected no-op to be in NO_OP_ALLOWLIST with a non-empty tracking issue.
   const detectedNoOps = detectNoOpHandlers(CLI_FILES);
@@ -801,7 +1277,8 @@ function main() {
   console.log(
     `[docs-parity] OK — ${docCommands.length} documented command(s) resolve; ` +
       `${detectedNoOps.size} no-op(s) tracked; ` +
-      `${[...publishers.values()].filter((p) => p.isStub).length} stub publisher(s) honest.`,
+      `${[...publishers.values()].filter((p) => p.isStub).length} stub publisher(s) honest; ` +
+      `${buildWeekDatasets.checked} Build Week Codex dataset command(s) pinned.`,
   );
   if (docCommands.length > 0) {
     console.log(`[docs-parity]   commands: ${docCommands.join(", ")}`);
