@@ -130,11 +130,32 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
   "--judge-codex-reasoning-effort",
 ]);
 
-const BUILD_WEEK_CREDIT_GUARD_LINE_RE =
-  /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
-const BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE =
-  /^\s*(?:export(?:\s+-n)?\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET(?:\s*=|\s*$)|REMNIC_BENCH_CODEX_CREDIT_BUDGET\s*=|unset(?:\s+-v)?\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET\b)/;
+const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/,
+  },
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    valid: /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_RESERVE=473\s*(?:#.*)?$/,
+  },
+  {
+    name: "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+    expected:
+      'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    valid:
+      /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_LEDGER="\$BUILD_WEEK_RUN_ROOT\/codex-credit-ledger\.json"\s*(?:#.*)?$/,
+  },
+]);
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
+
+function isShellEnvMutation(line, name) {
+  return new RegExp(
+    `^\\s*(?:export(?:\\s+-n)?\\s+${name}(?:\\s*=|\\s*$)|${name}\\s*=|unset(?:\\s+-v)?\\s+${name}\\b)`,
+  ).test(line);
+}
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in
@@ -363,15 +384,17 @@ function extractRemnicInvocations(relPath, src) {
  * are ordinary multiline shell invocations, not arbitrary shell programs.
  *
  * @param {string} src
- * @returns {Array<{ command: string; commandStartLine: number; blockHasCreditBudgetMutation: boolean }>}
+ * @returns {Array<{ command: string; commandStartLine: number; blockHasCreditProtocolMutation: boolean }>}
  */
 function extractLogicalShellCommands(src) {
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
     if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
     const lines = block.text.split("\n");
-    const blockHasCreditBudgetMutation = lines.some(
-      (line) => !/^\s*#/.test(line) && BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(line),
+    const blockHasCreditProtocolMutation = lines.some(
+      (line) =>
+        !/^\s*#/.test(line) &&
+        BUILD_WEEK_CREDIT_ENV_CONTRACTS.some(({ name }) => isShellEnvMutation(line, name)),
     );
     let logicalParts = [];
     let logicalStartIndex = 0;
@@ -386,7 +409,7 @@ function extractLogicalShellCommands(src) {
         commands.push({
           command,
           commandStartLine: block.startLine + 1 + logicalStartIndex,
-          blockHasCreditBudgetMutation,
+          blockHasCreditProtocolMutation,
         });
       }
       logicalParts = [];
@@ -401,17 +424,20 @@ function extractLogicalShellCommands(src) {
  * Prose and non-shell fences never affect executable environment state.
  *
  * @param {string} src
- * @returns {Array<{ line: number; valid: boolean }>}
+ * @returns {Array<{ name: string; line: number; valid: boolean }>}
  */
-function extractShellCreditBudgetMutations(src) {
+function extractShellCreditProtocolMutations(src) {
   const mutations = [];
   for (const block of extractFencedBlocks(src)) {
     if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
     for (const [index, line] of block.text.split("\n").entries()) {
-      if (!/^\s*#/.test(line) && BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(line)) {
+      if (/^\s*#/.test(line)) continue;
+      for (const contract of BUILD_WEEK_CREDIT_ENV_CONTRACTS) {
+        if (!isShellEnvMutation(line, contract.name)) continue;
         mutations.push({
+          name: contract.name,
           line: block.startLine + 1 + index,
-          valid: BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line),
+          valid: contract.valid.test(line),
         });
       }
     }
@@ -480,30 +506,29 @@ function checkBuildWeekCodexDatasetPaths() {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
-    const creditBudgetMutations = extractShellCreditBudgetMutations(src);
+    const creditProtocolMutations = extractShellCreditProtocolMutations(src);
     let checkedInDoc = 0;
-    for (const { command, commandStartLine, blockHasCreditBudgetMutation } of extractLogicalShellCommands(src)) {
+    for (const { command, commandStartLine, blockHasCreditProtocolMutation } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
       const usesCodexCli = /\bcodex-cli\b/.test(command);
-      if (!blockHasCreditBudgetMutation && !usesCodexCli) continue;
+      if (!blockHasCreditProtocolMutation && !usesCodexCli) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
       checkedInDoc += 1;
-      const lastCreditBudgetMutation = creditBudgetMutations.findLast(
-        ({ line }) => line < commandStartLine,
-      );
       const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
       const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
-      const hasSameCommandBudgetMutation = commandPrefix.includes(
-        "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
-      );
-      if (!lastCreditBudgetMutation?.valid || hasSameCommandBudgetMutation) {
-        failures.push(
-          `${rel}: Build Week Codex command must follow a shell export of ` +
-            "`REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`",
+      for (const contract of BUILD_WEEK_CREDIT_ENV_CONTRACTS) {
+        const lastMutation = creditProtocolMutations.findLast(
+          ({ name, line }) => name === contract.name && line < commandStartLine,
         );
+        if (!lastMutation?.valid || commandPrefix.includes(contract.name)) {
+          failures.push(
+            `${rel}: Build Week Codex command must follow an exact shell export of ` +
+              `\`${contract.expected}\``,
+          );
+        }
       }
       const remnicAt = commandTokens.indexOf("remnic");
       const disallowedFlags = [

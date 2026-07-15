@@ -661,6 +661,8 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
         "",
         "```bash",
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         "remnic bench run --json longmemeval --limit 1 \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         "  --runtime-profile real --results-dir \"$BUILD_WEEK_RESULTS_DIR\" --drain-timeout 600000 \\",
@@ -706,7 +708,7 @@ test("an otherwise valid Codex command fails without the credit-budget guard", (
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
@@ -732,7 +734,7 @@ test("a credit-budget guard after the Codex command does not authorize it", () =
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
@@ -758,7 +760,7 @@ test("a commented credit-budget guard does not authorize a Codex command", () =>
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
@@ -784,7 +786,7 @@ test("a non-exported credit-budget assignment does not authorize a Codex command
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
@@ -811,7 +813,7 @@ test("a credit-budget export in prose does not authorize a later shell command",
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
@@ -843,16 +845,31 @@ test("a later credit-budget override or unset invalidates an earlier guard", () 
 
       const result = runParity(root);
       assert.equal(result.status, 1, `${mutation}: ${result.stderr}`);
-      assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+      assert.match(result.stderr, /must follow an exact shell export of `export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
     });
   }
 });
 
-test("a same-command credit-budget mutation before the run invalidates an earlier guard", () => {
-  for (const prefix of [
-    "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
-    "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
-    "env REMNIC_BENCH_CODEX_CREDIT_BUDGET=3000 ",
+test("later reserve and ledger mutations invalidate the paid protocol", () => {
+  for (const { mutation, expected } of [
+    {
+      mutation: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=300",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    },
+    {
+      mutation: "unset REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    },
+    {
+      mutation: 'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="/tmp/other-ledger.json"',
+      expected:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    },
+    {
+      mutation: "unset REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+      expected:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    },
   ]) {
     withFixture((root) => {
       writeFileSync(
@@ -862,6 +879,61 @@ test("a same-command credit-budget mutation before the run invalidates an earlie
           "",
           "```bash",
           "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+          mutation,
+          "remnic bench run longmemeval --limit 1 \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${mutation}: ${result.stderr}`);
+      assert.ok(result.stderr.includes(`exact shell export of \`${expected}\``));
+    });
+  }
+});
+
+test("a same-command credit-budget mutation before the run invalidates an earlier guard", () => {
+  for (const { prefix, expected } of [
+    {
+      prefix: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    },
+    {
+      prefix: "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    },
+    {
+      prefix: "env REMNIC_BENCH_CODEX_CREDIT_BUDGET=3000 ",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    },
+    {
+      prefix: "env REMNIC_BENCH_CODEX_CREDIT_RESERVE=300 ",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    },
+    {
+      prefix: 'env REMNIC_BENCH_CODEX_CREDIT_LEDGER="/tmp/other-ledger.json" ',
+      expected:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    },
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
           `${prefix}remnic bench run longmemeval --limit 1 \\`,
           "  --dataset-dir ./bench-datasets/longmemeval \\",
           '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
@@ -875,7 +947,7 @@ test("a same-command credit-budget mutation before the run invalidates an earlie
 
       const result = runParity(root);
       assert.equal(result.status, 1, `${prefix}: ${result.stderr}`);
-      assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+      assert.ok(result.stderr.includes(`exact shell export of \`${expected}\``));
     });
   }
 });
@@ -890,6 +962,8 @@ test("a comment mentioning bench run before the credit guard does not invalidate
         "```bash",
         "# The remnic bench run command below consumes Codex credits.",
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         "remnic bench run longmemeval --limit 1 \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
@@ -968,6 +1042,8 @@ test("the first command in a two-command paid sequence is exactly a one-item smo
         "",
         "```bash",
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         `remnic bench run longmemeval --limit 100 ${protocol}`,
         `remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
         "```",
@@ -1004,6 +1080,8 @@ test("a two-command LoCoMo sequence accepts the benchmark-supported trial bound"
         "",
         "```bash",
         "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
         `remnic bench run locomo --trial-limit 1 ${protocol}`,
         `remnic bench run locomo --trial-limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
         "```",
