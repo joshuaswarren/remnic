@@ -56,6 +56,10 @@ const EXPLICIT_RECEIVER_LANGUAGES: ReadonlySet<string> = new Set([
   "tsx",
   "javascript",
   "python",
+  // PHP method dispatch requires $this->/self:: — both arrive as
+  // member_call_expression (memberAccess) — so a bare helper() inside a
+  // method never means a sibling method (codex review round 12).
+  "php",
 ]);
 
 /** Confidence for a call resolved to a unique same-file symbol. */
@@ -163,7 +167,10 @@ export function deriveHeuristicEdges(
     // specifiers bind (an external package's names must never resolve to
     // in-repo symbols); the hint travels on the edge so the store resolves
     // the dst ONLY within the declared target file (#1894 review).
-    const importBindings = new Map<string, { exported: string; hint: string }>();
+    const importBindings = new Map<
+      string,
+      { exported: string; hint: string; enclosing: string | undefined }
+    >();
     for (const imp of ir.imports) {
       // Two relative-import spellings bind (cursor review on #1894):
       //  - path style ("./x", "../x") — JS/TS and friends;
@@ -193,14 +200,32 @@ export function deriveHeuristicEdges(
       if (hint.startsWith("../")) continue;
       // Alias-aware (codex review on #1894): call sites use the LOCAL
       // identifier; the dst in the target file is the EXPORTED name.
-      // An empty bindings array falls back to importedNames like an
-      // absent one (cursor review round 9): emitters that populate names
-      // but not bindings must still bind.
+      // Fallback semantics sharpened across rounds 9 and 12: an ABSENT
+      // bindings field means a pre-bindings emitter (or hand-built IR) —
+      // fall back to importedNames as local===exported. An EXPLICIT empty
+      // array is the parser saying "no call-bindable names" (default /
+      // namespace imports whose exported symbol Phase A cannot know) and
+      // must NOT re-bind through the fallback.
       const bindings =
-        imp.bindings && imp.bindings.length > 0
-          ? imp.bindings
-          : imp.importedNames.map((name) => ({ exported: name, local: name }));
-      for (const b of bindings) importBindings.set(b.local, { exported: b.exported, hint });
+        imp.bindings ?? imp.importedNames.map((name) => ({ exported: name, local: name }));
+      // A function-local import binds only within its enclosing symbol
+      // (codex review round 12): find the innermost symbol containing the
+      // import's span; undefined = file level (binds everywhere).
+      let enclosing: { qualifiedName: string; size: number } | undefined;
+      for (const sym of ir.symbols) {
+        if (sym.span.startByte > imp.span.startByte || imp.span.endByte > sym.span.endByte) continue;
+        const size = sym.span.endByte - sym.span.startByte;
+        if (!enclosing || size < enclosing.size) {
+          enclosing = { qualifiedName: sym.qualifiedName, size };
+        }
+      }
+      for (const b of bindings) {
+        importBindings.set(b.local, {
+          exported: b.exported,
+          hint,
+          enclosing: enclosing?.qualifiedName,
+        });
+      }
     }
 
     const edges: EdgeIR[] = [];
@@ -245,9 +270,14 @@ export function deriveHeuristicEdges(
       // Function/method/module ancestors always contribute.
       const excludeClassScopes = EXPLICIT_RECEIVER_LANGUAGES.has(ir.language);
       const scopeLevels: string[] = [src.qualifiedName];
+      // Full ancestor chain (class levels included) — used for
+      // function-local import visibility, which is lexical containment,
+      // not bare-call scoping.
+      const ancestorChain = new Set<string>([src.qualifiedName]);
       let cursor: string | undefined = src.qualifiedName;
       while (cursor !== undefined && cursor !== "") {
         cursor = parentOf.get(cursor) ?? "";
+        if (cursor !== "") ancestorChain.add(cursor);
         if (excludeClassScopes) {
           const kind = cursor === "" ? undefined : kindOf.get(cursor);
           if (kind === "class" || kind === "interface" || kind === "enum") continue;
@@ -282,7 +312,13 @@ export function deriveHeuristicEdges(
           continue;
         }
         const binding = importBindings.get(candidate);
-        if (binding !== undefined) {
+        if (
+          binding !== undefined &&
+          // Function-local imports are visible only inside the symbol that
+          // contains them: the call's ancestor chain must include the
+          // import's enclosing symbol (file-level imports always bind).
+          (binding.enclosing === undefined || ancestorChain.has(binding.enclosing))
+        ) {
           dstQualifiedName = binding.exported;
           dstPathHint = binding.hint;
           confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;

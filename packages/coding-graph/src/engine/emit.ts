@@ -199,6 +199,9 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       let stmtStart = -1;
       let stmtEnd = -1;
       const names: string[] = [];
+      // Default/namespace import locals: informational only, never
+      // call-bindable (issue #1894 round 12).
+      const unboundNames: string[] = [];
       // local -> exported for aliased named imports (issue #1894 review).
       let aliasExported = "";
       let aliasLocal = "";
@@ -208,6 +211,8 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
           moduleText = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "import.name") {
           names.push(cap.node.text);
+        } else if (cap.name === "import.unboundName") {
+          unboundNames.push(cap.node.text);
         } else if (cap.name === "import.aliasExported") {
           aliasExported = cap.node.text;
         } else if (cap.name === "import.aliasLocal") {
@@ -246,6 +251,9 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
         // Non-aliased: local === exported. May be overwritten below when
         // the alias pattern also matched this specifier.
         if (!group.bindings.has(n)) group.bindings.set(n, n);
+      }
+      for (const n of unboundNames) {
+        group.names.add(n);
       }
       if (aliasExported && aliasLocal) {
         group.names.add(aliasExported);

@@ -484,18 +484,28 @@ test("with only a sibling method available, a bare call stays unresolved", () =>
   assert.equal(stats.skippedUnresolved, 1);
 });
 
-test("empty bindings array falls back to importedNames (cursor review round 9)", () => {
-  const ir = fileIR({
+test("absent bindings falls back to importedNames; explicit [] binds nothing (rounds 9 + 12)", () => {
+  const base = {
     path: "util.ts",
     symbols: [
-      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+      { kind: "function" as const, name: "shout", qualifiedName: "shout", span: span(30, 110) },
     ],
-    imports: [{ module: "./main", importedNames: ["greet"], bindings: [], span: span(0, 29) }],
     callSites: [{ calleeNameCandidates: ["greet"], span: span(60, 67) }],
-  });
-  const result = deriveHeuristicEdges([ir]);
-  assert.equal(firstFile(result).edges.length, 1);
-  assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
+  };
+  // Absent field (pre-bindings emitter / hand-built IR) -> fallback binds.
+  const absent = deriveHeuristicEdges([
+    fileIR({ ...base, imports: [{ module: "./main", importedNames: ["greet"], span: span(0, 29) }] }),
+  ]);
+  assert.equal(firstFile(absent).edges.length, 1);
+  // Explicit [] (default/namespace import: exported symbol unknowable) ->
+  // never re-bound through the fallback.
+  const explicit = deriveHeuristicEdges([
+    fileIR({
+      ...base,
+      imports: [{ module: "./main", importedNames: ["greet"], bindings: [], span: span(0, 29) }],
+    }),
+  ]);
+  assert.deepEqual(firstFile(explicit).edges, []);
 });
 
 test("pure parent-package python imports hint the package directory (codex review round 10)", () => {
@@ -541,4 +551,45 @@ test("implicit-this languages bind sibling methods on bare calls (codex review r
     firstFile(result).edges.map((e: EdgeIR) => [e.srcQualifiedName, e.dstQualifiedName]),
     [["C.run", "C.helper"]],
   );
+});
+
+test("php bare calls inside methods never bind sibling methods (codex review round 12)", () => {
+  const ir = fileIR({
+    path: "C.php",
+    language: "php",
+    symbols: [
+      { kind: "class", name: "C", qualifiedName: "C", span: span(0, 200) },
+      { kind: "method", name: "run", qualifiedName: "C.run", span: span(10, 100) },
+      { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
+    ],
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(firstFile(result).edges, []);
+});
+
+test("function-local imports bind only within their enclosing symbol (codex review round 12)", () => {
+  const ir = fileIR({
+    path: "app.py",
+    language: "python",
+    symbols: [
+      { kind: "function", name: "setup", qualifiedName: "setup", span: span(0, 100) },
+      { kind: "function", name: "run", qualifiedName: "run", span: span(110, 200) },
+    ],
+    // from .dep import helper INSIDE setup's span.
+    imports: [{ module: ".dep", importedNames: ["helper"], span: span(10, 40) }],
+    callSites: [
+      // Inside setup: binds.
+      { calleeNameCandidates: ["helper"], span: span(60, 66) },
+      // Inside sibling run: must NOT bind.
+      { calleeNameCandidates: ["helper"], span: span(140, 146) },
+    ],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => e.srcQualifiedName),
+    ["setup"],
+  );
+  assert.equal(stats.skippedUnresolved, 1);
 });

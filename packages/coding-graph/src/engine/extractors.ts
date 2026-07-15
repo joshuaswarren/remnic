@@ -56,11 +56,14 @@ const JS_FAMILY_DEFINITIONS = `
 const JS_IMPORTS = `
 (import_statement
   source: (string (string_fragment) @import.module)) @__import.stmt
+; Default and namespace imports bind LOCAL aliases whose exported symbol
+; is unknowable to Phase A (issue #1894 round 12): they appear in
+; importedNames (informational) but never in bindings (call-bindable).
 (import_statement
-  (import_clause (identifier) @import.name)
+  (import_clause (identifier) @import.unboundName)
   source: (string (string_fragment) @import.module)) @__import.stmt
 (import_statement
-  (import_clause (namespace_import (identifier) @import.name))
+  (import_clause (namespace_import (identifier) @import.unboundName))
   source: (string (string_fragment) @import.module)) @__import.stmt
 (import_statement
   (import_clause (named_imports (import_specifier name: (identifier) @import.name)))
