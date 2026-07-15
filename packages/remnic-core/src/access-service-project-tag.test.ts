@@ -24,10 +24,10 @@ test("projectTag auto-resolution uses the shared project tag canonicalizer", asy
   } as any);
 
   await (service as any).maybeAttachCodingContext("session-a", {
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
   });
 
-  const projectId = projectTagProjectId("Blend/Supply");
+  const projectId = projectTagProjectId("Acme/Webshop");
   assert.deepEqual(contexts.get("session-a"), {
     projectId,
     branch: null,

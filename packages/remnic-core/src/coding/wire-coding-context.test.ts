@@ -39,11 +39,11 @@ test("recall schema accepts projectTag field", () => {
   const result = validateRequest<RecallRequest>("recall", {
     query: "test query",
     sessionKey: "sess-1",
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
   assert.equal(result.success, true);
   if (result.success) {
-    assert.equal(result.data.projectTag, "blend-supply");
+    assert.equal(result.data.projectTag, "acme-webshop");
   }
 });
 
@@ -52,7 +52,7 @@ test("recall schema accepts both cwd and projectTag", () => {
     query: "test query",
     sessionKey: "sess-1",
     cwd: "/home/user/project",
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
   assert.equal(result.success, true);
 });
@@ -89,11 +89,11 @@ test("observe schema accepts projectTag field", () => {
   const result = validateRequest<ObserveRequest>("observe", {
     sessionKey: "sess-1",
     messages: [{ role: "user", content: "hello" }],
-    projectTag: "worthington-direct",
+    projectTag: "globex-storefront",
   });
   assert.equal(result.success, true);
   if (result.success) {
-    assert.equal(result.data.projectTag, "worthington-direct");
+    assert.equal(result.data.projectTag, "globex-storefront");
   }
 });
 
@@ -185,13 +185,13 @@ test("set_coding_context with projectTag creates tag-based context", async () =>
   const { mcp, calls } = makeMcp();
   const result = await call(mcp, "engram.set_coding_context", {
     sessionKey: "session-A",
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
   assert.deepEqual(result, { ok: true });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.ctx?.projectId, "tag:blend-supply");
+  assert.equal(calls[0]!.ctx?.projectId, "tag:acme-webshop");
   assert.equal(calls[0]!.ctx?.branch, null);
-  assert.equal(calls[0]!.ctx?.rootPath, "tag:blend-supply");
+  assert.equal(calls[0]!.ctx?.rootPath, "tag:acme-webshop");
   assert.equal(calls[0]!.ctx?.defaultBranch, null);
 });
 
@@ -199,16 +199,16 @@ test("set_coding_context with projectTag disambiguates lossy tags", async () => 
   const { mcp, calls } = makeMcp();
   await call(mcp, "engram.set_coding_context", {
     sessionKey: "session-A",
-    projectTag: "blend/supply",
+    projectTag: "acme/webshop",
   });
   await call(mcp, "engram.set_coding_context", {
     sessionKey: "session-B",
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
 
   assert.notEqual(calls[0]!.ctx?.projectId, calls[1]!.ctx?.projectId);
-  assert.match(calls[0]!.ctx?.projectId ?? "", /^tag:blend-supply-[0-9a-f]{8}$/);
-  assert.equal(calls[1]!.ctx?.projectId, "tag:blend-supply");
+  assert.match(calls[0]!.ctx?.projectId ?? "", /^tag:acme-webshop-[0-9a-f]{8}$/);
+  assert.equal(calls[1]!.ctx?.projectId, "tag:acme-webshop");
 });
 
 test("set_coding_context with codingContext takes precedence over projectTag", async () => {
@@ -221,7 +221,7 @@ test("set_coding_context with codingContext takes precedence over projectTag", a
       rootPath: "/work/proj",
       defaultBranch: "main",
     },
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.ctx?.projectId, "origin:abcd1234");
@@ -242,7 +242,7 @@ test("set_coding_context with codingContext=null clears (even with projectTag pr
   await call(mcp, "engram.set_coding_context", {
     sessionKey: "session-A",
     codingContext: null,
-    projectTag: "blend-supply",
+    projectTag: "acme-webshop",
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.ctx, null);
@@ -252,11 +252,11 @@ test("set_coding_context projectTag via canonical alias remnic.*", async () => {
   const { mcp, calls } = makeMcp();
   const result = await call(mcp, "remnic.set_coding_context", {
     sessionKey: "session-B",
-    projectTag: "worthington-direct",
+    projectTag: "globex-storefront",
   });
   assert.deepEqual(result, { ok: true });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.ctx?.projectId, "tag:worthington-direct");
+  assert.equal(calls[0]!.ctx?.projectId, "tag:globex-storefront");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -321,10 +321,10 @@ test("maybeAttachCodingContext: projectTag attaches tag-based context", async ()
     ): Promise<void>;
   }).maybeAttachCodingContext.bind(service);
 
-  await maybeAttach("session-X", { projectTag: "blend-supply" });
+  await maybeAttach("session-X", { projectTag: "acme-webshop" });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.ctx?.projectId, "tag:blend-supply");
-  assert.equal(calls[0]!.ctx?.rootPath, "tag:blend-supply");
+  assert.equal(calls[0]!.ctx?.projectId, "tag:acme-webshop");
+  assert.equal(calls[0]!.ctx?.rootPath, "tag:acme-webshop");
 });
 
 test("maybeAttachCodingContext: skips when session already has context", async () => {
@@ -351,7 +351,7 @@ test("maybeAttachCodingContext: skips when session already has context", async (
     ): Promise<void>;
   }).maybeAttachCodingContext.bind(service);
 
-  await maybeAttach("session-X", { projectTag: "blend-supply" });
+  await maybeAttach("session-X", { projectTag: "acme-webshop" });
   assert.equal(calls.length, 0, "should not overwrite existing context");
 });
 
@@ -379,7 +379,7 @@ test("maybeAttachCodingContext: skips when projectScope disabled", async () => {
     ): Promise<void>;
   }).maybeAttachCodingContext.bind(service);
 
-  await maybeAttach("session-X", { projectTag: "blend-supply" });
+  await maybeAttach("session-X", { projectTag: "acme-webshop" });
   assert.equal(calls.length, 0, "should not attach when projectScope is disabled");
 });
 
@@ -407,7 +407,7 @@ test("maybeAttachCodingContext: skips when no sessionKey", async () => {
     ): Promise<void>;
   }).maybeAttachCodingContext.bind(service);
 
-  await maybeAttach(undefined, { projectTag: "blend-supply" });
+  await maybeAttach(undefined, { projectTag: "acme-webshop" });
   assert.equal(calls.length, 0, "should not attach without sessionKey");
 });
 

@@ -162,14 +162,14 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   // Effective write namespace == principal self base overlaid with the project,
   // EXACTLY what a same-session project-scoped recall/store resolves.
   const expected = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
 
   assert.equal(res.effectiveNamespace, expected, "response effectiveNamespace");
@@ -334,7 +334,7 @@ test("#1495 explicit namespace wins and project context does NOT silently overri
     observeRequest({
       sessionKey: "pi-geek:abc123",
       namespace: "team",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
 
@@ -364,7 +364,7 @@ test("#1495 projectScope:false ⇒ no overlay (unqualified write stays on config
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   assert.equal(res.effectiveNamespace, "default");
@@ -385,7 +385,7 @@ test("#1495 namespacesEnabled:false ⇒ single-store behavior preserved", async 
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   assert.equal(res.effectiveNamespace, "default");
@@ -409,7 +409,7 @@ test("#1495 unauthorized explicit namespace throws BEFORE session context is att
       observeRequest({
         sessionKey: "pi-geek:abc123",
         namespace: "victim-secret",
-        projectTag: "Blend/Supply",
+        projectTag: "Acme/Webshop",
       }),
     ),
     /not writable/,
@@ -445,7 +445,7 @@ test("#1505 thread 1/3: unauthorized OVERLAY self-base throws BEFORE coding cont
 
   await assert.rejects(
     service.observe(
-      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
     ),
     /not writable/,
   );
@@ -491,13 +491,13 @@ test("#1505 thread jvO: restrictive default-namespace write policy does NOT reje
 
   const expectedOverlay = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
 
   // FAIL-BEFORE: this threw `namespace is not writable: default`. PASS-AFTER:
   // the observe is accepted exactly like memory_store/suggestion_submit would.
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   // Every side effect uses the authorized overlay write target.
@@ -533,7 +533,7 @@ test("#1505 thread jvO: a genuine reject (unwritable self base) under a restrict
 
   await assert.rejects(
     service.observe(
-      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
     ),
     /not writable/,
   );
@@ -553,12 +553,12 @@ test("#1495 scopeDebug exposes the resolved plan for callers/tests", async () =>
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   const expected = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
   assert.ok(res.scopeDebug, "scopeDebug must be present");
   assert.equal(res.scopeDebug!.principal, "pi-geek");
@@ -611,9 +611,9 @@ test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteName
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   // Bind a session coding context so both resolvers see the same project.
   probe.contexts.set("pi-geek:abc123", {
-    projectId: projectTagProjectId("Blend/Supply"),
+    projectId: projectTagProjectId("Acme/Webshop"),
     branch: null,
-    rootPath: projectTagProjectId("Blend/Supply"),
+    rootPath: projectTagProjectId("Acme/Webshop"),
     defaultBranch: null,
   });
   const service = new EngramAccessService(probe.orch);
@@ -765,14 +765,14 @@ test("#1495 skipExtraction does not enqueue extraction but still archives LCM un
   const res = await service.observe(
     observeRequest({
       sessionKey: "pi-geek:abc123",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
       skipExtraction: true,
     }),
   );
 
   const expected = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
   assert.equal(res.extractionQueued, false);
   assert.equal(probe.extractionCalls.length, 0);

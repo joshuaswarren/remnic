@@ -268,11 +268,11 @@ test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
       },
       body: JSON.stringify({
         sessionKey: "s1",
-        projectTag: "Blend/Supply",
+        projectTag: "Acme/Webshop",
       }),
     });
 
-    const projectId = projectTagProjectId("Blend/Supply");
+    const projectId = projectTagProjectId("Acme/Webshop");
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
     assert.deepEqual(calls, [

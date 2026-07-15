@@ -301,7 +301,7 @@ test("MCP write tools accept and forward client-injected cwd/projectTag (#1434)"
         category: "fact",
         dryRun: true,
         cwd: "/home/dev/project-x",
-        projectTag: "Blend/Supply",
+        projectTag: "Acme/Webshop",
       }),
     );
     const result = (response as Record<string, unknown> & {
@@ -310,7 +310,7 @@ test("MCP write tools accept and forward client-injected cwd/projectTag (#1434)"
 
     assert.equal(result?.isError, false, `${toolName} should accept cwd/projectTag`);
     assert.equal(received?.cwd, "/home/dev/project-x", `${toolName} must forward cwd`);
-    assert.equal(received?.projectTag, "Blend/Supply", `${toolName} must forward projectTag`);
+    assert.equal(received?.projectTag, "Acme/Webshop", `${toolName} must forward projectTag`);
   }
 });
 

@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Replaced real client names used as example project tags in MCP tool
+  descriptions (`access-mcp.ts`) and test fixtures with generic placeholders
+  (`acme-webshop`, `globex-storefront`). The shipped MCP schema no longer
+  references any real project name.
 - coding-graph indexing now derives CALLS edges from parsed call sites
   (Phase A heuristic resolution, issue #1891). Previously `codegraph_index`
   produced nodes but zero edges, leaving `trace_path`, blast radius, and

@@ -542,7 +542,7 @@ export class EngramMcpServer {
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
             projectTag: {
               type: "string",
-              description: "Project tag for non-git project scoping (e.g. 'blend-supply').",
+              description: "Project tag for non-git project scoping (e.g. 'acme-webshop').",
             },
             asOf: {
               type: "string",
@@ -611,7 +611,7 @@ export class EngramMcpServer {
             projectTag: {
               type: "string",
               description:
-                "Arbitrary project tag for non-git project scoping (e.g. 'blend-supply'). " +
+                "Arbitrary project tag for non-git project scoping (e.g. 'acme-webshop'). " +
                 "Creates a coding context with projectId 'tag:<projectTag>'. " +
                 "Use instead of codingContext when the session isn't tied to a specific git repo.",
             },
@@ -1274,7 +1274,7 @@ export class EngramMcpServer {
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
             projectTag: {
               type: "string",
-              description: "Project tag for non-git project scoping (e.g. 'blend-supply').",
+              description: "Project tag for non-git project scoping (e.g. 'acme-webshop').",
             },
           },
           required: ["sessionKey", "messages"],
