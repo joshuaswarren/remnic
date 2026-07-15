@@ -3613,6 +3613,25 @@ export async function preparePersistedJudgeCalibrationAttachment(
       `Calibration state for ${benchmarkId} is missing bound judge configuration hashes; recalibrate before attaching it.`,
     );
   }
+
+  const resolvedRunJudgeConfigHash = hashCalibrationProviderConfig(runJudgeProvider);
+  const hasCompleteLocalIdentity =
+    state.localJudgeProvider !== undefined && state.localJudgeModel !== undefined;
+  if (
+    !hasCompleteLocalIdentity &&
+    resolvedRunJudgeConfigHash !== state.localJudgeConfigHash
+  ) {
+    // Older state may have configuration hashes but no complete provider/model
+    // identity. In that case the resolved local-config hash is the only safe
+    // eligibility signal: unrelated unpinned runs ignore the state, while
+    // explicit pins must never be silently discarded.
+    if (hasBothPins) {
+      throw new Error(
+        `Calibration binding pins for ${benchmarkId} do not match the resolved run judge configuration; refusing to ignore explicit pins.`,
+      );
+    }
+    return undefined;
+  }
   if (
     !calibrationBinding.calibrationLocalConfigSha256 ||
     !calibrationBinding.calibrationFrontierConfigSha256
@@ -3628,7 +3647,6 @@ export async function preparePersistedJudgeCalibrationAttachment(
     throw new Error(`Calibration configuration hash mismatch for ${benchmarkId}; refusing to attach stale kappa.`);
   }
 
-  const resolvedRunJudgeConfigHash = hashCalibrationProviderConfig(runJudgeProvider);
   if (resolvedRunJudgeConfigHash !== state.localJudgeConfigHash) {
     throw new Error(
       `Resolved run judge configuration hash mismatch for ${benchmarkId}; ` +

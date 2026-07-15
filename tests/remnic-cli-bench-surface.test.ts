@@ -583,6 +583,74 @@ test("frontier and unrelated runs ignore local calibration state without requiri
   }
 });
 
+test("identity-incomplete calibration state uses the resolved config hash for eligibility", async () => {
+  const {
+    hashCalibrationProviderConfig,
+    preparePersistedJudgeCalibrationAttachment,
+  } = await import("../packages/remnic-cli/src/index.ts");
+  const localConfig = {
+    provider: "ollama",
+    model: "local-judge",
+    baseUrl: "http://127.0.0.1:11434",
+    temperature: 0,
+  };
+  const localHash = hashCalibrationProviderConfig(localConfig);
+  const frontierHash = "b".repeat(64);
+  const benchModule = {
+    async loadJudgeCalibrationState() {
+      return {
+        kappa: 0.81,
+        sampleSize: 200,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  const pins = {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  };
+
+  assert.equal(
+    await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "openai", model: "gpt-5.6" },
+      {},
+    ),
+    undefined,
+  );
+  await assert.rejects(
+    () => preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "openai", model: "gpt-5.6" },
+      pins,
+    ),
+    /refusing to ignore explicit pins/,
+  );
+  await assert.rejects(
+    () => preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      localConfig,
+      {},
+    ),
+    /are required to attach/,
+  );
+  const prepared = await preparePersistedJudgeCalibrationAttachment(
+    benchModule as never,
+    "locomo",
+    localConfig,
+    pins,
+  );
+  assert.equal(prepared?.localJudgeConfigHash, localHash);
+  assert.equal(prepared?.frontierJudgeConfigHash, frontierHash);
+});
+
 test("explicit calibration pins fail closed when state is unavailable or targets another judge", async () => {
   const { preparePersistedJudgeCalibrationAttachment } = await import(
     "../packages/remnic-cli/src/index.ts"
