@@ -925,6 +925,105 @@ export class GraphStore {
     return this.queue.schedule(() => this.runUpsertEdges(edges));
   }
 
+  /**
+   * Retire stale LSP-provenance edges for a file (issue #1895).
+   *
+   * The LSP resolution pass re-derives edges from the CURRENT source on each
+   * run. After writing the new `lsp` edges for a file, this method deletes
+   * prior `lsp`-provenance edges owned by that file's nodes whose
+   * `(src, dst, type)` key is NOT in the asserted set. This is the LSP
+   * layer's side of the provenance-lifecycle contract: each layer owns its
+   * own stale-edge retirement (#1894 established that reindex's heuristic
+   * scope never touches `lsp` rows).
+   *
+   * Heuristic, trace, and semantic edges are never touched.
+   *
+   * @returns the number of retired edges.
+   */
+  reconcileLspEdges(
+    filePath: string,
+    assertedEdges: ReadonlyArray<{
+      srcQualifiedName: string;
+      dstQualifiedName: string;
+      type: string;
+    }>,
+  ): number {
+    if (this.closed) return 0;
+    try {
+      // Resolve the file and its nodes.
+      const fileRow = expectRow<{ id: number }>(
+        this.db.prepare("SELECT id FROM files WHERE path = ?").get(filePath),
+        ["id"],
+      );
+      if (!fileRow) return 0;
+      const nodes = expectRows<{ id: string; qualified_name: string }>(
+        this.db
+          .prepare("SELECT id, qualified_name FROM nodes WHERE file_id = ?")
+          .all(fileRow.id),
+        ["id", "qualified_name"],
+      );
+      if (nodes.length === 0) return 0;
+
+      // Build srcQualifiedName → nodeId for this file's nodes. Only
+      // include names that appear exactly once (same conservative
+      // ambiguity policy as upsertFileEdges — cursor review on #1914).
+      const nameCount = new Map<string, number>();
+      for (const n of nodes) nameCount.set(n.qualified_name, (nameCount.get(n.qualified_name) ?? 0) + 1);
+      const srcMap = new Map<string, string>();
+      for (const n of nodes) {
+        if (nameCount.get(n.qualified_name) === 1) srcMap.set(n.qualified_name, n.id);
+      }
+      const nodeIds = nodes.map((n) => n.id);
+
+      // Build the asserted key set (resolved to node IDs).
+      const assertedKeys = new Set<string>();
+      for (const e of assertedEdges) {
+        const srcId = srcMap.get(e.srcQualifiedName);
+        if (!srcId) continue;
+        const dstId = resolveNodeId(e.dstQualifiedName, new Map(), this.db);
+        if (!dstId) continue;
+        assertedKeys.add(`${srcId}\u0000${dstId}\u0000${e.type}`);
+      }
+
+      // Find prior lsp edges owned by this file's nodes.
+      const placeholders = nodeIds.map(() => "?").join(", ");
+      const priorEdges = expectRows<{ src: string; dst: string; type: string }>(
+        this.db
+          .prepare(
+            `SELECT src, dst, type FROM edges
+              WHERE src IN (${placeholders}) AND provenance = 'lsp'`,
+          )
+          .all(...nodeIds),
+        ["src", "dst", "type"],
+      );
+
+      // Delete those NOT in the asserted set.
+      let deleted = 0;
+      const toDelete: Array<[string, string, string]> = [];
+      for (const e of priorEdges) {
+        const key = `${e.src}\u0000${e.dst}\u0000${e.type}`;
+        if (!assertedKeys.has(key)) toDelete.push([e.src, e.dst, e.type]);
+      }
+      if (toDelete.length > 0) {
+        const SQLITE_VARIABLE_LIMIT = 32_766;
+        const PARAMS_PER_TUPLE = 3;
+        const MAX_TUPLES = Math.floor(SQLITE_VARIABLE_LIMIT / PARAMS_PER_TUPLE);
+        for (let i = 0; i < toDelete.length; i += MAX_TUPLES) {
+          const chunk = toDelete.slice(i, i + MAX_TUPLES);
+          const ph = chunk.map(() => "(?, ?, ?)").join(", ");
+          const r = this.db
+            .prepare(`DELETE FROM edges WHERE (src, dst, type) IN (${ph})`)
+            .run(...chunk.flat());
+          deleted += r.changes;
+        }
+      }
+      return deleted;
+    } catch (error) {
+      logWriteFailure(error);
+      return 0;
+    }
+  }
+
   /** Wait for pending writes to drain — test seam. */
   async drain(): Promise<void> {
     await this.queue.drain();
