@@ -5756,16 +5756,10 @@ export function registerCli(
             args[0],
             (args[1] ?? {}) as Record<string, unknown>,
           );
-          // Route the xray capture through `EngramAccessService` so
-          // the CLI shares the same `xrayQueue` mutex that the HTTP
-          // and MCP surfaces use — otherwise the
-          // `clearLastXraySnapshot() → recall() → getLastXraySnapshot()`
-          // sequence races with concurrent callers (e.g., a gateway
-          // agent hitting the same orchestrator) and could swap in
-          // their snapshot mid-flight, or our capture could overwrite
-          // theirs (cursor Medium + codex P1 review on #597).  The
-          // service enforces CLAUDE.md rules 40 (serialized state) and
-          // 47 (no shared mutable state across async boundaries).
+          // Delegate through `EngramAccessService` to the orchestrator's atomic
+          // capture API, so CLI, HTTP, and MCP callers sharing an orchestrator
+          // also share one X-ray ordering domain and receive the snapshot owned
+          // by their invocation.
           const xrayService = new EngramAccessService(orchestrator);
           const response = await xrayService.recallXray({
             query: parsed.query,

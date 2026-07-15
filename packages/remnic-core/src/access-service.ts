@@ -2917,6 +2917,8 @@ export class EngramAccessService {
      * regular X-ray API/CLI/MCP surfaces keep their existing payload shape.
      */
     includeRecall?: boolean;
+    /** Cancel the capture before it starts and propagate cancellation to recall. */
+    abortSignal?: AbortSignal;
   }): Promise<{
     snapshotFound: boolean;
     snapshot?: RecallXraySnapshot;
@@ -2926,12 +2928,6 @@ export class EngramAccessService {
       request,
     );
   }
-  // Sequence lock for `recallXray` — see comment inside the method.
-  // Lives on the instance so every x-ray call on the same service
-  // shares it, and so separate services in the same process (e.g.
-  // per-tenant) do not block each other.
-  private xrayQueue: Promise<void> = Promise.resolve();
-
   async memoryStore(
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> },
@@ -5906,4 +5902,3 @@ export class EngramAccessService {
     );
   }
 }
-

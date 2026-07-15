@@ -23,6 +23,8 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
 import { EngramAccessService } from "../src/access-service.js";
+import { Orchestrator } from "../src/orchestrator.js";
+import { XrayCaptureQueue } from "../packages/remnic-core/src/orchestration/xray-capture-queue.js";
 import type { RecallXraySnapshot, RecallXrayResult } from "../src/recall-xray.js";
 import { buildXraySnapshot } from "../src/recall-xray.js";
 
@@ -72,6 +74,9 @@ function stubOrchestrator(opts: {
   const pathToTags = opts.pathToTags ?? {};
 
   const orchestrator = {
+    recallWithXrayCapture: Orchestrator.prototype.recallWithXrayCapture,
+    runRecallWithXrayCapture: (Orchestrator.prototype as any).runRecallWithXrayCapture,
+    xrayCaptureQueue: new XrayCaptureQueue(),
     config: {
       memoryDir: "/tmp/engram-xray-tags",
       namespacesEnabled: false,
@@ -129,6 +134,11 @@ function stubOrchestrator(opts: {
       getMemoryTimeline: async () => [],
     }),
   };
+  (orchestrator as any).invokeRecall = (
+    prompt: string,
+    sessionKey: string | undefined,
+    options: Record<string, unknown>,
+  ) => orchestrator.recall(prompt, sessionKey, options);
 
   return { orchestrator, state };
 }

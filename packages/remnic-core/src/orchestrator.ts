@@ -121,6 +121,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
 import { SessionContextCoordinator } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
+import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
@@ -258,10 +259,6 @@ import {
   type EvalShadowRecallRecord,
 } from "./evals.js";
 import { SessionObserverState } from "./session-observer-state.js";
-import {
-  abortError as sharedAbortError,
-  throwIfAborted as sharedThrowIfAborted,
-} from "./abort-error.js";
 import { CODEX_THREAD_KEY_PREFIX } from "./thread-key.js";
 import { isDisagreementPrompt } from "./signal.js";
 import { lintWorkspaceFiles, rotateMarkdownFileToArchive } from "./hygiene.js";
@@ -633,6 +630,8 @@ export class Orchestrator {
    * capturing caller can still read their snapshot back.
    */
   private lastXraySnapshot: RecallXraySnapshot | null = null;
+  /** Per-instance ordering domain for every writer of `lastXraySnapshot`. */
+  private readonly xrayCaptureQueue = new XrayCaptureQueue();
   readonly embeddingFallback: EmbeddingFallback;
   private readonly conversationIndexDir: string;
   private readonly extraction: ExtractionEngine;
@@ -2182,7 +2181,7 @@ export class Orchestrator {
     );
   }
 
-  async recall(
+  private invokeRecall(
     prompt: string,
     sessionKey?: string,
     options: RecallInvocationOptions = {},
@@ -2196,21 +2195,90 @@ export class Orchestrator {
     );
   }
 
+  async recall(
+    prompt: string,
+    sessionKey?: string,
+    options: RecallInvocationOptions = {},
+  ): Promise<string> {
+    if (options.xrayCapture === true) {
+      // Preserve the legacy string-returning surface and its soft-abort
+      // behavior while still placing every X-ray writer in the same ordering
+      // domain. In particular, a pre-aborted legacy recall continues to
+      // resolve with an empty string rather than rejecting.
+      const { result } = await this.runRecallWithXrayCapture(
+        prompt,
+        sessionKey,
+        options,
+      );
+      return result;
+    }
+    return this.invokeRecall(prompt, sessionKey, options);
+  }
+
   /**
-   * Return the most recent X-ray snapshot captured during a
-   * `recall()` call that passed `xrayCapture: true` (issue #570 PR 1).
+   * Return the most recent X-ray snapshot captured during a recall.
    * Returns `null` when no such capture has occurred on this
    * orchestrator instance.  Returned snapshot is a deep copy so
    * caller mutation cannot tear the stored value.
+   *
+   * @deprecated Reading this after a separate `recall()` is not atomic. Use
+   * `recallWithXrayCapture()` when the snapshot must belong to that call.
    */
   getLastXraySnapshot(): RecallXraySnapshot | null {
     if (!this.lastXraySnapshot) return null;
     return structuredClone(this.lastXraySnapshot);
   }
 
-  /** Clear the captured X-ray snapshot.  Exposed for tests / explicit reset. */
+  /**
+   * Clear the captured X-ray snapshot. Exposed for tests / explicit reset.
+   *
+   * @deprecated A separate clear → recall → get sequence is not atomic. Use
+   * `recallWithXrayCapture()` for capture operations.
+   */
   clearLastXraySnapshot(): void {
     this.lastXraySnapshot = null;
+  }
+
+  /** Atomically run recall and return the cloned X-ray snapshot it published. */
+  async recallWithXrayCapture(
+    prompt: string,
+    sessionKey?: string,
+    options: Omit<RecallInvocationOptions, "xrayCapture"> = {},
+  ): Promise<{
+    result: string;
+    snapshot: RecallXraySnapshot | null;
+    recallStartedAt: number;
+  }> {
+    return this.runRecallWithXrayCapture(
+      prompt,
+      sessionKey,
+      options,
+      options.abortSignal,
+    );
+  }
+
+  private async runRecallWithXrayCapture(
+    prompt: string,
+    sessionKey: string | undefined,
+    options: Omit<RecallInvocationOptions, "xrayCapture"> | RecallInvocationOptions,
+    queueAbortSignal?: AbortSignal,
+  ): Promise<{
+    result: string;
+    snapshot: RecallXraySnapshot | null;
+    recallStartedAt: number;
+  }> {
+    return this.xrayCaptureQueue.run(
+      () => this.invokeRecall(prompt, sessionKey, {
+        ...options,
+        xrayCapture: true,
+      }),
+      {
+        read: () => this.getLastXraySnapshot(),
+        clear: () => this.clearLastXraySnapshot(),
+        restore: (snapshot) => { this.lastXraySnapshot = snapshot; },
+      },
+      queueAbortSignal,
+    );
   }
 
   async waitForDirectAnswerObservationIdle(
