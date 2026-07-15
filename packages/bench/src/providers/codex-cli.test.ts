@@ -771,6 +771,75 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
       ],
     );
 
+    let releaseBlocker!: () => void;
+    let reportBlockerStarted!: () => void;
+    const blockerGate = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    const blockerStarted = new Promise<void>((resolve) => {
+      reportBlockerStarted = resolve;
+    });
+    const blocker = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          reportBlockerStarted();
+          await blockerGate;
+          return {
+            status: 0,
+            signal: null,
+            stdout: '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}',
+            stderr: "",
+            outputText: "blocker complete",
+          };
+        },
+      },
+    );
+    const blockerCompletion = blocker.complete("hold the budget queue");
+    await blockerStarted;
+
+    const queuedController = new AbortController();
+    let queuedDispatched = false;
+    const queued = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          queuedDispatched = true;
+          throw new Error("aborted queued call must not dispatch");
+        },
+      },
+    );
+    const queuedCompletion = queued.complete("queued call", {
+      signal: queuedController.signal,
+    });
+    queuedController.abort(new Error("queued cancellation"));
+    releaseBlocker();
+
+    assert.equal((await blockerCompletion).text, "blocker complete");
+    await assert.rejects(queuedCompletion, /queued cancellation/);
+    assert.equal(queuedDispatched, false);
+    assert.deepEqual(queued.getUsage(), {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    });
+
+    const afterQueuedAbort = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          return {
+            status: 0,
+            signal: null,
+            stdout: '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}',
+            stderr: "",
+            outputText: "continued",
+          };
+        },
+      },
+    );
+    assert.equal((await afterQueuedAbort.complete("continue")).text, "continued");
+
     const postDispatchFailure = createCodexCliProvider(
       { provider: "codex-cli", model: "gpt-5.6-luna" },
       {
@@ -791,7 +860,7 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     const blockedLedger = JSON.parse(
       await readFile(path.join(directory, "ledger.json"), "utf8"),
     ) as { entries: unknown[]; blockedReason?: string };
-    assert.equal(blockedLedger.entries.length, 3);
+    assert.equal(blockedLedger.entries.length, 5);
     assert.match(blockedLedger.blockedReason ?? "", /output collection failed/);
   } finally {
     __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
@@ -1178,6 +1247,29 @@ test("codex-cli command terminates subprocess when aborted", async () => {
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
+});
+
+test("codex-cli command identifies an already-aborted call as pre-dispatch", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("cancel before spawn"));
+
+  await assert.rejects(
+    __codexCliProviderTestHooks.runCodexCliCommand({
+      executable: path.join(os.tmpdir(), "must-not-spawn-codex"),
+      args: [],
+      input: "hello",
+      outputPath: path.join(os.tmpdir(), "must-not-write-last-message.txt"),
+      workspacePath: os.tmpdir(),
+      signal: controller.signal,
+      env: process.env,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === "CodexCreditDispatchError" &&
+      error.message === "Codex CLI aborted before start." &&
+      error.cause instanceof Error &&
+      error.cause.message === "cancel before spawn",
+  );
 });
 
 test("codex-cli command reports missing output without ledger-specific errors", async () => {

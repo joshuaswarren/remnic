@@ -128,6 +128,7 @@ const CODEX_CLI_DIAGNOSTICS_DIR_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
 const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 const CODEX_CLI_EXECUTABLE_ENV = "REMNIC_BENCH_CODEX_CLI_EXECUTABLE";
 const CODEX_CLI_VERSION_TIMEOUT_MS = 5_000;
+const CODEX_CLI_PRE_START_ABORT_MESSAGE = "Codex CLI aborted before start.";
 const CODEX_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
   "ALL_PROXY",
   "APPDATA",
@@ -257,6 +258,9 @@ class CodexCliProvider implements StructuredJudgeProvider {
                 this.recordUsage(usage.inputTokens, usage.outputTokens);
               },
               run: async () => {
+                if (opts.signal?.aborted) {
+                  throw codexCliPreStartAbortError(opts.signal);
+                }
                 let value: CodexCliRunResult;
                 try {
                   value = await this.runCodexCli(request);
@@ -340,9 +344,10 @@ class CodexCliProvider implements StructuredJudgeProvider {
           model: this.config.model,
         };
       } catch (error) {
-        lastError = error;
-        await finishDiagnostics({ error });
-        throw error;
+        const surfacedError = unwrapCodexCliPreStartAbort(error);
+        lastError = surfacedError;
+        await finishDiagnostics({ error: surfacedError });
+        throw surfacedError;
       } finally {
         await rm(tempDir, { force: true, recursive: true });
       }
@@ -939,13 +944,7 @@ function redactCodexCliArgs(args: string[]): string[] {
 function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunResult> {
   return new Promise((resolve, reject) => {
     if (request.signal?.aborted) {
-      resolve({
-        status: 124,
-        signal: null,
-        stdout: "",
-        stderr: "Codex CLI aborted before start.",
-        outputText: "",
-      });
+      reject(codexCliPreStartAbortError(request.signal));
       return;
     }
 
@@ -1282,6 +1281,20 @@ function codexCliAbortError(signal: AbortSignal): Error {
     return new Error(String(signal.reason));
   }
   return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function codexCliPreStartAbortError(signal: AbortSignal): CodexCreditDispatchError {
+  return new CodexCreditDispatchError(CODEX_CLI_PRE_START_ABORT_MESSAGE, {
+    cause: codexCliAbortError(signal),
+  });
+}
+
+function unwrapCodexCliPreStartAbort(error: unknown): unknown {
+  return error instanceof CodexCreditDispatchError &&
+    error.message === CODEX_CLI_PRE_START_ABORT_MESSAGE &&
+    error.cause instanceof Error
+    ? error.cause
+    : error;
 }
 
 function summarizeProcessOutput(stderr: string, stdout: string): string {
