@@ -89,6 +89,8 @@ export interface ParsedBenchArgs {
   localJudgeRequestTimeout?: number;
   frontierJudgeRequestTimeout?: number;
   calibrationDir?: string;
+  calibrationLocalConfigSha256?: string;
+  calibrationFrontierConfigSha256?: string;
   sourceResultId?: string;
   expectedAnswerSetSha256?: string;
   expectedQuestionIdListSha256?: string;
@@ -463,6 +465,8 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--local-judge-request-timeout",
   "--frontier-judge-request-timeout",
   "--calibration-dir",
+  "--calibration-local-config-sha256",
+  "--calibration-frontier-config-sha256",
   "--source-result-id",
   "--expected-answer-set-sha256",
   "--expected-question-id-list-sha256",
@@ -554,6 +558,9 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--provider",
   "--base-url",
   "--request-timeout",
+  "--calibration-dir",
+  "--calibration-local-config-sha256",
+  "--calibration-frontier-config-sha256",
   "--drain-timeout",
   "--max-429-wait",
   "--ama-bench-judge-protocol",
@@ -903,6 +910,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const localJudgeRequestTimeoutRaw = readBenchOptionValue(args, "--local-judge-request-timeout");
   const frontierJudgeRequestTimeoutRaw = readBenchOptionValue(args, "--frontier-judge-request-timeout");
   const calibrationDirRaw = readBenchOptionValue(args, "--calibration-dir");
+  const calibrationLocalConfigSha256 = readBenchOptionValue(args, "--calibration-local-config-sha256");
+  const calibrationFrontierConfigSha256 = readBenchOptionValue(args, "--calibration-frontier-config-sha256");
   const sourceResultId = readBenchOptionValue(args, "--source-result-id");
   const expectedAnswerSetSha256 = readBenchOptionValue(args, "--expected-answer-set-sha256");
   const expectedQuestionIdListSha256 = readBenchOptionValue(args, "--expected-question-id-list-sha256");
@@ -1127,6 +1136,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   for (const [flag, digest] of [
     ["--expected-answer-set-sha256", expectedAnswerSetSha256],
     ["--expected-question-id-list-sha256", expectedQuestionIdListSha256],
+    ["--calibration-local-config-sha256", calibrationLocalConfigSha256],
+    ["--calibration-frontier-config-sha256", calibrationFrontierConfigSha256],
   ] as const) {
     if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest)) {
       throw new Error(`ERROR: ${flag} must be a lowercase SHA-256 hex digest.`);
@@ -1587,6 +1598,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     localJudgeRequestTimeout,
     frontierJudgeRequestTimeout,
     calibrationDir: calibrationDirRaw ? path.resolve(expandTilde(calibrationDirRaw)) : undefined,
+    calibrationLocalConfigSha256,
+    calibrationFrontierConfigSha256,
     sourceResultId,
     expectedAnswerSetSha256,
     expectedQuestionIdListSha256,

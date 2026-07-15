@@ -403,12 +403,28 @@ the local and frontier judges (or every available question when fewer than
 and answer-set hash are pinned so later calibration runs cannot silently switch
 answer payloads. Each successful judge side is atomically checkpointed, so an
 interrupted run resumes without repaying completed calls. The checkpoint is
-bound to the source bytes, ordered IDs, slice, rubric, and both sanitized judge
-configurations; corrupt or mismatched state fails before model calls. The kappa and provenance are persisted
-(`~/.remnic/bench/calibration/`) and land in subsequent Tier L artifacts as
+bound to the source bytes, ordered IDs, slice, each provider's actual prompt
+identity, the category-binning identity, and both sanitized judge configurations.
+An exclusive 0600 lock covers initialization, every paid-call reservation, and
+each atomic update; concurrent or stale locks fail safe rather than risking a
+duplicate call. Corrupt or mismatched state fails before model calls. The kappa
+and provenance are persisted in the exact `--calibration-dir` and land in a
+subsequent Tier L artifact only when that run supplies the same directory plus
+the `localJudgeConfigHash` and `frontierJudgeConfigHash` printed by
+`judge-calibrate --json`:
+
+```bash
+remnic bench run locomo \
+  --calibration-dir ~/.remnic/bench/build-week-2026/calibration \
+  --calibration-local-config-sha256 <localJudgeConfigHash> \
+  --calibration-frontier-config-sha256 <frontierJudgeConfigHash> \
+  # ...the same local judge provider/model and normal run flags
+```
+
+The attached artifact records
 `judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,
 `confidenceInterval`, `bootstrapSamples`, `sourceResultId`, `answerSetHash`,
-and `sliceQuestionIds`.
+`sliceQuestionIds`, and both configuration hashes.
 `judge-calibrate` deliberately uses this dedicated checkpoint rather than the
 general `--judge-cache-dir`: resumed outputs are reported separately from fresh
 judge calls and are never mislabeled as ordinary cache hits.

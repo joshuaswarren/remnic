@@ -1,6 +1,11 @@
+import { createHash } from "node:crypto";
 import { FallbackLlmClient, type FallbackLlmRuntimeContext, type GatewayConfig } from "@remnic/core";
 import type { BenchJudge, BenchJudgeResult, BenchResponder, BenchResponse } from "./adapters/types.js";
 import type { StructuredJudge } from "./judges/sealed-rubric.js";
+import {
+  GENERAL_ANSWER_JUDGE_RUBRIC,
+  OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+} from "./judges/memcorrect-rubrics.js";
 import { createProvider } from "./providers/factory.js";
 import { createOpenAiResponsesProvider } from "./providers/openai-responses.js";
 import {
@@ -22,6 +27,37 @@ const DEFAULT_JUDGE_SYSTEM_PROMPT = [
   "Return only a numeric score from 0.00 to 1.00 inclusive.",
   "Use 1.00 for a fully correct answer, 0.00 for a fully incorrect answer, and fractional values for partial matches.",
 ].join(" ");
+
+function buildDefaultJudgeUserPrompt(question: string, predicted: string, expected: string): string {
+  return [
+    `QUESTION: ${question}`,
+    "",
+    `EXPECTED_ANSWER: ${expected}`,
+    "",
+    `PREDICTED_ANSWER: ${predicted}`,
+    "",
+    "Score the predicted answer against the expected answer.",
+  ].join("\n");
+}
+
+/** Hash of the exact rubric/prompt surface used by `createProviderBackedJudge`. */
+export function getProviderBackedJudgePromptIdentity(config: ProviderFactoryConfig): string {
+  const contract = config.provider === "openai"
+    ? {
+        kind: "structured",
+        rubric: GENERAL_ANSWER_JUDGE_RUBRIC,
+        rubricVersion: config.rubricVersion ?? OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+        inputTemplate: ["QUESTION: {question}", "REFERENCE_ANSWER: {expected}", "PREDICTED_ANSWER: {predicted}"],
+      }
+    : {
+        kind: "scalar",
+        systemPrompt: DEFAULT_JUDGE_SYSTEM_PROMPT,
+        userPrompt: buildDefaultJudgeUserPrompt("{question}", "{predicted}", "{expected}"),
+        temperature: 0,
+        maxTokens: 16,
+      };
+  return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+}
 
 const AMA_BENCH_RECOMMENDED_JUDGE_SYSTEM_PROMPT = [
   "You are evaluating an AMA-Bench long-horizon memory question.",
@@ -576,15 +612,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
     control?: { signal?: AbortSignal }
   ): Promise<BenchJudgeResult> {
     const completion = await provider.complete(
-      [
-        `QUESTION: ${question}`,
-        "",
-        `EXPECTED_ANSWER: ${expected}`,
-        "",
-        `PREDICTED_ANSWER: ${predicted}`,
-        "",
-        "Score the predicted answer against the expected answer.",
-      ].join("\n"),
+      buildDefaultJudgeUserPrompt(question, predicted, expected),
       {
         systemPrompt: DEFAULT_JUDGE_SYSTEM_PROMPT,
         temperature: 0,

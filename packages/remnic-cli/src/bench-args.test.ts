@@ -408,6 +408,21 @@ test("parseBenchArgs validates judge-calibration pinning and independent timeout
   ]), /requires a value/);
 });
 
+test("parseBenchArgs binds later runs to an exact calibration directory and judge configs", () => {
+  const parsed = parseBenchArgs([
+    "run", "locomo",
+    "--calibration-dir", "./private-calibration",
+    "--calibration-local-config-sha256", "c".repeat(64),
+    "--calibration-frontier-config-sha256", "d".repeat(64),
+  ]);
+  assert.equal(parsed.calibrationDir, path.resolve("private-calibration"));
+  assert.equal(parsed.calibrationLocalConfigSha256, "c".repeat(64));
+  assert.equal(parsed.calibrationFrontierConfigSha256, "d".repeat(64));
+  assert.throws(() => parseBenchArgs([
+    "run", "locomo", "--calibration-local-config-sha256", "not-a-digest",
+  ]), /lowercase SHA-256/);
+});
+
 test("parseBenchArgs rejects invalid --drain-timeout", () => {
   assert.throws(
     () => parseBenchArgs(["run", "locomo", "--drain-timeout", "0"]),

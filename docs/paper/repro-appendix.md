@@ -401,17 +401,23 @@ remnic bench judge-calibrate \
   --frontier-judge-request-timeout 600000
 ```
 
-The κ lands on the next `remnic bench run` artifact for that benchmark
-(only when the run's judge matches the calibrated pair). Absent calibration
+The κ lands on a later `remnic bench run` artifact for that benchmark only when
+the run supplies the same `--calibration-dir` and both configuration hashes
+reported by `judge-calibrate --json` via
+`--calibration-local-config-sha256` and
+`--calibration-frontier-config-sha256` (and the run's judge matches the
+calibrated local judge). Absent calibration
 is the common case — the result is written unchanged. The command selects a
 deterministic 200-question slice (or all available questions when fewer than
 200 exist), pins the source result, question IDs, and exact answer-set hash,
 and reports a deterministic 2,000-resample paired-bootstrap 95% confidence
 interval. Re-running calibration reuses the pinned answer payload instead of
 silently selecting whichever stored answers are newest. An atomic 0600
-checkpoint records each completed judge side and resumes only missing calls;
-its complete source/slice/rubric/judge contract must match or the command fails
-closed before either judge runs.
+checkpoint records each completed judge side and resumes only missing calls.
+An exclusive lock spans initialization, paid-call reservation, and updates;
+concurrent or stale locks fail safe. Its complete source, slice, actual prompt,
+binning, and judge-configuration contract must match or the command fails closed
+before either judge runs.
 
 ### A.3.7 Build, verify, and promote the artifact
 

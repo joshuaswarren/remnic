@@ -265,6 +265,7 @@ export {
   createGatewayResponder,
   createProviderBackedAmaBenchRecommendedJudge,
   createProviderBackedJudge,
+  getProviderBackedJudgePromptIdentity,
   createProviderBackedResponder,
   createProviderBackedStructuredJudge,
   createResponderFromProvider,

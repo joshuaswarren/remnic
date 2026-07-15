@@ -22,7 +22,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { BenchJudge } from "../adapters/types.js";
@@ -69,6 +69,9 @@ export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
     answerSetHash?: string;
     /** Question ids in the pinned calibration slice, in verdict order. */
     sliceQuestionIds?: readonly string[];
+    /** Full sanitized provider configuration hashes bound to this calibration. */
+    localJudgeConfigHash?: string;
+    frontierJudgeConfigHash?: string;
   };
 
 /**
@@ -114,14 +117,19 @@ export interface CalibrationVerdictPair {
   frontierCategory: JudgeCategory;
 }
 
-export const JUDGE_CALIBRATION_PROTOCOL_VERSION = "judge-calibration-v2";
+export const JUDGE_CALIBRATION_PROTOCOL_VERSION = "judge-calibration-v3";
+
+/** Identity of the default score-to-category mapping used by calibration. */
+export const DEFAULT_JUDGE_BINNING_IDENTITY =
+  "default-binary-score-v1:incorrect<0.5,correct>=0.5,nonfinite=incorrect";
 
 export interface JudgeCalibrationCheckpointProvenance {
   dir: string;
   sourceResultId: string;
   sourceResultSha256: string;
   orderedQuestionIdsHash: string;
-  rubricVersion: string;
+  localJudgePromptIdentity: string;
+  frontierJudgePromptIdentity: string;
   localJudgeConfigHash: string;
   frontierJudgeConfigHash: string;
 }
@@ -141,6 +149,8 @@ export interface RunJudgeCalibrationOptions {
    * binning function so they are compared on the same scale.
    */
   binScore?: (score: number) => JudgeCategory;
+  /** Stable identity of `binScore`; required with a custom mapper and checkpointing. */
+  binningIdentity?: string;
   /** Override the slice size (default 200; mainly for tests). */
   sliceSize?: number;
   /** Override the warning threshold (default 0.7). */
@@ -272,8 +282,18 @@ export async function runJudgeCalibration(
     );
   }
 
+  if (options.checkpoint && options.binScore && !options.binningIdentity) {
+    throw new Error("runJudgeCalibration: checkpointed custom binScore requires an explicit binningIdentity.");
+  }
+  const binningIdentity = options.binningIdentity ?? DEFAULT_JUDGE_BINNING_IDENTITY;
   const checkpoint = options.checkpoint
-    ? await loadOrInitializeCheckpoint(options.benchmarkId, options.checkpoint, sliceIds, answerSetHash, orderedQuestionIdsHash)
+    ? await loadOrInitializeCheckpoint(
+      options.benchmarkId,
+      { ...options.checkpoint, binningIdentity },
+      sliceIds,
+      answerSetHash,
+      orderedQuestionIdsHash,
+    )
     : undefined;
 
   const localLabels: JudgeCategory[] = [];
@@ -283,71 +303,75 @@ export async function runJudgeCalibration(
   let frontierJudgeCalls = 0;
   let resumedJudgeOutputs = 0;
 
-  for (const answer of sliceAnswers) {
-    const saved = checkpoint?.state.completed[answer.questionId];
-    let localCategory = saved?.localCategory;
-    if (localCategory !== undefined) {
-      resumedJudgeOutputs += 1;
-    } else {
-      const localScore = await options.localJudge.score(answer.question, answer.predicted, answer.expected);
-      localJudgeCalls += 1;
-      localCategory = binScore(localScore);
-      if (checkpoint) {
-        checkpoint.state.completed[answer.questionId] = { ...saved, localCategory };
-        await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+  try {
+    for (const answer of sliceAnswers) {
+      const saved = checkpoint?.state.completed[answer.questionId];
+      let localCategory = saved?.localCategory;
+      if (localCategory !== undefined) {
+        resumedJudgeOutputs += 1;
+      } else {
+        const localScore = await options.localJudge.score(answer.question, answer.predicted, answer.expected);
+        localJudgeCalls += 1;
+        localCategory = binScore(localScore);
+        if (checkpoint) {
+          checkpoint.state.completed[answer.questionId] = { ...saved, localCategory };
+          await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+        }
       }
-    }
-    let frontierCategory = checkpoint?.state.completed[answer.questionId]?.frontierCategory;
-    if (frontierCategory !== undefined) {
-      resumedJudgeOutputs += 1;
-    } else {
-      const frontierScore = await options.frontierJudge.score(answer.question, answer.predicted, answer.expected);
-      frontierJudgeCalls += 1;
-      frontierCategory = binScore(frontierScore);
-      if (checkpoint) {
-        checkpoint.state.completed[answer.questionId] = {
-          ...checkpoint.state.completed[answer.questionId],
-          frontierCategory,
-        };
-        await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+      let frontierCategory = checkpoint?.state.completed[answer.questionId]?.frontierCategory;
+      if (frontierCategory !== undefined) {
+        resumedJudgeOutputs += 1;
+      } else {
+        const frontierScore = await options.frontierJudge.score(answer.question, answer.predicted, answer.expected);
+        frontierJudgeCalls += 1;
+        frontierCategory = binScore(frontierScore);
+        if (checkpoint) {
+          checkpoint.state.completed[answer.questionId] = {
+            ...checkpoint.state.completed[answer.questionId],
+            frontierCategory,
+          };
+          await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+        }
       }
+      localLabels.push(localCategory);
+      frontierLabels.push(frontierCategory);
+      verdicts.push({
+        questionId: answer.questionId,
+        localCategory,
+        frontierCategory,
+      });
     }
-    localLabels.push(localCategory);
-    frontierLabels.push(frontierCategory);
-    verdicts.push({
-      questionId: answer.questionId,
-      localCategory,
-      frontierCategory,
+
+    const kappaResult = computeCohensKappa(localLabels, frontierLabels);
+    const bootstrap = bootstrapCohensKappaConfidenceInterval(localLabels, frontierLabels, {
+      iterations: options.bootstrapSamples ?? DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+      level: options.confidenceLevel,
     });
+    const warning = kappaResult.kappa < threshold;
+
+    return {
+      ...kappaResult,
+      benchmarkId: options.benchmarkId,
+      sliceQuestionIds: sliceIds,
+      threshold,
+      warning,
+      confidenceInterval: bootstrap.confidenceInterval,
+      bootstrapSamples: bootstrap.bootstrapSamples,
+      answerSetHash,
+      verdicts,
+      execution: {
+        localJudgeCalls,
+        frontierJudgeCalls,
+        resumedJudgeOutputs,
+        ...(checkpoint ? {
+          checkpointPath: checkpoint.path,
+          checkpointContractHash: checkpoint.state.contractHash,
+        } : {}),
+      },
+    };
+  } finally {
+    await checkpoint?.release();
   }
-
-  const kappaResult = computeCohensKappa(localLabels, frontierLabels);
-  const bootstrap = bootstrapCohensKappaConfidenceInterval(localLabels, frontierLabels, {
-    iterations: options.bootstrapSamples ?? DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
-    level: options.confidenceLevel,
-  });
-  const warning = kappaResult.kappa < threshold;
-
-  return {
-    ...kappaResult,
-    benchmarkId: options.benchmarkId,
-    sliceQuestionIds: sliceIds,
-    threshold,
-    warning,
-    confidenceInterval: bootstrap.confidenceInterval,
-    bootstrapSamples: bootstrap.bootstrapSamples,
-    answerSetHash,
-    verdicts,
-    execution: {
-      localJudgeCalls,
-      frontierJudgeCalls,
-      resumedJudgeOutputs,
-      ...(checkpoint ? {
-        checkpointPath: checkpoint.path,
-        checkpointContractHash: checkpoint.state.contractHash,
-      } : {}),
-    },
-  };
 }
 
 export function hashOrderedQuestionIds(questionIds: readonly string[]): string {
@@ -387,7 +411,7 @@ function hashCalibrationAnswerSet(answers: readonly CalibrationAnswer[]): string
 }
 
 interface CalibrationCheckpointState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   contractHash: string;
   contract: Record<string, unknown>;
   completed: Record<string, { localCategory?: JudgeCategory; frontierCategory?: JudgeCategory }>;
@@ -395,11 +419,11 @@ interface CalibrationCheckpointState {
 
 async function loadOrInitializeCheckpoint(
   benchmarkId: string,
-  provenance: JudgeCalibrationCheckpointProvenance,
+  provenance: JudgeCalibrationCheckpointProvenance & { binningIdentity: string },
   sliceQuestionIds: readonly string[],
   answerSetHash: string,
   orderedQuestionIdsHash: string,
-): Promise<{ path: string; state: CalibrationCheckpointState }> {
+): Promise<{ path: string; state: CalibrationCheckpointState; release: () => Promise<void> }> {
   for (const [name, digest] of Object.entries({
     sourceResultSha256: provenance.sourceResultSha256,
     orderedQuestionIdsHash,
@@ -408,54 +432,90 @@ async function loadOrInitializeCheckpoint(
   })) {
     if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error(`runJudgeCalibration: ${name} must be a lowercase SHA-256 digest.`);
   }
-  if (!provenance.sourceResultId || !provenance.rubricVersion) {
-    throw new Error("runJudgeCalibration: checkpoint sourceResultId and rubricVersion are required.");
+  if (
+    !provenance.sourceResultId || !provenance.localJudgePromptIdentity ||
+    !provenance.frontierJudgePromptIdentity || !provenance.binningIdentity
+  ) {
+    throw new Error("runJudgeCalibration: checkpoint sourceResultId, prompt identities, and binningIdentity are required.");
   }
   if (provenance.orderedQuestionIdsHash !== orderedQuestionIdsHash) {
     throw new Error("runJudgeCalibration: checkpoint ordered-question-id hash does not match the validated source.");
   }
   await ensurePrivateDirectory(provenance.dir);
   const checkpointPath = path.join(provenance.dir, `${sanitizeCalibrationSegment(benchmarkId)}.checkpoint.json`);
-  const contract = {
-    protocolVersion: JUDGE_CALIBRATION_PROTOCOL_VERSION,
-    benchmarkId,
-    sourceResultId: provenance.sourceResultId,
-    sourceResultSha256: provenance.sourceResultSha256,
-    orderedQuestionIdsHash: provenance.orderedQuestionIdsHash,
-    answerSetHash,
-    sliceQuestionIds,
-    rubricVersion: provenance.rubricVersion,
-    localJudgeConfigHash: provenance.localJudgeConfigHash,
-    frontierJudgeConfigHash: provenance.frontierJudgeConfigHash,
-  };
-  const contractHash = createHash("sha256").update(stableJson(contract)).digest("hex");
-  let raw: string;
+  const lockPath = `${checkpointPath}.lock`;
+  let lockHandle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    const info = await lstat(checkpointPath);
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error("checkpoint path is not a regular file");
-    raw = await readFile(checkpointPath, "utf8");
+    lockHandle = await open(lockPath, "wx", 0o600);
+    await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`, "utf8");
+    await chmod(lockPath, 0o600);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const state: CalibrationCheckpointState = { schemaVersion: 1, contractHash, contract, completed: {} };
-    await writeCalibrationCheckpoint(checkpointPath, state);
-    return { path: checkpointPath, state };
+    if (lockHandle) {
+      await lockHandle.close().catch(() => undefined);
+      await unlink(lockPath).catch(() => undefined);
+    }
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        `runJudgeCalibration: checkpoint is locked at ${lockPath}; refusing concurrent or stale-lock recovery to avoid duplicate paid judge calls.`,
+      );
+    }
+    throw error;
   }
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`); }
-  if (!isValidCheckpoint(parsed, new Set(sliceQuestionIds))) {
-    throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`);
+  let released = false;
+  const release = async (): Promise<void> => {
+    if (released) return;
+    if (!lockHandle) throw new Error(`runJudgeCalibration: checkpoint lock handle was not acquired for ${lockPath}.`);
+    released = true;
+    await lockHandle.close();
+    await unlink(lockPath);
+  };
+  try {
+    const contract = {
+      protocolVersion: JUDGE_CALIBRATION_PROTOCOL_VERSION,
+      benchmarkId,
+      sourceResultId: provenance.sourceResultId,
+      sourceResultSha256: provenance.sourceResultSha256,
+      orderedQuestionIdsHash: provenance.orderedQuestionIdsHash,
+      answerSetHash,
+      sliceQuestionIds,
+      localJudgePromptIdentity: provenance.localJudgePromptIdentity,
+      frontierJudgePromptIdentity: provenance.frontierJudgePromptIdentity,
+      localJudgeConfigHash: provenance.localJudgeConfigHash,
+      frontierJudgeConfigHash: provenance.frontierJudgeConfigHash,
+      binningIdentity: provenance.binningIdentity,
+    };
+    const contractHash = createHash("sha256").update(stableJson(contract)).digest("hex");
+    let raw: string;
+    try {
+      const info = await lstat(checkpointPath);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("checkpoint path is not a regular file");
+      raw = await readFile(checkpointPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const state: CalibrationCheckpointState = { schemaVersion: 2, contractHash, contract, completed: {} };
+      await writeCalibrationCheckpoint(checkpointPath, state);
+      return { path: checkpointPath, state, release };
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`); }
+    if (!isValidCheckpoint(parsed, new Set(sliceQuestionIds))) {
+      throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`);
+    }
+    if (parsed.contractHash !== contractHash || stableJson(parsed.contract) !== stableJson(contract)) {
+      throw new Error(`runJudgeCalibration: checkpoint contract mismatch at ${checkpointPath}; refusing to call judges.`);
+    }
+    await chmod(checkpointPath, 0o600);
+    return { path: checkpointPath, state: parsed, release };
+  } catch (error) {
+    await release().catch(() => undefined);
+    throw error;
   }
-  if (parsed.contractHash !== contractHash || stableJson(parsed.contract) !== stableJson(contract)) {
-    throw new Error(`runJudgeCalibration: checkpoint contract mismatch at ${checkpointPath}; refusing to call judges.`);
-  }
-  await chmod(checkpointPath, 0o600);
-  return { path: checkpointPath, state: parsed };
 }
 
 function isValidCheckpoint(value: unknown, sliceIds: ReadonlySet<string>): value is CalibrationCheckpointState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (record.schemaVersion !== 1 || typeof record.contractHash !== "string" || !/^[0-9a-f]{64}$/.test(record.contractHash) ||
+  if (record.schemaVersion !== 2 || typeof record.contractHash !== "string" || !/^[0-9a-f]{64}$/.test(record.contractHash) ||
       !record.contract || typeof record.contract !== "object" || Array.isArray(record.contract) ||
       !record.completed || typeof record.completed !== "object" || Array.isArray(record.completed)) return false;
   return Object.entries(record.completed as Record<string, unknown>).every(([id, output]) => {
@@ -507,7 +567,11 @@ export async function writeJudgeCalibrationState(
   result: JudgeCalibrationResult,
   calibrationDir: string,
   identities?: JudgeCalibrationIdentities,
-  provenance?: { sourceResultId: string },
+  provenance?: {
+    sourceResultId: string;
+    localJudgeConfigHash?: string;
+    frontierJudgeConfigHash?: string;
+  },
 ): Promise<string> {
   await ensurePrivateDirectory(calibrationDir);
   const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> = {
@@ -607,6 +671,13 @@ export async function loadJudgeCalibrationState(
     loaded.sourceResultId = sourceResultId;
     loaded.answerSetHash = answerSetHash;
     loaded.sliceQuestionIds = record.sliceQuestionIds as string[];
+  }
+  if (
+    typeof record.localJudgeConfigHash === "string" && /^[0-9a-f]{64}$/.test(record.localJudgeConfigHash) &&
+    typeof record.frontierJudgeConfigHash === "string" && /^[0-9a-f]{64}$/.test(record.frontierJudgeConfigHash)
+  ) {
+    loaded.localJudgeConfigHash = record.localJudgeConfigHash;
+    loaded.frontierJudgeConfigHash = record.frontierJudgeConfigHash;
   }
   // Identities are optional (older state files predate them). If ANY identity
   // field is present, ALL four must be present and string — otherwise the

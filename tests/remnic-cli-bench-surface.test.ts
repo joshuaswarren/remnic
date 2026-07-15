@@ -400,7 +400,10 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // attaches it to the stored result so subsequent artifacts carry the kappa.
   assert.match(source, /loadJudgeCalibrationState\?:/);
   assert.match(source, /async function attachPersistedJudgeCalibration\(/);
-  assert.match(source, /await attachPersistedJudgeCalibration\(benchModule, benchmarkId, result\);/);
+  assert.match(source, /await attachPersistedJudgeCalibration\(benchModule, benchmarkId, result, parsed\);/);
+  assert.match(source, /const calibrationDir = calibrationBinding\.calibrationDir \?\?/);
+  assert.match(source, /calibrationBinding\.calibrationLocalConfigSha256 !== state\.localJudgeConfigHash/);
+  assert.match(source, /calibrationBinding\.calibrationFrontierConfigSha256 !== state\.frontierJudgeConfigHash/);
   assert.match(source, /judgeCalibration: \{/);
 
   // P2 (codex): persisted kappa is bound to the calibrated judge pair. The
@@ -410,7 +413,8 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // stored frontier identity must NOT inherit the local judge's kappa
   // (cursor Low + codex P2 review).
   assert.match(source, /calibrationIdentities = \{/);
-  assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id/);
+  assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id,[\s\S]*localJudgeConfigHash,[\s\S]*frontierJudgeConfigHash/);
+  assert.match(source, /getProviderBackedJudgePromptIdentity\(localJudgeConfig\)/);
   assert.match(source, /if \(!matchesLocal\) \{/);
   assert.match(source, /state\.localJudgeModel !== undefined && state\.frontierJudgeModel !== undefined/);
 
@@ -438,8 +442,54 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /timeoutMs: parsed\.localJudgeRequestTimeout/);
   assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
   assert.match(source, /checkpoint: \{/);
-  assert.match(source, /\{ sourceResultId: loaded\.meta\.id \}/);
+  assert.match(source, /\{ sourceResultId: loaded\.meta\.id, localJudgeConfigHash, frontierJudgeConfigHash \}/);
   assert.match(source, /bootstrap CI/);
+});
+
+test("custom calibration directory and both config hashes bind attachment end to end", async () => {
+  const { attachPersistedJudgeCalibration } = await import("../packages/remnic-cli/src/index.ts");
+  const customDir = join(tmpdir(), "exact-private-calibration");
+  const localHash = "a".repeat(64);
+  const frontierHash = "b".repeat(64);
+  let loadedDir: string | undefined;
+  const benchModule = {
+    async loadJudgeCalibrationState(_benchmarkId: string, calibrationDir: string) {
+      loadedDir = calibrationDir;
+      return {
+        kappa: 0.81,
+        sampleSize: 2,
+        threshold: 0.7,
+        warning: false,
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  const result: {
+    config: {
+      benchmarkOptions?: Record<string, unknown>;
+      judgeProvider: { provider: string; model: string };
+    };
+  } = { config: { judgeProvider: { provider: "ollama", model: "judge" } } };
+  await attachPersistedJudgeCalibration(benchModule as never, "locomo", result, {
+    calibrationDir: customDir,
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  });
+  assert.equal(loadedDir, customDir);
+  assert.deepEqual(result.config.benchmarkOptions?.judgeCalibration, {
+    kappa: 0.81,
+    sampleSize: 2,
+    threshold: 0.7,
+    warning: false,
+    localJudgeConfigHash: localHash,
+    frontierJudgeConfigHash: frontierHash,
+  });
+  await assert.rejects(() => attachPersistedJudgeCalibration(benchModule as never, "locomo", result, {
+    calibrationDir: customDir,
+    calibrationLocalConfigSha256: "c".repeat(64),
+    calibrationFrontierConfigSha256: frontierHash,
+  }), /configuration hash mismatch/);
 });
 
 test("bench run exits non-zero after a mixed success/failure run", async () => {

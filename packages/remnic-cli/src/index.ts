@@ -774,6 +774,8 @@ type PackageBenchModule = {
         sliceQuestionIds?: readonly string[];
         confidenceInterval?: { lower: number; upper: number; level: number };
         bootstrapSamples?: number;
+        localJudgeConfigHash?: string;
+        frontierJudgeConfigHash?: string;
       }
     | undefined
   >;
@@ -1042,6 +1044,10 @@ Options:
   --expected-question-id-list-sha256 <sha256>
                            Expected ordered source task-ID list hash
   --calibration-dir <path> Private final-state and resumable-checkpoint directory
+  --calibration-local-config-sha256 <sha256>
+                           Required on later runs that attach calibration state
+  --calibration-frontier-config-sha256 <sha256>
+                           Required on later runs that attach calibration state
   --drain-timeout <ms>     Memory drain timeout in milliseconds
                            (defaults to --request-timeout; implicit codex-cli default: 600000)
   --local-lab-manifest <path>
@@ -2652,22 +2658,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   } as ProviderFactoryConfig;
   const frontierJudge = bench.createProviderBackedJudge(frontierJudgeConfig);
 
-  const calibrationConfigHash = (config: ProviderFactoryConfig): string => {
-    const canonicalize = (value: unknown, key = ""): unknown => {
-      if (typeof value === "string" && /(?:api.?key|authorization|token|secret)/i.test(key)) {
-        return { secretSha256: createHash("sha256").update(value).digest("hex") };
-      }
-      if (Array.isArray(value)) return value.map((item) => canonicalize(item));
-      if (value && typeof value === "object") {
-        return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((childKey) => [
-          childKey,
-          canonicalize((value as Record<string, unknown>)[childKey], childKey),
-        ]));
-      }
-      return value;
-    };
-    return createHash("sha256").update(JSON.stringify(canonicalize(config))).digest("hex");
-  };
+  const localJudgeConfigHash = hashCalibrationProviderConfig(localJudgeConfig);
+  const frontierJudgeConfigHash = hashCalibrationProviderConfig(frontierJudgeConfig);
 
   const result = await bench.runJudgeCalibration({
     benchmarkId,
@@ -2681,9 +2673,10 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
       sourceResultId: loaded.meta.id,
       sourceResultSha256,
       orderedQuestionIdsHash,
-      rubricVersion: bench.OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
-      localJudgeConfigHash: calibrationConfigHash(localJudgeConfig),
-      frontierJudgeConfigHash: calibrationConfigHash(frontierJudgeConfig),
+      localJudgePromptIdentity: bench.getProviderBackedJudgePromptIdentity(localJudgeConfig),
+      frontierJudgePromptIdentity: bench.getProviderBackedJudgePromptIdentity(frontierJudgeConfig),
+      localJudgeConfigHash,
+      frontierJudgeConfigHash,
     },
   });
 
@@ -2700,7 +2693,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     result,
     calibrationDir,
     calibrationIdentities,
-    { sourceResultId: loaded.meta.id },
+    { sourceResultId: loaded.meta.id, localJudgeConfigHash, frontierJudgeConfigHash },
   );
   // Read the persisted state straight back. This exercises the load path the
   // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
@@ -2708,7 +2701,11 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // would mean the persisted kappa is not what subsequent local artifacts
   // would carry, which is an operator-visible failure.
   const persisted = await bench.loadJudgeCalibrationState(benchmarkId, calibrationDir);
-  if (!persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning) {
+  if (
+    !persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning ||
+    persisted.localJudgeConfigHash !== localJudgeConfigHash ||
+    persisted.frontierJudgeConfigHash !== frontierJudgeConfigHash
+  ) {
     console.error(
       `ERROR: calibration state round-trip failed for ${benchmarkId} (wrote kappa ${result.kappa}, read back ${persisted ? persisted.kappa : "nothing"}). Re-run judge-calibrate.`,
     );
@@ -2733,6 +2730,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
           categories: result.categories,
           orderedQuestionIdsHash,
           sourceResultSha256,
+          localJudgeConfigHash,
+          frontierJudgeConfigHash,
           execution: result.execution,
           statePath,
         },
@@ -3457,7 +3456,7 @@ async function runBenchViaPackage(
     // carries the kappa + warning after `remnic bench judge-calibrate`. Absent
     // calibration (file missing) is the common case — the result is written
     // unchanged, preserving backwards compatibility.
-    await attachPersistedJudgeCalibration(benchModule, benchmarkId, result);
+    await attachPersistedJudgeCalibration(benchModule, benchmarkId, result, parsed);
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
@@ -3480,7 +3479,7 @@ async function runBenchViaPackage(
       );
       // Attach persisted calibration to partial results too — the kappa
       // reflects judge reliability, independent of whether the run finished.
-      await attachPersistedJudgeCalibration(benchModule, benchmarkId, partialResult);
+      await attachPersistedJudgeCalibration(benchModule, benchmarkId, partialResult, parsed);
       try {
         const partialPath = await benchModule.writeBenchmarkResult(partialResult, outputDir);
         console.error(`  Partial results (${partialTasks.length} tasks) written to ${partialPath}`);
@@ -3519,15 +3518,13 @@ async function runBenchViaPackage(
  * file is a silent miss inside `loadJudgeCalibrationState` (rule 34) — the run
  * is never failed by stale calibration.
  *
- * Judge binding (codex P2 review): when the persisted state records the
- * calibrated judge identities, the kappa is attached ONLY when the run's judge
- * matches the calibrated local or frontier judge — a run that swapped the
- * local-lab manifest or the frontier judge must not inherit a stale kappa for
- * a different pair. State files predating identities have none and are treated
- * as unbound (attach anyway) for backwards compatibility. Only the artifact
- * subset is stashed — never the judge identities (those are bookkeeping).
+ * Judge binding: attachment requires both persisted configuration hashes to be
+ * explicitly pinned by the run, and the run's provider/model must match the
+ * calibrated local judge. Legacy state without hashes fails closed and must be
+ * regenerated. Only the artifact subset and hashes are stashed — provider
+ * identities remain state-file bookkeeping.
  */
-async function attachPersistedJudgeCalibration(
+export async function attachPersistedJudgeCalibration(
   benchModule: PackageBenchModule,
   benchmarkId: string,
   result: {
@@ -3536,10 +3533,33 @@ async function attachPersistedJudgeCalibration(
       judgeProvider?: { provider?: string; model?: string } | null;
     };
   },
+  calibrationBinding: Pick<ParsedBenchArgs,
+    "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256"
+  >,
 ): Promise<void> {
-  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  const calibrationDir = calibrationBinding.calibrationDir ??
+    path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
   const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
   if (!state) return;
+  if (!state.localJudgeConfigHash || !state.frontierJudgeConfigHash) {
+    throw new Error(
+      `Calibration state for ${benchmarkId} is missing bound judge configuration hashes; recalibrate before attaching it.`,
+    );
+  }
+  if (
+    !calibrationBinding.calibrationLocalConfigSha256 ||
+    !calibrationBinding.calibrationFrontierConfigSha256
+  ) {
+    throw new Error(
+      `Calibration state exists for ${benchmarkId}; --calibration-local-config-sha256 and --calibration-frontier-config-sha256 are required to attach it.`,
+    );
+  }
+  if (
+    calibrationBinding.calibrationLocalConfigSha256 !== state.localJudgeConfigHash ||
+    calibrationBinding.calibrationFrontierConfigSha256 !== state.frontierJudgeConfigHash
+  ) {
+    throw new Error(`Calibration configuration hash mismatch for ${benchmarkId}; refusing to attach stale kappa.`);
+  }
   if (state.localJudgeModel !== undefined && state.frontierJudgeModel !== undefined) {
     const runJudgeProvider = result.config.judgeProvider?.provider;
     const runJudgeModel = result.config.judgeProvider?.model;
@@ -3566,8 +3586,27 @@ async function attachPersistedJudgeCalibration(
       ...(state.answerSetHash ? { answerSetHash: state.answerSetHash } : {}),
       ...(state.sourceResultId ? { sourceResultId: state.sourceResultId } : {}),
       ...(state.sliceQuestionIds ? { sliceQuestionIds: state.sliceQuestionIds } : {}),
+      localJudgeConfigHash: state.localJudgeConfigHash,
+      frontierJudgeConfigHash: state.frontierJudgeConfigHash,
     },
   };
+}
+
+function hashCalibrationProviderConfig(config: unknown): string {
+  const canonicalize = (value: unknown, key = ""): unknown => {
+    if (typeof value === "string" && /(?:api.?key|authorization|token|secret)/i.test(key)) {
+      return { secretSha256: createHash("sha256").update(value).digest("hex") };
+    }
+    if (Array.isArray(value)) return value.map((item) => canonicalize(item));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((childKey) => [
+        childKey,
+        canonicalize((value as Record<string, unknown>)[childKey], childKey),
+      ]));
+    }
+    return value;
+  };
+  return createHash("sha256").update(JSON.stringify(canonicalize(config))).digest("hex");
 }
 
 function restoreOptionalEnv(key: string, previousValue: string | undefined): void {

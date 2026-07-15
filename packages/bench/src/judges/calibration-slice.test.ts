@@ -23,7 +23,8 @@ function checkpointProvenance(dir: string, answers: readonly CalibrationAnswer[]
     sourceResultId: "source-run-1",
     sourceResultSha256: "a".repeat(64),
     orderedQuestionIdsHash: hashOrderedQuestionIds(answers.map((answer) => answer.questionId)),
-    rubricVersion: "rubric-v1",
+    localJudgePromptIdentity: "sha256:" + "1".repeat(64),
+    frontierJudgePromptIdentity: "sha256:" + "2".repeat(64),
     localJudgeConfigHash: "c".repeat(64),
     frontierJudgeConfigHash: "d".repeat(64),
   };
@@ -148,6 +149,88 @@ test("runJudgeCalibration fails closed on corrupt or mismatched checkpoint befor
       benchmarkId: "locomo", localJudge: counting, frontierJudge: counting, answers, sliceSize: 2,
       checkpoint: checkpointProvenance(dir, answers),
     }), /corrupt checkpoint/);
+    assert.equal(calls, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("runJudgeCalibration holds an exclusive checkpoint lock across judge-call reservation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-lock-"));
+  try {
+    const answers = makeAnswers(2);
+    let enteredFirstCall!: () => void;
+    let releaseFirstCall!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredFirstCall = resolve; });
+    const release = new Promise<void>((resolve) => { releaseFirstCall = resolve; });
+    let firstCalls = 0;
+    const blockingJudge: BenchJudge = {
+      async score() {
+        firstCalls += 1;
+        if (firstCalls === 1) {
+          enteredFirstCall();
+          await release;
+        }
+        return 1;
+      },
+    };
+    const first = runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: blockingJudge,
+      frontierJudge: blockingJudge,
+      answers,
+      sliceSize: 2,
+      checkpoint: checkpointProvenance(dir, answers),
+      bootstrapSamples: 20,
+    });
+    await entered;
+    let secondCalls = 0;
+    const secondJudge: BenchJudge = { async score() { secondCalls += 1; return 1; } };
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: secondJudge,
+      frontierJudge: secondJudge,
+      answers,
+      sliceSize: 2,
+      checkpoint: checkpointProvenance(dir, answers),
+    }), /checkpoint is locked/);
+    assert.equal(secondCalls, 0, "a concurrent process must never reserve a paid call");
+    releaseFirstCall();
+    await first;
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("runJudgeCalibration invalidates resume when prompt or binning identity changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-identities-"));
+  try {
+    const answers = makeAnswers(2);
+    const base = checkpointProvenance(dir, answers);
+    await runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: makeScalarStubJudge({ q0: 1, q1: 1 }),
+      frontierJudge: makeScalarStubJudge({ q0: 1, q1: 1 }),
+      answers,
+      sliceSize: 2,
+      checkpoint: base,
+      bootstrapSamples: 20,
+    });
+    let calls = 0;
+    const judge: BenchJudge = { async score() { calls += 1; return 1; } };
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: judge,
+      frontierJudge: judge,
+      answers,
+      sliceSize: 2,
+      checkpoint: { ...base, localJudgePromptIdentity: "sha256:" + "9".repeat(64) },
+    }), /contract mismatch/);
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: judge,
+      frontierJudge: judge,
+      answers,
+      sliceSize: 2,
+      checkpoint: base,
+      binningIdentity: "three-way-binning-v2",
+    }), /contract mismatch/);
     assert.equal(calls, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -531,13 +614,19 @@ test("writeJudgeCalibrationState pins source, slice, answer hash, and bootstrap 
       sliceSize: 12,
       bootstrapSamples: 100,
     });
-    await writeJudgeCalibrationState(result, dir, undefined, { sourceResultId: "run-pinned-123" });
+    await writeJudgeCalibrationState(result, dir, undefined, {
+      sourceResultId: "run-pinned-123",
+      localJudgeConfigHash: "a".repeat(64),
+      frontierJudgeConfigHash: "b".repeat(64),
+    });
     const loaded = await loadJudgeCalibrationState("locomo", dir);
     assert.equal(loaded?.sourceResultId, "run-pinned-123");
     assert.equal(loaded?.answerSetHash, result.answerSetHash);
     assert.deepEqual(loaded?.sliceQuestionIds, result.sliceQuestionIds);
     assert.deepEqual(loaded?.confidenceInterval, result.confidenceInterval);
     assert.equal(loaded?.bootstrapSamples, 100);
+    assert.equal(loaded?.localJudgeConfigHash, "a".repeat(64));
+    assert.equal(loaded?.frontierJudgeConfigHash, "b".repeat(64));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -32,6 +32,7 @@ MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
 # it needs the /api form (the local-lab manifest path normalizes this, the raw
 # CLI flag does not).
 JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
+CALIBRATION_DIR="$HOME/.remnic/bench/build-week-2026/calibration"
 SEED=1
 
 # judge-calibrate does NOT generate answers — it re-judges a benchmark's
@@ -67,7 +68,7 @@ node scripts/run-bench-cli.mjs judge-calibrate --benchmark locomo \
   --source-result-id 6e499698-6eaf-4a06-8a81-3d90dd867e57 \
   --expected-answer-set-sha256 a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81 \
   --expected-question-id-list-sha256 9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869 \
-  --calibration-dir "$HOME/.remnic/bench/build-week-2026/calibration" \
+  --calibration-dir "$CALIBRATION_DIR" \
   --local-judge-request-timeout 180000 --frontier-judge-request-timeout 600000 \
   2>&1 | tee "$LOG_DIR/judge-calibrate-locomo.log"
 
@@ -78,25 +79,35 @@ node scripts/run-bench-cli.mjs judge-calibrate --benchmark longmemeval \
   --source-result-id a7ab6f70-5661-499e-b4b2-99bf0830368c \
   --expected-answer-set-sha256 009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4 \
   --expected-question-id-list-sha256 9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5 \
-  --calibration-dir "$HOME/.remnic/bench/build-week-2026/calibration" \
+  --calibration-dir "$CALIBRATION_DIR" \
   --local-judge-request-timeout 180000 --frontier-judge-request-timeout 600000 \
   2>&1 | tee "$LOG_DIR/judge-calibrate-longmemeval.log"
 
 step "full LongMemEval (500 tasks) — Opus responder, local judge"
+LONGMEM_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"
+LONGMEM_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"
 node scripts/run-bench-cli.mjs run longmemeval \
   --runtime-profile baseline \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
   --dataset-dir bench-datasets/longmemeval \
+  --calibration-dir "$CALIBRATION_DIR" \
+  --calibration-local-config-sha256 "$LONGMEM_LOCAL_HASH" \
+  --calibration-frontier-config-sha256 "$LONGMEM_FRONTIER_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/longmemeval-full.log"
 
 step "full LoCoMo (1986 tasks) — Opus responder, local judge"
+LOCOMO_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "$CALIBRATION_DIR/locomo.json")"
+LOCOMO_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "$CALIBRATION_DIR/locomo.json")"
 node scripts/run-bench-cli.mjs run locomo \
   --runtime-profile baseline \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
   --dataset-dir bench-datasets/locomo \
+  --calibration-dir "$CALIBRATION_DIR" \
+  --calibration-local-config-sha256 "$LOCOMO_LOCAL_HASH" \
+  --calibration-frontier-config-sha256 "$LOCOMO_FRONTIER_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/locomo-full.log"
 
