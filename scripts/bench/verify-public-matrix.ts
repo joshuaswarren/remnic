@@ -526,9 +526,10 @@ function validateFullDatasetRunOptions(
         addIssue(issues, benchmark, resultPath, "invalid-bounded-trial-limit", `benchmarkOptions.${key} must be a positive integer.`);
       }
     }
-    if (!Object.prototype.hasOwnProperty.call(benchmarkOptions, "taskFilter")) return;
   }
-  const disallowedKeys = [...boundedKeys, "taskFilter"] as const;
+  const disallowedKeys = allowBoundedTrial
+    ? (["taskFilter"] as const)
+    : ([...boundedKeys, "taskFilter"] as const);
   for (const key of disallowedKeys) {
     if (Object.prototype.hasOwnProperty.call(benchmarkOptions, key)) {
       addIssue(

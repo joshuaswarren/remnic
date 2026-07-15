@@ -33,7 +33,7 @@ interface VerifyPublicMatrixEvidenceOptions {
 
 interface PublicMatrixEvidenceReport {
   ok: boolean;
-  issues: Array<{ code: string }>;
+  issues: Array<{ code: string; message: string }>;
 }
 
 type VerifyPublicMatrixEvidence = (
@@ -497,6 +497,49 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
     allowBoundedTrial: true,
   });
   assert.equal(report.ok, true, JSON.stringify(report.issues, null, 2));
+
+  result.config.benchmarkOptions = {
+    limit: 1,
+    trialLimit: 1,
+    taskFilter: "task-1",
+  };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
+  const filteredTrial = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  const limitedIssues = filteredTrial.issues.filter((issue) => issue.code === "limited-result");
+  assert.equal(limitedIssues.length, 1, JSON.stringify(filteredTrial.issues, null, 2));
+  assert.match(limitedIssues[0]!.message, /taskFilter/);
+
+  result.config.benchmarkOptions = { limit: 1 };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
 
   const noManifestBypass = await verifyPublicMatrixEvidence({
     resultsDir,
