@@ -58,9 +58,9 @@ test("projectNamespaceName: empty input falls back to 'unknown'", () => {
 });
 
 test("projectTagProjectId: lossy tags get hash disambiguators", () => {
-  assert.equal(projectTagProjectId("blend-supply"), "tag:blend-supply");
-  assert.notEqual(projectTagProjectId("blend/supply"), projectTagProjectId("blend-supply"));
-  assert.match(projectTagProjectId("blend/supply"), /^tag:blend-supply-[0-9a-f]{8}$/);
+  assert.equal(projectTagProjectId("acme-webshop"), "tag:acme-webshop");
+  assert.notEqual(projectTagProjectId("acme/webshop"), projectTagProjectId("acme-webshop"));
+  assert.match(projectTagProjectId("acme/webshop"), /^tag:acme-webshop-[0-9a-f]{8}$/);
 });
 
 test("projectNamespaceName: length-capped to 64 chars, no trailing dash", () => {

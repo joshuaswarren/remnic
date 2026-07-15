@@ -173,7 +173,7 @@ type RawExcerptInternals = {
 };
 
 const SESSION_KEY = "pi-geek:abc123";
-const PROJECT_TAG = "Blend/Supply";
+const PROJECT_TAG = "Acme/Webshop";
 
 function overlayNamespace(): string {
   return combineNamespaces(

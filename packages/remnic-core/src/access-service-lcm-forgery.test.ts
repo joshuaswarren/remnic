@@ -193,7 +193,7 @@ test("#1495 P1 FORGERY BLOCKED: a default-only caller cannot read another tenant
   const victimRes = await service.observe(
     observeRequest({
       sessionKey: "alice:s1",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
   const victimWriteKey = probe.rows[0]!.session_id;
@@ -235,7 +235,7 @@ test("#1495 P1 FORGERY BLOCKED: a default-only caller cannot read another tenant
   const service = new EngramAccessService(probe.orch);
 
   const victimRes = await service.observe(
-    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
   const victimOverlayNs = victimRes.effectiveNamespace!;
   assert.ok(victimOverlayNs.startsWith("alice-"));
@@ -268,7 +268,7 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: the victim still reads its OWN overl
 
   // alice archives under her overlay AND binds the coding context to her session.
   await service.observe(
-    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
 
   // A same-session lcmSearch by alice (no explicit namespace) must reach her rows:
@@ -330,7 +330,7 @@ test("#1505 codex P1 r2 FORGERY BLOCKED: explicit-namespace + sessionless lcmSea
 
   // VICTIM archives overlay rows.
   const victimRes = await service.observe(
-    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
   assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
 
@@ -361,7 +361,7 @@ test("#1505 codex P1 r2 FORGERY BLOCKED: default-readable implicit + sessionless
   const service = new EngramAccessService(probe.orch);
 
   const victimRes = await service.observe(
-    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Acme/Webshop" }),
   );
   assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
 

@@ -305,12 +305,12 @@ test("#1505 thread 2 (c) projectTag: observe LCM write key == recall reader key 
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
 
   const expectedNs = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
   const expectedKey = encodeNs(expectedNs, "pi-geek:abc123");
   assert.equal(res.effectiveNamespace, expectedNs);
@@ -442,7 +442,7 @@ test("#1505 thread 2 (d) projectScope:false ⇒ raw sessionKey everywhere (singl
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
   // No overlay ⇒ effective namespace is the default store ⇒ raw key.
   assert.equal(res.effectiveNamespace, "default");
@@ -470,7 +470,7 @@ test("#1505 thread 2 (d) namespacesEnabled:false ⇒ raw sessionKey everywhere",
   const service = new EngramAccessService(probe.orch);
 
   const res = await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
   assert.equal(res.effectiveNamespace, "default");
   assert.equal(probe.lcmWriteKeys[0], "pi-geek:abc123", "raw LCM write key");
@@ -501,14 +501,14 @@ test("#1505 thread 1: extraction provenance principal is the resolved principal 
   await service.observe(
     observeRequest({
       sessionKey: "pi-geek:abc123",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
       skipExtraction: false, // exercise the extraction path
     }),
   );
 
   const expectedNs = combineNamespaces(
     "pi-geek",
-    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
   );
   assert.equal(probe.extractionCalls.length, 1);
   // Provenance identity: the resolved principal, never a default parsed from the
@@ -590,7 +590,7 @@ test("#1505 thread 2: LCM read namespace honors authenticatedPrincipal (write-un
     observeRequest({
       sessionKey: "sess-1",
       authenticatedPrincipal: "alice",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
@@ -639,7 +639,7 @@ test("#1505 thread 2 compaction regression: flush/record overlay-derived key mat
   const service = new EngramAccessService(probe.orch);
 
   await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
   await service.lcmCompactionFlush({ sessionKey: "pi-geek:abc123" });
 
@@ -748,7 +748,7 @@ test("#1505 round 3: access lcmSearch routes the session_id through the SCOPED (
   const service = new EngramAccessService(probe.orch);
 
   await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
   const writeKey = probe.lcmWriteKeys[0];
   // New #1495 P1 encoding: `\x1f<overlayNs>\x1f<sessionKey>`. Parse the overlay
@@ -872,8 +872,8 @@ test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default wh
 
   // Bind a coding context to sess-1 so the overlay would apply on alice's base.
   probe.contexts.set("sess-1", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   const lcmReadNamespaceForSession = Orchestrator.prototype[
@@ -914,8 +914,8 @@ test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default wh
   } as Partial<PluginConfig>);
 
   probe.contexts.set("sess-1", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   const lcmReadNamespaceForSession = Orchestrator.prototype[
@@ -944,8 +944,8 @@ test("#1505 round 3 thread 1: orchestrator LCM read key still uses the overlay w
   } as Partial<PluginConfig>);
 
   probe.contexts.set("pi-geek:abc123", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   const lcmReadNamespaceForSession = Orchestrator.prototype[
@@ -977,8 +977,8 @@ test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the princip
   const service = new EngramAccessService(probe.orch);
 
   probe.contexts.set("sess-1", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   await service.lcmSearch({
@@ -1036,7 +1036,7 @@ test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLA
     observeRequest({
       sessionKey: "sess-1",
       authenticatedPrincipal: "alice",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
@@ -1080,8 +1080,8 @@ test("#1505 round 4 thread (codex P2): a read-only lcmSearch by the SAME write-o
   const service = new EngramAccessService(probe.orch);
 
   probe.contexts.set("sess-1", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   await service.lcmSearch({
@@ -1115,7 +1115,7 @@ test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key whe
     observeRequest({
       sessionKey: "sess-1",
       authenticatedPrincipal: "alice",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
@@ -1172,7 +1172,7 @@ test("#1505 thread NBHWs (codex P2): restrictive `default` WRITE policy + writab
     observeRequest({
       sessionKey: "sess-1",
       authenticatedPrincipal: "alice",
-      projectTag: "Blend/Supply",
+      projectTag: "Acme/Webshop",
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
@@ -1230,7 +1230,7 @@ test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable s
 
   // observe archives under pi-geek's readable+writable project overlay.
   await service.observe(
-    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
   const writeKey = probe.lcmWriteKeys[0];
   assertOverlayWriteKey(writeKey, "pi-geek-"); // observe must archive under pi-geek's overlay key, got ${writeKey}
@@ -1277,8 +1277,8 @@ test("#1505 codex P1 'Don't treat any readable namespace as default LCM access':
 
   // Bind a coding context so the overlay WOULD apply on alice's base.
   probe.contexts.set("sess-1", {
-    projectId: "blend-supply",
-    projectName: "Blend/Supply",
+    projectId: "acme-webshop",
+    projectName: "Acme/Webshop",
   } as unknown as CodingContext);
 
   const res = await service.lcmSearch({

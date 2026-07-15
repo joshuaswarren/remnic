@@ -90,13 +90,13 @@ async function walkCollectDirs(root: string, out: Set<string>): Promise<void> {
 // ─── Symptom A: coding-namespace derivation is stable across write/read ────
 
 test("#1492 Symptom A: a project-scoped session derives ONE stable overlay namespace — the write/read convergence point", () => {
-  // The reporter's scenario: user "pi-geek" in project "Blend/Supply". Both the
+  // The reporter's scenario: user "pi-geek" in project "Acme/Webshop". Both the
   // observe write path and the recall read path must resolve the SAME scoped
   // namespace. They do so by combining the principal base with the project
   // overlay through exactly ONE helper (combineNamespaces); a second ad-hoc
   // combination is what caused the original drift.
   const principal = "pi-geek";
-  const projectId = projectTagProjectId("Blend/Supply");
+  const projectId = projectTagProjectId("Acme/Webshop");
   const codingContext = {
     projectId,
     branch: null,

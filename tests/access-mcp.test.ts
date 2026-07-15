@@ -761,7 +761,7 @@ test("MCP day_summary tolerates injected git context keys", async () => {
         namespace: "global",
         timeZone: "America/Chicago",
         cwd: "/tmp/project",
-        projectTag: "blend-supply",
+        projectTag: "acme-webshop",
       },
     },
   });

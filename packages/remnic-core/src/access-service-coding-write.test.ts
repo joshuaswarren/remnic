@@ -76,11 +76,11 @@ test("#1434 projectTag scopes the write to the project namespace, read-only", as
   const resolved = await resolver(service)({
     sessionKey: "sess-1",
     authenticatedPrincipal: "alice",
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
     content: "x",
   });
 
-  assert.equal(resolved, projectNamespaceFor("Blend/Supply"));
+  assert.equal(resolved, projectNamespaceFor("Acme/Webshop"));
   assert.notEqual(resolved, "default", "project context must change the namespace");
   // Read-only: resolving must NOT persist coding context on the session.
   assert.equal(
@@ -100,7 +100,7 @@ test("#1434 a sessionless write with projectTag stays on the base namespace (rec
   const service = new EngramAccessService(orch);
   const resolved = await resolver(service)({
     authenticatedPrincipal: "alice",
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
     content: "x",
   });
   assert.equal(resolved, "default");
@@ -109,9 +109,9 @@ test("#1434 a sessionless write with projectTag stays on the base namespace (rec
 test("#1434 an existing session coding context scopes the write (recall-then-store flow)", async () => {
   const orch = makeOrchestratorStub();
   orch.setCodingContextForSession("sess-ctx", {
-    projectId: projectTagProjectId("Blend/Supply"),
+    projectId: projectTagProjectId("Acme/Webshop"),
     branch: null,
-    rootPath: projectTagProjectId("Blend/Supply"),
+    rootPath: projectTagProjectId("Acme/Webshop"),
     defaultBranch: null,
   });
   const service = new EngramAccessService(orch);
@@ -121,7 +121,7 @@ test("#1434 an existing session coding context scopes the write (recall-then-sto
     authenticatedPrincipal: "alice",
     content: "x",
   });
-  assert.equal(resolved, projectNamespaceFor("Blend/Supply"));
+  assert.equal(resolved, projectNamespaceFor("Acme/Webshop"));
 });
 
 test("#1434 an existing session binding wins over per-call projectTag (recall symmetry)", async () => {
@@ -155,7 +155,7 @@ test("#1434 explicit namespace wins and bypasses coding overlay", async () => {
     sessionKey: "sess-2",
     authenticatedPrincipal: "alice",
     namespace: "default",
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
     content: "x",
   });
   assert.equal(resolved, "default");
@@ -208,12 +208,12 @@ test("#1434 project write overlays onto the principal self base (recall symmetry
   const resolved = await resolver(service)({
     sessionKey: "sess-3c",
     authenticatedPrincipal: "alice",
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
     content: "x",
   });
   assert.equal(
     resolved,
-    combineNamespaces("alice", projectNamespaceName(projectTagProjectId("Blend/Supply"))),
+    combineNamespaces("alice", projectNamespaceName(projectTagProjectId("Acme/Webshop"))),
   );
 });
 
@@ -228,7 +228,7 @@ test("#1434 an explicit coding-overlay namespace string is NOT a writable target
     resolver(service)({
       sessionKey: "sess-explicit-overlay",
       authenticatedPrincipal: "alice",
-      namespace: projectNamespaceFor("Blend/Supply"), // "default-project-…"
+      namespace: projectNamespaceFor("Acme/Webshop"), // "default-project-…"
       content: "x",
     }),
     /not writable/,
@@ -308,7 +308,7 @@ test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenan
   const service = new EngramAccessService(orch);
   const resolved = await resolver(service)({
     sessionKey: "sess-4",
-    projectTag: "Blend/Supply",
+    projectTag: "Acme/Webshop",
     content: "x",
   });
   assert.equal(resolved, "default");
@@ -368,18 +368,18 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
   const service = new EngramAccessService(orch);
 
   const res = await service.memoryStore(
-    storeRequest({ sessionKey: "sess-attach", projectTag: "Blend/Supply" }),
+    storeRequest({ sessionKey: "sess-attach", projectTag: "Acme/Webshop" }),
   );
 
   assert.equal(res.status, "stored");
-  assert.equal(res.namespace, projectNamespaceFor("Blend/Supply"));
+  assert.equal(res.namespace, projectNamespaceFor("Acme/Webshop"));
   // The store attached the coding context the recall path reads.
   assert.equal(
     contexts.get("sess-attach")?.projectId,
-    projectTagProjectId("Blend/Supply"),
+    projectTagProjectId("Acme/Webshop"),
   );
   assert.ok(
-    getStorageCalls.every((ns) => ns === projectNamespaceFor("Blend/Supply")),
+    getStorageCalls.every((ns) => ns === projectNamespaceFor("Acme/Webshop")),
     `expected all getStorage calls on the project namespace, got ${JSON.stringify(getStorageCalls)}`,
   );
   // A later BARE resolve (no per-call context) on the same session — what a
@@ -389,7 +389,7 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
     authenticatedPrincipal: "alice",
     content: "y",
   });
-  assert.equal(bare, projectNamespaceFor("Blend/Supply"));
+  assert.equal(bare, projectNamespaceFor("Acme/Webshop"));
 });
 
 test("#1434 an explicit-namespace store does NOT bind the session to a project (Codex review)", async () => {
@@ -399,7 +399,7 @@ test("#1434 an explicit-namespace store does NOT bind the session to a project (
   const { orch, contexts } = makeAttachOrchestrator();
   const service = new EngramAccessService(orch);
   const res = await service.memoryStore(
-    storeRequest({ sessionKey: "sess-explicit", namespace: "default", projectTag: "Blend/Supply" }),
+    storeRequest({ sessionKey: "sess-explicit", namespace: "default", projectTag: "Acme/Webshop" }),
   );
   assert.equal(res.status, "stored");
   assert.equal(res.namespace, "default");
@@ -411,7 +411,7 @@ test("#1434 a dryRun store does NOT bind the session to a project (Codex review)
   const { orch, contexts } = makeAttachOrchestrator();
   const service = new EngramAccessService(orch);
   const res = await service.memoryStore(
-    storeRequest({ sessionKey: "sess-dry", projectTag: "Blend/Supply", dryRun: true }),
+    storeRequest({ sessionKey: "sess-dry", projectTag: "Acme/Webshop", dryRun: true }),
   );
   assert.equal(res.status, "validated");
   assert.equal(contexts.get("sess-dry"), undefined, "dryRun must not bind the session");
