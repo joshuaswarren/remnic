@@ -413,7 +413,8 @@ temperature, and seed, while explicit `--judge-provider`, `--judge-model`, and
 `--judge-base-url` flags are checked as identity assertions before dispatch.
 Any `--max-429-wait` value or `--disable-thinking` flag used by the later run
 must also be supplied identically to `judge-calibrate`; both surfaces resolve
-and hash the same fully overlaid local-judge configuration.
+and hash the same fully overlaid local-judge configuration. Within calibration,
+the shared 429-wait and disable-thinking overlays apply to both judge calls.
 Absent calibration
 is the common case — the result is written unchanged. The command selects a
 deterministic 200-question slice (or all available questions when fewer than

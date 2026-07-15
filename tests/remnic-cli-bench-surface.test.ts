@@ -528,6 +528,43 @@ test("custom calibration directory and both config hashes bind attachment end to
   });
 });
 
+test("frontier calibration config preserves timeout, 429, and thinking overlays", async () => {
+  const { buildCalibrationFrontierJudgeConfig } = await import(
+    "../packages/remnic-cli/src/index.ts"
+  );
+
+  assert.deepEqual(
+    buildCalibrationFrontierJudgeConfig({
+      judgeProvider: "claude-cli",
+      judgeModel: "opus",
+      judgeBaseUrl: "http://127.0.0.1:9000",
+      judgeApiKey: "private",
+      frontierJudgeRequestTimeout: 600_000,
+      max429WaitMs: 30_000,
+      disableThinking: true,
+    }),
+    {
+      provider: "claude-cli",
+      model: "opus",
+      baseUrl: "http://127.0.0.1:9000",
+      apiKey: "private",
+      retryOptions: { timeoutMs: 600_000, max429WaitMs: 30_000 },
+      disableThinking: true,
+    },
+  );
+  assert.deepEqual(
+    buildCalibrationFrontierJudgeConfig({
+      judgeProvider: "openai",
+      judgeModel: "gpt-5.6",
+    }),
+    { provider: "openai", model: "gpt-5.6" },
+  );
+  assert.throws(
+    () => buildCalibrationFrontierJudgeConfig({ judgeProvider: "openai" }),
+    /requires both --judge-provider and --judge-model/,
+  );
+});
+
 test("Tier-F runbook binds baseline runs to the same manifest judge configuration", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
   const script = await readFile("scripts/bench/run-tierf-opus.sh", "utf8");

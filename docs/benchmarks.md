@@ -434,7 +434,9 @@ timeout, 429-wait, and disable-thinking overlays come from the shared resolver
 used by `judge-calibrate`. If a later run supplies `--max-429-wait` or
 `--disable-thinking`, supply the identical flag/value to `judge-calibrate` so
 the persisted and runtime local-judge configuration hashes remain identical.
-The attachment path fails before dispatch if either surface drifts.
+During calibration those two shared transport/model overlays apply to both the
+local and frontier judge calls. The attachment path fails before dispatch if
+either surface drifts.
 
 The attached artifact records
 `judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,

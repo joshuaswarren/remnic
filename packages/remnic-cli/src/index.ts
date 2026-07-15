@@ -2666,15 +2666,9 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     disableThinking: parsed.disableThinking,
   }) as ProviderFactoryConfig;
   const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
-  const frontierJudgeConfig = {
-    provider: parsed.judgeProvider,
-    model: parsed.judgeModel,
-    ...(parsed.judgeBaseUrl ? { baseUrl: parsed.judgeBaseUrl } : {}),
-    ...(parsed.judgeApiKey ? { apiKey: parsed.judgeApiKey } : {}),
-    ...(parsed.frontierJudgeRequestTimeout
-      ? { retryOptions: { timeoutMs: parsed.frontierJudgeRequestTimeout } }
-      : {}),
-  } as ProviderFactoryConfig;
+  const frontierJudgeConfig = buildCalibrationFrontierJudgeConfig(
+    parsed,
+  ) as ProviderFactoryConfig;
   const frontierJudge = bench.createProviderBackedJudge(frontierJudgeConfig);
 
   const localJudgeConfigHash = hashCalibrationProviderConfig(localJudgeConfig);
@@ -2781,6 +2775,38 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   }
   console.log(`  Calibration state written + verified (round-trip ok): ${statePath}`);
   console.log(`  Subsequent local artifacts for ${benchmarkId} will carry kappa ${persisted.kappa.toFixed(4)}.`);
+}
+
+export function buildCalibrationFrontierJudgeConfig(
+  parsed: Pick<ParsedBenchArgs,
+    "judgeProvider" | "judgeModel" | "judgeBaseUrl" | "judgeApiKey" |
+    "frontierJudgeRequestTimeout" | "max429WaitMs" | "disableThinking"
+  >,
+): PackageBenchProviderConfig {
+  if (!parsed.judgeProvider || !parsed.judgeModel) {
+    throw new Error(
+      "Calibration frontier judge requires both --judge-provider and --judge-model.",
+    );
+  }
+  return {
+    provider: parsed.judgeProvider,
+    model: parsed.judgeModel,
+    ...(parsed.judgeBaseUrl ? { baseUrl: parsed.judgeBaseUrl } : {}),
+    ...(parsed.judgeApiKey ? { apiKey: parsed.judgeApiKey } : {}),
+    ...(parsed.frontierJudgeRequestTimeout !== undefined || parsed.max429WaitMs !== undefined
+      ? {
+          retryOptions: {
+            ...(parsed.frontierJudgeRequestTimeout !== undefined
+              ? { timeoutMs: parsed.frontierJudgeRequestTimeout }
+              : {}),
+            ...(parsed.max429WaitMs !== undefined
+              ? { max429WaitMs: parsed.max429WaitMs }
+              : {}),
+          },
+        }
+      : {}),
+    ...(parsed.disableThinking ? { disableThinking: true } : {}),
+  };
 }
 
 async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
