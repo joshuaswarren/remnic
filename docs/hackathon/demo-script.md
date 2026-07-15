@@ -3,10 +3,10 @@
 Target duration: 2 minutes 40 seconds. Hard limit: 3 minutes.
 
 Operator gate before recording: replace every bracketed placeholder used in the
-video with real evidence. Do not record until the npm cold-install path and
-Codex `/feedback` session ID exist. If the GPT-5.6 frontier artifact does not
-land, omit that result and its URL rather than substituting another model or
-turning a bounded trial into a full-run claim.
+video with real evidence. The version 9.6.24 packed-tarball path is verified on
+Linux x86_64. The Codex `/feedback` session ID is still required. If the GPT-5.6
+frontier artifact does not land, omit that result and its URL. Do not substitute
+another model or turn a bounded trial into a full-run claim.
 
 ## 0:00-0:20: the stale-memory problem
 
@@ -41,9 +41,9 @@ HTML report.
 
 Voiceover: "These are separate checks. Uptake asks whether the next answer
 uses the correction. Non-resurrection asks whether the old fact returns later.
-The packaged demo currently accepts the correction immediately but later serves
-the stale fact again. MemCorrect catches both behaviors instead of collapsing
-them into one flattering score."
+In the verified version 9.6.24 packaged run, uptake was 1. Non-resurrection was
+0: the correction appeared at once, but the stale fact returned later.
+MemCorrect catches both behaviors instead of hiding them in one score."
 
 If the packaged demo behavior changes before recording, update this beat to the
 actual output. Never narrate a metric that is not visible in the recorded run.
@@ -71,9 +71,8 @@ run and recorded.
 
 Voiceover: "Replace the demo with a stdio command or Streamable HTTP URL.
 For a non-canonical MCP surface, map the store, recall, correct, and reset tools
-and their argument semantics explicitly. Preflight rejects an unsafe or
-unscoped server; a backend failure never gets scored as an innocent empty
-recall."
+and their arguments. Preflight rejects an unsafe or unscoped server. It also
+keeps a backend failure separate from an empty recall."
 
 ## 2:10-2:35: Codex and GPT-5.6 roles
 
@@ -90,20 +89,20 @@ remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
 
 Voiceover: "Codex built and adversarially reviewed the new MCP adapter,
 Responses provider, and report card during Build Week. GPT-5.6 is the optional
-structured-output judge inside the harness. Our bounded CLI measurement uses
-Luna for bulk work and Terra for quality-critical judging, with every completed
-turn charged to the harness ledger. The account stays exclusive to that run,
-and missing usage blocks further dispatch. Remnic itself and the original
+structured-output judge inside the harness. Our bounded CLI protocol assigns
+Luna to bulk work and Terra to quality-critical judging. It charges each
+completed turn to the harness ledger and requires exclusive account use during
+the run. Missing usage blocks further dispatch. Remnic itself and the original
 benchmark package are prior work; our public evidence ledger draws that line
 commit by commit."
 
-The exact API model id above is `gpt-5.6`. It is distinct from the
-ChatGPT-backed Codex CLI slugs `gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI
-artifact is shown, its run must use one-shot isolated `codex exec` calls, normal
-service rather than fast mode, a 2,473-credit budget, a 473-credit reserve, and
-the real model labels. `gpt-5.6-sol` is opt-in only and is outside the bounded
-plan. Confirm ChatGPT authentication with `codex login status` and the catalog
-with `codex debug models` immediately before recording.
+The API model id above is `gpt-5.6`. The Codex CLI uses the separate slugs
+`gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI artifact is shown, its run must
+use isolated one-shot `codex exec` calls and normal service, not fast mode. It
+must show the 2,473-credit budget, 473-credit reserve, and real model labels.
+`gpt-5.6-sol` is opt-in only and is outside the bounded plan. Right before
+recording, check the login with `codex login status` and the model list with
+`codex debug models`.
 
 Do not say GPT-5.6 was benchmarked as the system under test unless the real,
 hash-locked artifact is on screen.
@@ -121,6 +120,8 @@ database."
 - [ ] Runtime is under 3 minutes and audio is present.
 - [ ] Audio explicitly explains both Codex and GPT-5.6 usage.
 - [ ] Commands shown match the released packages or the disclosed source path.
+- [ ] The keyless package receipt identifies version 9.6.24 and does not imply
+  a paid-model run.
 - [ ] No API key, token, personal data, or private terminal history is visible.
 - [ ] Every narrated score appears in the recorded artifact.
 - [ ] Any CLI artifact identifies Luna/Terra separately from API `gpt-5.6`.

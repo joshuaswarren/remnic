@@ -89,36 +89,56 @@ and Codex session evidence at submission time.
   below), so judges can run the tool without rebuilding anything.
 
 Delivered implementation commit:
-[`fb295ff8`](https://github.com/joshuaswarren/remnic/commit/fb295ff8fb9cb66c7f4bcde793d4ce63aa095ae1)
+[`2c2f63be`](https://github.com/joshuaswarren/remnic/commit/2c2f63be98ad3d8b40bca96567de067e11d4e56d)
 (MCP adapter, Responses judge provider, and report card).
 
 Additional in-window receipts:
 
-- [`43bf0b8d`](https://github.com/joshuaswarren/remnic/commit/43bf0b8d)
+- [`e758e275`](https://github.com/joshuaswarren/remnic/commit/e758e27552c531e428ad5997cafb3c8870200005)
   pins the judge data. It also adds a repeatable bootstrap confidence range.
-- [`c8e5837f`](https://github.com/joshuaswarren/remnic/commit/c8e5837f)
+- [`e698b144`](https://github.com/joshuaswarren/remnic/commit/e698b14409f8022f42b08097fe6834cace47a99b)
   adds the judge instructions, honest Devpost draft, and demo script.
-- [`f2496bdc`](https://github.com/joshuaswarren/remnic/commit/f2496bdc)
+- [`b12307c5`](https://github.com/joshuaswarren/remnic/commit/b12307c51a8a9b1bff4f314a2f1ae93daa09e991)
   adds the cold packed-tarball test. It passed on Linux x64 with Node 22.23.1
   on 2026-07-14. The run ended in `PACKAGED_SANDBOX_OK`. It used
   `adapterMode=mcp`, saved one task with `uptake_at_next=1`, and made a
   15,144-byte report. Run it with
   `node scripts/verify-build-week-sandbox.mjs`.
-- [`3777d3ac`](https://github.com/joshuaswarren/remnic/commit/3777d3ac)
+- [`366b6143`](https://github.com/joshuaswarren/remnic/commit/366b61436e5b5e960f59c0480a387ebce70a9629)
   makes provider failures fail closed. A rejected GPT-5.6 smoke can no longer
   produce a complete-looking artifact or exit successfully; 47 focused tests
   cover partial status, legitimate negative scores, empty results, and
   promotion refusal.
-- [`4a6a8192`](https://github.com/joshuaswarren/remnic/commit/4a6a8192),
-  [`6aa5d22f`](https://github.com/joshuaswarren/remnic/commit/6aa5d22f), and
-  [`2e692843`](https://github.com/joshuaswarren/remnic/commit/2e692843)
+- [`7ea9657a`](https://github.com/joshuaswarren/remnic/commit/7ea9657a61599cde1ee3b18e145324652049e5de),
+  [`3b301c41`](https://github.com/joshuaswarren/remnic/commit/3b301c417ffe42d878f76e14a46315ee1aafdfad), and
+  [`3d42b455`](https://github.com/joshuaswarren/remnic/commit/3d42b455ec0b7e2762c44aa760991e976e3f7342)
   are in-window research hardening beyond the submission core: bounded
   cross-session temporal recall, an evidence-bounded LoCoMo category
   diagnosis, and a default-off empty-recall abstention foundation. They are
   not presented as benchmark lifts because the required acceptance artifacts
   are still operator-gated.
-- [`4b17970e`](https://github.com/joshuaswarren/remnic/commit/4b17970e)
+- [`e3ffce20`](https://github.com/joshuaswarren/remnic/commit/e3ffce20096e51916c33e82562d9f5c194fc495f)
   adds the narrowly tested manifest-only Dependabot review-gate exception.
+- [`53db4aeb`](https://github.com/joshuaswarren/remnic/commit/53db4aebd885947b953e0d35ee73e26f6405b010),
+  [`6483f2da`](https://github.com/joshuaswarren/remnic/commit/6483f2da407af6531c2b3a90fc86a1e7d4689e93), and
+  [`1db7d86f`](https://github.com/joshuaswarren/remnic/commit/1db7d86f27f230e282b32d7c4d7e83c96117d8bd)
+  add the one-shot Codex CLI path, enforce its credit cap, and add safety checks
+  for bounded frontier runs.
+- [`164f925d`](https://github.com/joshuaswarren/remnic/commit/164f925d559f360fe9c9cb85f3f102fa7959b7a9),
+  [`bcc11197`](https://github.com/joshuaswarren/remnic/commit/bcc1119734d7c281975478268c1fc51292ea404f),
+  [`50fa56b0`](https://github.com/joshuaswarren/remnic/commit/50fa56b01711c6df8b7e138f17e97e94c31a2ab0), and
+  [`ab849733`](https://github.com/joshuaswarren/remnic/commit/ab84973365935418f938fd0ed9510d3b4a95e1c7)
+  add the LoCoMo diagnosis tool, pin staged dataset paths, add safe credit
+  recovery, and let judge calibration resume after a stop.
+
+On July 15, merged head `ab849733` passed the cold package test:
+`node scripts/verify-build-week-sandbox.mjs --keep`. The test put version 9.6.24
+in a clean global prefix. The host was Linux x86_64 with Node 22.23.1. The test
+ended in `PACKAGED_SANDBOX_OK`. This was a keyless, one-task MCP run. No judge
+or provider ran. It scored `uptake_at_next=1` and `non_resurrection=0`. It also
+wrote a 15,144-byte offline HTML report. The focused results-store test passed
+20 of 20 tests. This receipt proves the packaged keyless path and report
+export. It is not a paid-model result.
 
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
@@ -131,12 +151,12 @@ full-run claim.
 
 ## How Codex and GPT-5.6 were used
 
-Codex built the adapter, provider, report card, and sandbox work above.
-Exploration of the existing adapter seam, implementation, tests, and
-iteration all ran inside Codex sessions during the window. The README and
-the `/feedback` session ID document where Codex sped up the work. They also
-record the key design calls: the adapter contract shape, the scoring
-rubric, and the report layout.
+Codex built the new adapter, provider, report card, and sandbox. Codex also
+reviewed that work. It explored the old adapter seam, wrote the code and tests,
+and handled each revision during the event. The README records
+where Codex sped up the work. The `/feedback` session ID remains operator input
+and will be added before submission. Those receipts show three key choices: the
+adapter shape, the scoring rubric, and the report layout.
 
 GPT-5.6 is part of the product. It can act as an opt-in judge with strict
 structured output. There are two provider paths. The optional Responses API
@@ -237,7 +257,7 @@ queued internal work can finish after the last scored task.
 After the npm packages are installed, no datasets, API keys, or network:
 
 ```bash
-npm install -g @remnic/cli @remnic/bench
+npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
 remnic bench export <run-id> --format html --output ./memcorrect-report.html
@@ -248,7 +268,7 @@ no dataset, API key, or network. It exercises the real MCP transport and
 correction contract. It is a product smoke test, not a publishable backend or
 model result.
 
-Until the Build Week revision is published to npm, use the source checkout:
+To test a development checkout instead of the published packages:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -276,21 +296,22 @@ in `docs/paper/repro-appendix.md`.
 | Environment | Build Week support statement |
 |---|---|
 | Node.js | 22.12 or newer |
-| Linux | Source-checkout and packed-tarball global-prefix paths verified on Linux x64 |
+| Linux | Source-checkout and version 9.6.24 packed-tarball global-prefix paths verified on Linux x64 |
 | macOS | Supported by the Node CLI; final global-install receipt pending |
 | Windows | Use WSL2 for the claimed path; native Windows is not claimed as verified |
 | MCP transport | stdio and Streamable HTTP |
 
-The packed-tarball cold-install receipt is complete. Public npm version `9.6.17`
-predates this work. A release with the commits above must ship before the
-deadline. After that release, rerun the same test and record the version here.
+The version 9.6.24 packed-tarball cold-install receipt is complete on Linux.
+Both `@remnic/cli` and `@remnic/bench` are published at 9.6.24. This receipt
+does not claim a macOS or native Windows verification.
 
 ## Honest framing of the novelty claim
 
 MemCorrect's contribution is a composition and protocol claim. It is a
-one-command harness that scores any memory backend on correction acceptance
-and stale-memory harm, with provenance-locked artifacts. It is not a claim
-to be first to measure memory correction. StateBench, STALE, MemSyco-Bench,
+one-command harness that scores Remnic or another backend implementing its
+supported adapter contract on correction acceptance and stale-memory harm,
+with provenance-locked artifacts. It is not a claim to be first to measure
+memory correction. StateBench, STALE, MemSyco-Bench,
 MemStrata, and MemoryAgentBench are prior art. We engage them in
 `docs/paper/related-work.md`.
 

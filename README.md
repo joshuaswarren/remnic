@@ -32,6 +32,33 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 | Built-in agent memory that does not scale | Hybrid search, lifecycle management, namespaces, and governance |
 | Third-party memory services that cost money and hold your data | Everything stays local: your filesystem, your rules |
 
+## MemCorrect, our OpenAI Build Week entry
+
+Remnic's Developer Tools entry is **MemCorrect**. It tests Remnic or another
+memory backend that uses the same adapter contract. The test asks three
+questions: Did recall find the right fact? Did the memory accept a correction?
+Did the stale fact stay gone?
+
+```bash
+npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
+remnic bench runs list
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
+```
+
+After installation, this quick path needs no dataset, API key, or network. It
+starts the packaged stdio MCP demo and tests the generic MCP adapter. It also
+writes an offline HTML report. We tested the 9.6.24 packed tarballs from a clean
+global prefix on Linux x86_64 with Node 22.23.1.
+
+During Build Week, we added the MCP adapter, an optional GPT-5.6 judge through
+the OpenAI Responses API, and the report card. Codex helped us study the old
+adapter seam, write and test the new path, and review it. Remnic and the first
+benchmark harness predate the event. The
+[submission evidence ledger](HACKATHON.md) draws that line commit by commit. It
+also leaves the Codex `/feedback`, paid frontier artifact, video, and final
+submission marked as pending.
+
 ## Quick start
 
 ### Prerequisites
