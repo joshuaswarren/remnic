@@ -21,6 +21,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { openBetterSqlite3 } from "@remnic/core/runtime/better-sqlite";
+
 import { GraphStore, type FileIR } from "./graph-store.js";
 
 const span = (startByte: number, endByte: number) => ({ startByte, endByte });
@@ -42,10 +44,24 @@ function twoSymbolFile(overrides?: Partial<FileIR>): FileIR {
   } as FileIR;
 }
 
-async function openTempStore(): Promise<{ store: GraphStore; dir: string }> {
+async function openTempStore(): Promise<{ store: GraphStore; dir: string; dbPath: string }> {
   const dir = await mkdtemp(path.join(tmpdir(), "cg-prov-scope-"));
-  const store = await GraphStore.open({ dbPath: path.join(dir, "graph.sqlite") });
-  return { store, dir };
+  const dbPath = path.join(dir, "graph.sqlite");
+  const store = await GraphStore.open({ dbPath });
+  return { store, dir, dbPath };
+}
+
+/** Direct provenance read — the store has no provenance-split surface. */
+function readEdgeProvenances(dbPath: string): string[] {
+  const db = openBetterSqlite3(dbPath, { readonly: true });
+  try {
+    const rows = db.prepare("SELECT provenance FROM edges ORDER BY provenance").all() as Array<{
+      provenance: string;
+    }>;
+    return rows.map((r) => r.provenance);
+  } finally {
+    db.close();
+  }
 }
 
 test("scoped assertion preserves trace edges while deleting stale heuristic edges", async () => {
@@ -213,7 +229,7 @@ test("edges undefined still preserves all prior edges (early return)", async () 
 });
 
 test("scoped re-assertion never downgrades an lsp-upgraded row on the same key", async () => {
-  const { store, dir } = await openTempStore();
+  const { store, dir, dbPath } = await openTempStore();
   try {
     const heuristicEdge = {
       srcQualifiedName: "greet",
@@ -237,35 +253,128 @@ test("scoped re-assertion never downgrades an lsp-upgraded row on the same key",
       {
         ...twoSymbolFile({ contentHash: "hash-2" }),
         edges: [heuristicEdge],
-        assertedEdgeProvenances: ["heuristic"],
+        assertedEdgeProvenances: ["heuristic", "lsp"],
       },
     ]);
     assert.ok(reingested.ok);
 
-    const trace = store.traverse({ start: "greet", direction: "outgoing", maxDepth: 1 });
-    assert.ok(trace.ok);
     const stats = await store.schemaStats();
     assert.ok(stats.ok);
     assert.deepEqual(stats.stats.edgesByType, { CALLS: 1 });
-    // Provenance must still be lsp. schemaStats has no provenance split, so
-    // assert via a scoped-delete probe: an assertion of [] with heuristic
-    // scope must PRESERVE the row (it is lsp-owned now) — which is only
-    // true if the earlier re-assertion did not downgrade it.
-    const probe = await store.upsertFileBatch([
+    // Provenance must still be lsp: read it directly from the DB (the
+    // store exposes no provenance-split read surface, and an indirect
+    // probe would conflate this with the retire-on-vanish behavior).
+    assert.deepEqual(readEdgeProvenances(dbPath), ["lsp"]);
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an lsp row is retired when the call disappears from the parse (codex review)", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    const heuristicEdge = {
+      srcQualifiedName: "greet",
+      dstQualifiedName: "format",
+      type: "CALLS",
+      confidence: 0.9,
+      provenance: "heuristic" as const,
+    };
+    const seeded = await store.upsertFileBatch([{ ...twoSymbolFile(), edges: [heuristicEdge] }]);
+    assert.ok(seeded.ok);
+    const upgraded = await store.upsertEdges([
+      { ...heuristicEdge, confidence: 1, provenance: "lsp" },
+    ]);
+    assert.ok(upgraded.ok);
+
+    // Fresh parse no longer supports the call: scoped assertion includes
+    // lsp, so the upgraded row retires with its heuristic ancestor.
+    const reingested = await store.upsertFileBatch([
       {
-        ...twoSymbolFile({ contentHash: "hash-3" }),
+        ...twoSymbolFile({ contentHash: "hash-2" }),
         edges: [],
-        assertedEdgeProvenances: ["heuristic"],
+        assertedEdgeProvenances: ["heuristic", "lsp"],
       },
     ]);
-    assert.ok(probe.ok);
-    const after = await store.schemaStats();
-    assert.ok(after.ok);
-    assert.deepEqual(
-      after.stats.edgesByType,
-      { CALLS: 1 },
-      "lsp-provenance row survived a scoped empty assertion — no downgrade happened",
-    );
+    assert.ok(reingested.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.edges, 0, "vanished call retires the lsp-upgraded row too");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a path-hinted edge binds only inside its declared target file", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    // Two files each declaring a `greet`; the hinted edge must bind the
+    // one in lib/main.ts, never the decoy.
+    const seeded = await store.upsertFileBatch([
+      twoSymbolFile(),
+      {
+        ...twoSymbolFile({ path: "lib/main.ts", contentHash: "hash-lib" }),
+        symbols: [
+          { kind: "function", name: "helper", qualifiedName: "lib.helper", span: span(0, 40) },
+        ],
+      },
+      {
+        ...twoSymbolFile({ path: "util.ts", contentHash: "hash-util" }),
+        symbols: [
+          { kind: "function", name: "shout", qualifiedName: "shout", span: span(0, 40) },
+        ],
+        edges: [
+          {
+            srcQualifiedName: "shout",
+            dstQualifiedName: "greet",
+            type: "CALLS",
+            confidence: 0.8,
+            provenance: "heuristic",
+            dstPathHint: "main",
+          },
+        ],
+      },
+    ]);
+    assert.ok(seeded.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.deepEqual(stats.stats.edgesByType, { CALLS: 1 }, "hint matched main.ts");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a path-hinted edge whose target file is not indexed is dropped, never globally resolved", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    const seeded = await store.upsertFileBatch([
+      // A decoy `greet` exists in an UNRELATED file...
+      twoSymbolFile(),
+      {
+        ...twoSymbolFile({ path: "util.ts", contentHash: "hash-util" }),
+        symbols: [
+          { kind: "function", name: "shout", qualifiedName: "shout", span: span(0, 40) },
+        ],
+        edges: [
+          {
+            srcQualifiedName: "shout",
+            dstQualifiedName: "greet",
+            type: "CALLS",
+            confidence: 0.8,
+            provenance: "heuristic",
+            // ...but the import pointed at ./missing, which is not indexed.
+            dstPathHint: "missing",
+          },
+        ],
+      },
+    ]);
+    assert.ok(seeded.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.edges, 0, "hinted edge dropped instead of binding the decoy");
   } finally {
     await store.close();
     await rm(dir, { recursive: true, force: true });

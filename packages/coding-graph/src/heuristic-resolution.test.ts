@@ -81,6 +81,7 @@ test("import-bound cross-file call emits an edge for the store to resolve", () =
       type: "CALLS",
       confidence: HEURISTIC_CONFIDENCE_IMPORT_BOUND,
       provenance: "heuristic",
+      dstPathHint: "main",
     },
   ]);
 });
@@ -306,4 +307,22 @@ test("relative-module imports still bind (in-repo resolvable)", () => {
   const result = deriveHeuristicEdges([ir]);
   assert.equal(firstFile(result).edges.length, 1);
   assert.equal(firstFile(result).edges[0]?.confidence, HEURISTIC_CONFIDENCE_IMPORT_BOUND);
+  assert.equal(firstFile(result).edges[0]?.dstPathHint, "../lib/main");
+});
+
+test("an ambiguous first candidate does not block a later candidate's import binding (cursor review)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(40, 120) },
+      { kind: "function", name: "dup", qualifiedName: "a.dup", span: span(130, 160) },
+      { kind: "function", name: "dup", qualifiedName: "b.dup", span: span(170, 200) },
+    ],
+    imports: [{ module: "./main", importedNames: ["greet"], span: span(0, 29) }],
+    callSites: [{ calleeNameCandidates: ["dup", "greet"], span: span(60, 70) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.equal(firstFile(result).edges.length, 1);
+  assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
+  assert.equal(firstFile(result).edges[0]?.dstPathHint, "main");
 });

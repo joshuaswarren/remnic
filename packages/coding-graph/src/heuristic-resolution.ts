@@ -40,6 +40,8 @@
  * store's provenance-scoped stale delete (`assertedEdgeProvenances`),
  * re-derivation never destroys `trace`/`lsp` edges (rule 25).
  */
+import { posix } from "node:path";
+
 import type { EdgeIR, FileIR, StoreFileIR } from "./graph-store.js";
 
 /** Confidence for a call resolved to a unique same-file symbol. */
@@ -49,9 +51,13 @@ export const HEURISTIC_CONFIDENCE_IMPORT_BOUND = 0.8;
 
 /**
  * The provenance scope reindex asserts for derived edges: a fresh parse
- * contradicts only heuristic derivations, never trace/lsp edges.
+ * owns its own derivations AND their lsp upgrades (an lsp row is the
+ * same source-derived edge, upgraded — when the call disappears from the
+ * parse, the upgraded row is stale too). It never owns `trace` (runtime
+ * observation) or semantic edges. The store's update guard separately
+ * ensures a re-asserted key never DOWNGRADES an lsp row to heuristic.
  */
-export const HEURISTIC_PROVENANCE_SCOPE = ["heuristic"] as const;
+export const HEURISTIC_PROVENANCE_SCOPE = ["heuristic", "lsp"] as const;
 
 /** Per-batch resolution counters — surfaced by callers for observability. */
 export interface HeuristicResolutionStats {
@@ -130,12 +136,16 @@ export function deriveHeuristicEdges(
         names.set(sym.name, { qualifiedName: sym.qualifiedName, count: 1 });
       }
     }
-    // Only imports with a relative module specifier bind bare names —
-    // an external package's names must never resolve to in-repo symbols.
-    const importedNames = new Set<string>();
+    // name → repo-relative extension-stripped target path. Only relative
+    // specifiers bind (an external package's names must never resolve to
+    // in-repo symbols); the hint travels on the edge so the store resolves
+    // the dst ONLY within the declared target file (#1894 review).
+    const importBindings = new Map<string, string>();
     for (const imp of ir.imports) {
       if (!imp.module.startsWith("./") && !imp.module.startsWith("../")) continue;
-      for (const name of imp.importedNames) importedNames.add(name);
+      const joined = posix.join(posix.dirname(ir.path), imp.module);
+      const hint = joined.replace(/\.[cm]?[jt]sx?$/, "");
+      for (const name of imp.importedNames) importBindings.set(name, hint);
     }
 
     const edges: EdgeIR[] = [];
@@ -169,11 +179,16 @@ export function deriveHeuristicEdges(
         scopeLevels.push(cursor);
       }
 
-      // dst: first candidate with in-IR evidence.
+      // dst: first candidate with in-IR evidence. Ambiguity is tracked
+      // PER CANDIDATE (cursor review on #1894): an ambiguous same-file
+      // match for candidate A must not block candidate B's import
+      // binding.
       let dstQualifiedName: string | undefined;
+      let dstPathHint: string | undefined;
       let confidence = 0;
       let sawAmbiguous = false;
       for (const candidate of site.calleeNameCandidates) {
+        let candidateAmbiguous = false;
         for (const level of scopeLevels) {
           const match = scopeByName.get(level)?.get(candidate);
           if (!match) continue;
@@ -181,14 +196,19 @@ export function deriveHeuristicEdges(
             dstQualifiedName = match.qualifiedName;
             confidence = HEURISTIC_CONFIDENCE_SAME_FILE;
           } else {
-            sawAmbiguous = true;
+            candidateAmbiguous = true;
           }
           break; // innermost level with the name decides (shadowing).
         }
         if (dstQualifiedName !== undefined) break;
-        if (sawAmbiguous) continue;
-        if (importedNames.has(candidate)) {
+        if (candidateAmbiguous) {
+          sawAmbiguous = true;
+          continue;
+        }
+        const hint = importBindings.get(candidate);
+        if (hint !== undefined) {
           dstQualifiedName = candidate;
+          dstPathHint = hint;
           confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;
           break;
         }
@@ -209,6 +229,7 @@ export function deriveHeuristicEdges(
         type: "CALLS",
         confidence,
         provenance: "heuristic",
+        ...(dstPathHint !== undefined ? { dstPathHint } : {}),
       });
     }
 

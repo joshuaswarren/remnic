@@ -134,6 +134,15 @@ export interface EdgeIR {
   readonly srcNodeId?: string;
   /** Optional content-derived destination node id — see {@link EdgeIR.srcNodeId}. */
   readonly dstNodeId?: string;
+  /**
+   * Repo-relative, extension-stripped path the dst must live in (issue
+   * #1894 review): derived from a relative import's module specifier. A
+   * hinted edge resolves ONLY among nodes whose file path matches the
+   * hint (`<hint>`, `<hint>.<ext>`, or `<hint>/index.<ext>`) — never via
+   * the global bare-name fallback — so `import { foo } from "./missing"`
+   * can never bind an unrelated same-named symbol elsewhere in the repo.
+   */
+  readonly dstPathHint?: string;
 }
 
 /**
@@ -1762,12 +1771,13 @@ export class GraphStore {
       // re-ingest (chatgpt-codex-connector P2).
       const srcId = qualifiedNameToId.get(edge.srcQualifiedName);
       if (!srcId) continue;
-      // DST may be cross-file — use the full-DB fallback.
-      const dstId = resolveNodeId(
-        edge.dstQualifiedName,
-        qualifiedNameToId,
-        this.db,
-      );
+      // DST may be cross-file. A path-hinted edge (relative import,
+      // issue #1894 review) resolves ONLY within its declared target
+      // file — never via the global bare-name fallback; unhinted edges
+      // keep the batch-map + full-DB fallback.
+      const dstId = edge.dstPathHint
+        ? resolveNodeIdWithPathHint(edge.dstQualifiedName, edge.dstPathHint, this.db)
+        : resolveNodeId(edge.dstQualifiedName, qualifiedNameToId, this.db);
       if (!dstId) continue;
       const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
       assertedKeys.add(key);
@@ -1867,16 +1877,24 @@ export class GraphStore {
         // stale keys.
         continue;
       }
-      // Provenance scoping also protects the UPDATE path (issue #1891,
-      // codex P2): a prior row whose provenance is OUTSIDE the asserted
-      // scope (e.g. an lsp-upgraded row on the same key) must not be
-      // downgraded by re-deriving the heuristic assertion. The assertion
-      // already kept the row out of the stale-delete set; leaving the
-      // stronger row untouched is the whole point of the scope.
+      // Two update-path protections under provenance scoping (issue
+      // #1891 + #1894 review rounds):
+      //  1. a prior row whose provenance is OUTSIDE the asserted scope
+      //     is not this assertion's to modify (defense in depth — in
+      //     practice cross-provenance key collisions are heuristic/lsp
+      //     only, handled by 2);
+      //  2. an lsp row is a strictly stronger derivation of the SAME
+      //     source-derived edge: re-asserting the heuristic key keeps
+      //     the row alive (it is not stale) but must never downgrade it.
+      //     Retirement of lsp rows happens through the stale-delete when
+      //     the call disappears from the parse — lsp IS in the reindex
+      //     assertion scope precisely so vanished calls retire their
+      //     upgraded rows too.
       if (
         prior &&
         scoped &&
-        !(scoped as readonly string[]).includes(prior.provenance)
+        (!(scoped as readonly string[]).includes(prior.provenance) ||
+          (prior.provenance === "lsp" && edge.provenance === "heuristic"))
       ) {
         continue;
       }
@@ -3314,6 +3332,43 @@ function resolveNodeId(
     // EdgeIR with file identity material.
     return undefined;
   }
+  return rows[0]?.id;
+}
+
+/**
+ * Resolve a dst node constrained to a path hint (issue #1894 review): the
+ * node's file path must be the hint verbatim, `<hint>.<ext>`, or
+ * `<hint>/index.<ext>`. `substr` prefix comparisons (not LIKE) so hint
+ * characters are never pattern metacharacters. Zero or multiple matches
+ * return `undefined` — the edge is dropped rather than guessed (same
+ * conservative policy as {@link resolveNodeId}).
+ */
+function resolveNodeIdWithPathHint(
+  qualifiedName: string,
+  pathHint: string,
+  db: BetterSqlite3Database,
+): string | undefined {
+  const rows = expectRows<{ id: string }>(
+    db
+      .prepare(
+        `SELECT n.id FROM nodes n JOIN files f ON n.file_id = f.id
+          WHERE n.qualified_name = ?
+            AND (f.path = ?
+              OR substr(f.path, 1, ?) = ?
+              OR substr(f.path, 1, ?) = ?)
+          ORDER BY f.path, n.id`,
+      )
+      .all(
+        qualifiedName,
+        pathHint,
+        pathHint.length + 1,
+        `${pathHint}.`,
+        pathHint.length + 7,
+        `${pathHint}/index.`,
+      ),
+    ["id"],
+  );
+  if (rows.length !== 1) return undefined;
   return rows[0]?.id;
 }
 
