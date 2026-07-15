@@ -523,10 +523,12 @@ function resolveProviderConfig(
   // Remnic's fast gateway tier. Without a provider timeout, that tier inherits
   // core's intentional 15-second local-fast default, which is too short for a
   // normal Codex turn and can terminate it after dispatch. Keep this default
-  // benchmark-specific so core's host-agnostic fast-tier contract is unchanged.
-  const effectiveRequestTimeout =
-    requestTimeout ??
-    (provider === "codex-cli" ? DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS : undefined);
+  // benchmark-specific and transport-only so core's host-agnostic fast-tier
+  // contract and the harness's store/recall/reset phase guards are unchanged.
+  const providerRequestTimeoutMs =
+    requestTimeout === undefined && provider === "codex-cli"
+      ? DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS
+      : undefined;
 
   return {
     provider,
@@ -536,12 +538,13 @@ function resolveProviderConfig(
       : {}),
     ...(hasBaseUrl ? { baseUrl: baseUrl!.trim() } : {}),
     ...(hasApiKey ? { apiKey: apiKey!.trim() } : {}),
-    ...(effectiveRequestTimeout != null || max429WaitMs != null
+    ...(requestTimeout != null || max429WaitMs != null
       ? { retryOptions: {
-          ...(effectiveRequestTimeout != null ? { timeoutMs: effectiveRequestTimeout } : {}),
+          ...(requestTimeout != null ? { timeoutMs: requestTimeout } : {}),
           ...(max429WaitMs != null ? { max429WaitMs } : {}),
         } }
       : {}),
+    ...(providerRequestTimeoutMs !== undefined ? { providerRequestTimeoutMs } : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
     ...(provider === "codex-cli" ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
     ...(responderContextBudgetChars !== undefined
@@ -620,14 +623,17 @@ function buildInternalRemnicConfigOverrides(
     };
   }
 
+  const providerTimeoutMs =
+    config.retryOptions?.timeoutMs ?? config.providerRequestTimeoutMs;
+
   return {
     ...thinkingOverrides,
     modelSource: "gateway",
     localLlmEnabled: false,
-    ...(config.retryOptions?.timeoutMs
+    ...(providerTimeoutMs
       ? {
-          localLlmTimeoutMs: config.retryOptions.timeoutMs,
-          localLlmFastTimeoutMs: config.retryOptions.timeoutMs,
+          localLlmTimeoutMs: providerTimeoutMs,
+          localLlmFastTimeoutMs: providerTimeoutMs,
         }
       : {}),
     gatewayConfig: buildInternalGatewayConfig(config, options),
@@ -642,7 +648,8 @@ function buildInternalGatewayConfig(
 ): GatewayConfig {
   const providerId = INTERNAL_GATEWAY_AGENT_ID;
   const modelRef = `${providerId}/${config.model}`;
-  const timeoutMs = config.retryOptions?.timeoutMs;
+  const timeoutMs =
+    config.retryOptions?.timeoutMs ?? config.providerRequestTimeoutMs;
 
   return {
     agents: {
@@ -908,12 +915,22 @@ export function createAssistantAgentFromResponder(
 }
 
 function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig {
+  const retryOptions =
+    config.retryOptions || config.providerRequestTimeoutMs !== undefined
+      ? {
+          ...config.retryOptions,
+          ...(config.retryOptions?.timeoutMs === undefined &&
+          config.providerRequestTimeoutMs !== undefined
+            ? { timeoutMs: config.providerRequestTimeoutMs }
+            : {}),
+        }
+      : undefined;
   return {
     provider: config.provider,
     model: config.model,
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
     ...(config.apiKey ? { apiKey: config.apiKey } : {}),
-    ...(config.retryOptions ? { retryOptions: config.retryOptions } : {}),
+    ...(retryOptions ? { retryOptions } : {}),
     ...(config.disableThinking ? { disableThinking: config.disableThinking } : {}),
     ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
     ...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
@@ -929,6 +946,10 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
       : {}),
   } as ProviderFactoryConfig;
 }
+
+export const __runtimeProfilesTestHooks = {
+  asProviderFactoryConfig,
+};
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0

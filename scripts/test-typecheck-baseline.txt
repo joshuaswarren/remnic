@@ -78,7 +78,7 @@ packages/bench/src/responders.test.ts(444,21): TS18048
 packages/bench/src/responders.test.ts(446,13): TS18048
 packages/bench/src/responders.test.ts(450,24): TS18048
 packages/bench/src/results-store.test.ts(31,18): TS2352
-packages/bench/src/runtime-profiles.test.ts(54,38): TS2345
+packages/bench/src/runtime-profiles.test.ts(57,38): TS2345
 packages/bench/src/security/extraction-attack/mitigated-target.test.ts(23,5): TS2322
 packages/hermes-provider/src/index.test.ts(219,38): TS2304
 packages/import-mem0/src/adapter.test.ts(79,40): TS2304

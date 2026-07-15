@@ -207,7 +207,7 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledge
 remnic bench run longmemeval --runtime-profile real \
   --limit <LEDGER_DERIVED_LIMIT> \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -226,6 +226,10 @@ store with
 ledger is mode `0600` with
 `chmod 600 "$REMNIC_BENCH_CODEX_CREDIT_LEDGER"` after it is first created.
 Publish only the safe cost and token totals from the result and manifest.
+Codex CLI gets a benchmark-owned 180-second transport timeout automatically;
+do not add `--request-timeout` here because that explicit flag also enables a
+whole-phase benchmark guard. The separate drain timeout stays explicit so
+queued internal work can finish after the last scored task.
 
 ## How to test it in five minutes
 

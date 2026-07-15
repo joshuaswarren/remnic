@@ -696,7 +696,7 @@ further dispatch until manual account reconciliation:
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -707,7 +707,7 @@ remnic bench run --quick longmemeval \
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -729,6 +729,11 @@ private state too. After the first ledger write, enforce
 printed by the CLI, or recover it only from the isolated store with
 `remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`; use that ID
 for export and artifact promotion rather than an ambiguous latest run.
+The Codex CLI runtime supplies a 180-second transport-only timeout when the
+flag is omitted. Do not add `--request-timeout` to these commands: an explicit
+value also becomes a whole-phase benchmark guard, which can cut off long
+store/recall/reset phases. The 600-second drain timeout is deliberately
+separate and remains explicit.
 
 ---
 

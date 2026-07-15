@@ -518,6 +518,24 @@ test("resolveBenchmarkPhaseTimeoutMs falls back to provider timeout", () => {
   );
 });
 
+test("resolveBenchmarkPhaseTimeoutMs ignores transport-only provider timeouts", () => {
+  assert.equal(
+    resolveBenchmarkPhaseTimeoutMs({
+      systemProvider: {
+        provider: "codex-cli",
+        model: "gpt-5.6-luna",
+        providerRequestTimeoutMs: 180_000,
+      },
+      judgeProvider: {
+        provider: "codex-cli",
+        model: "gpt-5.6-terra",
+        providerRequestTimeoutMs: 180_000,
+      },
+    }),
+    undefined,
+  );
+});
+
 test("resolveBenchmarkProgressLogging coerces boolean-like string config", () => {
   assert.equal(resolveBenchmarkProgressLogging({ benchmarkHarnessProgress: "true" }), true);
   assert.equal(resolveBenchmarkProgressLogging({ benchmarkHarnessProgress: "0" }), false);

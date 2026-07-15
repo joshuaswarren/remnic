@@ -274,7 +274,7 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledge
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -286,7 +286,7 @@ remnic bench run --quick longmemeval \
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -300,6 +300,12 @@ and MemoryAgentBench. Neither flag is a token-credit budget, so the placeholder
 cannot be replaced with a fixed universal value: derive it from the ledger's
 observed per-task cost and resize after each bounded batch. A limited run is a
 trial artifact and cannot be promoted as a full leaderboard result.
+
+The Codex CLI profile supplies a 180-second transport-only timeout by default.
+Do not add `--request-timeout` to this protocol: an explicit request timeout
+also becomes a whole benchmark-phase guard and can prematurely cap a long
+store, recall, or reset phase. Keep the independent 600-second drain timeout
+for queued internal work.
 
 Keep both the atomic ledger and stored results outside the checkout: results
 may contain questions, answers, and recalled context. The restrictive `umask`

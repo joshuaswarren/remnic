@@ -104,7 +104,7 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledge
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -115,7 +115,7 @@ remnic bench run --quick longmemeval \
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
-  --request-timeout 180000 --drain-timeout 600000 \
+  --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -133,6 +133,12 @@ manual account reconciliation.
 Rates per one million tokens are Luna: 25 input, 2.5 cached input, 150 output;
 Terra: 62.5 input, 6.25 cached input, 375 output. A bounded result is a trial,
 not a full leaderboard artifact.
+
+Codex CLI receives a benchmark-owned 180-second transport timeout when no
+request timeout is supplied. Keep `--request-timeout` out of these commands:
+an explicit value also becomes a whole-phase guard, while the transport-only
+default lets long store/recall/reset phases complete. The 600-second drain cap
+remains explicit for queued internal work.
 
 The ledger and results stay outside the repository because stored runs may
 contain questions, answers, and recalled context. The `umask` plus explicit
