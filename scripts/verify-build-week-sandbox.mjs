@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -55,6 +56,68 @@ const coldEnv = {
   npm_config_update_notifier: "false",
   REMNIC_BENCH_GIT_SHA: process.env.REMNIC_BENCH_GIT_SHA ?? "packaged-sandbox",
 };
+
+for (const key of Object.keys(coldEnv)) {
+  if (
+    /(?:^|_)(?:API_KEY|AUTH_TOKEN|BEARER_TOKEN)$/i.test(key) ||
+    /^(?:CLAUDE_CODE_OAUTH_TOKEN|OPENAI_ACCESS_TOKEN|CODEX_API_KEY)$/i.test(key)
+  ) {
+    delete coldEnv[key];
+  }
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function manifestArtifactIdentity(manifest) {
+  return {
+    schemaVersion: manifest.schemaVersion,
+    run: {
+      id: manifest.run.id,
+      ...(manifest.run.mode ? { mode: manifest.run.mode } : {}),
+      selectedBenchmarks: manifest.run.selectedBenchmarks,
+      runtimeProfiles: manifest.run.runtimeProfiles,
+      selectedWorkItems: manifest.run.selectedWorkItems,
+      ...(manifest.run.limit !== undefined ? { limit: manifest.run.limit } : {}),
+      ...(manifest.run.seed !== undefined ? { seed: manifest.run.seed } : {}),
+    },
+    git: {
+      commit: manifest.git.commit,
+      shortCommit: manifest.git.shortCommit,
+    },
+    command: {
+      argv: manifest.command.argv,
+      envKeys: manifest.command.envKeys,
+    },
+    environment: {
+      platform: manifest.environment.platform,
+      arch: manifest.environment.arch,
+      nodeVersion: manifest.environment.nodeVersion,
+      ...(manifest.environment.packageManager
+        ? { packageManager: manifest.environment.packageManager }
+        : {}),
+    },
+    ...(manifest.qmd ? { qmd: manifest.qmd } : {}),
+    configFiles: manifest.configFiles,
+    datasets: manifest.datasets,
+    results: manifest.results,
+    ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
+  };
+}
 
 function shellQuote(value) {
   return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value)
@@ -218,7 +281,43 @@ try {
   if (mcpArtifact.result?.results?.aggregates?.uptake_at_next?.mean !== 1) {
     throw new Error("MemCorrect packaged demo did not accept the correction at the next turn");
   }
-  assertNonEmptyFile(path.join(mcpResultsDir, "MANIFEST.json"), "MemCorrect manifest");
+  if (mcpArtifact.result?.results?.aggregates?.non_resurrection?.mean !== 0) {
+    throw new Error("MemCorrect packaged demo did not reproduce the expected stale-memory resurrection");
+  }
+  const manifestPath = path.join(mcpResultsDir, "MANIFEST.json");
+  assertNonEmptyFile(manifestPath, "MemCorrect manifest");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const manifestResult = manifest?.results?.find(
+    (entry) => entry?.resultId === mcpArtifact.result.meta.id,
+  );
+  if (!manifestResult || manifestResult.judge !== null) {
+    throw new Error("MemCorrect packaged smoke did not prove a keyless, no-judge run");
+  }
+  const expectedResultPath = path.relative(mcpResultsDir, mcpArtifact.path).split(path.sep).join("/");
+  const resultBytes = readFileSync(mcpArtifact.path);
+  if (
+    manifestResult.path !== expectedResultPath ||
+    manifestResult.benchmark !== "memcorrect-v1" ||
+    manifestResult.mode !== mcpArtifact.result.meta.mode ||
+    manifestResult.sizeBytes !== resultBytes.length ||
+    manifestResult.sha256 !== sha256(resultBytes)
+  ) {
+    throw new Error("MemCorrect manifest is not bound to the packaged result artifact");
+  }
+  const expectedArtifactHash = sha256(stableStringify(manifestArtifactIdentity(manifest)));
+  if (manifest.artifactHash !== expectedArtifactHash) {
+    throw new Error("MemCorrect manifest artifactHash does not match its canonical contents");
+  }
+  const manifestDataset = manifest?.datasets?.find(
+    (entry) => entry?.benchmark === "memcorrect-v1",
+  );
+  if (
+    !manifestDataset ||
+    manifestDataset.status !== "not-provided" ||
+    manifestDataset.fileCount !== 0
+  ) {
+    throw new Error("MemCorrect packaged smoke unexpectedly depended on dataset files");
+  }
 
   const listed = remnic(["bench", "runs", "list", "--results-dir", mcpResultsDir, "--json"], {
     capture: true,
@@ -245,6 +344,16 @@ try {
   const report = readFileSync(reportPath, "utf8");
   if (!report.includes("Correction ledger") || !report.includes("Provenance")) {
     throw new Error("HTML export is not the Build Week memory report card");
+  }
+  if (
+    /\b(?:src|href|data)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(report) ||
+    /@import\s+(?:url\()?\s*["']?\s*(?:https?:)?\/\//i.test(report) ||
+    /url\(\s*["']?\s*(?:https?:)?\/\//i.test(report)
+  ) {
+    throw new Error("HTML report card is not self-contained");
+  }
+  if (!report.includes(manifest.artifactHash)) {
+    throw new Error("HTML report card does not identify the verified manifest artifact hash");
   }
 
   const installed = run("npm", ["ls", "-g", "--prefix", prefixDir, "--depth=0"], {
