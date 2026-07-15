@@ -131,7 +131,7 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
 ]);
 
 const BUILD_WEEK_CREDIT_GUARD_LINE_RE =
-  /^\s*(?:export\s+)?REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
+  /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in

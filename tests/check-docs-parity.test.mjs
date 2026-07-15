@@ -762,6 +762,32 @@ test("a commented credit-budget guard does not authorize a Codex command", () =>
   });
 });
 
+test("a non-exported credit-budget assignment does not authorize a Codex command", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "remnic bench run longmemeval --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+  });
+});
+
 test("a comment mentioning bench run before the credit guard does not invalidate it", () => {
   withFixture((root) => {
     writeFileSync(
