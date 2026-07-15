@@ -409,7 +409,14 @@ test("verifies a complete Codex CLI public matrix evidence subset", async (t) =>
       },
     }),
   );
-  await writeManifest(resultsDir, benchmarks);
+  await writeManifest(
+    resultsDir,
+    benchmarks,
+    "abc123",
+    undefined,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
   await writeDiagnostic(diagnosticsDir);
   await writeDiagnostic(diagnosticsDir, {
     runId: "stale-run",
@@ -497,6 +504,113 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
     allowBoundedTrial: true,
   });
   assert.equal(report.ok, true, JSON.stringify(report.issues, null, 2));
+
+  result.config.internalProvider = undefined;
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
+  const optionalInternalOptions: VerifyPublicMatrixEvidenceOptions = {
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.5",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "xhigh",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+    requireInternalProvider: false,
+  };
+  const optionalInternal = await verifyPublicMatrixEvidence(optionalInternalOptions);
+  assert.equal(optionalInternal.ok, true, JSON.stringify(optionalInternal.issues, null, 2));
+
+  const strictMissingInternal = await verifyPublicMatrixEvidence({
+    ...optionalInternalOptions,
+    requireInternalProvider: true,
+  });
+  assert.equal(
+    strictMissingInternal.issues.some((issue) => issue.code === "missing-internalProvider"),
+    true,
+    JSON.stringify(strictMissingInternal.issues, null, 2),
+  );
+
+  result.config.internalProvider = {
+    provider: "openai",
+    model: "gpt-4.1",
+  };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
+  const optionalNonCodexInternal = await verifyPublicMatrixEvidence(optionalInternalOptions);
+  assert.equal(
+    optionalNonCodexInternal.ok,
+    true,
+    JSON.stringify(optionalNonCodexInternal.issues, null, 2),
+  );
+  const strictNonCodexInternal = await verifyPublicMatrixEvidence({
+    ...optionalInternalOptions,
+    requireInternalProvider: true,
+  });
+  assert.equal(
+    strictNonCodexInternal.issues.some(
+      (issue) => issue.code === "wrong-internalProvider-provider",
+    ),
+    true,
+    JSON.stringify(strictNonCodexInternal.issues, null, 2),
+  );
+
+  result.config.internalProvider = {
+    ...codexProvider(),
+    model: "gpt-5.5",
+    reasoningEffort: "xhigh",
+  };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    codexCreditReceiptWithUnexpectedModel(),
+  );
+  await writeDiagnostic(diagnosticsDir, {
+    runId: "test-public-matrix-run",
+    model: "gpt-5.5",
+    reasoningEffort: "xhigh",
+    serviceTier: "default",
+  });
+  const optionalDistinctCodexInternal = await verifyPublicMatrixEvidence(
+    optionalInternalOptions,
+  );
+  assert.equal(
+    optionalDistinctCodexInternal.ok,
+    true,
+    JSON.stringify(optionalDistinctCodexInternal.issues, null, 2),
+  );
+  await rm(
+    path.join(diagnosticsDir, "codex-cli-test-public-matrix-run-gpt-5.5.json"),
+  );
+
+  result.config.internalProvider = {
+    ...codexProvider(),
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+  };
 
   result.config.benchmarkOptions = {
     limit: 1,
@@ -731,6 +845,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       expectedJudgeModel: "gpt-5.6-terra",
       expectedInternalModel: "gpt-5.6-luna",
       requireDiagnostics: false,
+      requireCodexCreditReceipt: true,
     });
     assert.equal(
       report.issues.some((issue) => issue.code === "manifest-invalid-codex-credit-receipt"),

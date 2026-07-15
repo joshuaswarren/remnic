@@ -216,6 +216,12 @@ export async function verifyPublicMatrixEvidence(
   const requireCodexCreditReceipt =
     (options.requireCodexCreditReceipt ?? false) ||
     (options.allowBoundedTrial ?? false);
+  const requireInternalProvider = options.requireInternalProvider ?? true;
+  const activeExpectedRoles = new Set<ProviderRole>([
+    "systemProvider",
+    "judgeProvider",
+    ...(requireInternalProvider ? (["internalProvider"] as const) : []),
+  ]);
   if (!requireManifest && (requireCodexCreditReceipt || options.allowBoundedTrial)) {
     issues.push({
       code: "manifest-required-for-credit-evidence",
@@ -232,7 +238,6 @@ export async function verifyPublicMatrixEvidence(
       benchmarks,
       expectedGitSha,
       expectedRuntimeProfile,
-      expectedCreditModels: [...new Set(Object.values(expectedModels))],
       requireCodexCreditReceipt,
       allowBoundedTrial: options.allowBoundedTrial ?? false,
       issues,
@@ -283,6 +288,9 @@ export async function verifyPublicMatrixEvidence(
 
     row.resultId = result.meta.id;
     row.taskCount = result.results.tasks.length;
+    if (result.config.internalProvider?.provider === "codex-cli") {
+      activeExpectedRoles.add("internalProvider");
+    }
     if (manifestResult) {
       validateManifestResultIdentity(manifestResult.entry, result, resultPath, issues);
     }
@@ -302,9 +310,21 @@ export async function verifyPublicMatrixEvidence(
       expectedGitSha,
       expectedLimit: options.allowBoundedTrial ? manifest?.run?.limit : undefined,
       allowBoundedTrial: options.allowBoundedTrial ?? false,
-      requireInternalProvider: options.requireInternalProvider ?? true,
+      requireInternalProvider,
       issues,
     });
+  }
+
+  if (requireCodexCreditReceipt && manifest?.codexCredit) {
+    validateCodexCreditReceipt(
+      manifest.codexCredit,
+      manifest.run?.id,
+      [...new Set(
+        [...activeExpectedRoles].map((role) => expectedModels[role]),
+      )],
+      manifestPath,
+      issues,
+    );
   }
 
   if (options.requireDiagnostics ?? true) {
@@ -314,7 +334,7 @@ export async function verifyPublicMatrixEvidence(
         : undefined,
       requireRunId: requireManifest,
       expectedProviderProfiles: [...new Set(
-        (Object.keys(expectedModels) as ProviderRole[]).map(
+        [...activeExpectedRoles].map(
           (role) => `${expectedModels[role]}\u0000${expectedReasoningEfforts[role]}`,
         ),
       )].map((profile) => {
@@ -410,7 +430,10 @@ function validateResultEnvelope(
 
   validateProviderRole(result, resultPath, "systemProvider", result.config.systemProvider, options);
   validateProviderRole(result, resultPath, "judgeProvider", result.config.judgeProvider, options);
-  if (options.requireInternalProvider || result.config.internalProvider) {
+  if (
+    options.requireInternalProvider ||
+    result.config.internalProvider?.provider === "codex-cli"
+  ) {
     validateProviderRole(result, resultPath, "internalProvider", result.config.internalProvider ?? null, options);
   }
 }
@@ -604,7 +627,6 @@ function validateManifest(
     benchmarks: string[];
     expectedGitSha: string | undefined;
     expectedRuntimeProfile: BenchRuntimeProfile;
-    expectedCreditModels: string[];
     requireCodexCreditReceipt: boolean;
     allowBoundedTrial: boolean;
     issues: PublicMatrixEvidenceIssue[];
@@ -692,14 +714,6 @@ function validateManifest(
       path: manifestPath,
       message: "This evidence gate requires a run-scoped Codex credit receipt.",
     });
-  } else if (manifest.codexCredit) {
-    validateCodexCreditReceipt(
-      manifest.codexCredit,
-      manifest.run?.id,
-      options.expectedCreditModels,
-      manifestPath,
-      options.issues,
-    );
   }
 
   for (const benchmark of options.benchmarks) {
