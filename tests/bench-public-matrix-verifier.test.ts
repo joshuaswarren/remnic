@@ -549,6 +549,45 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
   });
   assert.equal(reconciledReport.ok, true, JSON.stringify(reconciledReport.issues, null, 2));
 
+  const heavilyReconciledReceipt = validCodexCreditReceipt();
+  const heavilyReconciledCumulative = heavilyReconciledReceipt.cumulative as Record<
+    string,
+    unknown
+  >;
+  heavilyReconciledCumulative.unattributedReconciliationCount = 1;
+  heavilyReconciledCumulative.unattributedReconciledCredits = 1_987;
+  heavilyReconciledCumulative.credits =
+    (heavilyReconciledCumulative.credits as number) + 1_987;
+  heavilyReconciledReceipt.totalSpentCredits = 1_999.425;
+  heavilyReconciledReceipt.totalRemainingCredits = 473.575;
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    heavilyReconciledReceipt,
+  );
+  const heavilyReconciledReport = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  assert.equal(
+    heavilyReconciledReport.ok,
+    true,
+    JSON.stringify(heavilyReconciledReport.issues, null, 2),
+  );
+
   result.config.internalProvider = undefined;
   await writeResult(resultsDir, result);
   await writeManifest(
@@ -771,6 +810,41 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
   const resultsDir = path.join(tmpDir, "results");
   const benchmark = "longmemeval";
   await writeResult(resultsDir, benchmarkResult(benchmark));
+  const belowReserveReconciliation = validCodexCreditReceipt();
+  const belowReserveCumulative = belowReserveReconciliation.cumulative as Record<
+    string,
+    unknown
+  >;
+  belowReserveCumulative.unattributedReconciliationCount = 1;
+  belowReserveCumulative.unattributedReconciledCredits = 2_000;
+  belowReserveCumulative.credits = (belowReserveCumulative.credits as number) + 2_000;
+  belowReserveReconciliation.totalSpentCredits = 2_012.425;
+  belowReserveReconciliation.totalRemainingCredits = 460.575;
+  const overAttributedCeiling = validCodexCreditReceipt();
+  for (const key of ["cumulative", "run"] as const) {
+    const scope = overAttributedCeiling[key] as Record<string, unknown>;
+    scope.calls = (scope.calls as number) * 162;
+    scope.credits = (scope.credits as number) * 162;
+    for (const tokenKey of [
+      "inputTokens",
+      "cachedInputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+    ]) {
+      scope[tokenKey] = (scope[tokenKey] as number) * 162;
+    }
+    scope.models = (scope.models as Array<Record<string, unknown>>).map((model) => ({
+      ...model,
+      calls: (model.calls as number) * 162,
+      credits: (model.credits as number) * 162,
+      inputTokens: (model.inputTokens as number) * 162,
+      cachedInputTokens: (model.cachedInputTokens as number) * 162,
+      outputTokens: (model.outputTokens as number) * 162,
+      reasoningOutputTokens: (model.reasoningOutputTokens as number) * 162,
+    }));
+  }
+  overAttributedCeiling.totalSpentCredits = 2_012.85;
+  overAttributedCeiling.totalRemainingCredits = 460.15;
   const variants: Array<Record<string, unknown>> = [
     { ...validCodexCreditReceipt(), blocked: true },
     {
@@ -871,6 +945,8 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
     },
     codexCreditReceiptWithUnexpectedModel(),
     codexCreditReceiptWithRunAttributedReconciliation(),
+    belowReserveReconciliation,
+    overAttributedCeiling,
   ];
   const verifyPublicMatrixEvidence = await loadVerifier();
   for (const receipt of variants) {

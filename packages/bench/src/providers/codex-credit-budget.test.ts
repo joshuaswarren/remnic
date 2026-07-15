@@ -574,6 +574,57 @@ test("reconciliation charges all unexplained account activity without per-run at
   }
 });
 
+test("reconciliation normalizes decimal roundoff without recording phantom spend", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-reconcile-roundoff-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 0.002,
+        entries: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            model: "gpt-5.6-luna",
+            runId: "roundoff-run",
+            credits: 0.002,
+            inputTokens: 80,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+        ],
+        blockedReason: "missing terminal usage after exact recorded spend",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const before = await readFile(ledgerPath);
+    const receipt = await reconcileCodexCreditLedger({
+      ledgerPath,
+      priorLedgerSha256: createHash("sha256").update(before).digest("hex"),
+      observedRemainingCredits: 2_472.998,
+      originalBudgetBalanceConfirmed: true,
+      noCreditsAddedOrRefundedConfirmed: true,
+      accountWideUnattributedChargeAccepted: true,
+      affectedRunId: "roundoff-run",
+    });
+
+    assert.equal(receipt.unattributedCredits, 0);
+    assert.equal(receipt.totalSpentCredits, 0.002);
+    assert.equal(receipt.totalRemainingCredits, 2_472.998);
+    const publicReceipt = await buildCodexCreditReceipt(ledgerPath, "roundoff-run");
+    assert.equal(publicReceipt.totalSpentCredits, 0.002);
+    assert.equal(publicReceipt.cumulative.unattributedReconciledCredits, 0);
+    assert.equal(publicReceipt.run?.credits, 0.002);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("reconciliation fails closed without changing ledger bytes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-reconcile-reject-"));
   const ledgerPath = path.join(directory, "ledger.json");

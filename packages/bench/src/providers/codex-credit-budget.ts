@@ -107,6 +107,7 @@ export interface CodexCreditReceipt {
 }
 
 const ONE_MILLION = 1_000_000;
+const CREDIT_EPSILON = 1e-9;
 // Conservative upper bound for one supported text-model turn. GPT-5.6 Terra's
 // full 1.05M-token context plus 128K output costs well under this amount.
 const MAX_BOUNDED_CALL_CREDITS = 300;
@@ -199,13 +200,21 @@ export async function reconcileCodexCreditLedger(args: {
     if (args.observedRemainingCredits > ledger.budgetCredits) {
       throw new Error("observedRemainingCredits cannot exceed the ledger budget");
     }
-    const observedSpentCredits = ledger.budgetCredits - args.observedRemainingCredits;
-    const unattributedCredits = observedSpentCredits - ledger.spentCredits;
-    if (!Number.isFinite(unattributedCredits) || unattributedCredits < 0) {
+    const rawUnattributedCredits =
+      ledger.budgetCredits - args.observedRemainingCredits - ledger.spentCredits;
+    if (
+      !Number.isFinite(rawUnattributedCredits) ||
+      rawUnattributedCredits < -CREDIT_EPSILON
+    ) {
       throw new Error(
         "observedRemainingCredits implies less spend than the ledger already records; reconciliation refused",
       );
     }
+    const unattributedCredits =
+      Math.abs(rawUnattributedCredits) <= CREDIT_EPSILON
+        ? 0
+        : rawUnattributedCredits;
+    const observedSpentCredits = ledger.spentCredits + unattributedCredits;
     const at = new Date().toISOString();
     const reconciliation: CodexCreditLedgerReconciliation = {
       at,

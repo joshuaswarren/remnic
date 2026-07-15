@@ -783,7 +783,11 @@ function validateCodexCreditReceipt(
     receipt.budgetCredits === 2_473 &&
     receipt.reserveCredits === 473 &&
     receipt.plannedSpendCeilingCredits! <= 2_000 &&
-    receipt.totalSpentCredits! <= receipt.plannedSpendCeilingCredits! &&
+    receipt.totalSpentCredits! <= receipt.budgetCredits! &&
+    receipt.totalRemainingCredits! >= receipt.reserveCredits! &&
+    receipt.cumulative!.credits! -
+      (receipt.cumulative!.unattributedReconciledCredits ?? 0) <=
+      receipt.plannedSpendCeilingCredits! + 1e-9 &&
     nearlyEqual(
       receipt.totalRemainingCredits!,
       receipt.budgetCredits! - receipt.totalSpentCredits!,
@@ -800,8 +804,9 @@ function validateCodexCreditReceipt(
       code: "manifest-invalid-codex-credit-receipt",
       path: manifestPath,
       message:
-        "Codex credit receipt must be unblocked, within the 2,000-credit planned-spend ceiling, " +
-        "internally consistent, and scoped to manifest run.id.",
+        "Codex credit receipt must be unblocked, preserve the 473-credit reserve, stay within " +
+        "the total budget and 2,000-credit benchmark-attributed planned-spend ceiling, be internally " +
+        "consistent, and be scoped to manifest run.id.",
     });
   }
 }
