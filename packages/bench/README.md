@@ -91,12 +91,20 @@ status` to report ChatGPT authentication. A 473-credit safety reserve leaves
 then measure a quick task before choosing a workload bound:
 
 ```bash
+BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
+umask 077
+mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
-export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 
 remnic bench run --quick longmemeval \
   --runtime-profile real \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --request-timeout 180000 --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -106,6 +114,8 @@ remnic bench run --quick longmemeval \
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --request-timeout 180000 --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -123,6 +133,14 @@ manual account reconciliation.
 Rates per one million tokens are Luna: 25 input, 2.5 cached input, 150 output;
 Terra: 62.5 input, 6.25 cached input, 375 output. A bounded result is a trial,
 not a full leaderboard artifact.
+
+The ledger and results stay outside the repository because stored runs may
+contain questions, answers, and recalled context. The `umask` plus explicit
+directory modes make newly created state private. After the first ledger write,
+run `chmod 600 "$REMNIC_BENCH_CODEX_CREDIT_LEDGER"`. Preserve the exact run ID
+printed by the CLI, or recover it only from this run store with
+`remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`; use that ID
+for export and artifact promotion rather than an ambiguous “latest” run.
 
 Codex built and adversarially reviewed the Build Week adapter, Responses
 provider, and report card. The underlying Remnic engine and original benchmark

@@ -163,9 +163,12 @@ regression) records `tier: "local"` plus a `hardware` envelope; Tier F
 (absence is treated as frontier for backwards compatibility).
 
 **Judge calibration.** `judgeCalibration` carries the Cohen's κ between the
-local and frontier judges over a fixed calibration slice, plus the sample
-size, threshold, and a `warning` flag set when κ falls below threshold. It
-lands on local artifacts after `remnic bench judge-calibrate` (§A.3.5).
+local and frontier judges over a deterministic, pinned 200-question slice (or
+all available questions when fewer than 200 exist), plus a deterministic
+paired-bootstrap 95% confidence interval, sample size, threshold, and a
+`warning` flag set when κ falls below threshold. The stored-result source,
+ordered question IDs, and answer-set hash pin the judged payload across reruns.
+It lands on local artifacts after `remnic bench judge-calibrate` (§A.3.6).
 
 **What is committed today.** `docs/benchmarks/results/` on `main` carries
 ten artifacts. Two are clearly-marked mock placeholders
@@ -394,7 +397,12 @@ remnic bench judge-calibrate \
 
 The κ lands on the next `remnic bench run` artifact for that benchmark
 (only when the run's judge matches the calibrated pair). Absent calibration
-is the common case — the result is written unchanged.
+is the common case — the result is written unchanged. The command selects a
+deterministic 200-question slice (or all available questions when fewer than
+200 exist), pins the source result, question IDs, and exact answer-set hash,
+and reports a deterministic 2,000-resample paired-bootstrap 95% confidence
+interval. Re-running calibration reuses the pinned answer payload instead of
+silently selecting whichever stored answers are newest.
 
 ### A.3.7 Build, verify, and promote the artifact
 
@@ -650,9 +658,15 @@ normal service, not fast mode. Configure the provider's guard before the first
 turn:
 
 ```bash
+BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
+umask 077
+mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
-export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 unset REMNIC_BENCH_CODEX_ALLOW_SOL
 ```
 
@@ -681,6 +695,8 @@ further dispatch until manual account reconciliation:
 ```bash
 remnic bench run --quick longmemeval \
   --runtime-profile real \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --request-timeout 180000 --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -690,6 +706,8 @@ remnic bench run --quick longmemeval \
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --request-timeout 180000 --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
   --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
@@ -704,7 +722,13 @@ token-budget flag. The existing `--limit` caps loaded items, and
 directly caps credits. The provider environment variables enforce the credit
 ceiling, while the ledger determines the next safe task bound. Label every
 bounded output as partial coverage and keep the private ledger out of the
-public artifact unless it has been sanitized.
+public artifact unless it has been sanitized. Stored results may also include
+questions, answers, and recalled context, so the external results directory is
+private state too. After the first ledger write, enforce
+`chmod 600 "$REMNIC_BENCH_CODEX_CREDIT_LEDGER"`. Preserve the exact run ID
+printed by the CLI, or recover it only from the isolated store with
+`remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`; use that ID
+for export and artifact promotion rather than an ambiguous latest run.
 
 ---
 

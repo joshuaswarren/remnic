@@ -420,11 +420,13 @@ test("provider-backed runtime resolution configures codex-cli with xhigh reasoni
   assert.deepEqual(resolved.systemProvider, {
     provider: "codex-cli",
     model: "gpt-5.5",
+    retryOptions: { timeoutMs: 180_000 },
     reasoningEffort: "xhigh",
   });
   assert.deepEqual(resolved.judgeProvider, {
     provider: "codex-cli",
     model: "gpt-5.5",
+    retryOptions: { timeoutMs: 180_000 },
     reasoningEffort: "xhigh",
   });
   assert.equal(typeof resolved.adapterOptions.responder?.respond, "function");
@@ -509,6 +511,35 @@ test("runtime profile can route Remnic internal LLM calls through codex-cli", as
   assert.equal(
     gatewayConfig.models?.providers?.["remnic-bench-internal"]?.codexCliReasoningEffort,
     "xhigh",
+  );
+});
+
+test("runtime profile gives Codex CLI internal fast and main tiers a safe default timeout", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    internalProvider: "codex-cli",
+    internalModel: "gpt-5.6-luna",
+  });
+
+  assert.deepEqual(resolved.internalProvider, {
+    provider: "codex-cli",
+    model: "gpt-5.6-luna",
+    baseUrl: "codex-cli://local",
+    retryOptions: { timeoutMs: 180_000 },
+    reasoningEffort: "xhigh",
+  });
+  assert.equal(resolved.remnicConfig.localLlmTimeoutMs, 180_000);
+  assert.equal(resolved.remnicConfig.localLlmFastTimeoutMs, 180_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 180_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmFastTimeoutMs, 180_000);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, undefined);
+
+  const gatewayConfig = resolved.effectiveRemnicConfig.gatewayConfig as {
+    models?: { providers?: Record<string, { retryOptions?: { timeoutMs?: number } }> };
+  };
+  assert.equal(
+    gatewayConfig.models?.providers?.["remnic-bench-internal"]?.retryOptions?.timeoutMs,
+    180_000,
   );
 });
 

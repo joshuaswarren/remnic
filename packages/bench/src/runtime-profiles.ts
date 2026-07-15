@@ -138,6 +138,7 @@ export interface ResolvedBenchRuntimeProfile {
 
 const REDACTED_CONFIG_VALUE = "[redacted]";
 const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
+const DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS = 180_000;
 let codexCliFallbackRegistered = false;
 let codexCliFallbackChain: Promise<void> = Promise.resolve();
 
@@ -508,6 +509,15 @@ function resolveProviderConfig(
     );
   }
 
+  // A Codex CLI completion is a subprocess-backed model turn, including for
+  // Remnic's fast gateway tier. Without a provider timeout, that tier inherits
+  // core's intentional 15-second local-fast default, which is too short for a
+  // normal Codex turn and can terminate it after dispatch. Keep this default
+  // benchmark-specific so core's host-agnostic fast-tier contract is unchanged.
+  const effectiveRequestTimeout =
+    requestTimeout ??
+    (provider === "codex-cli" ? DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS : undefined);
+
   return {
     provider,
     model: resolvedModel!.trim(),
@@ -516,9 +526,9 @@ function resolveProviderConfig(
       : {}),
     ...(hasBaseUrl ? { baseUrl: baseUrl!.trim() } : {}),
     ...(hasApiKey ? { apiKey: apiKey!.trim() } : {}),
-    ...(requestTimeout != null || max429WaitMs != null
+    ...(effectiveRequestTimeout != null || max429WaitMs != null
       ? { retryOptions: {
-          ...(requestTimeout != null ? { timeoutMs: requestTimeout } : {}),
+          ...(effectiveRequestTimeout != null ? { timeoutMs: effectiveRequestTimeout } : {}),
           ...(max429WaitMs != null ? { max429WaitMs } : {}),
         } }
       : {}),

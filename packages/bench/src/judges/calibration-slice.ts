@@ -129,7 +129,7 @@ export interface RunJudgeCalibrationOptions {
    * binning function so they are compared on the same scale.
    */
   binScore?: (score: number) => JudgeCategory;
-  /** Override the slice size (default 50; mainly for tests). */
+  /** Override the slice size (default 200; mainly for tests). */
   sliceSize?: number;
   /** Override the warning threshold (default 0.7). */
   threshold?: number;
