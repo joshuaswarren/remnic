@@ -723,6 +723,28 @@ test("Build Week LongMemEval rejects LoCoMo-only --trial-limit", () => {
   });
 });
 
+test("Build Week LongMemEval rejects --trial-limit even when --limit is valid", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run longmemeval --limit 1 --trial-limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /longmemeval command must not include `--trial-limit`/);
+  });
+});
+
 test("Build Week dataset path cannot impersonate a missing positional benchmark", () => {
   withFixture((root) => {
     writeFileSync(

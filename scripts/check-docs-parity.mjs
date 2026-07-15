@@ -452,10 +452,22 @@ function checkBuildWeekCodexDatasetPaths() {
             "use full mode with an explicit item bound so a bad staged path fails before provider dispatch",
         );
       }
+      const allBoundFlags = ["--limit", "--trial-limit"];
       const supportedBoundFlags =
-        benchmark === "longmemeval" ? ["--limit"] : ["--limit", "--trial-limit"];
+        benchmark === "longmemeval" ? ["--limit"] : allBoundFlags;
+      const unsupportedBoundFlags = allBoundFlags.filter(
+        (flag) =>
+          !supportedBoundFlags.includes(flag) &&
+          commandTokens.some((token) => token === flag || token.startsWith(`${flag}=`)),
+      );
+      for (const flag of unsupportedBoundFlags) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not include \`${flag}\`; ` +
+            "the benchmark CLI does not support that bound",
+        );
+      }
       const presentBoundFlags = supportedBoundFlags.filter((flag) =>
-        commandTokens.includes(flag),
+        commandTokens.some((token) => token === flag || token.startsWith(`${flag}=`)),
       );
       if (presentBoundFlags.length === 0) {
         failures.push(
