@@ -727,6 +727,29 @@ test("Build Week Codex commands pin the complete paid-run protocol", () => {
   }
 });
 
+test("a guarded Build Week command cannot bypass checks by dropping Codex flags", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "remnic bench run longmemeval --runtime-profile baseline --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must include `--runtime-profile real`/);
+    assert.match(result.stderr, /must include `--system-provider codex-cli`/);
+  });
+});
+
 test("Build Week Codex quick mode is rejected even with a staged dataset path", () => {
   withFixture((root) => {
     writeFileSync(

@@ -91,10 +91,10 @@ const SKIPPED_DIR_NAMES = new Set([
 // or unreadable staged path falls back to a bundled fixture. Either source
 // silently changes the measured workload and invalidates the run receipt.
 const BUILD_WEEK_CODEX_DOCS = Object.freeze([
-  "HACKATHON.md",
-  "packages/bench/README.md",
-  "docs/benchmarks.md",
-  "docs/paper/repro-appendix.md",
+  { path: "HACKATHON.md", expectedCommands: 1 },
+  { path: "packages/bench/README.md", expectedCommands: 2 },
+  { path: "docs/benchmarks.md", expectedCommands: 2 },
+  { path: "docs/paper/repro-appendix.md", expectedCommands: 2 },
 ]);
 
 const BENCH_RUN_BOOLEAN_FLAGS = new Set([
@@ -338,7 +338,7 @@ function extractRemnicInvocations(relPath, src) {
  * are ordinary multiline shell invocations, not arbitrary shell programs.
  *
  * @param {string} src
- * @returns {string[]}
+ * @returns {Array<{ command: string; guardedBuildWeekBlock: boolean }>}
  */
 function extractLogicalShellCommands(src) {
   const shellLangs = new Set([
@@ -353,11 +353,14 @@ function extractLogicalShellCommands(src) {
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
     if (!shellLangs.has(block.lang)) continue;
+    const guardedBuildWeekBlock = block.text.includes(
+      "REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+    );
     const logical = block.text.replace(/\\\s*\n/g, " ");
     for (const line of logical.split("\n")) {
       const command = line.trim();
       if (command.length > 0 && !command.startsWith("#")) {
-        commands.push(command);
+        commands.push({ command, guardedBuildWeekBlock });
       }
     }
   }
@@ -418,17 +421,22 @@ function extractShellOptionValue(command, flag) {
 function checkBuildWeekCodexDatasetPaths() {
   const failures = [];
   let checked = 0;
-  for (const rel of BUILD_WEEK_CODEX_DOCS) {
+  const completeProtocolDocSet = BUILD_WEEK_CODEX_DOCS.every(({ path: rel }) =>
+    existsSync(path.join(ROOT, ...rel.split("/"))),
+  );
+  for (const { path: rel, expectedCommands } of BUILD_WEEK_CODEX_DOCS) {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
-    for (const command of extractLogicalShellCommands(src)) {
+    let checkedInDoc = 0;
+    for (const { command, guardedBuildWeekBlock } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
-      if (!/\bcodex-cli\b/.test(command)) continue;
+      if (!guardedBuildWeekBlock && !/\bcodex-cli\b/.test(command)) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
+      checkedInDoc += 1;
       for (const selector of ["--all", "--custom", "--matrix"]) {
         if (commandTokens.some((token) => token === selector || token.startsWith(`${selector}=`))) {
           failures.push(
@@ -536,6 +544,16 @@ function checkBuildWeekCodexDatasetPaths() {
           );
         }
       }
+    }
+    if (checkedInDoc === 0) {
+      failures.push(
+        `${rel}: must contain at least one guarded Build Week Codex benchmark command`,
+      );
+    } else if (completeProtocolDocSet && checkedInDoc !== expectedCommands) {
+      failures.push(
+        `${rel}: expected ${expectedCommands} guarded Build Week Codex benchmark command(s); ` +
+          `found ${checkedInDoc}`,
+      );
     }
   }
   return { failures, checked };
