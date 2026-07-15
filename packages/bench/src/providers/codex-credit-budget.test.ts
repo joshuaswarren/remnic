@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   __codexCreditBudgetTestHooks,
   CodexCreditAccountingError,
+  CodexCreditDispatchError,
   calculateCodexCredits,
   parseCodexJsonlUsage,
   resolveCodexCreditBudgetConfig,
@@ -212,6 +213,65 @@ test("unknown charged usage blocks the ledger until manual reconciliation", asyn
       /blocked pending manual reconciliation/,
     );
     assert.equal(called, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("confirmed pre-dispatch failures release the lock without blocking the ledger", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-dispatch-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          throw new CodexCreditDispatchError("executable not found");
+        },
+      }),
+      /executable not found/,
+    );
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "retry succeeded", usage }),
+      }),
+      "retry succeeded",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unexpected in-flight failures persist a blocked ledger and release the raw lock", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-unknown-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          throw new Error("unexpected transport failure");
+        },
+      }),
+      /unexpected transport failure/,
+    );
+    await assert.rejects(readFile(`${ledgerPath}.lock`, "utf8"), { code: "ENOENT" });
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "unexpected", usage }),
+      }),
+      /blocked pending manual reconciliation/,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

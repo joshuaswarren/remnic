@@ -22,6 +22,7 @@ import {
 } from "./structured-judge.js";
 import {
   CodexCreditAccountingError,
+  CodexCreditDispatchError,
   parseCodexJsonlUsage,
   resolveCodexCreditBudgetConfig,
   runWithinCodexCreditBudget,
@@ -966,7 +967,16 @@ function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunRes
         unregisterActiveCodexCliChild(child.pid);
       }
       request.signal?.removeEventListener("abort", onAbort);
-      reject(error);
+      reject(
+        child.pid
+          ? new CodexCreditAccountingError(
+              `Codex CLI failed after its process started; account balance must be reconciled before resuming: ${safeErrorMessage(error)}`,
+            )
+          : new CodexCreditDispatchError(
+              `Codex CLI could not start: ${safeErrorMessage(error)}`,
+              { cause: error },
+            ),
+      );
     });
     child.on("close", async (status, signal) => {
       if (timeout) {
@@ -1005,7 +1015,11 @@ function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunRes
         const outputText = await readCodexOutput(request.outputPath, status);
         resolve({ status, signal, stdout, stderr, outputText });
       } catch (error) {
-        reject(error);
+        reject(
+          new CodexCreditAccountingError(
+            `${safeErrorMessage(error)} Account balance must be reconciled before resuming.`,
+          ),
+        );
       }
     });
     try {

@@ -63,6 +63,14 @@ export class CodexCreditAccountingError extends Error {
   }
 }
 
+/** The Codex child was confirmed not to have started, so no credits were charged. */
+export class CodexCreditDispatchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CodexCreditDispatchError";
+  }
+}
+
 export function resolveCodexCreditBudgetConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexCreditBudgetConfig | undefined {
@@ -147,10 +155,15 @@ export async function runWithinCodexCreditBudget<T>(args: {
     try {
       result = await args.run();
     } catch (error) {
-      if (error instanceof CodexCreditAccountingError) {
+      if (error instanceof CodexCreditDispatchError) {
+        await writeLockState(lock, "settled");
+        accountingSettled = true;
+      } else {
         const blockedLedger: CodexCreditLedger = {
           ...ledger,
-          blockedReason: error.message,
+          blockedReason: error instanceof CodexCreditAccountingError
+            ? error.message
+            : `Codex dispatch outcome is unknown after an unexpected error: ${safeErrorMessage(error)}`,
         };
         await writeLedger(args.config.ledgerPath, blockedLedger);
         await writeLockState(lock, "settled");
@@ -400,6 +413,10 @@ function readCounter(value: unknown): number | undefined {
 
 function readOptionalCounter(value: unknown): number | undefined {
   return value === undefined ? 0 : readCounter(value);
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function parsePositiveNumber(value: string, name: string): number {

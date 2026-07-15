@@ -1003,6 +1003,28 @@ test("codex-cli command rejects a successful process that omits the final-messag
   }
 });
 
+test("codex-cli command identifies a confirmed pre-dispatch failure", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-dispatch-"));
+  try {
+    await assert.rejects(
+      __codexCliProviderTestHooks.runCodexCliCommand({
+        executable: path.join(tempDir, "missing-codex-executable"),
+        args: [],
+        input: "prompt",
+        outputPath: path.join(tempDir, "last-message.txt"),
+        workspacePath: tempDir,
+        env: process.env,
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.name === "CodexCreditDispatchError" &&
+        /could not start/.test(error.message),
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("codex-cli parent cleanup terminates active subprocesses", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-test-"));
 
