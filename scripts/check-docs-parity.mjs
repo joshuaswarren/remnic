@@ -655,8 +655,9 @@ function checkBuildWeekCodexDatasetPaths() {
           );
         }
       }
-      if (expectedCommands === 2) {
-        const requiredLimit = checkedInDoc === 1 ? "1" : "<LEDGER_DERIVED_LIMIT>";
+      if (expectedCommands === 1 || expectedCommands === 2) {
+        const requiredLimit =
+          expectedCommands === 1 || checkedInDoc === 2 ? "<LEDGER_DERIVED_LIMIT>" : "1";
         const roleBounds = presentBoundFlags.map((flag) => ({
           flag,
           value: extractShellOptionValue(command, flag),
@@ -665,7 +666,7 @@ function checkBuildWeekCodexDatasetPaths() {
           const acceptedFlags = supportedBoundFlags.map((flag) => `\`${flag} ${requiredLimit}\``);
           const actualBounds = roleBounds.map(({ flag, value }) => `${flag} ${value ?? "<missing>"}`);
           failures.push(
-            `${rel}: Build Week Codex command ${checkedInDoc} of 2 must include exactly one of ` +
+            `${rel}: Build Week Codex command ${checkedInDoc} of ${expectedCommands} must include exactly one of ` +
               `${acceptedFlags.join(" or ")}; got ${actualBounds.join(", ") || "no supported bound"}`,
           );
         }
