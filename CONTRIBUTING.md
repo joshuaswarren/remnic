@@ -1,132 +1,93 @@
-# Contributing to openclaw-engram
+# Contributing to Remnic
 
-Thanks for contributing. We welcome both issues and pull requests from humans and AI-assisted contributors.
+Thanks for contributing. Issues and pull requests are welcome from humans and AI-assisted contributors alike.
 
 ## Ways to contribute
 
-- Report bugs via GitHub Issues
-- Propose features via GitHub Issues
+- Report bugs or propose features via [GitHub Issues](https://github.com/joshuaswarren/remnic/issues)
 - Submit pull requests for fixes, docs, tests, and improvements
-- Improve examples/docs to help adoption
+- Improve examples and docs to help adoption
 
 ## Before opening a PR
 
-1. Search existing issues/PRs to avoid duplicates.
-2. For non-trivial changes, open an issue first and propose approach/scope.
-3. Keep changes focused and small when possible.
+1. Search existing issues and PRs to avoid duplicates.
+2. For non-trivial changes, open an issue first and propose the approach and scope.
+3. Keep PRs narrow: one subsystem group per PR. If work spans schema/surface contracts, storage/serialization, and retrieval behavior, split it before review.
 
 ## Development setup
 
-Requires Node.js `>=22.12.0` (aligned with OpenClaw engine support).
+Requires Node.js `>=22.12.0` and [pnpm](https://pnpm.io/).
 
 ```bash
-npm ci
+git clone https://github.com/joshuaswarren/remnic.git
+cd remnic
+pnpm install
+pnpm run build
 npm run check-types
 npm test
-npm run build
 ```
 
-Install local guard hooks (recommended):
+Install the local guard hooks (recommended):
 
 ```bash
 npm run hooks:install
 ```
 
-This enables:
-- `pre-commit`: `npm run preflight:quick`
-- `pre-push`: `npm run preflight`
+This wires `pre-commit` to `npm run preflight:quick` and `pre-push` to `npm run preflight`.
 
-Cursor headless review behavior (`npm run review:cursor`):
-- Runs only if `agent` (preferred) or `cursor-agent` is installed and callable.
-- Auto-skips (non-failing) when Cursor CLI is unavailable/unconfigured.
-- Returns non-zero when it reports findings in strict finding format.
-- Uses documented print mode (`-p`) with `--output-format text` in non-interactive flow.
-- Override knobs:
-  - `CURSOR_PREPUSH_MODEL=<model>` to pick model (default: `auto`).
-  - `CURSOR_PREPUSH_BASE_REF=<ref>` to change diff base (default: `origin/main`).
-  - `CURSOR_PREPUSH_TIMEOUT_SECONDS=<seconds>` to control headless review timeout (default: `300`).
-  - `CURSOR_PREPUSH_MAX_DIFF_CHARS=<chars>` to cap diff included in prompt (default: `120000`).
-  - `CURSOR_PREPUSH_STRICT=1` to fail when Cursor is unavailable/timed-out/unparseable (recommended for maintainers running manual pre-push review).
+## Quality gates
 
-## Install path for users
+- `npm run preflight:quick` — fast gate (types + config contract + key tests). Run before every push.
+- `npm run preflight` — full pre-PR gate (types + contract + tests + build).
+- `npm run check-config-contract` — required when you touch config types, `parseConfig`, or the plugin manifest schema.
+- `npm run check:docs-parity` — required when you touch docs that contain CLI commands; every fenced `remnic <cmd>` must be a real registered command.
+- `npm run test:entity-hardening` — required when you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, `config.ts`, or anything under `storage/` or `orchestration/`.
 
-Use npm install via OpenClaw as the primary install path in docs:
-
-```bash
-openclaw plugins install openclaw-engram --pin
-```
+For retrieval/planner/cache/config changes, also run the mandatory hardening gate described in [docs/ops/pr-review-hardening-playbook.md](docs/ops/pr-review-hardening-playbook.md).
 
 ## PR quality bar
 
-A good PR should:
+A good PR:
 
-- Include tests for behavior changes
-- Keep backwards compatibility unless intentionally changed
-- Avoid unrelated refactors in the same PR
-- Update docs for user-facing/config changes
-- Update `CHANGELOG.md` (see changelog policy below)
+- Includes tests for behavior changes — tests must verify behavior, not pass vacuously
+- Keeps backwards compatibility unless the change is intentionally breaking (and labeled as such)
+- Avoids unrelated refactors
+- Updates docs for user-facing or config changes
+- Updates `CHANGELOG.md` (see below)
 
-For retrieval/planner/cache/config changes, run the mandatory hardening gate:
-
-- `docs/ops/pr-review-hardening-playbook.md`
+Reviewers of retrieval/planner/caching logic verify: flag symmetry (`enabled=false` disables write and read effects), zero semantics (`0` is never coerced to `1`), cap-after-filter ordering, cache coherence across instances, fallback parity with primary search policy, artifact isolation, planner mode reachability, and heuristic robustness across language variants.
 
 ## Changelog policy
 
-This repository uses `CHANGELOG.md` on `main` as the contributor-facing ledger for upcoming release notes.
-Published per-version notes ship through GitHub Releases from the tagged release workflow.
+`CHANGELOG.md` on `main` is the contributor-facing ledger for upcoming release notes; published per-version notes ship through GitHub Releases.
 
-- Add a concise entry in `## [Unreleased]` for user-facing changes.
-- Use one of the standard sections when possible: `Added`, `Changed`, `Fixed`, `Security`.
-- Keep entries short and outcome-focused.
-
-A CI check enforces `Unreleased` changelog updates when source/config files change.
-Maintainers can bypass for exceptional cases by applying label `skip-changelog`.
+- Add a concise entry under `## [Unreleased]` for user-facing changes, using `Added`, `Changed`, `Fixed`, or `Security`.
+- A CI check enforces this when source or config files change; maintainers can bypass with the `skip-changelog` label.
 
 ## AI-assisted contributions
 
-AI-assisted and agent-assisted PRs are welcome.
-
-Please ensure:
+AI-assisted and agent-assisted PRs are welcome. Please ensure:
 
 - A human reviews and stands behind the final PR
 - Generated code is understood, minimal, and tested
 - No secrets, tokens, or private data are introduced
-- Tooling or automation changes include clear rationale
+
+Agents working in this repo should read [AGENTS.md](AGENTS.md) — it contains the binding engineering guardrails and review-prevention patterns.
 
 ## Security
 
-- Do not submit secrets in code, issues, or PRs.
-- If you find a sensitive vulnerability, open a private security report where possible instead of posting exploit details publicly.
-
-## Review and merge process
-
-- Maintainers may request changes for scope, safety, tests, and documentation.
-- PRs require passing checks and at least one maintainer approval.
-- Significant changes may be merged in follow-up slices to reduce risk.
-- For logic changes in retrieval/planner/caching, reviewers should verify:
-  - flag symmetry (`enabled=false` disables write+read effects)
-  - zero semantics (`0` is never coerced to `1`)
-  - cap-after-filter behavior
-  - cache coherence across instances/concurrency
-  - fallback parity (same policy constraints as primary and fallback paths)
-  - artifact isolation (`artifacts/` excluded from generic memory recall path)
-  - planner mode reachability (`no_recall`, `minimal`, `full`, `graph_mode`)
-  - heuristic robustness (intent patterns cover common language variants)
+Do not submit secrets in code, issues, or PRs. For sensitive vulnerabilities, follow [SECURITY.md](SECURITY.md) instead of posting exploit details publicly.
 
 ## Release process
 
-- Merges to `main` trigger an automated release workflow.
-- The workflow validates (`check-types`, `test`, `build`), bumps a patch version, tags `vX.Y.Z`, creates a GitHub release, and publishes to npm.
-- Configure repository secret `NPM_TOKEN` (npm automation token) for publish.
-- If `NPM_TOKEN` is missing, release creation still runs but npm publish is skipped.
+Merges to `main` trigger the automated release workflow: it validates (types, tests, build), derives the version bump from PR labels (`major`/`breaking-change` → major, `feature`/`enhancement` → minor, otherwise patch), tags `vX.Y.Z`, creates a GitHub release, and publishes the public packages in dependency order. See [docs/development/release-process.md](docs/development/release-process.md).
 
-## Good first contributions
+## More
 
-Useful high-impact contributions include:
+- [docs/development/contributing.md](docs/development/contributing.md) — deeper contributor reference
+- [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — code and testing conventions
+- [docs/architecture/monorepo-structure.md](docs/architecture/monorepo-structure.md) — package map
 
-- Better error messages and docs
-- Additional regression tests
-- Example configs for common providers
-- Performance/safety improvements with benchmarks/tests
+Good first contributions: better error messages, additional regression tests, example configs for common providers, and performance or safety improvements with benchmarks.
 
-Thanks again for improving openclaw-engram.
+Thanks again for improving Remnic.

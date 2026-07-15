@@ -1,8 +1,8 @@
-# Context Retention (v2.4)
+# Context retention
 
-v2.4 hardens long-running systems by making summaries richer and enabling optional "semantic recall" over past transcripts.
+Remnic hardens long-running sessions by making hourly summaries richer and enabling optional semantic recall over past transcripts.
 
-## Extended Hourly Summaries
+## Extended hourly summaries
 
 Config (all default off):
 - `hourlySummariesExtendedEnabled`
@@ -14,16 +14,16 @@ Output:
 - Each hour is stored as a section with structured subsections.
 
 Tool stats:
-- Engram captures tool names during `agent_end` and stores a per-session JSONL under `memoryDir/state/tool-usage/...`.
+- Remnic captures tool names during `agent_end` and stores a per-session JSONL under `memoryDir/state/tool-usage/...`.
 - Extended summaries can aggregate those counts per hour.
 
-## Scheduling Hourly Summaries
+## Scheduling hourly summaries
 
-Engram exposes tool `memory_summarize_hourly`. The recommended scheduling approach is an OpenClaw cron job that runs an **isolated agent turn** and calls the tool.
+Remnic exposes tool `memory_summarize_hourly`. The recommended scheduling approach is an OpenClaw cron job that runs an **isolated agent turn** and calls the tool.
 
-Engram intentionally does not silently modify `~/.openclaw/cron/jobs.json` unless `hourlySummaryCronAutoRegister: true`.
+Remnic intentionally does not silently modify `~/.openclaw/cron/jobs.json` unless `hourlySummaryCronAutoRegister: true`.
 
-## Conversation Semantic Recall (Optional)
+## Conversation semantic recall (optional)
 
 Config (default off):
 - `conversationIndexEnabled`
@@ -40,8 +40,8 @@ Config (default off):
 How it works:
 1. `conversation_index_update` chunks transcript history into markdown docs under:
    - `memoryDir/conversation-index/chunks/<sessionKey>/<YYYY-MM-DD>/*.md`
-2. When `conversationIndexBackend` is `qmd`, Engram updates and searches the configured QMD collection.
-3. When `conversationIndexBackend` is `faiss`, Engram shells out to the bundled Python sidecar and stores local artifacts under:
+2. When `conversationIndexBackend` is `qmd`, Remnic updates and searches the configured QMD collection.
+3. When `conversationIndexBackend` is `faiss`, Remnic shells out to the bundled Python sidecar and stores local artifacts under:
    - `memoryDir/state/conversation-index/faiss/index.faiss`
    - `memoryDir/state/conversation-index/faiss/metadata.jsonl`
    - `memoryDir/state/conversation-index/faiss/manifest.json`

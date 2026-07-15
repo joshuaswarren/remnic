@@ -5,8 +5,8 @@
 ### Prerequisites
 
 - Node.js >= 22.12.0
-- pnpm >= 9.0
-- Python 3.11+ (for `plugin-hermes` only)
+- pnpm 10.x (the repo pins `pnpm@10.32.1` via `packageManager`)
+- Python 3.10+ (for `plugin-hermes` only)
 
 ### Setup
 
@@ -22,13 +22,13 @@ pnpm test
 
 ```bash
 # Build one package
-pnpm run build --filter=@remnic/core
+pnpm --filter @remnic/core build
 
 # Test one package
-pnpm test --filter=@remnic/server
+pnpm --filter @remnic/cli test
 
 # Type-check one package
-pnpm run check-types --filter=@remnic/cli
+pnpm --filter @remnic/cli check-types
 ```
 
 ### Running Everything
@@ -99,7 +99,7 @@ import os from "node:os";
 import path from "node:path";
 
 test("description of behavior", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-test-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-test-"));
   try {
     // test logic using temp directory
     assert.equal(actual, expected);
@@ -125,7 +125,9 @@ npx tsx --test tests/specific.test.ts  # one file
 4. Write documentation first (if adding new features)
 5. Write tests second
 6. Write implementation third
-7. Run `pnpm run preflight:quick`
+7. Run `pnpm run preflight:quick` (lint, type-check, targeted tests, and the
+   `check:docs-parity` gate — every fenced `remnic <cmd>` block in `docs/**.md`,
+   `README.md`, and `packages/*/README.md` must resolve to a real CLI command)
 8. If you touched `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`,
    `entity-retrieval.ts`, `config.ts`, or any file under `storage/` or `orchestration/`
    in `src/` or `packages/remnic-core/src/`, run `pnpm run test:entity-hardening`
@@ -141,6 +143,7 @@ npx tsx --test tests/specific.test.ts  # one file
 - [ ] Documentation updated (if behavior changed)
 - [ ] No secrets or credentials committed
 - [ ] PR diff <= 400 LOC (or justified)
+- [ ] `remnic` commands in docs pass `pnpm run check:docs-parity`
 - [ ] Review fixes will be batched by subsystem, not pushed as micro-fixes
 
 ## Release Process

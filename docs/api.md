@@ -1,38 +1,12 @@
 # API Reference
 
+Remnic exposes one local service layer through HTTP and MCP adapters, a set of agent tools registered with the OpenClaw gateway, and an OpenClaw-hosted command surface. This page is the reference for all three. For the standalone `remnic` command-line tool, see the [CLI reference](cli.md).
+
 ## Standalone CLI Commands
 
-The canonical CLI is `remnic`. The legacy `engram` binary remains as a forwarder during the rename window, and the standalone commands below are still available through either name.
+The canonical CLI is `remnic`; the legacy `engram` binary remains as a forwarder during the rename window, and every command works under either name. The full standalone reference — all 35 top-level commands, their subcommands, and flags — lives in the [CLI reference](cli.md).
 
-| Command | Description |
-|---------|-------------|
-| `remnic init` | Create `remnic.config.json` in the current directory |
-| `remnic status [--json]` | Show server/daemon status and health |
-| `remnic query <text> [--json] [--explain]` | Query memories; `--explain` shows per-tier latency breakdown |
-| `remnic doctor` | Run diagnostics (Node version, config, API key, memory dir, daemon status) |
-| `remnic config` | Show current resolved configuration |
-| `remnic daemon <start\|stop\|restart>` | Manage the background HTTP server |
-| `remnic tree <generate\|watch\|validate>` | Workspace context tree operations |
-| `remnic onboard [dir] [--json]` | Analyze a project directory (language detection, doc discovery, ingestion plan) |
-| `remnic curate <path> [--json]` | Curate files into memory with duplicate/contradiction detection |
-| `remnic review <list\|approve\|dismiss\|flag> [id]` | Review inbox management |
-| `remnic sync <run\|watch> [--source <dir>]` | Diff-aware filesystem sync |
-| `remnic dedup [--json]` | Find duplicate memories |
-| `remnic connectors <list\|install\|remove\|doctor> [id]` | Manage host adapter connectors |
-| `remnic space <list\|switch\|create\|delete\|push\|pull\|share\|promote\|audit>` | Manage personal, project, and team memory spaces |
-| `remnic benchmark <run\|check\|report> [queries...] [--explain] [--baseline=<path>] [--report=<path>]` | Run benchmarks, check for regressions, generate reports |
-| `remnic versions <list\|show\|diff\|revert> <page-path> [version-id(s)]` | Page version history management |
-| `remnic taxonomy <show\|resolver\|add\|remove> [args]` | MECE taxonomy knowledge directory management |
-| `remnic enrich <entity-name\|--all\|audit\|providers> [--dry-run]` | External entity enrichment pipeline |
-| `remnic binary <scan\|status\|run\|clean> [--dry-run\|--force]` | Binary file lifecycle operations |
-
-All commands accept `--json` for machine-readable output. The CLI resolves configuration from:
-
-1. `REMNIC_CONFIG_PATH` environment variable (`ENGRAM_CONFIG_PATH` is still accepted in v1.x)
-2. `./remnic.config.json` in the current directory
-3. `~/.config/remnic/config.json` (default)
-
-See the [Platform Migration Guide](guides/platform-migration.md) for detailed setup and usage instructions.
+This page documents the shared access layer (HTTP + MCP), the agent tools, and the [`openclaw engram`](#cli-commands) hosted command surface.
 
 ---
 
@@ -42,31 +16,105 @@ Remnic exposes one shared local service layer through both HTTP and MCP adapters
 
 ### HTTP
 
-Core routes:
+Two infrastructure routes carry no request envelope and sit outside the op-gated catalog: `GET /engram/v1/health` (service health plus projection/search availability) and `POST /mcp` (the [MCP-over-HTTP](#mcp-over-http) JSON-RPC delegate). Every other route below is op-gated and shares the write envelope, rate limits, and validation described later on this page.
 
-- `GET /engram/v1/health` — service health plus projection/search availability
+**Recall and query**
+
 - `POST /engram/v1/recall` — shared recall entrypoint
 - `POST /engram/v1/recall/explain` — last recall snapshot plus intent/graph debug state
+- `GET /engram/v1/recall/tier-explain` — tier-explain document for a session
+- `GET /engram/v1/recall/xray` — recall with X-ray attribution capture (`q` required)
+- `GET /engram/v1/recall/timings` — recent recall timing samples
+- `POST /engram/v1/action-confidence` — read-only ask/draft/act/refuse/escalate decision
+
+**Memories and entities**
+
 - `POST /engram/v1/memories` — explicit memory write path
-- `POST /engram/v1/suggestions` — queue review-first memory suggestions
 - `GET /engram/v1/memories` — browse memories with query/status/category filters
 - `GET /engram/v1/memories/:id` — fetch one memory
-- `GET /engram/v1/memories/:id/timeline` — fetch one memory lifecycle timeline
+- `GET /engram/v1/memories/:id/timeline` — fetch one memory's lifecycle timeline
+- `POST /engram/v1/suggestions` — queue review-first memory suggestions
 - `GET /engram/v1/entities` — list entities
-- `GET /engram/v1/entities/:name` — fetch one entity
-- `GET /engram/v1/review-queue` — latest governance review bundle when present
-- `GET /engram/v1/maintenance` — health plus latest governance artifact summary
-- `GET /engram/v1/trust-zones/status` — trust-zone store status, counts, and latest record summary
-- `GET /engram/v1/trust-zones/records` — browse trust-zone records with zone/source/query filters
-- `POST /engram/v1/trust-zones/promote` — dry-run or apply a trust-zone promotion
-- `POST /engram/v1/trust-zones/demo-seed` — explicitly seed an opt-in buyer demo dataset
-- `POST /engram/v1/review-disposition` — operator review decision write path
-- `POST /engram/v1/observe` — feed conversation messages into LCM archive and extraction pipeline
+- `GET /engram/v1/entities/:id` — fetch one entity
+
+**Corrections**
+
+- `POST /engram/v1/correction/plan` — plan a natural-language memory correction
+- `POST /engram/v1/correction/apply` — apply a planned correction
+- `GET /engram/v1/correction/pending` — list pending corrections
+
+**Observe and LCM**
+
+- `POST /engram/v1/observe` — feed conversation messages into the LCM archive and extraction pipeline
 - `POST /engram/v1/lcm/search` — full-text search over LCM-archived conversations
 - `POST /engram/v1/lcm/compaction/flush` — drain pending LCM observations before a host compaction
 - `POST /engram/v1/lcm/compaction/record` — record a completed host compaction checkpoint
 - `GET /engram/v1/lcm/status` — LCM availability and stats
-- `POST /v1/citations/observed` — Record observed citation usage for attribution tracking
+
+**Trust zones**
+
+- `GET /engram/v1/trust-zones/status` — store status, counts, and latest record summary
+- `GET /engram/v1/trust-zones/records` — browse trust-zone records with zone/source/query filters
+- `POST /engram/v1/trust-zones/promote` — dry-run or apply a trust-zone promotion
+- `POST /engram/v1/trust-zones/demo-seed` — explicitly seed an opt-in demo dataset
+
+**Review, governance, and quality**
+
+- `GET /engram/v1/review-queue` — latest governance review bundle when present
+- `POST /engram/v1/review-disposition` — operator review-decision write path
+- `GET /engram/v1/review/contradictions` — list contradiction-review items
+- `GET /engram/v1/review/contradictions/:id` — one contradiction pair
+- `POST /engram/v1/review/resolve` — resolve a contradiction pair
+- `POST /engram/v1/contradiction-scan` — run an on-demand contradiction scan
+- `GET /engram/v1/maintenance` — health plus latest governance artifact summary
+- `GET /engram/v1/quality` — memory quality status
+
+**Coding agent**
+
+- `POST /engram/v1/coding-context` — attach or clear a session's coding context
+- `POST /engram/v1/coding/decisions` — record or list coding decision records
+- `POST /engram/v1/coding/architecture` — get or refresh the architecture card
+- `POST /engram/v1/coding/delta` — session delta since last seen
+
+**Capsules and offline sync**
+
+- `POST /engram/v1/capsules/export` — export a portable capsule archive
+- `POST /engram/v1/capsules/import` — import a capsule archive
+- `GET` or `POST /engram/v1/offline-sync/snapshot` — offline sync snapshot
+- `POST /engram/v1/offline-sync/files` — list files for offline sync
+- `POST /engram/v1/offline-sync/file-content` — read file content
+- `POST /engram/v1/offline-sync/apply-file-content` — apply file content
+- `POST /engram/v1/offline-sync/apply` — apply an offline sync batch
+- `GET /engram/v1/offline-sync/snapshot-stream` — snapshot stream (SSE)
+
+**Wearables**
+
+- `GET /engram/v1/wearables/status` — wearable source status
+- `POST /engram/v1/wearables/sync` — sync one source or all sources
+- `GET /engram/v1/wearables/transcript` — full transcript for a day
+- `GET /engram/v1/wearables/transcripts/search` — search stored transcripts
+- `GET /engram/v1/wearables/memories` — transcript-derived memories
+
+**Graph, peers, dreams, and console**
+
+- `GET /engram/v1/adapters` — host-adapter status
+- `GET /engram/v1/procedural/stats` — procedural-memory stats
+- `GET /engram/v1/graph/snapshot` — read-only graph snapshot
+- `GET /engram/v1/graph/events` — graph event stream (SSE)
+- `GET /engram/v1/peers` — list peers
+- `GET /engram/v1/peers/:id` — fetch one peer
+- `PUT /engram/v1/peers/:id` — create or update a peer
+- `DELETE /engram/v1/peers/:id` — delete a peer
+- `GET /engram/v1/peers/:id/profile` — fetch a peer's cognitive profile
+- `GET /engram/v1/dreams/status` — Dreams pipeline telemetry
+- `POST /engram/v1/dreams/run` — run one Dreams phase
+- `GET /engram/v1/console/state` — runtime console state snapshot
+- `POST /engram/v1/chat/message` — chat message (SSE)
+- `GET /engram/v1/chat/events/:id` — chat event stream (SSE)
+
+**Citations**
+
+- `POST /v1/citations/observed` — record observed citation usage for attribution tracking (note: no `/engram/v1` prefix)
 
 Recall request fields:
 
@@ -77,7 +125,7 @@ Recall request fields:
 - `mode` (`auto`, `no_recall`, `minimal`, `full`, `graph_mode`)
 - `includeDebug`
 - `cwd` (string, optional) — absolute path to the working directory. When provided and no coding context exists for the session, the server resolves git context automatically (see [Coding agent mode](coding-agent.md#project-detection)).
-- `projectTag` (string, optional) — project name (e.g. `"blend-supply"`). Creates a `tag:<name>` coding context. Takes precedence over `cwd` when both are provided.
+- `projectTag` (string, optional) — project name (e.g. `"acme-webshop"`). Creates a `tag:<name>` coding context. Takes precedence over `cwd` when both are provided.
 
 Recall response fields:
 
@@ -162,7 +210,7 @@ Request fields:
 - `namespace` (string, optional) — target namespace; defaults to the resolved namespace from the principal
 - `skipExtraction` (boolean, optional) — when `true`, messages are archived in LCM but not sent through extraction
 - `cwd` (string, optional) — absolute path to the working directory. When provided and no coding context exists for the session, the server resolves git context automatically (see [Coding agent mode](coding-agent.md#project-detection)).
-- `projectTag` (string, optional) — project name (e.g. `"blend-supply"`). Creates a `tag:<name>` coding context. Takes precedence over `cwd` when both are provided.
+- `projectTag` (string, optional) — project name (e.g. `"acme-webshop"`). Creates a `tag:<name>` coding context. Takes precedence over `cwd` when both are provided.
 
 Response (HTTP 202):
 
@@ -618,28 +666,30 @@ Update review metadata on an existing continuity loop entry.
 
 ## CLI Commands
 
-Run via `openclaw engram <command>`:
+Run via `openclaw engram <command>` when Remnic is hosted inside OpenClaw. This is a curated subset of the roughly 100 hosted subcommands; the [operations guide](operations.md) covers the operator workflows, and the standalone `remnic` binary is documented in the [CLI reference](cli.md).
 
 | Command | Description |
 |---------|-------------|
-| `flush` | Force-flush the buffer and run extraction now |
-| `search <query>` | Search memories from the terminal |
 | `stats` | Show memory counts, buffer state, and QMD status |
-| `export [--format json\|sqlite\|md]` | Export all memories to a portable file |
-| `import <file>` | Import memories from a portable file |
-| `purge` | Delete all memories (requires confirmation) |
-| `continuity incidents [--state open\|closed\|all] [--limit N]` | List continuity incidents |
-| `continuity incident-open --symptom <text> [--trigger-window <text>] [--suspected-cause <text>]` | Open a continuity incident |
-| `continuity incident-close --id <id> --fix-applied <text> --verification-result <text> [--preventive-rule <text>]` | Close a continuity incident |
+| `search <query>` | Search memories from the terminal |
+| `recall <query>` | Run a full recall |
+| `doctor` | Diagnose the hosted install |
+| `flush-access` | Flush pending access-tracking updates to disk |
+| `access-stats [--top N]` | Show the most-accessed memories |
+| `export [--format json\|md\|sqlite] [--out <path>]` | Export memories to a portable file |
+| `import [--from <path>] [--format auto\|json\|md\|sqlite]` | Import memories from a portable file |
+| `backup` | Snapshot the memory directory |
+| `purge` | Delete memories (requires confirmation) |
+| `bulk-import --source weclone` | Bulk-import from a registered hosted source (for example WeClone) |
+| `access <http-serve\|http-stop\|http-status\|mcp-serve>` | Manage the HTTP and MCP access surfaces |
+| `continuity <incidents\|incident-open\|incident-close>` | Manage continuity incidents |
 | `action-audit [--namespace <name>] [--limit N]` | Show namespace-aware memory action outcomes and policy decisions |
-| `action-confidence [--confidence N] [--risk low\|medium\|high\|irreversible\|restricted] [--context none\|partial\|sufficient]` | Evaluate ask/draft/act/refuse/escalate advisory policy |
+| `action-confidence [--confidence N] [--risk <level>] [--context <readiness>]` | Evaluate the ask/draft/act/refuse/escalate advisory policy |
 | `trust-zone-status` | Show trust-zone store status and aggregate counts |
 | `trust-zone-promote --record-id <id> --target-zone <zone> --reason <text> [--dry-run]` | Preview or apply a trust-zone promotion |
-| `trust-zone-demo-seed [--scenario enterprise-buyer-v1\|agentic-commerce-v1] [--recorded-at <iso>] [--dry-run]` | Explicitly preview or seed an opt-in trust-zone buyer demo dataset |
-| `versions <list\|show\|diff\|revert> <page-path> [version-id(s)]` | Page version history management |
-| `taxonomy <show\|resolver\|add\|remove> [args]` | MECE taxonomy knowledge directory management |
-| `enrich <entity-name\|--all\|audit\|providers> [--dry-run]` | External entity enrichment pipeline |
-| `binary <scan\|status\|run\|clean> [--dry-run\|--force]` | Binary file lifecycle operations |
+| `trust-zone-demo-seed [--scenario enterprise-buyer-v1\|agentic-commerce-v1] [--recorded-at <iso>] [--dry-run]` | Explicitly preview or seed an opt-in trust-zone demo dataset |
+
+`access` manages the HTTP and MCP access surfaces (`http-serve`, `http-stop`, `http-status`, `mcp-serve`); the separate `access-stats` command reports the most-accessed memories. The two are distinct commands — do not conflate them.
 
 ## Error Responses
 

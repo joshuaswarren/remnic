@@ -67,7 +67,7 @@ the Proxmox cluster with nightly-prune/weekly-restart/telemetry automation
 (`scripts/ci-runner-*`), currently serving Deckard CI. Findings:
 
 - proxmox2/3/4/5/z1 are documented as I/O- or capacity-saturated ("do not add
-  workers"); proxmox (192.168.2.3) has modest headroom.
+  workers"); the primary proxmox node has modest headroom.
 - **jarvis** (EPYC 7443P 24C/48T, 256 GB ECC, 3.5 TiB free local-lvm, dual
   10 GbE) is the only node with real capacity; the ML VM leaves ~60 GB +
   spare cores on the host.

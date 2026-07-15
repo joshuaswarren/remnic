@@ -99,7 +99,7 @@ Public line:
 The helper is exposed as:
 
 - core: `evaluateActionConfidence(input)`
-- HTTP: `POST /remnic/v1/action-confidence`
+- HTTP: `POST /engram/v1/action-confidence`
 - MCP: `remnic.action_confidence` and legacy `engram.action_confidence`
 - CLI: `remnic action-confidence`
 

@@ -6,11 +6,21 @@ How to create a Remnic plugin for a new AI agent platform.
 
 Every Remnic plugin follows the same pattern:
 
-1. **Connect to EMO** — via HTTP API or MCP protocol on `:4318`
+1. **Connect to Remnic** — via the daemon's HTTP API or MCP protocol on `:4318`
 2. **Auto-recall** — inject memory context before the agent processes a prompt
 3. **Auto-observe** — capture conversation turns and file changes for memory extraction
 4. **Explicit tools** — provide the agent with direct recall/store/search capabilities
 5. **Authenticate** — use a per-plugin token from `~/.remnic/tokens.json` with `~/.engram/tokens.json` as a migration fallback
+
+## Architecture boundary
+
+`@remnic/core` never imports a host package. Core owns memory behavior and
+exposes host-agnostic contracts; each plugin depends on core and maps those
+contracts onto its platform's plugin SDK, hooks, and manifest. Keep
+host-specific types, commands, and lifecycle glue in the plugin package. When
+the host already provides a native command surface, tool-registration path, or
+memory lifecycle hook, consume that upstream primitive instead of inventing a
+parallel abstraction in core.
 
 ## Integration Depth Tiers
 
@@ -21,7 +31,7 @@ The platform supports MCP but has no plugin/hook system. The agent must explicit
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "remnic": {
       "url": "http://localhost:4318/mcp",
       "headers": { "Authorization": "Bearer ${REMNIC_AUTH_TOKEN}" }
     }
@@ -38,7 +48,7 @@ The platform has a plugin format AND lifecycle hooks. Hooks enable automatic mem
 - `UserPromptSubmit` → recall memories relevant to the prompt, inject as `additionalContext`
 - `PostToolUse` → observe file changes in background
 
-**Required MCP:** Full 44-tool MCP server for explicit operations.
+**Required MCP:** the full Remnic MCP tool surface (100+ tools) for explicit operations.
 
 ### Tier 3: MemoryProvider (Hermes)
 
@@ -86,7 +96,7 @@ Follow the target platform's plugin documentation. At minimum:
 
 ### Step 4: Add an Installer
 
-Create `src/installer.ts` that `engram connectors install myplatform` calls:
+Create `src/installer.ts` that `remnic connectors install myplatform` calls:
 
 ```typescript
 export async function install(options: { tokenStore: TokenStore; configDir: string }) {
@@ -148,7 +158,7 @@ REMNIC_TOKEN="$(node -e "
 ")"
 
 INPUT="$(cat)"
-# Parse input, call EMO API, return hook response
+# Parse input, call the Remnic API, return hook response
 ```
 
 ## Testing Your Plugin

@@ -39,22 +39,26 @@ The contradiction scan closes this gap by:
 
 ## Surfaces
 
-### CLI
+### CLI (hosted)
+
+Contradiction review ships on the OpenClaw-hosted CLI. (Do not confuse it with
+the standalone `remnic review` command, which drives the separate memory
+*suggestion* queue with `list|approve|dismiss|flag`.)
 
 ```bash
 # List unresolved contradictions
-engram review list
-engram review list --filter contradicts --namespace work
+openclaw engram review list
+openclaw engram review list --filter contradicts --namespace work
 
 # Show a specific pair
-engram review show <pairId>
+openclaw engram review show <pairId>
 
 # Resolve a pair
-engram review resolve <pairId> --verb keep-a
-engram review resolve <pairId> --verb both-valid
+openclaw engram review resolve <pairId> --verb keep-a
+openclaw engram review resolve <pairId> --verb both-valid
 
 # Run an on-demand scan
-engram review scan
+openclaw engram review scan
 ```
 
 Valid verbs:
@@ -73,11 +77,11 @@ POST /engram/v1/review/resolve  { pairId, verb }
 POST /engram/v1/contradiction-scan  { namespace? }
 ```
 
-### MCP Tools
+### MCP tools
 
-- `engram.review_list` — List review items
-- `engram.review_resolve` — Resolve a pair
-- `engram.contradiction_scan_run` — Run on-demand scan
+- `remnic.review_list` / `engram.review_list` — List review items
+- `remnic.review_resolve` / `engram.review_resolve` — Resolve a pair
+- `remnic.contradiction_scan_run` / `engram.contradiction_scan_run` — Run an on-demand scan
 
 ## Cron
 

@@ -1,12 +1,21 @@
-# Compounding Engine (v5.0)
+# Compounding engine
 
-The compounding engine turns feedback into persistent institutional learning.
+The compounding engine turns cross-agent feedback into persistent institutional learning: weekly synthesis reports, a stable mistake registry, and rubrics that can be injected into future prompts. Enable it when you want agents to accumulate lessons from approvals and rejections over time. Opt-in via `compoundingEnabled` (default `false`).
 
-Enable:
-- `compoundingEnabled: true`
+> Provenance: compounding engine landed in v5.0.
 
-Optional injection into every prompt:
-- `compoundingInjectEnabled` (default: true when compounding is enabled)
+## Enable it
+
+```json
+{
+  "compoundingEnabled": true,
+  "compoundingInjectEnabled": true,
+  "compoundingSemanticEnabled": false
+}
+```
+
+- `compoundingInjectEnabled` (default `true` when compounding is enabled) injects recurring mistake patterns and matching rubric snippets into recall.
+- `compoundingSemanticEnabled` (default `false`) adds an advisory `Promotion Candidates` section to weekly reports.
 
 ## Inputs
 
@@ -18,7 +27,7 @@ Write feedback via tool:
 
 ## Outputs
 
-On each weekly synthesis run, Engram writes:
+On each weekly synthesis run, Remnic writes:
 - `memoryDir/compounding/weekly/<YYYY-Www>.md`
 - `memoryDir/compounding/weekly/<YYYY-Www>.json`
 - `memoryDir/compounding/mistakes.json`
@@ -56,7 +65,7 @@ Promoted lessons are written as durable `principle` or `rule` memories with `sou
 
 When `compoundingInjectEnabled=true`, recall injection can include both recurring mistake patterns and rubric snippets that match the current query/workflow.
 
-## Running Weekly Synthesis
+## Running weekly synthesis
 
 Manual:
 
@@ -68,7 +77,7 @@ compounding_weekly_synthesize
 Recommended scheduling:
 - Use OpenClaw cron with an isolated agent turn that calls `compounding_weekly_synthesize`.
 
-## Continuity Audit Generation
+## Continuity audit generation
 
 When `identityContinuityEnabled=true`, `continuityAuditEnabled=true`, and `compoundingEnabled=true`, use:
 

@@ -1,10 +1,10 @@
-# Local LLM Guide
+# Local LLM guide
 
-Use Engram's local LLM path when you want extraction, reranking, and selected helper flows to stay on an OpenAI-compatible endpoint you control.
+Use Remnic's local LLM path when you want extraction, reranking, and selected helper flows to stay on an OpenAI-compatible endpoint you control.
 
-This guide applies when `modelSource` is `plugin` (the default). If you switch to `modelSource: "gateway"`, Engram sends extraction/consolidation/rerank calls to the configured gateway agent chain instead, and `localLlm*` settings no longer control the primary extraction path.
+This guide applies when `modelSource` is `plugin` (the parser default when the key is unset; new installs may be seeded with `gateway`). With `modelSource: "gateway"`, Remnic sends extraction/consolidation/rerank calls to the configured gateway agent chain instead, and `localLlm*` settings no longer control the primary extraction path.
 
-## Fast Start
+## Fast start
 
 If you want the preset first:
 
@@ -21,7 +21,7 @@ If you want the preset first:
 
 The preset seeds the broader advanced surface, but your explicit `localLlm*` values still win.
 
-## Recommended Split
+## Recommended split
 
 Use the primary local model for slower tasks:
 
@@ -36,11 +36,11 @@ Use the fast local tier for short-turn helpers:
 - temporal-memory summaries
 - compression-guideline refinement
 
-## Key Settings
+## Key settings
 
 | Setting | Why it matters |
 |---------|----------------|
-| `localLlmEnabled` | Master switch for Engram's local inference path while `modelSource=plugin` |
+| `localLlmEnabled` | Master switch for Remnic's local inference path while `modelSource=plugin` |
 | `localLlmUrl` | Base URL for the OpenAI-compatible endpoint |
 | `localLlmModel` | Main local model ID |
 | `localLlmFastEnabled` | Enables the smaller/faster local tier |
@@ -50,14 +50,14 @@ Use the fast local tier for short-turn helpers:
 | `localLlmFastTimeoutMs` | Lower bound for fast helper requests |
 | `embeddingFallbackProvider` | Use `local` if you also want embedding fallback to stay local |
 
-## Operational Notes
+## Operational notes
 
 - Keep `localLlmFallback=true` during bring-up unless you explicitly want hard failures.
 - If the local server reports a smaller context window than the model supports, set `localLlmMaxContext`.
 - If reranking feels slow, lower `rerankTimeoutMs` before changing the main extraction timeout.
-- The local path is fail-open by default. If the endpoint disappears, Engram should degrade rather than block the gateway.
+- The local path is fail-open by default. If the endpoint disappears, Remnic should degrade rather than block the gateway.
 
-## Custom OpenAI-Compatible Endpoint (Self-Hosted)
+## Custom OpenAI-compatible endpoint (self-hosted)
 
 If you run a single OpenAI-compatible server (vLLM, Ollama, LM Studio, etc.) that serves both chat completions and embeddings, you can point everything at it with just `openaiBaseUrl`:
 
@@ -70,9 +70,9 @@ If you run a single OpenAI-compatible server (vLLM, Ollama, LM Studio, etc.) tha
 }
 ```
 
-Engram routes extraction, consolidation, and embedding requests to your endpoint. The embedding path appends `/embeddings` to `openaiBaseUrl` automatically.
+Remnic routes extraction, consolidation, and embedding requests to your endpoint. The embedding path appends `/embeddings` to `openaiBaseUrl` automatically.
 
-### Separate Chat and Embedding Models
+### Separate chat and embedding models
 
 If your chat model and embedding model live on different servers, use `openaiBaseUrl` for chat and the `localLlm*` settings for embeddings:
 
@@ -89,7 +89,7 @@ If your chat model and embedding model live on different servers, use `openaiBas
 }
 ```
 
-### Docker Networking
+### Docker networking
 
 When running OpenClaw in Docker and the LLM server on the host, use `host.docker.internal` instead of `localhost`:
 
@@ -100,7 +100,7 @@ When running OpenClaw in Docker and the LLM server on the host, use `host.docker
 }
 ```
 
-## When Not To Use It
+## When not to use it
 
 - If you do not have a stable local endpoint yet, start with `memoryOsPreset: "balanced"`.
 - If you want the lowest moving-part count, start with `conservative` and leave local inference disabled until the rest of the install is stable.

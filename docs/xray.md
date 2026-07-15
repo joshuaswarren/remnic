@@ -1,55 +1,57 @@
 # Recall X-ray
 
-Issue [#570](https://github.com/joshuaswarren/remnic/issues/570) adds a
-unified per-result attribution snapshot for recalls. After any recall,
-an X-ray capture tells you **exactly why each memory surfaced** — which
-retrieval tier served it, how its score decomposed, every filter it
-passed (and the first filter that would have rejected it), any graph
-path traversed, the audit-log entry id, memory provenance and safety
-context, and the character budget the final payload consumed.
+A recall X-ray is a unified per-result attribution snapshot. After any recall,
+it tells you **exactly why each memory surfaced** — which retrieval tier served
+it, how its score decomposed, every filter it passed (and the first filter that
+would have rejected it), any graph path traversed, the audit-log entry id,
+memory provenance and safety context, and the character budget the final payload
+consumed.
 
-Most competitors treat retrieval as a black box. Remnic X-ray makes the
-whole ladder legible in one snapshot that is rendered identically by
-the CLI, HTTP, and MCP surfaces — so what an operator reads in a
-terminal matches byte-for-byte what an agent reads over MCP.
+Most memory systems treat retrieval as a black box. X-ray makes the whole ladder
+legible in one snapshot that is rendered identically by the CLI, HTTP, and MCP
+surfaces — so what an operator reads in a terminal matches byte-for-byte what an
+agent reads over MCP.
+
+> **Not to be confused with [Retrieval explain](./retrieval-explain.md).** That
+> page documents the standalone *tier explain* surface (`recall_tier_explain`),
+> which annotates only the last-recall snapshot with the direct-answer tier
+> verdict. X-ray is the richer capture: it runs a fresh recall against an
+> arbitrary query and returns per-result filters, score decomposition, and audit
+> correlation — and carries the tier-explain block inside its snapshot. See
+> [Tier explain vs X-ray](#tier-explain-vs-x-ray) below.
 
 ## How to run
+
+X-ray ships as a first-class **standalone** command:
 
 ```sh
 remnic xray "<query>" [--format json|text|markdown] [--budget N] [--namespace ns] [--out file]
 ```
 
-CLI surface defined in
-[`packages/remnic-core/src/cli.ts`](../packages/remnic-core/src/cli.ts)
-(lines 4015-4076). The handler delegates to a shared
-`EngramAccessService.recallXray(...)` so the CLI, HTTP, and MCP
-surfaces share the same `xrayQueue` mutex and cannot race each other
-(rules 40 and 47).
+The OpenClaw-hosted equivalent is `openclaw engram xray "<query>"`, which adds a
+`--disclosure chunk|section|raw` flag for the per-disclosure token-spend summary.
+Both handlers delegate to a shared `EngramAccessService.recallXray(...)` so the
+CLI, HTTP, and MCP surfaces share the same `xrayQueue` mutex and cannot race each
+other.
 
-Flags:
+Flags (standalone), validated by `parseXrayCliOptions` in
+`packages/remnic-core/src/recall-xray-cli.ts` — an empty or missing query throws
+a listed-options error rather than silently defaulting:
 
-- `<query>` (required, non-empty). Validated by `parseXrayCliOptions`
-  in
-  [`packages/remnic-core/src/recall-xray-cli.ts`](../packages/remnic-core/src/recall-xray-cli.ts)
-  (lines 52-77) — an empty or missing query throws a listed-options
-  error rather than silently defaulting.
-- `--format` — `text` (default), `markdown`, or `json`. Unknown
-  values raise an error that lists the valid options
-  (`parseXrayFormat`, `recall-xray-renderer.ts` lines 40-52).
-- `--budget <chars>` — positive integer override for the recall
-  character budget on this single call. Not a positive integer →
-  rejected at the CLI boundary (rules 14 and 51).
-- `--namespace <ns>` — override the namespace to scope this recall
-  against.
-- `--out <path>` — write the rendered snapshot to a file instead of
-  stdout. The path is tilde-expanded (rule 17).
+- `<query>` (required, non-empty).
+- `--format` — `text` (default), `markdown`, or `json`. Unknown values raise an
+  error that lists the valid options.
+- `--budget <chars>` — positive integer override for the recall character budget
+  on this single call. Not a positive integer is rejected at the CLI boundary.
+- `--namespace <ns>` — override the namespace to scope this recall against.
+- `--out <path>` — write the rendered snapshot to a file instead of stdout. The
+  path is tilde-expanded.
 
 ### Sample output
 
 The following is a synthetic example of a text-format X-ray for a
-review-context-augmented recall. Exact field ordering and spacing are
-stable under the renderer's golden tests (lines 93-139 of
-`recall-xray-renderer.ts`).
+review-context-augmented recall. Field ordering and spacing are stable under the
+renderer's golden tests.
 
 ```
 === Recall X-ray ===
@@ -110,17 +112,15 @@ source-anchors:
   - decisions/recall-cache-ttl.md:10-14
 ```
 
-The markdown format is structurally identical but rendered as GitHub
-tables + H2/H3 sections; the JSON format is the raw
-`RecallXraySnapshot` serialized under a `{ snapshotFound: true, ... }`
-envelope.
+The markdown format is structurally identical but rendered as GitHub tables +
+H2/H3 sections; the JSON format is the raw `RecallXraySnapshot` serialized under
+a `{ snapshotFound: true, ... }` envelope.
 
 ## JSON schema
 
-The canonical v1 shape lives in
-[`packages/remnic-core/src/recall-xray.ts`](../packages/remnic-core/src/recall-xray.ts).
-A stable `schemaVersion: "1"` tag on every snapshot lets downstream
-consumers version-gate their parsers.
+The canonical v1 shape lives in `packages/remnic-core/src/recall-xray.ts`. A
+stable `schemaVersion: "1"` tag on every snapshot lets downstream consumers
+version-gate their parsers.
 
 ### `RecallXraySnapshot`
 
@@ -155,7 +155,7 @@ interface RecallXrayResult {
     | "review-context";
   scoreDecomposition: RecallXrayScoreDecomposition;
   graphPath?: string[];
-  graphEdgeConfidences?: number[]; // issue #681 PR 3/3 — aligned with graphPath
+  graphEdgeConfidences?: number[]; // aligned with graphPath
   auditEntryId?: string;
   admittedBy: string[];      // filters the candidate passed
   rejectedBy?: string;       // first filter that would have rejected
@@ -194,14 +194,14 @@ still remains the always-present retrieval scope.
 
 When the graph subsystem (`servedBy: "graph"`) produced a result, the X-ray
 optionally surfaces a `graphEdgeConfidences` array aligned with `graphPath`:
-each entry is the confidence of the edge between consecutive nodes, so the
-array length is always `graphPath.length - 1`. Operators use this to
-attribute floor-pruning and PageRank ranking decisions back to specific
-edges. See [`graph-reasoning.md`](architecture/graph-reasoning.md) for the
-underlying floor and iteration controls (`graphTraversalConfidenceFloor`,
+each entry is the confidence of the edge between consecutive nodes, so the array
+length is always `graphPath.length - 1`. Operators use this to attribute
+floor-pruning and PageRank ranking decisions back to specific edges. See
+[graph-reasoning.md](architecture/graph-reasoning.md) for the underlying floor
+and iteration controls (`graphTraversalConfidenceFloor`,
 `graphTraversalPageRankIterations`).
 
-### `RecallXrayScoreDecomposition` (lines 68-75)
+### `RecallXrayScoreDecomposition`
 
 ```ts
 interface RecallXrayScoreDecomposition {
@@ -210,19 +210,18 @@ interface RecallXrayScoreDecomposition {
   importance?: number;
   mmrPenalty?: number;
   tierPrior?: number;
-  reinforcementBoost?: number;  // additive boost from reinforcement_count (issue #687 PR 3/4)
+  reinforcementBoost?: number;  // additive boost from reinforcement_count
   final: number;             // the only guaranteed field
 }
 ```
 
-Different tiers populate different terms. `hybrid` typically reports
-`vector` + `bm25` + `mmrPenalty`; `direct-answer` reports `importance`
-+ `tierPrior`. When `reinforcementRecallBoostEnabled` is `true`, memories
-with `reinforcement_count` frontmatter also carry `reinforcementBoost`.
-The renderer formats each known field with four decimal places and keeps
-the line stable across missing fields.
+Different tiers populate different terms. `hybrid` typically reports `vector` +
+`bm25` + `mmrPenalty`; `direct-answer` reports `importance` + `tierPrior`. When
+`reinforcementRecallBoostEnabled` is `true`, memories with `reinforcement_count`
+frontmatter also carry `reinforcementBoost`. The renderer formats each known
+field with four decimal places and keeps the line stable across missing fields.
 
-### `RecallFilterTrace` (lines 104-110)
+### `RecallFilterTrace`
 
 ```ts
 interface RecallFilterTrace {
@@ -233,11 +232,20 @@ interface RecallFilterTrace {
 }
 ```
 
-The `servedBy` union is orthogonal to the `RetrievalTier` enum used by
-issue #518's tier-explain surface. The two sets stay separate on
-purpose so the observability contracts can evolve independently;
-`tierExplain` is carried verbatim inside the X-ray snapshot when the
-direct-answer tier ran.
+## Tier explain vs X-ray
+
+The `servedBy` union above is orthogonal to the `RetrievalTier` enum used by the
+[tier-explain surface](./retrieval-explain.md) (issue #518). The two sets stay
+separate on purpose so the observability contracts can evolve independently.
+
+The `tierExplain` field inside a snapshot is populated **only when
+`recallDirectAnswerEnabled: true`** (default `false`, verified in
+`packages/remnic-core/src/config.ts`) and the direct-answer gate returns a
+verdict for the recall. When the flag is off, `tierExplain` is `null` — every
+other part of the X-ray snapshot (filters, results, score decomposition, audit
+ids) is unaffected and still populated. In short: X-ray always attributes *which
+tier served each result* via `servedBy`; the embedded `tierExplain` block is the
+extra direct-answer observation that only appears when you opt in.
 
 ## HTTP surface
 
@@ -245,36 +253,30 @@ direct-answer tier ran.
 GET /engram/v1/recall/xray?q=<query>[&session=<key>][&namespace=<ns>][&budget=<chars>]
 ```
 
-Defined in
-[`packages/remnic-core/src/access-http.ts`](../packages/remnic-core/src/access-http.ts)
-(lines 403-477). The route is `GET` so proxies can cache the response
-by full URL; all recall parameters are query-string fields. Bearer
-auth is enforced identically to the rest of `/engram/v1/*`, and the
-namespace is resolved through `resolveNamespace(...)` before the
-orchestrator runs — the same scope layer the write path uses, so there
-is no cross-namespace read leak (rule 42).
+Defined in `packages/remnic-core/src/access-http.ts`. The route is `GET` so
+proxies can cache the response by full URL; all recall parameters are
+query-string fields. Bearer auth is enforced identically to the rest of
+`/engram/v1/*`, and the namespace is resolved through `resolveNamespace(...)`
+before the orchestrator runs — the same scope layer the write path uses, so
+there is no cross-namespace read leak.
 
-Content negotiation: the endpoint currently returns JSON
-(`respondJson`). CLI and operator callers who want the markdown or
-text rendering compute it locally via `renderXray(snapshot, format)`
-from the shared renderer.
+Content negotiation: the endpoint returns JSON (`respondJson`). CLI and operator
+callers who want the markdown or text rendering compute it locally via
+`renderXray(snapshot, format)` from the shared renderer.
 
-Validation errors surface as `400`s with an `error`/`code`/`message`
-triple (missing query, invalid budget). Backend faults bubble to the
-global `handle()` catch so they return `500` with a logged trace id.
+Validation errors surface as `400`s with an `error`/`code`/`message` triple
+(missing query, invalid budget). Backend faults bubble to the global `handle()`
+catch so they return `500` with a logged trace id.
 
 ## MCP tool
 
-Registered as `engram.recall_xray` in
-[`packages/remnic-core/src/access-mcp.ts`](../packages/remnic-core/src/access-mcp.ts)
-(lines 180-207, handler at 1228-1280). `withToolAliases` emits
-`remnic.recall_xray` as the canonical alias automatically — the
-dual-name invariant that every new MCP tool ships with.
+Registered as `remnic.recall_xray` (canonical) with `engram.recall_xray` as the
+legacy alias, in `packages/remnic-core/src/access-mcp.ts`. `withToolAliases`
+emits the dual name automatically — the invariant that every MCP tool ships with.
 
-Input schema accepts `query` (required), `sessionKey`, `namespace`,
-and `budget`. Validation errors are surfaced as MCP tool-call errors
-listing the valid options instead of silently returning
-`snapshotFound: false`.
+Input schema accepts `query` (required), `sessionKey`, `namespace`, and
+`budget`. Validation errors are surfaced as MCP tool-call errors listing the
+valid options instead of silently returning `snapshotFound: false`.
 
 Response shape matches the HTTP surface exactly:
 
@@ -285,67 +287,55 @@ Response shape matches the HTTP surface exactly:
 }
 ```
 
-When the orchestrator does not produce a snapshot (capture disabled,
-session scope mismatch), the response is `{ "snapshotFound": false }`.
+When the orchestrator does not produce a snapshot (capture disabled, session
+scope mismatch), the response is `{ "snapshotFound": false }`.
 
-## Legacy `/recall/explain` markdown delegation
+## Shared markdown renderer
 
-Issue #518 introduced `recall/explain` with `text` and `json` formats
-that surface a single-session tier snapshot. Issue #570 PR 7 adds a
-`markdown` format to that same surface — and rather than duplicate the
-rendering logic, the explain renderer delegates to the shared X-ray
-markdown renderer when `format === "markdown"`. See
-[`packages/remnic-core/src/recall-explain-renderer.ts`](../packages/remnic-core/src/recall-explain-renderer.ts)
-(lines 29-35, 239-340).
-
-This is backwards-compatible. Existing `text` and `json` callers see
-no change — the markdown branch is additive. The adapter at
-`toRecallXraySnapshotFromLegacy(...)` maps the
-`LastRecallSnapshot` shape into the X-ray snapshot shape so the
-renderer's single code path handles both surfaces (CLAUDE.md rule 22:
-one renderer, not three).
-
-The orthogonality from #518 is preserved: `recall/explain` still
-returns a single-session snapshot; `recall/xray` captures a fresh
-snapshot against an arbitrary query. They answer different questions
-and live at different URLs.
+The graph-path `recall/explain` surface and the tier-explain surface both gained
+a `markdown` format that delegates to the shared X-ray markdown renderer rather
+than duplicating rendering logic (`packages/remnic-core/src/recall-explain-renderer.ts`).
+This is backwards-compatible: existing `text` and `json` callers see no change;
+the markdown branch is additive. The adapter
+`toRecallXraySnapshotFromLegacy(...)` maps the `LastRecallSnapshot` shape into
+the X-ray snapshot shape so a single renderer code path handles both surfaces.
 
 ## Observability positioning
 
-Most memory / retrieval systems treat recall as a black box. You see
-what the system returned; you do not see why, which filters it applied,
-or how close a rejected candidate came to being admitted. X-ray makes
-the retrieval ladder legible:
+X-ray makes the retrieval ladder legible:
 
-- **Per-result attribution** — every returned memory carries its
-  `servedBy` tier, score decomposition, and the ordered list of
-  filters it passed, with the first rejecting filter tracked even for
-  admitted results (when one exists).
-- **Filter ladder** — the snapshot records every gate the orchestrator
-  ran with `considered` and `admitted` counts, so you can see exactly
-  where candidates are being dropped.
-- **Budget accounting** — `budget.used` / `budget.chars` shows what
-  fraction of the recall budget the final payload consumed, so
-  over-long or too-sparse recalls are diagnosable without log diving.
+- **Per-result attribution** — every returned memory carries its `servedBy`
+  tier, score decomposition, and the ordered list of filters it passed, with the
+  first rejecting filter tracked even for admitted results (when one exists).
+- **Filter ladder** — the snapshot records every gate the orchestrator ran with
+  `considered` and `admitted` counts, so you can see exactly where candidates are
+  being dropped.
+- **Budget accounting** — `budget.used` / `budget.chars` shows what fraction of
+  the recall budget the final payload consumed, so over-long or too-sparse
+  recalls are diagnosable without log diving.
 - **Audit correlation** — each result carries an `auditEntryId` that
-  cross-references the standard audit log; you can follow a recall
-  from X-ray to the recall-audit trail to the storage operation.
-- **Tier-explain inline** — when the direct-answer tier ran, its
-  `RecallTierExplain` block is carried verbatim inside the snapshot
-  so the filter ladder and the tier verdict live side by side.
+  cross-references the standard audit log; you can follow a recall from X-ray to
+  the recall-audit trail to the storage operation.
+- **Tier-explain inline** — when the direct-answer tier is enabled and fired,
+  its `RecallTierExplain` block is carried verbatim inside the snapshot so the
+  filter ladder and the tier verdict live side by side.
 
-For one-off investigations operators run `remnic xray "<query>"`. For
-systemic observability they consume the MCP tool or HTTP endpoint and
-stream snapshots into their own analytics pipeline — the JSON shape is
-stable under `schemaVersion: "1"`.
+For one-off investigations, operators run `remnic xray "<query>"`. For systemic
+observability they consume the MCP tool or HTTP endpoint and stream snapshots
+into their own analytics pipeline — the JSON shape is stable under
+`schemaVersion: "1"`.
 
 ## Related reading
 
-- [Retrieval Explain](./retrieval-explain.md) — issue #518's
-  single-session tier-explain surface. The `markdown` format there now
-  delegates to the X-ray renderer.
-- [Advanced Retrieval](./advanced-retrieval.md) — the tiers whose
-  output X-ray attributes.
-- [`packages/remnic-core/src/recall-xray.ts`](../packages/remnic-core/src/recall-xray.ts) — schema, builder, and pure factories.
-- [`packages/remnic-core/src/recall-xray-renderer.ts`](../packages/remnic-core/src/recall-xray-renderer.ts) — shared text / markdown / JSON renderer used by CLI, HTTP, and MCP.
-- [`packages/remnic-core/src/recall-xray-cli.ts`](../packages/remnic-core/src/recall-xray-cli.ts) — `--format` / `--budget` / `--namespace` / `--out` validation.
+- [Retrieval explain](./retrieval-explain.md) — the standalone tier-explain
+  surface (`recall_tier_explain`) whose block X-ray embeds, and its distinction
+  from the graph-path `recall/explain` explainer.
+- [Recall disclosure depth](./recall-disclosure.md) — the `chunk`/`section`/`raw`
+  payload depth that X-ray reports as a per-result token-spend summary.
+- [Advanced retrieval](./advanced-retrieval.md) — the tiers whose output X-ray
+  attributes.
+- `packages/remnic-core/src/recall-xray.ts` — schema, builder, and pure factories.
+- `packages/remnic-core/src/recall-xray-renderer.ts` — shared text / markdown /
+  JSON renderer used by CLI, HTTP, and MCP.
+- `packages/remnic-core/src/recall-xray-cli.ts` — `--format` / `--budget` /
+  `--namespace` / `--out` validation.

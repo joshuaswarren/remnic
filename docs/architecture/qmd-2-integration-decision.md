@@ -1,23 +1,25 @@
 # QMD 2.0 Integration Decision
 
+> Decision record (historical) — 2026-03-11. Describes the QMD adapter architecture still in use today.
+
 Issue: `#231`  
 Date: 2026-03-11
 
 ## Decision
 
-Engram will stay on the current QMD adapter architecture for now:
+Remnic will stay on the current QMD adapter architecture for now:
 
 - shared stdio MCP session as the warm primary path
 - CLI subprocess fallback for fail-open recovery
 - backend abstraction preserved so QMD is not the only long-term search option
 
-Engram will adopt the low-risk QMD 2.0 / late 1.1.x improvements that fit that architecture:
+Remnic will adopt the low-risk QMD 2.0 / late 1.1.x improvements that fit that architecture:
 
 - pass inferred recall intent into unified `query` when explicitly enabled
 - request QMD explain traces when explicitly enabled
 - persist a bounded `last_qmd_recall.json` snapshot plus a `memory_qmd_debug` operator tool
 
-Engram will not migrate to the QMD SDK in this issue.
+Remnic will not migrate to the QMD SDK in this issue.
 
 ## Comparison
 
@@ -27,11 +29,11 @@ Pros:
 
 - Direct access to `createStore`, unified `search()`, `getDocumentBody()`, and collection helpers
 - Cleaner typed boundary than shelling out
-- Easier long-term removal of custom glue if Engram ever becomes QMD-only
+- Easier long-term removal of custom glue if Remnic ever becomes QMD-only
 
 Cons:
 
-- Changes Engram's runtime contract substantially
+- Changes Remnic's runtime contract substantially
 - Increases coupling to QMD's in-process SQLite, model, and Node/runtime assumptions
 - Raises rollback risk for namespace-scoped routing, fail-open behavior, and multi-instance operator workflows
 - Requires a larger mocking/test harness shift than this issue needs
@@ -44,12 +46,12 @@ Pros:
 
 - Keeps models warm and is already integrated
 - Preserves process isolation around QMD internals
-- Gives a stable tool boundary without forcing Engram into QMD's SDK lifecycle
+- Gives a stable tool boundary without forcing Remnic into QMD's SDK lifecycle
 
 Cons:
 
 - Still needs adapter code for result normalization and recovery
-- Not every QMD capability is automatically surfaced unless Engram plumbs it through
+- Not every QMD capability is automatically surfaced unless Remnic plumbs it through
 
 Decision: keep as warm primary path.
 
@@ -72,8 +74,8 @@ Decision: keep as compatibility fallback.
 
 Pros:
 
-- Preserves Engram's current reliability model
-- Lets Engram adopt QMD 2.0 query features without a full architecture rewrite
+- Preserves Remnic's current reliability model
+- Lets Remnic adopt QMD 2.0 query features without a full architecture rewrite
 - Lowest migration risk for current roadmap needs
 
 Cons:
@@ -103,7 +105,7 @@ Useful, but not enough to justify the migration cost yet. Defer.
 
 ### Unified `search()`
 
-Adopt indirectly. Engram now forwards intent only through unified `query` and avoids its own hybrid top-up when that intent hint is active, so QMD's own query expansion/rerank path stays authoritative.
+Adopt indirectly. Remnic now forwards intent only through unified `query` and avoids its own hybrid top-up when that intent hint is active, so QMD's own query expansion/rerank path stays authoritative.
 
 ### `intent`
 
@@ -119,7 +121,7 @@ Reviewed, but deferred. Current recall still uses bounded snippets because that 
 
 ### Collection/default collection helpers
 
-Reviewed, but no change in this issue. Engram's namespace-derived collection naming stays in place.
+Reviewed, but no change in this issue. Remnic's namespace-derived collection naming stays in place.
 
 ### MCP server boundary changes
 
@@ -140,7 +142,7 @@ Both default to `false`.
 
 ### Rollback
 
-Disable the flags. Engram reverts to the previous behavior:
+Disable the flags. Remnic reverts to the previous behavior:
 
 - no QMD-native intent hinting
 - no QMD explain capture
@@ -150,4 +152,4 @@ No data migration is required. `state/last_qmd_recall.json` is debug-only and di
 
 ## Why not remove more glue now?
 
-Because this issue is about revisiting QMD 2.0 from first principles, not forcing a rewrite. The selected changes improve retrieval quality and observability now, while preserving Engram's broader backend abstraction and low-risk fallback model.
+Because this issue is about revisiting QMD 2.0 from first principles, not forcing a rewrite. The selected changes improve retrieval quality and observability now, while preserving Remnic's broader backend abstraction and low-risk fallback model.

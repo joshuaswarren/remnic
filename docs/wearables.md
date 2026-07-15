@@ -245,7 +245,16 @@ remnic wearables speakers set bee 0 "Alex" --self
 remnic wearables speakers set limitless "Speaker 2" "Jane Doe"
 remnic wearables corrections add "remnick" "Remnic"
 remnic wearables corrections list
+remnic wearables fuse 2026-06-10           # merge same-day transcripts across sources
+remnic wearables fused 2026-06-10          # print the fused day artifact
 ```
+
+**Cross-source fusion** (`fuse` / `fused`) merges the same calendar day's
+transcripts from multiple wearables into one deduplicated day artifact. Fusion
+is opt-in (`wearables.fusion.enabled`, default `false`): `fuse <date>` builds or
+refreshes the fused artifact for that day, and `fused <date>` prints it. A day
+whose sources disagree on timezone is skipped rather than merged incorrectly,
+and any stale fused artifact for that day is cleared.
 
 Continuous syncing is built in: long-lived hosts (the gateway, the
 HTTP daemon) start an in-process **auto-sync** scheduler by default

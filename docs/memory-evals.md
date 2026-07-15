@@ -1,4 +1,4 @@
-# Memory Evals
+# Memory evals
 
 Agent memory without evals is vibes with a database.
 
@@ -6,6 +6,11 @@ Remnic memory evals measure whether user-aware memory improves agent outcomes
 without crossing boundaries. The first-class contract lives in `@remnic/bench`
 as `MEMORY_EVAL_DIMENSIONS`; each dimension maps to quick-capable benchmark
 surfaces so CI can catch regressions without a second eval harness.
+
+This is the concept doc: what memory quality means and how each dimension maps
+to quick benchmarks. For the eval-store, shadow-recording, and CI-gate machinery
+that runs and records these benchmarks, see the
+[Evaluation harness](evaluation-harness.md).
 
 ## Questions
 
@@ -37,7 +42,7 @@ Lower is better for the rate metrics that describe harm, violations, or
 unnecessary interruptions. Higher is better for recall, precision, lift, and
 turns saved.
 
-## Running Quick Coverage
+## Running quick coverage
 
 Use the exported list when building CI or release checks:
 

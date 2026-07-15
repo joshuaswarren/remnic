@@ -1,19 +1,21 @@
 # EMO/OEO Architecture Split
 
+> Decision record (historical) — 2026-04-05. The split that made the engine host-agnostic; the standalone-daemon architecture it describes is current. "EMO/OEO" and `openclaw-engram` are the decision-era component and package names.
+
 > **Status:** Accepted  
 > **Date:** 2026-04-05  
 > **Author:** Joshua Warren
 
 ## Summary
 
-Engram is restructured from a monolithic OpenClaw plugin into two components:
+Remnic is restructured from a monolithic OpenClaw plugin into two components:
 
 - **EMO (Engram Memory Orchestrator)** — standalone daemon process. The product.
 - **OEO (OpenClaw Engram Orchestrator)** — thin OpenClaw plugin that bridges to EMO.
 
 ## Problem
 
-Engram's value is universal memory for AI agents, but its architecture couples it to OpenClaw. Users of Claude Code, Codex CLI, Hermes Agent, and Replit Agent must run OpenClaw just to get Engram. This limits adoption and prevents the core value proposition: **all your agents sharing one memory**.
+Remnic's value is universal memory for AI agents, but its architecture couples it to OpenClaw. Users of Claude Code, Codex CLI, Hermes Agent, and Replit Agent must run OpenClaw just to get Remnic. This limits adoption and prevents the core value proposition: **all your agents sharing one memory**.
 
 ## Decision
 
@@ -58,7 +60,7 @@ When a user tells OpenClaw "I prefer TypeScript", Claude Code knows this on the 
 
 ### Positive
 
-- Engram becomes usable without OpenClaw
+- Remnic becomes usable without OpenClaw
 - Multi-agent memory sharing works out of the box
 - Clear separation of concerns (engine vs integration)
 - Each platform gets a native plugin, not just MCP
@@ -78,5 +80,5 @@ When a user tells OpenClaw "I prefer TypeScript", Claude Code knows this on the 
 ## Alternatives Considered
 
 1. **Keep monolithic plugin, add MCP-only connectors** — rejected because MCP alone can't provide automatic per-turn memory injection (no hooks)
-2. **Fork Engram for standalone** — rejected because it creates maintenance burden of two codebases
+2. **Fork Remnic for standalone** — rejected because it creates maintenance burden of two codebases
 3. **Make OpenClaw optional peer dep** — rejected because the split must be clean; the engine should have zero OpenClaw imports

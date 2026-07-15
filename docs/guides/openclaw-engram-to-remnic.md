@@ -1,4 +1,4 @@
-# OpenClaw Engram to Remnic Migration
+# OpenClaw Engram to Remnic migration
 
 This guide is for OpenClaw users moving from the legacy
 `@joshuaswarren/openclaw-engram` package to the canonical
@@ -8,7 +8,7 @@ Use it when an OpenClaw upgrade reports `0 plugins updated, 1 unchanged,
 1 skipped`, or when `engram-http` starts but `/engram/v1/health` never
 responds after moving to a newer OpenClaw bundle.
 
-## Short Answer
+## Short answer
 
 Run the Remnic migration command:
 
@@ -24,7 +24,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 remnic doctor
 ```
 
-## What the Command Changes
+## What the command changes
 
 `remnic openclaw migrate-engram` is a focused wrapper around the safe OpenClaw
 upgrade path. It:
@@ -42,7 +42,7 @@ The legacy `plugins.entries["openclaw-engram"]` entry is intentionally retained
 during migration. Keep it until the gateway log shows Remnic starting under the
 canonical id and `remnic doctor` passes. After that, it can be removed manually.
 
-## Config Key
+## Config key
 
 Use this key after migration:
 
@@ -70,7 +70,7 @@ Do not rename the package to `remnic-workspace` in `plugins.entries`. The npm
 workspace root is named `remnic-workspace`, but the OpenClaw plugin id is
 `openclaw-remnic`.
 
-## Preserving Local Patches
+## Preserving local patches
 
 If your legacy `@joshuaswarren/openclaw-engram` tree contains local edits, the
 migration command leaves that tree in place and also copies it into the timestamped
@@ -85,12 +85,11 @@ Recommended flow:
 4. Restart the OpenClaw gateway.
 5. Run `remnic doctor`.
 
-For GPT-5-family OpenAI chat-completions models, Remnic now sends
-`max_completion_tokens` instead of `max_tokens` and omits `temperature` for
-native OpenAI `gpt-5*` models. Local compatibility patches for that behavior
-should not be needed after this release.
+For native OpenAI `gpt-5*` chat-completions models, Remnic sends
+`max_completion_tokens` instead of `max_tokens` and omits `temperature`. Local
+compatibility patches for that behavior are no longer needed.
 
-## Useful Flags
+## Useful flags
 
 ```bash
 remnic openclaw migrate-engram --dry-run
@@ -116,7 +115,7 @@ Look for:
 
 - `plugins.slots.memory = "openclaw-remnic"`;
 - `plugins.entries["openclaw-remnic"]`;
-- `[remnic] gateway_start fired` in the gateway log;
+- `gateway_start fired — Remnic memory plugin is active` in the gateway log;
 - a successful health response from the loopback Remnic HTTP server.
 
 If the gateway does not start, restore `openclaw.json` or the extension

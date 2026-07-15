@@ -31,10 +31,10 @@ Run Remnic on a remote server or VPS. Use a reverse proxy (nginx, Caddy) with TL
 ```nginx
 server {
     listen 443 ssl;
-    server_name engram.example.com;
+    server_name remnic.example.com;
 
-    ssl_certificate /etc/ssl/certs/engram.pem;
-    ssl_certificate_key /etc/ssl/private/engram.key;
+    ssl_certificate /etc/ssl/certs/remnic.pem;
+    ssl_certificate_key /etc/ssl/private/remnic.key;
 
     location / {
         proxy_pass http://127.0.0.1:4318;
@@ -201,7 +201,7 @@ Returns:
     "active": true,
     "degraded": false,
     "mode": "cli",
-    "collection": "remnic-memory",
+    "collection": "openclaw-engram",
     "collectionState": "present",
     "installedVersion": "qmd 2.5.3",
     "supportedVersion": "2.5.3",

@@ -182,9 +182,9 @@ api.registerTool()              // memory_search, memory_store, etc.
 api.registerCommand()           // CLI: openclaw engram <command>
 ```
 
-## v9.0 Search Backend Architecture
+## Search Backend Architecture
 
-Engram v9 introduces a port/adapter pattern for search. All backends implement the `SearchBackend` interface (`src/search/port.ts`), which the orchestrator calls for recall, update, and embedding operations.
+Remnic uses a port/adapter pattern for search. All backends implement the `SearchBackend` interface (`packages/remnic-core/src/search/port.ts`), which the orchestrator calls for recall, update, and embedding operations.
 
 ```
 Orchestrator → SearchBackend (interface)
@@ -196,7 +196,7 @@ Orchestrator → SearchBackend (interface)
                  └── NoopSearchBackend   (no-op)
 ```
 
-The factory (`src/search/factory.ts`) reads `searchBackend` from config and instantiates the correct adapter. Embedded backends (Orama, LanceDB) share two utilities:
+The factory (`packages/remnic-core/src/search/factory.ts`) reads `searchBackend` from config and instantiates the correct adapter. Embedded backends (Orama, LanceDB) share two utilities:
 - `document-scanner.ts` — scans the memory directory for indexable `.md` files
 - `embed-helper.ts` — computes vector embeddings via OpenAI or local LLM
 

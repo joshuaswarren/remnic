@@ -4,18 +4,36 @@ Native Remnic plugin for OpenAI Codex CLI. Provides automatic memory recall, obs
 
 ## Installation
 
+Codex integration takes three discrete steps. None is automated end-to-end today; each writes to a different place.
+
+### 1. Mint a token and install the phase-2 guide
+
 ```bash
 remnic connectors install codex-cli
 ```
 
-This:
-1. Starts the Remnic daemon if not running
-2. Generates a dedicated auth token
-3. Installs the plugin to `~/.codex/plugins/`
-4. Enables hooks (`[features] codex_hooks = true` in `~/.codex/config.toml`)
-5. Configures MCP server pointing to Remnic
-6. Drops the Codex memory extension at `~/.codex/memories_extensions/remnic/instructions.md`
-7. Runs a health check
+This writes `~/.remnic/connectors/codex-cli.json` (Remnic connector state), stores a per-connector bearer token in `~/.remnic/tokens.json`, and materializes `~/.codex/memories_extensions/remnic/instructions.md` (the local-only phase-2 consolidation guide). It runs a daemon health check but does **not** start the daemon, and it does **not** write `~/.codex/config.toml` or deploy `.codex-plugin/`, `hooks/`, or `skills/`.
+
+### 2. Add Remnic as an MCP server
+
+Paste this block into `~/.codex/config.toml`, then set `REMNIC_AUTH_TOKEN` in Codex's environment to the token from step 1:
+
+```toml
+[mcp_servers.remnic]
+url = "http://127.0.0.1:4318/mcp"
+bearer_token_env_var = "REMNIC_AUTH_TOKEN"
+http_headers = { "X-Engram-Client-Id" = "codex" }
+```
+
+Without this step Codex cannot reach the Remnic daemon.
+
+### 3. Install and load the plugin
+
+```bash
+npm install -g @remnic/plugin-codex
+```
+
+Then load it through Codex's own plugin loader (symlink into `~/.codex/plugins/`, marketplace install, or whatever your Codex build supports — consult Codex's plugin docs). Until this step runs, the session hooks and skills are inactive, so auto-recall and auto-observe do not fire.
 
 ## What It Does
 
@@ -26,7 +44,8 @@ This:
 | `SessionStart` | Session begins | Recalls project context + user preferences |
 | `UserPromptSubmit` | Every user message | Recalls memories relevant to the prompt |
 | `PostToolUse` | After Bash execution | Observes command results and file changes |
-| `Stop` | Session ends | Flushes session learnings to EMO |
+| `Stop` | Session ends | Flushes buffered observations to the daemon for extraction |
+| `PreCompact` | Before Codex compacts the conversation | Flushes the observe buffer to long-term memory so nothing is lost before summarization |
 
 ### Explicit Skills
 
@@ -45,7 +64,7 @@ materializer.
 
 ### MCP Tools
 
-All 44 Remnic MCP tools are available via the `.mcp.json` configuration. The legacy `engram.*` aliases remain available during v1.x.
+The full Remnic MCP tool surface is available via the `.mcp.json` configuration. The legacy `engram.*` aliases remain available during the v1.x compatibility window.
 
 ## Memory Extension
 
@@ -101,13 +120,13 @@ via the `codex.installExtension` config flag:
 ```
 
 When `installExtension` is `false`, `remnic connectors install codex-cli`
-still installs MCP and hooks but does not touch `memories_extensions/`.
+still writes Remnic connector state and the bearer token but does not materialize `memories_extensions/`. Adding the MCP block and loading the plugin (steps 2 and 3 above) remain manual either way.
 
 ## How It Differs from Claude Code Plugin
 
 - **Stop hook:** Codex has a `Stop` event that fires when the agent completes its turn. The plugin uses this to flush any remaining observations and store session learnings — ensuring nothing is lost even if the session ends abruptly.
 - **PostToolUse matcher:** Matches `Bash` (Codex's primary tool) instead of `Write|Edit|MultiEdit`.
-- **Hooks feature flag:** Codex hooks require `[features] codex_hooks = true` — the installer sets this automatically.
+- **Hook trust:** Codex does not run non-managed hooks until a human approves them via `/hooks` on first use; the installer never bypasses that review.
 - **Config format:** TOML (`~/.codex/config.toml`) instead of JSON.
 
 ## Configuration
@@ -122,12 +141,7 @@ Additional Codex-specific issue:
 
 ### Hooks not firing
 
-Verify hooks are enabled:
-
-```bash
-grep codex_hooks ~/.codex/config.toml
-# Should show: codex_hooks = true
-```
+Codex does not run non-managed hooks until you review and trust them. The first time the hooks are enabled, run `/hooks` in the Codex CLI and approve the four Remnic entries (`SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`). Codex records trust against the hook hash, so editing `hooks.json` re-triggers the review. For fleet or headless rollouts, ship the hooks under a `managed_dir` declared in `requirements.toml` so Codex trusts them by policy.
 
 ## Native memory materialization
 

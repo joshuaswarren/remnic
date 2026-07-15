@@ -27,14 +27,14 @@ All agents connect to a single EMO instance. EMO is the sole owner of the memory
 
 | Mode | Path | Why |
 |------|------|-----|
-| Standalone (no OpenClaw) | `~/.engram/memory/` | Clean default for new users |
+| Standalone (no OpenClaw) | `~/.remnic/memory/` | Clean default for new users (a legacy `~/.engram/memory/` is read if present) |
 | OpenClaw embedded/delegate | `~/.openclaw/workspace/memory/local/` | Backward compat; OpenClaw features (Ops Dashboard, Conductor, cron jobs) read from this path |
 
 The path is resolved at startup:
 1. Explicit `memoryDir` in config → use it
-2. `ENGRAM_MEMORY_DIR` env var → use it
+2. `REMNIC_MEMORY_DIR` env var (legacy `ENGRAM_MEMORY_DIR`) → use it
 3. OpenClaw detected (`~/.openclaw/` exists and plugin mode) → use OpenClaw path
-4. Fallback → `~/.engram/memory/`
+4. Fallback → `~/.remnic/memory/` (or an existing `~/.engram/memory/`)
 
 ## Identity Resolution
 

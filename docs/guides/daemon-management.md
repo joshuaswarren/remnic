@@ -43,7 +43,7 @@ remnic daemon uninstall   # disable + remove service file
 remnic daemon start       # start now (without installing service)
 remnic daemon stop        # stop now
 remnic daemon restart     # restart
-remnic daemon status      # show running state, port, memory path
+remnic daemon status      # running state + pid, port, service, memory extensions
 ```
 
 ## Configuration

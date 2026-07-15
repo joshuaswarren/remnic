@@ -1,8 +1,25 @@
-# Identity Continuity
+# Identity continuity
 
-Identity continuity adds recovery-oriented memory artifacts so the assistant can regain stable behavior after drift, context loss, or tool/runtime incidents.
+Identity continuity adds recovery-oriented memory artifacts — an identity anchor, incident records, continuity audits, and improvement loops — so the assistant can regain stable behavior after drift, context loss, or a tool/runtime incident. It is fail-open: disabling the flags returns runtime behavior to baseline retrieval/extraction. Opt-in via `identityContinuityEnabled` (default `false`).
 
-This feature set is controlled by the v8.4 config surface and is designed to be fail-open: disabling continuity flags should return runtime behavior to baseline retrieval/extraction paths.
+> Provenance: the identity-continuity config surface landed in v8.4.
+
+## Enable it
+
+```json
+{
+  "identityContinuityEnabled": true,
+  "identityInjectionMode": "recovery_only",
+  "identityMaxInjectChars": 1200,
+  "continuityIncidentLoggingEnabled": true,
+  "continuityAuditEnabled": false
+}
+```
+
+- `identityInjectionMode` (default `recovery_only`; also `minimal`, `full`) controls how the identity anchor is injected.
+- `identityMaxInjectChars` (default `1200`) caps injected anchor size.
+- `continuityIncidentLoggingEnabled` (defaults to `identityContinuityEnabled`) toggles incident logging.
+- `continuityAuditEnabled` (default `false`) toggles audit generation.
 
 ## Artifacts
 
@@ -19,7 +36,7 @@ Primary artifacts:
 - `audits/weekly/*.md` and `audits/monthly/*.md`: generated continuity audits by period.
 - `improvement-loops.md`: recurring loop register and review metadata.
 
-## Safety Boundaries
+## Safety boundaries
 
 Continuity features must keep these invariants:
 
@@ -32,7 +49,7 @@ Continuity features must keep these invariants:
    - `continuityAuditEnabled=false` disables audit generation paths.
 5. Fail-open behavior on parse/storage errors (log and continue).
 
-## Template: Identity Anchor
+## Template: identity anchor
 
 Use this structure for safe merges via `identity_anchor_update`:
 
@@ -59,7 +76,7 @@ Use this structure for safe merges via `identity_anchor_update`:
 - Recovery guidance:
 ```
 
-## Template: Continuity Incident
+## Template: continuity incident
 
 Incident files are markdown with frontmatter; open/close tools maintain lifecycle fields.
 
@@ -85,7 +102,7 @@ identity anchor omitted in recovery response
 Observed during weekly continuity audit.
 ```
 
-## Template: Continuity Audit
+## Template: continuity audit
 
 ```markdown
 ---
@@ -114,7 +131,20 @@ signalSummary:
 - Run `continuity_loop_review` for stale loops.
 ```
 
-## Rollout by Risk Tier
+## CLI and tools
+
+The continuity surface runs on the hosted `openclaw engram` CLI plus MCP tools; the standalone `remnic` binary does not include these commands. All commands no-op when `identityContinuityEnabled` is false.
+
+```bash
+openclaw engram continuity incidents --state open --limit 25
+openclaw engram continuity incident-open --symptom "<symptom>"
+openclaw engram continuity incident-close --id <id> --fix-applied "<fix>" --verification-result "<result>"
+openclaw engram identity
+```
+
+Tools: `identity_anchor_get`, `identity_anchor_update`, `continuity_incident_open`, `continuity_incident_close`, `continuity_incident_list`, `continuity_loop_add_or_update`, `continuity_loop_review`, `continuity_audit_generate`, `memory_identity`.
+
+## Rollout by risk tier
 
 1. Low risk:
    - Enable `identityContinuityEnabled`.

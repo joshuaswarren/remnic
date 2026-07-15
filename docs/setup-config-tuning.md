@@ -1,23 +1,23 @@
-# Setup, Configuration, and Tuning
+# Setup, configuration, and tuning
 
-This guide is the operational runbook for enabling and tuning Engram features across the current Engram config surface.
+This is the operator runbook for tuning Remnic beyond its shipped defaults. Remnic works well out of the box, so reach for this guide when you are self-hosting, running multi-agent or namespaced deployments, or trading off recall budget, retention, cost, and latency. Every example targets the OpenClaw plugin surface (`openclaw.json`); standalone operators can set the same keys in `remnic.config.json` and use `remnic doctor` / `remnic config` in place of the `openclaw engram` commands shown here.
 
-Operator loop:
+Start every tuning pass with the built-in diagnostics:
 - Run `openclaw engram setup --json` after first install or after moving memory/workspace paths.
 - Run `openclaw engram config-review --json` to compare your active config with shipped defaults and recommended settings.
 - Run `openclaw engram doctor --json` to catch misconfigurations, missing dependencies, and runtime health problems before blaming recall quality on the model.
 
 ## 1) Enable Plugin + Core Config
 
-In `openclaw.json`:
+In `openclaw.json` (the current plugin id is `openclaw-remnic`; installs created before the rename may still use the legacy `openclaw-engram` id, which Remnic continues to read):
 
 ```jsonc
 {
   "plugins": {
-    "allow": ["openclaw-engram"],
-    "slots": { "memory": "openclaw-engram" },
+    "allow": ["openclaw-remnic"],
+    "slots": { "memory": "openclaw-remnic" },
     "entries": {
-      "openclaw-engram": {
+      "openclaw-remnic": {
         "enabled": true,
         "config": {
           "openaiApiKey": "${OPENAI_API_KEY}",
@@ -50,7 +50,8 @@ In `openclaw.json`:
 ```
 
 Service env override (optional):
-- `OPENCLAW_ENGRAM_CONFIG_PATH=/absolute/path/to/openclaw.json`
+- `OPENCLAW_CONFIG_PATH=/absolute/path/to/openclaw.json` (legacy
+  `OPENCLAW_ENGRAM_CONFIG_PATH` is honored as a fallback)
 
 Third-party OpenAI-compatible extraction endpoints:
 - Set `localLlmEnabled: true` and point `localLlmUrl` at the provider base URL.
@@ -60,7 +61,7 @@ Third-party OpenAI-compatible extraction endpoints:
 ## 1b) File Hygiene (Avoid Silent Truncation)
 
 If your workspace bootstrap files (commonly `USER.md`, `MEMORY.md`, `IDENTITY.md`) get large, OpenClaw can silently truncate them during prompt bootstrap.
-Enable Engram's optional file hygiene to warn early and (optionally) rotate oversized files into an archive directory:
+Enable Remnic's optional file hygiene to warn early and (optionally) rotate oversized files into an archive directory:
 
 ```jsonc
 {
@@ -133,12 +134,12 @@ FAISS alternative:
 
 FAISS setup notes:
 - Install the sidecar dependencies with `pip install -r scripts/faiss_requirements.txt`.
-- Set `ENGRAM_FAISS_ENABLE_ST=1` if you want sentence-transformers embeddings. Without it, the sidecar uses deterministic hash embeddings.
+- Set `REMNIC_FAISS_ENABLE_ST=1` (legacy `ENGRAM_FAISS_ENABLE_ST=1` still works) if you want sentence-transformers embeddings. Without it, the sidecar uses deterministic hash embeddings.
 - Expect local FAISS artifacts under `memoryDir/state/conversation-index/faiss/` (`index.faiss`, `metadata.jsonl`, `manifest.json`).
 - Use `openclaw engram conversation-index-health` to confirm the backend is `faiss` and not degraded.
 - Use `openclaw engram conversation-index-inspect` to diagnose missing artifacts, stale manifests, or empty indexes.
 - Use `openclaw engram conversation-index-rebuild --hours 24` to force a deterministic rebuild from transcript history.
-- If the sidecar is unavailable or the local artifacts are missing, Engram fails open and simply skips semantic transcript recall.
+- If the sidecar is unavailable or the local artifacts are missing, Remnic fails open and simply skips semantic transcript recall.
 
 ## 2b) v8.0 Phase 1 (Experimental, Cost-Aware)
 
@@ -166,7 +167,7 @@ Recommended rollout:
 
 ## 2c) v8.3 Lifecycle Policy Rollout
 
-Start in shadow mode, then phase in retrieval behavior:
+`lifecyclePolicyEnabled` is default-on since issue #686, so scoring and transitions already run on a fresh install. The config below makes the rollout explicit and keeps retrieval filtering off until you have measured outcomes; set `lifecyclePolicyEnabled: false` to opt out entirely.
 
 ```jsonc
 {
@@ -345,7 +346,7 @@ Use this when cron prompts are large/instruction-heavy and cause QMD query insta
 ```
 
 Behavior:
-- For instruction-heavy cron prompts, Engram builds a compact retrieval query and applies minimal recall budget.
+- For instruction-heavy cron prompts, Remnic builds a compact retrieval query and applies minimal recall budget.
 - In `cronConversationRecallMode: "auto"`, conversation semantic recall is skipped only for instruction-heavy cron prompts.
 - Set `cronConversationRecallMode: "always"` to force conversation semantic recall for cron jobs that need it.
 - Set `cronConversationRecallMode: "never"` to disable conversation semantic recall for all cron jobs.

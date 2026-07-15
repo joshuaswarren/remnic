@@ -1,8 +1,8 @@
 # Config Reference
 
-All settings live in `openclaw.json` under `plugins.entries.openclaw-engram.config`.
+All settings live in `openclaw.json` under `plugins.entries.openclaw-remnic.config`. (Installs created before the rename may still use the legacy `openclaw-engram` entry key; Remnic reads either.)
 
-Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key.
+Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key. Remnic ships 699 schema-validated top-level options plus 4 tuning presets, so treat the appendix as the source of truth and reach for a preset before hand-tuning individual keys.
 
 ## Core
 
@@ -33,7 +33,7 @@ OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM 
 
 Preset intent:
 
-- `conservative` keeps recall budgets lower and leaves experimental learning/graph features off.
+- `conservative` keeps recall budgets lower and leaves experimental learning/graph features off. It also pins `procedural.enabled: false`, opting out of procedural memory even though the global default is `true` (issue #567). The `procedural` block is deep-merged, so a partial user override cannot silently re-enable it — set `procedural.enabled: true` explicitly if you want it back.
 - `balanced` enables the recommended indexing, artifact, and rerank defaults without turning on the higher-churn learning loops.
 - `research-max` enables the broadest shipped experimental surface, including graph recall and adaptive policy loops.
 - `local-llm-heavy` biases extraction/rerank/tooling toward local OpenAI-compatible endpoints and the fast local tier.
@@ -60,7 +60,7 @@ Access-layer safety notes:
 - Request bodies are capped by `agentAccessHttp.maxBodyBytes`.
 - Explicit write routes are rate-limited and support `schemaVersion`, `idempotencyKey`, and `dryRun` envelopes.
 - The stdio MCP server (`openclaw engram access mcp-serve`) uses the same internal access service as HTTP, so recall/read/write behavior stays aligned across both transports.
-- MCP is intentionally zero-config on the Engram side: launch `openclaw engram access mcp-serve` from the client and it will use the same local memory directory, namespace rules, and explicit-capture policy as the in-process plugin runtime.
+- MCP is intentionally zero-config on the Remnic side: launch `openclaw engram access mcp-serve` from the client and it will use the same local memory directory, namespace rules, and explicit-capture policy as the in-process plugin runtime.
 
 ## Buffer & Triggers
 
@@ -200,9 +200,9 @@ Supported keys:
 
 ### Recall Budget Tuning
 
-The recall budget controls how much context Engram injects into each agent prompt. Getting this right is critical — too small and memories are silently truncated; too large and you waste context window space.
+The recall budget controls how much context Remnic injects into each agent prompt. Getting this right is critical — too small and memories are silently truncated; too large and you waste context window space.
 
-**How it works (v9.0.66+):** Engram assembles recall context in pipeline section order (shared-context → profile → entity retrieval → knowledge index → ... → memories → transcripts → summaries). The budget-aware assembler reserves space for the `memories` section so earlier sections cannot fully exhaust the budget. However, the reservation is minimal (heading-sized). If the total budget is too small, earlier sections still crowd out memory content.
+**How it works (v9.0.66+):** Remnic assembles recall context in pipeline section order (shared-context → profile → entity retrieval → knowledge index → ... → memories → transcripts → summaries). The budget-aware assembler reserves space for the `memories` section so earlier sections cannot fully exhaust the budget. However, the reservation is minimal (heading-sized). If the total budget is too small, earlier sections still crowd out memory content.
 
 **Common pitfall:** The default budget is `maxMemoryTokens * 4` = **8,000 chars**. A typical profile is 4,000–8,000 chars and shared context adds another 4,000–6,000 chars. With these defaults, the `memories` section is still included (it is a protected section), but may be truncated to heading-only (~24 chars) with no actual memory content. The `lastRecall` state file will show successful memory retrieval (non-empty `memoryIds`) but the agent sees only the section heading because the content was truncated during context assembly.
 
@@ -361,7 +361,7 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `lifecyclePolicyEnabled` | `false` | Enable lifecycle scoring + transitions + retrieval weighting. |
+| `lifecyclePolicyEnabled` | `true` | Enable lifecycle scoring + transitions + retrieval weighting. Default-on since issue #686; set `false` to fully disable lifecycle behavior. |
 | `lifecycleFilterStaleEnabled` | `false` | Filter lifecycle `stale`/`archived` candidates from retrieval before final cap (only when policy is enabled). |
 | `lifecyclePromoteHeatThreshold` | `0.55` | Heat threshold for promotion toward `validated`/`active`. |
 | `lifecycleStaleDecayThreshold` | `0.65` | Decay threshold to move a memory to `stale`. |
@@ -484,11 +484,11 @@ The original v8 roadmap listed several operator knobs that are now split across 
 
 ## Gateway Model Source
 
-Route all Engram LLM calls through the OpenClaw gateway's agent model chain instead of Engram's own `openaiApiKey`/`localLlm*` configuration. This lets you define a single fallback chain per agent persona in `openclaw.json` and reuse the gateway's provider credentials.
+Route all Remnic LLM calls through the OpenClaw gateway's agent model chain instead of Remnic's own `openaiApiKey`/`localLlm*` configuration. This lets you define a single fallback chain per agent persona in `openclaw.json` and reuse the gateway's provider credentials.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `modelSource` | `gateway` for new OpenClaw installs; `plugin` otherwise | `gateway` delegates to a gateway agent's model chain; `plugin` uses Engram's own openai/localLlm config |
+| `modelSource` | `gateway` for new OpenClaw installs; `plugin` otherwise | `gateway` delegates to a gateway agent's model chain; `plugin` uses Remnic's own openai/localLlm config |
 | `gatewayAgentId` | `""` | Agent persona ID from `openclaw.json → agents.list[]` for primary LLM calls (extraction, consolidation, summarization). Falls back to `agents.defaults.model` if empty. |
 | `fastGatewayAgentId` | `""` | Agent persona ID for fast-tier ops (rerank, entity summaries, compression guidelines). Uses `gatewayAgentId` chain when empty. |
 | `taskModelChain` | _(unset)_ | Optional inline `{ "primary", "fallbacks": [] }` model chain for Remnic's background tasks (extraction, extraction judge, fact/profile/identity consolidation, summarization, semantic consolidation, calibration, causal consolidation). Resolves through gateway providers. When set, it overrides `gatewayAgentId`/`agents.defaults.model` for these tasks only. **Requires `modelSource: "gateway"`** — ignored (with a startup warning) in `plugin` mode. |
@@ -496,7 +496,7 @@ Route all Engram LLM calls through the OpenClaw gateway's agent model chain inst
 When `modelSource` is `gateway`:
 
 - `localLlmEnabled` and the direct OpenAI client are bypassed for primary LLM dispatch — all LLM calls flow through `FallbackLlmClient` with the configured agent chain
-- Extraction and consolidation start on the configured gateway chain directly; the historical "falling back to gateway" wording only applies when Engram is still in `plugin` mode
+- Extraction and consolidation start on the configured gateway chain directly; the historical "falling back to gateway" wording only applies when Remnic is still in `plugin` mode
 - The existing `openaiApiKey`, `model`, and `localLlm*` settings are ignored for LLM dispatch but retained as config for backward compatibility; `OPENAI_API_KEY` is not inherited in gateway mode
 - `localLlmFast*` settings are also bypassed when `fastGatewayAgentId` is set
 - **Reranking** uses the `fastGatewayAgentId` chain (or `gatewayAgentId` if fast is unset) instead of the local LLM — this can dramatically reduce rerank latency when the fast chain points at a cloud provider
@@ -527,7 +527,7 @@ Notes:
 
 ### Setup
 
-1. **Define providers** in `agents/main/agent/models.json` with the endpoints and credentials you want Engram to use (e.g., `fireworks`, `zai`, `anthropic`, `lmstudio`).
+1. **Define providers** in `agents/main/agent/models.json` with the endpoints and credentials you want Remnic to use (e.g., `fireworks`, `zai`, `anthropic`, `lmstudio`).
 
 2. **Create agent personas** in `openclaw.json → agents.list[]`:
 
@@ -535,7 +535,7 @@ Notes:
 {
   "id": "engram-llm",
   "default": false,
-  "name": "Engram LLM Chain",
+  "name": "Remnic LLM Chain",
   "model": {
     "primary": "fireworks/accounts/fireworks/routers/kimi-k2p5-turbo",
     "fallbacks": [
@@ -548,7 +548,7 @@ Notes:
 {
   "id": "engram-llm-fast",
   "default": false,
-  "name": "Engram Fast LLM Chain",
+  "name": "Remnic Fast LLM Chain",
   "model": {
     "primary": "fireworks/accounts/fireworks/routers/kimi-k2p5-turbo",
     "fallbacks": [
@@ -562,13 +562,13 @@ Notes:
 
 Model strings use the format `provider/model-id` where `provider` matches a key in the `providers` object of your agent's `models.json`. Built-in OpenClaw providers (e.g., `openai-codex`, `google-vertex`, `github-copilot`) work automatically — they don't need explicit entries in `models.json` since the gateway materializes them from its plugin catalogs.
 
-3. **Configure Engram** in `openclaw.json → plugins.entries.openclaw-engram.config`:
+3. **Configure Remnic** in `openclaw.json → plugins.entries.openclaw-remnic.config`:
 
 ```jsonc
 {
   "modelSource": "gateway",
-  "gatewayAgentId": "engram-llm",
-  "fastGatewayAgentId": "engram-llm-fast"
+  "gatewayAgentId": "remnic-llm",
+  "fastGatewayAgentId": "remnic-llm-fast"
 }
 ```
 
@@ -578,25 +578,25 @@ Model strings use the format `provider/model-id` where `provider` matches a key 
 
 When a primary model call fails (timeout, HTTP error, empty response), `FallbackLlmClient` tries each fallback in order. The chain stops at the first successful response.
 
-Provider lookup checks the explicit `models.providers` config first, then falls back to the gateway's materialized `models.json` (`~/.openclaw/agents/main/agent/models.json`), which contains all providers including built-in ones registered by gateway plugins (e.g., `openai-codex` with OAuth, `google-vertex`, `github-copilot`). This means any provider the gateway knows about — including OAuth-based providers — can be used in Engram's model chain without additional configuration.
+Provider lookup checks the explicit `models.providers` config first, then falls back to the gateway's materialized `models.json` (`~/.openclaw/agents/main/agent/models.json`), which contains all providers including built-in ones registered by gateway plugins (e.g., `openai-codex` with OAuth, `google-vertex`, `github-copilot`). This means any provider the gateway knows about — including OAuth-based providers — can be used in Remnic's model chain without additional configuration.
 
 ### API key resolution
 
-Provider auth is resolved using OpenClaw's native runtime. Engram first tries the gateway's `getRuntimeAuthForModel()` function, which handles all provider-specific transforms — OAuth token exchange (for `openai-codex`, `github-copilot`, etc.), base URL overrides, profile-based credentials, and secret reference formats — using the same codepath the gateway uses for its own agent sessions.
+Provider auth is resolved using OpenClaw's native runtime. Remnic first tries the gateway's `getRuntimeAuthForModel()` function, which handles all provider-specific transforms — OAuth token exchange (for `openai-codex`, `github-copilot`, etc.), base URL overrides, profile-based credentials, and secret reference formats — using the same codepath the gateway uses for its own agent sessions.
 
-If the gateway runtime isn't available (e.g., running outside the gateway process), Engram falls back to `resolveProviderApiKey()` for secret ref resolution, then checks the `PROVIDER_NAME_API_KEY` environment variable before skipping the provider.
+If the gateway runtime isn't available (e.g., running outside the gateway process), Remnic falls back to `resolveProviderApiKey()` for secret ref resolution, then checks the `PROVIDER_NAME_API_KEY` environment variable before skipping the provider.
 
-This means your existing auth setup works automatically — OAuth providers, API keys, 1Password, Vault, env vars, and plain-text keys all work without special Engram configuration.
+This means your existing auth setup works automatically — OAuth providers, API keys, 1Password, Vault, env vars, and plain-text keys all work without special Remnic configuration.
 
 ### Switching back
 
-Set `modelSource` to `plugin` (or remove it) to restore the original behavior where Engram uses its own `localLlm*` and `openaiApiKey` settings.
+Set `modelSource` to `plugin` (or remove it) to restore the original behavior where Remnic uses its own `localLlm*` and `openaiApiKey` settings.
 
 ## Local LLM / OpenAI-Compatible Endpoint
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `localLlmEnabled` | `false` | Enable Engram's local/compatible endpoint when `modelSource` remains `plugin` |
+| `localLlmEnabled` | `false` | Enable Remnic's local/compatible endpoint when `modelSource` remains `plugin` |
 | `localLlmUrl` | `http://localhost:1234/v1` | Base URL for endpoint |
 | `localLlmModel` | `local-model` | Model ID |
 | `localLlmApiKey` | `(unset)` | Optional API key |
@@ -652,7 +652,7 @@ Session integrity diagnostics/repair are CLI-driven and intentionally config-lig
 
 Safety contract:
 - Repair defaults to dry-run.
-- `--apply` only mutates Engram-managed transcript/checkpoint artifacts.
+- `--apply` only mutates Remnic-managed transcript/checkpoint artifacts.
 - OpenClaw session-file mutation requires explicit `--allow-session-file-repair` plus an explicit path and still does not perform automatic pointer rewiring.
 
 ### v8.8 Live Graph Dashboard
@@ -735,13 +735,13 @@ See [advanced-retrieval.md](advanced-retrieval.md) for guidance.
 FAISS notes:
 - `conversation_index_update` still writes chunk markdown under `memoryDir/conversation-index/chunks/...`; the FAISS backend additionally upserts those chunks into the local sidecar index.
 - The sidecar health check reports `degraded` when Python dependencies or local artifacts are missing. Recall stays fail-open and skips semantic transcript injection instead of breaking hook execution.
-- Sentence-transformers embeddings are opt-in via `ENGRAM_FAISS_ENABLE_ST=1`. Without that env var, the sidecar uses deterministic hash embeddings for low-friction local setups.
+- Sentence-transformers embeddings are opt-in via `REMNIC_FAISS_ENABLE_ST=1` (legacy `ENGRAM_FAISS_ENABLE_ST=1` still works). Without that env var, the sidecar uses deterministic hash embeddings for low-friction local setups.
 
 ## v9.1 Evaluation Harness Foundation
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `evalHarnessEnabled` | `false` | Enable Engram's benchmark/evaluation harness bookkeeping |
+| `evalHarnessEnabled` | `false` | Enable Remnic's benchmark/evaluation harness bookkeeping |
 | `evalShadowModeEnabled` | `false` | Record live recall decisions to the eval store without changing injected output |
 | `benchmarkBaselineSnapshotsEnabled` | `false` | Enable versioned baseline snapshot artifacts for the latest completed benchmark runs |
 | `benchmarkDeltaReporterEnabled` | `false` | Enable named-baseline delta reports against the current eval store |
@@ -780,7 +780,7 @@ FAISS notes:
 
 Current foundation slice:
 - `openclaw engram benchmark-status` scans `benchmarks/**.json` and `runs/**.json`, validates manifests/run summaries, and reports the latest completed run.
-- When `benchmarkBaselineSnapshotsEnabled` is on, Engram also tracks typed `baselines/*.json` artifacts under the eval store and surfaces the latest stored baseline snapshot in `openclaw engram benchmark-status`.
+- When `benchmarkBaselineSnapshotsEnabled` is on, Remnic also tracks typed `baselines/*.json` artifacts under the eval store and surfaces the latest stored baseline snapshot in `openclaw engram benchmark-status`.
 - When both eval flags are on, live recall also writes `shadow/YYYY-MM-DD/<trace-id>.json` records with hashes, counts, chosen source, and recalled memory IDs.
 - `openclaw engram benchmark-validate <path>` validates a manifest JSON file or a pack directory with a root `manifest.json`.
 - `openclaw engram benchmark-import <path> [--force]` validates first, then imports into `benchmarks/<benchmarkId>/`.
@@ -788,31 +788,31 @@ Current foundation slice:
 - `openclaw engram benchmark-baseline-report --snapshot-id <id>` compares the current eval store against a named stored baseline snapshot, emits both JSON and markdown summaries, and fails when pass rate, shared metrics, coverage, or eval artifact validity regress relative to that snapshot.
 - The required GitHub `eval-benchmark-gate` workflow uses the committed fixture baseline snapshot at `tests/fixtures/eval-ci/store/baselines/required-main.json` as its stable PR-gating reference.
 - `openclaw engram benchmark-ci-gate --base <dir> --candidate <dir>` compares two eval-store roots and fails when pass rate, shared metrics, or benchmark coverage regress.
-- When `objectiveStateRecallEnabled` is on, Engram can inject a separate `## Objective State` recall section sourced from the objective-state store.
-- When `causalTrajectoryMemoryEnabled` is on, Engram can persist typed causal chains into a separate store for later graph/retrieval slices.
-- When `causalTrajectoryRecallEnabled` is on, Engram can inject a separate `## Causal Trajectories` recall section sourced from the causal-trajectory store.
+- When `objectiveStateRecallEnabled` is on, Remnic can inject a separate `## Objective State` recall section sourced from the objective-state store.
+- When `causalTrajectoryMemoryEnabled` is on, Remnic can persist typed causal chains into a separate store for later graph/retrieval slices.
+- When `causalTrajectoryRecallEnabled` is on, Remnic can inject a separate `## Causal Trajectories` recall section sourced from the causal-trajectory store.
 - When `actionGraphRecallEnabled` is also on, each newly recorded causal trajectory emits deterministic `goal -> action -> observation -> outcome -> follow_up` edges into the causal graph without changing retrieval behavior yet.
-- When `trustZonesEnabled` is on, Engram can persist provenance-bearing records into separate `quarantine`, `working`, and `trusted` storage tiers.
-- When `quarantinePromotionEnabled` is also on, Engram exposes an explicit promotion path that blocks direct `quarantine -> trusted` jumps and requires anchored provenance before promoting risky working records into `trusted`.
-- When `trustZoneRecallEnabled` is also on, Engram injects a separate `## Trust Zones` recall section sourced from `working` and `trusted` trust-zone records while keeping `quarantine` records out of recall by default.
+- When `trustZonesEnabled` is on, Remnic can persist provenance-bearing records into separate `quarantine`, `working`, and `trusted` storage tiers.
+- When `quarantinePromotionEnabled` is also on, Remnic exposes an explicit promotion path that blocks direct `quarantine -> trusted` jumps and requires anchored provenance before promoting risky working records into `trusted`.
+- When `trustZoneRecallEnabled` is also on, Remnic injects a separate `## Trust Zones` recall section sourced from `working` and `trusted` trust-zone records while keeping `quarantine` records out of recall by default.
 - When `memoryPoisoningDefenseEnabled` is also on, `openclaw engram trust-zone-status` reports deterministic provenance trust scores derived from source class plus `sourceId` / `evidenceHash` / `sessionKey` anchors so later poisoning defenses can build on explicit signals instead of hidden heuristics.
 - With both `memoryPoisoningDefenseEnabled` and `quarantinePromotionEnabled` enabled, risky `working -> trusted` promotions now require at least one independent non-`quarantine` corroborating record with anchored provenance and overlapping `entityRefs` or `tags`.
 - When `memoryRedTeamBenchEnabled` is on, benchmark manifests can also declare `benchmarkType: "memory-red-team"` plus `attackClass` and `targetSurface`, and `openclaw engram benchmark-status` reports red-team pack counts and unique attack metadata.
-- When `harmonicRetrievalEnabled` is on, Engram can persist typed abstraction nodes into a separate abstraction-node store for later harmonic retrieval slices.
-- When `abstractionAnchorsEnabled` is also on, Engram can persist cue-anchor index entries under `{abstractionNodeStoreDir}/anchors` for entities, files, tools, outcomes, constraints, and dates.
-- When the harmonic retrieval section is enabled in the recall pipeline, Engram can inject a dedicated `## Harmonic Retrieval` section that explains which abstraction nodes matched and which cue anchors contributed.
+- When `harmonicRetrievalEnabled` is on, Remnic can persist typed abstraction nodes into a separate abstraction-node store for later harmonic retrieval slices.
+- When `abstractionAnchorsEnabled` is also on, Remnic can persist cue-anchor index entries under `{abstractionNodeStoreDir}/anchors` for entities, files, tools, outcomes, constraints, and dates.
+- When the harmonic retrieval section is enabled in the recall pipeline, Remnic can inject a dedicated `## Harmonic Retrieval` section that explains which abstraction nodes matched and which cue anchors contributed.
 - Use `openclaw engram abstraction-node-status` to inspect node storage, `openclaw engram cue-anchor-status` to inspect anchor counts and invalid index records, and `openclaw engram harmonic-search <query>` to preview blended harmonic retrieval matches.
-- When `verifiedRecallEnabled` is on, Engram can inject a separate `## Verified Episodes` recall section sourced from recent memory boxes, but only when each surfaced box still cites at least one non-archived source memory whose `memoryKind` remains `episode`.
+- When `verifiedRecallEnabled` is on, Remnic can inject a separate `## Verified Episodes` recall section sourced from recent memory boxes, but only when each surfaced box still cites at least one non-archived source memory whose `memoryKind` remains `episode`.
 - Use `openclaw engram verified-recall-search <query>` to preview verified episodic recall matches, including verified memory counts, matched fields, and cited episodic memory IDs.
 - When `semanticRulePromotionEnabled` is on, `openclaw engram semantic-rule-promote --memory-id <id>` can promote an explicit `IF ... THEN ...` rule from a non-archived episodic memory into a durable `rule` memory with lineage, `sourceMemoryId`, and duplicate suppression.
-- When `semanticRuleVerificationEnabled` is on, Engram can inject a separate `## Verified Rules` recall section sourced from promoted `rule` memories, but only when each surfaced rule still clears a provenance-aware effective-confidence threshold after re-checking its `sourceMemoryId`.
-- When both `creationMemoryEnabled` and `commitmentLedgerEnabled` are on, Engram can persist explicit commitment ledger entries and expose them through `openclaw engram commitment-status` and `openclaw engram commitment-record`.
-- When `commitmentLifecycleEnabled` is also on, Engram can transition commitment states with `openclaw engram commitment-set-state`, report overdue/stale/decay-eligible counts in `openclaw engram commitment-status`, and apply overdue-expiry plus resolved-entry cleanup through `openclaw engram commitment-lifecycle-run`.
-- When both `creationMemoryEnabled` and `resumeBundlesEnabled` are on, Engram can persist explicit typed resume bundles, inspect them with `openclaw engram resume-bundle-status`, write manual shells with `openclaw engram resume-bundle-record`, and assemble bounded bundles from transcript recovery plus recent objective state, work products, and open commitments with `openclaw engram resume-bundle-build`.
-- When `creationMemoryEnabled` is on, Engram can persist explicit work-product ledger entries and expose them through `openclaw engram work-product-status` and `openclaw engram work-product-record`.
-- When both `creationMemoryEnabled` and `workProductRecallEnabled` are on, Engram can inject a separate `## Work Products` recall section sourced from the typed work-product ledger and expose `openclaw engram work-product-recall-search <query>` for reuse previews.
-- When `memoryUtilityLearningEnabled` is on, Engram can persist typed downstream utility telemetry for promotion and ranking decisions, inspect the resulting event ledger with `openclaw engram utility-status`, record explicit benchmark/operator utility observations through `openclaw engram utility-record`, and learn bounded offline promotion/ranking weights through `openclaw engram utility-learn` with the persisted learner snapshot visible in `openclaw engram utility-learning-status`.
-- When `promotionByOutcomeEnabled` is also on and a learner snapshot exists, Engram applies bounded learned utility multipliers to ranking heuristic deltas and bounded promotion/demotion threshold nudges to tier migration without re-reading raw utility telemetry on the hot path.
+- When `semanticRuleVerificationEnabled` is on, Remnic can inject a separate `## Verified Rules` recall section sourced from promoted `rule` memories, but only when each surfaced rule still clears a provenance-aware effective-confidence threshold after re-checking its `sourceMemoryId`.
+- When both `creationMemoryEnabled` and `commitmentLedgerEnabled` are on, Remnic can persist explicit commitment ledger entries and expose them through `openclaw engram commitment-status` and `openclaw engram commitment-record`.
+- When `commitmentLifecycleEnabled` is also on, Remnic can transition commitment states with `openclaw engram commitment-set-state`, report overdue/stale/decay-eligible counts in `openclaw engram commitment-status`, and apply overdue-expiry plus resolved-entry cleanup through `openclaw engram commitment-lifecycle-run`.
+- When both `creationMemoryEnabled` and `resumeBundlesEnabled` are on, Remnic can persist explicit typed resume bundles, inspect them with `openclaw engram resume-bundle-status`, write manual shells with `openclaw engram resume-bundle-record`, and assemble bounded bundles from transcript recovery plus recent objective state, work products, and open commitments with `openclaw engram resume-bundle-build`.
+- When `creationMemoryEnabled` is on, Remnic can persist explicit work-product ledger entries and expose them through `openclaw engram work-product-status` and `openclaw engram work-product-record`.
+- When both `creationMemoryEnabled` and `workProductRecallEnabled` are on, Remnic can inject a separate `## Work Products` recall section sourced from the typed work-product ledger and expose `openclaw engram work-product-recall-search <query>` for reuse previews.
+- When `memoryUtilityLearningEnabled` is on, Remnic can persist typed downstream utility telemetry for promotion and ranking decisions, inspect the resulting event ledger with `openclaw engram utility-status`, record explicit benchmark/operator utility observations through `openclaw engram utility-record`, and learn bounded offline promotion/ranking weights through `openclaw engram utility-learn` with the persisted learner snapshot visible in `openclaw engram utility-learning-status`.
+- When `promotionByOutcomeEnabled` is also on and a learner snapshot exists, Remnic applies bounded learned utility multipliers to ranking heuristic deltas and bounded promotion/demotion threshold nudges to tier migration without re-reading raw utility telemetry on the hot path.
 - Use `openclaw engram semantic-rule-verify <query>` to preview verified semantic-rule matches, including verification status, effective confidence, and the cited source memory id.
 - Future slices will add automated benchmark runners on top of this store and gate format.
 
@@ -988,7 +988,7 @@ of truth for similarity logic across read-time and write-time code paths.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `emitLegacyTools` | `true` | Advertise legacy `engram_*`/`engram.*` MCP tool aliases alongside canonical `remnic_*` names. Set `false` to halve the advertised `tools/list` surface (only `remnic_*`); tools stay callable under both names. Also settable via `REMNIC_EMIT_LEGACY_TOOLS`. (issue #1427) |
+| `emitLegacyTools` | conditional (see below) | Advertise legacy `engram_*`/`engram.*` MCP tool aliases alongside canonical `remnic_*` names. On a fresh install the schema default is `false`, so only `remnic_*` is advertised; the value is sticky-`true` when legacy connector entries already exist on disk (so upgrades keep working). Set explicitly to override, or use `REMNIC_EMIT_LEGACY_TOOLS`. Tools stay callable under both names regardless. (issue #1427) |
 | `citationsEnabled` | `false` | Emit oai-mem-citation blocks in recall responses |
 | `citationsAutoDetect` | `true` | Auto-detect Codex citation context |
 
@@ -1529,7 +1529,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `factArchivalMaxImportance` | `0.3` | `0.3` |
 | `factArchivalMaxAccessCount` | `2` | `2` |
 | `factArchivalProtectedCategories` | `["commitment","preference","decision","principle","procedure"]` | `["commitment","preference","decision","principle","procedure"]` |
-| `lifecyclePolicyEnabled` | `false` | `false` until you are ready to measure lifecycle outcomes |
+| `lifecyclePolicyEnabled` | `true` | `true` (default-on since issue #686; set `false` to disable lifecycle scoring entirely) |
 | `lifecycleFilterStaleEnabled` | `false` | `false` for the initial lifecycle rollout |
 | `lifecyclePromoteHeatThreshold` | `0.55` | `0.55` |
 | `lifecycleStaleDecayThreshold` | `0.65` | `0.65` |
@@ -1632,7 +1632,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `versioningEnabled` | `false` | `false` |
 | `versioningMaxPerPage` | `50` | `50` |
 | `versioningSidecarDir` | `".versions"` | `".versions"` |
-| `emitLegacyTools` | `true` | `true` |
+| `emitLegacyTools` | `false` (fresh install; sticky-`true` when legacy entries exist) | `false` for `remnic_*`-only clients; leave sticky-`true` on upgraded installs |
 | `citationsEnabled` | `false` | `false` |
 | `citationsAutoDetect` | `true` | `true` |
 | `taxonomyEnabled` | `false` | `false` |

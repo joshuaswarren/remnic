@@ -1,13 +1,19 @@
 # Peers
 
-Issue [#679](https://github.com/joshuaswarren/remnic/issues/679) introduces a
-**peer registry**: a generalization of Remnic's singular
+Remnic has a **peer registry**: a generalization of Remnic's singular
 identity-anchor model into a multi-peer schema. Every party that interacts
 with a Remnic store — the operator themself, other humans, other agents,
 and non-conversational integrations — can be represented as a `Peer` with
 an evolving cognitive profile.
 
-All five PRs are now merged. This page covers the complete feature.
+Provenance: the peer registry lands across five PRs under issue
+[#679](https://github.com/joshuaswarren/remnic/issues/679); this page covers
+the complete feature.
+
+> **Command surface.** The `peer` command group runs on the hosted
+> `openclaw engram` surface (the OpenClaw gateway / plugin runtime). The
+> standalone `remnic` binary does not expose `peer`; use `openclaw engram peer …`
+> or the HTTP/MCP surfaces below.
 
 ## Concepts
 
@@ -25,7 +31,7 @@ kernel files under `peers/{peer-id}/`:
 `Peer.kind` is one of:
 
 - `self` — the current Remnic operator. Supersedes the legacy
-  identity-anchor model; `remnic peer migrate` seeds
+  identity-anchor model; `openclaw engram peer migrate` seeds
   `peers/self/identity.md` from existing legacy data.
 - `human` — another human collaborator distinct from `self`.
 - `agent` — another AI agent (e.g. Claude Code, Codex, Hermes).
@@ -82,9 +88,9 @@ markdown.
 
 ## Profile reasoner
 
-The async profile reasoner (shipped in PR 2/5) runs inside the Dreams REM
-phase. It reads recent `interactions.log.md` entries and derives structured
-`profile.md` fields with provenance. Each field records:
+The async profile reasoner runs inside the Dreams REM phase. It reads recent
+`interactions.log.md` entries and derives structured `profile.md` fields with
+provenance. Each field records:
 
 - `observedAt` — ISO-8601 timestamp of the observation.
 - `signal` — the log entry text that drove the inference.
@@ -96,10 +102,10 @@ The reasoner is **disabled by default** and must be opted in via
 
 ## Recall integration
 
-PR 3/5 wires the peer registry into the recall pipeline. When a peer is
-registered for the active session (`orchestrator.setPeerIdForSession`),
-Remnic injects a brief excerpt from that peer's `profile.md` into the
-prompt context as a `## Peer Profile` section.
+The peer registry wires into the recall pipeline. When a peer is registered
+for the active session (`orchestrator.setPeerIdForSession`), Remnic injects a
+brief excerpt from that peer's `profile.md` into the prompt context as a
+`## Peer Profile` section.
 
 ### Recall X-ray annotation
 
@@ -127,48 +133,48 @@ injection in the X-ray trace.
 
 ## CLI commands
 
-All peer commands live under `remnic peer`:
+All peer commands run on the hosted `openclaw engram peer` surface:
 
 ```
-remnic peer list [--json]
-remnic peer show <id> [--json]
-remnic peer set <id> [--kind <kind>] [--display-name <name>] [--notes <text>] [--json]
-remnic peer delete <id> [--json]
-remnic peer forget <id> --confirm yes [--json]
-remnic peer profile <id> [--json]
-remnic peer migrate [--dry-run] [--display-name <name>] [--json]
+openclaw engram peer list [--json]
+openclaw engram peer show <id> [--json]
+openclaw engram peer set <id> [--kind <kind>] [--display-name <name>] [--notes <text>] [--json]
+openclaw engram peer delete <id> [--json]
+openclaw engram peer forget <id> --confirm yes [--json]
+openclaw engram peer profile <id> [--json]
+openclaw engram peer migrate [--dry-run] [--display-name <name>] [--json]
 ```
 
-### `remnic peer list`
+### `openclaw engram peer list`
 
 Lists all registered peers. `--json` emits `{ "peers": [...] }`.
 
-### `remnic peer show <id>`
+### `openclaw engram peer show <id>`
 
 Shows the identity record for a single peer. Exits non-zero when the
 peer is not found.
 
-### `remnic peer set <id>`
+### `openclaw engram peer set <id>`
 
 Creates or updates a peer. On first write, `--kind` sets the peer kind
 (default `"human"` when omitted at service layer). On subsequent writes,
 `kind` is immutable — pass `--display-name` or `--notes` to update those
 fields instead.
 
-### `remnic peer delete <id>`
+### `openclaw engram peer delete <id>`
 
 Removes `peers/{id}/identity.md`. The peer directory and companion files
 (`profile.md`, `interactions.log.md`) are left in place. Idempotent:
 returns a no-op result when the peer does not exist.
 
-### `remnic peer forget <id> --confirm yes`
+### `openclaw engram peer forget <id> --confirm yes`
 
 **DESTRUCTIVE.** Purges the entire peer directory — `identity.md`,
 `profile.md`, `interactions.log.md`, and any other companion files under
 `peers/{id}/`. All data is permanently removed.
 
 ```
-remnic peer forget <id> --confirm yes [--json]
+openclaw engram peer forget <id> --confirm yes [--json]
 ```
 
 Requires `--confirm yes` exactly. Any other value (or omitting the flag)
@@ -223,17 +229,17 @@ Returns `400 { "error": "confirm_required" }` when the body omits
 Returns `{ "ok": true, "purged": true|false }`. Throws when `confirm` is
 absent or not `"yes"`.
 
-### `remnic peer profile <id>`
+### `openclaw engram peer profile <id>`
 
 Prints the evolving cognitive profile for a peer. The profile is written
 by the async reasoner; exits non-zero when no profile exists yet.
 
-### `remnic peer migrate`
+### `openclaw engram peer migrate`
 
 Migrates legacy identity-anchor data into `peers/self/identity.md`.
 
 ```
-remnic peer migrate [--dry-run] [--display-name <name>] [--json]
+openclaw engram peer migrate [--dry-run] [--display-name <name>] [--json]
 ```
 
 **What it reads:**
@@ -253,7 +259,7 @@ with no notes. Symlinked source files are silently skipped.
 - **Idempotent** — if `peers/self/identity.md` already exists the command
   returns immediately without overwriting.
 - **Non-destructive** — legacy files are never deleted. Verify the result
-  with `remnic peer show self` before archiving legacy data.
+  with `openclaw engram peer show self` before archiving legacy data.
 - **`--dry-run`** — computes and prints the proposed peer record without
   writing anything to disk.
 
@@ -262,14 +268,14 @@ with no notes. Symlinked source files are silently skipped.
 ```
 Migrated identity-anchor data to peers/self/identity.md.
   Read anchor:  /path/to/memory/identity/identity-anchor.md
+```
 
 Legacy identity-anchor files are untouched. Verify the migration result
-with `remnic peer show self` before archiving legacy files.
-```
+with `openclaw engram peer show self` before archiving legacy files.
 
 ## HTTP and MCP surfaces
 
-PR 4/5 shipped the following HTTP endpoints and MCP tools:
+The peer registry ships the following HTTP endpoints and MCP tools:
 
 | Surface | HTTP | MCP tool |
 |---------|------|----------|
@@ -286,12 +292,12 @@ The legacy `engram_identity_anchor_get` and `engram_identity_anchor_update`
 MCP tools continue to work unchanged. `identityAnchorUpdate` is now
 **deprecated** — the method is preserved for backward compatibility but
 will be removed in a future major version. Use `peerSet({ id: "self", ... })`
-or `remnic peer set self` to update the self peer going forward.
+or `openclaw engram peer set self` to update the self peer going forward.
 
-After running `remnic peer migrate` you can verify with:
+After running `openclaw engram peer migrate` you can verify with:
 
 ```
-remnic peer show self
+openclaw engram peer show self
 ```
 
 And then optionally archive the legacy files:
@@ -312,9 +318,9 @@ mv ~/.remnic/identity/identity-anchor.md ~/.remnic/identity/identity-anchor.md.b
 - **Provenance everywhere.** Every profile field carries a list of
   `PeerProfileFieldProvenance` entries pointing back to the originating
   session/signal. You can audit exactly why a profile claim exists.
-- **Forget is destructive.** Use `remnic peer forget <id> --confirm yes`
+- **Forget is destructive.** Use `openclaw engram peer forget <id> --confirm yes`
   to permanently purge the full peer directory (identity, profile, and
-  interaction log). Use `remnic peer delete <id>` to remove only the
+  interaction log). Use `openclaw engram peer delete <id>` to remove only the
   identity kernel while preserving companion files.
-- **Capsule export gating.** Capsule export (issue #676) does not
-  include peer profiles unless explicitly opted in.
+- **Capsule export gating.** Capsule export does not include peer profiles
+  unless explicitly opted in.

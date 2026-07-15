@@ -19,7 +19,7 @@ OpenClaw Gateway (single process)
 
 ### When to use
 
-- You're an existing OpenClaw user upgrading to the new Engram
+- You're an existing OpenClaw user upgrading to the new Remnic
 - You want a single process managing everything
 - You don't need the EMO daemon running independently
 
@@ -54,33 +54,39 @@ EMO daemon (:4318)          ← standalone process
 ### Behavior
 
 - EMO daemon runs independently via launchd/systemd
-- Memory store path configured in EMO's config (defaults to `~/.engram/memory/`)
+- Memory store path configured in EMO's config (defaults to `~/.remnic/memory/`)
 - OpenClaw features still work (OEO proxies memory reads through EMO's HTTP API)
 - If OpenClaw stops, EMO keeps running — other agents unaffected
 
 ## Configuration
 
-```json
-// In OpenClaw config or engram.config.json
-{
-  "engram": {
-    "mode": "embedded",          // "embedded" or "delegate"
-    "delegateUrl": "http://127.0.0.1:4318",  // only for delegate mode
-    "delegateToken": "engram_oc_..."          // only for delegate mode
-  }
-}
-```
+Bridge mode is not a config-file key. The OpenClaw plugin resolves it at gateway
+startup (`detectBridgeMode()` in `packages/plugin-openclaw/src/bridge.ts`):
 
-## Switching Modes
+1. If the `REMNIC_BRIDGE_MODE` environment variable is set (`embedded` or
+   `delegate`; legacy `ENGRAM_BRIDGE_MODE` also works), that wins.
+2. Otherwise, if a daemon is already listening on the configured port, the
+   bridge auto-detects **delegate** mode.
+3. Otherwise it runs **embedded**.
+
+In delegate mode the daemon endpoint comes from `REMNIC_HOST` (default
+`127.0.0.1`) and the daemon port env (legacy `ENGRAM_*` equivalents accepted).
+
+## Switching modes
 
 ```bash
-# Switch to delegate mode (requires running daemon)
-engram daemon install           # start daemon on boot
-engram config set mode delegate
+# Switch to delegate mode: start a daemon, then restart the gateway —
+# auto-detection picks delegate when the daemon is reachable.
+remnic daemon install
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 
-# Switch back to embedded mode
-engram config set mode embedded
-engram daemon stop              # optional: stop standalone daemon
+# Or pin the mode explicitly in the gateway's environment:
+#   REMNIC_BRIDGE_MODE=delegate
+
+# Switch back to embedded: stop the daemon (or pin REMNIC_BRIDGE_MODE=embedded),
+# then restart the gateway.
+remnic daemon stop
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
 ## Port Conflict Prevention

@@ -107,9 +107,9 @@ intentional given the out-of-scope statement in the issue.
 ## 4. Attack surfaces
 
 ### 4.1 MCP tools
-Enumerated in `access-mcp.ts:98-817`. Every read-path tool that touches memory
+Enumerated in `access-mcp.ts`. Every read-path tool that touches memory
 is reachable by any client that successfully completes the MCP `initialize`
-handshake and passes `tools/call`. The surface is broad — **47 tool names**
+handshake and passes `tools/call`. The surface is broad — dozens of tool names
 including legacy-alias pairs — so attackers have many phrasings to try.
 
 Read-path tools that return memory content:
@@ -152,8 +152,9 @@ including `/engram/v1/recall`, `GET /engram/v1/memories` (list/browse),
 exposed via the MCP tool surface (`access-mcp.ts`).
 
 ### 4.3 CLI access
-`remnic recall`, `remnic memory search`, `remnic memory get`, and related
-commands run in-process with the same permissions as the invoking user. Out
+`remnic query` (standalone recall) and the hosted `openclaw engram recall` /
+`openclaw engram search` commands run in-process with the same permissions as
+the invoking user. Out
 of the MCP threat model but in scope for the harness because the same
 orchestrator code paths are exercised — PR 2's in-process fixture will drive
 the orchestrator directly rather than going through transports.

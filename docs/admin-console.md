@@ -1,10 +1,26 @@
-# Remnic Admin Console
+# Admin console
 
-Local operator surface served by `remnic access http-serve` at
-`/remnic/ui` (and the legacy `/engram/ui` alias). All data fetches and
-operator actions go through the loopback bearer-token API; the page
-itself is a static `index.html` + `app.js` shell shipped under
-`admin-console/public/`.
+The admin console is a browser-based operator UI for a running Remnic instance:
+a memory browser, recall debugger, trust-zone and review-queue panes, and a live
+memory-graph view. All data fetches and operator actions go through the loopback
+bearer-token API; the page itself is a static `index.html` + `app.js` shell
+shipped under `admin-console/public/`. It is distinct from the terminal
+[operator console](./console.md), which inspects live engine internals.
+
+## Serving the console
+
+The console is mounted by the HTTP access server and reachable at `/remnic/ui/`
+(with the legacy `/engram/ui/` alias). Two ways to serve it:
+
+- **Standalone** — run `@remnic/server` (`remnic-server`) and set
+  `server.adminConsoleEnabled: true` (default `false`; env override
+  `REMNIC_ADMIN_CONSOLE_ENABLED`). The server binds `127.0.0.1:4318` by default,
+  so the console lives at `http://127.0.0.1:4318/remnic/ui/`.
+- **OpenClaw-hosted** — `openclaw engram access http-serve` (also
+  `127.0.0.1:4318` by default).
+
+All console calls require the same loopback bearer token as the rest of the
+`/engram/v1/*` operator API.
 
 ## Panes
 

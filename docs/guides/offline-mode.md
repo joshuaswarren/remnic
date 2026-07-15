@@ -1,4 +1,4 @@
-# Offline Mode
+# Offline mode
 
 Offline mode lets a laptop keep using Remnic when the home Remnic daemon is
 unreachable, then sync local changes back when the network returns.
@@ -16,7 +16,7 @@ cruise cabin without reconfiguring agents. If the home daemon is reachable, the
 watcher pushes and pulls. If it is not reachable, Remnic stays local and the
 watcher retries until the connection comes back.
 
-## Before Travel
+## Before travel
 
 Start or verify the home daemon:
 
@@ -37,7 +37,7 @@ remnic daemon start
 Seed the laptop from the home daemon:
 
 ```bash
-export REMNIC_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4317"
+export REMNIC_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4318"
 export REMNIC_OFFLINE_TOKEN="$REMNIC_AUTH_TOKEN"
 remnic offline prepare --namespace default
 ```
@@ -45,7 +45,7 @@ remnic offline prepare --namespace default
 `prepare` downloads a full snapshot from the remote namespace and writes the
 offline sync state under `<memoryDir>/.offline-sync/state/`.
 
-## Stay Synced
+## Stay synced
 
 Keep this running on the laptop before you leave:
 
@@ -64,7 +64,7 @@ The watcher performs the same work as `remnic offline sync`:
 Network failures do not clear local state or block local Remnic use. The next
 watch iteration tries again.
 
-## Manual Sync
+## Manual sync
 
 Use `sync` when you want a one-shot transfer:
 
@@ -80,7 +80,7 @@ remnic offline status --namespace default
 remnic offline status --namespace default --json
 ```
 
-## Multiple Namespaces
+## Multiple namespaces
 
 Sync each namespace independently:
 
@@ -94,7 +94,7 @@ remnic offline watch --namespace work --interval-ms 120000
 The state file key includes the remote identity and namespace, so separate
 namespaces do not overwrite each other's sync base.
 
-## Conflict Handling
+## Conflict handling
 
 Offline mode uses a shared-base merge protocol. A file is applied only when the
 target side is still at the base version the sender last saw.
@@ -109,7 +109,7 @@ and writes the incoming version under:
 The sync result reports the conflict path so you can inspect or merge it later.
 Remote-side conflicts behave the same way on the home daemon.
 
-## What Syncs
+## What syncs
 
 Offline sync operates at the Remnic storage directory layer. That means it works
 for core memories, retrieval indices, governance metadata, review queues,
@@ -174,18 +174,18 @@ watcher logs one warning and permanently skips that file for the lifetime of
 the watcher process, so the rest of the namespace keeps syncing. Add the path
 to `offlineSyncExcludes` (or `--exclude`) to silence it across restarts.
 
-## Environment Variables
+## Environment variables
 
 The CLI reads these values when flags are omitted:
 
 ```bash
-export REMNIC_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4317"
+export REMNIC_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4318"
 export REMNIC_OFFLINE_TOKEN="..."
 ```
 
 Legacy fallbacks are also accepted:
 
 ```bash
-export ENGRAM_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4317"
+export ENGRAM_OFFLINE_REMOTE_URL="http://home-remnic.tailnet-name.ts.net:4318"
 export ENGRAM_AUTH_TOKEN="..."
 ```

@@ -6,33 +6,33 @@ classification models Remnic's extraction pipeline can consume locally:
 - **faithfulness-gate** (`remnic-faithfulness-gate-v1`) — (factText, quote, context)
   → {entailed, contradicted, unsupported}. Backs the extraction faithfulness
   gate (#1576 / #1585).
-- **correction-intent** (`remnic-correction-intent-v1`) — turn text + a small
-  prior-turn window → the #1581 `corrections[]` block (or none). Backs passive-
-  correction detection (#1581 / #1585).
+- **correction-intent** (`remnic-correction-intent-v1`) — a turn window →
+  {correction, none} detection classifier. Backs passive-correction detection
+  (#1581 / #1585 / #1738). Emitting the full #1581 `corrections[]` block
+  (targetHint, correctedAssertion, polarity) is the v2 causal-LM follow-up.
 
 Everything reproduces from manifests; **no datasets or weights are ever
 committed to this repo** (git carries recipes and hashes, never blobs).
 
-## Status: software landed, eval numbers GPU-gated
+## Status: both v1 models trained; downstream numbers GPU-gated
 
 This document describes the reproducible software shipped for #1585:
 
 | Piece | Status |
 |---|---|
-| Manifest schema + version-pin (`common/manifest_schema.py`, `common/training_stack.py`) | ✅ landed (both manifests committed as `pending-training` schema examples) |
-| Seeded data generators (faithfulness perturbations + correction-intent morphology) | ✅ landed (CI-tested: determinism + selfcheck, pure CPU) |
-| Train recipes (`train.py`, lazy-imported GPU stack) | ✅ landed (recipe + reproducibility contract) |
-| Eval harness (held-out p95 latency + F1) | ✅ landed (`common/latency.py`, `common/eval_runner.py`) |
-| Remnic config pointers | ✅ landed (`extractionFaithfulnessBaseUrl`, `correctionIntent*`) |
-| **Actual training runs + eval-number manifests** | ✅ **faithfulness-gate trained** (v1, this PR — held-out macro-F1 1.0, p95 9.93 ms; see Results below); ⏳ correction-intent pending (train loop is a scaffold + its `trl`/`bitsandbytes` pins don't resolve on PyPI — follow-up issue filed) |
-| **Downstream bench artifacts (gate quality vs prompted LLM; MemCorrect false_apply)** | ⏳ **GPU-gated** — produced by the #1574 bench protocol, not the model-lab recipes; the manifest's `eval.downstream` points there |
-| **HF weight publish (`common/hf_push.py`)** | ⏳ **pending** — `hf_push.py` is a stub (`NotImplementedError`) and no HF credentials exist on the lab box; the trained weights are content-pinned locally via `manifest.artifact.localArtifactSha256` (see that block) |
+| Manifest schema + version-pin (`common/manifest_schema.py`, `common/training_stack.py`) | landed (both manifests committed as `trained` with real eval numbers) |
+| Seeded data generators (faithfulness perturbations + correction-intent morphology) | landed (CI-tested: determinism + selfcheck, pure CPU) |
+| Train recipes (`train.py`, lazy-imported GPU stack) | landed (recipe + reproducibility contract) |
+| Eval harness (held-out p95 latency + F1) | landed (`common/latency.py`, `common/eval_runner.py`) |
+| Remnic config pointers | landed (`extractionFaithfulnessBaseUrl`, `correctionIntent*`) |
+| **Actual training runs + eval-number manifests** | **both v1 models trained** on the lab RTX 3090 (#1737 faithfulness-gate, #1738 correction-intent) — held-out macro-F1 1.0 each; see Results below |
+| **Downstream bench artifacts (gate quality vs prompted LLM; MemCorrect false_apply)** | GPU-gated — produced by the #1574 / #1584 bench protocols, not the model-lab recipes; each manifest's `eval.downstream` points there |
+| **HF weight publish (`common/hf_push.py`)** | pending — `hf_push.py` is a stub (`NotImplementedError`) and no HF credentials exist on the lab box; the trained weights are content-pinned locally via `manifest.artifact.localArtifactSha256` (see that block) |
 
 Per rule 55 (#1520): **no accuracy/latency number appears here without an
-artifact from a real run.** The faithfulness-gate manifest is `trained` and
-carries real held-out numbers; correction-intent stays `pending-training`
-until its train loop lands. Every number below traces to a manifest `eval`
-block.
+artifact from a real run.** Both v1 manifests are `status: trained` and carry
+real held-out numbers; the downstream (production-signal) numbers are still
+GPU-gated. Every number below traces to a manifest `eval` block.
 
 ## Results — faithfulness-gate v1 (real run, RTX 3090)
 
@@ -63,6 +63,35 @@ the backward pass) and is unstable under bf16 on small data. `roberta-large-mnli
 is the documented ≤4B fallback — fp32-stable and already NLI-pretrained — and
 converged cleanly (held-out macro-F1 climbed 0.22→0.48→0.65→0.96→1.0 over
 epochs 1–5). See `manifest.baseModel.$comment`.
+
+## Results — correction-intent v1 (real run, RTX 3090)
+
+Trained from the manifest at `model-lab/correction-intent/manifest.json`
+(`status: trained`). v1 is the **detection** slice of #1581: a turn window in,
+`{correction, none}` out. It shares the faithfulness-gate encoder stack and the
+same reproducible venv (identical `trainingStack.pipFreezeSha256`).
+
+| Metric | Value | Source |
+|---|---|---|
+| Held-out macro-F1 | **1.000** | `manifest.eval.heldOut.macroF1` (25 held-out examples, 10% split) |
+| Per-class F1 (correction / none) | 1.00 / 1.00 | `manifest.eval.heldOut.detection` |
+| Held-out p95 latency | **11.75 ms** | `manifest.eval.heldOut.latencyMs.p95` (single-example GPU forward, fp32) |
+| Base model | `roberta-large-mnli` (0.355 B) | `manifest.baseModel` — 3-way NLI head reinitialized to a 2-way detection head |
+| Dataset | 250 records (120 correction / 130 none), sha256 `c0238a2b…` | `manifest.dataRecipe` |
+
+The original #1585 plan used a <=4B instruct causal LM (TRL/LoRA) emitting the
+`corrections[]` JSON block, but `trl==0.16.6` / `bitsandbytes==0.44.1` do not
+exist on PyPI and the only resolvable `trl` breaks the shared venv's `datasets`
+pin (#1738). v1 therefore reuses the fp32-stable `roberta-large-mnli` encoder;
+it converged cleanly (held-out macro-F1 0.92 → 0.87 → 1.0 over epochs 1–3, held
+through epoch 12). Span extraction (`correctedAssertion` + polarity) is
+`not-applicable-v1` and is the v2 causal-LM follow-up.
+
+Same held-out caveat as the gate: the split is drawn from the same morphology
+generator as the train set, so macro-F1 1.0 reflects perfect pattern separation,
+not real-world robustness. The production number is the **downstream** one
+(detection quality vs the prompted-LLM classifier on real conversations),
+produced by the #1584 MemCorrect bench protocol — out of scope for `eval.py`.
 
 ## Hardware envelope (sets the model-size policy)
 
@@ -96,16 +125,17 @@ python model-lab/faithfulness-gate/train.py --version-tag v1 \
     --base-model roberta-large-mnli --mixed-precision fp32 --epochs 12 --learning-rate 1e-5
 python model-lab/faithfulness-gate/eval.py --version-tag v1            # → manifest eval.heldOut block (F1 + p95 latency)
 
-# 3. Correction-intent (≤4B instruct LM, LoRA) — PENDING:
-#    train.py is a scaffold (exits recipe-ready-not-run) and its trl/bitsandbytes
-#    pins don't resolve on PyPI yet; see the follow-up issue. generate-data is CPU-only
-#    and runnable; eval (offline scoring of pre-computed predictions) is too.
-python model-lab/correction-intent/generate-data.py --seed 1337 --yes   # → correction-intent/data/
+# 3. Correction-intent (encoder detection classifier — roberta-large-mnli; v1 is #1738):
+python model-lab/correction-intent/generate-data.py --seed 1337 --yes   # → correction-intent/data/ (sha256 in the manifest)
+python model-lab/correction-intent/train.py --version-tag v1 \
+    --base-model roberta-large-mnli --mixed-precision fp32 --epochs 12 --learning-rate 1e-5
+python model-lab/correction-intent/eval.py --version-tag v1            # → manifest eval.heldOut block (detection F1 + p95 latency)
 ```
 
 `train.py`/`eval.py` lazy-import the GPU stack so `--help` works on a bare
 machine; each exits with code 2 + an install hint if `torch`/`transformers`
-(and `trl`/`peft` for correction-intent) are missing. **They never run in CI.**
+are missing (both v1 models share the encoder stack — no `trl`/`peft`).
+**They never run in CI.**
 
 After a real run, `train.py` captures the exact interpreter + lib versions into
 the manifest's `trainingStack` block (`common/training_stack.capture_training_stack`),

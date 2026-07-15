@@ -368,20 +368,10 @@ After setup, start a new Codex session and check:
 
 Codex's phase-2 consolidation reads canonical files under `<codex_home>/memories/`
 (`memory_summary.md`, `MEMORY.md`, `raw_memories.md`, `rollout_summaries/*.md`).
-Remnic can mirror hot memories into this exact layout so the always-loaded
-`memory_summary.md` is populated with Remnic content — giving Codex a quick
-cross-session pass without any MCP roundtrips.
+Remnic can mirror its hot memories into that exact layout so the always-loaded
+`memory_summary.md` carries Remnic content with no MCP roundtrips. It is opt-in
+via a `.remnic-managed` sentinel file, writes atomically, and no-ops when the
+content is unchanged — `remnic connectors install codex-cli` sets this up for you.
 
-Materialization is **opt-in via a sentinel file** (`<codex_home>/memories/.remnic-managed`):
-if the sentinel is missing, Remnic will skip the directory and log a warning,
-so hand-edited layouts are never clobbered. Writes are atomic (temp dir +
-rename), and idempotent no-ops happen whenever the content hash is unchanged.
-
-Triggers (all configurable):
-
-- After semantic or causal consolidation completes (`codexMaterializeOnConsolidation`)
-- At Codex session end via the bundled Stop hook (`codexMaterializeOnSessionEnd`)
-- Manually: `tsx scripts/codex-materialize.ts --reason manual`
-
-See [plugins/codex.md — Native memory materialization](../plugins/codex.md#native-memory-materialization)
-for the full list of config knobs and the opt-out procedure.
+For the trigger flags, token budget, and full opt-out procedure, see
+[plugins/codex.md — Native memory materialization](../plugins/codex.md#native-memory-materialization).

@@ -68,8 +68,8 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 # Step 3: Start a conversation — check the gateway log
 grep "gateway_start" ~/.openclaw/logs/gateway.log
 
-# Expected output:
-# [remnic] gateway_start fired — Remnic memory plugin is active (id=openclaw-engram, memoryDir=~/.openclaw/workspace/memory/local)
+# Expected output (the id matches the configured entry; installs via the legacy shim show id=openclaw-engram):
+# gateway_start fired — Remnic memory plugin is active (id=openclaw-remnic, memoryDir=~/.openclaw/workspace/memory/local)
 
 # Step 4: Verify the full health picture
 remnic doctor

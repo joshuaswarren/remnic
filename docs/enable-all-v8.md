@@ -1,13 +1,13 @@
-# Enable All v8 Features
+# Enable all features (full-feature profile)
 
-This guide provides a single config profile that explicitly enables all major v8 feature families in `openclaw-engram`.
+This is the full-feature profile: a single config block that explicitly turns on every major Remnic feature family at once, so you can validate the whole surface in one pass and then trim back to what you need. The `v8` in the file name is a historical label; these features shipped across many releases through v9.6.22, so treat this as the current maximal profile, not a version-specific one.
 
-Apply under:
+Apply it under the OpenClaw plugin entry. The current plugin id is `openclaw-remnic`; installs created before the rename may still use the legacy `openclaw-engram` id, which Remnic continues to read.
 
-- `plugins.entries.openclaw-engram.enabled = true`
-- `plugins.entries.openclaw-engram.config = { ... }`
+- `plugins.entries.openclaw-remnic.enabled = true`
+- `plugins.entries.openclaw-remnic.config = { ... }`
 
-## Full v8 Config Profile
+## Full config profile
 
 ```jsonc
 {
@@ -75,9 +75,9 @@ Apply under:
 - Keep secrets in environment variables (`${OPENAI_API_KEY}`), not hardcoded keys.
 - If you run many features at once, expect higher extraction/consolidation activity.
 - `debug: true` is recommended while validating; disable later for quieter logs.
-- If you use `conversationIndexBackend: "faiss"`, install `scripts/faiss_requirements.txt` first and optionally set `ENGRAM_FAISS_ENABLE_ST=1` for sentence-transformers embeddings.
+- If you use `conversationIndexBackend: "faiss"`, install `scripts/faiss_requirements.txt` first and optionally set `REMNIC_FAISS_ENABLE_ST=1` (legacy `ENGRAM_FAISS_ENABLE_ST=1` still works) for sentence-transformers embeddings.
 - If you prefer QMD for transcript recall, swap the FAISS fields for `conversationIndexBackend: "qmd"` plus `conversationIndexQmdCollection`.
-- **`procedural.enabled`** turns on issue #519 procedural memory (writes under `procedures/`, recall injection, mining). The sample block above enables it; remove the `procedural` object or set `"enabled": false` if you want this profile without procedural behavior. See [procedural-memory.md](procedural-memory.md).
+- **`procedural.enabled`** controls procedural memory (writes under `procedures/`, recall injection, mining). It is default-on since issue #567, so setting `"enabled": true` here is explicit rather than required; remove the `procedural` object or set `"enabled": false` to run this profile without procedural behavior. See [procedural-memory.md](procedural-memory.md).
 
 ## Required Restart
 

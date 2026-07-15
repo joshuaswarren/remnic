@@ -1,17 +1,21 @@
-# Shared Context (v4.0)
+# Shared context
 
-Shared-context is a file-based coordination layer that multiple agents can read/write, enabling cross-agent collaboration without direct agent-to-agent messaging.
+Shared context is a file-based coordination layer that multiple agents read and write, enabling cross-agent collaboration without direct agent-to-agent messaging. Enable it when you run several agents that should pool priorities, work products, and feedback in one place. Opt-in via `sharedContextEnabled` (default `false`).
 
-Default location:
-- `~/.openclaw/workspace/shared-context/`
+> Provenance: shared context landed in v4.0.
 
-Override:
-- `sharedContextDir`
+## Enable it
 
-Enable:
-- `sharedContextEnabled: true`
+```json
+{
+  "sharedContextEnabled": true,
+  "sharedContextDir": "~/.openclaw/workspace/shared-context"
+}
+```
 
-## Directory Structure
+`sharedContextDir` is optional and defaults to `~/.openclaw/workspace/shared-context/`.
+
+## Directory structure
 
 - `priorities.md`: curated living priority stack (agents read before acting)
 - `priorities.inbox.md`: append-only inbox for new priority notes
@@ -62,12 +66,12 @@ Compatibility aliases remain supported:
 - `crossSignalsSemanticTimeoutMs`
 
 Injection:
-- When enabled, Engram injects `priorities.md`, the latest `roundtable/*.md`, and the latest `cross-signals/*.md` into the system prompt (timeboxed and capped by `sharedContextMaxInjectChars`).
+- When enabled, Remnic injects `priorities.md`, the latest `roundtable/*.md`, and the latest `cross-signals/*.md` into the system prompt (timeboxed and capped by `sharedContextMaxInjectChars`, default 4,000).
 - Shared context is assembled at **position 1** in the recall pipeline — before profile and memories. It consumes recall budget first.
 
 ### Budget interaction
 
-With the default `recallBudgetChars` of 8,000 and `sharedContextMaxInjectChars` of 6,000, shared context plus profile (~7,500 chars) can exhaust the entire budget, leaving zero room for actual memories. If you enable shared context, set `recallBudgetChars` to at least 32,000 (or 64,000+ for large-context models). See [Recall Budget Tuning](config-reference.md#recall-budget-tuning).
+With the default `recallBudgetChars` of 8,000 and `sharedContextMaxInjectChars` of 4,000, shared context plus profile can consume most of the budget, leaving little room for actual memories. If you enable shared context, raise `recallBudgetChars` to at least 32,000 (or 64,000+ for large-context models). See [Recall budget tuning](config-reference.md#recall-budget-tuning).
 
 ## Scheduling
 

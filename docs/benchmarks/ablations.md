@@ -143,6 +143,6 @@ remnic bench run --benchmark locomo \
 
 The ablation matrix runner is
 `scripts/bench/run-ablation-matrix.ts` (issue #1730). See the [two-tier
-benchmark protocol](./benchmarks.md#two-tier-benchmark-protocol) for why these
+benchmark protocol](../benchmarks.md#two-tier-benchmark-protocol) for why these
 Tier L numbers must never be conflated with Tier F (frontier) leaderboard
 claims.

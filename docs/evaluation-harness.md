@@ -1,17 +1,19 @@
-# Evaluation Harness
+# Evaluation harness
 
-Engram is moving to a benchmark-first development model. This first slice adds the storage contract and status tooling for an AMA-Bench-style evaluation harness without changing live recall behavior.
+Remnic is moving to a benchmark-first development model. This first slice adds the storage contract and status tooling for an AMA-Bench-style evaluation harness without changing live recall behavior.
 
-## Why This Exists
+For the memory-outcome dimensions and quick-benchmark coverage this harness measures, see [Memory evals](memory-evals.md).
 
-Recent agent-memory work is clear: memory should be evaluated on real agent trajectories, not chat QA. Engram's evaluation harness is meant to answer one operational question for every memory PR:
+## Why this exists
+
+Recent agent-memory work is clear: memory should be evaluated on real agent trajectories, not chat QA. Remnic's evaluation harness is meant to answer one operational question for every memory PR:
 
 `Did this make agent outcomes better, worse, or just different?`
 
 Primary source:
 - AMA-Bench / AMA-Agent: https://arxiv.org/abs/2602.22769
 
-## Current Scope
+## Current scope
 
 This slice ships:
 
@@ -41,9 +43,9 @@ This slice does **not** yet ship:
 
 Those land in follow-on PR slices documented in the roadmap.
 
-## Directory Layout
+## Directory layout
 
-By default, Engram looks under:
+By default, Remnic looks under:
 
 ```text
 {memoryDir}/state/evals/
@@ -61,7 +63,7 @@ By default, Engram looks under:
 
 You can override the root with `evalStoreDir`.
 
-## Benchmark Manifest Format
+## Benchmark manifest format
 
 ```json
 {
@@ -115,7 +117,7 @@ Example red-team benchmark manifest:
 }
 ```
 
-## Run Summary Format
+## Run summary format
 
 ```json
 {
@@ -142,9 +144,9 @@ Supported statuses:
 - `failed`
 - `partial`
 
-## Shadow Recall Record Format
+## Shadow recall record format
 
-When both `evalHarnessEnabled` and `evalShadowModeEnabled` are on, Engram records a best-effort shadow snapshot for each live recall decision without changing the injected context:
+When both `evalHarnessEnabled` and `evalShadowModeEnabled` are on, Remnic records a best-effort shadow snapshot for each live recall decision without changing the injected context:
 
 ```json
 {
@@ -246,18 +248,18 @@ The CI gate:
 - fails when pass rate or shared metrics regress
 - currently treats `trustViolationRate` as lower-is-better and other shared metrics as higher-is-better
 
-## Rollout Guidance
+## Rollout guidance
 
 - Keep `evalHarnessEnabled: false` by default in production until you want benchmark bookkeeping on disk.
 - Turn on `evalShadowModeEnabled` when you want to start recording live recall decisions for measurement without changing recall output.
 - Treat benchmark packs as versioned operator assets. PRs that change them should explain why the benchmark changed.
 - Use `memory-red-team` packs for poisoning-defense suites so attack intent stays explicit in status output instead of relying on tags alone.
 
-## Next Steps
+## Next steps
 
 See:
 
-- [Engram Feature Roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1)
+- [Feature roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1)
 - [Historical Plans Index](plans/README.md)
 - [PR1 Eval Harness Foundation Plan](plans/2026-03-06-engram-pr1-eval-harness-foundation.md)
 - [PR2 Benchmark Pack Validator And Import Tools](plans/2026-03-06-engram-pr2-benchmark-tools.md)

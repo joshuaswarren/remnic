@@ -2,7 +2,7 @@
 
 ## Backup, Export, and Import
 
-Engram supports portable exports and safe backups via CLI.
+Remnic supports portable exports and safe backups via CLI.
 
 ### Export
 
@@ -29,7 +29,7 @@ openclaw engram import --from /tmp/engram-export --format auto
 openclaw engram backup --out-dir /tmp/engram-backups --retention-days 14
 ```
 
-With namespaces (v3.0):
+With namespaces enabled (default off):
 
 ```bash
 openclaw engram export --namespace shared --format json --out /tmp/shared-export
@@ -48,7 +48,7 @@ openclaw engram doctor             # Aggregated runtime diagnostics + remediatio
 openclaw engram inventory          # Memory/entity/storage footprint, review queue, and native-knowledge sync counts
 openclaw engram topics              # View extracted topic list
 openclaw engram threads             # View conversation threads
-openclaw engram access              # Most-accessed memories
+openclaw engram access-stats         # Most-accessed memories
 openclaw engram route list          # List routing rules
 openclaw engram route add ...       # Add/update a routing rule
 openclaw engram route remove ...    # Remove routing rules by pattern
@@ -91,7 +91,7 @@ Compatibility diagnostics:
 - Use `openclaw engram compat --strict` to fail with non-zero exit code on warnings or errors.
 
 Operator toolkit:
-- `openclaw engram setup` validates the loaded OpenClaw config, creates missing Engram-owned directories, checks QMD reachability/collection presence, and can scaffold `MEMORY.md` when explicit capture is enabled.
+- `openclaw engram setup` validates the loaded OpenClaw config, creates missing Remnic-owned directories, checks QMD reachability/collection presence, and can scaffold `MEMORY.md` when explicit capture is enabled.
 - `openclaw engram setup --preview-capture-instructions` prints the managed explicit-capture snippet without writing files.
 - `openclaw engram setup --install-capture-instructions` writes or updates only the managed explicit-capture block inside `MEMORY.md`.
 - `openclaw engram setup --remove-capture-instructions` removes the managed explicit-capture block and deletes `MEMORY.md` if that block was the file's only content.
@@ -113,7 +113,7 @@ Graph diagnostics:
 Session integrity diagnostics:
 - `openclaw engram session-check` reports transcript chain anomalies (malformed lines, invalid entries, duplicate turn IDs, broken role chains, incomplete tail turns) and checkpoint integrity state.
 - `openclaw engram session-repair` is dry-run by default and outputs both plan + apply summary payloads.
-- `session-repair --apply` mutates only Engram-managed files (transcripts/checkpoint) and never rewires OpenClaw pointers/session references.
+- `session-repair --apply` mutates only Remnic-managed files (transcripts/checkpoint) and never rewires OpenClaw pointers/session references.
 - `--allow-session-file-repair` only unlocks an explicit guarded workflow for external session-file paths and still performs no automatic rewiring.
 
 Memory action diagnostics:
@@ -157,7 +157,7 @@ Access layer notes:
 - `openclaw engram access mcp-serve` exposes the same recall/read/write service layer over stdio for MCP clients such as Codex and Claude Code.
 - Use `GET /engram/v1/health`, `GET /engram/v1/quality`, or `GET /engram/v1/maintenance` as startup probes when local scripts need projection/governance readiness signals before issuing recall or review requests.
 
-## Compression Guideline Optimizer Tool (v8.11)
+## Compression Guideline Optimizer Tool
 
 Agent tool names:
 - `compression_guidelines_optimize`
@@ -180,7 +180,7 @@ Cron-safe usage pattern:
 - Call the tool in an isolated cron session to avoid blocking interactive turns.
 - Prefer `dryRun=true` for first-pass checks, then run with `dryRun=false` when stable.
 
-## Network Sync and WebDAV (v8.8)
+## Network Sync and WebDAV
 
 Network features are opt-in and not started by default.
 
@@ -243,7 +243,7 @@ Operational safety notes:
 
 ## Hourly Summaries (Cron)
 
-Engram can generate hourly summaries of conversation activity.
+Remnic can generate hourly summaries of conversation activity.
 
 Recommended cron setup (via OpenClaw agent turn — avoids `main` session restrictions):
 
@@ -271,7 +271,7 @@ Enable extended summaries:
 
 ## Cron Recall Policy
 
-Engram supports cron-specific recall policy so you can keep high-frequency automation jobs cheap while still enabling memory context for selected cron sessions.
+Remnic supports cron-specific recall policy so you can keep high-frequency automation jobs cheap while still enabling memory context for selected cron sessions.
 
 ```jsonc
 {
@@ -303,7 +303,7 @@ Pattern tip:
 
 ## File Hygiene
 
-Engram can optionally lint and rotate large workspace files that are bootstrapped into the prompt (e.g. `IDENTITY.md`). Without rotation, an oversized file can be silently truncated by the gateway.
+Remnic can optionally lint and rotate large workspace files that are bootstrapped into the prompt (e.g. `IDENTITY.md`). Without rotation, an oversized file can be silently truncated by the gateway.
 
 ```jsonc
 {
@@ -356,7 +356,7 @@ wc -l ~/.openclaw/workspace/memory/local/state/fact-hashes.txt
 
 ## Observation Ledger Maintenance
 
-Engram exposes explicit maintenance commands for observation artifacts.
+Remnic exposes explicit maintenance commands for observation artifacts.
 
 ```bash
 # Archive dated transcript/tool/hourly artifacts older than retention window
@@ -385,7 +385,7 @@ Operational guarantees:
 
 ## Memory Projection Maintenance
 
-Engram can also rebuild a derived SQLite projection for current-state inspection and per-memory timelines.
+Remnic can also rebuild a derived SQLite projection for current-state inspection and per-memory timelines.
 
 ```bash
 # Rebuild the derived projection from markdown memory files plus lifecycle events
@@ -421,7 +421,7 @@ Operational guarantees:
 
 ## Memory Governance Maintenance
 
-Engram can run a deterministic memory-governance sweep that builds a review queue, applies reversible status/archive transitions, and writes durable audit artifacts for each run.
+Remnic can run a deterministic memory-governance sweep that builds a review queue, applies reversible status/archive transitions, and writes durable audit artifacts for each run.
 
 ```bash
 # Simulate a governance run and write review artifacts only
