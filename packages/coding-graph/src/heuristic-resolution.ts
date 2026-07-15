@@ -342,7 +342,7 @@ export function deriveHeuristicEdges(
             }
             if (ancestorChain.has(c.enclosing)) {
               const depth = [...ancestorChain].indexOf(c.enclosing);
-              if (depth > chosenDepth) { chosen = c; chosenDepth = depth; }
+              if (chosenDepth < 0 || depth < chosenDepth) { chosen = c; chosenDepth = depth; }
             }
           }
           if (chosen) {
