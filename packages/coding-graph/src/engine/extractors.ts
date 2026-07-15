@@ -65,6 +65,13 @@ const JS_IMPORTS = `
 (import_statement
   (import_clause (named_imports (import_specifier name: (identifier) @import.name)))
   source: (string (string_fragment) @import.module)) @__import.stmt
+; Aliased named import (issue #1894 review): import { foo as bar } — the
+; local binding is the alias; the exported name stays the binding target.
+(import_statement
+  (import_clause (named_imports (import_specifier
+    name: (identifier) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)))
+  source: (string (string_fragment) @import.module)) @__import.stmt
 
 ; CommonJS require("...") — capture the module specifier so dependency
 ; edges exist for Node/CommonJS codebases, not just ES-module imports.
@@ -130,7 +137,10 @@ const JS_EXPORTS = `
 
 const JS_CALLS = `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (member_expression property: (property_identifier) @call.callee))
+; Member calls are captured separately (issue #1894 review): obj.save()'s
+; \`save\` must never bind a bare visible symbol — method dispatch is
+; Phase B (LSP) territory. The emit layer marks these memberAccess: true.
+(call_expression function: (member_expression property: (property_identifier) @call.member))
 `.trim();
 
 const JS_ROUTES = `
@@ -235,7 +245,7 @@ const GO_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (selector_expression field: (field_identifier) @call.callee))
+(call_expression function: (selector_expression field: (field_identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -271,7 +281,7 @@ const RUST_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (field_expression field: (field_identifier) @call.callee))
+(call_expression function: (field_expression field: (field_identifier) @call.member))
 (call_expression function: (scoped_identifier) @call.callee)
 `.trim(),
   routesQuery: ``,
@@ -331,7 +341,7 @@ const CPP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (field_expression field: (field_identifier) @call.callee))
+(call_expression function: (field_expression field: (field_identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -390,7 +400,7 @@ const PHP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (function_call_expression function: (name) @call.callee)
-(member_call_expression (name) @call.callee)
+(member_call_expression (name) @call.member)
 `.trim(),
   routesQuery: ``,
 };

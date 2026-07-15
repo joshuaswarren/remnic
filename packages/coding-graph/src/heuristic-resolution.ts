@@ -71,6 +71,8 @@ export interface HeuristicResolutionStats {
   readonly skippedAmbiguous: number;
   /** Call sites with no enclosing symbol (module-level calls). */
   readonly skippedNoEnclosingSymbol: number;
+  /** Member/property calls — Phase B (LSP) territory, never bare-bound. */
+  readonly skippedMemberAccess: number;
 }
 
 /** A FileIR enriched with the store-consumable edge assertions. */
@@ -94,6 +96,7 @@ export function deriveHeuristicEdges(
   let skippedUnresolved = 0;
   let skippedAmbiguous = 0;
   let skippedNoEnclosingSymbol = 0;
+  let skippedMemberAccess = 0;
 
   const files: ResolvedFileIR[] = [];
 
@@ -140,12 +143,22 @@ export function deriveHeuristicEdges(
     // specifiers bind (an external package's names must never resolve to
     // in-repo symbols); the hint travels on the edge so the store resolves
     // the dst ONLY within the declared target file (#1894 review).
-    const importBindings = new Map<string, string>();
+    const importBindings = new Map<string, { exported: string; hint: string }>();
     for (const imp of ir.imports) {
       if (!imp.module.startsWith("./") && !imp.module.startsWith("../")) continue;
       const joined = posix.join(posix.dirname(ir.path), imp.module);
       const hint = joined.replace(/\.[cm]?[jt]sx?$/, "");
-      for (const name of imp.importedNames) importBindings.set(name, hint);
+      // A normalized hint still starting with "../" escapes the repo root:
+      // files.path values are canonical (no ".." segments), so such an
+      // edge could never resolve — skip the binding here so the call site
+      // is honestly counted as unresolved instead of emitting a
+      // guaranteed-dead edge (cursor review on #1894).
+      if (hint.startsWith("../")) continue;
+      // Alias-aware (codex review on #1894): call sites use the LOCAL
+      // identifier; the dst in the target file is the EXPORTED name.
+      const bindings =
+        imp.bindings ?? imp.importedNames.map((name) => ({ exported: name, local: name }));
+      for (const b of bindings) importBindings.set(b.local, { exported: b.exported, hint });
     }
 
     const edges: EdgeIR[] = [];
@@ -153,6 +166,14 @@ export function deriveHeuristicEdges(
 
     for (const site of ir.callSites) {
       callSites += 1;
+
+      // Member/property calls (obj.save()) never bind bare names in
+      // Phase A: the receiver decides the target, and only Phase B (LSP)
+      // can resolve dispatch (codex review on #1894).
+      if (site.memberAccess === true) {
+        skippedMemberAccess += 1;
+        continue;
+      }
 
       // src: innermost enclosing symbol (smallest containing span).
       let src: { qualifiedName: string; size: number } | undefined;
@@ -205,10 +226,10 @@ export function deriveHeuristicEdges(
           sawAmbiguous = true;
           continue;
         }
-        const hint = importBindings.get(candidate);
-        if (hint !== undefined) {
-          dstQualifiedName = candidate;
-          dstPathHint = hint;
+        const binding = importBindings.get(candidate);
+        if (binding !== undefined) {
+          dstQualifiedName = binding.exported;
+          dstPathHint = binding.hint;
           confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;
           break;
         }
@@ -244,6 +265,7 @@ export function deriveHeuristicEdges(
       skippedUnresolved,
       skippedAmbiguous,
       skippedNoEnclosingSymbol,
+      skippedMemberAccess,
     },
   };
 }

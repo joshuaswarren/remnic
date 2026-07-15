@@ -295,9 +295,9 @@ test("external-package imports never bind bare names (no false in-repo edges)", 
   assert.equal(stats.skippedUnresolved, 1);
 });
 
-test("relative-module imports still bind (in-repo resolvable)", () => {
+test("relative-module imports bind with a normalized in-repo hint", () => {
   const ir = fileIR({
-    path: "util.ts",
+    path: "src/util.ts",
     symbols: [
       { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
     ],
@@ -307,7 +307,65 @@ test("relative-module imports still bind (in-repo resolvable)", () => {
   const result = deriveHeuristicEdges([ir]);
   assert.equal(firstFile(result).edges.length, 1);
   assert.equal(firstFile(result).edges[0]?.confidence, HEURISTIC_CONFIDENCE_IMPORT_BOUND);
-  assert.equal(firstFile(result).edges[0]?.dstPathHint, "../lib/main");
+  assert.equal(firstFile(result).edges[0]?.dstPathHint, "lib/main");
+});
+
+test("an import escaping the repo root never binds (cursor review)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+    ],
+    // dirname("util.ts") = "." so ../lib escapes the repo root — files.path
+    // is canonical and can never match a "../" hint.
+    imports: [{ module: "../lib/main.js", importedNames: ["greet"], span: span(0, 29) }],
+    callSites: [{ calleeNameCandidates: ["greet"], span: span(60, 67) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(firstFile(result).edges, []);
+  assert.equal(stats.skippedUnresolved, 1);
+});
+
+test("member-access call sites never bind bare names (codex review)", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "function", name: "run", qualifiedName: "run", span: span(0, 90) },
+      { kind: "function", name: "connect", qualifiedName: "connect", span: span(100, 150) },
+    ],
+    // client.connect() — the property name matches a visible bare symbol
+    // but the receiver decides the target; Phase A must skip it.
+    callSites: [{ calleeNameCandidates: ["connect"], memberAccess: true, span: span(30, 40) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(firstFile(result).edges, []);
+  assert.equal(stats.skippedMemberAccess, 1);
+});
+
+test("aliased imports bind by local name and emit the exported dst (codex review)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+    ],
+    imports: [
+      {
+        module: "./main",
+        importedNames: ["greet"],
+        bindings: [{ exported: "greet", local: "salute" }],
+        span: span(0, 29),
+      },
+    ],
+    // Call site uses the LOCAL alias...
+    callSites: [{ calleeNameCandidates: ["salute"], span: span(60, 68) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.equal(firstFile(result).edges.length, 1);
+  // ...but the edge's dst is the EXPORTED name in the target file.
+  assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
+  assert.equal(firstFile(result).edges[0]?.dstPathHint, "main");
 });
 
 test("an ambiguous first candidate does not block a later candidate's import binding (cursor review)", () => {
