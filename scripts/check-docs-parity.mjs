@@ -130,6 +130,9 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
   "--judge-codex-reasoning-effort",
 ]);
 
+const BUILD_WEEK_CREDIT_GUARD_LINE_RE =
+  /^\s*(?:export\s+)?REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
+
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in
 // prose, tables, or list items. Inline code in this repo references
@@ -372,7 +375,7 @@ function extractLogicalShellCommands(src) {
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
     if (!shellLangs.has(block.lang)) continue;
-    const guardAt = block.text.indexOf("REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473");
+    const guardAt = block.text.search(BUILD_WEEK_CREDIT_GUARD_LINE_RE);
     const firstRunAt = block.text.search(/\bremnic\s+bench\s+run\b/);
     const guardedBuildWeekBlock = guardAt >= 0 && firstRunAt >= 0 && guardAt < firstRunAt;
     const logical = block.text.replace(/\\\s*\n/g, " ");
@@ -449,7 +452,7 @@ function checkBuildWeekCodexDatasetPaths() {
     const src = readFileSync(abs, "utf8");
     const creditGuardLine = src
       .split("\n")
-      .findIndex((line) => line.includes("REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473")) + 1;
+      .findIndex((line) => BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line)) + 1;
     let checkedInDoc = 0;
     for (const { command, guardedBuildWeekBlock, blockStartLine } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
