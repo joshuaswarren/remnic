@@ -682,7 +682,17 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     assert.equal((await chatGptAuthed.complete("hello")).text, "answer");
     const ledger = JSON.parse(
       await readFile(path.join(directory, "ledger.json"), "utf8"),
-    ) as { entries: Array<{ inputTokens: number; cachedInputTokens: number }> };
+    ) as {
+      entries: Array<{
+        at: string;
+        model: string;
+        credits: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      }>;
+    };
     assert.deepEqual(ledger.entries[0], {
       at: ledger.entries[0]?.at,
       model: "gpt-5.6-luna",
