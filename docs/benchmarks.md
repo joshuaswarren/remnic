@@ -443,6 +443,10 @@ The attached artifact records
 `judge-calibrate` deliberately uses this dedicated checkpoint rather than the
 general `--judge-cache-dir`: resumed outputs are reported separately from fresh
 judge calls and are never mislabeled as ordinary cache hits.
+`judge-calibrate` currently measures the default scalar judge prompt. Therefore
+AMA-Bench runs using `--ama-bench-judge-protocol recommended` do not attach that
+κ; supplying calibration pins to such a run fails before model dispatch rather
+than stamping default-prompt agreement onto a binary-protocol artifact.
 A kappa below **0.7** renders a loud "local judge unreliable for this
 benchmark" warning in the report and on the artifact. The calibration
 slice is question-ids-only — no dataset content is committed (per the

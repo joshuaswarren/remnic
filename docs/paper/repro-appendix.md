@@ -426,6 +426,10 @@ An exclusive lock spans initialization, paid-call reservation, and updates;
 concurrent or stale locks fail safe. Its complete source, slice, actual prompt,
 binning, and judge-configuration contract must match or the command fails closed
 before either judge runs.
+The current calibration command measures the default scalar judge prompt only.
+AMA-Bench artifacts produced with `--ama-bench-judge-protocol recommended`
+therefore omit this calibration attachment; explicit calibration pins on that
+protocol fail before dispatch.
 
 ### A.3.7 Build, verify, and promote the artifact
 

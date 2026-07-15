@@ -1032,6 +1032,7 @@ Options:
                            Codex CLI reasoning effort for Remnic's internal LLM
   --ama-bench-judge-protocol <default|recommended>
                            For ama-bench, use the recommended binary LLM-judge protocol
+                           (default-protocol calibration is not attached to recommended runs)
   --ama-bench-cross-judge-model <model>
                            For ama-bench, add a second recommended-protocol judge for agreement checks
   --ama-bench-cross-judge-provider <provider>
@@ -3567,13 +3568,25 @@ export async function preparePersistedJudgeCalibrationAttachment(
   benchmarkId: string,
   runJudgeProvider: PackageBenchProviderConfig | null | undefined,
   calibrationBinding: Pick<ParsedBenchArgs,
-    "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256"
+    "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256" |
+    "amaBenchJudgeProtocol"
   >,
 ): Promise<PreparedJudgeCalibrationAttachment | undefined> {
   const hasLocalPin = Boolean(calibrationBinding.calibrationLocalConfigSha256);
   const hasFrontierPin = Boolean(calibrationBinding.calibrationFrontierConfigSha256);
   const hasAnyPin = hasLocalPin || hasFrontierPin;
   const hasBothPins = hasLocalPin && hasFrontierPin;
+  if (
+    benchmarkId === "ama-bench" &&
+    calibrationBinding.amaBenchJudgeProtocol === "recommended"
+  ) {
+    if (hasAnyPin) {
+      throw new Error(
+        "AMA-Bench recommended-protocol runs cannot attach default-protocol judge calibration; remove both calibration pins or calibrate the recommended prompt contract separately.",
+      );
+    }
+    return undefined;
+  }
   if (hasAnyPin && !hasBothPins) {
     throw new Error(
       "--calibration-local-config-sha256 and --calibration-frontier-config-sha256 must be supplied together.",
