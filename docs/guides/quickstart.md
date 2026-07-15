@@ -35,6 +35,11 @@ state. It reads the service definition and port directly, so it works even when 
 daemon process is down. For auto-start, logs, and port changes, see
 [Daemon management](./daemon-management.md).
 
+To let Remnic *extract* new memories (not just recall), give it a model provider:
+put your OpenAI API key — or local-LLM settings — in `~/.config/remnic/config.json`.
+The managed service reads secrets from that file, not from your shell environment.
+See [Getting started](../getting-started.md#configure) for the config shape.
+
 ## Step 3: Connect your tool
 
 Register a connector for each AI tool you use:

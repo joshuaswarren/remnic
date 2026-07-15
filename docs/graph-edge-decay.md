@@ -47,10 +47,10 @@ all elapsed windows in a single pass, so the job is idempotent — running it tw
 with the same timestamp is a no-op.
 
 When an edge is observed during extraction (e.g., two memories share a named
-entity), the reinforcement primitive resets `lastReinforcedAt` to `now` and bumps
-`confidence` by the default reinforcement delta (`0.05`), capped at `1.0`. Repeated
-co-occurrence can recover confidence that previously decayed, but it cannot push an
-edge above the ceiling.
+entity), the reinforcement primitive resets `lastReinforcedAt` to `now` and
+bumps `confidence` by the default reinforcement delta (`0.05`), capped at
+`1.0`. Repeated co-occurrence can recover confidence that previously decayed,
+but it cannot push an edge above the ceiling.
 
 **Confidence floor** — edges whose confidence drops to or below the configured
 `graphEdgeDecayFloor` are never decayed further. They remain in the graph but will

@@ -31,35 +31,49 @@ This installs the `remnic` command and the bundled `@remnic/server` the daemon r
 A legacy `engram` binary is installed alongside as a forwarder during the v1.x rename
 window.
 
-Create the daemon's config, set your secrets, then install the background service:
+Create the daemon's config, put your secrets in it, then install the background
+service:
 
 ```bash
 mkdir -p ~/.config/remnic
 remnic init                                  # scaffold a config to copy from
 cp remnic.config.json ~/.config/remnic/config.json
-export OPENAI_API_KEY=sk-...
-export REMNIC_AUTH_TOKEN=$(openssl rand -hex 32)
+# Edit ~/.config/remnic/config.json and replace the ${OPENAI_API_KEY} and
+# ${REMNIC_AUTH_TOKEN} placeholders with real values (e.g. a fresh
+# `openssl rand -hex 32` for the token).
 remnic daemon install                        # write service file, enable, start
 remnic status                                # confirm it is running
 ```
 
-`remnic init` writes a starter `remnic.config.json` in the current directory. The
-managed daemon looks for config at `~/.config/remnic/config.json` (it runs outside your
-shell's working directory), so copy it there — or point the service at any path with
-`REMNIC_CONFIG_PATH`. See [Configure](#configure) for the file shape.
+`remnic init` writes a starter `remnic.config.json` in the current directory with
+`${OPENAI_API_KEY}` and `${REMNIC_AUTH_TOKEN}` placeholders. **The managed service
+does not inherit your shell environment** — launchd/systemd only pass `PATH` and
+`REMNIC_CONFIG_PATH` to the daemon, and placeholders are not expanded — so put the
+real values in the config file (or add them to the service environment yourself).
+Shell `export`s work only for a foreground `remnic daemon start` in the same
+session. The managed daemon looks for config at `~/.config/remnic/config.json`
+(it runs outside your shell's working directory), so copy it there — or point the
+service at any path with `REMNIC_CONFIG_PATH`. See [Configure](#configure) for the
+file shape.
 
 ### Option B: OpenClaw plugin
 
-If you run the [OpenClaw](https://github.com/openclaw/openclaw) gateway, install Remnic
-as its memory plugin. One command configures everything:
+If you run the [OpenClaw](https://github.com/openclaw/openclaw) gateway, install
+Remnic as its memory plugin:
 
 ```bash
-remnic openclaw install
+openclaw plugins install clawhub:@remnic/plugin-openclaw   # 1. install the plugin package
+remnic openclaw install                                    # 2. wire the memory slot
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway    # 3. restart the gateway (macOS)
+remnic doctor                                              # 4. verify every check passes
 ```
 
-This sets both `plugins.entries."openclaw-remnic"` and `plugins.slots.memory` in
-`~/.openclaw/openclaw.json` (or `$OPENCLAW_CONFIG_PATH`), then restarts the gateway.
-Use `--dry-run` first to preview the config diff, or `--yes` to skip prompts.
+`remnic openclaw install` sets both `plugins.entries."openclaw-remnic"` and
+`plugins.slots.memory` in `~/.openclaw/openclaw.json` (or `$OPENCLAW_CONFIG_PATH`) —
+it does not download the plugin package itself, so run the `openclaw plugins install`
+step first. Config changes only take effect after a full gateway restart (on Linux,
+restart your gateway service, e.g. `systemctl restart openclaw-gateway`). Use
+`--dry-run` to preview the config diff, or `--yes` to skip prompts.
 
 Migrating from the old `@joshuaswarren/openclaw-engram` plugin? Run
 `remnic openclaw migrate-engram`, which backs up the legacy extension before switching
