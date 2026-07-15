@@ -132,6 +132,7 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
 
 const BUILD_WEEK_CREDIT_GUARD_LINE_RE =
   /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
+const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
 // from inside fences — NOT from inline code spans (`remnic <cmd>`) in
@@ -363,18 +364,9 @@ function extractRemnicInvocations(relPath, src) {
  * @returns {Array<{ command: string; guardedBuildWeekBlock: boolean; blockStartLine: number }>}
  */
 function extractLogicalShellCommands(src) {
-  const shellLangs = new Set([
-    "",
-    "bash",
-    "sh",
-    "shell",
-    "shell-session",
-    "zsh",
-    "console",
-  ]);
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
-    if (!shellLangs.has(block.lang)) continue;
+    if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
     const guardAt = block.text.search(BUILD_WEEK_CREDIT_GUARD_LINE_RE);
     let firstRunAt = -1;
     let offset = 0;
@@ -398,6 +390,26 @@ function extractLogicalShellCommands(src) {
     }
   }
   return commands;
+}
+
+/**
+ * Return absolute Markdown line numbers for executable credit-budget exports.
+ * Prose and non-shell fences must not authorize a later copy-pasteable command.
+ *
+ * @param {string} src
+ * @returns {number[]}
+ */
+function extractShellCreditGuardLines(src) {
+  const guardLines = [];
+  for (const block of extractFencedBlocks(src)) {
+    if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
+    for (const [index, line] of block.text.split("\n").entries()) {
+      if (BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line)) {
+        guardLines.push(block.startLine + 1 + index);
+      }
+    }
+  }
+  return guardLines;
 }
 
 /**
@@ -461,9 +473,7 @@ function checkBuildWeekCodexDatasetPaths() {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
-    const creditGuardLine = src
-      .split("\n")
-      .findIndex((line) => BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line)) + 1;
+    const creditGuardLines = extractShellCreditGuardLines(src);
     let checkedInDoc = 0;
     for (const { command, guardedBuildWeekBlock, blockStartLine } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
@@ -475,7 +485,7 @@ function checkBuildWeekCodexDatasetPaths() {
       checked += 1;
       checkedInDoc += 1;
       const creditGuardPrecedesCommand =
-        guardedBuildWeekBlock || (creditGuardLine > 0 && creditGuardLine < blockStartLine);
+        guardedBuildWeekBlock || creditGuardLines.some((line) => line < blockStartLine);
       if (!creditGuardPrecedesCommand) {
         failures.push(
           `${rel}: Build Week Codex command must follow a shell export of ` +
