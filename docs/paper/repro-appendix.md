@@ -392,17 +392,45 @@ remnic bench judge-calibrate \
   --local-lab-manifest ~/bench/local-lab.json \
   --judge-provider <frontier-provider> \
   --judge-model <frontier-judge-model> \
-  --results-dir ~/.remnic/bench/results
+  --results-dir ~/.remnic/bench/results \
+  --calibration-dir ~/.remnic/bench/calibration \
+  --source-result-id <exact-full-result-id> \
+  --expected-answer-set-sha256 <sha256> \
+  --expected-question-id-list-sha256 <sha256> \
+  --local-judge-request-timeout 180000 \
+  --frontier-judge-request-timeout 600000
 ```
 
-The κ lands on the next `remnic bench run` artifact for that benchmark
-(only when the run's judge matches the calibrated pair). Absent calibration
+The κ lands on a later `remnic bench run` artifact for that benchmark only when
+the run supplies the same `--calibration-dir` and both configuration hashes
+reported by `judge-calibrate --json` via
+`--calibration-local-config-sha256` and
+`--calibration-frontier-config-sha256` (and the run's judge matches the
+calibrated local judge). For baseline/real responder profiles, also pass the
+same `--local-lab-manifest` and the same local judge timeout as
+`--request-timeout`; the manifest is the source of normalized base URL,
+temperature, and seed, while explicit `--judge-provider`, `--judge-model`, and
+`--judge-base-url` flags are checked as identity assertions before dispatch.
+Any `--max-429-wait` value or `--disable-thinking` flag used by the later run
+must also be supplied identically to `judge-calibrate`; both surfaces resolve
+and hash the same fully overlaid local-judge configuration. Within calibration,
+the shared 429-wait and disable-thinking overlays apply to both judge calls.
+Absent calibration
 is the common case — the result is written unchanged. The command selects a
 deterministic 200-question slice (or all available questions when fewer than
 200 exist), pins the source result, question IDs, and exact answer-set hash,
 and reports a deterministic 2,000-resample paired-bootstrap 95% confidence
 interval. Re-running calibration reuses the pinned answer payload instead of
-silently selecting whichever stored answers are newest.
+silently selecting whichever stored answers are newest. An atomic 0600
+checkpoint records each completed judge side and resumes only missing calls.
+An exclusive lock spans initialization, paid-call reservation, and updates;
+concurrent or stale locks fail safe. Its complete source, slice, actual prompt,
+binning, and judge-configuration contract must match or the command fails closed
+before either judge runs.
+The current calibration command measures the default scalar judge prompt only.
+AMA-Bench artifacts produced with `--ama-bench-judge-protocol recommended`
+therefore omit this calibration attachment; explicit calibration pins on that
+protocol fail before dispatch.
 
 ### A.3.7 Build, verify, and promote the artifact
 

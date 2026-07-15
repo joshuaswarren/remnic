@@ -399,9 +399,29 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // production consumer — the run path loads persisted calibration and
   // attaches it to the stored result so subsequent artifacts carry the kappa.
   assert.match(source, /loadJudgeCalibrationState\?:/);
-  assert.match(source, /async function attachPersistedJudgeCalibration\(/);
-  assert.match(source, /await attachPersistedJudgeCalibration\(benchModule, benchmarkId, result\);/);
-  assert.match(source, /judgeCalibration: \{/);
+  assert.match(source, /async function preparePersistedJudgeCalibrationAttachment\(/);
+  assert.match(source, /const judgeCalibration = await preparePersistedJudgeCalibrationAttachment\(/);
+  assert.match(source, /attachPreparedJudgeCalibration\(result, judgeCalibration\);/);
+  assert.match(source, /calibrationBinding\.calibrationDir \?\?/);
+  assert.match(source, /calibrationBinding\.calibrationLocalConfigSha256 !== state\.localJudgeConfigHash/);
+  assert.match(source, /calibrationBinding\.calibrationFrontierConfigSha256 !== state\.frontierJudgeConfigHash/);
+  const prepareIndex = source.indexOf(
+    "const judgeCalibration = await preparePersistedJudgeCalibrationAttachment(",
+  );
+  const endpointPreflightIndex = source.indexOf(
+    "await preflightLocalLabEndpointsIfNeeded(benchModule, plan);",
+    prepareIndex,
+  );
+  const adapterIndex = source.indexOf("await plan.createAdapter({", prepareIndex);
+  const benchmarkIndex = source.indexOf(
+    "await benchModule.runBenchmark(benchmarkId, {",
+    prepareIndex,
+  );
+  assert.ok(prepareIndex >= 0);
+  assert.ok(prepareIndex < endpointPreflightIndex);
+  assert.ok(prepareIndex < adapterIndex);
+  assert.ok(prepareIndex < benchmarkIndex);
+  assert.match(source, /judgeCalibration,/);
 
   // P2 (codex): persisted kappa is bound to the calibrated judge pair. The
   // judge-calibrate command records the local + frontier judge identities,
@@ -410,9 +430,10 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // stored frontier identity must NOT inherit the local judge's kappa
   // (cursor Low + codex P2 review).
   assert.match(source, /calibrationIdentities = \{/);
-  assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id/);
-  assert.match(source, /if \(!matchesLocal\) \{/);
-  assert.match(source, /state\.localJudgeModel !== undefined && state\.frontierJudgeModel !== undefined/);
+  assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id,[\s\S]*localJudgeConfigHash,[\s\S]*frontierJudgeConfigHash/);
+  assert.match(source, /getProviderBackedJudgePromptIdentity\(localJudgeConfig\)/);
+  assert.match(source, /if \(!matchesLocal\) \{[\s\S]*if \(hasBothPins\)[\s\S]*return undefined;/);
+  assert.match(source, /state\.localJudgeProvider !== undefined && state\.localJudgeModel !== undefined/);
 
   // P2 (codex): limited full runs (--limit 1) are rejected before calibrating
   // so a one-sample κ cannot be persisted.
@@ -424,19 +445,482 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /const knownBenchmarkIds = await resolveKnownBenchmarkIds\(\);/);
   assert.match(source, /if \(!knownBenchmarkIds\.has\(benchmarkId\)\)/);
 
-  // P2 (codex): calibration candidates are filtered to full runs so a stale
-  // 1-task quick result cannot seed a meaningless kappa, AND a partial full
-  // run is skipped in favor of an older complete run.
+  // Calibration accepts only the explicitly pinned full result; it never
+  // auto-selects a newer result or falls back from a partial source.
   assert.match(source, /\.filter\(\(entry\) => entry\.mode === "full"\)/);
   assert.match(source, /loaded\.meta\.status === "partial"/);
-  assert.match(source, /candidateResult\.meta\.status !== "partial"/);
 
-  // #1877: once selected, calibration reuses the exact stored result instead
-  // of drifting to whichever cached answers are newest.
-  assert.match(source, /const pinnedSourceId = previousCalibration\?\.sourceResultId/);
+  // #1877: the operator pins source and both payload hashes before any call;
+  // independent timeout controls are propagated to the two judge configs.
+  assert.match(source, /const pinnedSourceId = parsed\.sourceResultId/);
   assert.match(source, /entry\.id === pinnedSourceId/);
-  assert.match(source, /\{ sourceResultId: loaded\.meta\.id \}/);
+  assert.match(source, /expectedAnswerSetHash: parsed\.expectedAnswerSetSha256/);
+  assert.match(source, /orderedQuestionIdsHash !== parsed\.expectedQuestionIdListSha256/);
+  assert.match(source, /requestTimeout: parsed\.localJudgeRequestTimeout/);
+  assert.match(source, /max429WaitMs: parsed\.max429WaitMs/);
+  assert.match(source, /disableThinking: parsed\.disableThinking/);
+  assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
+  assert.match(source, /checkpoint: \{/);
+  assert.match(source, /\{ sourceResultId: loaded\.meta\.id, localJudgeConfigHash, frontierJudgeConfigHash \}/);
   assert.match(source, /bootstrap CI/);
+});
+
+test("custom calibration directory and both config hashes bind attachment end to end", async () => {
+  const {
+    attachPreparedJudgeCalibration,
+    hashCalibrationProviderConfig,
+    preparePersistedJudgeCalibrationAttachment,
+  } = await import("../packages/remnic-cli/src/index.ts");
+  const customDir = join(tmpdir(), "exact-private-calibration");
+  const localConfig = {
+    provider: "ollama",
+    model: "judge",
+    baseUrl: "http://127.0.0.1:11434",
+    retryOptions: { timeoutMs: 60_000 },
+    temperature: 0,
+    seed: 47,
+  };
+  const localHash = hashCalibrationProviderConfig(localConfig);
+  const frontierHash = "b".repeat(64);
+  let loadedDir: string | undefined;
+  const benchModule = {
+    async loadJudgeCalibrationState(_benchmarkId: string, calibrationDir: string) {
+      loadedDir = calibrationDir;
+      return {
+        kappa: 0.81,
+        sampleSize: 2,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeModel: "judge",
+        frontierJudgeProvider: "openai",
+        frontierJudgeModel: "gpt-5.6",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  const result: {
+    config: {
+      benchmarkOptions?: Record<string, unknown>;
+      judgeProvider: { provider: string; model: string };
+    };
+  } = { config: { judgeProvider: localConfig } };
+  const prepared = await preparePersistedJudgeCalibrationAttachment(
+    benchModule as never,
+    "locomo",
+    localConfig,
+    {
+      calibrationDir: customDir,
+      calibrationLocalConfigSha256: localHash,
+      calibrationFrontierConfigSha256: frontierHash,
+    },
+  );
+  attachPreparedJudgeCalibration(result, prepared);
+  assert.equal(loadedDir, customDir);
+  assert.deepEqual(result.config.benchmarkOptions?.judgeCalibration, {
+    kappa: 0.81,
+    sampleSize: 2,
+    threshold: 0.7,
+    warning: false,
+    localJudgeConfigHash: localHash,
+    frontierJudgeConfigHash: frontierHash,
+  });
+});
+
+test("frontier calibration config preserves timeout, 429, and thinking overlays", async () => {
+  const { buildCalibrationFrontierJudgeConfig } = await import(
+    "../packages/remnic-cli/src/index.ts"
+  );
+
+  assert.deepEqual(
+    buildCalibrationFrontierJudgeConfig({
+      judgeProvider: "claude-cli",
+      judgeModel: "opus",
+      judgeBaseUrl: "http://127.0.0.1:9000",
+      judgeApiKey: "private",
+      frontierJudgeRequestTimeout: 600_000,
+      max429WaitMs: 30_000,
+      disableThinking: true,
+    }),
+    {
+      provider: "claude-cli",
+      model: "opus",
+      baseUrl: "http://127.0.0.1:9000",
+      apiKey: "private",
+      retryOptions: { timeoutMs: 600_000, max429WaitMs: 30_000 },
+      disableThinking: true,
+    },
+  );
+  assert.deepEqual(
+    buildCalibrationFrontierJudgeConfig({
+      judgeProvider: "openai",
+      judgeModel: "gpt-5.6",
+    }),
+    { provider: "openai", model: "gpt-5.6" },
+  );
+  assert.throws(
+    () => buildCalibrationFrontierJudgeConfig({ judgeProvider: "openai" }),
+    /requires both --judge-provider and --judge-model/,
+  );
+});
+
+test("Tier-F runbook binds baseline runs to the same manifest judge configuration", async () => {
+  const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const script = await readFile("scripts/bench/run-tierf-opus.sh", "utf8");
+
+  assert.match(source, /localLabManifestPath: parsed\.localLabManifestPath/);
+  assert.match(source, /bench\.resolveLocalLabJudgeProviderConfig\(\{/);
+  for (const benchmark of ["longmemeval", "locomo"]) {
+    const commandStart = script.indexOf(`run ${benchmark} \\\n`);
+    assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command`);
+    const commandEnd = script.indexOf("2>&1 | tee", commandStart);
+    const command = script.slice(commandStart, commandEnd);
+    assert.match(command, /--runtime-profile baseline/);
+    assert.match(command, /--local-lab-manifest "\$MANIFEST"/);
+    assert.match(command, /--request-timeout 180000/);
+    assert.match(command, /"\$\{JUDGE_ARGS\[@\]\}"/);
+    assert.match(command, /--calibration-local-config-sha256/);
+    assert.match(command, /--calibration-frontier-config-sha256/);
+  }
+});
+
+test("frontier and unrelated runs ignore local calibration state without requiring pins", async () => {
+  const { preparePersistedJudgeCalibrationAttachment } = await import(
+    "../packages/remnic-cli/src/index.ts"
+  );
+  const state = {
+    kappa: 0.81,
+    sampleSize: 2,
+    threshold: 0.7,
+    warning: false,
+    localJudgeProvider: "ollama",
+    localJudgeModel: "local-judge",
+    frontierJudgeProvider: "openai",
+    frontierJudgeModel: "gpt-5.6",
+    localJudgeConfigHash: "a".repeat(64),
+    frontierJudgeConfigHash: "b".repeat(64),
+  };
+  const benchModule = {
+    async loadJudgeCalibrationState() {
+      return state;
+    },
+  };
+  for (const runJudgeProvider of [
+    { provider: "openai", model: "gpt-5.6" },
+    { provider: "anthropic", model: "claude-opus-4-6" },
+  ]) {
+    assert.equal(
+      await preparePersistedJudgeCalibrationAttachment(
+        benchModule as never,
+        "locomo",
+        runJudgeProvider,
+        {},
+      ),
+      undefined,
+    );
+  }
+});
+
+test("identity-incomplete calibration state uses the resolved config hash for eligibility", async () => {
+  const {
+    hashCalibrationProviderConfig,
+    preparePersistedJudgeCalibrationAttachment,
+  } = await import("../packages/remnic-cli/src/index.ts");
+  const localConfig = {
+    provider: "ollama",
+    model: "local-judge",
+    baseUrl: "http://127.0.0.1:11434",
+    temperature: 0,
+  };
+  const localHash = hashCalibrationProviderConfig(localConfig);
+  const frontierHash = "b".repeat(64);
+  const benchModule = {
+    async loadJudgeCalibrationState() {
+      return {
+        kappa: 0.81,
+        sampleSize: 200,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  const pins = {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  };
+
+  assert.equal(
+    await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "openai", model: "gpt-5.6" },
+      {},
+    ),
+    undefined,
+  );
+  await assert.rejects(
+    () => preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "openai", model: "gpt-5.6" },
+      pins,
+    ),
+    /refusing to ignore explicit pins/,
+  );
+  await assert.rejects(
+    () => preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      localConfig,
+      {},
+    ),
+    /are required to attach/,
+  );
+  const prepared = await preparePersistedJudgeCalibrationAttachment(
+    benchModule as never,
+    "locomo",
+    localConfig,
+    pins,
+  );
+  assert.equal(prepared?.localJudgeConfigHash, localHash);
+  assert.equal(prepared?.frontierJudgeConfigHash, frontierHash);
+});
+
+test("AMA-Bench recommended protocol never inherits default-protocol calibration", async () => {
+  const {
+    hashCalibrationProviderConfig,
+    preparePersistedJudgeCalibrationAttachment,
+  } = await import("../packages/remnic-cli/src/index.ts");
+  const localConfig = {
+    provider: "ollama",
+    model: "local-judge",
+    baseUrl: "http://127.0.0.1:11434",
+    temperature: 0,
+  };
+  const localHash = hashCalibrationProviderConfig(localConfig);
+  const frontierHash = "b".repeat(64);
+  let loadCalls = 0;
+  const benchModule = {
+    async loadJudgeCalibrationState() {
+      loadCalls += 1;
+      return {
+        kappa: 0.81,
+        sampleSize: 200,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeModel: "local-judge",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  const pins = {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  };
+
+  assert.equal(
+    await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "ama-bench",
+      localConfig,
+      { amaBenchJudgeProtocol: "recommended" },
+    ),
+    undefined,
+  );
+  await assert.rejects(
+    () => preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "ama-bench",
+      localConfig,
+      { ...pins, amaBenchJudgeProtocol: "recommended" },
+    ),
+    /cannot attach default-protocol judge calibration/,
+  );
+  assert.equal(loadCalls, 0);
+
+  const prepared = await preparePersistedJudgeCalibrationAttachment(
+    benchModule as never,
+    "ama-bench",
+    localConfig,
+    { ...pins, amaBenchJudgeProtocol: "default" },
+  );
+  assert.equal(prepared?.localJudgeConfigHash, localHash);
+  assert.equal(loadCalls, 1);
+});
+
+test("explicit calibration pins fail closed when state is unavailable or targets another judge", async () => {
+  const { preparePersistedJudgeCalibrationAttachment } = await import(
+    "../packages/remnic-cli/src/index.ts"
+  );
+  const localHash = "a".repeat(64);
+  const frontierHash = "b".repeat(64);
+  const pins = {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  };
+  let loadCalls = 0;
+  let benchmarkCalls = 0;
+  let modelCalls = 0;
+  const unavailableBenchModule = {
+    async loadJudgeCalibrationState() {
+      loadCalls += 1;
+      return undefined;
+    },
+  };
+  const guardedRun = async (
+    benchModule: object,
+    binding: {
+      calibrationLocalConfigSha256?: string;
+      calibrationFrontierConfigSha256?: string;
+    },
+  ) => {
+    const prepared = await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "ollama", model: "local-judge" },
+      binding,
+    );
+    benchmarkCalls += 1;
+    modelCalls += 1;
+    return prepared;
+  };
+
+  await assert.rejects(
+    () => guardedRun(unavailableBenchModule, pins),
+    /no valid calibration state could be loaded/,
+  );
+  await assert.rejects(
+    () => guardedRun({}, pins),
+    /no valid calibration state could be loaded/,
+  );
+  assert.equal(
+    await guardedRun(unavailableBenchModule, {}),
+    undefined,
+  );
+  for (const binding of [
+    { calibrationLocalConfigSha256: localHash },
+    { calibrationFrontierConfigSha256: frontierHash },
+  ]) {
+    await assert.rejects(
+      () => guardedRun(unavailableBenchModule, binding),
+      /must be supplied together/,
+    );
+  }
+  assert.equal(loadCalls, 2);
+
+  const localStateBenchModule = {
+    async loadJudgeCalibrationState() {
+      return {
+        kappa: 0.81,
+        sampleSize: 200,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeModel: "different-local-judge",
+        frontierJudgeProvider: "openai",
+        frontierJudgeModel: "gpt-5.6",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  await assert.rejects(
+    () => guardedRun(localStateBenchModule, pins),
+    /refusing to ignore explicit pins/,
+  );
+  assert.equal(benchmarkCalls, 1);
+  assert.equal(modelCalls, 1);
+});
+
+test("missing, stale, and resolved-config calibration failures occur before benchmark or model calls", async () => {
+  const {
+    hashCalibrationProviderConfig,
+    preparePersistedJudgeCalibrationAttachment,
+  } = await import("../packages/remnic-cli/src/index.ts");
+  const localConfig = {
+    provider: "ollama",
+    model: "local-judge",
+    baseUrl: "http://127.0.0.1:11434",
+    retryOptions: { timeoutMs: 60_000 },
+    temperature: 0,
+    seed: 47,
+  };
+  const localHash = hashCalibrationProviderConfig(localConfig);
+  const frontierHash = "b".repeat(64);
+  const benchModule = {
+    async loadJudgeCalibrationState() {
+      return {
+        kappa: 0.81,
+        sampleSize: 2,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeModel: "local-judge",
+        frontierJudgeProvider: "openai",
+        frontierJudgeModel: "gpt-5.6",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  let benchmarkCalls = 0;
+  let modelCalls = 0;
+  const guardedRun = async (
+    runJudgeProvider: typeof localConfig,
+    binding: {
+      calibrationLocalConfigSha256?: string;
+      calibrationFrontierConfigSha256?: string;
+    },
+  ) => {
+    const prepared = await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      runJudgeProvider,
+      binding,
+    );
+    benchmarkCalls += 1;
+    modelCalls += 1;
+    return prepared;
+  };
+
+  await assert.rejects(() => guardedRun(localConfig, {}), /are required to attach/);
+  await assert.rejects(
+    () => guardedRun(localConfig, {
+      calibrationLocalConfigSha256: "c".repeat(64),
+      calibrationFrontierConfigSha256: frontierHash,
+    }),
+    /configuration hash mismatch/,
+  );
+  for (const changedConfig of [
+    { ...localConfig, baseUrl: "http://127.0.0.1:22434" },
+    { ...localConfig, retryOptions: { timeoutMs: 120_000 } },
+    { ...localConfig, temperature: 0.1 },
+    { ...localConfig, seed: 48 },
+  ]) {
+    await assert.rejects(
+      () => guardedRun(changedConfig, {
+        calibrationLocalConfigSha256: localHash,
+        calibrationFrontierConfigSha256: frontierHash,
+      }),
+      /Resolved run judge configuration hash mismatch/,
+    );
+  }
+  assert.equal(benchmarkCalls, 0);
+  assert.equal(modelCalls, 0);
+
+  const prepared = await guardedRun(localConfig, {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  });
+  assert.ok(prepared);
+  assert.equal(benchmarkCalls, 1);
+  assert.equal(modelCalls, 1);
 });
 
 test("bench run exits non-zero after a mixed success/failure run", async () => {

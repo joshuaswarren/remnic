@@ -11,6 +11,7 @@ import {
   createAssistantAgentFromResponder,
   deriveOpenclawRuntimeContext,
   resolveBenchRuntimeProfile,
+  resolveLocalLabJudgeProviderConfig,
 } from "./runtime-profiles.ts";
 
 test("baseline runtime profile keeps the stripped retrieval-only config", async () => {
@@ -768,6 +769,123 @@ test("local-lab runtime profile applies requestTimeout/max429WaitMs/disableThink
   assert.equal(resolved.judgeProvider?.retryOptions?.timeoutMs, 12_000);
   assert.equal(resolved.judgeProvider?.retryOptions?.max429WaitMs, 5_000);
   assert.equal(resolved.judgeProvider?.disableThinking, true);
+});
+
+test("baseline manifest-bound judge matches the calibration resolver exactly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-manifest-judge-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "responder",
+        ctx: 32768,
+        temperature: 0,
+        seed: 47,
+      },
+      judge: {
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "qwen2.5-7b-32k:latest",
+        ctx: 32768,
+        temperature: 0,
+        seed: 47,
+      },
+      phases: "sequential",
+    }),
+  );
+
+  const calibrationJudge = await resolveLocalLabJudgeProviderConfig({
+    localLabManifestPath: manifestPath,
+    requestTimeout: 180_000,
+    max429WaitMs: 30_000,
+    disableThinking: true,
+  });
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    systemProvider: "claude-cli",
+    systemModel: "opus",
+    judgeProvider: "ollama",
+    judgeModel: "qwen2.5-7b-32k:latest",
+    // The explicit /api form used by run-tierf-opus.sh is an identity
+    // assertion; the manifest remains the full config source.
+    judgeBaseUrl: "http://127.0.0.1:11434/api",
+    localLabManifestPath: manifestPath,
+    requestTimeout: 180_000,
+    max429WaitMs: 30_000,
+    disableThinking: true,
+  });
+
+  assert.deepEqual(resolved.judgeProvider, calibrationJudge);
+  assert.deepEqual(resolved.judgeProvider, {
+    provider: "ollama",
+    model: "qwen2.5-7b-32k:latest",
+    baseUrl: "http://127.0.0.1:11434/api",
+    temperature: 0,
+    seed: 47,
+    retryOptions: { timeoutMs: 180_000, max429WaitMs: 30_000 },
+    disableThinking: true,
+  });
+  assert.equal(resolved.systemProvider?.provider, "claude-cli");
+  assert.equal(resolved.systemProvider?.model, "opus");
+});
+
+test("baseline manifest-bound judge rejects identity and normalized endpoint drift", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-manifest-drift-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "responder",
+        ctx: 32768,
+        temperature: 0,
+        seed: 47,
+      },
+      judge: {
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "qwen2.5-7b-32k:latest",
+        ctx: 32768,
+        temperature: 0,
+        seed: 47,
+      },
+      phases: "sequential",
+    }),
+  );
+  const base = {
+    runtimeProfile: "baseline" as const,
+    judgeProvider: "ollama" as const,
+    judgeModel: "qwen2.5-7b-32k:latest",
+    judgeBaseUrl: "http://127.0.0.1:11434/api",
+    localLabManifestPath: manifestPath,
+    requestTimeout: 180_000,
+  };
+
+  await assert.rejects(
+    () => resolveBenchRuntimeProfile({ ...base, judgeModel: "different-judge" }),
+    /provider\/model flags do not match/,
+  );
+  await assert.rejects(
+    () => resolveBenchRuntimeProfile({
+      ...base,
+      judgeBaseUrl: "http://127.0.0.1:22434/api",
+    }),
+    /baseUrl flag does not match/,
+  );
+
+  // Bare host and trailing slash forms normalize to the same Ollama /api URL.
+  const matching = await resolveBenchRuntimeProfile({
+    ...base,
+    judgeBaseUrl: "http://127.0.0.1:11434/",
+  });
+  assert.equal(matching.judgeProvider?.baseUrl, "http://127.0.0.1:11434/api");
 });
 
 test("local-lab runtime profile leaves providers unchanged when no runtime options are set", async () => {

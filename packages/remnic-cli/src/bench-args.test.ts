@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -378,6 +379,55 @@ test("parseBenchArgs accepts independent provider and drain timeouts", () => {
   assert.deepEqual(parsed.benchmarks, ["locomo"]);
   assert.equal(parsed.requestTimeout, 120000);
   assert.equal(parsed.drainTimeout, 600000);
+});
+
+test("parseBenchArgs validates judge-calibration pinning and independent timeouts", () => {
+  const parsed = parseBenchArgs([
+    "judge-calibrate", "--benchmark", "locomo",
+    "--source-result-id", "run-1",
+    "--expected-answer-set-sha256", "a".repeat(64),
+    "--expected-question-id-list-sha256", "b".repeat(64),
+    "--local-judge-request-timeout", "120000",
+    "--frontier-judge-request-timeout", "240000",
+    "--max-429-wait", "30000",
+    "--disable-thinking",
+    "--calibration-dir", "./private-calibration",
+  ]);
+  assert.equal(parsed.sourceResultId, "run-1");
+  assert.equal(parsed.expectedAnswerSetSha256, "a".repeat(64));
+  assert.equal(parsed.expectedQuestionIdListSha256, "b".repeat(64));
+  assert.equal(parsed.localJudgeRequestTimeout, 120000);
+  assert.equal(parsed.frontierJudgeRequestTimeout, 240000);
+  assert.equal(parsed.max429WaitMs, 30000);
+  assert.equal(parsed.disableThinking, true);
+  assert.equal(parsed.calibrationDir, path.resolve("private-calibration"));
+  assert.throws(() => parseBenchArgs([
+    "judge-calibrate", "--expected-answer-set-sha256", "short",
+  ]), /lowercase SHA-256/);
+  assert.throws(() => parseBenchArgs([
+    "judge-calibrate", "--frontier-judge-request-timeout", "0",
+  ]), /positive integer/);
+  assert.throws(() => parseBenchArgs([
+    "judge-calibrate", "--max-429-wait", "1.5",
+  ]), /non-negative integer/);
+  assert.throws(() => parseBenchArgs([
+    "judge-calibrate", "--source-result-id",
+  ]), /requires a value/);
+});
+
+test("parseBenchArgs binds later runs to an exact calibration directory and judge configs", () => {
+  const parsed = parseBenchArgs([
+    "run", "locomo",
+    "--calibration-dir", "./private-calibration",
+    "--calibration-local-config-sha256", "c".repeat(64),
+    "--calibration-frontier-config-sha256", "d".repeat(64),
+  ]);
+  assert.equal(parsed.calibrationDir, path.resolve("private-calibration"));
+  assert.equal(parsed.calibrationLocalConfigSha256, "c".repeat(64));
+  assert.equal(parsed.calibrationFrontierConfigSha256, "d".repeat(64));
+  assert.throws(() => parseBenchArgs([
+    "run", "locomo", "--calibration-local-config-sha256", "not-a-digest",
+  ]), /lowercase SHA-256/);
 });
 
 test("parseBenchArgs rejects invalid --drain-timeout", () => {

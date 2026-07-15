@@ -265,6 +265,7 @@ export {
   createGatewayResponder,
   createProviderBackedAmaBenchRecommendedJudge,
   createProviderBackedJudge,
+  getProviderBackedJudgePromptIdentity,
   createProviderBackedResponder,
   createProviderBackedStructuredJudge,
   createResponderFromProvider,
@@ -317,7 +318,10 @@ export type {
   ResolveBenchRuntimeProfileOptions,
   ResolvedBenchRuntimeProfile,
 } from "./runtime-profiles.js";
-export { resolveBenchRuntimeProfile } from "./runtime-profiles.js";
+export {
+  resolveBenchRuntimeProfile,
+  resolveLocalLabJudgeProviderConfig,
+} from "./runtime-profiles.js";
 
 export {
   LOCAL_LAB_PROVIDER_KINDS,
@@ -537,11 +541,13 @@ export {
   DEFAULT_KAPPA_CONFIDENCE_LEVEL,
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
+  JUDGE_CALIBRATION_PROTOCOL_VERSION,
   MIN_CALIBRATION_SOURCE_TASKS,
   binarizeJudgeScore,
   bootstrapCohensKappaConfidenceInterval,
   computeCohensKappa,
   loadJudgeCalibrationState,
+  hashOrderedQuestionIds,
   runJudgeCalibration,
   selectCalibrationSlice,
   writeJudgeCalibrationState,
@@ -553,6 +559,7 @@ export type {
   BootstrapKappaOptions,
   BootstrapKappaResult,
   JudgeCalibrationIdentities,
+  JudgeCalibrationCheckpointProvenance,
   JudgeCalibrationResult,
   JudgeCategory,
   KappaConfidenceInterval,

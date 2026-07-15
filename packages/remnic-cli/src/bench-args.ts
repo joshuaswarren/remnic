@@ -86,6 +86,14 @@ export interface ParsedBenchArgs {
   custom?: string;
   target?: BenchPublishTarget;
   requestTimeout?: number;
+  localJudgeRequestTimeout?: number;
+  frontierJudgeRequestTimeout?: number;
+  calibrationDir?: string;
+  calibrationLocalConfigSha256?: string;
+  calibrationFrontierConfigSha256?: string;
+  sourceResultId?: string;
+  expectedAnswerSetSha256?: string;
+  expectedQuestionIdListSha256?: string;
   drainTimeout?: number;
   /** Max wall-clock time (ms) to keep retrying 429 rate-limit responses. */
   max429WaitMs?: number;
@@ -128,7 +136,9 @@ export interface ParsedBenchArgs {
   judgeCacheDir?: string;
   /**
    * Issue #1573 PR2: path to a local-lab manifest JSON file. Required when
-   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`.
+   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`. On other
+   * profiles it binds the judge to the manifest's normalized full config while
+   * leaving the selected responder profile unchanged.
    */
   localLabManifestPath?: string;
 }
@@ -454,6 +464,14 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--provider",
   "--base-url",
   "--request-timeout",
+  "--local-judge-request-timeout",
+  "--frontier-judge-request-timeout",
+  "--calibration-dir",
+  "--calibration-local-config-sha256",
+  "--calibration-frontier-config-sha256",
+  "--source-result-id",
+  "--expected-answer-set-sha256",
+  "--expected-question-id-list-sha256",
   "--drain-timeout",
   "--max-429-wait",
   "--ama-bench-judge-protocol",
@@ -542,6 +560,9 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--provider",
   "--base-url",
   "--request-timeout",
+  "--calibration-dir",
+  "--calibration-local-config-sha256",
+  "--calibration-frontier-config-sha256",
   "--drain-timeout",
   "--max-429-wait",
   "--ama-bench-judge-protocol",
@@ -629,8 +650,15 @@ const BENCH_ACTION_FLAGS: Record<
       "--judge-model",
       "--judge-base-url",
       "--judge-api-key",
+      "--local-judge-request-timeout",
+      "--frontier-judge-request-timeout",
+      "--max-429-wait",
+      "--calibration-dir",
+      "--source-result-id",
+      "--expected-answer-set-sha256",
+      "--expected-question-id-list-sha256",
     ],
-    boolean: ["--json", "--help", "-h"],
+    boolean: ["--disable-thinking", "--json", "--help", "-h"],
   },
   published: {
     value: PUBLISHED_VALUE_FLAGS,
@@ -882,6 +910,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const output = readBenchOptionValue(args, "--output");
   const targetRaw = readBenchOptionValue(args, "--target");
   const requestTimeoutRaw = readBenchOptionValue(args, "--request-timeout");
+  const localJudgeRequestTimeoutRaw = readBenchOptionValue(args, "--local-judge-request-timeout");
+  const frontierJudgeRequestTimeoutRaw = readBenchOptionValue(args, "--frontier-judge-request-timeout");
+  const calibrationDirRaw = readBenchOptionValue(args, "--calibration-dir");
+  const calibrationLocalConfigSha256 = readBenchOptionValue(args, "--calibration-local-config-sha256");
+  const calibrationFrontierConfigSha256 = readBenchOptionValue(args, "--calibration-frontier-config-sha256");
+  const sourceResultId = readBenchOptionValue(args, "--source-result-id");
+  const expectedAnswerSetSha256 = readBenchOptionValue(args, "--expected-answer-set-sha256");
+  const expectedQuestionIdListSha256 = readBenchOptionValue(args, "--expected-question-id-list-sha256");
   const drainTimeoutRaw = readBenchOptionValue(args, "--drain-timeout");
   // Issue #1573 PR1: judge-result cache directory override. `parseBenchArgs`
   // resolves tildes + relative paths identically to other filesystem flags
@@ -1087,6 +1123,27 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       throw new Error(
         "ERROR: --request-timeout must not exceed 3,600,000 ms (1 hour).",
       );
+    }
+  }
+
+  const parseJudgeTimeout = (raw: string | undefined, flag: string): number | undefined => {
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0 || value > 3_600_000) {
+      throw new Error(`ERROR: ${flag} must be a positive integer no greater than 3,600,000 ms.`);
+    }
+    return value;
+  };
+  const localJudgeRequestTimeout = parseJudgeTimeout(localJudgeRequestTimeoutRaw, "--local-judge-request-timeout");
+  const frontierJudgeRequestTimeout = parseJudgeTimeout(frontierJudgeRequestTimeoutRaw, "--frontier-judge-request-timeout");
+  for (const [flag, digest] of [
+    ["--expected-answer-set-sha256", expectedAnswerSetSha256],
+    ["--expected-question-id-list-sha256", expectedQuestionIdListSha256],
+    ["--calibration-local-config-sha256", calibrationLocalConfigSha256],
+    ["--calibration-frontier-config-sha256", calibrationFrontierConfigSha256],
+  ] as const) {
+    if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest)) {
+      throw new Error(`ERROR: ${flag} must be a lowercase SHA-256 hex digest.`);
     }
   }
 
@@ -1541,6 +1598,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       : undefined,
     publishedDryRun: args.includes("--dry-run"),
     requestTimeout,
+    localJudgeRequestTimeout,
+    frontierJudgeRequestTimeout,
+    calibrationDir: calibrationDirRaw ? path.resolve(expandTilde(calibrationDirRaw)) : undefined,
+    calibrationLocalConfigSha256,
+    calibrationFrontierConfigSha256,
+    sourceResultId,
+    expectedAnswerSetSha256,
+    expectedQuestionIdListSha256,
     drainTimeout,
     // Issue #1573 PR1: surface judge-cache flags into the runner options.
     noJudgeCache: args.includes("--no-judge-cache"),

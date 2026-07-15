@@ -108,8 +108,11 @@ export interface ResolveBenchRuntimeProfileOptions {
   disableThinking?: boolean;
   /**
    * Path to a local-lab manifest JSON file (issue #1573 PR2). Required when
-   * `runtimeProfile: "local-lab"`. The manifest pins responder/judge/embedding
-   * to operator-hosted models with temperature=0 and a fixed seed.
+   * `runtimeProfile: "local-lab"`. For other profiles, an explicit manifest
+   * binds the benchmark judge to the manifest's normalized judge config while
+   * leaving the profile's responder unchanged. The manifest pins
+   * provider/model/baseUrl/temperature/seed; runtime options are overlaid by
+   * the same resolver used by `judge-calibrate`.
    */
   localLabManifestPath?: string;
 }
@@ -167,7 +170,7 @@ export async function resolveBenchRuntimeProfile(
       options.systemResponderContextBudgetChars,
       options.systemResponderPromptBudgetChars,
     );
-  const judgeProvider = resolveProviderConfig(
+  const explicitJudgeProvider = resolveProviderConfig(
     "judge",
     options.judgeProvider,
     options.judgeModel,
@@ -180,6 +183,13 @@ export async function resolveBenchRuntimeProfile(
       undefined,
       undefined,
     );
+  const judgeProvider = options.localLabManifestPath
+    ? await resolveManifestBoundJudgeProvider(
+        options.localLabManifestPath,
+        options,
+        explicitJudgeProvider,
+      )
+    : explicitJudgeProvider;
   const internalProvider = applyInternalProviderDefaults(
     resolveProviderConfig(
       "internal",
@@ -781,6 +791,101 @@ function applyLocalLabRuntimeOptions(
   };
 }
 
+/**
+ * Resolve the local judge configuration that is shared by calibration and
+ * benchmark execution. Keeping manifest normalization and runtime overlays in
+ * one path prevents the persisted calibration hash from describing a subtly
+ * different judge (for example, a bare Ollama URL without temperature/seed).
+ */
+export async function resolveLocalLabJudgeProviderConfig(
+  options: Pick<
+    ResolveBenchRuntimeProfileOptions,
+    "requestTimeout" | "max429WaitMs" | "disableThinking"
+  > & { localLabManifestPath: string },
+): Promise<ProviderConfig> {
+  const manifest = await loadLocalLabManifest(options.localLabManifestPath);
+  const resolved = resolveLocalLabProfile(manifest);
+  return buildLocalLabJudgeProviderConfig(resolved, options);
+}
+
+function buildLocalLabJudgeProviderConfig(
+  resolved: ResolvedLocalLabProfile,
+  options: Pick<
+    ResolveBenchRuntimeProfileOptions,
+    "requestTimeout" | "max429WaitMs" | "disableThinking"
+  >,
+): ProviderConfig {
+  return applyLocalLabRuntimeOptions(
+    sanitizeProviderConfig(resolved.judge.providerConfig),
+    options,
+  );
+}
+
+async function resolveManifestBoundJudgeProvider(
+  localLabManifestPath: string,
+  options: ResolveBenchRuntimeProfileOptions,
+  explicitJudgeProvider: ProviderConfig | null,
+): Promise<ProviderConfig> {
+  const manifestJudge = await resolveLocalLabJudgeProviderConfig({
+    localLabManifestPath,
+    requestTimeout: options.requestTimeout,
+    max429WaitMs: options.max429WaitMs,
+    disableThinking: options.disableThinking,
+  });
+  if (explicitJudgeProvider) {
+    assertManifestJudgeIdentity(explicitJudgeProvider, manifestJudge);
+  }
+  return manifestJudge;
+}
+
+function assertManifestJudgeIdentity(
+  explicitJudge: ProviderConfig,
+  manifestJudge: ProviderConfig,
+): void {
+  if (
+    explicitJudge.provider !== manifestJudge.provider ||
+    explicitJudge.model !== manifestJudge.model
+  ) {
+    throw new Error(
+      "judge provider/model flags do not match the local-lab manifest judge: " +
+        `flags=${explicitJudge.provider}/${explicitJudge.model}, ` +
+        `manifest=${manifestJudge.provider}/${manifestJudge.model}`,
+    );
+  }
+  if (
+    explicitJudge.baseUrl !== undefined &&
+    normalizeProviderBaseUrl(explicitJudge.provider, explicitJudge.baseUrl) !==
+      manifestJudge.baseUrl
+  ) {
+    throw new Error(
+      "judge baseUrl flag does not match the normalized local-lab manifest judge: " +
+        `flags=${normalizeProviderBaseUrl(explicitJudge.provider, explicitJudge.baseUrl)}, ` +
+        `manifest=${String(manifestJudge.baseUrl)}`,
+    );
+  }
+  if (explicitJudge.apiKey !== undefined) {
+    throw new Error(
+      "manifest-bound local judge does not accept --judge-api-key; keep local endpoint credentials out of the persisted manifest/hash contract",
+    );
+  }
+}
+
+function normalizeProviderBaseUrl(
+  provider: BuiltInProvider,
+  rawBaseUrl: string,
+): string {
+  const trimmed = rawBaseUrl.trim().endsWith("/")
+    ? rawBaseUrl.trim().slice(0, -1)
+    : rawBaseUrl.trim();
+  if (provider === "ollama" && !trimmed.endsWith("/api")) {
+    return `${trimmed}/api`;
+  }
+  if (provider === "local-llm" && !trimmed.endsWith("/v1")) {
+    return `${trimmed}/v1`;
+  }
+  return trimmed;
+}
+
 function registerCodexCliFallbackRunnerIfNeeded(config: ProviderConfig | null): void {
   if (!config || config.provider !== "codex-cli" || codexCliFallbackRegistered) {
     return;
@@ -1023,10 +1128,7 @@ async function resolveLocalLabRuntimeProfile(
     sanitizeProviderConfig(resolved.responder.providerConfig),
     options,
   );
-  const judgeProvider = applyLocalLabRuntimeOptions(
-    sanitizeProviderConfig(resolved.judge.providerConfig),
-    options,
-  );
+  const judgeProvider = buildLocalLabJudgeProviderConfig(resolved, options);
   const judgeFactoryConfig = judgeProvider
     ? asProviderFactoryConfig(judgeProvider)
     : undefined;

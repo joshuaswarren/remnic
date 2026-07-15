@@ -661,3 +661,17 @@ test("provider-backed judge keeps out-of parsing stable across repeated calls", 
   assert.equal(await judge.score("q", "predicted", "expected"), 0.8);
   assert.equal(await judge.score("q", "predicted", "expected"), 0.8);
 });
+
+test("provider-backed judge prompt identity tracks the actual structured and scalar prompt contracts", async () => {
+  const { getProviderBackedJudgePromptIdentity } = await import("./responders.ts");
+  const scalar = getProviderBackedJudgePromptIdentity({ provider: "claude-cli", model: "opus" });
+  const structuredV1 = getProviderBackedJudgePromptIdentity({
+    provider: "openai", model: "gpt-5.6", rubricVersion: "rubric-v1",
+  });
+  const structuredV2 = getProviderBackedJudgePromptIdentity({
+    provider: "openai", model: "gpt-5.6", rubricVersion: "rubric-v2",
+  });
+  assert.match(scalar, /^sha256:[0-9a-f]{64}$/);
+  assert.notEqual(scalar, structuredV1);
+  assert.notEqual(structuredV1, structuredV2);
+});

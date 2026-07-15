@@ -379,19 +379,76 @@ Before trusting a Tier L judge for regression, run:
 ```bash
 remnic bench judge-calibrate --benchmark locomo \
   --local-lab-manifest docs/benchmarks/configs/local-lab-3090.json \
-  --judge-provider anthropic --judge-model <frontier-judge-id>
+  --judge-provider claude-cli --judge-model opus \
+  --results-dir ~/.remnic/bench/results \
+  --calibration-dir ~/.remnic/bench/build-week-2026/calibration \
+  --source-result-id 6e499698-6eaf-4a06-8a81-3d90dd867e57 \
+  --expected-answer-set-sha256 a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81 \
+  --expected-question-id-list-sha256 9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869 \
+  --local-judge-request-timeout 180000 \
+  --frontier-judge-request-timeout 600000
 ```
+
+For the pinned Build Week LongMemEval source, use the same command with
+`--benchmark longmemeval`, source id
+`a7ab6f70-5661-499e-b4b2-99bf0830368c`, answer-set hash
+`009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4`,
+and ordered-question-id hash
+`9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5`.
 
 This scores a deterministic, pinned 200-question calibration slice with both
 the local and frontier judges (or every available question when fewer than
 200 exist) and reports **Cohen's kappa** with a deterministic paired-bootstrap
 95% confidence interval. The exact stored-result source, ordered question IDs,
 and answer-set hash are pinned so later calibration runs cannot silently switch
-answer payloads. The kappa and provenance are persisted
-(`~/.remnic/bench/calibration/`) and land in subsequent Tier L artifacts as
+answer payloads. Each successful judge side is atomically checkpointed, so an
+interrupted run resumes without repaying completed calls. The checkpoint is
+bound to the source bytes, ordered IDs, slice, each provider's actual prompt
+identity, the category-binning identity, and both sanitized judge configurations.
+An exclusive 0600 lock covers initialization, every paid-call reservation, and
+each atomic update; concurrent or stale locks fail safe rather than risking a
+duplicate call. Corrupt or mismatched state fails before model calls. The kappa
+and provenance are persisted in the exact `--calibration-dir` and land in a
+subsequent Tier L artifact only when that run supplies the same directory plus
+the `localJudgeConfigHash` and `frontierJudgeConfigHash` printed by
+`judge-calibrate --json`:
+
+```bash
+remnic bench run locomo \
+  --runtime-profile baseline \
+  --judge-provider ollama \
+  --judge-model qwen2.5-7b-32k:latest \
+  --judge-base-url http://127.0.0.1:11434/api \
+  --local-lab-manifest docs/benchmarks/configs/local-lab-3090.json \
+  --request-timeout 180000 \
+  --calibration-dir ~/.remnic/bench/build-week-2026/calibration \
+  --calibration-local-config-sha256 <localJudgeConfigHash> \
+  --calibration-frontier-config-sha256 <frontierJudgeConfigHash>
+  # ...the same local judge identity and normal run flags
+```
+
+For a non-`local-lab` responder profile, `--local-lab-manifest` binds only the
+judge. The CLI judge provider/model/base URL remain explicit assertions against
+the normalized manifest identity, while temperature, seed, and the runtime
+timeout, 429-wait, and disable-thinking overlays come from the shared resolver
+used by `judge-calibrate`. If a later run supplies `--max-429-wait` or
+`--disable-thinking`, supply the identical flag/value to `judge-calibrate` so
+the persisted and runtime local-judge configuration hashes remain identical.
+During calibration those two shared transport/model overlays apply to both the
+local and frontier judge calls. The attachment path fails before dispatch if
+either surface drifts.
+
+The attached artifact records
 `judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,
 `confidenceInterval`, `bootstrapSamples`, `sourceResultId`, `answerSetHash`,
-and `sliceQuestionIds`.
+`sliceQuestionIds`, and both configuration hashes.
+`judge-calibrate` deliberately uses this dedicated checkpoint rather than the
+general `--judge-cache-dir`: resumed outputs are reported separately from fresh
+judge calls and are never mislabeled as ordinary cache hits.
+`judge-calibrate` currently measures the default scalar judge prompt. Therefore
+AMA-Bench runs using `--ama-bench-judge-protocol recommended` do not attach that
+κ; supplying calibration pins to such a run fails before model dispatch rather
+than stamping default-prompt agreement onto a binary-protocol artifact.
 A kappa below **0.7** renders a loud "local judge unreliable for this
 benchmark" warning in the report and on the artifact. The calibration
 slice is question-ids-only — no dataset content is committed (per the

@@ -710,6 +710,8 @@ test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue
       answerSetHash,
       sourceResultId: "run-pinned-123",
       sliceQuestionIds: ["q-17", "q-42"],
+      localJudgeConfigHash: "b".repeat(64),
+      frontierJudgeConfigHash: "c".repeat(64),
     },
   });
   const roundTripped = parseBenchmarkArtifact(serializeBenchmarkArtifact(built));
@@ -724,6 +726,8 @@ test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue
   assert.equal(roundTripped.judgeCalibration?.answerSetHash, answerSetHash);
   assert.equal(roundTripped.judgeCalibration?.sourceResultId, "run-pinned-123");
   assert.deepEqual(roundTripped.judgeCalibration?.sliceQuestionIds, ["q-17", "q-42"]);
+  assert.equal(roundTripped.judgeCalibration?.localJudgeConfigHash, "b".repeat(64));
+  assert.equal(roundTripped.judgeCalibration?.frontierJudgeConfigHash, "c".repeat(64));
 });
 
 test("parseBenchmarkArtifact accepts old artifacts without tier/hardware (forwards compatible)", () => {
@@ -837,7 +841,14 @@ test("buildBenchmarkArtifact inherits judgeCalibration from result.config.benchm
       adapterMode: "direct",
       remnicConfig: {},
       benchmarkOptions: {
-        judgeCalibration: { kappa: 0.82, sampleSize: 50, threshold: 0.7, warning: false },
+        judgeCalibration: {
+          kappa: 0.82,
+          sampleSize: 50,
+          threshold: 0.7,
+          warning: false,
+          localJudgeConfigHash: "d".repeat(64),
+          frontierJudgeConfigHash: "e".repeat(64),
+        },
       },
     },
   });
@@ -855,6 +866,8 @@ test("buildBenchmarkArtifact inherits judgeCalibration from result.config.benchm
   assert.equal(artifact.judgeCalibration?.sampleSize, 50);
   assert.equal(artifact.judgeCalibration?.threshold, 0.7);
   assert.equal(artifact.judgeCalibration?.warning, false);
+  assert.equal(artifact.judgeCalibration?.localJudgeConfigHash, "d".repeat(64));
+  assert.equal(artifact.judgeCalibration?.frontierJudgeConfigHash, "e".repeat(64));
 });
 
 test("buildBenchmarkArtifact explicit judgeCalibration overrides result.config value (#1573)", () => {

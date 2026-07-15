@@ -114,6 +114,10 @@ export interface BenchmarkArtifactJudgeCalibration {
   sourceResultId?: string;
   /** Ordered, bounded task ids that make the pinned calibration slice auditable. */
   sliceQuestionIds?: readonly string[];
+  /** Sanitized full local judge provider configuration hash. */
+  localJudgeConfigHash?: string;
+  /** Sanitized full frontier judge provider configuration hash. */
+  frontierJudgeConfigHash?: string;
 }
 
 export interface BenchmarkArtifactPerTaskScore {
@@ -330,6 +334,8 @@ function readJudgeCalibrationFromBenchmarkOptions(
   const answerSetHash = record.answerSetHash;
   const sourceResultId = record.sourceResultId;
   const sliceQuestionIds = readCalibrationQuestionIds(record.sliceQuestionIds);
+  const localJudgeConfigHash = record.localJudgeConfigHash;
+  const frontierJudgeConfigHash = record.frontierJudgeConfigHash;
   const hasCompleteProvenance =
     typeof answerSetHash === "string" && /^[0-9a-f]{64}$/.test(answerSetHash) &&
     typeof sourceResultId === "string" && sourceResultId.length > 0 &&
@@ -345,6 +351,10 @@ function readJudgeCalibrationFromBenchmarkOptions(
       : {}),
     ...(hasCompleteProvenance
       ? { answerSetHash, sourceResultId, sliceQuestionIds }
+      : {}),
+    ...(typeof localJudgeConfigHash === "string" && /^[0-9a-f]{64}$/.test(localJudgeConfigHash) &&
+      typeof frontierJudgeConfigHash === "string" && /^[0-9a-f]{64}$/.test(frontierJudgeConfigHash)
+      ? { localJudgeConfigHash, frontierJudgeConfigHash }
       : {}),
   };
 }
@@ -534,6 +544,14 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
     }
     if (calibration.sliceQuestionIds !== undefined && !readCalibrationQuestionIds(calibration.sliceQuestionIds)) {
       throw new Error("BenchmarkArtifact judgeCalibration.sliceQuestionIds must contain 1 to 200 unique non-empty strings when provided.");
+    }
+    for (const key of ["localJudgeConfigHash", "frontierJudgeConfigHash"] as const) {
+      if (
+        calibration[key] !== undefined &&
+        (typeof calibration[key] !== "string" || !/^[0-9a-f]{64}$/.test(calibration[key]))
+      ) {
+        throw new Error(`BenchmarkArtifact judgeCalibration.${key} must be a lowercase SHA-256 hex digest when provided.`);
+      }
     }
     const hasAnyPinnedProvenance =
       calibration.answerSetHash !== undefined ||
