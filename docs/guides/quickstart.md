@@ -106,16 +106,18 @@ See [Daily briefing](./daily-briefing.md) for scopes, JSON output, and saved rep
 
 ## Already using OpenClaw?
 
-OpenClaw has the deepest native integration. One command configures it end to end —
-the plugin entry plus the `plugins.slots.memory` slot — without touching your existing
-memories:
+OpenClaw has the deepest native integration. Install the plugin package, then wire
+the memory slot — your existing memories are untouched:
 
 ```bash
+openclaw plugins install clawhub:@remnic/plugin-openclaw
 remnic openclaw install
 ```
 
-Restart the gateway afterward. Full walkthrough and config live in
-[Getting started](../getting-started.md).
+`remnic openclaw install` writes the plugin entry plus `plugins.slots.memory` in
+`openclaw.json`; it does not download the package, so run the `openclaw plugins
+install` step first. Restart the gateway afterward. Full walkthrough and config live
+in [Getting started](../getting-started.md).
 
 ## Next steps
 

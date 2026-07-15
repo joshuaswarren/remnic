@@ -190,7 +190,16 @@ npm install -g @tobilu/qmd@2.5.3
 qmd --version                                 # confirm 2.5.3
 ```
 
-Register your memory directory in `~/.config/qmd/index.yml`:
+Register your memory directory in `~/.config/qmd/index.yml`. **The `path` must match
+your configured `memoryDir`** — for a standalone install using the config shown above:
+
+```yaml
+openclaw-engram:
+  path: ~/.remnic/memory
+  extensions: [.md]
+```
+
+For an OpenClaw plugin install, point it at the plugin's memory directory instead:
 
 ```yaml
 openclaw-engram:
@@ -199,7 +208,7 @@ openclaw-engram:
 ```
 
 The `openclaw-engram` collection name is a stable compatibility identifier — keep it as
-is. Then index and embed:
+is in both modes. Then index and embed:
 
 ```bash
 qmd update && qmd embed

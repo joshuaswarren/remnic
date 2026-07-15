@@ -94,17 +94,17 @@ One store, many front doors. Each integration reads and writes the same memory o
 | Oh My Pi (omp) | Native extension + MCP | Every turn / every turn | [docs/integration/omp.md](docs/integration/omp.md) |
 | Any MCP client | HTTP or stdio MCP | On demand | [docs/integration/connector-setup.md](docs/integration/connector-setup.md) |
 
-Most connectors install with a single command once the daemon is running, for example:
+Once the daemon is running, register each tool with a single command:
 
 ```bash
-remnic connectors install claude-code   # hooks + MCP
-remnic connectors install codex-cli     # hooks + MCP + memory extension
-remnic connectors install pi            # extension + MCP + compaction
-remnic connectors install omp           # extension + MCP
-remnic connectors install replit        # MCP
+remnic connectors install codex-cli     # token + connector state + memory extension
+remnic connectors install claude-code   # token + connector state
+remnic connectors install pi            # token + connector state
+remnic connectors install omp           # token + connector state
+remnic connectors install replit        # token + connector state
 ```
 
-Each connector generates its own auth token, installs the right hooks or extension, and verifies the connection. See the [connector setup guide](docs/integration/connector-setup.md) for every tool, its config snippet, and multi-tenant setups.
+Each install mints a host-specific auth token and records Remnic-side connector state; for some hosts (such as Codex CLI) it also materializes the memory extension. How much of the host itself gets configured varies — Claude Code and Hermes, for example, need a few manual wiring steps documented in their plugin guides. See the [connector setup guide](docs/integration/connector-setup.md) for every tool, exactly what its install automates, its config snippet, and multi-tenant setups.
 
 Over MCP, Remnic exposes a rich tool surface beyond store and recall: entity lookup, memory correction, temporal recall, X-ray provenance, daily briefing, work-board, and continuity tools among them. Hosted clients call these directly, and the standalone HTTP endpoint (`remnic daemon start` or `@remnic/server`) serves the same tools. See the [HTTP + MCP API reference](docs/api.md).
 
