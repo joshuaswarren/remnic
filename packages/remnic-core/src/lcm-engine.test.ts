@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { extractLcmConfig, LcmEngine } from "./lcm/engine.js";
+import { LcmArchive } from "./lcm/archive.js";
+import { LcmEngine, extractLcmConfig } from "./lcm/engine.js";
 import { openLcmDatabase } from "./lcm/schema.js";
 import type { PluginConfig } from "./types.js";
 
@@ -541,6 +542,135 @@ test("LCM normalizes session IDs across observe, stats, and clear", async () => 
     ]);
     await engine.waitForObserveQueueIdle();
     assert.equal((await engine.getStats()).totalMessages, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("expandContext preserves distinct archive-row identity for duplicate turns", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-expand-identity-"),
+  );
+
+  try {
+    const engine = new LcmEngine(
+      createPluginConfig(memoryDir),
+      async () => "summary",
+    );
+    await engine.ensureInitialized();
+
+    const db = openLcmDatabase(memoryDir);
+    let expected: ReturnType<LcmArchive["getMessages"]>;
+    try {
+      const archive = new LcmArchive(db);
+      archive.appendMessages("session-expanded", [
+        { turnIndex: 7, role: "user", content: "duplicate turn user" },
+        {
+          turnIndex: 7,
+          role: "assistant",
+          content: "duplicate turn assistant",
+        },
+      ]);
+      expected = archive.getMessages("session-expanded", 7, 7);
+    } finally {
+      db.close();
+    }
+
+    assert.equal(expected.length, 2);
+    const [firstDuplicate, secondDuplicate] = expected;
+    assert.ok(firstDuplicate);
+    assert.ok(secondDuplicate);
+    assert.notEqual(firstDuplicate.id, secondDuplicate.id);
+
+    const expanded = await engine.expandContext(
+      "  session-expanded  ",
+      7,
+      7,
+      100,
+    );
+
+    assert.deepEqual(
+      expanded,
+      expected.map(({ id, session_id, turn_index, role, content }) => ({
+        id,
+        session_id,
+        turn_index,
+        role,
+        content,
+      })),
+    );
+    assert.deepEqual(
+      expanded.map(({ session_id }) => session_id),
+      ["session-expanded", "session-expanded"],
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("expandContext preserves first, middle, and last row identity when truncated", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-expand-truncated-identity-"),
+  );
+
+  try {
+    const engine = new LcmEngine(
+      createPluginConfig(memoryDir),
+      async () => "summary",
+    );
+    await engine.ensureInitialized();
+
+    const db = openLcmDatabase(memoryDir);
+    let archived: ReturnType<LcmArchive["getMessages"]>;
+    try {
+      const archive = new LcmArchive(db);
+      archive.appendMessages("session-truncated", [
+        { turnIndex: 1, role: "user", content: "AAAAAAAA" },
+        { turnIndex: 2, role: "assistant", content: "BBBBBBBB" },
+        { turnIndex: 3, role: "user", content: "CCCCCCCC" },
+        { turnIndex: 4, role: "assistant", content: "DDDDDDDD" },
+      ]);
+      archived = archive.getMessages("session-truncated", 1, 4);
+    } finally {
+      db.close();
+    }
+
+    assert.equal(archived.length, 4);
+    const [first, middle, , last] = archived;
+    assert.ok(first);
+    assert.ok(middle);
+    assert.ok(last);
+
+    const expanded = await engine.expandContext(
+      "  session-truncated  ",
+      1,
+      4,
+      5,
+    );
+
+    assert.deepEqual(expanded, [
+      {
+        id: first.id,
+        session_id: "session-truncated",
+        turn_index: 1,
+        role: "user",
+        content: "AAAAAAAA",
+      },
+      {
+        id: middle.id,
+        session_id: "session-truncated",
+        turn_index: 2,
+        role: "assistant",
+        content: "BBBBBB",
+      },
+      {
+        id: last.id,
+        session_id: "session-truncated",
+        turn_index: 4,
+        role: "assistant",
+        content: "DDDDDD",
+      },
+    ]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

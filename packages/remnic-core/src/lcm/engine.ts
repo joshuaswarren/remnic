@@ -23,6 +23,15 @@ export interface LcmEngineConfig {
   messagePartsRecallMaxResults: number;
 }
 
+/** An expanded archive row with stable lineage identity; content may be budget-truncated. */
+export interface LcmExpandedMessage {
+  id: number;
+  session_id: string;
+  turn_index: number;
+  role: string;
+  content: string;
+}
+
 function positiveInteger(value: unknown, fallback: number, min = 1): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(min, Math.floor(value));
@@ -526,7 +535,7 @@ export class LcmEngine {
     fromTurn: number,
     toTurn: number,
     maxTokens: number,
-  ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
+  ): Promise<LcmExpandedMessage[]> {
     if (!this.config.enabled) return [];
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return [];
@@ -542,6 +551,8 @@ export class LcmEngine {
 
     if (totalChars <= maxChars) {
       return messages.map((m) => ({
+        id: m.id,
+        session_id: m.session_id,
         turn_index: m.turn_index,
         role: m.role,
         content: m.content,
@@ -549,8 +560,7 @@ export class LcmEngine {
     }
 
     // Keep first and last messages, truncate from middle
-    const result: Array<{ turn_index: number; role: string; content: string }> =
-      [];
+    const result: LcmExpandedMessage[] = [];
     let budget = maxChars;
 
     // Reserve space for the last message
@@ -567,6 +577,8 @@ export class LcmEngine {
       const m = messages[i];
       const truncated = m.content.slice(0, budget);
       result.push({
+        id: m.id,
+        session_id: m.session_id,
         turn_index: m.turn_index,
         role: m.role,
         content: truncated,
@@ -576,6 +588,8 @@ export class LcmEngine {
 
     // Always append the last message
     result.push({
+      id: lastMsg.id,
+      session_id: lastMsg.session_id,
       turn_index: lastMsg.turn_index,
       role: lastMsg.role,
       content: lastMsg.content.slice(0, lastMsgChars + Math.max(0, budget)),
