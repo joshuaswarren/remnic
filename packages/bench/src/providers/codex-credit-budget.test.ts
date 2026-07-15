@@ -36,6 +36,26 @@ test("parses the final native turn.completed usage event losslessly", () => {
   );
 });
 
+test("defaults omitted supplemental usage counters to zero", () => {
+  assert.deepEqual(
+    parseCodexJsonlUsage(
+      '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}',
+    ),
+    {
+      inputTokens: 12,
+      cachedInputTokens: 0,
+      outputTokens: 3,
+      reasoningOutputTokens: 0,
+    },
+  );
+  assert.equal(
+    parseCodexJsonlUsage(
+      '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":"bad","output_tokens":3}}',
+    ),
+    undefined,
+  );
+});
+
 test("prices GPT-5.6 tiers using uncached, cached, and output rates", () => {
   assert.equal(calculateCodexCredits("gpt-5.6-sol", usage), 17.75);
   assert.equal(calculateCodexCredits("gpt-5.6-terra", usage), 8.875);

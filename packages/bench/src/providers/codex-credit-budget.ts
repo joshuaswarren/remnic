@@ -291,14 +291,26 @@ export function parseCodexJsonlUsage(output: string): CodexCliNativeUsage | unde
         usage?: Record<string, unknown>;
       };
       if (event.type !== "turn.completed" || !event.usage) continue;
-      const parsed = {
-        inputTokens: readCounter(event.usage.input_tokens),
-        cachedInputTokens: readCounter(event.usage.cached_input_tokens),
-        outputTokens: readCounter(event.usage.output_tokens),
-        reasoningOutputTokens: readCounter(event.usage.reasoning_output_tokens),
-      };
-      if (Object.values(parsed).every((value) => value !== undefined)) {
-        usage = parsed as CodexCliNativeUsage;
+      const inputTokens = readCounter(event.usage.input_tokens);
+      const outputTokens = readCounter(event.usage.output_tokens);
+      const cachedInputTokens = readOptionalCounter(
+        event.usage.cached_input_tokens,
+      );
+      const reasoningOutputTokens = readOptionalCounter(
+        event.usage.reasoning_output_tokens,
+      );
+      if (
+        inputTokens !== undefined &&
+        outputTokens !== undefined &&
+        cachedInputTokens !== undefined &&
+        reasoningOutputTokens !== undefined
+      ) {
+        usage = {
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          reasoningOutputTokens,
+        };
       }
     } catch {
       // Codex may print non-JSON status text alongside JSONL. Ignore it.
@@ -384,6 +396,10 @@ function readCounter(value: unknown): number | undefined {
   return Number.isSafeInteger(value) && (value as number) >= 0
     ? (value as number)
     : undefined;
+}
+
+function readOptionalCounter(value: unknown): number | undefined {
+  return value === undefined ? 0 : readCounter(value);
 }
 
 function parsePositiveNumber(value: string, name: string): number {
