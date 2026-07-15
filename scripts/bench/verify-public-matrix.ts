@@ -21,6 +21,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { PUBLISHED_BENCHMARK_ARTIFACT_IDS } from "../../packages/bench/src/published-artifact.ts";
+import { calculateCodexCredits } from "../../packages/bench/src/providers/codex-credit-budget.ts";
 import {
   listBenchmarkResults,
   loadBenchmarkResult,
@@ -51,6 +52,29 @@ interface CodexDiagnosticRecord {
     status?: number | null;
     signal?: string | null;
   };
+}
+
+interface CodexCreditReceiptScope {
+  calls?: number;
+  credits?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  models?: Array<CodexCreditReceiptScope & { model?: string }>;
+}
+
+interface CodexCreditReceipt {
+  schemaVersion?: number;
+  ledgerSha256?: string;
+  budgetCredits?: number;
+  reserveCredits?: number;
+  plannedSpendCeilingCredits?: number;
+  totalSpentCredits?: number;
+  totalRemainingCredits?: number;
+  blocked?: boolean;
+  cumulative?: CodexCreditReceiptScope;
+  run?: CodexCreditReceiptScope & { id?: string };
 }
 
 interface ReproManifest {
@@ -100,6 +124,7 @@ interface ReproManifest {
   };
   qmd?: unknown;
   configFiles?: unknown;
+  codexCredit?: CodexCreditReceipt;
   artifactHash?: string;
 }
 
@@ -138,9 +163,17 @@ export interface VerifyPublicMatrixEvidenceOptions {
   manifestPath?: string;
   requireManifest?: boolean;
   requireDiagnostics?: boolean;
+  requireCodexCreditReceipt?: boolean;
+  allowBoundedTrial?: boolean;
   requireInternalProvider?: boolean;
   expectedModel?: string;
+  expectedSystemModel?: string;
+  expectedJudgeModel?: string;
+  expectedInternalModel?: string;
   expectedReasoningEffort?: BenchReasoningEffort;
+  expectedSystemReasoningEffort?: BenchReasoningEffort;
+  expectedJudgeReasoningEffort?: BenchReasoningEffort;
+  expectedInternalReasoningEffort?: BenchReasoningEffort;
   expectedServiceTier?: string;
   expectedRuntimeProfile?: BenchRuntimeProfile;
   expectedGitSha?: string;
@@ -151,8 +184,18 @@ export async function verifyPublicMatrixEvidence(
   options: VerifyPublicMatrixEvidenceOptions,
 ): Promise<PublicMatrixEvidenceReport> {
   const expectedModel = options.expectedModel ?? DEFAULT_MODEL;
+  const expectedModels: Record<ProviderRole, string> = {
+    systemProvider: options.expectedSystemModel ?? expectedModel,
+    judgeProvider: options.expectedJudgeModel ?? expectedModel,
+    internalProvider: options.expectedInternalModel ?? expectedModel,
+  };
   const expectedReasoningEffort =
     options.expectedReasoningEffort ?? DEFAULT_REASONING_EFFORT;
+  const expectedReasoningEfforts: Record<ProviderRole, BenchReasoningEffort> = {
+    systemProvider: options.expectedSystemReasoningEffort ?? expectedReasoningEffort,
+    judgeProvider: options.expectedJudgeReasoningEffort ?? expectedReasoningEffort,
+    internalProvider: options.expectedInternalReasoningEffort ?? expectedReasoningEffort,
+  };
   const expectedServiceTier = options.expectedServiceTier ?? DEFAULT_SERVICE_TIER;
   const expectedRuntimeProfile =
     options.expectedRuntimeProfile ?? DEFAULT_RUNTIME_PROFILE;
@@ -170,6 +213,22 @@ export async function verifyPublicMatrixEvidence(
     benchmark,
   }));
   const requireManifest = options.requireManifest ?? true;
+  const requireCodexCreditReceipt =
+    (options.requireCodexCreditReceipt ?? false) ||
+    (options.allowBoundedTrial ?? false);
+  const requireInternalProvider = options.requireInternalProvider ?? true;
+  const activeExpectedRoles = new Set<ProviderRole>([
+    "systemProvider",
+    "judgeProvider",
+    ...(requireInternalProvider ? (["internalProvider"] as const) : []),
+  ]);
+  if (!requireManifest && (requireCodexCreditReceipt || options.allowBoundedTrial)) {
+    issues.push({
+      code: "manifest-required-for-credit-evidence",
+      path: manifestPath,
+      message: "Codex credit and bounded-trial evidence cannot be verified with manifest checks disabled.",
+    });
+  }
   const manifest = requireManifest
     ? await loadReproManifest(manifestPath, issues)
     : undefined;
@@ -179,6 +238,8 @@ export async function verifyPublicMatrixEvidence(
       benchmarks,
       expectedGitSha,
       expectedRuntimeProfile,
+      requireCodexCreditReceipt,
+      allowBoundedTrial: options.allowBoundedTrial ?? false,
       issues,
     });
   }
@@ -227,6 +288,9 @@ export async function verifyPublicMatrixEvidence(
 
     row.resultId = result.meta.id;
     row.taskCount = result.results.tasks.length;
+    if (result.config.internalProvider?.provider === "codex-cli") {
+      activeExpectedRoles.add("internalProvider");
+    }
     if (manifestResult) {
       validateManifestResultIdentity(manifestResult.entry, result, resultPath, issues);
     }
@@ -240,13 +304,27 @@ export async function verifyPublicMatrixEvidence(
       );
     }
     validateResultEnvelope(result, resultPath, {
-      expectedModel,
-      expectedReasoningEffort,
+      expectedModels,
+      expectedReasoningEfforts,
       expectedRuntimeProfile,
       expectedGitSha,
-      requireInternalProvider: options.requireInternalProvider ?? true,
+      expectedLimit: options.allowBoundedTrial ? manifest?.run?.limit : undefined,
+      allowBoundedTrial: options.allowBoundedTrial ?? false,
+      requireInternalProvider,
       issues,
     });
+  }
+
+  if (requireCodexCreditReceipt && manifest?.codexCredit) {
+    validateCodexCreditReceipt(
+      manifest.codexCredit,
+      manifest.run?.id,
+      [...new Set(
+        [...activeExpectedRoles].map((role) => expectedModels[role]),
+      )],
+      manifestPath,
+      issues,
+    );
   }
 
   if (options.requireDiagnostics ?? true) {
@@ -255,8 +333,14 @@ export async function verifyPublicMatrixEvidence(
         ? manifest.run.id.trim()
         : undefined,
       requireRunId: requireManifest,
-      expectedModel,
-      expectedReasoningEffort,
+      expectedProviderProfiles: [...new Set(
+        [...activeExpectedRoles].map(
+          (role) => `${expectedModels[role]}\u0000${expectedReasoningEfforts[role]}`,
+        ),
+      )].map((profile) => {
+        const [model, reasoningEffort] = profile.split("\u0000");
+        return { model: model!, reasoningEffort: reasoningEffort as BenchReasoningEffort };
+      }),
       expectedServiceTier,
       issues,
     });
@@ -276,10 +360,12 @@ function validateResultEnvelope(
   result: BenchmarkResult,
   resultPath: string,
   options: {
-    expectedModel: string;
-    expectedReasoningEffort: BenchReasoningEffort;
+    expectedModels: Record<ProviderRole, string>;
+    expectedReasoningEfforts: Record<ProviderRole, BenchReasoningEffort>;
     expectedRuntimeProfile: BenchRuntimeProfile;
     expectedGitSha: string | undefined;
+    expectedLimit: number | undefined;
+    allowBoundedTrial: boolean;
     requireInternalProvider: boolean;
     issues: PublicMatrixEvidenceIssue[];
   },
@@ -303,6 +389,12 @@ function validateResultEnvelope(
   if (result.results.tasks.length === 0) {
     addIssue(options.issues, benchmark, resultPath, "empty-task-set", "Result has no per-task scores.");
   }
+  if (
+    options.expectedLimit !== undefined &&
+    result.results.tasks.length !== options.expectedLimit
+  ) {
+    addIssue(options.issues, benchmark, resultPath, "bounded-trial-task-count-mismatch", `Result has ${result.results.tasks.length} tasks; bounded trial requires manifest run.limit=${options.expectedLimit}.`);
+  }
   if (Object.keys(result.results.aggregates).length === 0) {
     addIssue(options.issues, benchmark, resultPath, "empty-aggregates", "Result has no aggregate metrics.");
   }
@@ -311,6 +403,7 @@ function validateResultEnvelope(
     benchmark,
     resultPath,
     result.config.benchmarkOptions,
+    options.allowBoundedTrial,
     options.issues,
   );
   for (const [metric, aggregate] of Object.entries(result.results.aggregates)) {
@@ -337,7 +430,10 @@ function validateResultEnvelope(
 
   validateProviderRole(result, resultPath, "systemProvider", result.config.systemProvider, options);
   validateProviderRole(result, resultPath, "judgeProvider", result.config.judgeProvider, options);
-  if (options.requireInternalProvider || result.config.internalProvider) {
+  if (
+    options.requireInternalProvider ||
+    result.config.internalProvider?.provider === "codex-cli"
+  ) {
     validateProviderRole(result, resultPath, "internalProvider", result.config.internalProvider ?? null, options);
   }
 }
@@ -378,6 +474,7 @@ function buildManifestArtifactHashIdentity(manifest: ReproManifest): unknown {
     configFiles: manifest.configFiles,
     datasets: manifest.datasets,
     results: manifest.results,
+    ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
 }
 
@@ -436,12 +533,26 @@ function validateFullDatasetRunOptions(
   benchmark: string,
   resultPath: string,
   benchmarkOptions: BenchmarkResult["config"]["benchmarkOptions"],
+  allowBoundedTrial: boolean,
   issues: PublicMatrixEvidenceIssue[],
 ): void {
   if (!benchmarkOptions || typeof benchmarkOptions !== "object") {
     return;
   }
-  const disallowedKeys = ["limit", "trialLimit", "taskFilter"] as const;
+  const boundedKeys = ["limit", "trialLimit"] as const;
+  if (allowBoundedTrial) {
+    for (const key of boundedKeys) {
+      if (
+        Object.prototype.hasOwnProperty.call(benchmarkOptions, key) &&
+        (!Number.isSafeInteger(benchmarkOptions[key]) || (benchmarkOptions[key] as number) <= 0)
+      ) {
+        addIssue(issues, benchmark, resultPath, "invalid-bounded-trial-limit", `benchmarkOptions.${key} must be a positive integer.`);
+      }
+    }
+  }
+  const disallowedKeys = allowBoundedTrial
+    ? (["taskFilter"] as const)
+    : ([...boundedKeys, "taskFilter"] as const);
   for (const key of disallowedKeys) {
     if (Object.prototype.hasOwnProperty.call(benchmarkOptions, key)) {
       addIssue(
@@ -461,12 +572,14 @@ function validateProviderRole(
   role: ProviderRole,
   provider: ProviderConfig | null,
   options: {
-    expectedModel: string;
-    expectedReasoningEffort: BenchReasoningEffort;
+    expectedModels: Record<ProviderRole, string>;
+    expectedReasoningEfforts: Record<ProviderRole, BenchReasoningEffort>;
     issues: PublicMatrixEvidenceIssue[];
   },
 ): void {
   const benchmark = result.meta.benchmark;
+  const expectedModel = options.expectedModels[role];
+  const expectedReasoningEffort = options.expectedReasoningEfforts[role];
   if (!provider) {
     addIssue(options.issues, benchmark, resultPath, `missing-${role}`, `${role} is missing.`);
     return;
@@ -474,11 +587,11 @@ function validateProviderRole(
   if (provider.provider !== "codex-cli") {
     addIssue(options.issues, benchmark, resultPath, `wrong-${role}-provider`, `${role}.provider must be codex-cli, got ${provider.provider}.`);
   }
-  if (provider.model !== options.expectedModel) {
-    addIssue(options.issues, benchmark, resultPath, `wrong-${role}-model`, `${role}.model must be ${options.expectedModel}, got ${provider.model}.`);
+  if (provider.model !== expectedModel) {
+    addIssue(options.issues, benchmark, resultPath, `wrong-${role}-model`, `${role}.model must be ${expectedModel}, got ${provider.model}.`);
   }
-  if (provider.reasoningEffort !== options.expectedReasoningEffort) {
-    addIssue(options.issues, benchmark, resultPath, `wrong-${role}-reasoning`, `${role}.reasoningEffort must be ${options.expectedReasoningEffort}, got ${String(provider.reasoningEffort)}.`);
+  if (provider.reasoningEffort !== expectedReasoningEffort) {
+    addIssue(options.issues, benchmark, resultPath, `wrong-${role}-reasoning`, `${role}.reasoningEffort must be ${expectedReasoningEffort}, got ${String(provider.reasoningEffort)}.`);
   }
 }
 
@@ -514,6 +627,8 @@ function validateManifest(
     benchmarks: string[];
     expectedGitSha: string | undefined;
     expectedRuntimeProfile: BenchRuntimeProfile;
+    requireCodexCreditReceipt: boolean;
+    allowBoundedTrial: boolean;
     issues: PublicMatrixEvidenceIssue[];
   },
 ): void {
@@ -563,18 +678,41 @@ function validateManifest(
       message: "Repro manifest must record run.id so shared Codex diagnostics can be scoped to this run.",
     });
   }
-  if (manifest.run && Object.prototype.hasOwnProperty.call(manifest.run, "limit")) {
+  const hasRunLimit =
+    manifest.run !== undefined &&
+    Object.prototype.hasOwnProperty.call(manifest.run, "limit");
+  if (options.allowBoundedTrial && !hasRunLimit) {
     options.issues.push({
-      code: "manifest-limited-run",
+      code: "manifest-bounded-trial-missing-limit",
       path: manifestPath,
-      message: "Repro manifest records run.limit; full public-matrix evidence must use the full dataset.",
+      message: "Bounded-trial mode requires a positive manifest run.limit.",
     });
+  }
+  if (hasRunLimit) {
+    if (
+      !options.allowBoundedTrial ||
+      !Number.isSafeInteger(manifest.run.limit) ||
+      (manifest.run.limit ?? 0) <= 0
+    ) {
+      options.issues.push({
+        code: "manifest-limited-run",
+        path: manifestPath,
+        message: "Repro manifest run.limit is allowed only as a positive integer in explicit bounded-trial mode.",
+      });
+    }
   }
   if (!manifest.run?.runtimeProfiles?.includes(options.expectedRuntimeProfile)) {
     options.issues.push({
       code: "manifest-missing-runtime-profile",
       path: manifestPath,
       message: `Expected manifest runtimeProfiles to include ${options.expectedRuntimeProfile}.`,
+    });
+  }
+  if (options.requireCodexCreditReceipt && !manifest.codexCredit) {
+    options.issues.push({
+      code: "manifest-missing-codex-credit-receipt",
+      path: manifestPath,
+      message: "This evidence gate requires a run-scoped Codex credit receipt.",
     });
   }
 
@@ -606,6 +744,166 @@ function validateManifest(
       addIssue(options.issues, benchmark, manifestPath, "manifest-result-wrong-git", `Expected manifest result git to match ${options.expectedGitSha}, got ${String(result.gitSha)}.`);
     }
   }
+}
+
+function validateCodexCreditReceipt(
+  receipt: CodexCreditReceipt,
+  manifestRunId: string | undefined,
+  expectedModels: string[],
+  manifestPath: string,
+  issues: PublicMatrixEvidenceIssue[],
+): void {
+  const numericFields = [
+    receipt.budgetCredits,
+    receipt.reserveCredits,
+    receipt.plannedSpendCeilingCredits,
+    receipt.totalSpentCredits,
+    receipt.totalRemainingCredits,
+  ];
+  const structurallyValid =
+    receipt.schemaVersion === 1 &&
+    isSha256(receipt.ledgerSha256) &&
+    numericFields.every(isFiniteNonNegativeNumber) &&
+    (receipt.budgetCredits ?? 0) > 0 &&
+    receipt.blocked === false &&
+    isValidCreditScope(receipt.cumulative) &&
+    isValidCreditScope(receipt.run) &&
+    isNonEmptyString(receipt.run?.id) &&
+    receipt.run?.id === manifestRunId &&
+    receipt.run!.calls! > 0 &&
+    receipt.run!.credits! > 0;
+  const accountingValid =
+    structurallyValid &&
+    nearlyEqual(
+      receipt.plannedSpendCeilingCredits!,
+      receipt.budgetCredits! - receipt.reserveCredits!,
+    ) &&
+    receipt.budgetCredits === 2_473 &&
+    receipt.reserveCredits === 473 &&
+    receipt.plannedSpendCeilingCredits! <= 2_000 &&
+    receipt.totalSpentCredits! <= receipt.plannedSpendCeilingCredits! &&
+    nearlyEqual(
+      receipt.totalRemainingCredits!,
+      receipt.budgetCredits! - receipt.totalSpentCredits!,
+    ) &&
+    nearlyEqual(receipt.cumulative!.credits!, receipt.totalSpentCredits!) &&
+    scopeDoesNotExceed(receipt.run!, receipt.cumulative!) &&
+    receipt.run!.models!.length === expectedModels.length &&
+    receipt.run!.models!.every(
+      (entry) =>
+        expectedModels.includes(entry.model!) && entry.calls! > 0 && entry.credits! > 0,
+    );
+  if (!accountingValid) {
+    issues.push({
+      code: "manifest-invalid-codex-credit-receipt",
+      path: manifestPath,
+      message:
+        "Codex credit receipt must be unblocked, within the 2,000-credit planned-spend ceiling, " +
+        "internally consistent, and scoped to manifest run.id.",
+    });
+  }
+}
+
+function isValidCreditScope(scope: CodexCreditReceiptScope | undefined): boolean {
+  if (!scope || !isValidCreditTotals(scope) || !Array.isArray(scope.models)) return false;
+  const modelNames = new Set<string>();
+  for (const model of scope.models) {
+    if (
+      !isNonEmptyString(model.model) ||
+      /gpt-5\.6-sol/i.test(model.model) ||
+      modelNames.has(model.model) ||
+      !isValidCreditTotals(model) ||
+      !isModelCreditConsistent(model)
+    ) {
+      return false;
+    }
+    modelNames.add(model.model);
+  }
+  return (
+    scope.models.reduce((sum, model) => sum + (model.calls ?? 0), 0) === scope.calls &&
+    nearlyEqual(
+      scope.models.reduce((sum, model) => sum + (model.credits ?? 0), 0),
+      scope.credits,
+    ) &&
+    (["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const)
+      .every(
+        (key) =>
+          scope.models!.reduce((sum, model) => sum + (model[key] ?? 0), 0) === scope[key],
+      )
+  );
+}
+
+function isModelCreditConsistent(
+  model: CodexCreditReceiptScope & { model?: string },
+): boolean {
+  try {
+    return nearlyEqual(
+      calculateCodexCredits(model.model!, {
+        inputTokens: model.inputTokens!,
+        cachedInputTokens: model.cachedInputTokens!,
+        outputTokens: model.outputTokens!,
+        reasoningOutputTokens: model.reasoningOutputTokens!,
+      }),
+      model.credits!,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isValidCreditTotals(scope: CodexCreditReceiptScope): boolean {
+  const counters = [
+    scope.inputTokens,
+    scope.cachedInputTokens,
+    scope.outputTokens,
+    scope.reasoningOutputTokens,
+  ];
+  if (
+    !Number.isSafeInteger(scope.calls) ||
+    (scope.calls ?? -1) < 0 ||
+    !isFiniteNonNegativeNumber(scope.credits) ||
+    !counters.every((value) => Number.isSafeInteger(value) && (value ?? -1) >= 0) ||
+    (scope.cachedInputTokens ?? 0) > (scope.inputTokens ?? 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function scopeDoesNotExceed(
+  run: CodexCreditReceiptScope,
+  cumulative: CodexCreditReceiptScope,
+): boolean {
+  const tokenKeys = [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ] as const;
+  return (
+    run.calls! <= cumulative.calls! &&
+    run.credits! <= cumulative.credits! + 1e-9 &&
+    tokenKeys.every((key) => run[key]! <= cumulative[key]!) &&
+    run.models!.every((runModel) => {
+      const cumulativeModel = cumulative.models!.find(
+        (candidate) => candidate.model === runModel.model,
+      );
+      return Boolean(
+        cumulativeModel &&
+        runModel.calls! <= cumulativeModel.calls! &&
+        runModel.credits! <= cumulativeModel.credits! + 1e-9 &&
+        tokenKeys.every((key) => runModel[key]! <= cumulativeModel[key]!),
+      );
+    })
+  );
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1e-9;
 }
 
 async function resolveManifestResult(
@@ -775,8 +1073,10 @@ async function validateDiagnostics(
   options: {
     expectedRunId: string | undefined;
     requireRunId: boolean;
-    expectedModel: string;
-    expectedReasoningEffort: BenchReasoningEffort;
+    expectedProviderProfiles: Array<{
+      model: string;
+      reasoningEffort: BenchReasoningEffort;
+    }>;
     expectedServiceTier: string;
     issues: PublicMatrixEvidenceIssue[];
   },
@@ -812,6 +1112,7 @@ async function validateDiagnostics(
   }
 
   let checked = 0;
+  const seenProfiles = new Set<string>();
   for (const file of files) {
     let record: CodexDiagnosticRecord;
     try {
@@ -831,11 +1132,14 @@ async function validateDiagnostics(
     if (record.provider !== "codex-cli") {
       options.issues.push({ code: "wrong-diagnostic-provider", path: file, message: `Expected provider=codex-cli, got ${String(record.provider)}.` });
     }
-    if (record.model !== options.expectedModel) {
-      options.issues.push({ code: "wrong-diagnostic-model", path: file, message: `Expected model=${options.expectedModel}, got ${String(record.model)}.` });
+    const expectedModelProfiles = options.expectedProviderProfiles.filter(
+      (profile) => profile.model === record.model,
+    );
+    if (expectedModelProfiles.length === 0) {
+      options.issues.push({ code: "wrong-diagnostic-model", path: file, message: `Expected one of models=${options.expectedProviderProfiles.map((profile) => profile.model).join(",")}, got ${String(record.model)}.` });
     }
-    if (record.reasoningEffort !== options.expectedReasoningEffort) {
-      options.issues.push({ code: "wrong-diagnostic-reasoning", path: file, message: `Expected reasoningEffort=${options.expectedReasoningEffort}, got ${String(record.reasoningEffort)}.` });
+    if (!expectedModelProfiles.some((profile) => profile.reasoningEffort === record.reasoningEffort)) {
+      options.issues.push({ code: "wrong-diagnostic-reasoning", path: file, message: `Expected reasoningEffort=${expectedModelProfiles.map((profile) => profile.reasoningEffort).join(",")}, got ${String(record.reasoningEffort)}.` });
     }
     if (record.serviceTier !== options.expectedServiceTier) {
       options.issues.push({ code: "wrong-diagnostic-service-tier", path: file, message: `Expected serviceTier=${options.expectedServiceTier}, got ${String(record.serviceTier)}.` });
@@ -846,6 +1150,16 @@ async function validateDiagnostics(
     if (record.result?.status !== 0 || record.result?.signal) {
       options.issues.push({ code: "diagnostic-nonzero-exit", path: file, message: `Diagnostic result was status=${String(record.result?.status)} signal=${String(record.result?.signal)}.` });
     }
+    if (
+      record.provider === "codex-cli" &&
+      expectedModelProfiles.some((profile) => profile.reasoningEffort === record.reasoningEffort) &&
+      record.serviceTier === options.expectedServiceTier &&
+      !record.error &&
+      record.result?.status === 0 &&
+      !record.result.signal
+    ) {
+      seenProfiles.add(`${record.model}\u0000${record.reasoningEffort}`);
+    }
   }
   if (options.expectedRunId && checked === 0) {
     options.issues.push({
@@ -853,6 +1167,15 @@ async function validateDiagnostics(
       path: diagnosticsDir,
       message: `Codex CLI diagnostics directory contains no JSON records for manifest run.id=${options.expectedRunId}.`,
     });
+  }
+  for (const profile of options.expectedProviderProfiles) {
+    if (!seenProfiles.has(`${profile.model}\u0000${profile.reasoningEffort}`)) {
+      options.issues.push({
+        code: "missing-codex-diagnostic-profile",
+        path: diagnosticsDir,
+        message: `No successful diagnostic covered model=${profile.model} reasoningEffort=${profile.reasoningEffort}.`,
+      });
+    }
   }
   return checked;
 }
@@ -972,9 +1295,17 @@ function parseArgs(args: string[]): VerifyPublicMatrixEvidenceOptions & { json: 
   let manifestPath: string | undefined;
   let requireManifest = true;
   let requireDiagnostics = true;
+  let requireCodexCreditReceipt = false;
+  let allowBoundedTrial = false;
   let requireInternalProvider = true;
   let expectedModel = DEFAULT_MODEL;
+  let expectedSystemModel: string | undefined;
+  let expectedJudgeModel: string | undefined;
+  let expectedInternalModel: string | undefined;
   let expectedReasoningEffort: BenchReasoningEffort = DEFAULT_REASONING_EFFORT;
+  let expectedSystemReasoningEffort: BenchReasoningEffort | undefined;
+  let expectedJudgeReasoningEffort: BenchReasoningEffort | undefined;
+  let expectedInternalReasoningEffort: BenchReasoningEffort | undefined;
   let expectedServiceTier = DEFAULT_SERVICE_TIER;
   let expectedRuntimeProfile: BenchRuntimeProfile = DEFAULT_RUNTIME_PROFILE;
   let expectedGitSha: string | undefined;
@@ -1007,9 +1338,33 @@ function parseArgs(args: string[]): VerifyPublicMatrixEvidenceOptions & { json: 
         break;
       case "--model":
         expectedModel = next();
+        expectedSystemModel = undefined;
+        expectedJudgeModel = undefined;
+        expectedInternalModel = undefined;
+        break;
+      case "--system-model":
+        expectedSystemModel = next();
+        break;
+      case "--judge-model":
+        expectedJudgeModel = next();
+        break;
+      case "--internal-model":
+        expectedInternalModel = next();
         break;
       case "--reasoning-effort":
         expectedReasoningEffort = parseReasoningEffort(next());
+        expectedSystemReasoningEffort = undefined;
+        expectedJudgeReasoningEffort = undefined;
+        expectedInternalReasoningEffort = undefined;
+        break;
+      case "--system-reasoning-effort":
+        expectedSystemReasoningEffort = parseReasoningEffort(next());
+        break;
+      case "--judge-reasoning-effort":
+        expectedJudgeReasoningEffort = parseReasoningEffort(next());
+        break;
+      case "--internal-reasoning-effort":
+        expectedInternalReasoningEffort = parseReasoningEffort(next());
         break;
       case "--service-tier":
         expectedServiceTier = next();
@@ -1030,6 +1385,13 @@ function parseArgs(args: string[]): VerifyPublicMatrixEvidenceOptions & { json: 
         break;
       case "--no-diagnostics":
         requireDiagnostics = false;
+        break;
+      case "--require-codex-credit-receipt":
+        requireCodexCreditReceipt = true;
+        break;
+      case "--allow-bounded-trial":
+        allowBoundedTrial = true;
+        requireCodexCreditReceipt = true;
         break;
       case "--allow-missing-internal-provider":
         requireInternalProvider = false;
@@ -1052,9 +1414,17 @@ function parseArgs(args: string[]): VerifyPublicMatrixEvidenceOptions & { json: 
     ...(manifestPath ? { manifestPath } : {}),
     requireManifest,
     requireDiagnostics,
+    requireCodexCreditReceipt,
+    allowBoundedTrial,
     requireInternalProvider,
     expectedModel,
+    ...(expectedSystemModel ? { expectedSystemModel } : {}),
+    ...(expectedJudgeModel ? { expectedJudgeModel } : {}),
+    ...(expectedInternalModel ? { expectedInternalModel } : {}),
     expectedReasoningEffort,
+    ...(expectedSystemReasoningEffort ? { expectedSystemReasoningEffort } : {}),
+    ...(expectedJudgeReasoningEffort ? { expectedJudgeReasoningEffort } : {}),
+    ...(expectedInternalReasoningEffort ? { expectedInternalReasoningEffort } : {}),
     expectedServiceTier,
     expectedRuntimeProfile,
     expectedGitSha,
@@ -1088,13 +1458,21 @@ Options:
   --manifest <path>                   Repro manifest path (default: <results-dir>/MANIFEST.json)
   --benchmarks <ids>                  Comma-separated subset; defaults to all public benchmarks
   --model <id>                        Expected Codex model (default: gpt-5.5)
+  --system-model <id>                 Expected system-provider model (overrides --model)
+  --judge-model <id>                  Expected judge-provider model (overrides --model)
+  --internal-model <id>               Expected internal-provider model (overrides --model)
   --reasoning-effort <value>          Expected reasoning effort (default: xhigh)
+  --system-reasoning-effort <value>   Expected system reasoning (overrides shared value)
+  --judge-reasoning-effort <value>    Expected judge reasoning (overrides shared value)
+  --internal-reasoning-effort <value> Expected internal reasoning (overrides shared value)
   --service-tier <value>              Expected Codex service tier (default: fast)
   --runtime-profile <profile>         Expected runtime profile (default: real)
   --git-sha <sha>                     Expected result git SHA
   --skip-git                          Do not compare result/manifest git SHA
   --no-manifest                       Skip MANIFEST.json checks
   --no-diagnostics                    Skip Codex diagnostics checks
+  --require-codex-credit-receipt      Require valid run-scoped <=2,000-credit accounting
+  --allow-bounded-trial               Permit positive limits; also requires credit accounting
   --allow-missing-internal-provider   Do not require internalProvider to be Codex CLI
   --json                              Print JSON report
 `);

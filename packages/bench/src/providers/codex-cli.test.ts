@@ -686,6 +686,7 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
       entries: Array<{
         at: string;
         model: string;
+        runId: string;
         credits: number;
         inputTokens: number;
         cachedInputTokens: number;
@@ -693,7 +694,9 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
         reasoningOutputTokens: number;
       }>;
     };
-    assert.deepEqual(ledger.entries[0], {
+    const { runId, ...entry } = ledger.entries[0]!;
+    assert.equal(runId.length > 0, true);
+    assert.deepEqual(entry, {
       at: ledger.entries[0]?.at,
       model: "gpt-5.6-luna",
       credits: 0.00355,

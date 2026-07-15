@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ interface CodexCreditLedgerEntry extends CodexCliNativeUsage {
   at: string;
   model: string;
   credits: number;
+  runId?: string;
 }
 
 interface CodexCreditLedger {
@@ -37,6 +39,32 @@ export interface CodexCreditBudgetConfig {
   reserveCredits: number;
   ledgerPath: string;
   allowSol: boolean;
+  runId?: string;
+}
+
+export interface CodexCreditReceiptScope extends CodexCliNativeUsage {
+  calls: number;
+  credits: number;
+  models: Array<
+    CodexCliNativeUsage & {
+      model: string;
+      calls: number;
+      credits: number;
+    }
+  >;
+}
+
+export interface CodexCreditReceipt {
+  schemaVersion: 1;
+  ledgerSha256: string;
+  budgetCredits: number;
+  reserveCredits: number;
+  plannedSpendCeilingCredits: number;
+  totalSpentCredits: number;
+  totalRemainingCredits: number;
+  blocked: boolean;
+  cumulative: CodexCreditReceiptScope;
+  run?: CodexCreditReceiptScope & { id: string };
 }
 
 const ONE_MILLION = 1_000_000;
@@ -74,6 +102,7 @@ export class CodexCreditDispatchError extends Error {
 
 export function resolveCodexCreditBudgetConfig(
   env: NodeJS.ProcessEnv = process.env,
+  fallbackRunId?: string,
 ): CodexCreditBudgetConfig | undefined {
   const rawBudget = env.REMNIC_BENCH_CODEX_CREDIT_BUDGET?.trim();
   if (!rawBudget) return undefined;
@@ -104,6 +133,7 @@ export function resolveCodexCreditBudgetConfig(
         ".remnic/bench/codex-credit-ledger.json",
     ),
   );
+  const runId = parseOptionalRunId(env.REMNIC_BENCH_RUN_ID) ?? parseOptionalRunId(fallbackRunId);
   return {
     budgetCredits,
     reserveCredits,
@@ -111,6 +141,7 @@ export function resolveCodexCreditBudgetConfig(
     allowSol: /^(?:1|true|yes|on)$/i.test(
       env.REMNIC_BENCH_CODEX_ALLOW_SOL?.trim() ?? "",
     ),
+    ...(runId ? { runId } : {}),
   };
 }
 
@@ -146,10 +177,12 @@ export async function runWithinCodexCreditBudget<T>(args: {
       );
     }
     const usableCredits = args.config.budgetCredits - args.config.reserveCredits;
-    if (ledger.spentCredits >= usableCredits) {
+    const dispatchHeadroom = usableCredits - ledger.spentCredits;
+    if (dispatchHeadroom < MAX_BOUNDED_CALL_CREDITS) {
       throw new Error(
-        `Codex credit budget exhausted: ${ledger.spentCredits.toFixed(3)} spent; ` +
-          `${usableCredits.toFixed(3)} usable after the ${args.config.reserveCredits.toFixed(3)} safety reserve.`,
+        `Codex credit budget cannot safely dispatch another call: ${ledger.spentCredits.toFixed(3)} spent; ` +
+          `${dispatchHeadroom.toFixed(3)} remains below the ${usableCredits.toFixed(3)} planned-spend ceiling, ` +
+          `but ${MAX_BOUNDED_CALL_CREDITS.toFixed(3)} credits of worst-case call headroom are required.`,
       );
     }
 
@@ -186,6 +219,7 @@ export async function runWithinCodexCreditBudget<T>(args: {
           at: new Date().toISOString(),
           model: args.model,
           credits,
+          ...(args.config.runId ? { runId: args.config.runId } : {}),
           ...result.usage,
         },
       ],
@@ -194,10 +228,10 @@ export async function runWithinCodexCreditBudget<T>(args: {
     await writeLockState(lock, "settled");
     accountingSettled = true;
     args.onUsagePersisted?.(result.usage);
-    if (nextSpent > args.config.budgetCredits) {
+    if (nextSpent > usableCredits) {
       throw new Error(
-        `Codex credit budget exceeded by completed call: ${nextSpent.toFixed(3)} > ` +
-          `${args.config.budgetCredits.toFixed(3)} credits. Usage was persisted; stop the benchmark immediately.`,
+        `Codex planned-spend ceiling exceeded by completed call: ${nextSpent.toFixed(3)} > ` +
+          `${usableCredits.toFixed(3)} credits. Usage was persisted; stop the benchmark immediately.`,
       );
     }
     return result.value;
@@ -401,6 +435,34 @@ export function calculateCodexCredits(
   );
 }
 
+export async function buildCodexCreditReceipt(
+  ledgerPath: string,
+  runId?: string,
+): Promise<CodexCreditReceipt> {
+  const resolvedPath = path.resolve(expandHomeRelativePath(ledgerPath));
+  const contents = await readFile(resolvedPath);
+  const ledger = parseLedger(JSON.parse(contents.toString("utf8")) as Partial<CodexCreditLedger>);
+  const normalizedRunId = parseOptionalRunId(runId);
+  const cumulative = summarizeLedgerEntries(ledger.entries);
+  const runEntries = normalizedRunId
+    ? ledger.entries.filter((entry) => entry.runId === normalizedRunId)
+    : [];
+  return {
+    schemaVersion: 1,
+    ledgerSha256: createHash("sha256").update(contents).digest("hex"),
+    budgetCredits: ledger.budgetCredits,
+    reserveCredits: ledger.reserveCredits,
+    plannedSpendCeilingCredits: ledger.budgetCredits - ledger.reserveCredits,
+    totalSpentCredits: ledger.spentCredits,
+    totalRemainingCredits: ledger.budgetCredits - ledger.spentCredits,
+    blocked: ledger.blockedReason !== undefined,
+    cumulative,
+    ...(normalizedRunId
+      ? { run: { id: normalizedRunId, ...summarizeLedgerEntries(runEntries) } }
+      : {}),
+  };
+}
+
 function resolveRate(model: string): CodexCreditRate {
   const match = CREDIT_RATES.find(([pattern]) => pattern.test(model));
   if (!match) {
@@ -424,19 +486,16 @@ function assertModelAllowed(model: string, config: CodexCreditBudgetConfig): voi
 
 async function readLedger(config: CodexCreditBudgetConfig): Promise<CodexCreditLedger> {
   try {
-    const parsed = JSON.parse(await readFile(config.ledgerPath, "utf8")) as Partial<CodexCreditLedger>;
+    const parsed = parseLedger(
+      JSON.parse(await readFile(config.ledgerPath, "utf8")) as Partial<CodexCreditLedger>,
+    );
     if (
-      parsed.schemaVersion !== 1 ||
       parsed.budgetCredits !== config.budgetCredits ||
-      parsed.reserveCredits !== config.reserveCredits ||
-      typeof parsed.spentCredits !== "number" ||
-      !Number.isFinite(parsed.spentCredits) ||
-      parsed.spentCredits < 0 ||
-      !Array.isArray(parsed.entries)
+      parsed.reserveCredits !== config.reserveCredits
     ) {
       throw new Error("ledger schema or budget does not match this run");
     }
-    return parsed as CodexCreditLedger;
+    return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw new Error(`Invalid Codex credit ledger at ${config.ledgerPath}: ${String(error)}`);
@@ -449,6 +508,102 @@ async function readLedger(config: CodexCreditBudgetConfig): Promise<CodexCreditL
       entries: [],
     };
   }
+}
+
+function parseLedger(parsed: Partial<CodexCreditLedger>): CodexCreditLedger {
+  const entryCredits = Array.isArray(parsed.entries)
+    ? parsed.entries.reduce(
+        (sum, entry) =>
+          sum +
+          (typeof (entry as Partial<CodexCreditLedgerEntry>)?.credits === "number"
+            ? (entry as Partial<CodexCreditLedgerEntry>).credits ?? 0
+            : 0),
+        0,
+      )
+    : Number.NaN;
+  if (
+    parsed.schemaVersion !== 1 ||
+    typeof parsed.budgetCredits !== "number" ||
+    !Number.isFinite(parsed.budgetCredits) ||
+    parsed.budgetCredits <= 0 ||
+    typeof parsed.reserveCredits !== "number" ||
+    !Number.isFinite(parsed.reserveCredits) ||
+    parsed.reserveCredits < 0 ||
+    parsed.reserveCredits >= parsed.budgetCredits ||
+    typeof parsed.spentCredits !== "number" ||
+    !Number.isFinite(parsed.spentCredits) ||
+    parsed.spentCredits < 0 ||
+    !Array.isArray(parsed.entries) ||
+    !parsed.entries.every(isLedgerEntry) ||
+    Math.abs(entryCredits - parsed.spentCredits) > 1e-9 ||
+    (parsed.blockedReason !== undefined && typeof parsed.blockedReason !== "string")
+  ) {
+    throw new Error("ledger schema is invalid");
+  }
+  return parsed as CodexCreditLedger;
+}
+
+function isLedgerEntry(entry: unknown): entry is CodexCreditLedgerEntry {
+  if (!entry || typeof entry !== "object") return false;
+  const candidate = entry as Partial<CodexCreditLedgerEntry>;
+  return (
+    typeof candidate.at === "string" &&
+    typeof candidate.model === "string" &&
+    candidate.model.length > 0 &&
+    typeof candidate.credits === "number" &&
+    Number.isFinite(candidate.credits) &&
+    candidate.credits >= 0 &&
+    (candidate.runId === undefined || isValidStoredRunId(candidate.runId)) &&
+    readCounter(candidate.inputTokens) !== undefined &&
+    readCounter(candidate.cachedInputTokens) !== undefined &&
+    readCounter(candidate.outputTokens) !== undefined &&
+    readCounter(candidate.reasoningOutputTokens) !== undefined &&
+    (candidate.cachedInputTokens ?? 0) <= (candidate.inputTokens ?? 0) &&
+    isEntryCreditConsistent(candidate as CodexCreditLedgerEntry)
+  );
+}
+
+function isEntryCreditConsistent(entry: CodexCreditLedgerEntry): boolean {
+  try {
+    return Math.abs(calculateCodexCredits(entry.model, entry) - entry.credits) <= 1e-9;
+  } catch {
+    return false;
+  }
+}
+
+function summarizeLedgerEntries(entries: CodexCreditLedgerEntry[]): CodexCreditReceiptScope {
+  const byModel = new Map<string, CodexCreditLedgerEntry[]>();
+  for (const entry of entries) {
+    const modelEntries = byModel.get(entry.model) ?? [];
+    modelEntries.push(entry);
+    byModel.set(entry.model, modelEntries);
+  }
+  const totals = summarizeUsage(entries);
+  return {
+    calls: entries.length,
+    credits: entries.reduce((sum, entry) => sum + entry.credits, 0),
+    ...totals,
+    models: [...byModel.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([model, modelEntries]) => ({
+        model,
+        calls: modelEntries.length,
+        credits: modelEntries.reduce((sum, entry) => sum + entry.credits, 0),
+        ...summarizeUsage(modelEntries),
+      })),
+  };
+}
+
+function summarizeUsage(entries: CodexCreditLedgerEntry[]): CodexCliNativeUsage {
+  return entries.reduce<CodexCliNativeUsage>(
+    (totals, entry) => ({
+      inputTokens: totals.inputTokens + entry.inputTokens,
+      cachedInputTokens: totals.cachedInputTokens + entry.cachedInputTokens,
+      outputTokens: totals.outputTokens + entry.outputTokens,
+      reasoningOutputTokens: totals.reasoningOutputTokens + entry.reasoningOutputTokens,
+    }),
+    { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+  );
 }
 
 async function writeLedger(filePath: string, ledger: CodexCreditLedger): Promise<void> {
@@ -497,6 +652,33 @@ function parseNonNegativeNumber(value: string, name: string): number {
     throw new Error(`${name} must be a finite non-negative number`);
   }
   return parsed;
+}
+
+function parseOptionalRunId(value: string | undefined): string | undefined {
+  const runId = value?.trim();
+  if (!runId) return undefined;
+  if (runId.length > 128 || hasControlCharacters(runId)) {
+    throw new Error("REMNIC_BENCH_RUN_ID must be at most 128 characters without control characters");
+  }
+  return runId;
+}
+
+function isValidStoredRunId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 128 &&
+    value === value.trim() &&
+    !hasControlCharacters(value)
+  );
+}
+
+function hasControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || codePoint === 0x7f) return true;
+  }
+  return false;
 }
 
 export const __codexCreditBudgetTestHooks = {
