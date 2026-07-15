@@ -108,7 +108,6 @@ export interface HeuristicResolutionResult {
 /**
  * Derive CALLS edge assertions for a freshly parsed batch. Pure and
  * deterministic: output order follows input order (files, then call
- * sites), so repeated runs over the same IR are byte-identical (rule 38).
  */
 export function deriveHeuristicEdges(
   batch: readonly FileIR[],
@@ -169,7 +168,7 @@ export function deriveHeuristicEdges(
     // the dst ONLY within the declared target file (#1894 review).
     const importBindings = new Map<
       string,
-      Array<{ exported: string; hint: string; enclosing: string | undefined }>
+      Array<{ exported: string; hint: string; enclosing: string | undefined; invisible?: boolean }>
     >();
     for (const imp of ir.imports) {
       // Two relative-import spellings bind (cursor review on #1894):
