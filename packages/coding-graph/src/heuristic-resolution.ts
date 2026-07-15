@@ -254,7 +254,10 @@ export function deriveHeuristicEdges(
       }
 
       resolved += 1;
-      const key = `${src.qualifiedName}\u0000${dstQualifiedName}`;
+      // The hint is part of edge identity (codex review on #1894): two
+      // aliased imports of the same exported name from different modules
+      // resolve to different nodes at the store, so both must survive.
+      const key = `${src.qualifiedName}\u0000${dstQualifiedName}\u0000${dstPathHint ?? ""}`;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       edges.push({

@@ -3338,43 +3338,41 @@ function resolveNodeId(
 
 /**
  * Resolve a dst node constrained to a path hint (issue #1894 review): the
- * node's file path must be the hint verbatim, `<hint>.<ext>`, or
- * `<hint>/index.<ext>`, or `<hint>/__init__.<ext>` (Python packages).
- * `substr` prefix comparisons (not LIKE) so hint
- * characters are never pattern metacharacters. Zero or multiple matches
- * return `undefined` — the edge is dropped rather than guessed (same
- * conservative policy as {@link resolveNodeId}).
+ * node's file path must be the hint verbatim, `<hint>.<ext>`,
+ * `<hint>/index.<ext>`, or `<hint>/__init__.<ext>` (Python packages) —
+ * where `<ext>` is a SINGLE dot-free extension segment, so `main.test.ts`
+ * and `main.d.ts` never satisfy a `main` hint (they are not what a module
+ * resolver would load for `./main`). Candidate rows are fetched by
+ * qualified name and the path shape is checked in JS: no LIKE/GLOB, so
+ * hint characters are never pattern metacharacters. Zero or multiple
+ * matches return `undefined` — the edge is dropped rather than guessed
+ * (same conservative policy as {@link resolveNodeId}).
  */
 function resolveNodeIdWithPathHint(
   qualifiedName: string,
   pathHint: string,
   db: BetterSqlite3Database,
 ): string | undefined {
-  const rows = expectRows<{ id: string }>(
+  const rows = expectRows<{ id: string; path: string }>(
     db
       .prepare(
-        `SELECT n.id FROM nodes n JOIN files f ON n.file_id = f.id
+        `SELECT n.id, f.path FROM nodes n JOIN files f ON n.file_id = f.id
           WHERE n.qualified_name = ?
-            AND (f.path = ?
-              OR substr(f.path, 1, ?) = ?
-              OR substr(f.path, 1, ?) = ?
-              OR substr(f.path, 1, ?) = ?)
           ORDER BY f.path, n.id`,
       )
-      .all(
-        qualifiedName,
-        pathHint,
-        pathHint.length + 1,
-        `${pathHint}.`,
-        pathHint.length + 7,
-        `${pathHint}/index.`,
-        pathHint.length + 10,
-        `${pathHint}/__init__.`,
-      ),
-    ["id"],
+      .all(qualifiedName),
+    ["id", "path"],
   );
-  if (rows.length !== 1) return undefined;
-  return rows[0]?.id;
+  const matches = rows.filter((row) => {
+    if (row.path === pathHint) return true;
+    if (!row.path.startsWith(pathHint)) return false;
+    const rest = row.path.slice(pathHint.length);
+    // ".<ext>" | "/index.<ext>" | "/__init__.<ext>" — single extension
+    // segment only (no further dots or separators).
+    return /^(?:\.[^./]+|\/(?:index|__init__)\.[^./]+)$/.test(rest);
+  });
+  if (matches.length !== 1) return undefined;
+  return matches[0]?.id;
 }
 
 /**

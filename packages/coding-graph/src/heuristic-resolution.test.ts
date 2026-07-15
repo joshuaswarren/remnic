@@ -422,3 +422,28 @@ test("python dot-style import escaping the root never binds", () => {
   const result = deriveHeuristicEdges([ir]);
   assert.deepEqual(firstFile(result).edges, []);
 });
+
+test("same exported name from two modules yields two hinted edges (codex review)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "run", qualifiedName: "run", span: span(60, 160) },
+    ],
+    imports: [
+      { module: "./a", importedNames: ["foo"], bindings: [{ exported: "foo", local: "fooA" }], span: span(0, 28) },
+      { module: "./b", importedNames: ["foo"], bindings: [{ exported: "foo", local: "fooB" }], span: span(29, 57) },
+    ],
+    callSites: [
+      { calleeNameCandidates: ["fooA"], span: span(80, 86) },
+      { calleeNameCandidates: ["fooB"], span: span(100, 106) },
+    ],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => [e.dstQualifiedName, e.dstPathHint]),
+    [
+      ["foo", "a"],
+      ["foo", "b"],
+    ],
+  );
+});

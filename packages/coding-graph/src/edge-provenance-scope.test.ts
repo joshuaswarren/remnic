@@ -380,3 +380,47 @@ test("a path-hinted edge whose target file is not indexed is dropped, never glob
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a path hint never matches test/declaration filename variants (codex review)", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    const seeded = await store.upsertFileBatch([
+      // main.test.ts exports a greet too — a module resolver would never
+      // load it for "./main", so the hint must ignore it.
+      {
+        ...twoSymbolFile({ path: "main.test.ts", contentHash: "hash-test" }),
+        symbols: [
+          { kind: "function", name: "greet", qualifiedName: "greet", span: span(0, 40) },
+        ],
+      },
+      twoSymbolFile(),
+      {
+        ...twoSymbolFile({ path: "util.ts", contentHash: "hash-util" }),
+        symbols: [
+          { kind: "function", name: "shout", qualifiedName: "shout", span: span(0, 40) },
+        ],
+        edges: [
+          {
+            srcQualifiedName: "shout",
+            dstQualifiedName: "greet",
+            type: "CALLS",
+            confidence: 0.8,
+            provenance: "heuristic",
+            dstPathHint: "main",
+          },
+        ],
+      },
+    ]);
+    assert.ok(seeded.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.deepEqual(
+      stats.stats.edgesByType,
+      { CALLS: 1 },
+      "bound main.ts despite the main.test.ts decoy (not ambiguous-dropped)",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
