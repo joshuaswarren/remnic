@@ -144,6 +144,13 @@ export interface EdgeIR {
    * can never bind an unrelated same-named symbol elsewhere in the repo.
    */
   readonly dstPathHint?: string;
+  /**
+   * Language of the importing file (issue #1894 round 13): constrains the
+   * hinted dst's file extension to that language's module-resolution set
+   * so a polyglot repo cannot cross-bind a JS import to a same-named .py
+   * file.
+   */
+  readonly dstImporterLanguage?: string;
 }
 
 /**
@@ -1777,7 +1784,12 @@ export class GraphStore {
       // file — never via the global bare-name fallback; unhinted edges
       // keep the batch-map + full-DB fallback.
       const dstId = edge.dstPathHint
-        ? resolveNodeIdWithPathHint(edge.dstQualifiedName, edge.dstPathHint, this.db)
+        ? resolveNodeIdWithPathHint(
+            edge.dstQualifiedName,
+            edge.dstPathHint,
+            this.db,
+            edge.dstImporterLanguage,
+          )
         : resolveNodeId(edge.dstQualifiedName, qualifiedNameToId, this.db);
       if (!dstId) continue;
       const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
@@ -3355,11 +3367,52 @@ function resolveNodeId(
  * matches return `undefined` — the edge is dropped rather than guessed
  * (same conservative policy as {@link resolveNodeId}).
  */
+/**
+ * Language families and the file extensions a module resolver in that
+ * family accepts (issue #1894 round 13). A polyglot repo cannot let a
+ * JS import bind a same-named .py file: constrain by importer language.
+ */
+const LANG_FAMILY_EXTENSIONS: Record<string, ReadonlySet<string>> = {
+  js: new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs"]),
+  python: new Set(["py", "pyi"]),
+  ruby: new Set(["rb"]),
+  go: new Set(["go"]),
+  rust: new Set(["rs"]),
+  php: new Set(["php"]),
+  java: new Set(["java"]),
+  csharp: new Set(["cs"]),
+  cpp: new Set(["cc", "cpp", "cxx", "c", "hh", "hpp", "hxx", "h"]),
+  kotlin: new Set(["kt"]),
+  swift: new Set(["swift"]),
+  bash: new Set(["sh", "bash"]),
+};
+
+const IMPORTER_LANG_FAMILY: Record<string, keyof typeof LANG_FAMILY_EXTENSIONS> = {
+  typescript: "js",
+  tsx: "js",
+  javascript: "js",
+  python: "python",
+  ruby: "ruby",
+  go: "go",
+  rust: "rust",
+  php: "php",
+  java: "java",
+  csharp: "csharp",
+  c: "cpp",
+  cpp: "cpp",
+  kotlin: "kotlin",
+  swift: "swift",
+  bash: "bash",
+};
+
 function resolveNodeIdWithPathHint(
   qualifiedName: string,
   pathHint: string,
   db: BetterSqlite3Database,
+  importerLanguage?: string,
 ): string | undefined {
+  const family = importerLanguage ? IMPORTER_LANG_FAMILY[importerLanguage] : undefined;
+  const allowedExts = family ? LANG_FAMILY_EXTENSIONS[family] : undefined;
   const rows = expectRows<{ id: string; path: string }>(
     db
       .prepare(
@@ -3374,9 +3427,12 @@ function resolveNodeIdWithPathHint(
     if (row.path === pathHint) return true;
     if (!row.path.startsWith(pathHint)) return false;
     const rest = row.path.slice(pathHint.length);
-    // ".<ext>" | "/index.<ext>" | "/__init__.<ext>" — single extension
-    // segment only (no further dots or separators).
-    return /^(?:\.[^./]+|\/(?:index|__init__)\.[^./]+)$/.test(rest);
+    const m = /^(?:\.([^./]+)|\/(?:index|__init__)\.([^./]+))$/.exec(rest);
+    if (!m) return false;
+    const ext = m[1] ?? m[2];
+    // When the importer's language family is known, only that family's
+    // extensions may satisfy the hint; otherwise any single extension.
+    return !allowedExts || allowedExts.has(ext);
   });
   if (matches.length !== 1) return undefined;
   return matches[0]?.id;

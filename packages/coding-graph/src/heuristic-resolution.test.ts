@@ -82,6 +82,7 @@ test("import-bound cross-file call emits an edge for the store to resolve", () =
       confidence: HEURISTIC_CONFIDENCE_IMPORT_BOUND,
       provenance: "heuristic",
       dstPathHint: "main",
+      dstImporterLanguage: "typescript",
     },
   ]);
 });

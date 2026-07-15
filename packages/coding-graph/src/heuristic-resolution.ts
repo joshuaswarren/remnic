@@ -169,7 +169,7 @@ export function deriveHeuristicEdges(
     // the dst ONLY within the declared target file (#1894 review).
     const importBindings = new Map<
       string,
-      { exported: string; hint: string; enclosing: string | undefined }
+      Array<{ exported: string; hint: string; enclosing: string | undefined }>
     >();
     for (const imp of ir.imports) {
       // Two relative-import spellings bind (cursor review on #1894):
@@ -219,12 +219,29 @@ export function deriveHeuristicEdges(
           enclosing = { qualifiedName: sym.qualifiedName, size };
         }
       }
+      // A local name can be imported in more than one scope (codex review
+      // round 13); keep them all and choose the innermost matching one at
+      // the call site. Class-body imports are class attributes and are NOT
+      // bare-call-visible, so a class-kind enclosing is filtered out at
+      // lookup time.
+      const enclosingKind =
+        enclosing === undefined ? undefined : kindOf.get(enclosing.qualifiedName);
+      const visible =
+        enclosingKind === undefined ||
+        (enclosingKind !== "class" &&
+          enclosingKind !== "interface" &&
+          enclosingKind !== "enum");
       for (const b of bindings) {
-        importBindings.set(b.local, {
+        const list = importBindings.get(b.local) ?? [];
+        list.push({
           exported: b.exported,
           hint,
-          enclosing: enclosing?.qualifiedName,
+          enclosing: visible ? enclosing?.qualifiedName : undefined,
+          // A class-body import is genuinely invisible: store it with a
+          // sentinel that can never match an ancestor chain.
+          invisible: !visible,
         });
+        importBindings.set(b.local, list);
       }
     }
 
@@ -311,18 +328,30 @@ export function deriveHeuristicEdges(
           sawAmbiguous = true;
           continue;
         }
-        const binding = importBindings.get(candidate);
-        if (
-          binding !== undefined &&
-          // Function-local imports are visible only inside the symbol that
-          // contains them: the call's ancestor chain must include the
-          // import's enclosing symbol (file-level imports always bind).
-          (binding.enclosing === undefined || ancestorChain.has(binding.enclosing))
-        ) {
-          dstQualifiedName = binding.exported;
-          dstPathHint = binding.hint;
-          confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;
-          break;
+        const candidates = importBindings.get(candidate);
+        if (candidates !== undefined) {
+          // Innermost visible binding wins (codex review round 13):
+          // a function-local import shadows a same-name file-level one
+          // inside that function; class-body imports are never visible.
+          let chosen: { exported: string; hint: string } | undefined;
+          let chosenDepth = -1;
+          for (const c of candidates) {
+            if (c.invisible) continue;
+            if (c.enclosing === undefined) {
+              if (chosenDepth < 0) { chosen = c; chosenDepth = 0; }
+              continue;
+            }
+            if (ancestorChain.has(c.enclosing)) {
+              const depth = [...ancestorChain].indexOf(c.enclosing);
+              if (depth > chosenDepth) { chosen = c; chosenDepth = depth; }
+            }
+          }
+          if (chosen) {
+            dstQualifiedName = chosen.exported;
+            dstPathHint = chosen.hint;
+            confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;
+            break;
+          }
         }
       }
       if (dstQualifiedName === undefined) {
@@ -344,7 +373,9 @@ export function deriveHeuristicEdges(
         type: "CALLS",
         confidence,
         provenance: "heuristic",
-        ...(dstPathHint !== undefined ? { dstPathHint } : {}),
+        ...(dstPathHint !== undefined
+          ? { dstPathHint, dstImporterLanguage: ir.language }
+          : {}),
       });
     }
 
