@@ -466,6 +466,40 @@ function checkBuildWeekCodexDatasetPaths() {
             "use full mode with an explicit item bound so a bad staged path fails before provider dispatch",
         );
       }
+      const requiredProtocolOptions = new Map([
+        ["--runtime-profile", "real"],
+        ["--results-dir", '"$BUILD_WEEK_RESULTS_DIR"'],
+        ["--drain-timeout", "600000"],
+        ["--system-provider", "codex-cli"],
+        ["--system-model", "gpt-5.6-luna"],
+        ["--system-codex-reasoning-effort", "medium"],
+        ["--internal-provider", "codex-cli"],
+        ["--internal-model", "gpt-5.6-luna"],
+        ["--internal-codex-reasoning-effort", "medium"],
+        ["--judge-provider", "codex-cli"],
+        ["--judge-model", "gpt-5.6-terra"],
+        ["--judge-codex-reasoning-effort", "high"],
+      ]);
+      for (const [flag, requiredValue] of requiredProtocolOptions) {
+        const actualValue = extractShellOptionValue(command, flag);
+        if (actualValue !== requiredValue) {
+          failures.push(
+            `${rel}: Build Week Codex ${benchmark} command must include ` +
+              `\`${flag} ${requiredValue}\`; got ${actualValue ?? `no ${flag}`}`,
+          );
+        }
+      }
+      if (commandTokens.some((token) => token === "--request-timeout" || token.startsWith("--request-timeout="))) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not include \`--request-timeout\`; ` +
+            "the Codex transport profile owns that timeout",
+        );
+      }
+      if (command.includes("gpt-5.6-sol")) {
+        failures.push(
+          `${rel}: Build Week Codex ${benchmark} command must not use \`gpt-5.6-sol\``,
+        );
+      }
       const allBoundFlags = ["--limit", "--trial-limit"];
       const supportedBoundFlags =
         benchmark === "longmemeval" ? ["--limit"] : allBoundFlags;

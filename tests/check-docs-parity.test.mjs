@@ -662,11 +662,17 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
         "```bash",
         "remnic bench run --json longmemeval --limit 1 \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
-        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "  --runtime-profile real --results-dir \"$BUILD_WEEK_RESULTS_DIR\" --drain-timeout 600000 \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
         "",
         "remnic bench run locomo --trial-limit 1 \\",
         "  --dataset-dir ./bench-datasets/locomo \\",
-        "  --judge-provider codex-cli --judge-model gpt-5.6-terra",
+        "  --runtime-profile real --results-dir \"$BUILD_WEEK_RESULTS_DIR\" --drain-timeout 600000 \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
         "```",
         "",
       ].join("\n"),
@@ -676,6 +682,49 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /2 Build Week Codex dataset command\(s\) pinned/);
   });
+});
+
+test("Build Week Codex commands pin the complete paid-run protocol", () => {
+  const validProtocol = [
+    '--runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000',
+    "--system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium",
+    "--internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium",
+    "--judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+  ].join(" ");
+  for (const [label, protocol] of [
+    ["missing real profile", validProtocol.replace("--runtime-profile real ", "")],
+    ["baseline profile", validProtocol.replace("--runtime-profile real", "--runtime-profile baseline")],
+    ["wrong system model", validProtocol.replace("gpt-5.6-luna", "gpt-5.6-terra")],
+    ["Sol model", validProtocol.replace("gpt-5.6-luna", "gpt-5.6-sol")],
+    ["explicit request timeout", `${validProtocol} --request-timeout 180000`],
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "remnic bench run longmemeval --limit 1 \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          "  " + protocol + " \\",
+          "  --system-provider codex-cli",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${label}: ${result.stderr}`);
+      if (label === "explicit request timeout") {
+        assert.match(result.stderr, /must not include `--request-timeout`/);
+      } else if (label === "Sol model") {
+        assert.match(result.stderr, /must not use `gpt-5\.6-sol`/);
+      } else {
+        assert.match(result.stderr, /must include `--(?:runtime-profile|system-model)/);
+      }
+    });
+  }
 });
 
 test("Build Week Codex quick mode is rejected even with a staged dataset path", () => {
