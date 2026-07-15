@@ -271,8 +271,10 @@ export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
 export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 
-remnic bench run --quick longmemeval \
+remnic bench run longmemeval \
   --runtime-profile real \
+  --limit 1 \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -285,6 +287,7 @@ remnic bench run --quick longmemeval \
 # Replace this only after the smoke ledger establishes observed cost.
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -300,6 +303,11 @@ and MemoryAgentBench. Neither flag is a token-credit budget, so the placeholder
 cannot be replaced with a fixed universal value: derive it from the ledger's
 observed per-task cost and resize after each bounded batch. A limited run is a
 trial artifact and cannot be promoted as a full leaderboard result.
+The measured probe is a full-mode run bounded to one staged LongMemEval item.
+Full mode fails before provider dispatch if the explicit dataset directory is
+missing or unreadable; it cannot fall back to the bundled quick fixture. The
+larger bounded command uses the same gitignored source, and neither command
+auto-selects the CLI-managed dataset store.
 
 The Codex CLI profile supplies a 180-second transport-only timeout by default.
 Do not add `--request-timeout` to this protocol: an explicit request timeout

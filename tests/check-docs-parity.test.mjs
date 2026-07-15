@@ -626,6 +626,153 @@ test("a bogus command in the root README fenced block is caught", () => {
   });
 });
 
+// Build Week credit-backed commands must not silently switch from staged real
+// data to the bundled quick fixture or the CLI-managed dataset store.
+test("a Build Week Codex command without a staged dataset path fails", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run --quick longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /Build Week Codex longmemeval command must include `--dataset-dir \.\/bench-datasets\/longmemeval`/,
+    );
+  });
+});
+
+test("Build Week Codex commands accept only the matching staged dataset path", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run --json longmemeval --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "",
+        "remnic bench run locomo --trial-limit 1 \\",
+        "  --dataset-dir ./bench-datasets/locomo \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /2 Build Week Codex dataset command\(s\) pinned/);
+  });
+});
+
+test("Build Week Codex quick mode is rejected even with a staged dataset path", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run --quick longmemeval \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must not use `--quick`/);
+    assert.match(result.stderr, /longmemeval command must include an explicit `--limit`/);
+  });
+});
+
+test("Build Week LongMemEval rejects LoCoMo-only --trial-limit", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run longmemeval --trial-limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /longmemeval command must include an explicit `--limit`/);
+  });
+});
+
+test("Build Week dataset path cannot impersonate a missing positional benchmark", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must include positional benchmark `longmemeval` or `locomo`/);
+  });
+});
+
+test("Build Week Codex bounds reject missing, zero, and negative values", () => {
+  for (const [suffix, expected] of [
+    ["--limit", /has no value for `--limit`/],
+    ["--limit 0", /--limit must be a positive integer/],
+    ["--limit -1", /--limit must be a positive integer/],
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          `remnic bench run longmemeval ${suffix} \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          "  --system-provider codex-cli --system-model gpt-5.6-luna",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, expected);
+    });
+  }
+});
+
 // ── Misc ────────────────────────────────────────────────────────────────────
 
 test("unknown arguments are rejected with usage", () => {

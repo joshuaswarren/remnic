@@ -206,6 +206,7 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledge
 # Replace <LEDGER_DERIVED_LIMIT> after a smoke turn establishes actual cost.
 remnic bench run longmemeval --runtime-profile real \
   --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \

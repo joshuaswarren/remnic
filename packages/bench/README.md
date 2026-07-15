@@ -101,8 +101,10 @@ export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
 export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
 
-remnic bench run --quick longmemeval \
+remnic bench run longmemeval \
   --runtime-profile real \
+  --limit 1 \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -114,6 +116,7 @@ remnic bench run --quick longmemeval \
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
   --results-dir "$BUILD_WEEK_RESULTS_DIR" \
   --drain-timeout 600000 \
   --system-provider codex-cli --system-model gpt-5.6-luna \
@@ -130,6 +133,11 @@ actual `turn.completed` JSONL usage. Stop dispatching at 2,000 spent; the
 473-credit reserve absorbs only a final in-flight call whose exact cost becomes
 known after completion. Missing exact terminal usage blocks the ledger pending
 manual account reconciliation.
+The measured probe is a full-mode run bounded to one staged LongMemEval item.
+Full mode fails before provider dispatch if that explicit dataset directory is
+missing or unreadable, so it cannot fall back to the bundled quick fixture.
+Both commands pin the same gitignored dataset source and do not fall back to
+the CLI-managed dataset store.
 Rates per one million tokens are Luna: 25 input, 2.5 cached input, 150 output;
 Terra: 62.5 input, 6.25 cached input, 375 output. A bounded result is a trial,
 not a full leaderboard artifact.
