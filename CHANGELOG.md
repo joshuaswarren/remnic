@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.6.24] — 2026-07-15
+
 ### Fixed
 
 - coding-graph indexing now derives CALLS edges from parsed call sites
