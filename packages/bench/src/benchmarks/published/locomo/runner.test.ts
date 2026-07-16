@@ -3,9 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-
 import type { Message } from "../../../adapters/types.js";
 import { locomoDefinition, runLoCoMoBenchmark } from "./runner.ts";
+import { selectLoCoMoTasks } from "./task-selection.js";
 
 test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from the official dataset", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
@@ -972,6 +972,279 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
       storedMessages[1]?.content ?? "",
       /relative_time: session date 8 May 2023; yesterday = 7 May 2023/,
     );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("LoCoMo task selection scores canonical dataset order while retaining complete selected-conversation ingest", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-selected-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+  const calls: string[] = [];
+  const candidateTaskIds = [
+    "conversation-a-q0-single_hop",
+    "conversation-a-q1-multi_hop",
+    "conversation-b-q0-multi_hop",
+    "conversation-unused-q0-single_hop",
+  ];
+  const selection = selectLoCoMoTasks(
+    candidateTaskIds.map((taskId) => ({ taskId })),
+    {
+      taskIds: [
+        "conversation-b-q0-multi_hop",
+        "conversation-a-q1-multi_hop",
+      ],
+    },
+  );
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "conversation-a",
+          conversation: {
+            speaker_a: "Maya",
+            session_1: [
+              { speaker: "Maya", dia_id: "D1:1", text: "Alpha context." },
+            ],
+            session_2: [
+              { speaker: "Maya", dia_id: "D2:1", text: "Beta context." },
+            ],
+          },
+          qa: [
+            {
+              question: "What is alpha?",
+              answer: "alpha",
+              evidence: ["D1:1"],
+              category: 1,
+            },
+            {
+              question: "What is beta?",
+              answer: "beta",
+              evidence: ["D2:1"],
+              category: 2,
+            },
+          ],
+        },
+        {
+          sample_id: "conversation-b",
+          conversation: {
+            speaker_a: "Noah",
+            session_1: [
+              { speaker: "Noah", dia_id: "D3:1", text: "Gamma context." },
+            ],
+          },
+          qa: [
+            {
+              question: "What is gamma?",
+              answer: "gamma",
+              evidence: ["D3:1"],
+              category: 2,
+            },
+          ],
+        },
+        {
+          sample_id: "conversation-unused",
+          conversation: {
+            speaker_a: "Unused",
+            session_1: [
+              { speaker: "Unused", dia_id: "D4:1", text: "Unused context." },
+            ],
+          },
+          qa: [
+            {
+              question: "What is unused?",
+              answer: "unused",
+              evidence: ["D4:1"],
+              category: 1,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runLoCoMoBenchmark({
+      benchmark: locomoDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      benchmarkOptions: {
+        taskSelector: {
+          kind: "explicit-task-ids",
+          taskIds: [
+            "conversation-b-q0-multi_hop",
+            "conversation-a-q1-multi_hop",
+          ],
+          expectedSelectedTaskIdsSha256: selection.selectedTaskIdsSha256,
+        },
+      },
+      system: {
+        async reset() {
+          calls.push("reset");
+        },
+        async store(sessionId) {
+          calls.push(`store:${sessionId}`);
+        },
+        async recall(_sessionId, question) {
+          return `${question} alpha beta gamma`;
+        },
+        async search() {
+          return [];
+        },
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond(question) {
+            return {
+              text: question.includes("beta") ? "beta" : "gamma",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "selector-test-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(
+      result.results.tasks.map((task) => task.taskId),
+      ["conversation-a-q1-multi_hop", "conversation-b-q0-multi_hop"],
+    );
+    assert.deepEqual(calls, [
+      "reset",
+      "store:conversation-a-session_1",
+      "store:conversation-a-session_2",
+      "reset",
+      "store:conversation-b-session_1",
+    ]);
+    assert.deepEqual(result.config.benchmarkOptions?.taskSelection, selection);
+    assert.equal(result.config.benchmarkOptions?.taskSelector, undefined);
+    assert.match(result.meta.datasetHash ?? "", /^[0-9a-f]{64}$/u);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("LoCoMo task selection fails before adapter side effects on invalid or incompatible selectors", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-selector-invalid-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+  let sideEffects = 0;
+  const taskId = "selector-validation-q0-multi_hop";
+  const validHash = selectLoCoMoTasks([{ taskId }], { taskIds: [taskId] })
+    .selectedTaskIdsSha256;
+  const system = {
+    async reset() {
+      sideEffects += 1;
+    },
+    async store() {
+      sideEffects += 1;
+    },
+    async recall() {
+      sideEffects += 1;
+      return "";
+    },
+    async search() {
+      return [];
+    },
+    async destroy() {},
+    async getStats() {
+      return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+    },
+  };
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "selector-validation",
+          conversation: {
+            speaker_a: "Maya",
+            session_1: [
+              { speaker: "Maya", dia_id: "D1:1", text: "Selector context." },
+            ],
+          },
+          qa: [
+            {
+              question: "Which selector?",
+              answer: "selector",
+              evidence: ["D1:1"],
+              category: 2,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const selector = {
+      kind: "explicit-task-ids",
+      taskIds: [taskId],
+      expectedSelectedTaskIdsSha256: validHash,
+    };
+    const base = {
+      benchmark: locomoDefinition,
+      mode: "full" as const,
+      datasetDir: tempDir,
+      system,
+    };
+    await assert.rejects(
+      runLoCoMoBenchmark({
+        ...base,
+        benchmarkOptions: {
+          taskSelector: {
+            ...selector,
+            expectedSelectedTaskIdsSha256: "0".repeat(64),
+          },
+        },
+      }),
+      /selected task-id hash does not match/,
+    );
+    await assert.rejects(
+      runLoCoMoBenchmark({
+        ...base,
+        benchmarkOptions: {
+          taskSelector: { ...selector, taskIds: ["unknown"] },
+        },
+      }),
+      /Unknown/,
+    );
+    await assert.rejects(
+      runLoCoMoBenchmark({
+        ...base,
+        benchmarkOptions: {
+          taskSelector: { ...selector, taskIds: [taskId, taskId] },
+        },
+      }),
+      /duplicates/,
+    );
+    for (const incompatible of [
+      { ...base, mode: "quick" as const, benchmarkOptions: { taskSelector: selector } },
+      { ...base, limit: 1, benchmarkOptions: { taskSelector: selector } },
+      { ...base, benchmarkOptions: { taskSelector: selector, trialLimit: 1 } },
+      {
+        ...base,
+        benchmarkOptions: { taskSelector: selector, trialConcurrency: 2 },
+      },
+    ]) {
+      await assert.rejects(runLoCoMoBenchmark(incompatible), /task selection/);
+    }
+    await assert.rejects(
+      runLoCoMoBenchmark({
+        ...base,
+        benchmarkOptions: { taskSelection: { selectedCount: 1 } },
+      }),
+      /runner-owned/,
+    );
+    assert.equal(sideEffects, 0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

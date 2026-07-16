@@ -94,6 +94,8 @@ export interface ParsedBenchArgs {
   sourceResultId?: string;
   expectedAnswerSetSha256?: string;
   expectedQuestionIdListSha256?: string;
+  taskIdsFile?: string;
+  expectedTaskIdListSha256?: string;
   drainTimeout?: number;
   /** Max wall-clock time (ms) to keep retrying 429 rate-limit responses. */
   max429WaitMs?: number;
@@ -472,6 +474,8 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--source-result-id",
   "--expected-answer-set-sha256",
   "--expected-question-id-list-sha256",
+  "--task-ids-file",
+  "--expected-task-id-list-sha256",
   "--drain-timeout",
   "--max-429-wait",
   "--ama-bench-judge-protocol",
@@ -563,6 +567,8 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--calibration-dir",
   "--calibration-local-config-sha256",
   "--calibration-frontier-config-sha256",
+  "--task-ids-file",
+  "--expected-task-id-list-sha256",
   "--drain-timeout",
   "--max-429-wait",
   "--ama-bench-judge-protocol",
@@ -918,6 +924,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const sourceResultId = readBenchOptionValue(args, "--source-result-id");
   const expectedAnswerSetSha256 = readBenchOptionValue(args, "--expected-answer-set-sha256");
   const expectedQuestionIdListSha256 = readBenchOptionValue(args, "--expected-question-id-list-sha256");
+  const taskIdsFileRaw = readBenchOptionValue(args, "--task-ids-file");
+  const expectedTaskIdListSha256 = readBenchOptionValue(args, "--expected-task-id-list-sha256");
   const drainTimeoutRaw = readBenchOptionValue(args, "--drain-timeout");
   // Issue #1573 PR1: judge-result cache directory override. `parseBenchArgs`
   // resolves tildes + relative paths identically to other filesystem flags
@@ -1139,6 +1147,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   for (const [flag, digest] of [
     ["--expected-answer-set-sha256", expectedAnswerSetSha256],
     ["--expected-question-id-list-sha256", expectedQuestionIdListSha256],
+    ["--expected-task-id-list-sha256", expectedTaskIdListSha256],
     ["--calibration-local-config-sha256", calibrationLocalConfigSha256],
     ["--calibration-frontier-config-sha256", calibrationFrontierConfigSha256],
   ] as const) {
@@ -1283,6 +1292,33 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     );
   if (publishedTrialLimit !== undefined && !trialLimitTargetsSupportedBenchmark) {
     throw new Error("ERROR: --trial-limit is currently supported only for LoCoMo and MemoryAgentBench.");
+  }
+
+  const hasTaskIdsFile = taskIdsFileRaw !== undefined;
+  const hasExpectedTaskIdListSha256 = expectedTaskIdListSha256 !== undefined;
+  if (hasTaskIdsFile !== hasExpectedTaskIdListSha256) {
+    throw new Error(
+      "ERROR: --task-ids-file and --expected-task-id-list-sha256 must be supplied together.",
+    );
+  }
+  if (hasTaskIdsFile) {
+    const targetsSingleLoCoMo = action === "published"
+      ? publishedName === "locomo" && benchmarks.length === 0
+      : action === "run" && !args.includes("--all") &&
+        benchmarks.length === 1 && benchmarks[0] === "locomo";
+    if (!targetsSingleLoCoMo) {
+      throw new Error(
+        "ERROR: --task-ids-file is supported only for a single LoCoMo run.",
+      );
+    }
+    if (args.includes("--quick")) {
+      throw new Error("ERROR: --task-ids-file requires a full LoCoMo run; remove --quick.");
+    }
+    if (publishedLimit !== undefined || publishedTrialLimit !== undefined) {
+      throw new Error(
+        "ERROR: --task-ids-file cannot be combined with --limit or --trial-limit.",
+      );
+    }
   }
 
   let publishedTrialConcurrency: number | undefined;
@@ -1606,6 +1642,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     sourceResultId,
     expectedAnswerSetSha256,
     expectedQuestionIdListSha256,
+    taskIdsFile: taskIdsFileRaw
+      ? path.resolve(expandTilde(taskIdsFileRaw))
+      : undefined,
+    expectedTaskIdListSha256,
     drainTimeout,
     // Issue #1573 PR1: surface judge-cache flags into the runner options.
     noJudgeCache: args.includes("--no-judge-cache"),

@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 import type { BenchmarkResult, ProviderConfig, TaskResult } from "../types.js";
+import {
+  parseLoCoMoTaskSelectionManifest,
+  type LoCoMoTaskSelectionManifest,
+} from "../benchmarks/published/locomo/task-selection.js";
 
 export const LOCOMO_FULL_TASK_COUNT = 1_986;
 export const LOCOMO_RECALL_EXCERPT_CHARS = 240;
@@ -92,6 +96,7 @@ export interface LoComoRecallResultProvenance {
   judgeModel: string;
   seeds: number[];
   taskPayloadSha256: string;
+  taskSelection?: LoCoMoTaskSelectionManifest;
 }
 
 export interface LoComoRecallDeltaReport {
@@ -149,9 +154,14 @@ export function diagnoseLoComoRecallDelta(options: DiagnoseLoComoRecallDeltaOpti
 
   assertEvidenceEnvelope(options.baseline, "baseline");
   assertEvidenceEnvelope(options.real, "real");
-  assertCompleteResult(options.baseline.result, "baseline");
-  assertCompleteResult(options.real.result, "real");
-  assertComparableResults(options.baseline.result, options.real.result);
+  const baselineSelection = assertCompleteResult(options.baseline.result, "baseline");
+  const realSelection = assertCompleteResult(options.real.result, "real");
+  assertComparableResults(
+    options.baseline.result,
+    options.real.result,
+    baselineSelection,
+    realSelection
+  );
 
   const joined = joinTasks(options.baseline.result, options.real.result);
   assertMetricSets(joined, primaryMetric);
@@ -177,8 +187,8 @@ export function diagnoseLoComoRecallDelta(options: DiagnoseLoComoRecallDeltaOpti
     schemaVersion: 1,
     benchmarkId: "locomo",
     comparison: {
-      baseline: buildProvenance(options.baseline, "baseline", joined, "baseline"),
-      real: buildProvenance(options.real, "real", joined, "real"),
+      baseline: buildProvenance(options.baseline, "baseline", joined, "baseline", baselineSelection),
+      real: buildProvenance(options.real, "real", joined, "real", realSelection),
     },
     taskCount: joined.length,
     primaryMetric,
@@ -278,7 +288,10 @@ function assertEvidenceEnvelope(evidence: LoComoRawResultEvidence, label: "basel
   }
 }
 
-function assertCompleteResult(result: BenchmarkResult, label: "baseline" | "real"): void {
+function assertCompleteResult(
+  result: BenchmarkResult,
+  label: "baseline" | "real"
+): LoCoMoTaskSelectionManifest | undefined {
   if (result.meta.benchmark !== "locomo") {
     throw new Error(`${label} result must be a locomo benchmark result.`);
   }
@@ -293,10 +306,34 @@ function assertCompleteResult(result: BenchmarkResult, label: "baseline" | "real
   if (limit !== undefined || trialLimit !== undefined) {
     throw new Error(`${label} result is limited and cannot be used as complete evidence.`);
   }
-  if (result.results.tasks.length !== LOCOMO_FULL_TASK_COUNT) {
+  const benchmarkOptions = result.config.benchmarkOptions;
+  const hasTaskSelection =
+    benchmarkOptions !== null &&
+    typeof benchmarkOptions === "object" &&
+    Object.prototype.hasOwnProperty.call(benchmarkOptions, "taskSelection");
+  const taskSelection = hasTaskSelection
+    ? parseLoCoMoTaskSelectionManifest(
+        benchmarkOptions.taskSelection,
+        `${label} result taskSelection`
+      )
+    : undefined;
+  if (!taskSelection && result.results.tasks.length !== LOCOMO_FULL_TASK_COUNT) {
     throw new Error(
       `${label} result must contain exactly ${LOCOMO_FULL_TASK_COUNT} tasks; got ${result.results.tasks.length}.`
     );
+  }
+  if (taskSelection) {
+    if (taskSelection.candidateCount !== LOCOMO_FULL_TASK_COUNT) {
+      throw new Error(
+        `${label} result taskSelection.candidateCount must be ${LOCOMO_FULL_TASK_COUNT}.`
+      );
+    }
+    const resultTaskIds = result.results.tasks.map((task) => task.taskId);
+    if (stableJson(resultTaskIds) !== stableJson(taskSelection.selectedTaskIds)) {
+      throw new Error(
+        `${label} result task ids must exactly match taskSelection.selectedTaskIds in canonical order.`
+      );
+    }
   }
   for (const task of result.results.tasks) {
     const details = asRecord(task.details);
@@ -306,14 +343,26 @@ function assertCompleteResult(result: BenchmarkResult, label: "baseline" | "real
       throw new Error(`${label} result contains failed task ${JSON.stringify(task.taskId)}.`);
     }
   }
+  return taskSelection;
 }
 
-function assertComparableResults(baseline: BenchmarkResult, real: BenchmarkResult): void {
+function assertComparableResults(
+  baseline: BenchmarkResult,
+  real: BenchmarkResult,
+  baselineSelection: LoCoMoTaskSelectionManifest | undefined,
+  realSelection: LoCoMoTaskSelectionManifest | undefined
+): void {
   if (baseline.config.runtimeProfile !== "baseline") {
     throw new Error('baseline result runtimeProfile must be "baseline".');
   }
   if (real.config.runtimeProfile !== "real") {
     throw new Error('real result runtimeProfile must be "real".');
+  }
+  if (stableJson(baselineSelection ?? null) !== stableJson(realSelection ?? null)) {
+    throw new Error(
+      "Results are not comparable: config.benchmarkOptions.taskSelection differs " +
+        `(${stableJson(baselineSelection ?? null)} vs ${stableJson(realSelection ?? null)}).`
+    );
   }
   const checks: Array<[string, unknown, unknown]> = [
     ["meta.version", baseline.meta.version, real.meta.version],
@@ -468,7 +517,8 @@ function buildProvenance(
   evidence: LoComoRawResultEvidence,
   profile: "baseline" | "real",
   joined: JoinedTask[],
-  side: "baseline" | "real"
+  side: "baseline" | "real",
+  taskSelection: LoCoMoTaskSelectionManifest | undefined
 ): LoComoRecallResultProvenance {
   const system = requireProvider(evidence.result.config.systemProvider, profile, "system");
   const judge = requireProvider(evidence.result.config.judgeProvider, profile, "judge");
@@ -491,6 +541,7 @@ function buildProvenance(
     judgeModel: judge.model,
     seeds: [...evidence.result.meta.seeds],
     taskPayloadSha256: sha256(stableJson(payload)),
+    ...(taskSelection ? { taskSelection } : {}),
   };
 }
 

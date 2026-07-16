@@ -298,10 +298,10 @@ tests/bench-openai-provider.test.ts(86,30): TS2722
 tests/bench-openai-provider.test.ts(86,30): TS18048
 tests/bench-public-matrix-verifier.test.ts(412,7): TS2740
 tests/bench-public-matrix-verifier.test.ts(416,7): TS2739
-tests/bench-public-matrix-verifier.test.ts(989,7): TS2740
-tests/bench-public-matrix-verifier.test.ts(992,7): TS2739
-tests/bench-public-matrix-verifier.test.ts(1059,7): TS2740
-tests/bench-public-matrix-verifier.test.ts(1142,7): TS2739
+tests/bench-public-matrix-verifier.test.ts(1027,7): TS2740
+tests/bench-public-matrix-verifier.test.ts(1030,7): TS2739
+tests/bench-public-matrix-verifier.test.ts(1097,7): TS2740
+tests/bench-public-matrix-verifier.test.ts(1180,7): TS2739
 tests/bench-remnic-deterministic-runners.test.ts(221,37): TS2339
 tests/bench-ui-assistant.test.ts(21,9): TS2741
 tests/bench-ui-results.test.ts(20,8): TS6142

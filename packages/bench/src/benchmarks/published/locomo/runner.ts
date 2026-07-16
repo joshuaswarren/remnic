@@ -26,6 +26,11 @@ import type {
   BenchmarkResult,
   ResolvedRunBenchmarkOptions,
 } from "../../../types.js";
+import {
+  type LoCoMoPinnedTaskSelector,
+  type LoCoMoTaskSelectionManifest,
+  selectLoCoMoTasks,
+} from "./task-selection.js";
 
 const CATEGORY_NAMES: Record<number, string> = {
   1: "single_hop",
@@ -337,31 +342,54 @@ export const locomoDefinition: BenchmarkDefinition = {
 export async function runLoCoMoBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
+  const rawBenchmarkOptions = options.benchmarkOptions ?? {};
+  if (rawBenchmarkOptions.taskSelection !== undefined) {
+    throw new Error(
+      "LoCoMo benchmarkOptions.taskSelection is runner-owned and cannot be supplied by callers.",
+    );
+  }
+  const taskSelector = resolvePinnedTaskSelector(
+    rawBenchmarkOptions.taskSelector,
+  );
+  if (taskSelector !== undefined) {
+    assertTaskSelectorCompatibility(options, rawBenchmarkOptions);
+  }
   const loaded = await loadLoCoMoDataset(
     options.mode,
     options.datasetDir,
     options.limit,
   );
   const conversations = loaded.items;
-  const trialLimit = resolveTrialLimit(options.benchmarkOptions?.trialLimit);
+  const trialLimit = resolveTrialLimit(rawBenchmarkOptions.trialLimit);
   const multiHopRecallComposition = resolveLoCoMoBooleanOption(
-    options.benchmarkOptions?.multiHopRecallComposition,
+    rawBenchmarkOptions.multiHopRecallComposition,
     "multiHopRecallComposition",
     true,
   );
-  const plans = applyTrialLimit(
-    conversations.map((conversation) =>
-      buildLoCoMoPlan(conversation, multiHopRecallComposition)
-    ),
-    trialLimit,
+  const allPlans = conversations.map((conversation) =>
+    buildLoCoMoPlan(conversation, multiHopRecallComposition)
   );
+  const selected = taskSelector === undefined
+    ? undefined
+    : applyTaskSelection(allPlans, taskSelector);
+  const plans = selected === undefined
+    ? applyTrialLimit(allPlans, trialLimit)
+    : selected.plans;
+  const {
+    taskSelector: _taskSelector,
+    taskSelection: _taskSelection,
+    ...callerBenchmarkOptions
+  } = rawBenchmarkOptions;
   const benchmarkOptions = {
-    ...(options.benchmarkOptions ?? {}),
+    ...callerBenchmarkOptions,
     ...(trialLimit === undefined ? {} : { trialLimit }),
+    ...(selected === undefined
+      ? {}
+      : { taskSelection: selected.manifest }),
     multiHopRecallComposition,
   };
 
-  return runPublishedHarness({
+  const result = await runPublishedHarness({
     options: { ...options, benchmarkOptions },
     metricsSpec: {
       metrics: ["f1", "contains_answer", "rouge_l", "llm_judge"],
@@ -369,6 +397,111 @@ export async function runLoCoMoBenchmark(
     plans,
     totalCount: plans.reduce((sum, plan) => sum + plan.trials.length, 0),
   });
+  result.meta.datasetHash = loaded.sha256;
+  return result;
+}
+
+function resolvePinnedTaskSelector(
+  raw: unknown,
+): LoCoMoPinnedTaskSelector | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("LoCoMo benchmarkOptions.taskSelector must be an object.");
+  }
+  const record = raw as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "kind",
+    "taskIds",
+    "expectedSelectedTaskIdsSha256",
+  ]);
+  const unknownKey = Object.keys(record).find((key) => !allowedKeys.has(key));
+  if (unknownKey !== undefined) {
+    throw new Error(
+      `LoCoMo benchmarkOptions.taskSelector contains unknown field ${unknownKey}.`,
+    );
+  }
+  if (record.kind !== "explicit-task-ids") {
+    throw new Error(
+      'LoCoMo benchmarkOptions.taskSelector.kind must be "explicit-task-ids".',
+    );
+  }
+  if (
+    !Array.isArray(record.taskIds) ||
+    record.taskIds.some(
+      (taskId) => typeof taskId !== "string" || taskId.length === 0,
+    )
+  ) {
+    throw new Error(
+      "LoCoMo benchmarkOptions.taskSelector.taskIds must contain non-empty strings.",
+    );
+  }
+  if (
+    typeof record.expectedSelectedTaskIdsSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(record.expectedSelectedTaskIdsSha256)
+  ) {
+    throw new Error(
+      "LoCoMo benchmarkOptions.taskSelector.expectedSelectedTaskIdsSha256 must be 64 lowercase hexadecimal characters.",
+    );
+  }
+  return {
+    kind: "explicit-task-ids",
+    taskIds: [...record.taskIds] as string[],
+    expectedSelectedTaskIdsSha256:
+      record.expectedSelectedTaskIdsSha256,
+  };
+}
+
+function assertTaskSelectorCompatibility(
+  options: ResolvedRunBenchmarkOptions,
+  benchmarkOptions: Record<string, unknown>,
+): void {
+  if (options.mode !== "full") {
+    throw new Error("LoCoMo task selection requires full benchmark mode.");
+  }
+  if (options.limit !== undefined) {
+    throw new Error("LoCoMo task selection cannot be combined with limit.");
+  }
+  if (benchmarkOptions.trialLimit !== undefined) {
+    throw new Error(
+      "LoCoMo task selection cannot be combined with benchmarkOptions.trialLimit.",
+    );
+  }
+  if (
+    benchmarkOptions.trialConcurrency !== undefined &&
+    Number(benchmarkOptions.trialConcurrency) !== 1
+  ) {
+    throw new Error(
+      "LoCoMo task selection requires benchmarkOptions.trialConcurrency to be 1.",
+    );
+  }
+}
+
+function applyTaskSelection(
+  plans: HarnessPlan[],
+  selector: LoCoMoPinnedTaskSelector,
+): { plans: HarnessPlan[]; manifest: LoCoMoTaskSelectionManifest } {
+  const candidateTrials = plans.flatMap((plan) => plan.trials);
+  const manifest = selectLoCoMoTasks(candidateTrials, {
+    taskIds: selector.taskIds,
+  });
+  if (
+    manifest.selectedTaskIdsSha256 !==
+    selector.expectedSelectedTaskIdsSha256
+  ) {
+    throw new Error(
+      "LoCoMo selected task-id hash does not match benchmarkOptions.taskSelector.expectedSelectedTaskIdsSha256.",
+    );
+  }
+  const selectedTaskIds = new Set(manifest.selectedTaskIds);
+  const selectedPlans = plans.flatMap((plan) => {
+    const trials = plan.trials.filter((trial) =>
+      selectedTaskIds.has(trial.taskId)
+    );
+    return trials.length === 0 ? [] : [{ ...plan, trials }];
+  });
+  return { plans: selectedPlans, manifest };
 }
 
 function resolveLoCoMoBooleanOption(

@@ -15,26 +15,23 @@ import {
   prioritizeLoCoMoRecallTextWithTrace,
   sanitizeLoCoMoRecallText,
 } from "./runner.js";
+import {
+  LOCOMO_TASK_SELECTION_VERSION,
+  type LoCoMoTaskSelectionManifest,
+  type LoCoMoTaskSelector,
+  selectLoCoMoTasks,
+} from "./task-selection.js";
 
 export const LOCOMO_RETRIEVAL_TRACE_SCHEMA_VERSION = 1 as const;
-export const LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION = 1 as const;
+export const LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION =
+  LOCOMO_TASK_SELECTION_VERSION;
 export const LOCOMO_RETRIEVAL_TRACE_BUDGET_VERSION = 1 as const;
 
 export type LoCoMoRetrievalTraceProfile = "baseline" | "real";
 
-export type LoCoMoRetrievalTraceSelector =
-  | { taskIds: readonly string[]; sampleSize?: never; seed?: never }
-  | { taskIds?: never; sampleSize: number; seed: number };
-
-export interface LoCoMoRetrievalTraceSelectionManifest {
-  algorithm: "explicit-task-ids" | "sha256-seeded-sample";
-  version: typeof LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION;
-  seed?: number;
-  candidateCount: number;
-  selectedCount: number;
-  selectedTaskIds: string[];
-  selectedTaskIdsSha256: string;
-}
+export type LoCoMoRetrievalTraceSelector = LoCoMoTaskSelector;
+export type LoCoMoRetrievalTraceSelectionManifest =
+  LoCoMoTaskSelectionManifest;
 
 export interface LoCoMoRetrievalTraceCoreCaptureReceipt {
   budget: BenchRecallTraceCoreCapture["budget"];
@@ -264,73 +261,7 @@ export function selectLoCoMoRetrievalTraceTasks(
   tasks: readonly Pick<SelectableTask, "taskId">[],
   selector: LoCoMoRetrievalTraceSelector
 ): LoCoMoRetrievalTraceSelectionManifest {
-  const allIds = tasks.map((task) => task.taskId);
-  if (new Set(allIds).size !== allIds.length) {
-    throw new Error("LoCoMo retrieval trace task ids must be unique.");
-  }
-  let selected: string[];
-  let algorithm: LoCoMoRetrievalTraceSelectionManifest["algorithm"];
-  let seed: number | undefined;
-  const hasTaskIds = "taskIds" in selector && selector.taskIds !== undefined;
-  const hasSampleSize = "sampleSize" in selector && selector.sampleSize !== undefined;
-  if (Number(hasTaskIds) + Number(hasSampleSize) !== 1) {
-    throw new Error("Choose exactly one LoCoMo retrieval trace selector.");
-  }
-  if (hasTaskIds && "seed" in selector && selector.seed !== undefined) {
-    throw new Error("LoCoMo retrieval trace seed is valid only for seeded sampling.");
-  }
-
-  if (hasTaskIds) {
-    algorithm = "explicit-task-ids";
-    const requestedTaskIds = selector.taskIds;
-    if (!requestedTaskIds) throw new Error("LoCoMo explicit task ids are required.");
-    const requested = [...requestedTaskIds];
-    if (requested.length === 0) {
-      throw new Error("LoCoMo retrieval trace explicit task selection cannot be empty.");
-    }
-    if (new Set(requested).size !== requested.length) {
-      throw new Error("LoCoMo retrieval trace explicit task ids must not contain duplicates.");
-    }
-    const available = new Set(allIds);
-    const unknown = requested.filter((taskId) => !available.has(taskId));
-    if (unknown.length > 0) {
-      throw new Error(`Unknown LoCoMo retrieval trace task id: ${unknown[0]}`);
-    }
-    const requestedSet = new Set(requested);
-    selected = allIds.filter((taskId) => requestedSet.has(taskId));
-  } else {
-    algorithm = "sha256-seeded-sample";
-    const sampleSize = selector.sampleSize;
-    seed = selector.seed;
-    if (sampleSize === undefined || seed === undefined) {
-      throw new Error("LoCoMo seeded sampling requires sampleSize and seed.");
-    }
-    if (!Number.isSafeInteger(sampleSize) || sampleSize <= 0 || sampleSize > allIds.length) {
-      throw new Error(`LoCoMo retrieval trace sampleSize must be an integer from 1 to ${allIds.length}.`);
-    }
-    if (!Number.isSafeInteger(seed) || seed < 0) {
-      throw new Error("LoCoMo retrieval trace seed must be a non-negative safe integer.");
-    }
-    const sampled = [...allIds]
-      .sort((left, right) => {
-        const leftHash = hashString(`${seed}\0${left}`);
-        const rightHash = hashString(`${seed}\0${right}`);
-        return leftHash.localeCompare(rightHash) || left.localeCompare(right);
-      })
-      .slice(0, sampleSize);
-    const sampledSet = new Set(sampled);
-    selected = allIds.filter((taskId) => sampledSet.has(taskId));
-  }
-
-  return {
-    algorithm,
-    version: LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION,
-    ...(seed === undefined ? {} : { seed }),
-    candidateCount: allIds.length,
-    selectedCount: selected.length,
-    selectedTaskIds: selected,
-    selectedTaskIdsSha256: hashCanonicalJson(selected),
-  };
+  return selectLoCoMoTasks(tasks, selector);
 }
 
 export function serializeLoCoMoRetrievalTraceReceipt(receipt: LoCoMoRetrievalTraceReceipt): string {
