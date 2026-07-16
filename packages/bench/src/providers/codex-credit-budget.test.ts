@@ -715,6 +715,98 @@ test("v1 migration rejects sub-nanounit values and accepts the exact nanounit bo
   }
 });
 
+test("v1 migration normalizes accumulated aggregate float drift from exact entry nanounits", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-v1-float-drift-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  const entryCount = 2_677;
+  const totalCachedInputTokens = 200_181_025;
+  const tokensPerEntry = Math.floor(totalCachedInputTokens / entryCount);
+  const entriesWithExtraToken = totalCachedInputTokens % entryCount;
+  const entries = Array.from({ length: entryCount }, (_, index) => {
+    const inputTokens = tokensPerEntry + (index < entriesWithExtraToken ? 1 : 0);
+    const entryUsage = {
+      inputTokens,
+      cachedInputTokens: inputTokens,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    };
+    return {
+      at: "2026-07-15T00:00:00.000Z",
+      model: "gpt-5.6-luna",
+      runId: "drifted-v1-run",
+      credits: calculateCodexBudgetUnits("gpt-5.6-luna", entryUsage),
+      ...entryUsage,
+    };
+  });
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 500.45256250000057,
+        entries,
+        blockedReason: "missing terminal usage after accumulated float accounting",
+      })}\n`,
+      { mode: 0o600 }
+    );
+
+    const before = await readFile(ledgerPath);
+    const initialReceipt = await buildCodexCreditReceipt(ledgerPath, "drifted-v1-run");
+    assert.equal(initialReceipt.totalSpentUnits, 500.4525625);
+    assert.equal(initialReceipt.cumulative.calls, entryCount);
+
+    const reconciliation = await reconcileCodexCreditLedger({
+      ledgerPath,
+      priorLedgerSha256: createHash("sha256").update(before).digest("hex"),
+      beforeAccountBalance: "2500.1250000000",
+      afterAccountBalance: "2500.1250000000",
+      affectedRunId: "drifted-v1-run",
+      sameAccountConfirmed: true,
+      snapshotsBracketBlockedEventConfirmed: true,
+      balanceSettledConfirmed: true,
+      noCreditsAddedOrRefundedConfirmed: true,
+    });
+    assert.equal(reconciliation.priorRecordedSpentUnits, 500.4525625);
+    assert.equal(reconciliation.totalSpentUnits, 500.4525625);
+    const migratedLedger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      spentUnits: number;
+      migrationWitnessV1: { source: string };
+    };
+    assert.equal(migratedLedger.spentUnits, 500.4525625);
+    assert.equal(migratedLedger.migrationWitnessV1.source, before.toString("utf8"));
+    assert.equal((await buildCodexCreditReceipt(ledgerPath)).totalSpentUnits, 500.4525625);
+
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "continued after drift migration", usage }),
+      }),
+      "continued after drift migration"
+    );
+    assert.equal((await buildCodexCreditReceipt(ledgerPath)).totalSpentUnits, 504.0025625);
+
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 500.452562502,
+        entries,
+      })}\n`,
+      { mode: 0o600 }
+    );
+    await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("unknown charged usage blocks the ledger until manual reconciliation", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-blocked-"));
   const ledgerPath = path.join(directory, "ledger.json");

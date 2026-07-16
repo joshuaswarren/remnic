@@ -161,6 +161,7 @@ export interface CodexCreditReceipt {
 // Conservative upper bound for one supported text-model turn. GPT-5.6 Terra's
 // full 1.05M-token context plus 128K output costs well under this amount.
 const MAX_BOUNDED_CALL_CREDITS = 300;
+const LEGACY_LEDGER_FLOAT_DRIFT_TOLERANCE = 1e-9;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
 const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
   [/^gpt-5\.6-sol$/i, { input: 125, cachedInput: 12.5, output: 750 }],
@@ -861,17 +862,12 @@ function isLedgerV1(value: unknown): value is CodexCreditLedgerV1 {
     isSupportedBudgetUnits(candidate.reserveCredits) &&
     candidate.reserveCredits < candidate.budgetCredits &&
     isNonNegativeFinite(candidate.spentCredits) &&
-    isSupportedBudgetUnits(candidate.spentCredits) &&
     Array.isArray(entries) &&
     entries.every(isLedgerEntryV1) &&
     (reconciliations === undefined ||
       (Array.isArray(reconciliations) &&
         reconciliations.every((item) => isLedgerReconciliationWithinBudgetV1(item, candidate.budgetCredits)))) &&
-    Math.abs(
-      entries.reduce((sum, entry) => sum + entry.credits, 0) +
-        (reconciliations ?? []).reduce((sum, item) => sum + item.credits, 0) -
-        candidate.spentCredits
-    ) <= 1e-9 &&
+    isLedgerV1SpentConsistent(candidate as CodexCreditLedgerV1) &&
     (candidate.blockedReason === undefined ||
       (typeof candidate.blockedReason === "string" && candidate.blockedReason.length > 0))
   );
@@ -879,11 +875,12 @@ function isLedgerV1(value: unknown): value is CodexCreditLedgerV1 {
 
 function migrateLedgerV1(ledger: CodexCreditLedgerV1, sourceContents?: string | Uint8Array): CodexCreditLedger {
   const source = sourceContents ? Buffer.from(sourceContents).toString("utf8") : `${JSON.stringify(ledger)}\n`;
+  const spentUnits = nanounitsToBudgetUnits(ledgerV1SpentNanounits(ledger));
   return {
     schemaVersion: 2,
     budgetUnits: ledger.budgetCredits,
     reserveUnits: ledger.reserveCredits,
-    spentUnits: ledger.spentCredits,
+    spentUnits,
     entries: ledger.entries.map(({ credits, ...entry }) => ({ ...entry, budgetUnits: credits })),
     ...(ledger.reconciliations?.length ? { legacyReconciliations: ledger.reconciliations } : {}),
     migratedFromV1Sha256: sha256(source),
@@ -1061,7 +1058,7 @@ function isDirectV1PredecessorResolution(ledger: CodexCreditLedger, resolution: 
     isLedgerV1(predecessor) &&
     resolution.priorEntryCount === predecessor.entries.length &&
     resolution.priorLedgerSha256 === ledger.migratedFromV1Sha256 &&
-    budgetUnitsToNanounits(resolution.priorRecordedSpentUnits) === budgetUnitsToNanounits(predecessor.spentCredits) &&
+    budgetUnitsToNanounits(resolution.priorRecordedSpentUnits) === ledgerV1SpentNanounits(predecessor) &&
     predecessor.blockedReason === resolution.affectedBlockedEvent.reason
   );
 }
@@ -1348,6 +1345,24 @@ function nanounitsToBudgetUnits(value: bigint): number {
 
 function sumBudgetUnitNanounits(values: number[]): bigint {
   return values.reduce((sum, value) => sum + budgetUnitsToNanounits(value), 0n);
+}
+
+function ledgerV1SpentNanounits(ledger: CodexCreditLedgerV1): bigint {
+  return (
+    sumBudgetUnitNanounits(ledger.entries.map((entry) => entry.credits)) +
+    sumBudgetUnitNanounits((ledger.reconciliations ?? []).map((reconciliation) => reconciliation.credits))
+  );
+}
+
+function isLedgerV1SpentConsistent(ledger: CodexCreditLedgerV1): boolean {
+  try {
+    const exactSpentNanounits = ledgerV1SpentNanounits(ledger);
+    if (exactSpentNanounits > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+    const exactSpentUnits = nanounitsToBudgetUnits(exactSpentNanounits);
+    return Math.abs(exactSpentUnits - ledger.spentCredits) <= LEGACY_LEDGER_FLOAT_DRIFT_TOLERANCE;
+  } catch {
+    return false;
+  }
 }
 
 function ledgerSpentNanounits(ledger: CodexCreditLedger): bigint {
