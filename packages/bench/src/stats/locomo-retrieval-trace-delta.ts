@@ -242,7 +242,8 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
     realVisible.core > baselineVisible.core &&
     realVisible.lcm < baselineVisible.lcm &&
     !other &&
-    !budget;
+    !budget &&
+    !compositionPolicy;
   let mechanism: LoCoMoRetrievalMechanism;
   if (!exact) mechanism = "insufficient-exact-lineage";
   else if (coreVisibleLcmDisplacement) mechanism = "real-core-visible-lcm-displacement";
