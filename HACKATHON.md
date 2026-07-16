@@ -130,6 +130,13 @@ Additional in-window receipts:
   [`ab849733`](https://github.com/joshuaswarren/remnic/commit/ab84973365935418f938fd0ed9510d3b4a95e1c7)
   add the LoCoMo diagnosis tool, pin staged dataset paths, add safe credit
   recovery, and let judge calibration resume after a stop.
+- [`30de78ea`](https://github.com/joshuaswarren/remnic/commit/30de78ea924af066c72f64768a017fc88518af78)
+  and
+  [`7d885e2e`](https://github.com/joshuaswarren/remnic/commit/7d885e2e1fcecdceee056aa4a3ac3419cb5a650a)
+  add provider-free LoCoMo recall receipts and a strict paired structural
+  analyzer. The July 16 current-main capture covered all 321 historical
+  multi-hop tasks and found no baseline/real retrieval-structure delta. This
+  is negative diagnostic evidence, not a scored benchmark lift.
 
 On July 15, merged head `ab849733` passed the cold package test:
 `node scripts/verify-build-week-sandbox.mjs --keep`. The test put version 9.6.24
@@ -139,6 +146,14 @@ or provider ran. It scored `uptake_at_next=1` and `non_resurrection=0`. It also
 wrote a 15,144-byte offline HTML report. The focused results-store test passed
 20 of 20 tests. This receipt proves the packaged keyless path and report
 export. It is not a paid-model result.
+
+On July 16, merged head `7d885e2e` repeated the cold package test from the
+source checkout at version 9.6.33. A clean global prefix installed the packed
+core, server, Pi plugin, coding graph, bench, and CLI packages. The keyless
+one-task LongMemEval smoke and MCP MemCorrect run both completed; run listing
+and HTML export succeeded; the report was 15,144 bytes; and the test ended in
+`PACKAGED_SANDBOX_OK`. This verifies the current source package set on Linux
+x64. It does not claim that version 9.6.33 is published or that a model ran.
 
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
@@ -303,7 +318,10 @@ in `docs/paper/repro-appendix.md`.
 
 The version 9.6.24 packed-tarball cold-install receipt is complete on Linux.
 Both `@remnic/cli` and `@remnic/bench` are published at 9.6.24. This receipt
-does not claim a macOS or native Windows verification.
+does not claim a macOS or native Windows verification. The version 9.6.33
+source package set also passed the same Linux x64 cold global-prefix test on
+July 16; that newer receipt is a source-package check, not a publication
+claim.
 
 ## Honest framing of the novelty claim
 

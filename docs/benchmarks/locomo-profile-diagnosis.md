@@ -11,16 +11,19 @@ and has a −0.104 F1 delta.
 
 This establishes the affected slice, not the recall-side mechanism. The
 published score artifacts contain per-task scores but no answer payloads or
-recall X-ray receipts. No paired baseline/real recall receipts are available
-in the repository or local result store, so claims that QMD, entity retrieval,
-verified recall, or Memory Boxes displaced LCM evidence remain hypotheses.
+recall X-ray receipts. The later private paired capture described below tests
+the current runtime rather than reconstructing the July 14 runtime. Claims
+that QMD, entity retrieval, verified recall, or Memory Boxes caused the
+historical regression therefore remain hypotheses.
 
-For benchmark operators, the evidence supports a narrow provisional rule:
-use `--runtime-profile baseline` for LoCoMo runs that deliberately use
-`replayExtractionMode: "skip"` when the objective is the best score from this
-validated configuration. Do not generalize that recommendation to production
-agents, LongMemEval, extraction-enabled LoCoMo runs, or other workloads. No
-shipped default changes on this evidence.
+For benchmark operators, that historical pair supported a narrow provisional
+rule: use `--runtime-profile baseline` for LoCoMo runs that deliberately use
+`replayExtractionMode: "skip"` when reproducing the July 14 configuration.
+A July 16 current-main capture described below no longer reproduces a
+retrieval-structure difference, so this is historical reproduction guidance,
+not current-main profile guidance. Do not generalize it to production agents,
+LongMemEval, extraction-enabled LoCoMo runs, or other workloads. No shipped
+default changes on this evidence.
 
 ## Multi-hop accounts for most of the headline judge delta
 
@@ -96,27 +99,58 @@ pnpm exec tsx scripts/bench/diagnose-locomo-profile-delta.ts \
   --metric f1 --format json
 ```
 
-## Acceptance remains blocked on paired recall evidence
+## Current main does not reproduce the retrieval-structure divergence
 
-The baseline score artifact is recoverable from git history, but the operator
-baseline replay state, answer-level traces, and paired recall X-ray receipts
-are not available. The committed real artifact alone cannot prove recall
-interference. Issue #1879's root-cause acceptance criterion therefore remains
-open until an operator captures baseline and real receipts for the same ranked
-regression task ids.
+On July 16, 2026, merged main `7d885e2e` captured paired, provider-free recall
+receipts for all 321 multi-hop tasks from the historical comparison. Both
+captures used LoCoMo-10 dataset SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`,
+the same ordered selector (`selectedTaskIdsSha256`
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`),
+the same recall-budget algorithm, and skip-extraction replay. Their retrieval
+configuration hashes differ as intended:
 
-The deterministic tool prints those task ids. The next run should preserve,
-for each profile and task: served recall tiers, ordered evidence and scores,
-token-budget truncation/displacement, final responder answer, and the exact
-profile/config hash. Compare multi-hop regressions first, retain a few
-single-hop improvements as negative controls, and only then choose between a
-recall-composition fix and permanent benchmark-profile guidance.
+- baseline: `bec4199d39a1c706276a1cca99cb100a7aa2d588ebc64fcdd1aa3f8fe2f30e88`
+- real: `2a87cae27581fe0534e4316888f2a000bf85ce13bcc646f9e99abe1bb41e2bd3`
+
+The strict paired analyzer classified all 321 tasks as
+`no-structural-delta`. Every displacement, selection, composition, budget,
+mixed, and insufficient-lineage count was zero. The report therefore marks
+the dominant multi-hop mechanism `not-supported` (0 of 321). Safe artifact
+identities are:
+
+- baseline receipt: `a9ce89899ba7baa22d272b5b774ae661f3f49bcb2eccbd18efb45bd824edf661`
+- real receipt: `5d83561b24b8a8530e0f95ee357d138626460f0c24368fe773fe1fb2276bc716`
+- paired report: `719ddd7a32c3afca9f0c8f522ee5d57fd2571a35581c929a42294829ef948f47`
+
+The receipts and full report remain in the operator's private benchmark store.
+They contain no gold answers or raw content, but are classified restricted and
+are not committed. This negative result rules out the proposed current-main
+core/LCM structural-displacement explanation on the affected slice. It does
+not identify the July 14 historical cause, prove that answer scores are now
+equal, or show that a responder would treat identical context identically.
+
+## Acceptance remains blocked on paired scored evidence
+
+The retrieval capture now exists, but it finds no structural divergence on
+current main. Issue #1879's acceptance criterion therefore remains open until
+a same-selector scored baseline/real rerun either establishes parity or names
+a different mechanism with bounded evidence. That rerun must use identical
+responder, judge, seed, dataset, task order, and recall budget. It should start
+with a credit-metered smoke and expand only if the reconciled Codex-credit
+ledger can cover the selected slice while preserving its reserve.
+
+Do not treat the current negative trace as a benchmark lift. It made no model
+calls and captured no answers or judge scores. Likewise, do not promote the
+historical baseline recommendation into permanent workload guidance unless a
+new scored comparison justifies it.
 
 ## Further questions
 
 - Does the multi-hop regression reproduce when the responder answers are
   judged by the same calibrated frontier judge?
-- Which recall tier first diverges between profiles on the ranked task ids?
+- If scored answers still diverge, which post-retrieval or responder behavior
+  explains the difference despite structurally identical recalled context?
 - Is the effect caused by evidence omission, ordering, token-budget pressure,
   or responder distraction despite retaining the same evidence?
 - Does enabling extraction for LoCoMo reverse the result, making the current
