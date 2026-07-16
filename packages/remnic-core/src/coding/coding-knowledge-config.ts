@@ -22,6 +22,7 @@
  */
 
 import type { CodingKnowledgeConfig, CodingGraphLspConfig } from "../types.js";
+import { TIER_1_LANGUAGES } from "./coding-graph-types.js";
 import { coerceBool } from "../connectors/coerce.js";
 
 export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
@@ -149,11 +150,10 @@ function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
   if (!enabled) return { enabled: false };
 
   // Server overrides are validated STRICTLY (rule 51): a malformed entry
-  // must not silently fall through to the built-in default server — the
-  // operator configured an override for a reason. Unknown language KEYS
-  // are allowed (forward-compat: the optional @remnic/coding-graph package
-  // owns the language list and may grow it independently of core; an
-  // unmatched key is inert at the runtime seam).
+  // or a misspelled language key must not silently fall through to the
+  // built-in default server — the operator configured an override for a
+  // reason. Keys validate against TIER_1_LANGUAGES (core owns the tier-1
+  // list in coding-graph-types.ts, so there is no drift risk).
   const servers: CodingGraphLspConfig["servers"] = {};
   if (raw.servers !== undefined && raw.servers !== null) {
     if (typeof raw.servers !== "object" || Array.isArray(raw.servers)) {
@@ -162,6 +162,11 @@ function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
       );
     }
     for (const [lang, def] of Object.entries(raw.servers as Record<string, unknown>)) {
+      if (!(TIER_1_LANGUAGES as readonly string[]).includes(lang)) {
+        throw new Error(
+          `codingKnowledge.lsp.servers has unknown language key ${JSON.stringify(lang)}; valid keys: ${TIER_1_LANGUAGES.join(", ")}.`,
+        );
+      }
       if (!def || typeof def !== "object" || Array.isArray(def)) {
         throw new Error(
           `codingKnowledge.lsp.servers.${lang} must be an object ({ command, args? }); got ${JSON.stringify(def)}.`,

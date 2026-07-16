@@ -882,12 +882,21 @@ export async function runCodegraphLspResolution(params: {
             throw new Error("store.upsertEdges is not available");
           }
           const result = await params.store.upsertEdges(upgrades);
-          // The executor's contract: a throwing apply means the batch did
-          // not persist and must not be counted as upgraded (review
-          // thread: silently skipped edges inflate the upgraded count and
-          // let reconciliation retire edges that were never re-asserted).
+          // Throw ONLY when nothing persisted (ok:false) — the executor's
+          // transactional contract holds because no state changed. A
+          // skipped>0 result has ALREADY committed the resolvable edges in
+          // one transaction, so throwing after the fact would desync the
+          // executor's view from the DB (skipped reconciliation +
+          // undercounted upgrades while edges persist — review thread).
+          // Skips are surfaced as a degradation instead of a silent drop.
           if (!result.ok) throw new Error(`upsertEdges failed: ${result.code}`);
-          if (result.skipped > 0) throw new Error(`upsertEdges skipped ${result.skipped} edge(s)`);
+          if (result.skipped > 0) {
+            degradations.push({
+              language,
+              code: "edges_skipped",
+              message: `upsertEdges persisted ${result.persisted} and skipped ${result.skipped} edge(s) for ${language} (unresolvable endpoints).`,
+            });
+          }
         },
         reconcileLspEdges: (
           filePath: string,
