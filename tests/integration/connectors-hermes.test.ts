@@ -4463,7 +4463,8 @@ test("installConnector hermes preserves the prior config when the new home's shi
           const second = mod.installConnector({ connectorId: "hermes", force: true });
           assert.equal(second.status, "installed", second.message);
           assert.ok(
-            second.message.includes("left the prior-install Hermes config untouched"),
+            second.message.includes("left the prior-install Hermes config in place") &&
+              second.message.includes("refreshed with the newly-issued token"),
             `reinstall should note the preserved fallback, got: ${second.message}`,
           );
         });
@@ -4484,10 +4485,10 @@ test("installConnector hermes preserves the prior config when the new home's shi
           tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
         );
         const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
-        assert.equal(
-          saved.priorHermesConfigPath,
-          configA,
-          "the surviving prior config must be persisted as priorHermesConfigPath",
+        assert.deepEqual(
+          saved.priorHermesConfigPaths,
+          [configA],
+          "the surviving prior config must be persisted in priorHermesConfigPaths",
         );
 
         withHermesHome(undefined, () => {

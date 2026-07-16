@@ -1426,12 +1426,34 @@ export function installConnector(options: InstallOptions): InstallResult {
       typeof priorConfigPathRaw === "string" && priorConfigPathRaw.length > 0 ? priorConfigPathRaw : null;
     const priorConfigDiffers =
       priorConfigPath !== null && !sameHermesConfigTarget(priorConfigPath, yamlResult.configPath);
-    if (priorConfigDiffers && shimOutcome.materializedAt === null) {
+    if (priorConfigDiffers && priorConfigPath !== null && shimOutcome.materializedAt === null) {
+      // Refresh the preserved config with the ACTIVE token: the install just
+      // rotated the token store, so leaving the old inline token would make
+      // the "fallback" fail daemon auth (Bugbot on PR #1938, round 13). The
+      // upsert preserves the file's other remnic: sub-keys.
+      let fallbackDetail = "";
+      if (isPlausibleHermesConfigPath(priorConfigPath)) {
+        try {
+          const refresh = upsertHermesConfigAt(priorConfigPath, {
+            host: hermesHost,
+            port: hermesPort,
+            token: tokenEntry.token,
+          });
+          fallbackDetail = refresh.updated
+            ? " Its remnic: block was refreshed with the newly-issued token so it keeps working."
+            : ` Note: its token could not be refreshed (${refresh.reason ?? "config not writable"}) — re-run install with HERMES_HOME pointing there to restore daemon auth.`;
+        } catch (refreshErr) {
+          fallbackDetail = ` Note: its token could not be refreshed (${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}) — re-run install with HERMES_HOME pointing there to restore daemon auth.`;
+        }
+      } else {
+        fallbackDetail =
+          " Note: its token was rotated by this install — re-run install with HERMES_HOME pointing there to restore daemon auth.";
+      }
       notes.push(
-        `Note: left the prior-install Hermes config untouched at ${priorConfigPath} — ` +
+        `Note: left the prior-install Hermes config in place at ${priorConfigPath} — ` +
           `no Remnic shim could be written under the current Hermes home, so the prior ` +
-          `installation remains the working fallback. Resolve the shim collision/failure ` +
-          `above and re-run with --force to complete the migration.`,
+          `installation remains the working fallback.${fallbackDetail} Resolve the shim ` +
+          `collision/failure above and re-run with --force to complete the migration.`,
       );
     } else if (priorConfigDiffers && priorConfigPath !== null && isPlausibleHermesConfigPath(priorConfigPath)) {
       try {
@@ -1445,49 +1467,72 @@ export function installConnector(options: InstallOptions): InstallResult {
         );
       }
     }
-    // Reconcile the persisted priorHermesConfigPath with reality (Codex P2 on
-    // PR #1938, round 12): if a displaced or previously-tracked config still
-    // carries a remnic: block (deliberately preserved on an unconfirmed shim
-    // move, cleanup failed, or the provenance guard declined), keep tracking
-    // it so a later `remove` cleans BOTH configs; if nothing survives, drop a
-    // stale inherited key. Best-effort second write — the primary connector
-    // JSON is already committed.
+    // Reconcile the persisted prior-config provenance with reality (Codex P2
+    // on PR #1938, rounds 12-13): EVERY displaced or previously-tracked config
+    // that still carries a remnic: block (preserved fallback, failed cleanup,
+    // declined guard — possibly several across repeated HERMES_HOME moves) is
+    // kept in priorHermesConfigPaths so a later `remove` cleans them all;
+    // stale entries are dropped. Best-effort second write — the primary
+    // connector JSON is already committed.
     {
-      const inheritedPriorRaw = savedConnectorConfig.priorHermesConfigPath;
       const candidates: string[] = [];
       if (priorConfigDiffers && priorConfigPath !== null) {
         candidates.push(priorConfigPath);
       }
-      if (typeof inheritedPriorRaw === "string" && inheritedPriorRaw.length > 0) {
-        candidates.push(inheritedPriorRaw);
+      const inheritedArrayRaw = savedConnectorConfig.priorHermesConfigPaths;
+      if (Array.isArray(inheritedArrayRaw)) {
+        for (const entry of inheritedArrayRaw) {
+          if (typeof entry === "string" && entry.length > 0) {
+            candidates.push(entry);
+          }
+        }
       }
-      const survivingPrior =
-        candidates.find((candidate) => {
-          if (sameHermesConfigTarget(candidate, yamlResult.configPath)) {
-            return false;
-          }
-          try {
-            return /^remnic:/m.test(fs.readFileSync(candidate, "utf8"));
-          } catch {
-            return false;
-          }
-        }) ?? null;
+      // Legacy single-path key from earlier builds of this branch.
+      const inheritedLegacyRaw = savedConnectorConfig.priorHermesConfigPath;
+      if (typeof inheritedLegacyRaw === "string" && inheritedLegacyRaw.length > 0) {
+        candidates.push(inheritedLegacyRaw);
+      }
+      const survivingPriors: string[] = [];
+      for (const candidate of candidates) {
+        if (sameHermesConfigTarget(candidate, yamlResult.configPath)) {
+          continue;
+        }
+        if (survivingPriors.some((kept) => sameHermesConfigTarget(kept, candidate))) {
+          continue;
+        }
+        let blockSurvives = false;
+        try {
+          blockSurvives = /^remnic:/m.test(fs.readFileSync(candidate, "utf8"));
+        } catch {
+          blockSurvives = false;
+        }
+        if (blockSurvives) {
+          survivingPriors.push(candidate);
+        }
+      }
       try {
         const committed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-        const persistedPrior =
-          typeof committed.priorHermesConfigPath === "string" ? committed.priorHermesConfigPath : null;
-        if (survivingPrior !== null && persistedPrior !== survivingPrior) {
-          committed.priorHermesConfigPath = survivingPrior;
-          writeSecretFileSync(configPath, JSON.stringify(committed, null, 2));
-        } else if (survivingPrior === null && persistedPrior !== null) {
+        const persistedRaw = committed.priorHermesConfigPaths;
+        const persisted = Array.isArray(persistedRaw) ? persistedRaw : null;
+        const changed =
+          persisted === null ||
+          persisted.length !== survivingPriors.length ||
+          survivingPriors.some((entry, index) => persisted[index] !== entry) ||
+          "priorHermesConfigPath" in committed;
+        if (changed) {
+          if (survivingPriors.length > 0) {
+            committed.priorHermesConfigPaths = survivingPriors;
+          } else {
+            delete committed.priorHermesConfigPaths;
+          }
           delete committed.priorHermesConfigPath;
           writeSecretFileSync(configPath, JSON.stringify(committed, null, 2));
         }
       } catch {
-        if (survivingPrior !== null) {
+        if (survivingPriors.length > 0) {
           notes.push(
-            `Note: could not record the prior Hermes config location (${survivingPrior}) in the connector registry — ` +
-              `clean its remnic: block manually when decommissioning that home.`,
+            `Note: could not record the prior Hermes config location(s) (${survivingPriors.join(", ")}) in the connector registry — ` +
+              `clean their remnic: blocks manually when decommissioning those homes.`,
           );
         }
       }
@@ -1948,7 +1993,7 @@ export function removeConnector(connectorId: string): RemoveResult {
   // under the HERMES_HOME that was active during install (Codex P2 on PR #1938).
   let savedHermesShimPath: string | null = null;
   let savedHermesConfigPath: string | null = null;
-  let savedPriorHermesConfigPath: string | null = null;
+  const savedPriorHermesConfigPaths: string[] = [];
   if (connectorId === "hermes" && fs.existsSync(configPath)) {
     try {
       const parsedRaw: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -1967,8 +2012,17 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (typeof parsed.hermesConfigPath === "string" && parsed.hermesConfigPath.length > 0) {
         savedHermesConfigPath = parsed.hermesConfigPath;
       }
+      // Array provenance (round 13) plus the legacy single-path key from
+      // earlier builds of this branch.
+      if (Array.isArray(parsed.priorHermesConfigPaths)) {
+        for (const entry of parsed.priorHermesConfigPaths) {
+          if (typeof entry === "string" && entry.length > 0) {
+            savedPriorHermesConfigPaths.push(entry);
+          }
+        }
+      }
       if (typeof parsed.priorHermesConfigPath === "string" && parsed.priorHermesConfigPath.length > 0) {
-        savedPriorHermesConfigPath = parsed.priorHermesConfigPath;
+        savedPriorHermesConfigPaths.push(parsed.priorHermesConfigPath);
       }
     } catch {
       // Fail closed, mirroring the codex-cli provenance guard: a malformed
@@ -2275,9 +2329,10 @@ export function removeConnector(connectorId: string): RemoveResult {
     try {
       const yamlResult = removeHermesConfig({
         profile: storedProfile,
-        extraConfigPaths: [savedHermesConfigPath, savedPriorHermesConfigPath].filter(
-          (candidate): candidate is string => candidate !== null,
-        ),
+        extraConfigPaths: [
+          ...(savedHermesConfigPath !== null ? [savedHermesConfigPath] : []),
+          ...savedPriorHermesConfigPaths,
+        ],
       });
       if (yamlResult.updated) {
         notes.push(`Removed remnic: block from Hermes config: ${yamlResult.configPath}`);
@@ -2579,7 +2634,19 @@ export function upsertHermesConfig(opts: {
   port: number;
   token: string;
 }): HermesConfigResult {
-  const cfgPath = hermesConfigPath(opts.profile);
+  return upsertHermesConfigAt(hermesConfigPath(opts.profile), opts);
+}
+
+/**
+ * Path-addressed variant of {@link upsertHermesConfig}: writes/updates the
+ * `remnic:` block in the config.yaml at `cfgPath`. Used both for the
+ * profile-resolved primary config and for refreshing a preserved
+ * prior-install config with the active token (PR #1938, round 13).
+ */
+function upsertHermesConfigAt(
+  cfgPath: string,
+  opts: { host: string; port: number; token: string },
+): HermesConfigResult {
   const profileDir = path.dirname(cfgPath);
 
   // YAML-injection guard: validate scalar values before interpolating them
