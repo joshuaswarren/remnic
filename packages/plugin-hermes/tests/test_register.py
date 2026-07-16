@@ -225,3 +225,41 @@ def test_register_without_config_and_without_hermes_cli_uses_empty_config():
         register(ctx)
 
     mock_provider.assert_called_once_with({})
+
+
+def _fake_hermes_cli(config_module):
+    """Install a fake hermes_cli/hermes_cli.config into sys.modules."""
+    import sys
+    from types import ModuleType
+
+    pkg = ModuleType("hermes_cli")
+    pkg.config = config_module
+    return patch.dict(sys.modules, {"hermes_cli": pkg, "hermes_cli.config": config_module})
+
+
+def test_load_hermes_host_config_prefers_readonly_loader():
+    from types import ModuleType
+
+    from remnic_hermes import _load_hermes_host_config
+
+    mod = ModuleType("hermes_cli.config")
+    mod.load_config_readonly = lambda: {"remnic": {"token": "ro"}}
+    mod.load_config = lambda: {"remnic": {"token": "full"}}
+
+    with _fake_hermes_cli(mod):
+        assert _load_hermes_host_config() == {"remnic": {"token": "ro"}}
+
+
+def test_load_hermes_host_config_falls_back_to_load_config_on_older_hermes():
+    """Hermes releases in the supported floor (v0.7.0+) expose load_config()
+    but not load_config_readonly(); the loader must fall back rather than
+    silently returning {} (issue #1929 review)."""
+    from types import ModuleType
+
+    from remnic_hermes import _load_hermes_host_config
+
+    mod = ModuleType("hermes_cli.config")
+    mod.load_config = lambda: {"remnic": {"token": "full", "host": "10.0.0.8"}}
+
+    with _fake_hermes_cli(mod):
+        assert _load_hermes_host_config() == {"remnic": {"token": "full", "host": "10.0.0.8"}}

@@ -334,11 +334,22 @@ def _load_hermes_host_config() -> dict:  # type: ignore[type-arg]
     the host config here lets a `$HERMES_HOME/plugins/<name>/` directory shim
     simply re-export this ``register`` instead of duplicating config loading
     (issue #1929).
+
+    Prefers ``load_config_readonly()`` (fast, no deepcopy) and falls back to
+    ``load_config()`` on older Hermes releases (v0.7.0+ supported floor) that
+    predate the readonly helper.
     """
     try:
-        from hermes_cli.config import load_config_readonly
-
-        loaded = load_config_readonly()
+        from hermes_cli import config as hermes_config
+    except Exception:
+        return {}
+    loader = getattr(hermes_config, "load_config_readonly", None)
+    if not callable(loader):
+        loader = getattr(hermes_config, "load_config", None)
+    if not callable(loader):
+        return {}
+    try:
+        loaded = loader()
         return loaded if isinstance(loaded, dict) else {}
     except Exception:
         return {}
