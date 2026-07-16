@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createBenchRecallTraceRecorder } from "../adapters/remnic-recall-trace.js";
 import type {
   LoCoMoRetrievalTaskReceipt,
   LoCoMoRetrievalTraceReceipt,
@@ -26,7 +27,6 @@ function task(
     coreChars?: number;
     coreScore?: number;
     compositionMode?: "focused" | "fallback";
-    truncated?: boolean;
     lineageStatus?: "exact" | "unavailable";
   } = {}
 ): LoCoMoRetrievalTaskReceipt {
@@ -35,6 +35,57 @@ function task(
   const coreScore = options.coreScore ?? 1;
   const coreChars = options.coreChars ?? 0;
   const lineageStatus = options.lineageStatus ?? "exact";
+  const sections: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["sections"] = [];
+  const selections: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["selections"] = [];
+  let composedChars = 0;
+  for (let index = 0; index < sectionCopies; index += 1) {
+    const separatorStart = composedChars;
+    const contentStart = separatorStart + (sections.length === 0 ? 0 : 2);
+    const contentEnd = contentStart + sectionChars;
+    sections.push({
+      id: `section-${index}`,
+      source: "lcm-summary",
+      separatorStart,
+      contentStart,
+      contentEnd,
+      composedStart: separatorStart,
+      composedEnd: contentEnd,
+      visibleStart: separatorStart,
+      visibleEnd: contentEnd,
+      visibleChars: contentEnd - separatorStart,
+    });
+    selections.push({
+      sectionId: `section-${index}`,
+      kind: "lcm-summary",
+      lineageStatus,
+      ...(lineageStatus === "exact" ? { archiveRowIds: [7 + index] } : {}),
+      summary: { depth: 1, msgStart: index, msgEnd: index + 1 },
+      composedStart: contentStart,
+      composedEnd: contentEnd,
+      visibleStart: contentStart,
+      visibleEnd: contentEnd,
+    });
+    composedChars = contentEnd;
+  }
+  if (coreChars > 0) {
+    const separatorStart = composedChars;
+    const contentStart = separatorStart + (sections.length === 0 ? 0 : 2);
+    const contentEnd = contentStart + coreChars;
+    sections.push({
+      id: "core-section",
+      source: "core",
+      separatorStart,
+      contentStart,
+      contentEnd,
+      composedStart: separatorStart,
+      composedEnd: contentEnd,
+      visibleStart: separatorStart,
+      visibleEnd: contentEnd,
+      visibleChars: contentEnd - separatorStart,
+    });
+    composedChars = contentEnd;
+  }
+  const returnedChars = composedChars;
   return {
     taskId: id,
     question: digest(`question:${id}`),
@@ -45,51 +96,8 @@ function task(
         trace: {
           schemaVersion: 1,
           sensitivity: { classification: "restricted", contentEncoding: "sha256+length", containsGold: false },
-          sections: [
-            ...Array.from({ length: sectionCopies }, (_, index) => ({
-              id: `section-${index}`,
-              source: "lcm-summary" as const,
-              separatorStart: index * sectionChars,
-              contentStart: index * sectionChars,
-              contentEnd: (index + 1) * sectionChars,
-              composedStart: index * sectionChars,
-              composedEnd: (index + 1) * sectionChars,
-              visibleStart: index * sectionChars,
-              visibleEnd: (index + 1) * sectionChars,
-              visibleChars: sectionChars,
-            })),
-            ...(coreChars === 0
-              ? []
-              : [
-                  {
-                    id: "core-section",
-                    source: "core" as const,
-                    separatorStart: 0,
-                    contentStart: 0,
-                    contentEnd: coreChars,
-                    composedStart: 0,
-                    composedEnd: coreChars,
-                    visibleStart: 0,
-                    visibleEnd: coreChars,
-                    visibleChars: coreChars,
-                  },
-                ]),
-          ],
-          selections: Array.from(
-            { length: sectionCopies },
-            (_, index) =>
-              ({
-                sectionId: `section-${index}`,
-                kind: "lcm-summary",
-                lineageStatus,
-                ...(lineageStatus === "exact" ? { archiveRowIds: [7 + index] } : {}),
-                summary: { depth: 1, msgStart: index, msgEnd: index + 1 },
-                composedStart: index * sectionChars,
-                composedEnd: (index + 1) * sectionChars,
-                visibleStart: index * sectionChars,
-                visibleEnd: (index + 1) * sectionChars,
-              }) as LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["selections"][number]
-          ),
+          sections,
+          selections,
           lcmCandidates: [
             {
               rank: 0,
@@ -114,9 +122,9 @@ function task(
           },
           budget: {
             requestedChars: 100,
-            composedChars: 20,
-            returnedChars: options.truncated ? 10 : 20,
-            truncated: options.truncated ?? false,
+            composedChars,
+            returnedChars,
+            truncated: false,
           },
         },
       },
@@ -177,6 +185,42 @@ function reseal(value: LoCoMoRetrievalTraceReceipt): LoCoMoRetrievalTraceReceipt
   return { ...withoutHash, artifactHash: hashCanonicalJson(withoutHash) };
 }
 
+function recorderTask(id: string, sectionChars: number): LoCoMoRetrievalTaskReceipt {
+  const requestedChars = 20;
+  const taskReceipt = task(id);
+  const recorder = createBenchRecallTraceRecorder(requestedChars);
+  recorder.appendSection("section-0", "lcm-summary", sectionChars);
+  recorder.recordSummarySelections("section-0", [
+    { id: "summary-0", depth: 1, msgStart: 0, msgEnd: 1, entryStart: 0, entryEnd: 10 },
+  ]);
+  recorder.recordLcmCandidate({
+    rank: 0,
+    archiveRowId: 7,
+    turnIndex: 2,
+    role: "user",
+    score: 0.5,
+    lineageStatus: "exact",
+  });
+  const trace = recorder.finalize(Math.min(requestedChars, sectionChars));
+  const coreCapture = taskReceipt.sessions[0]?.trace.coreCapture;
+  const session = taskReceipt.sessions[0];
+  assert.ok(session);
+  session.trace = {
+    ...trace,
+    selections: trace.selections.map(({ summary, ...selection }) => ({
+      ...selection,
+      ...(summary === undefined
+        ? {}
+        : { summary: { depth: summary.depth, msgStart: summary.msgStart, msgEnd: summary.msgEnd } }),
+    })),
+    ...(coreCapture === undefined ? {} : { coreCapture }),
+  };
+  taskReceipt.recallBudgetChars = requestedChars;
+  taskReceipt.composition.input = digest(`recall-prefix-${Math.min(requestedChars, sectionChars)}`);
+  taskReceipt.composition.output = digest("stable composition output");
+  return taskReceipt;
+}
+
 test("pairs deterministic receipts and reports core-visible LCM displacement without raw identifiers", () => {
   const ids = ["private-alpha-q0-multi_hop", "private-alpha-q1-multi_hop", "private-alpha-q2-multi_hop"];
   const baseline = receipt(
@@ -211,12 +255,12 @@ test("uses true multiset subtraction and labels composition and budget changes",
   const baselineTasks = [
     task("fixture-q0-single_hop", { sectionCopies: 2 }),
     task("fixture-q1-temporal"),
-    task("fixture-q2-adversarial"),
+    recorderTask("fixture-q2-adversarial", 15),
   ];
   const realTasks = [
     task("fixture-q0-single_hop", { sectionCopies: 1 }),
     task("fixture-q1-temporal", { compositionMode: "fallback" }),
-    task("fixture-q2-adversarial", { truncated: true }),
+    recorderTask("fixture-q2-adversarial", 25),
   ];
   const report = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", baselineTasks), receipt("real", realTasks));
 
@@ -242,7 +286,7 @@ test("preserves equal-total section source and layout changes as structural sign
   const realSection = sourceReal.sessions[0]?.trace.sections[0];
   assert.ok(baselineSection);
   assert.ok(realSection);
-  baselineSection.source = "derived";
+  baselineSection.source = "explicit-cue";
   realSection.source = "evidence-pack";
   for (const entry of [sourceBaseline, sourceReal]) {
     const selection = entry.sessions[0]?.trace.selections[0];
@@ -287,7 +331,7 @@ test("preserves equal-length section identity and ordering changes", () => {
     receipt("real", [reorderedReal])
   ).tasks[0];
   assert.equal(reorderedDelta?.dimensions.sectionVisibleChars.changed, true);
-  assert.equal(reorderedDelta?.dimensions.selections.changed, false);
+  assert.equal(reorderedDelta?.dimensions.selections.changed, true);
   assert.equal(reorderedDelta?.mechanism, "lcm-selection-change");
 
   const replacedId = "fixture-q1-multi_hop";
@@ -305,8 +349,26 @@ test("preserves equal-length section identity and ordering changes", () => {
     receipt("real", [replacedReal])
   ).tasks[0];
   assert.equal(replacedDelta?.dimensions.sectionVisibleChars.changed, true);
-  assert.equal(replacedDelta?.dimensions.selections.changed, false);
+  assert.equal(replacedDelta?.dimensions.selections.changed, true);
   assert.equal(replacedDelta?.mechanism, "lcm-selection-change");
+});
+
+test("binds selection lineage to its section identity", () => {
+  const id = "fixture-q0-multi_hop";
+  const baselineTask = task(id, { sectionCopies: 2 });
+  const realTask = task(id, { sectionCopies: 2 });
+  const realSelections = realTask.sessions[0]?.trace.selections;
+  assert.ok(realSelections?.[0]);
+  assert.ok(realSelections[1]);
+  [realSelections[0].sectionId, realSelections[1].sectionId] = [
+    realSelections[1].sectionId,
+    realSelections[0].sectionId,
+  ];
+
+  assert.throws(
+    () => diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask])),
+    /selection structure is invalid/
+  );
 });
 
 test("binds summary and raw-row lineage identities to rendered positions", () => {
@@ -370,7 +432,7 @@ test("attributes upstream displacement before downstream composition digest drif
   }).receipt;
   realTask.composition = prioritizeLoCoMoRecallTextWithTrace({
     question: "Where does Alice live?",
-    recalledText: "Alice lives in Paris.",
+    recalledText: "Alice lives in Lima.",
     multiHopRecallComposition: true,
   }).receipt;
 
@@ -403,15 +465,214 @@ test("does not classify rendered character counts as recall-budget changes", () 
   const id = "fixture-q0-multi_hop";
   const baselineTask = task(id);
   const realTask = task(id, { sectionChars: 19, coreChars: 10, coreScore: 0.5 });
-  const realBudget = realTask.sessions[0]?.trace.budget;
-  assert.ok(realBudget);
-  realBudget.composedChars = 29;
-  realBudget.returnedChars = 29;
 
   const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
     .tasks[0];
   assert.equal(delta?.dimensions.recallBudget.changed, false);
   assert.equal(delta?.mechanism, "real-core-visible-lcm-displacement");
+});
+
+test("reports recorder-built fixed-budget tail-geometry transitions", () => {
+  const baselineTask = recorderTask("fixture-q0-multi_hop", 15);
+  const realTask = recorderTask("fixture-q0-multi_hop", 25);
+
+  const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
+    .tasks[0];
+  assert.equal(delta?.dimensions.recallBudget.changed, true);
+  assert.equal(delta?.dimensions.sectionVisibleChars.changed, true);
+  assert.equal(delta?.dimensions.selections.changed, false);
+  assert.equal(delta?.dimensions.compositionDigests.changed, true);
+  assert.equal(delta?.dimensions.compositionPolicy.changed, false);
+  assert.equal(delta?.mechanism, "budget-truncation-change");
+
+  const reverse = diagnoseLoCoMoRetrievalTraceDelta(
+    receipt("baseline", [recorderTask("fixture-q1-multi_hop", 25)]),
+    receipt("real", [recorderTask("fixture-q1-multi_hop", 15)])
+  ).tasks[0];
+  assert.equal(reverse?.mechanism, "budget-truncation-change");
+});
+
+test("keeps policy and pre-truncation retrieval changes out of budget tail attribution", () => {
+  const cases: Array<{
+    name: string;
+    mutate: (baselineTask: LoCoMoRetrievalTaskReceipt, realTask: LoCoMoRetrievalTaskReceipt) => void;
+  }> = [
+    {
+      name: "composition policy",
+      mutate: (_baselineTask, realTask) => {
+        realTask.composition.mode = "fallback";
+      },
+    },
+    {
+      name: "composed section layout",
+      mutate: (baselineTask, realTask) => {
+        for (const entry of [baselineTask, realTask]) {
+          const trace = entry.sessions[0]?.trace;
+          assert.ok(trace);
+          const separatorStart = trace.budget.composedChars;
+          const contentStart = separatorStart + 2;
+          trace.sections.push({
+            id: "derived-tail",
+            source: "derived",
+            separatorStart,
+            contentStart,
+            contentEnd: contentStart,
+            composedStart: separatorStart,
+            composedEnd: contentStart,
+            visibleStart: Math.min(separatorStart, trace.budget.requestedChars),
+            visibleEnd: Math.min(contentStart, trace.budget.requestedChars),
+            visibleChars:
+              Math.min(contentStart, trace.budget.requestedChars) -
+              Math.min(separatorStart, trace.budget.requestedChars),
+          });
+          trace.budget.composedChars = contentStart;
+          trace.budget.returnedChars = Math.min(trace.budget.requestedChars, contentStart);
+          trace.budget.truncated = trace.budget.returnedChars < contentStart;
+        }
+      },
+    },
+    {
+      name: "selection lineage",
+      mutate: (_baselineTask, realTask) => {
+        const summary = realTask.sessions[0]?.trace.selections[0]?.summary;
+        assert.ok(summary);
+        summary.msgEnd += 1;
+      },
+    },
+    {
+      name: "candidate identity",
+      mutate: (_baselineTask, realTask) => {
+        const candidate = realTask.sessions[0]?.trace.lcmCandidates[0];
+        assert.ok(candidate);
+        candidate.archiveRowId = 8;
+      },
+    },
+    {
+      name: "unavailable candidate structure",
+      mutate: (baselineTask, realTask) => {
+        for (const entry of [baselineTask, realTask]) {
+          const trace = entry.sessions[0]?.trace;
+          const candidate = trace?.lcmCandidates[0];
+          assert.ok(trace);
+          assert.ok(candidate);
+          const { archiveRowId: _archiveRowId, ...withoutArchiveRowId } = candidate;
+          trace.lcmCandidates[0] = { ...withoutArchiveRowId, lineageStatus: "unavailable" };
+        }
+        const realCandidate = realTask.sessions[0]?.trace.lcmCandidates[0];
+        assert.ok(realCandidate);
+        realCandidate.role = "assistant";
+      },
+    },
+    {
+      name: "composition output",
+      mutate: (_baselineTask, realTask) => {
+        realTask.composition.output = digest("different composition output");
+      },
+    },
+    {
+      name: "composition selected-line digest",
+      mutate: (baselineTask, realTask) => {
+        const composition = prioritizeLoCoMoRecallTextWithTrace({
+          question: "Where does Alice live and work?",
+          recalledText: "Alice lives in Rome.\nAlice works at Acme.",
+          multiHopRecallComposition: true,
+        }).receipt;
+        baselineTask.composition = structuredClone(composition);
+        realTask.composition = structuredClone(composition);
+        const selectedLine = realTask.composition.selectedLines[0];
+        assert.ok(selectedLine);
+        selectedLine.output = digest("Alice lives in Lima.");
+      },
+    },
+    {
+      name: "composition selected-line geometry",
+      mutate: (baselineTask, realTask) => {
+        const composition = prioritizeLoCoMoRecallTextWithTrace({
+          question: "Where does Alice live and work?",
+          recalledText: "Alice lives in Rome.\nAlice works at Acme.",
+          multiHopRecallComposition: true,
+        }).receipt;
+        baselineTask.composition = structuredClone(composition);
+        realTask.composition = structuredClone(composition);
+        const selectedLine = realTask.composition.selectedLines[0];
+        assert.ok(selectedLine);
+        selectedLine.outputStart += 1;
+        selectedLine.outputEnd += 1;
+        selectedLine.visibleStart += 1;
+        selectedLine.visibleEnd += 1;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const baselineTask = recorderTask(`fixture-${testCase.name}-q0-multi_hop`, 15);
+    const realTask = recorderTask(`fixture-${testCase.name}-q0-multi_hop`, 25);
+    testCase.mutate(baselineTask, realTask);
+    const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
+      .tasks[0];
+    assert.equal(delta?.mechanism, "mixed", testCase.name);
+  }
+});
+
+test("keeps core and auxiliary changes out of budget tail attribution", () => {
+  const cases: Array<{
+    name: string;
+    mutate: (realTask: LoCoMoRetrievalTaskReceipt) => void;
+  }> = [
+    {
+      name: "core result",
+      mutate: (realTask) => {
+        const result = realTask.sessions[0]?.trace.coreCapture?.results[0];
+        assert.ok(result);
+        result.scoreDecomposition.final = 0.5;
+      },
+    },
+    {
+      name: "core filter",
+      mutate: (realTask) => {
+        const filter = realTask.sessions[0]?.trace.coreCapture?.filters[0];
+        assert.ok(filter);
+        filter.admitted = 0;
+      },
+    },
+    {
+      name: "core allocation",
+      mutate: (realTask) => {
+        const budget = realTask.sessions[0]?.trace.coreCapture?.budget;
+        assert.ok(budget);
+        budget.used += 1;
+      },
+    },
+    {
+      name: "auxiliary structure",
+      mutate: (realTask) => {
+        const trace = realTask.sessions[0]?.trace;
+        assert.ok(trace);
+        trace.sections.push({
+          id: "evidence-section",
+          source: "evidence-pack",
+          separatorStart: 25,
+          contentStart: 27,
+          contentEnd: 35,
+          composedStart: 25,
+          composedEnd: 35,
+          visibleStart: 20,
+          visibleEnd: 20,
+          visibleChars: 0,
+        });
+        trace.budget.composedChars = 35;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const baselineTask = recorderTask(`fixture-${testCase.name}-q0-multi_hop`, 15);
+    const realTask = recorderTask(`fixture-${testCase.name}-q0-multi_hop`, 25);
+    testCase.mutate(realTask);
+    const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
+      .tasks[0];
+    assert.equal(delta?.mechanism, "mixed", testCase.name);
+  }
 });
 
 test("labels composition-digest-only changes without claiming no structural delta", () => {
@@ -447,12 +708,11 @@ test("accepts exact compressed-summary lineage without archive row ids", () => {
 
 test("treats LCM-free tasks and exact raw-row fallback as complete lineage", () => {
   const coreOnlyId = "fixture-q0-multi_hop";
-  const coreOnlyBaseline = task(coreOnlyId, { coreChars: 10 });
-  const coreOnlyReal = task(coreOnlyId, { coreChars: 10 });
+  const coreOnlyBaseline = task(coreOnlyId, { sectionCopies: 0, coreChars: 10 });
+  const coreOnlyReal = task(coreOnlyId, { sectionCopies: 0, coreChars: 10 });
   for (const entry of [coreOnlyBaseline, coreOnlyReal]) {
     const trace = entry.sessions[0]?.trace;
     assert.ok(trace);
-    trace.sections = trace.sections.filter((section) => section.source === "core");
     trace.selections = [];
     trace.lcmCandidates = [];
   }
@@ -503,13 +763,11 @@ test("ignores unavailable candidates when rendered LCM lineage is exact", () => 
   assert.equal(delta?.dimensions.lcmCandidates.changed, false);
   assert.equal(delta?.mechanism, "no-structural-delta");
 
-  const candidateOnly = task(id);
+  const candidateOnly = task(id, { sectionCopies: 0 });
   const candidateOnlyTrace = candidateOnly.sessions[0]?.trace;
   const candidateOnlyCandidate = candidateOnlyTrace?.lcmCandidates[0];
   assert.ok(candidateOnlyTrace);
   assert.ok(candidateOnlyCandidate);
-  candidateOnlyTrace.sections = [];
-  candidateOnlyTrace.selections = [];
   const { archiveRowId: _candidateOnlyArchiveRowId, ...candidateOnlyWithoutRow } = candidateOnlyCandidate;
   candidateOnlyTrace.lcmCandidates[0] = { ...candidateOnlyWithoutRow, lineageStatus: "unavailable" };
   assert.equal(
@@ -552,17 +810,6 @@ test("ignores unavailable non-LCM selections for exact attribution", () => {
     visibleStart: 22,
     visibleEnd: 30,
   });
-  baselineTrace.selections.push({
-    sectionId: "evidence-section",
-    kind: "trajectory-line",
-    lineageStatus: "unavailable",
-    archiveRowIds: [99],
-    composedStart: 22,
-    composedEnd: 30,
-    visibleStart: 22,
-    visibleEnd: 30,
-  });
-
   const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
     .tasks[0];
   assert.equal(delta?.dimensions.sectionVisibleChars.changed, false);
@@ -674,11 +921,8 @@ test("requires an LCM-specific lineage carrier for LCM-bearing sections", () => 
   const realTask = task(id);
   for (const entry of [baselineTask, realTask]) {
     const trace = entry.sessions[0]?.trace;
-    const selection = trace?.selections[0];
     assert.ok(trace);
-    assert.ok(selection);
-    selection.kind = "evidence-block";
-    delete selection.summary;
+    trace.selections = [];
     trace.lcmCandidates = [];
   }
 
@@ -707,7 +951,7 @@ test("binds exact LCM lineage to every rendered LCM section", () => {
       id: "raw-row-section",
       source: "raw-row",
       separatorStart: 20,
-      contentStart: 20,
+      contentStart: 22,
       contentEnd: 30,
       composedStart: 20,
       composedEnd: 30,
@@ -715,6 +959,8 @@ test("binds exact LCM lineage to every rendered LCM section", () => {
       visibleEnd: 30,
       visibleChars: 10,
     });
+    trace.budget.composedChars = 30;
+    trace.budget.returnedChars = 30;
   }
   assert.equal(
     diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask])).tasks[0]
@@ -771,6 +1017,71 @@ test("fails closed on tampering, pairing drift, equal config hashes, and unavail
   assert.throws(
     () => diagnoseLoCoMoRetrievalTraceDelta(baseline, reseal(inconsistentBudget)),
     /session structure is invalid/
+  );
+
+  const malformedCompanionBaseline = recorderTask("fixture-q1-multi_hop", 15);
+  const malformedCompanionReal = recorderTask("fixture-q1-multi_hop", 25);
+  const malformedCompanion = structuredClone(malformedCompanionBaseline.sessions[0]);
+  assert.ok(malformedCompanion);
+  malformedCompanion.trace.budget.composedChars = 30;
+  malformedCompanion.trace.budget.returnedChars = 20;
+  malformedCompanion.trace.budget.truncated = true;
+  malformedCompanionBaseline.sessions.push(structuredClone(malformedCompanion));
+  malformedCompanionReal.sessions.push(structuredClone(malformedCompanion));
+  assert.throws(
+    () =>
+      diagnoseLoCoMoRetrievalTraceDelta(
+        receipt("baseline", [malformedCompanionBaseline]),
+        receipt("real", [malformedCompanionReal])
+      ),
+    /session structure is invalid/
+  );
+
+  const inconsistentSectionVisibility = receipt("real", [task("fixture-q0-multi_hop")]);
+  const invalidSection = inconsistentSectionVisibility.tasks[0]?.sessions[0]?.trace.sections[0];
+  assert.ok(invalidSection);
+  invalidSection.visibleEnd -= 1;
+  invalidSection.visibleChars -= 1;
+  assert.throws(
+    () => diagnoseLoCoMoRetrievalTraceDelta(baseline, reseal(inconsistentSectionVisibility)),
+    /section structure is invalid/
+  );
+
+  const malformedSectionLayout = receipt("real", [task("fixture-q0-multi_hop", { sectionCopies: 2 })]);
+  const malformedSecondSection = malformedSectionLayout.tasks[0]?.sessions[0]?.trace.sections[1];
+  assert.ok(malformedSecondSection);
+  malformedSecondSection.separatorStart += 1;
+  malformedSecondSection.contentStart += 1;
+  malformedSecondSection.composedStart += 1;
+  assert.throws(
+    () => diagnoseLoCoMoRetrievalTraceDelta(baseline, reseal(malformedSectionLayout)),
+    /section structure is invalid/
+  );
+
+  const outOfSectionSelection = receipt("real", [task("fixture-q0-multi_hop")]);
+  const invalidSelection = outOfSectionSelection.tasks[0]?.sessions[0]?.trace.selections[0];
+  assert.ok(invalidSelection);
+  invalidSelection.composedEnd += 1;
+  invalidSelection.visibleEnd += 1;
+  assert.throws(
+    () => diagnoseLoCoMoRetrievalTraceDelta(baseline, reseal(outOfSectionSelection)),
+    /selection structure is invalid/
+  );
+
+  const invalidComposition = receipt("real", [task("fixture-q0-multi_hop")]);
+  const invalidCompositionTask = invalidComposition.tasks[0];
+  assert.ok(invalidCompositionTask);
+  invalidCompositionTask.composition = prioritizeLoCoMoRecallTextWithTrace({
+    question: "Where does Alice live?",
+    recalledText: "Alice lives in Rome.",
+    multiHopRecallComposition: true,
+  }).receipt;
+  const invalidCompositionLine = invalidCompositionTask.composition.selectedLines[0];
+  assert.ok(invalidCompositionLine);
+  invalidCompositionLine.visible = !invalidCompositionLine.visible;
+  assert.throws(
+    () => diagnoseLoCoMoRetrievalTraceDelta(baseline, reseal(invalidComposition)),
+    /composition line structure is invalid/
   );
 
   for (const missingLineage of ["selection-missing", "selection-empty", "candidate-missing"] as const) {

@@ -144,7 +144,7 @@ export function diagnoseLoCoMoRetrievalTraceDelta(
       causalClaim: false as const,
       exactLineageRequired: true as const,
       explanation:
-        "Labels summarize paired, content-free structural differences. They do not prove that a retrieval mechanism caused an answer or score change.",
+        "Labels summarize paired, content-free structural differences. The budget-truncation label denotes a fixed-budget tail-geometry transition with a stable recorded composition outcome; it does not prove identical prefix content. No label proves that a retrieval mechanism caused an answer or score change.",
     },
   };
   return { ...withoutHash, artifactHash: hashCanonicalJson(withoutHash) };
@@ -209,16 +209,16 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
   };
   const exact = hasCompleteExactLineage(baseline) && hasCompleteExactLineage(real);
   const lcmSelectionsChanged = delta(
-    exactSelectionSignatures(baseline, "lcm"),
-    exactSelectionSignatures(real, "lcm")
+    exactSelectionSignatures(baseline, "lcm", "emitted"),
+    exactSelectionSignatures(real, "lcm", "emitted")
   ).changed;
   const lcmArchiveRowsChanged = delta(
     exactArchiveRowSignatures(baseline, "lcm"),
     exactArchiveRowSignatures(real, "lcm")
   ).changed;
   const auxiliarySelectionsChanged = delta(
-    exactSelectionSignatures(baseline, "auxiliary"),
-    exactSelectionSignatures(real, "auxiliary")
+    exactSelectionSignatures(baseline, "auxiliary", "emitted"),
+    exactSelectionSignatures(real, "auxiliary", "emitted")
   ).changed;
   const auxiliaryArchiveRowsChanged = delta(
     exactArchiveRowSignatures(baseline, "auxiliary"),
@@ -227,14 +227,20 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
   const core = dimensions.coreResults.changed || dimensions.coreFilters.changed || dimensions.coreBudget.changed;
   const baselineVisible = visibleCharsByGroup(baseline);
   const realVisible = visibleCharsByGroup(real);
-  const coreSections = sectionGroupChanged(baseline, real, "core");
-  const lcmSections = sectionGroupChanged(baseline, real, "lcm");
-  const otherSections = sectionGroupChanged(baseline, real, "other");
+  const coreSections = sectionGroupChanged(baseline, real, "core", "emitted");
+  const lcmSections = sectionGroupChanged(baseline, real, "lcm", "emitted");
+  const otherSections = sectionGroupChanged(baseline, real, "other", "emitted");
   const lcm = lcmSections || lcmSelectionsChanged || lcmArchiveRowsChanged || dimensions.lcmCandidates.changed;
   const auxiliary = auxiliarySelectionsChanged || auxiliaryArchiveRowsChanged;
   const other = otherSections || auxiliary;
+  const composedSelectionsChanged = delta(
+    structuralSelectionSignatures(baseline, "all", "composed", false),
+    structuralSelectionSignatures(real, "all", "composed", false)
+  ).changed;
+  const allCandidatesChanged = delta(candidateSignatures(baseline, false), candidateSignatures(real, false)).changed;
   const compositionPolicy = dimensions.compositionPolicy.changed;
   const compositionDigests = dimensions.compositionDigests.changed;
+  const compositionOutcomeChanged = compositionOutcomeSignature(baseline) !== compositionOutcomeSignature(real);
   const budget = dimensions.recallBudget.changed;
   const coreVisibleLcmDisplacement =
     core &&
@@ -244,11 +250,19 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
     !other &&
     !budget &&
     !compositionPolicy;
+  const budgetTailGeometryTransition =
+    budget &&
+    hasFixedBudgetTailGeometryTransition(baseline, real) &&
+    !core &&
+    !composedSelectionsChanged &&
+    !allCandidatesChanged &&
+    !compositionPolicy &&
+    !compositionOutcomeChanged;
   let mechanism: LoCoMoRetrievalMechanism;
   if (!exact) mechanism = "insufficient-exact-lineage";
   else if (coreVisibleLcmDisplacement) mechanism = "real-core-visible-lcm-displacement";
   else if (lcm && !core && !coreSections && !other && !budget) mechanism = "lcm-selection-change";
-  else if (budget && !core && !coreSections && !lcm && !other) mechanism = "budget-truncation-change";
+  else if (budgetTailGeometryTransition) mechanism = "budget-truncation-change";
   else if (compositionPolicy && !core && !coreSections && !lcm && !other && !budget)
     mechanism = "composition-filter-displacement";
   else if (compositionDigests && !compositionPolicy && !core && !coreSections && !lcm && !other && !budget)
@@ -280,14 +294,15 @@ type SectionGroup = "core" | "lcm" | "other";
 function sectionGroupChanged(
   baseline: LoCoMoRetrievalTaskReceipt,
   real: LoCoMoRetrievalTaskReceipt,
-  group: SectionGroup
+  group: SectionGroup,
+  projection: StructuralProjection
 ): boolean {
   const signaturesFor = (task: LoCoMoRetrievalTaskReceipt): string[] => {
     const output: string[] = [];
     task.sessions.forEach((session, sessionOrdinal) => {
       session.trace.sections.forEach((section, sectionOrdinal) => {
         if (sectionGroup(section.source) === group) {
-          output.push(structuralSectionSignature(section, sessionOrdinal, sectionOrdinal));
+          output.push(structuralSectionSignature(section, sessionOrdinal, sectionOrdinal, projection));
         }
       });
     });
@@ -307,7 +322,8 @@ function sectionGroup(
 function structuralSectionSignature(
   section: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["sections"][number],
   sessionOrdinal: number,
-  sectionOrdinal: number
+  sectionOrdinal: number,
+  projection: StructuralProjection
 ): string {
   return hashCanonicalJson({
     sessionOrdinal,
@@ -319,14 +335,19 @@ function structuralSectionSignature(
     contentEnd: section.contentEnd,
     composedStart: section.composedStart,
     composedEnd: section.composedEnd,
-    visibleStart: section.visibleStart,
-    visibleEnd: section.visibleEnd,
-    visibleChars: section.visibleChars,
+    ...(projection === "emitted"
+      ? {
+          visibleStart: section.visibleStart,
+          visibleEnd: section.visibleEnd,
+          visibleChars: section.visibleChars,
+        }
+      : {}),
   });
 }
 
 type Dimension = keyof LoCoMoRetrievalTaskDelta["dimensions"];
 type SelectionScope = "all" | "lcm" | "auxiliary";
+type StructuralProjection = "emitted" | "composed";
 
 function selectionInScope(
   selection: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["selections"][number],
@@ -336,14 +357,28 @@ function selectionInScope(
   return scope === "all" || (scope === "lcm" ? isLcm : !isLcm);
 }
 
-function exactSelectionSignatures(task: LoCoMoRetrievalTaskReceipt, scope: SelectionScope): string[] {
+function exactSelectionSignatures(
+  task: LoCoMoRetrievalTaskReceipt,
+  scope: SelectionScope,
+  projection: StructuralProjection
+): string[] {
+  return structuralSelectionSignatures(task, scope, projection, true);
+}
+
+function structuralSelectionSignatures(
+  task: LoCoMoRetrievalTaskReceipt,
+  scope: SelectionScope,
+  projection: StructuralProjection,
+  exactOnly: boolean
+): string[] {
   const output: string[] = [];
   task.sessions.forEach((session, sessionOrdinal) => {
     for (const value of session.trace.selections) {
-      if (!selectionInScope(value, scope) || !hasExactSelectionLineage(value)) continue;
+      if (!selectionInScope(value, scope) || (exactOnly && !hasExactSelectionLineage(value))) continue;
       output.push(
         hashCanonicalJson({
           sessionOrdinal,
+          sectionIdRef: digestIdentifier(value.sectionId),
           kind: value.kind,
           lineageStatus: value.lineageStatus,
           turnIndex: value.turnIndex,
@@ -353,8 +388,12 @@ function exactSelectionSignatures(task: LoCoMoRetrievalTaskReceipt, scope: Selec
           archiveRowIds: value.archiveRowIds,
           composedStart: value.composedStart,
           composedEnd: value.composedEnd,
-          visibleStart: value.visibleStart,
-          visibleEnd: value.visibleEnd,
+          ...(projection === "emitted"
+            ? {
+                visibleStart: value.visibleStart,
+                visibleEnd: value.visibleEnd,
+              }
+            : {}),
         })
       );
     }
@@ -407,9 +446,31 @@ function hasExactCandidateLineage(
   );
 }
 
+function candidateSignatures(task: LoCoMoRetrievalTaskReceipt, exactOnly: boolean): string[] {
+  const output: string[] = [];
+  task.sessions.forEach((session, sessionOrdinal) => {
+    for (const value of session.trace.lcmCandidates) {
+      if (exactOnly && !hasExactCandidateLineage(value)) continue;
+      output.push(
+        hashCanonicalJson({
+          sessionOrdinal,
+          rank: value.rank,
+          archiveRowId: value.archiveRowId,
+          turnIndex: value.turnIndex,
+          role: value.role,
+          score: value.score,
+          lineageStatus: value.lineageStatus,
+        })
+      );
+    }
+  });
+  return output;
+}
+
 function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): string[] {
-  if (dimension === "selections") return exactSelectionSignatures(task, "all");
+  if (dimension === "selections") return exactSelectionSignatures(task, "all", "emitted");
   if (dimension === "archiveRows") return exactArchiveRowSignatures(task, "all");
+  if (dimension === "lcmCandidates") return candidateSignatures(task, true);
   if (dimension === "recallBudget") {
     return [
       hashCanonicalJson({
@@ -431,6 +492,10 @@ function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): str
           stage: line.stage,
           hop: line.hop,
           visible: line.visible,
+          outputStart: line.outputStart,
+          outputEnd: line.outputEnd,
+          visibleStart: line.visibleStart,
+          visibleEnd: line.visibleEnd,
         })),
       }),
     ];
@@ -449,23 +514,8 @@ function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): str
     const trace = session.trace;
     if (dimension === "sectionVisibleChars") {
       trace.sections.forEach((value, sectionOrdinal) => {
-        output.push(structuralSectionSignature(value, sessionOrdinal, sectionOrdinal));
+        output.push(structuralSectionSignature(value, sessionOrdinal, sectionOrdinal, "emitted"));
       });
-    } else if (dimension === "lcmCandidates") {
-      for (const value of trace.lcmCandidates) {
-        if (!hasExactCandidateLineage(value)) continue;
-        output.push(
-          hashCanonicalJson({
-            sessionOrdinal,
-            rank: value.rank,
-            archiveRowId: value.archiveRowId,
-            turnIndex: value.turnIndex,
-            role: value.role,
-            score: value.score,
-            lineageStatus: value.lineageStatus,
-          })
-        );
-      }
     } else if (dimension === "coreResults") {
       for (const [resultOrdinal, value] of (trace.coreCapture?.results ?? []).entries())
         output.push(
@@ -496,6 +546,110 @@ function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): str
     }
   });
   return output;
+}
+
+function compositionOutcomeSignature(task: LoCoMoRetrievalTaskReceipt): string {
+  return hashCanonicalJson({
+    output: task.composition.output,
+    selectedLines: task.composition.selectedLines.map((line) => ({ input: line.input, output: line.output })),
+  });
+}
+
+function hasFixedBudgetTailGeometryTransition(
+  baseline: LoCoMoRetrievalTaskReceipt,
+  real: LoCoMoRetrievalTaskReceipt
+): boolean {
+  let sawTransition = false;
+  for (let index = 0; index < baseline.sessions.length; index += 1) {
+    const baselineSession = baseline.sessions[index];
+    const realSession = real.sessions[index];
+    const baselineTrace = baselineSession?.trace;
+    const realTrace = realSession?.trace;
+    if (
+      !baselineSession ||
+      !realSession ||
+      !baselineTrace ||
+      !realTrace ||
+      baselineTrace.budget.requestedChars !== realTrace.budget.requestedChars
+    ) {
+      return false;
+    }
+    if (baselineTrace.budget.truncated === realTrace.budget.truncated) {
+      if (
+        baselineTrace.budget.composedChars !== realTrace.budget.composedChars ||
+        baselineTrace.budget.returnedChars !== realTrace.budget.returnedChars ||
+        sectionGroupChanged(
+          { ...baseline, sessions: [baselineSession] },
+          { ...real, sessions: [realSession] },
+          "core",
+          "composed"
+        ) ||
+        sectionGroupChanged(
+          { ...baseline, sessions: [baselineSession] },
+          { ...real, sessions: [realSession] },
+          "lcm",
+          "composed"
+        ) ||
+        sectionGroupChanged(
+          { ...baseline, sessions: [baselineSession] },
+          { ...real, sessions: [realSession] },
+          "other",
+          "composed"
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    const shorter = baselineTrace.budget.truncated ? realTrace : baselineTrace;
+    const longer = baselineTrace.budget.truncated ? baselineTrace : realTrace;
+    const requested = shorter.budget.requestedChars;
+    if (
+      shorter.budget.truncated ||
+      !longer.budget.truncated ||
+      shorter.budget.composedChars > requested ||
+      longer.budget.composedChars <= requested ||
+      shorter.budget.returnedChars !== shorter.budget.composedChars ||
+      longer.budget.returnedChars !== requested ||
+      shorter.sections.length === 0 ||
+      shorter.sections.length !== longer.sections.length
+    ) {
+      return false;
+    }
+    const finalIndex = shorter.sections.length - 1;
+    for (let sectionIndex = 0; sectionIndex < finalIndex; sectionIndex += 1) {
+      const shortSection = shorter.sections[sectionIndex];
+      const longSection = longer.sections[sectionIndex];
+      if (!shortSection || !longSection) return false;
+      if (
+        structuralSectionSignature(shortSection, 0, sectionIndex, "composed") !==
+        structuralSectionSignature(longSection, 0, sectionIndex, "composed")
+      ) {
+        return false;
+      }
+    }
+    const shortFinal = shorter.sections[finalIndex];
+    const longFinal = longer.sections[finalIndex];
+    if (!shortFinal || !longFinal) return false;
+    const extension = longFinal.composedEnd - shortFinal.composedEnd;
+    if (
+      shortFinal.id !== longFinal.id ||
+      shortFinal.source !== longFinal.source ||
+      shortFinal.separatorStart !== longFinal.separatorStart ||
+      shortFinal.contentStart !== longFinal.contentStart ||
+      shortFinal.composedStart !== longFinal.composedStart ||
+      shortFinal.contentEnd !== shortFinal.composedEnd ||
+      longFinal.contentEnd !== longFinal.composedEnd ||
+      shortFinal.composedEnd !== shorter.budget.composedChars ||
+      longFinal.composedEnd !== longer.budget.composedChars ||
+      extension <= 0 ||
+      longFinal.contentEnd - shortFinal.contentEnd !== extension
+    ) {
+      return false;
+    }
+    sawTransition = true;
+  }
+  return sawTransition;
 }
 
 function delta(baseline: string[], real: string[]): LoCoMoStructuralMultisetDelta {
@@ -650,6 +804,9 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
     for (const session of task.sessions) {
       assertExactKeys(session, ["session", "trace"], `${label} retrieval trace session`);
       const trace = session.trace;
+      const expectedComposedChars = Array.isArray(trace.sections)
+        ? trace.sections.reduce((maximum, section) => Math.max(maximum, section.composedEnd), 0)
+        : -1;
       assertExactKeys(
         trace,
         ["schemaVersion", "sensitivity", "sections", "selections", "lcmCandidates", "coreCapture", "budget"],
@@ -678,12 +835,15 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
         new Set(trace.sections.map((section) => section.id)).size !== trace.sections.length ||
         !isTraceBudget(trace.budget) ||
         trace.budget.requestedChars !== task.recallBudgetChars ||
+        trace.budget.composedChars !== expectedComposedChars ||
+        trace.budget.returnedChars !== Math.min(trace.budget.requestedChars, trace.budget.composedChars) ||
         trace.budget.returnedChars > trace.budget.composedChars ||
         trace.budget.truncated !== trace.budget.returnedChars < trace.budget.composedChars
       ) {
         throw new Error(`${label} retrieval trace session structure is invalid.`);
       }
-      for (const section of trace.sections) {
+      let previousContentEnd = 0;
+      for (const [sectionIndex, section] of trace.sections.entries()) {
         assertExactKeys(
           section,
           [
@@ -700,6 +860,13 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
           ],
           `${label} retrieval trace section`
         );
+        const expectedVisibleStart = Math.min(section.composedStart, trace.budget.returnedChars);
+        const expectedVisibleEnd = Math.max(
+          expectedVisibleStart,
+          Math.min(section.composedEnd, trace.budget.returnedChars)
+        );
+        const expectedSeparatorStart = sectionIndex === 0 ? 0 : previousContentEnd;
+        const expectedContentStart = expectedSeparatorStart + (sectionIndex === 0 ? 0 : 2);
         if (
           ![
             "derived",
@@ -714,11 +881,20 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
           section.id.length === 0 ||
           !isTraceRange(section) ||
           ![section.separatorStart, section.contentStart, section.contentEnd].every(isNonNegativeSafeInteger) ||
+          section.separatorStart !== expectedSeparatorStart ||
+          section.contentStart !== expectedContentStart ||
+          section.contentEnd < section.contentStart ||
+          section.composedStart !== section.separatorStart ||
+          section.composedEnd !== section.contentEnd ||
           !Number.isSafeInteger(section.visibleChars) ||
-          section.visibleChars < 0
+          section.visibleChars < 0 ||
+          section.visibleStart !== expectedVisibleStart ||
+          section.visibleEnd !== expectedVisibleEnd ||
+          section.visibleChars !== expectedVisibleEnd - expectedVisibleStart
         ) {
           throw new Error(`${label} retrieval trace section structure is invalid.`);
         }
+        previousContentEnd = section.contentEnd;
       }
       for (const selection of trace.selections) {
         assertExactKeys(
@@ -747,6 +923,11 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
           );
         }
         const selectedSection = trace.sections.find((section) => section.id === selection.sectionId);
+        const expectedVisibleStart = Math.min(selection.composedStart, trace.budget.returnedChars);
+        const expectedVisibleEnd = Math.max(
+          expectedVisibleStart,
+          Math.min(selection.composedEnd, trace.budget.returnedChars)
+        );
         if (
           !["evidence-block", "trajectory-line", "lcm-summary", "raw-row"].includes(selection.kind) ||
           typeof selection.sectionId !== "string" ||
@@ -754,7 +935,15 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
           selectedSection === undefined ||
           (selection.kind === "lcm-summary" && selectedSection.source !== "lcm-summary") ||
           (selection.kind === "raw-row" && selectedSection.source !== "raw-row") ||
+          (selection.kind === "evidence-block" &&
+            selectedSection.source !== "explicit-cue" &&
+            selectedSection.source !== "evidence-pack") ||
+          (selection.kind === "trajectory-line" && selectedSection.source !== "trajectory-analysis") ||
           !isTraceRange(selection) ||
+          selection.composedStart < selectedSection.contentStart ||
+          selection.composedEnd > selectedSection.contentEnd ||
+          selection.visibleStart !== expectedVisibleStart ||
+          selection.visibleEnd !== expectedVisibleEnd ||
           (selection.lineageStatus !== "exact" && selection.lineageStatus !== "unavailable") ||
           (selection.turnIndex !== undefined && !isNonNegativeSafeInteger(selection.turnIndex)) ||
           (selection.role !== undefined && typeof selection.role !== "string") ||
@@ -873,6 +1062,7 @@ function assertComposition(composition: LoCoMoRetrievalTaskReceipt["composition"
   ) {
     throw new Error(`${label} retrieval trace composition structure is invalid.`);
   }
+  let previousOutputEnd = -1;
   for (const line of composition.selectedLines) {
     assertExactKeys(
       line,
@@ -897,10 +1087,20 @@ function assertComposition(composition: LoCoMoRetrievalTaskReceipt["composition"
       (line.stage !== "direct" && line.stage !== "linked") ||
       (line.hop !== undefined && !isNonNegativeSafeInteger(line.hop)) ||
       typeof line.visible !== "boolean" ||
-      ![line.outputStart, line.outputEnd, line.visibleStart, line.visibleEnd].every(isNonNegativeSafeInteger)
+      ![line.outputStart, line.outputEnd, line.visibleStart, line.visibleEnd].every(isNonNegativeSafeInteger) ||
+      line.outputStart < previousOutputEnd ||
+      line.outputEnd < line.outputStart ||
+      line.outputEnd - line.outputStart !== line.output.charCount ||
+      line.visibleEnd < line.visibleStart ||
+      line.visibleStart > line.outputStart ||
+      line.visibleEnd > line.outputEnd ||
+      line.visibleEnd > composition.output.charCount ||
+      (line.visibleStart < line.outputStart && line.visibleStart !== line.visibleEnd) ||
+      line.visible !== (line.visibleStart === line.outputStart && line.visibleEnd === line.outputEnd)
     ) {
       throw new Error(`${label} retrieval trace composition line structure is invalid.`);
     }
+    previousOutputEnd = line.outputEnd;
   }
 }
 
@@ -924,7 +1124,11 @@ function isTraceRange(value: {
   visibleStart?: unknown;
   visibleEnd?: unknown;
 }): boolean {
-  return [value.composedStart, value.composedEnd, value.visibleStart, value.visibleEnd].every(isNonNegativeSafeInteger);
+  return (
+    [value.composedStart, value.composedEnd, value.visibleStart, value.visibleEnd].every(isNonNegativeSafeInteger) &&
+    (value.composedEnd as number) >= (value.composedStart as number) &&
+    (value.visibleEnd as number) >= (value.visibleStart as number)
+  );
 }
 
 function isTraceBudget(value: unknown): boolean {
