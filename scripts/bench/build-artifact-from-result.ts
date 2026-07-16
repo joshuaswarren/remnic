@@ -198,8 +198,9 @@ export function parseArgs(argv: string[]): ArgParseResult {
 /**
  * Validate a parsed result for promotion to a publishable artifact. Publish-
  * safety guards (issue #1712): reject unpublished benchmark ids, partial /
- * quick-mode runs, and runs persisted with a `benchmarkOptions.limit` or
- * `trialLimit` — only complete full runs may be published. Structural
+ * quick-mode runs, and runs persisted with a `benchmarkOptions.limit`,
+ * `trialLimit`, or `taskSelection` — only complete full-dataset runs may be
+ * published. Structural
  * validation of the inner task/aggregate shape is delegated to
  * `buildBenchmarkArtifact`, which throws with a per-field diagnostic.
  */
@@ -278,6 +279,13 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
         ok: false,
         message:
           "refusing to promote a limited run (config.benchmarkOptions.limit/trialLimit set); only full runs may be published.",
+      };
+    }
+    if (Object.prototype.hasOwnProperty.call(benchmarkOptions, "taskSelection")) {
+      return {
+        ok: false,
+        message:
+          "refusing to promote selected coverage (config.benchmarkOptions.taskSelection set); only full-dataset runs may be published.",
       };
     }
   }

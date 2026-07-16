@@ -276,6 +276,23 @@ test("validateResultForPromotion rejects a limited run via benchmarkOptions.tria
   assert.match(!r.ok && r.message, /refusing to promote a limited run/);
 });
 
+test("validateResultForPromotion rejects selected task coverage", () => {
+  const r = validateResultForPromotion(makeResult({
+    benchmarkOptions: {
+      taskSelection: {
+        algorithm: "explicit-task-ids",
+        version: 1,
+        candidateCount: 1_986,
+        selectedCount: 1,
+        selectedTaskIds: ["locomo-task-1"],
+        selectedTaskIdsSha256: "a".repeat(64),
+      },
+    },
+  }));
+  assert.equal(r.ok, false);
+  assert.match(!r.ok && r.message, /refusing to promote selected coverage.*taskSelection/);
+});
+
 test("validateResultForPromotion treats a null benchmarkOptions as absent (typeof null === object footgun)", () => {
   // JSON `null` must not crash the limit check (typeof null === "object").
   const r = validateResultForPromotion(makeResult({ benchmarkOptions: null as unknown as Record<string, unknown> }));

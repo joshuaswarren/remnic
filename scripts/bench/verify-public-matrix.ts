@@ -553,8 +553,8 @@ function validateFullDatasetRunOptions(
     }
   }
   const disallowedKeys = allowBoundedTrial
-    ? (["taskFilter"] as const)
-    : ([...boundedKeys, "taskFilter"] as const);
+    ? (["taskFilter", "taskSelection"] as const)
+    : ([...boundedKeys, "taskFilter", "taskSelection"] as const);
   for (const key of disallowedKeys) {
     if (Object.prototype.hasOwnProperty.call(benchmarkOptions, key)) {
       addIssue(
