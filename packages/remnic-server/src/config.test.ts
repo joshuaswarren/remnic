@@ -224,3 +224,38 @@ test("server config parser rejects invalid field types", () => {
     /server\.adminConsolePrefillToken: expected a boolean/,
   );
 });
+
+test("parseServerConfig write rate limit keys: optional, string-coerced, invalid rejected (issue #1937)", () => {
+  // Unset -> undefined (EngramAccessHttpServer applies the 30/60000 defaults).
+  const defaults = parseServerConfig({});
+  assert.equal(defaults.writeRateLimitMaxRequests, undefined);
+  assert.equal(defaults.writeRateLimitWindowMs, undefined);
+
+  const custom = parseServerConfig({
+    writeRateLimitMaxRequests: 120,
+    writeRateLimitWindowMs: 30000,
+  });
+  assert.equal(custom.writeRateLimitMaxRequests, 120);
+  assert.equal(custom.writeRateLimitWindowMs, 30000);
+
+  // CLI/env-sourced numerics arrive as strings — coerce, don't reject.
+  const coerced = parseServerConfig({
+    writeRateLimitMaxRequests: "120" as unknown as number,
+    writeRateLimitWindowMs: "30000" as unknown as number,
+  });
+  assert.equal(coerced.writeRateLimitMaxRequests, 120);
+  assert.equal(coerced.writeRateLimitWindowMs, 30000);
+
+  for (const bad of [0, -5, 1.5, "abc"]) {
+    assert.throws(
+      () => parseServerConfig({ writeRateLimitMaxRequests: bad as unknown as number }),
+      /server\.writeRateLimitMaxRequests: expected a positive integer/,
+      `writeRateLimitMaxRequests=${JSON.stringify(bad)} must throw`,
+    );
+    assert.throws(
+      () => parseServerConfig({ writeRateLimitWindowMs: bad as unknown as number }),
+      /server\.writeRateLimitWindowMs: expected a positive integer/,
+      `writeRateLimitWindowMs=${JSON.stringify(bad)} must throw`,
+    );
+  }
+});

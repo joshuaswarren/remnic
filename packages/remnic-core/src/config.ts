@@ -1515,6 +1515,16 @@ export function parseConfig(
       typeof rawAgentAccessHttp?.maxBodyBytes === "number"
         ? Math.max(1, Math.floor(rawAgentAccessHttp.maxBodyBytes))
         : 131072,
+    writeRateLimitMaxRequests: resolvePositiveIntegerConfig(
+      rawAgentAccessHttp?.writeRateLimitMaxRequests,
+      30,
+      "agentAccessHttp.writeRateLimitMaxRequests",
+    ),
+    writeRateLimitWindowMs: resolvePositiveIntegerConfig(
+      rawAgentAccessHttp?.writeRateLimitWindowMs,
+      60_000,
+      "agentAccessHttp.writeRateLimitWindowMs",
+    ),
   };
 
   let baseUrl: string | undefined;

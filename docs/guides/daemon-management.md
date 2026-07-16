@@ -68,6 +68,12 @@ remnic daemon status      # running state + pid, port, service, memory extension
 }
 ```
 
+Optional `server` keys: `writeRateLimitMaxRequests` (default `30`) and
+`writeRateLimitWindowMs` (default `60000`) tune the write rate limit that
+returns `429 write_rate_limited` on write routes (issue #1937). Both must be
+positive integers — invalid values abort startup with a precise message,
+matching the other `server.*` fields.
+
 ### Environment Variables
 
 | Variable | Default | Description |

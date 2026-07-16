@@ -720,7 +720,7 @@ All error responses follow a consistent JSON structure:
 | 401 | `unauthorized` | Missing or invalid bearer token |
 | 404 | `not_found` | Unknown endpoint or resource |
 | 413 | `request_body_too_large` | Body exceeds `maxBodyBytes` (default: 128KB) |
-| 429 | `write_rate_limited` | Write rate limit exceeded (30 requests per 60 seconds) |
+| 429 | `write_rate_limited` | Write rate limit exceeded (default: 30 requests per 60 seconds; tunable via `agentAccessHttp.writeRateLimitMaxRequests` / `writeRateLimitWindowMs`, or `server.*` for the standalone daemon — issue #1937) |
 | 500 | `internal_error` | Unexpected server error |
 
 ### Correlation IDs

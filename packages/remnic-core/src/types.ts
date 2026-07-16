@@ -255,6 +255,10 @@ export interface AgentAccessHttpConfig {
   authToken?: AgentAccessAuthToken;
   principal?: string;
   maxBodyBytes: number;
+  /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
+  writeRateLimitMaxRequests: number;
+  /** Rolling window for the write rate limit, in ms (issue #1937). */
+  writeRateLimitWindowMs: number;
 }
 
 export interface DreamingConfig {

@@ -20,6 +20,8 @@ test("parseConfig sets local HTTP access defaults", () => {
       authToken: undefined,
       principal: undefined,
       maxBodyBytes: 131072,
+      writeRateLimitMaxRequests: 30,
+      writeRateLimitWindowMs: 60000,
     });
   } finally {
     if (originalRemnic === undefined) {
@@ -66,6 +68,8 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
         authToken: "${ENGRAM_ACCESS_TEST_TOKEN}",
         principal: "${ENGRAM_ACCESS_TEST_PRINCIPAL}",
         maxBodyBytes: 2048,
+        writeRateLimitMaxRequests: 120,
+        writeRateLimitWindowMs: 30000,
       },
     });
     assert.deepEqual(cfg.agentAccessHttp, {
@@ -75,6 +79,8 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
       authToken: "config-token",
       principal: "config-principal",
       maxBodyBytes: 2048,
+      writeRateLimitMaxRequests: 120,
+      writeRateLimitWindowMs: 30000,
     });
 
     const envCfg = parseConfig({
@@ -247,4 +253,28 @@ test("parseConfig preserves small explicit HTTP body limits", () => {
     },
   });
   assert.equal(cfg.agentAccessHttp.maxBodyBytes, 32);
+});
+
+test("parseConfig write rate limit accepts CLI string numerics and rejects invalid values (issue #1937)", () => {
+  // CLI-sourced values arrive as strings (rule 24) — must coerce, not reject.
+  const coerced = parseConfig({
+    openaiApiKey: "sk-test",
+    agentAccessHttp: { writeRateLimitMaxRequests: "120", writeRateLimitWindowMs: "30000" },
+  });
+  assert.equal(coerced.agentAccessHttp.writeRateLimitMaxRequests, 120);
+  assert.equal(coerced.agentAccessHttp.writeRateLimitWindowMs, 30000);
+
+  // Invalid values are rejected loudly (rule 39), never silently reinterpreted.
+  for (const bad of [0, -5, 3.7, "abc", true]) {
+    assert.throws(
+      () => parseConfig({ openaiApiKey: "sk-test", agentAccessHttp: { writeRateLimitMaxRequests: bad } }),
+      /agentAccessHttp\.writeRateLimitMaxRequests must be a positive integer/,
+      `writeRateLimitMaxRequests=${JSON.stringify(bad)} must throw`,
+    );
+    assert.throws(
+      () => parseConfig({ openaiApiKey: "sk-test", agentAccessHttp: { writeRateLimitWindowMs: bad } }),
+      /agentAccessHttp\.writeRateLimitWindowMs must be a positive integer/,
+      `writeRateLimitWindowMs=${JSON.stringify(bad)} must throw`,
+    );
+  }
 });
