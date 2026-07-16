@@ -4285,3 +4285,88 @@ test("installConnector hermes rollback preserves a pre-existing marker shim (#19
     }
   });
 });
+
+test("installConnector hermes force-reinstall cleans the prior HERMES_HOME's remnic: block (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const configA = path.join(homeA, "config.yaml");
+        assert.ok(
+          fs.readFileSync(configA, "utf-8").includes("remnic:"),
+          "sanity: first install wrote the remnic: block under home A",
+        );
+
+        withHermesHome(homeB, () => {
+          const second = mod.installConnector({ connectorId: "hermes", force: true });
+          assert.equal(second.status, "installed", second.message);
+        });
+        assert.ok(
+          fs.readFileSync(path.join(homeB, "config.yaml"), "utf-8").includes("remnic:"),
+          "reinstall must write the remnic: block under home B",
+        );
+        assert.ok(
+          !fs.readFileSync(configA, "utf-8").includes("remnic:"),
+          "the prior home's remnic: block (stale token) must be cleaned on reinstall",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("removeConnector hermes cleans a custom-basename HERMES_HOME config without plugins/ (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        // Custom HERMES_HOME with an arbitrary basename; plugins is a FILE so
+        // shim materialization fails and no Hermes-layout sibling dir exists.
+        const customHome = path.join(tmpHome, "opt-data");
+        fs.mkdirSync(customHome, { recursive: true });
+        fs.writeFileSync(path.join(customHome, "plugins"), "not a directory\n");
+
+        withHermesHome(customHome, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "installed", install.message);
+        });
+        const customConfig = path.join(customHome, "config.yaml");
+        assert.ok(
+          fs.readFileSync(customConfig, "utf-8").includes("remnic:"),
+          "sanity: install wrote the remnic: block under the custom home",
+        );
+
+        // Remove with HERMES_HOME unset: the persisted config path must still
+        // be accepted (remnic:-block content fallback) and cleaned.
+        withHermesHome(undefined, () => {
+          const remove = mod.removeConnector("hermes");
+          assert.equal(remove.status, "removed", remove.message);
+        });
+        assert.ok(
+          !fs.readFileSync(customConfig, "utf-8").includes("remnic:"),
+          "the custom home's remnic: block (with the daemon token) must be cleaned on remove",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});

@@ -360,11 +360,30 @@ export function isPlausibleHermesConfigPath(candidate: string): boolean {
   if (path.basename(path.dirname(dir)) === "profiles") {
     return true;
   }
-  return ["plugins", "profiles"].some((sibling) => {
-    try {
-      return fs.statSync(path.join(dir, sibling)).isDirectory();
-    } catch {
+  if (
+    ["plugins", "profiles"].some((sibling) => {
+      try {
+        return fs.statSync(path.join(dir, sibling)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+  ) {
+    return true;
+  }
+  // Last resort for custom HERMES_HOME dirs with an arbitrary basename and no
+  // Hermes-layout siblings (e.g. shim materialization failed so plugins/ was
+  // never created): accept the path when the file itself currently carries a
+  // top-level remnic: block — cleanup only ever strips that block, so the
+  // content check bounds what a tampered path could affect (Bugbot on
+  // PR #1938, round 9).
+  try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile() || stat.size > 1024 * 1024) {
       return false;
     }
-  });
+    return /^remnic:/m.test(fs.readFileSync(candidate, "utf8"));
+  } catch {
+    return false;
+  }
 }

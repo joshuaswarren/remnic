@@ -1393,6 +1393,31 @@ export function installConnector(options: InstallOptions): InstallResult {
     // (g) Report the shim reconciliation performed in (d2) — materialization
     // itself already ran before connector.json was written (Issue #1929).
     notes.push(...shimOutcome.notes);
+    // Force reinstall under a changed HERMES_HOME: the PRIOR install's
+    // config.yaml still carries a remnic: block with the now-replaced token.
+    // Clean it after the new config + connector JSON are confirmed, before its
+    // only persisted reference (savedConnectorConfig.hermesConfigPath) is
+    // forgotten — otherwise switching Hermes back to the old home loads a
+    // stale, revoked Remnic config (Codex P2 on PR #1938, round 9).
+    // Best-effort and provenance-guarded, mirroring the shim reconciliation.
+    const priorConfigPathRaw = savedConnectorConfig.hermesConfigPath;
+    if (
+      typeof priorConfigPathRaw === "string" &&
+      priorConfigPathRaw.length > 0 &&
+      !sameHermesConfigTarget(priorConfigPathRaw, yamlResult.configPath) &&
+      isPlausibleHermesConfigPath(priorConfigPathRaw)
+    ) {
+      try {
+        const priorCleanup = removeHermesConfigFile(priorConfigPathRaw);
+        if (priorCleanup.updated) {
+          notes.push(`Cleaned remnic: block from prior-install Hermes config: ${priorConfigPathRaw}`);
+        }
+      } catch {
+        notes.push(
+          `Note: could not clean the remnic: block from the prior-install Hermes config at ${priorConfigPathRaw} — remove it manually.`,
+        );
+      }
+    }
     // Provider activation is a manual, non-destructive step: we never edit the
     // exclusive `memory.provider` slot in the user's Hermes config.yaml.
     notes.push(
