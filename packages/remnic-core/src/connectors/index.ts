@@ -787,15 +787,42 @@ export function installConnector(options: InstallOptions): InstallResult {
           /* connector JSON unreadable — reconcile without a prior path */
         }
         const priorRaw = parsed?.pluginShimPath;
-        const outcome = reconcileHermesShim(
-          typeof priorRaw === "string" && priorRaw.length > 0 ? priorRaw : null,
-        );
+        const priorPersisted = typeof priorRaw === "string" && priorRaw.length > 0 ? priorRaw : null;
+        const outcome = reconcileHermesShim(priorPersisted);
         if (outcome.notes.length > 0) {
           backfillNote = ` ${outcome.notes.join(" ")}`;
         }
         if (parsed !== null && outcome.persistPath !== null && parsed.pluginShimPath !== outcome.persistPath) {
           parsed.pluginShimPath = outcome.persistPath;
-          writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
+          try {
+            writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
+          } catch (persistErr) {
+            // Mirror the install-path rollback (Codex P2 on PR #1938, round 5):
+            // without the persisted path, the registry cannot clean the shims
+            // this reconcile just changed — undo the filesystem effects so the
+            // JSON on disk still matches reality. Shim content is
+            // deterministic, so a cleaned prior shim regenerates exactly.
+            const rollbackFailures: string[] = [];
+            if (outcome.materializedAt !== null && outcome.materializedAt !== priorPersisted) {
+              try {
+                removeHermesShim([outcome.materializedAt]);
+              } catch {
+                rollbackFailures.push(`remove ${outcome.materializedAt} manually`);
+              }
+            }
+            if (outcome.priorCleanedAt !== null) {
+              try {
+                materializeHermesShim(outcome.priorCleanedAt);
+              } catch {
+                rollbackFailures.push(`restore the shim at ${outcome.priorCleanedAt} manually`);
+              }
+            }
+            const persistMsg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+            backfillNote =
+              rollbackFailures.length === 0
+                ? ` Note: could not persist the shim path (${persistMsg}); shim changes were rolled back.`
+                : ` Note: could not persist the shim path (${persistMsg}) and rollback was incomplete — ${rollbackFailures.join("; ")}.`;
+          }
         }
       } catch {
         /* best-effort backfill — install status is unchanged */
@@ -2039,34 +2066,11 @@ export function removeConnector(connectorId: string): RemoveResult {
   // Only attempted after successful file removal so that config.yaml cleanup
   // is consistent with the connector JSON state.
   if (connectorId === "hermes") {
-    try {
-      const yamlResult = removeHermesConfig({ profile: storedProfile });
-      if (yamlResult.updated) {
-        notes.push(`Removed remnic: block from Hermes config: ${yamlResult.configPath}`);
-      } else if (yamlResult.reason?.startsWith("Hermes config cleanup partially failed:")) {
-        const tokenStatus = tokenRevoked
-          ? "the connector registry config was deleted and the token was revoked"
-          : "the connector registry config was deleted but TOKEN REVOCATION ALSO FAILED — " +
-            "inspect ~/.remnic/tokens.json and revoke manually";
-        return {
-          connectorId,
-          configPath,
-          status: "error",
-          message:
-            `Hermes remove partially succeeded: ${tokenStatus}, but ${yamlResult.reason}. ` +
-            `Updated paths: ${yamlResult.configPath}. Manually remove any stale remnic: ` +
-            `block and token material from the failed Hermes config path.`,
-        };
-      } else if (yamlResult.skipped) {
-        notes.push(`Hermes config cleanup skipped: ${yamlResult.reason}`);
-      }
-    } catch (err) {
-      notes.push(
-        `Hermes config cleanup skipped: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    // Remove the Hermes plugin-directory shim (Issue #1929). removeHermesShim
+    // Remove the Hermes plugin-directory shim (Issue #1929) FIRST — it is
+    // independent of config.yaml cleanup, and the yaml partial-failure branch
+    // below returns early. Running the shim cleanup after that return would
+    // leave a Remnic-generated shim discoverable while the registry entry and
+    // token are already gone (Bugbot on PR #1938, round 5). removeHermesShim
     // deletes candidates ONLY when they carry our generated marker, then
     // rmdir's the now-empty plugins/remnic/ dir. Never rm -rf; never touch a
     // user-authored __init__.py. Candidates: the path persisted at install
@@ -2090,6 +2094,35 @@ export function removeConnector(connectorId: string): RemoveResult {
     } catch (shimErr) {
       notes.push(
         `Hermes plugin shim cleanup skipped: ${shimErr instanceof Error ? shimErr.message : String(shimErr)}`,
+      );
+    }
+
+    try {
+      const yamlResult = removeHermesConfig({ profile: storedProfile });
+      if (yamlResult.updated) {
+        notes.push(`Removed remnic: block from Hermes config: ${yamlResult.configPath}`);
+      } else if (yamlResult.reason?.startsWith("Hermes config cleanup partially failed:")) {
+        const tokenStatus = tokenRevoked
+          ? "the connector registry config was deleted and the token was revoked"
+          : "the connector registry config was deleted but TOKEN REVOCATION ALSO FAILED — " +
+            "inspect ~/.remnic/tokens.json and revoke manually";
+        const shimSuffix = notes.length > 0 ? ` Completed cleanup: ${notes.join("; ")}.` : "";
+        return {
+          connectorId,
+          configPath,
+          status: "error",
+          message:
+            `Hermes remove partially succeeded: ${tokenStatus}, but ${yamlResult.reason}. ` +
+            `Updated paths: ${yamlResult.configPath}. Manually remove any stale remnic: ` +
+            `block and token material from the failed Hermes config path.` +
+            shimSuffix,
+        };
+      } else if (yamlResult.skipped) {
+        notes.push(`Hermes config cleanup skipped: ${yamlResult.reason}`);
+      }
+    } catch (err) {
+      notes.push(
+        `Hermes config cleanup skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -2152,7 +2185,12 @@ function sanitizeHermesProfile(profile: string): string {
 
 function hermesConfigPath(profile: string): string {
   const safeProfile = sanitizeHermesProfile(profile);
-  const hermesRoot = path.resolve(resolveHomeDir(), ".hermes");
+  // Root at the SAME Hermes home the shim uses (honors HERMES_HOME, and the
+  // platform-native default). Upstream get_hermes_home() reads HERMES_HOME and
+  // the config loader resolves config.yaml relative to it, so writing the
+  // remnic: block under ~/.hermes while HERMES_HOME points elsewhere would be
+  // silently ignored by Hermes (Codex P2 on PR #1938, round 5).
+  const hermesRoot = resolveHermesRoot();
   const rootConfigPath = path.join(hermesRoot, "config.yaml");
   const profilesRoot = path.join(hermesRoot, "profiles");
   if (safeProfile === "default") {
@@ -2201,8 +2239,7 @@ function sameHermesConfigTarget(leftPath: string, rightPath: string): boolean {
 }
 
 function hermesDefaultProfileConfigPath(): string {
-  const hermesRoot = path.resolve(resolveHomeDir(), ".hermes");
-  return path.join(hermesRoot, "profiles", "default", "config.yaml");
+  return path.join(resolveHermesRoot(), "profiles", "default", "config.yaml");
 }
 
 function hermesConfigCleanupPaths(profile: string): string[] {

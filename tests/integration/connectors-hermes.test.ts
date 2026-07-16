@@ -3653,32 +3653,30 @@ test("installConnector hermes still succeeds when the shim cannot be materialize
     try {
       withTempHome((tmpHome) => {
         mod.removeConnector("hermes");
-        seedHermesRootConfig(tmpHome);
-        // Point HERMES_HOME at a regular FILE so resolveHermesRoot throws —
-        // the shim write fails, but the install must still succeed.
-        const bogusHermesHome = path.join(tmpHome, "hermes-home-is-a-file");
-        fs.writeFileSync(bogusHermesHome, "not a directory\n");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+        // Make `<hermesRoot>/plugins` a regular FILE so shim materialization
+        // fails (mkdir collides), while config.yaml stays writable — the
+        // install must still succeed and emit the manual-creation hint.
+        fs.writeFileSync(path.join(hermesDir, "plugins"), "not a directory\n");
 
-        withHermesHome(bogusHermesHome, () => {
-          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
-          assert.equal(install.status, "installed", install.message);
-          assert.ok(
-            install.message.includes("could not materialize"),
-            `install should note the shim failure, got: ${install.message}`,
-          );
-          assert.ok(
-            install.message.includes("register_memory_provider"),
-            `manual-creation hint must include the discovery-heuristic literal, got: ${install.message}`,
-          );
-          assert.ok(
-            !install.message.includes("mkdir -p"),
-            `manual-creation hint must not embed a copy-paste shell command (quoting hazard), got: ${install.message}`,
-          );
-          assert.ok(
-            fs.statSync(bogusHermesHome).isFile(),
-            "the pre-existing file at HERMES_HOME must be left intact",
-          );
-        });
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        assert.ok(
+          install.message.includes("could not materialize"),
+          `install should note the shim failure, got: ${install.message}`,
+        );
+        assert.ok(
+          install.message.includes("register_memory_provider"),
+          `manual-creation hint must include the discovery-heuristic literal, got: ${install.message}`,
+        );
+        assert.ok(
+          !install.message.includes("mkdir -p"),
+          `manual-creation hint must not embed a copy-paste shell command (quoting hazard), got: ${install.message}`,
+        );
+        assert.ok(
+          fs.statSync(path.join(hermesDir, "plugins")).isFile(),
+          "the pre-existing file at plugins/ must be left intact",
+        );
       });
       resolve();
     } catch (err) {
@@ -3965,12 +3963,14 @@ test("installConnector hermes force-reinstall keeps tracking the prior shim when
         const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
         assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
 
-        // Force-reinstall pointing HERMES_HOME at a regular FILE: the new shim
-        // cannot be materialized, so the OLD shim must survive AND stay
-        // referenced by connector JSON (never discard a live shim's path).
-        const bogusHome = path.join(tmpHome, "hermes-home-is-a-file");
-        fs.writeFileSync(bogusHome, "not a directory\n");
-        withHermesHome(bogusHome, () => {
+        // Force-reinstall under a HERMES_HOME whose plugins/ path is a regular
+        // FILE: the new shim cannot be materialized, so the OLD shim must
+        // survive AND stay referenced by connector JSON (never discard a live
+        // shim's path).
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeB, { recursive: true });
+        fs.writeFileSync(path.join(homeB, "plugins"), "not a directory\n");
+        withHermesHome(homeB, () => {
           const second = mod.installConnector({ connectorId: "hermes", force: true });
           assert.equal(second.status, "installed", second.message);
           assert.ok(
@@ -4124,6 +4124,105 @@ test("installConnector hermes rolls back the shim when the connector JSON write 
         } finally {
           fs.chmodSync(connectorsDir, 0o700);
         }
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("removeConnector hermes cleans the shim even when config.yaml cleanup fails (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "sanity: shim exists after install");
+
+        // Make config.yaml cleanup fail (its directory is read-only) while the
+        // shim's own directories stay writable. Shim cleanup runs FIRST and
+        // must succeed regardless of the yaml outcome.
+        fs.chmodSync(hermesDir, 0o500);
+        try {
+          mod.removeConnector("hermes");
+        } finally {
+          fs.chmodSync(hermesDir, 0o700);
+        }
+        assert.ok(
+          !fs.existsSync(shimPath),
+          "the Remnic-generated shim must be cleaned even when config.yaml cleanup fails",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes backfill rolls back shim changes when persistence fails (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
+        const shimB = path.join(homeB, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
+
+        // Make hermes.json unwritable, then rerun WITHOUT --force under a new
+        // HERMES_HOME: the backfill reconcile moves the shim A→B, persistence
+        // fails, and the move must be rolled back so the on-disk state still
+        // matches the JSON that survives (pluginShimPath = shim A).
+        const connectorsDir = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors",
+        );
+        fs.chmodSync(connectorsDir, 0o500);
+        try {
+          withHermesHome(homeB, () => {
+            const rerun = mod.installConnector({ connectorId: "hermes" });
+            assert.equal(rerun.status, "already_installed", rerun.message);
+            assert.ok(
+              rerun.message.includes("rolled back"),
+              `backfill message should report the rollback, got: ${rerun.message}`,
+            );
+          });
+        } finally {
+          fs.chmodSync(connectorsDir, 0o700);
+        }
+        assert.ok(fs.existsSync(shimA), "the prior shim must be restored when persistence fails");
+        assert.ok(!fs.existsSync(shimB), "the newly-materialized shim must be rolled back");
+
+        const saved = JSON.parse(
+          fs.readFileSync(path.join(connectorsDir, "hermes.json"), "utf-8"),
+        );
+        assert.equal(saved.pluginShimPath, shimA, "hermes.json must still reference the surviving shim");
       });
       resolve();
     } catch (err) {
