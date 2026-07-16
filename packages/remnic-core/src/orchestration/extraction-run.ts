@@ -821,16 +821,19 @@ export class ExtractionRunCoordinator {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
-        const nsMap = this.extractionRetryState.get(selfNamespace);
-        if (nsMap?.has(extractionFingerprint)) {
-          try {
-            meta ??= await storage.loadMeta();
-            if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
-              await storage.saveMeta(meta);
-            }
-          } catch (err) {
-            log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
+        try {
+          meta ??= await storage.loadMeta();
+          // Hydrate the in-memory mirror from persisted meta before clearing.
+          // A forced flush (forceExtractionAttempt) bypasses the retry gate and
+          // never hydrated, so without this a stale persisted backoff entry
+          // would survive a successful forced flush and keep blocking normal
+          // extraction until the timer expired (cursor/codex review).
+          this.hydrateRetryStateFromMeta(selfNamespace, meta);
+          if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
+            await storage.saveMeta(meta);
           }
+        } catch (err) {
+          log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
         }
       }
     }

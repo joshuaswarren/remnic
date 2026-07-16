@@ -410,6 +410,39 @@ test("recovery: a successful extract clears the fingerprint's retry state so it 
   }
 });
 
+test("recovery: a successful FORCED flush on a fresh coordinator clears a persisted backoff entry (cursor/codex review)", async () => {
+  // A forced flush bypasses the retry gate and never hydrates the in-memory
+  // mirror, so the success-heal path must still clear the persisted meta entry
+  // — otherwise a stale backoff survives a successful forced flush and keeps
+  // blocking normal extraction until the timer expires.
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 100,
+  });
+  try {
+    const coordA = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+    await h.run(coordA, "fp-heal"); // fail → parked, persisted to meta.json
+    const storage = await h.storageForNs("default");
+    let meta = await storage.loadMeta();
+    assert.equal((meta.extractionRetryState ?? []).length, 1, "failure persisted");
+
+    // Fresh coordinator (mirror empty, namespace not hydrated) — forced success.
+    const coordB = h.newCoordinator();
+    h.setRespond(() => successResult());
+    await h.run(coordB, "fp-heal", { force: true });
+
+    meta = await storage.loadMeta();
+    assert.equal(
+      (meta.extractionRetryState ?? []).length,
+      0,
+      "successful forced flush must clear the persisted backoff entry",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Class-specific caps
 // ---------------------------------------------------------------------------

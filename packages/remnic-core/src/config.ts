@@ -2827,7 +2827,7 @@ export function parseConfig(
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
     // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
-    extractionRetryEnabled: cfg.extractionRetryEnabled !== false,
+    extractionRetryEnabled: coerceBooleanLike(cfg.extractionRetryEnabled) ?? true,
     extractionRetryScheduleMs:
       Array.isArray(cfg.extractionRetryScheduleMs) &&
       cfg.extractionRetryScheduleMs.length > 0 &&
