@@ -422,11 +422,11 @@ export function registerTools(api: ToolApi, orchestrator: Orchestrator): void {
         );
       }
 
-      if (!result.duplicateOf && orchestrator.config.queryAwareIndexingEnabled && indexesExist(orchestrator.config.memoryDir)) {
+      if (!result.duplicateOf && orchestrator.config.queryAwareIndexingEnabled && await indexesExist(orchestrator.config.memoryDir)) {
         const storage = await orchestrator.getStorage(candidate.namespace);
         const mem = await storage.getMemoryById(result.id).catch(() => null);
         if (mem?.path && mem.frontmatter?.created) {
-          indexMemory(orchestrator.config.memoryDir, mem.path, mem.frontmatter.created, mem.frontmatter.tags ?? []);
+          await indexMemory(orchestrator.config.memoryDir, mem.path, mem.frontmatter.created, mem.frontmatter.tags ?? []);
         }
       }
 
@@ -2232,10 +2232,10 @@ Best for:
         // Update temporal + tag indexes for the promoted copy (v8.1).
         // Same guard as memory_store: skip if indexes don't exist yet to avoid
         // blocking the full corpus bootstrap on the next extraction.
-        if (orchestrator.config.queryAwareIndexingEnabled && indexesExist(orchestrator.config.memoryDir)) {
+        if (orchestrator.config.queryAwareIndexingEnabled && await indexesExist(orchestrator.config.memoryDir)) {
           const promoted = await dst.getMemoryById(newId).catch(() => null);
           if (promoted?.path && promoted.frontmatter?.created) {
-            indexMemory(orchestrator.config.memoryDir, promoted.path, promoted.frontmatter.created, promoted.frontmatter.tags ?? []);
+            await indexMemory(orchestrator.config.memoryDir, promoted.path, promoted.frontmatter.created, promoted.frontmatter.tags ?? []);
           }
         }
 

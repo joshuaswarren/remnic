@@ -392,7 +392,7 @@ export class PersistenceIndexCoordinator {
       return;
     // Check for missing indexes BEFORE the early-return so first-time enablement
     // can bootstrap the full corpus even when this extraction turn persisted nothing.
-    const needsFullRebuild = !indexesExist(this.deps.config.memoryDir);
+    const needsFullRebuild = !(await indexesExist(this.deps.config.memoryDir));
     if (!needsFullRebuild && persistedIds.length === 0) return;
     try {
       // Read the corpus once to avoid N separate full-corpus scans.
@@ -451,15 +451,15 @@ export class PersistenceIndexCoordinator {
         // is empty (e.g. store contains only archived/superseded entries).
         // This marks bootstrap completion so indexesExist() returns true and
         // subsequent extractions skip the full-corpus scan.
-        clearIndexes(this.deps.config.memoryDir);
+        await clearIndexes(this.deps.config.memoryDir);
         if (entries.length > 0) {
-          indexMemoriesBatch(this.deps.config.memoryDir, entries);
+          await indexMemoriesBatch(this.deps.config.memoryDir, entries);
         }
         log.info(
           `temporal-index: bootstrapped from ${entries.length} active memories`,
         );
       } else if (entries.length > 0) {
-        indexMemoriesBatch(this.deps.config.memoryDir, entries);
+        await indexMemoriesBatch(this.deps.config.memoryDir, entries);
       }
     } catch (err) {
       log.debug(`temporal-index update failed (non-fatal): ${err}`);

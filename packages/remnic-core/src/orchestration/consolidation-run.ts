@@ -165,7 +165,7 @@ export class ConsolidationRunCoordinator {
             memoryItemMutated = true;
             await this.deps.embeddingFallback.removeFromIndex(item.existingId);
             if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
-              deindexMemory(
+              await deindexMemory(
                 config.memoryDir,
                 toInvalidate.path,
                 toInvalidate.frontmatter.created,
@@ -216,7 +216,7 @@ export class ConsolidationRunCoordinator {
                 toMergeInvalidate?.path &&
                 toMergeInvalidate.frontmatter?.created
               ) {
-                deindexMemory(
+                await deindexMemory(
                   config.memoryDir,
                   toMergeInvalidate.path,
                   toMergeInvalidate.frontmatter.created,
@@ -293,7 +293,7 @@ export class ConsolidationRunCoordinator {
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
         for (const m of deletedCommitments) {
-          deindexMemory(
+          await deindexMemory(
             config.memoryDir,
             m.path,
             m.frontmatter.created,
@@ -336,7 +336,7 @@ export class ConsolidationRunCoordinator {
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
         for (const m of deletedTTL) {
-          deindexMemory(
+          await deindexMemory(
             config.memoryDir,
             m.path,
             m.frontmatter.created,

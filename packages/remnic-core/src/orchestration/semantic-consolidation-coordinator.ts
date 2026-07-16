@@ -342,7 +342,7 @@ export class SemanticConsolidationCoordinator {
                 m.path &&
                 m.frontmatter?.created
               ) {
-                deindexMemory(
+                await deindexMemory(
                   targetStorage.dir,
                   m.path,
                   m.frontmatter.created,

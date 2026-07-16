@@ -15,10 +15,14 @@
  * - Both indexes are plain JSON; no external dependencies
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export interface TemporalIndex {
   /** version bumped when schema changes */
@@ -82,8 +86,34 @@ const TAG_INDEX_VERSION = 2;
 const INDEX_LOCK_STALE_MS = 60_000;
 const INDEX_LOCK_POLL_MS = 10;
 const INDEX_PROCESS_START_TOLERANCE_MS = 2_000;
-const INDEX_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 const INDEX_PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
+
+interface IndexFileIdentity {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+}
+
+interface CachedIndex<T> {
+  identity: IndexFileIdentity;
+  index: T;
+  currentSchema: boolean;
+}
+
+type IndexLoadResult<T> =
+  | { kind: "ok"; index: T; currentSchema: boolean }
+  | { kind: "missing" }
+  | { kind: "invalid" };
+
+const parsedIndexCache = new Map<string, CachedIndex<unknown>>();
+const writeChains = new Map<string, Promise<void>>();
+let indexReadObserverForTest: (() => void) | undefined;
+
+/** Test-only observer for asserting cache read/parse behavior. */
+export function setIndexReadObserverForTest(observer?: () => void): void {
+  indexReadObserverForTest = observer;
+}
 
 interface IndexLockOwner {
   pid: number;
@@ -105,30 +135,78 @@ function tagIndexPath(memoryDir: string): string {
   return path.join(stateDir(memoryDir), TAG_INDEX_FILE);
 }
 
-function ensureStateDir(memoryDir: string): void {
-  const dir = stateDir(memoryDir);
-  fs.mkdirSync(dir, { recursive: true });
+async function ensureStateDir(memoryDir: string): Promise<void> {
+  await fs.promises.mkdir(stateDir(memoryDir), { recursive: true });
 }
 
-function readJsonSafe<T>(filePath: string, fallback: T): T {
+function identityFromStat(stat: fs.Stats): IndexFileIdentity {
+  return {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    ino: stat.ino,
+  };
+}
+
+function identityEquals(left: IndexFileIdentity, right: IndexFileIdentity): boolean {
+  return left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.ino === right.ino;
+}
+
+async function loadIndexCached<T>(
+  filePath: string,
+  normalize: (raw: unknown) => T,
+  hasCurrentSchema: (raw: unknown) => boolean,
+): Promise<IndexLoadResult<T>> {
+  let handle: fs.promises.FileHandle;
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    return JSON.parse(raw) as T;
+    handle = await fs.promises.open(filePath, "r");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT"
+      ? { kind: "missing" }
+      : { kind: "invalid" };
+  }
+
+  try {
+    const identity = identityFromStat(await handle.stat());
+    const cached = parsedIndexCache.get(filePath) as CachedIndex<T> | undefined;
+    if (cached && identityEquals(cached.identity, identity)) {
+      return { kind: "ok", index: cached.index, currentSchema: cached.currentSchema };
+    }
+    indexReadObserverForTest?.();
+    const parsed = JSON.parse(await handle.readFile("utf8")) as unknown;
+    const index = normalize(parsed);
+    const currentSchema = hasCurrentSchema(parsed);
+    parsedIndexCache.set(filePath, { identity, index, currentSchema });
+    return { kind: "ok", index, currentSchema };
   } catch {
-    return fallback;
+    parsedIndexCache.delete(filePath);
+    return { kind: "invalid" };
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 
-function writeJsonSafe(filePath: string, data: unknown): void {
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
-  } catch {
-    // Fail silently — indexes are advisory only
-  }
+function withPathMutex<T>(filePath: string, update: () => Promise<T>): Promise<T> {
+  const previous = writeChains.get(filePath) ?? Promise.resolve();
+  const run = previous.then(update, update);
+  const tail = run.then(() => undefined, () => undefined);
+  writeChains.set(filePath, tail);
+  void tail.then(() => {
+    if (writeChains.get(filePath) === tail) writeChains.delete(filePath);
+  });
+  return run;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(INDEX_LOCK_SLEEP, 0, 0, ms);
+async function primeCacheAfterWrite(filePath: string, index: unknown): Promise<void> {
+  try {
+    const identity = identityFromStat(await fs.promises.stat(filePath));
+    parsedIndexCache.set(filePath, { identity, index, currentSchema: true });
+  } catch {
+    parsedIndexCache.delete(filePath);
+  }
 }
 
 function uniqueTempPath(filePath: string): string {
@@ -142,9 +220,9 @@ function lockOwnerPath(lockDir: string): string {
   return path.join(lockDir, "owner.json");
 }
 
-function writeIndexLockOwner(lockDir: string): void {
+async function writeIndexLockOwner(lockDir: string): Promise<void> {
   try {
-    fs.writeFileSync(
+    await fs.promises.writeFile(
       lockOwnerPath(lockDir),
       JSON.stringify({
         pid: process.pid,
@@ -161,9 +239,9 @@ function writeIndexLockOwner(lockDir: string): void {
   }
 }
 
-function readIndexLockOwner(lockDir: string): IndexLockOwner | null {
+async function readIndexLockOwner(lockDir: string): Promise<IndexLockOwner | null> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(lockOwnerPath(lockDir), "utf8")) as { pid?: unknown };
+    const parsed = JSON.parse(await fs.promises.readFile(lockOwnerPath(lockDir), "utf8")) as { pid?: unknown };
     if (!(typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0)) return null;
     const owner: IndexLockOwner = { pid: parsed.pid };
     if (
@@ -193,13 +271,13 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function readProcessStartedAtMs(pid: number): number | null {
+async function readProcessStartedAtMs(pid: number): Promise<number | null> {
   try {
-    const output = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
       timeout: 1_000,
-    }).trim();
+    });
+    const output = stdout.trim();
     if (!output) return null;
     const startedAtMs = Date.parse(output);
     return Number.isFinite(startedAtMs) ? startedAtMs : null;
@@ -208,10 +286,10 @@ function readProcessStartedAtMs(pid: number): number | null {
   }
 }
 
-function lockOwnerIsRunning(owner: IndexLockOwner): boolean {
+async function lockOwnerIsRunning(owner: IndexLockOwner): Promise<boolean> {
   if (!processIsAlive(owner.pid)) return false;
   if (owner.processStartedAtMs === undefined) return true;
-  const runningStartedAtMs = readProcessStartedAtMs(owner.pid);
+  const runningStartedAtMs = await readProcessStartedAtMs(owner.pid);
   if (runningStartedAtMs === null) return true;
   return runningStartedAtMs <= owner.processStartedAtMs + INDEX_PROCESS_START_TOLERANCE_MS;
 }
@@ -223,20 +301,20 @@ function lockIsFresh(lockInfo: fs.Stats, owner: IndexLockOwner | null): boolean 
   return Date.now() - referenceMs < INDEX_LOCK_STALE_MS;
 }
 
-function removeAbandonedIndexLock(lockDir: string): IndexLockCleanupResult {
+async function removeAbandonedIndexLock(lockDir: string): Promise<IndexLockCleanupResult> {
   try {
-    const info = fs.lstatSync(lockDir);
+    const info = await fs.promises.lstat(lockDir);
     if (info.isSymbolicLink()) return "blocked";
     if (!info.isDirectory()) {
-      fs.rmSync(lockDir, { force: true });
+      await fs.promises.rm(lockDir, { force: true });
       return "removed";
     }
-    const owner = readIndexLockOwner(lockDir);
+    const owner = await readIndexLockOwner(lockDir);
     if (owner !== null) {
-      if (lockOwnerIsRunning(owner)) return "wait";
+      if (await lockOwnerIsRunning(owner)) return "wait";
     }
     if (owner === null && lockIsFresh(info, null)) return "wait";
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    await fs.promises.rm(lockDir, { recursive: true, force: true });
     return "removed";
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "removed";
@@ -245,38 +323,38 @@ function removeAbandonedIndexLock(lockDir: string): IndexLockCleanupResult {
   }
 }
 
-function withIndexFileLock(filePath: string, update: () => void): void {
+async function withIndexFileLock(filePath: string, update: () => Promise<void>): Promise<void> {
   const lockDir = `${filePath}.lock.d`;
   let acquired = false;
 
   while (!acquired) {
     try {
-      fs.mkdirSync(lockDir);
-      writeIndexLockOwner(lockDir);
+      await fs.promises.mkdir(lockDir);
+      await writeIndexLockOwner(lockDir);
       acquired = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT") {
         try {
-          fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+          await fs.promises.mkdir(path.dirname(lockDir), { recursive: true });
         } catch {
           return;
         }
-        sleepSync(INDEX_LOCK_POLL_MS);
+        await delay(INDEX_LOCK_POLL_MS);
         continue;
       }
       if (code !== "EEXIST") return;
-      const cleanupResult = removeAbandonedIndexLock(lockDir);
+      const cleanupResult = await removeAbandonedIndexLock(lockDir);
       if (cleanupResult === "blocked") return;
-      sleepSync(INDEX_LOCK_POLL_MS);
+      await delay(INDEX_LOCK_POLL_MS);
     }
   }
 
   try {
-    update();
+    await update();
   } finally {
     try {
-      fs.rmSync(lockDir, { recursive: true, force: true });
+      await fs.promises.rm(lockDir, { recursive: true, force: true });
     } catch {
       // Fail silently — indexes are advisory only
     }
@@ -287,23 +365,24 @@ function withIndexFileLock(filePath: string, update: () => void): void {
  * Atomic write: write to a unique `.tmp` sibling then rename so readers never
  * observe a partially-written file.
  */
-function writeJsonAtomic(filePath: string, data: unknown): void {
-  const payload = JSON.stringify(data, null, 2);
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<boolean> {
+  const payload = JSON.stringify(data);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tmp = uniqueTempPath(filePath);
     try {
-      fs.writeFileSync(tmp, payload, "utf8");
-      fs.renameSync(tmp, filePath);
-      return;
+      await fs.promises.writeFile(tmp, payload, "utf8");
+      await fs.promises.rename(tmp, filePath);
+      return true;
     } catch {
       try {
-        fs.unlinkSync(tmp);
+        await fs.promises.unlink(tmp);
       } catch {
         // Fail silently — indexes are advisory only
       }
-      sleepSync(INDEX_LOCK_POLL_MS);
+      await delay(INDEX_LOCK_POLL_MS);
     }
   }
+  return false;
 }
 
 function emptyTemporalIndex(): TemporalIndex {
@@ -324,23 +403,54 @@ function normalizeTemporalIndex(raw: TemporalIndex | null | undefined): Temporal
   };
 }
 
-function updateTemporalIndex(memoryDir: string, update: (index: TemporalIndex) => void): void {
+function hasCurrentTemporalIndexSchema(raw: unknown): boolean {
+  return isRecord(raw) &&
+    raw.version === INDEX_VERSION &&
+    isRecord(raw.dates) &&
+    isRecord(raw.events);
+}
+
+async function updateTemporalIndex(memoryDir: string, update: (index: TemporalIndex) => void): Promise<void> {
   const indexPath = temporalIndexPath(memoryDir);
-  withIndexFileLock(indexPath, () => {
-    const index = normalizeTemporalIndex(readJsonSafe<TemporalIndex>(indexPath, emptyTemporalIndex()));
-    update(index);
-    writeJsonAtomic(indexPath, index);
+  await withPathMutex(indexPath, async () => {
+    await withIndexFileLock(indexPath, async () => {
+      const loaded = await loadIndexCached(
+        indexPath,
+        (raw) => normalizeTemporalIndex(raw as TemporalIndex),
+        hasCurrentTemporalIndexSchema,
+      );
+      const index = structuredClone(loaded.kind === "ok" ? loaded.index : emptyTemporalIndex());
+      update(index);
+      if (await writeJsonAtomic(indexPath, index)) {
+        await primeCacheAfterWrite(indexPath, index);
+      } else {
+        parsedIndexCache.delete(indexPath);
+      }
+    });
   });
 }
 
-function updateTagIndex(memoryDir: string, update: (index: TagIndex) => void): void {
+async function updateTagIndex(memoryDir: string, update: (index: TagIndex) => void): Promise<void> {
   const indexPath = tagIndexPath(memoryDir);
-  withIndexFileLock(indexPath, () => {
-    const index = normalizeTagIndex(
-      readJsonSafe<TagIndex>(indexPath, { version: TAG_INDEX_VERSION, tags: {}, aliases: {} })
-    );
-    update(index);
-    writeJsonAtomic(indexPath, index);
+  await withPathMutex(indexPath, async () => {
+    await withIndexFileLock(indexPath, async () => {
+      const loaded = await loadIndexCached(
+        indexPath,
+        (raw) => normalizeTagIndex(raw as TagIndex),
+        () => true,
+      );
+      const index = structuredClone(
+        loaded.kind === "ok"
+          ? loaded.index
+          : { version: TAG_INDEX_VERSION, tags: {}, aliases: {} },
+      );
+      update(index);
+      if (await writeJsonAtomic(indexPath, index)) {
+        await primeCacheAfterWrite(indexPath, index);
+      } else {
+        parsedIndexCache.delete(indexPath);
+      }
+    });
   });
 }
 
@@ -678,13 +788,6 @@ function aliasPhrase(alias: string): string {
   return alias.replace(/\//g, " ").replace(/-/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function promptContainsAlias(prompt: string, alias: string): boolean {
-  const phrase = aliasPhrase(alias);
-  if (!phrase) return false;
-  const normalizedPrompt = ` ${normalizeAliasKey(prompt)} `;
-  return normalizedPrompt.includes(` ${phrase} `);
-}
-
 // ─── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -695,18 +798,18 @@ function promptContainsAlias(prompt: string, alias: string): boolean {
  * @param createdAt ISO timestamp of the memory's creation date
  * @param tags Array of tag strings from the memory's frontmatter
  */
-export function indexMemory(
+export async function indexMemory(
   memoryDir: string,
   memoryPath: string,
   createdAt: string,
   tags: string[],
   temporal: Omit<Partial<TemporalIndexEntry>, "path" | "createdAt" | "tags"> = {},
-): void {
+): Promise<void> {
   try {
-    ensureStateDir(memoryDir);
+    await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    updateTemporalIndex(memoryDir, (index) => {
+    await updateTemporalIndex(memoryDir, (index) => {
       index.version = INDEX_VERSION;
       removePathFromAllSets(index.dates, memoryPath);
       addPathToSet(index.dates, dateKey, memoryPath);
@@ -718,7 +821,7 @@ export function indexMemory(
       });
     });
 
-    updateTagIndex(memoryDir, (index) => {
+    await updateTagIndex(memoryDir, (index) => {
       removePathFromAllTagEntries(index, memoryPath);
       for (const tag of tags) {
         if (tag && typeof tag === "string") {
@@ -734,17 +837,22 @@ export function indexMemory(
 /**
  * Remove a memory file from both indexes (called on deletion/archival).
  */
-export function deindexMemory(memoryDir: string, memoryPath: string, createdAt: string, tags: string[]): void {
+export async function deindexMemory(
+  memoryDir: string,
+  memoryPath: string,
+  createdAt: string,
+  tags: string[],
+): Promise<void> {
   try {
-    ensureStateDir(memoryDir);
+    await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    updateTemporalIndex(memoryDir, (index) => {
+    await updateTemporalIndex(memoryDir, (index) => {
       removePathFromSet(index.dates, dateKey, memoryPath);
       delete index.events[memoryPath];
     });
 
-    updateTagIndex(memoryDir, (index) => {
+    await updateTagIndex(memoryDir, (index) => {
       for (const tag of tags) {
         if (tag && typeof tag === "string") {
           removeTagGraphEntry(index, tag, memoryPath);
@@ -761,16 +869,16 @@ export function deindexMemory(memoryDir: string, memoryPath: string, createdAt: 
  * Called before a full-corpus rebuild so stale paths in any surviving index
  * file do not persist after the rebuild completes.
  */
-export function clearIndexes(memoryDir: string): void {
+export async function clearIndexes(memoryDir: string): Promise<void> {
   try {
-    ensureStateDir(memoryDir);
-    updateTemporalIndex(memoryDir, (index) => {
+    await ensureStateDir(memoryDir);
+    await updateTemporalIndex(memoryDir, (index) => {
       index.version = INDEX_VERSION;
       index.lastRebuildAt = undefined;
       index.dates = {};
       index.events = {};
     });
-    updateTagIndex(memoryDir, (index) => {
+    await updateTagIndex(memoryDir, (index) => {
       index.version = TAG_INDEX_VERSION;
       index.lastRebuildAt = undefined;
       index.tags = {};
@@ -785,11 +893,15 @@ export function clearIndexes(memoryDir: string): void {
  * Returns true when both index files exist on disk.
  * Used to detect first-time enablement so callers can trigger a full rebuild.
  */
-export function indexesExist(memoryDir: string): boolean {
+export async function indexesExist(memoryDir: string): Promise<boolean> {
   try {
-    if (!fs.existsSync(tagIndexPath(memoryDir))) return false;
-    const raw = JSON.parse(fs.readFileSync(temporalIndexPath(memoryDir), "utf8")) as unknown;
-    return isRecord(raw) && raw.version === INDEX_VERSION && isRecord(raw.dates) && isRecord(raw.events);
+    await fs.promises.access(tagIndexPath(memoryDir));
+    const loaded = await loadIndexCached(
+      temporalIndexPath(memoryDir),
+      (raw) => normalizeTemporalIndex(raw as TemporalIndex),
+      hasCurrentTemporalIndexSchema,
+    );
+    return loaded.kind === "ok" && loaded.currentSchema;
   } catch {
     return false;
   }
@@ -799,15 +911,15 @@ export function indexesExist(memoryDir: string): boolean {
  * Batch-add multiple memories to both indexes in a single read-modify-write cycle.
  * More efficient than calling indexMemory() per file when adding many at once.
  */
-export function indexMemoriesBatch(
+export async function indexMemoriesBatch(
   memoryDir: string,
   entries: TemporalIndexEntry[]
-): void {
+): Promise<void> {
   if (entries.length === 0) return;
   try {
-    ensureStateDir(memoryDir);
+    await ensureStateDir(memoryDir);
 
-    updateTemporalIndex(memoryDir, (index) => {
+    await updateTemporalIndex(memoryDir, (index) => {
       index.version = INDEX_VERSION;
       for (const entry of entries) {
         const dateKey = isoDateFromTimestamp(entry.createdAt);
@@ -817,7 +929,7 @@ export function indexMemoriesBatch(
       }
     });
 
-    updateTagIndex(memoryDir, (index) => {
+    await updateTagIndex(memoryDir, (index) => {
       for (const entry of entries) {
         removePathFromAllTagEntries(index, entry.path);
         for (const tag of entry.tags) {
@@ -854,18 +966,13 @@ export async function queryByDateRangeAsync(
 ): Promise<Set<string> | null> {
   try {
     const tPath = temporalIndexPath(memoryDir);
-    let raw: string;
-    try {
-      raw = await fs.promises.readFile(tPath, "utf8");
-    } catch {
-      return null; // File missing or unreadable
-    }
-    let tIndex: TemporalIndex;
-    try {
-      tIndex = normalizeTemporalIndex(JSON.parse(raw) as TemporalIndex);
-    } catch {
-      tIndex = emptyTemporalIndex();
-    }
+    const loaded = await loadIndexCached(
+      tPath,
+      (raw) => normalizeTemporalIndex(raw as TemporalIndex),
+      hasCurrentTemporalIndexSchema,
+    );
+    if (loaded.kind === "missing") return null;
+    const tIndex = loaded.kind === "ok" ? loaded.index : emptyTemporalIndex();
     // toDate is exclusive (first day NOT included). Default: tomorrow so "all of today" is included.
     const end = toDate ?? new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
 
@@ -894,15 +1001,13 @@ export async function queryTemporalTimelineAsync(
   options: { query?: string; limit?: number } = {},
 ): Promise<TemporalIndexEvent[] | null> {
   try {
-    const raw = await fs.promises.readFile(temporalIndexPath(memoryDir), "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      !isRecord(parsed) ||
-      parsed.version !== INDEX_VERSION ||
-      !isRecord(parsed.dates) ||
-      !isRecord(parsed.events)
-    ) return null;
-    const index = normalizeTemporalIndex(parsed as unknown as TemporalIndex);
+    const loaded = await loadIndexCached(
+      temporalIndexPath(memoryDir),
+      (raw) => normalizeTemporalIndex(raw as TemporalIndex),
+      hasCurrentTemporalIndexSchema,
+    );
+    if (loaded.kind !== "ok" || !loaded.currentSchema) return null;
+    const index = loaded.index;
     const chronology = Object.values(index.events)
       .filter((event) =>
         typeof event?.path === "string" &&
@@ -971,20 +1076,13 @@ export async function queryByTagsAsync(memoryDir: string, tags: string[]): Promi
   if (tags.length === 0) return null;
   try {
     const gPath = tagIndexPath(memoryDir);
-    let raw: string;
-    try {
-      raw = await fs.promises.readFile(gPath, "utf8");
-    } catch {
-      return null; // File missing or unreadable
-    }
-    let gIndex: TagIndex;
-    try {
-      gIndex = normalizeTagIndex(JSON.parse(raw) as TagIndex);
-    } catch {
-      return null;
-    }
-
-    return queryByTagsFromIndex(gIndex, tags);
+    const loaded = await loadIndexCached(
+      gPath,
+      (raw) => normalizeTagIndex(raw as TagIndex),
+      () => true,
+    );
+    if (loaded.kind !== "ok") return null;
+    return queryByTagsFromIndex(loaded.index, tags);
   } catch {
     return null;
   }
@@ -1031,17 +1129,29 @@ export async function resolvePromptTagPrefilterAsync(
 }> {
   const explicitTags = extractTagsFromPrompt(prompt);
   try {
-    const raw = await fs.promises.readFile(tagIndexPath(memoryDir), "utf8");
-    const tagIndex = normalizeTagIndex(JSON.parse(raw) as TagIndex);
+    const loaded = await loadIndexCached(
+      tagIndexPath(memoryDir),
+      (raw) => normalizeTagIndex(raw as TagIndex),
+      () => true,
+    );
+    if (loaded.kind !== "ok") {
+      return { matchedTags: explicitTags, expandedTags: explicitTags, paths: null };
+    }
+    const tagIndex = loaded.index;
     const matched = new Set<string>(explicitTags);
+    const normalizedPrompt = ` ${normalizeAliasKey(prompt)} `;
+    const containsAlias = (alias: string): boolean => {
+      const phrase = aliasPhrase(alias);
+      return phrase.length > 0 && normalizedPrompt.includes(` ${phrase} `);
+    };
 
     for (const canonical of Object.keys(tagIndex.tags)) {
-      if (promptContainsAlias(prompt, canonical)) {
+      if (containsAlias(canonical)) {
         matched.add(canonical);
       }
     }
     for (const [alias, canonicals] of Object.entries(tagIndex.aliases ?? {})) {
-      if (!promptContainsAlias(prompt, alias)) continue;
+      if (!containsAlias(alias)) continue;
       for (const canonical of canonicals) {
         matched.add(canonical);
       }

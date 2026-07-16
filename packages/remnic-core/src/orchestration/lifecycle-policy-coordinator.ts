@@ -345,7 +345,7 @@ export class LifecyclePolicyCoordinator {
           memory.path &&
           memory.frontmatter?.created
         ) {
-          deindexMemory(
+          await deindexMemory(
             this.config.memoryDir,
             memory.path,
             memory.frontmatter.created,

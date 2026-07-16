@@ -39,7 +39,7 @@ async function makeOrchestrator(
 
 test("queryByTagsAsync expands child-tag queries to safe parent-tag matches", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-query-aware-tags-"));
-  indexMemoriesBatch(memoryDir, [
+  await indexMemoriesBatch(memoryDir, [
     {
       path: "/tmp/memory/facts/child.md",
       createdAt: "2026-03-09T00:00:00.000Z",
@@ -61,7 +61,7 @@ test("queryByTagsAsync expands child-tag queries to safe parent-tag matches", as
 
 test("resolvePromptTagPrefilterAsync matches tag aliases through punctuation-delimited prompts", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-query-aware-alias-"));
-  indexMemoriesBatch(memoryDir, [
+  await indexMemoriesBatch(memoryDir, [
     {
       path: "/tmp/memory/facts/ops.md",
       createdAt: "2026-03-09T00:00:00.000Z",
@@ -75,9 +75,9 @@ test("resolvePromptTagPrefilterAsync matches tag aliases through punctuation-del
   assert.equal(match.paths?.has("/tmp/memory/facts/ops.md"), true);
 });
 
-test("resolvePromptTagPrefilterAsync reuses the loaded tag index for path lookup", async () => {
+test("resolvePromptTagPrefilterAsync reuses the writer-primed tag cache for path lookup", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-query-aware-read-once-"));
-  indexMemoriesBatch(memoryDir, [
+  await indexMemoriesBatch(memoryDir, [
     {
       path: "/tmp/memory/facts/ops.md",
       createdAt: "2026-03-09T00:00:00.000Z",
@@ -85,20 +85,25 @@ test("resolvePromptTagPrefilterAsync reuses the loaded tag index for path lookup
     },
   ]);
 
-  const originalReadFile = fs.promises.readFile;
-  let readCount = 0;
-  fs.promises.readFile = (async (...args: Parameters<typeof originalReadFile>) => {
-    readCount += 1;
-    return originalReadFile(...args);
-  }) as typeof originalReadFile;
+  const originalOpen = fs.promises.open;
+  let handleReadCount = 0;
+  fs.promises.open = (async (...args: Parameters<typeof originalOpen>) => {
+    const handle = await originalOpen(...args);
+    const originalHandleRead = handle.readFile.bind(handle);
+    handle.readFile = (async (...readArgs: Parameters<typeof handle.readFile>) => {
+      handleReadCount += 1;
+      return originalHandleRead(...readArgs);
+    }) as typeof handle.readFile;
+    return handle;
+  }) as typeof originalOpen;
 
   try {
     const match = await resolvePromptTagPrefilterAsync(memoryDir, "What happened with infra ops?");
     assert.deepEqual(match.matchedTags, ["infra/ops"]);
     assert.equal(match.paths?.has("/tmp/memory/facts/ops.md"), true);
-    assert.equal(readCount, 1);
+    assert.equal(handleReadCount, 0);
   } finally {
-    fs.promises.readFile = originalReadFile;
+    fs.promises.open = originalOpen;
   }
 });
 
@@ -141,7 +146,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp merges advisory query-aware seeds w
   );
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -210,7 +215,7 @@ test("temporal query-aware seeds survive alongside backend results", async () =>
   );
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -276,7 +281,7 @@ test("recallInternal applies query-aware prefilter parity to embedding fallback 
   );
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -327,7 +332,7 @@ test("query-aware max candidate limit treats 0 as uncapped for advisory seed res
   });
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -381,7 +386,7 @@ test("explicit tag misses preserve an empty prefilter through QMD retrieval", as
   );
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -456,7 +461,7 @@ test("explicit tag misses dominate temporal matches and skip non-QMD fallbacks",
   );
 
   const memories = await storage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -537,7 +542,7 @@ test("explicit tag misses suppress fresh QMD cache hits", async () => {
   assert.match(cachedContext, /alpha result/i);
   assert.equal(qmdCalls, 2);
 
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     memories.map((memory: any) => ({
       path: memory.path,
@@ -578,7 +583,7 @@ test("query-aware prefilter scopes candidate paths to authorized namespaces", as
 
   const defaultMemories = await defaultStorage.readAllMemories();
   const sharedMemories = await sharedStorage.readAllMemories();
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     [...defaultMemories, ...sharedMemories].map((memory: any) => ({
       path: memory.path,
@@ -829,7 +834,7 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
     storage.readAllMemories(),
     (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]),
   ]);
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     corpus.flat().map((memory: any) => ({
       path: memory.path,
@@ -874,7 +879,7 @@ test("archive-scan cold fallback fills budget after excluding artifact paths", a
   }
 
   const archivedMemories = await (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]);
-  indexMemoriesBatch(
+  await indexMemoriesBatch(
     orchestrator.config.memoryDir,
     archivedMemories.map((memory: any) => ({
       path: memory.path,

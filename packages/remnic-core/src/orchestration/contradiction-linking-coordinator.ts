@@ -253,7 +253,7 @@ export class ContradictionLinkingCoordinator {
         resolveIndexingCapabilities(config).queryAwareIndexing &&
         contradiction.supersededPath
       ) {
-        deindexMemory(
+        await deindexMemory(
           config.memoryDir,
           contradiction.supersededPath,
           contradiction.supersededCreated,

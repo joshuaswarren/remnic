@@ -327,7 +327,7 @@ test("event-order recall bounds large-index memory reads before injection", asyn
   const orchestrator = new Orchestrator(cfg);
   for (let i = 0; i < 600; i += 1) {
     const day = String((i % 28) + 1).padStart(2, "0");
-    indexMemory(
+    await indexMemory(
       memoryDir,
       path.join(memoryDir, "facts", `event-${String(i).padStart(4, "0")}.md`),
       `2026-03-${day}T00:00:00.000Z`,
