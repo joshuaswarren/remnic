@@ -367,7 +367,18 @@ export function removeHermesShim(candidatePaths: readonly string[]): {
       notes.push(`Hermes plugin shim left untouched (not Remnic-generated): ${shimPath}`);
       continue;
     }
-    fs.unlinkSync(shimPath);
+    try {
+      fs.unlinkSync(shimPath);
+    } catch (unlinkErr) {
+      // One stale/unwritable candidate must not abort cleanup of the rest
+      // (Codex P2 on PR #1938, round 20). The failed path stays on disk and,
+      // still carrying the marker, remains tracked by the provenance
+      // reconciliation for a later retry.
+      notes.push(
+        `Hermes plugin shim could not be removed (${unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr)}): ${shimPath} — remove it manually or re-run after fixing permissions.`,
+      );
+      continue;
+    }
     removedPaths.push(shimPath);
     try {
       fs.rmdirSync(path.dirname(shimPath));
