@@ -482,3 +482,31 @@ export function survivingMarkerShims(
   }
   return survivors;
 }
+
+/**
+ * Reject symlinked path components between the Hermes root and a config.yaml
+ * target (`profiles/`, `profiles/<name>/`, and the file itself). Mirrors the
+ * shim component guard: a symlinked component below the accepted root could
+ * redirect the token-bearing config write or removal rewrite outside the
+ * selected Hermes home (Codex P1 on PR #1938, round 19). Missing components
+ * are fine — they get created.
+ */
+export function assertConfigComponentsNotSymlinked(cfgPath: string): void {
+  const dir = path.dirname(cfgPath);
+  const components = [cfgPath, dir];
+  const grandparent = path.dirname(dir);
+  if (path.basename(grandparent) === "profiles") {
+    components.push(grandparent);
+  }
+  for (const component of components) {
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(component).isSymbolicLink();
+    } catch {
+      continue; // does not exist yet
+    }
+    if (isLink) {
+      throw new Error(`refusing to operate through a symbolic link: ${component}`);
+    }
+  }
+}

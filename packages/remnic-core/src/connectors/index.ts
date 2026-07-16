@@ -17,6 +17,7 @@ import { mergeEnv, readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { expandTildePath } from "../utils/path.js";
 import { coerceInstallExtension } from "./coerce.js";
 import {
+  assertConfigComponentsNotSymlinked,
   hermesShimPath,
   isPlausibleHermesConfigPath,
   materializeHermesShim,
@@ -806,45 +807,57 @@ export function installConnector(options: InstallOptions): InstallResult {
         }
         const priorRaw = parsed?.pluginShimPath;
         const priorPersisted = typeof priorRaw === "string" && priorRaw.length > 0 ? priorRaw : null;
+        // Gate the whole backfill on the ACTIVE home carrying a remnic:
+        // config (Codex P2 on PR #1938, round 19): moving/creating the
+        // discovery shim under a home whose config.yaml has no remnic: block
+        // would make Hermes discover a provider with no host/token — this
+        // path never writes configs or tokens, so only --force can migrate
+        // config, token, and shim together.
+        const profileRaw = parsed?.profile;
+        let currentConfigPath: string | null = null;
+        let activeConfigHasBlock = false;
+        try {
+          currentConfigPath = hermesConfigPath(
+            typeof profileRaw === "string" && profileRaw.length > 0 ? profileRaw : "default",
+          );
+          activeConfigHasBlock =
+            fs.existsSync(currentConfigPath) &&
+            /^remnic:/m.test(fs.readFileSync(currentConfigPath, "utf8"));
+        } catch {
+          activeConfigHasBlock = false;
+        }
+        if (!activeConfigHasBlock) {
+          backfillNote =
+            " Note: the active Hermes home's config.yaml has no remnic: block — skipped the shim backfill " +
+            "so Hermes cannot discover an unconfigured provider. If Hermes was installed under a different " +
+            "HERMES_HOME, re-run with --force to rewrite the config (and token) and migrate the shim " +
+            "under the current home.";
+          return {
+            connectorId: options.connectorId,
+            status: "already_installed",
+            message: `Already installed. Use --force to reinstall.${backfillNote}`,
+          };
+        }
         const outcome = reconcileHermesShim(priorPersisted);
         if (outcome.notes.length > 0) {
           backfillNote = ` ${outcome.notes.join(" ")}`;
         }
         let configProvenanceAdded = false;
-        if (parsed !== null) {
-          // Backfill config.yaml provenance too (Codex P2 on PR #1938,
-          // round 7): persist the current-environment config path when it
-          // actually carries a remnic: block, and warn when it does not —
-          // the block likely lives under a previous HERMES_HOME, and only a
-          // --force reinstall regenerates the token and rewrites config.yaml
-          // under the active home (this path never writes tokens).
-          if (typeof parsed.hermesConfigPath !== "string" || parsed.hermesConfigPath.length === 0) {
-            try {
-              const profileRaw = parsed.profile;
-              const currentConfigPath = hermesConfigPath(
-                typeof profileRaw === "string" && profileRaw.length > 0 ? profileRaw : "default",
-              );
-              if (
-                fs.existsSync(currentConfigPath) &&
-                /^remnic:/m.test(fs.readFileSync(currentConfigPath, "utf8"))
-              ) {
-                parsed.hermesConfigPath = currentConfigPath;
-                configProvenanceAdded = true;
-              } else {
-                backfillNote +=
-                  " Note: no remnic: block found in the active Hermes home's config.yaml — " +
-                  "if Hermes was installed under a different HERMES_HOME, re-run with --force " +
-                  "to rewrite the config (and token) under the current home.";
-              }
-            } catch {
-              /* config path unresolvable — leave provenance absent */
-            }
-          }
+        if (
+          parsed !== null &&
+          currentConfigPath !== null &&
+          (typeof parsed.hermesConfigPath !== "string" || parsed.hermesConfigPath.length === 0)
+        ) {
+          // Backfill config.yaml provenance too (round 7): the active config
+          // carries a remnic: block (gate above), so record where it lives.
+          parsed.hermesConfigPath = currentConfigPath;
+          configProvenanceAdded = true;
         }
         // Prior-shim provenance parity (round 18): keep tracking any prior
         // marker shim that survives (e.g. its cleanup failed), and clean
         // inherited priors on a confirmed replacement.
         let shimPriorsChanged = false;
+        const cleanedInheritedBackfillShims: string[] = [];
         if (parsed !== null) {
           const shimPriorCandidates: string[] = [];
           if (priorPersisted !== null) {
@@ -863,7 +876,8 @@ export function installConnector(options: InstallOptions): InstallResult {
             );
             if (cleanupTargets.length > 0) {
               try {
-                removeHermesShim(cleanupTargets);
+                const cleaned = removeHermesShim(cleanupTargets);
+                cleanedInheritedBackfillShims.push(...cleaned.removedPaths);
               } catch {
                 /* survivors below stay tracked */
               }
@@ -915,6 +929,18 @@ export function installConnector(options: InstallOptions): InstallResult {
                 materializeHermesShim(outcome.priorCleanedAt);
               } catch {
                 rollbackFailures.push(`restore the shim at ${outcome.priorCleanedAt} manually`);
+              }
+            }
+            // Regenerate inherited priors this backfill pass cleaned — parity
+            // with the main install rollback (Bugbot on PR #1938, round 19).
+            for (const cleanedPath of cleanedInheritedBackfillShims) {
+              if (outcome.priorCleanedAt !== null && sameShimTarget(cleanedPath, outcome.priorCleanedAt)) {
+                continue;
+              }
+              try {
+                materializeHermesShim(cleanedPath);
+              } catch {
+                rollbackFailures.push(`restore the shim at ${cleanedPath} manually`);
               }
             }
             const persistMsg = persistErr instanceof Error ? persistErr.message : String(persistErr);
@@ -2847,6 +2873,9 @@ function upsertHermesConfigAt(
   cfgPath: string,
   opts: { host: string; port: number; token: string },
 ): HermesConfigResult {
+  // Symlinked components below the Hermes root must not redirect the
+  // token-bearing write (Codex P1 on PR #1938, round 19).
+  assertConfigComponentsNotSymlinked(cfgPath);
   const profileDir = path.dirname(cfgPath);
 
   // YAML-injection guard: validate scalar values before interpolating them
@@ -3074,6 +3103,10 @@ export function removeHermesConfig(opts: {
 }
 
 function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
+  // Symlinked components below the Hermes root must not redirect the cleanup
+  // rewrite (Codex P1 on PR #1938, round 19). Throwing surfaces as a
+  // "cleanup failed" result at the caller.
+  assertConfigComponentsNotSymlinked(cfgPath);
   if (!fs.existsSync(cfgPath)) {
     return {
       updated: false,

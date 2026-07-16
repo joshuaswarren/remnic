@@ -4013,7 +4013,7 @@ test("installConnector hermes force-reinstall keeps tracking the prior shim when
   });
 });
 
-test("installConnector hermes already_installed backfill cleans the shim from a prior HERMES_HOME (#1929)", async () => {
+test("installConnector hermes backfill refuses to move the shim to a home without a remnic: config (#1929)", async () => {
   const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
 
   await new Promise<void>((resolve, reject) => {
@@ -4033,26 +4033,33 @@ test("installConnector hermes already_installed backfill cleans the shim from a 
         const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
         assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
 
-        // Rerun WITHOUT --force under a different HERMES_HOME: backfill must
-        // materialize the new shim, clean the old one, and re-point the JSON.
-        let rerunMessage = "";
+        // Rerun WITHOUT --force under a different HERMES_HOME whose config
+        // has no remnic: block: the backfill must NOT move the shim — Hermes
+        // would discover a provider with no host/token. Only --force migrates
+        // config, token, and shim together.
         withHermesHome(homeB, () => {
           const rerun = mod.installConnector({ connectorId: "hermes" });
           assert.equal(rerun.status, "already_installed", rerun.message);
-          rerunMessage = rerun.message;
+          assert.ok(
+            rerun.message.includes("skipped the shim backfill"),
+            `rerun should explain the skipped backfill, got: ${rerun.message}`,
+          );
+          assert.ok(
+            rerun.message.includes("--force"),
+            `rerun should advise --force to migrate, got: ${rerun.message}`,
+          );
         });
-        const shimB = path.join(homeB, "plugins", "remnic", "__init__.py");
-        assert.ok(fs.existsSync(shimB), "backfill must materialize the shim under the new HERMES_HOME");
+        assert.ok(fs.existsSync(shimA), "the working prior shim must be left in place");
         assert.ok(
-          !fs.existsSync(shimA),
-          `backfill must clean the Remnic-generated shim from the prior HERMES_HOME, got message: ${rerunMessage}`,
+          !fs.existsSync(path.join(homeB, "plugins", "remnic", "__init__.py")),
+          "no shim may be created under a home without a remnic: config",
         );
 
         const connectorJsonPath = path.join(
           tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
         );
         const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
-        assert.equal(saved.pluginShimPath, shimB, "backfill must re-point pluginShimPath at the new shim");
+        assert.equal(saved.pluginShimPath, shimA, "provenance must keep pointing at the working shim");
       });
       resolve();
     } catch (err) {
@@ -4212,47 +4219,42 @@ test("installConnector hermes backfill rolls back shim changes when persistence 
     try {
       withTempHome((tmpHome) => {
         mod.removeConnector("hermes");
-        seedHermesRootConfig(tmpHome);
-        const homeA = path.join(tmpHome, "hermes-home-a");
-        const homeB = path.join(tmpHome, "hermes-home-b");
-        fs.mkdirSync(homeA, { recursive: true });
-        fs.mkdirSync(homeB, { recursive: true });
+        const hermesDir = seedHermesRootConfig(tmpHome);
 
-        withHermesHome(homeA, () => {
-          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
-          assert.equal(first.status, "installed", first.message);
-        });
-        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
-        const shimB = path.join(homeB, "plugins", "remnic", "__init__.py");
-        assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
 
-        // Make hermes.json unwritable, then rerun WITHOUT --force under a new
-        // HERMES_HOME: the backfill reconcile moves the shim A→B, persistence
-        // fails, and the move must be rolled back so the on-disk state still
-        // matches the JSON that survives (pluginShimPath = shim A).
+        // Simulate a pre-shim-era install (no shim, no provenance), then make
+        // hermes.json unwritable: the backfill materializes the shim, the
+        // persist fails, and the newly-created shim must be rolled back so
+        // the on-disk state still matches the surviving JSON.
+        fs.rmSync(shimPath);
+        fs.rmdirSync(path.dirname(shimPath));
         const connectorsDir = path.join(
           tmpHome, ".config", "remnic", ".remnic-connectors", "connectors",
         );
+        const connectorJsonPath = path.join(connectorsDir, "hermes.json");
+        const stripped = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        delete stripped.pluginShimPath;
+        fs.writeFileSync(connectorJsonPath, JSON.stringify(stripped, null, 2));
         fs.chmodSync(connectorsDir, 0o500);
         try {
-          withHermesHome(homeB, () => {
-            const rerun = mod.installConnector({ connectorId: "hermes" });
-            assert.equal(rerun.status, "already_installed", rerun.message);
-            assert.ok(
-              rerun.message.includes("rolled back"),
-              `backfill message should report the rollback, got: ${rerun.message}`,
-            );
-          });
+          const rerun = mod.installConnector({ connectorId: "hermes" });
+          assert.equal(rerun.status, "already_installed", rerun.message);
+          assert.ok(
+            rerun.message.includes("rolled back"),
+            `backfill message should report the rollback, got: ${rerun.message}`,
+          );
         } finally {
           fs.chmodSync(connectorsDir, 0o700);
         }
-        assert.ok(fs.existsSync(shimA), "the prior shim must be restored when persistence fails");
-        assert.ok(!fs.existsSync(shimB), "the newly-materialized shim must be rolled back");
-
-        const saved = JSON.parse(
-          fs.readFileSync(path.join(connectorsDir, "hermes.json"), "utf-8"),
+        assert.ok(
+          !fs.existsSync(shimPath),
+          "the newly-materialized shim must be rolled back when persistence fails",
         );
-        assert.equal(saved.pluginShimPath, shimA, "hermes.json must still reference the surviving shim");
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(saved.pluginShimPath, undefined, "hermes.json must remain without shim provenance");
       });
       resolve();
     } catch (err) {
