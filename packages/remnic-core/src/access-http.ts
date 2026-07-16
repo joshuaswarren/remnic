@@ -3150,12 +3150,6 @@ export class EngramAccessHttpServer {
       abortSignal,
     });
 
-    if (abortSignal.aborted) {
-      throw isAbortError(abortSignal.reason)
-        ? abortSignal.reason
-        : abortError("HTTP client disconnected");
-    }
-
     if (isMcpWrite && response !== null) {
       const result = (response as Record<string, unknown>).result as Record<string, unknown> | undefined;
       const isError = result?.isError === true;
@@ -3177,6 +3171,14 @@ export class EngramAccessHttpServer {
         this.recordWriteRateLimitHit();
       }
     }
+    // A mutating tool may have committed just before the client disconnected.
+    // Record that side effect above, then honor cancellation before emitting
+    // any response. Read-only calls reach this guard without accounting.
+    if (abortSignal.aborted) {
+      throw isAbortError(abortSignal.reason)
+        ? abortSignal.reason
+        : abortError("HTTP client disconnected");
+    }
     if (response === null) {
       res.statusCode = 202;
       res.end();
@@ -3187,11 +3189,6 @@ export class EngramAccessHttpServer {
     const assignedSessionId = this.mcpServer.popInitSessionId(mcpCorrelationId);
     if (assignedSessionId) {
       res.setHeader("mcp-session-id", assignedSessionId);
-    }
-    if (abortSignal.aborted) {
-      throw isAbortError(abortSignal.reason)
-        ? abortSignal.reason
-        : abortError("HTTP client disconnected");
     }
     this.respondJson(res, 200, response);
   }

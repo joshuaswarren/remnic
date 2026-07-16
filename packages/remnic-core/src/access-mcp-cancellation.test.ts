@@ -31,12 +31,15 @@ function waitFor<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
   ]);
 }
 
-function mcpBody(name: string, query = "slow recall"): string {
+function mcpBody(
+  name: string,
+  args: Record<string, unknown> = { query: "slow recall" },
+): string {
   return JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "tools/call",
-    params: { name, arguments: { query } },
+    params: { name, arguments: args },
   });
 }
 
@@ -175,6 +178,115 @@ test("standalone MCP calls leave recall cancellation undefined", async () => {
 
   assert.equal(observedSignal, undefined);
   assert.equal((response?.result as { isError?: boolean } | undefined)?.isError, false);
+});
+
+test("an already-aborted MCP write never starts and preserves the AbortError", async () => {
+  const controller = new AbortController();
+  const reason = abortError("caller disconnected before dispatch");
+  let writeStarted = false;
+  const service = {
+    memoryStore: async () => {
+      writeStarted = true;
+      return {} as never;
+    },
+  } as unknown as EngramAccessService;
+  const mcp = new EngramMcpServer(service);
+  controller.abort(reason);
+
+  await assert.rejects(
+    mcp.handleRequest(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remnic.memory_store",
+          arguments: { content: "must not be stored", category: "fact" },
+        },
+      },
+      { abortSignal: controller.signal },
+    ),
+    (error: unknown) => error === reason,
+  );
+  assert.equal(writeStarted, false);
+});
+
+test("MCP write quota is recorded after commit even when the client disconnects before completion", async () => {
+  const mutationCommitted = deferred<void>();
+  const releaseOperation = deferred<void>();
+  const operationSettled = deferred<void>();
+  const requestAborted = deferred<void>();
+  let responseStarted = false;
+  const service = {
+    memoryStore: async () => {
+      mutationCommitted.resolve();
+      try {
+        await releaseOperation.promise;
+      } finally {
+        operationSettled.resolve();
+      }
+      return {
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: "default",
+        dryRun: false,
+        accepted: true,
+        queued: false,
+        status: "stored",
+        memoryId: "committed-memory",
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const serverHost = server as unknown as {
+    mcpServer: EngramMcpServer;
+    writeRequestTimestamps: number[];
+  };
+  const originalHandleRequest = serverHost.mcpServer.handleRequest.bind(serverHost.mcpServer);
+  serverHost.mcpServer.handleRequest = async (request, options) => {
+    options?.abortSignal?.addEventListener("abort", () => requestAborted.resolve(), { once: true });
+    return originalHandleRequest(request, options);
+  };
+  const status = await server.start();
+
+  try {
+    const client = httpRequest({
+      host: "127.0.0.1",
+      port: status.port,
+      path: "/mcp",
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+    }, (res) => {
+      responseStarted = true;
+      res.resume();
+    });
+    client.on("error", () => {});
+    client.end(mcpBody("remnic.memory_store", {
+      content: "committed before disconnect",
+      category: "fact",
+    }));
+
+    await waitFor(mutationCommitted.promise);
+    client.destroy();
+    await waitFor(requestAborted.promise);
+    releaseOperation.resolve();
+
+    await waitFor(operationSettled.promise);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(serverHost.writeRequestTimestamps.length, 1);
+    assert.equal(responseStarted, false, "the disconnected client must not receive the committed write response");
+  } finally {
+    releaseOperation.resolve();
+    await server.stop();
+  }
 });
 
 test("a disconnected MCP recall queued on the budget lock never starts and does not poison the lock", async () => {

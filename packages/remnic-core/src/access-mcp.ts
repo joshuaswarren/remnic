@@ -2654,6 +2654,10 @@ export class EngramMcpServer {
           ...(options?.namespaceOverride ? { namespace: options.namespaceOverride } : {}),
           ...(options?.sessionKeyOverride ? { sessionKey: options.sessionKeyOverride } : {}),
         };
+        // Abort before dispatch so a disconnected request never starts work.
+        // Once a mutating tool has returned, cancellation is deferred to the
+        // HTTP transport so it can account for the committed write first.
+        throwMcpAbort(options?.abortSignal, "MCP request aborted before operation start");
         const result = await this.callTool(
           name,
           argumentsObject,
@@ -2664,7 +2668,9 @@ export class EngramMcpServer {
           options?.sourceConnector,
           options?.abortSignal,
         );
-        throwMcpAbort(options?.abortSignal, "MCP request aborted before response");
+        if (isReadOnlyToolName(name)) {
+          throwMcpAbort(options?.abortSignal, "MCP request aborted before response");
+        }
         return {
           jsonrpc: "2.0",
           id,
@@ -2980,7 +2986,6 @@ export class EngramMcpServer {
       ...(sourceConnector ? { sourceConnector } : {}),
       ...(abortSignal ? { abortSignal } : {}),
     })) as { result: unknown };
-    throwMcpAbort(abortSignal, "MCP request aborted before postprocessing");
     return output.result;
   }
 }
