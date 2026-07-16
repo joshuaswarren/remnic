@@ -74,13 +74,13 @@ and Codex session evidence at submission time.
 - [x] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
   GPT-5.6 through the OpenAI Responses API as the grading model. It scores
   benchmark answers, correction acceptance, and stale-memory harm.
-- [ ] GPT-5.6 frontier-tier run. A bounded, credit-backed Tier-F run uses
+- [ ] GPT-5.6 frontier-tier artifact. Credit-backed benchmark runs use
   `gpt-5.6-luna` for bulk responder and internal work and `gpt-5.6-terra` for
   quality-critical judging. `gpt-5.6-sol` is outside the bounded plan and is
-  disabled unless the operator explicitly opts in. A result is claimed only
-  after its artifact and manifest are committed under
-  `docs/benchmarks/results/`; bounded coverage is labeled as a trial, never a
-  full leaderboard number.
+  disabled unless the operator explicitly opts in. The completed selected
+  LoCoMo comparison below is diagnostic evidence, not this artifact gate. A
+  leaderboard result is claimed only after a full-coverage artifact and clean
+  manifest are committed under `docs/benchmarks/results/`.
 - [x] Memory report card. Extends `remnic bench export --format html` into
   a single shareable scored report with per-dimension scores, correction
   behavior, and provenance. Included in the existing publish feed for
@@ -137,6 +137,12 @@ Additional in-window receipts:
   analyzer. The July 16 current-main capture covered all 321 historical
   multi-hop tasks and found no baseline/real retrieval-structure delta. This
   is negative diagnostic evidence, not a scored benchmark lift.
+- [`1e78814b`](https://github.com/joshuaswarren/remnic/commit/1e78814bf5ea2d9acdf684d290043326310143e5)
+  and
+  [`fd5d7cae`](https://github.com/joshuaswarren/remnic/commit/fd5d7cae6b8e4fda4adc85d4b3a48f2ecd13fa20)
+  add hash-pinned LoCoMo task selection, paired-result validation, private-path
+  redaction, and dry-run enforcement. PR #1935 merged those safeguards as
+  `3a8f9290` before the paid comparison began.
 
 On July 15, merged head `ab849733` passed the cold package test:
 `node scripts/verify-build-week-sandbox.mjs --keep`. The test put version 9.6.24
@@ -162,14 +168,38 @@ prefix completed the keyless MCP MemCorrect smoke, run listing, and HTML
 export. The registry-installed report was 15,128 bytes. No judge or provider
 ran. This is the current judge install path below.
 
+On July 16, launch head `3a8f9290` completed a paired scored LoCoMo comparison
+on the exact 321 multi-hop tasks implicated by the historical regression. Both
+the `baseline` and `real` profiles completed all 321 tasks with no task-level
+failure. They used LoCoMo-10 SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
+and ordered-selector SHA-256
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`.
+Luna handled responder and internal work; Terra handled judging. The real
+profile moved `llm_judge` from 0.3050 to 0.2983 (-0.0067), F1 from 0.3100 to
+0.3057 (-0.0044), and `contains_answer` from 0.0903 to 0.0935 (+0.0031).
+The run used 242.2365325 locally accounted credits across 1,329 Luna and 410
+Terra calls, with zero Sol calls. The pinned calibration source result was not
+present on this host, so the absolute Terra score is not called calibrated.
+The private result hashes and full evidence boundary are documented in
+`docs/benchmarks/locomo-profile-diagnosis.md`.
+
+This is a same-selector paired diagnostic, not a full 1,986-question LoCoMo
+result. The selector is intentionally rejected by artifact promotion and the
+public-matrix gate. The late manifest also observed an unrelated shared-
+checkout branch switch and recorded a dirty Git envelope; the result files
+retain the launch SHA, but neither they nor that manifest are used for a
+leaderboard or submission score claim.
+
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
 paste the real session ID here before submission.
 
 GPT-5.6 frontier artifact and manifest:
-**PENDING OPERATOR RUN.** Link only a committed artifact produced by the
-credit-backed Codex CLI protocol below. Do not convert a bounded trial into a
-full-run claim.
+**PENDING LONGMEM/MEMCORRECT EVIDENCE.** The completed selected LoCoMo pair is
+not promotable. Link only a committed artifact produced by the credit-backed
+Codex CLI protocol below, and do not convert bounded coverage into a full-run
+claim.
 
 ## How Codex and GPT-5.6 were used
 
@@ -184,8 +214,9 @@ GPT-5.6 is part of the product. It can act as an opt-in judge with strict
 structured output. There are two provider paths. The optional Responses API
 judge uses the exact model id `gpt-5.6`. The ChatGPT-backed Codex CLI has other
 names. Luna does the bulk work. Terra does the key judge work. These names and
-paths are not the same. We will not claim a CLI result until a real, locked
-artifact exists.
+paths are not the same. The selected LoCoMo diagnostic is reported only with
+its coverage and limitations; no CLI leaderboard or submission score is
+claimed until a real, locked artifact exists.
 
 ## Credit-backed Codex CLI run protocol
 

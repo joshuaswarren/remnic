@@ -90,15 +90,17 @@ contradiction-scan, graph-recall) are in
 At 7B-Q4 single-seed no cell moves any metric outside the run-to-run noise
 band, so no shipped default is changed by that ablation.
 
-The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison is
-diagnosed in
+The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison and its
+July 16 current-main follow-up are diagnosed in
 [`docs/benchmarks/locomo-profile-diagnosis.md`](./benchmarks/locomo-profile-diagnosis.md).
-The regression is concentrated in multi-hop questions and is present on
-judge-independent F1, but paired recall X-ray receipts are not available, so
-the recall-side mechanism is not yet established. Pending that evidence,
-benchmark operators should use the `baseline` profile only for LoCoMo's
-skip-extraction replay path when optimizing this measured configuration; this
-is not production guidance and does not change shipped defaults.
+The historical regression was concentrated in multi-hop questions and present
+on judge-independent F1. Current main's provider-free paired capture found no
+retrieval-structure delta across those 321 tasks, and the scored GPT-5.6 pair
+reduced the historical gap to -0.0067 `llm_judge` and -0.0044 F1 while moving
+`contains_answer` +0.0031. That result does not establish parity or a causal
+retrieval mechanism. The old `baseline` recommendation is therefore only
+historical reproduction guidance for the July 14 configuration, not current-
+main or production guidance, and no shipped default changes on this evidence.
 
 An answer-time support gate is available as a read-time faithfulness control.
 It defaults to `true` for the full-feature `real` profile and remains disabled
@@ -137,6 +139,44 @@ This foundation does **not** establish issue #1878's acceptance metrics. A new
 calibrated, uncapped 1,986-task real-profile LoCoMo run, with the required
 responder/judge credentials and published artifact, is still required before
 claiming adversarial lift or answerable-category preservation.
+
+### Build Week paired LoCoMo multi-hop diagnostic (2026-07-16)
+
+Merged launch head `3a8f9290` ran the same ordered 321-task multi-hop selector
+under `baseline` and `real`. Both profiles used `gpt-5.6-luna` for responder
+and internal work, `gpt-5.6-terra` for judging, seed 0, normal service, and
+serialized trials. Both completed 321/321 tasks without a task-level failure.
+The dataset SHA-256 is
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`;
+the canonical selected-task-list SHA-256 is
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`.
+
+| Metric | Baseline | Real | Delta (`real - baseline`) |
+|---|---:|---:|---:|
+| `llm_judge` | 0.3050 | 0.2983 | -0.0067 |
+| F1 | 0.3100 | 0.3057 | -0.0044 |
+| `contains_answer` | 0.0903 | 0.0935 | +0.0031 |
+| hidden-evidence-id safety | 1.0000 | 1.0000 | 0.0000 |
+
+The run-scoped ledger receipt records 242.2365325 credits, 1,329 Luna calls,
+410 Terra calls, and zero Sol calls. Baseline and real result SHA-256 values
+are, respectively,
+`21cd3c1f6f6c1a89a8d7d432d7004e08d575655e2cdca4addde0952852890397`
+and
+`549c31e578a2269d2c4c49ea688a9de2ddeb097fcd9f627a312d1a95f6677708`.
+The raw results and report cards remain private because they contain questions,
+answers, and recalled context.
+
+This is bounded paired evidence, not a LoCoMo leaderboard result. The exact
+selector is stored in each result, and both artifact promotion and the full
+public-matrix verifier reject `taskSelection` by design. The pinned calibration
+source result was absent from this host, so Terra's absolute score is not
+described as calibrated or compared to external leaderboards; F1 and
+`contains_answer` are reported alongside it. A late manifest regeneration also
+observed an unrelated shared-checkout branch switch and marked its Git envelope
+dirty. The result files retain launch SHA `3a8f9290`, but the dirty manifest is
+not publication evidence. This diagnostic does not cover LoCoMo's adversarial,
+single-hop, temporal, or open-domain categories and cannot satisfy #1878.
 
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
