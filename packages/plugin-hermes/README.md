@@ -36,28 +36,14 @@ If you have read documentation or third-party reviews suggesting Remnic must reg
    pip install --upgrade remnic-hermes
    ```
 
-2. Wire Hermes to Remnic (generates an auth token, writes the Hermes config entry, and checks daemon health):
+2. Wire Hermes to Remnic (generates an auth token, writes the Hermes config entry, materializes the plugin discovery shim at `$HERMES_HOME/plugins/remnic/__init__.py`, and checks daemon health):
    ```bash
    remnic connectors install hermes
    ```
 
-3. Create the memory-provider shim and select the provider (Hermes discovers memory providers by scanning `$HERMES_HOME/plugins/<name>/`, not pip metadata):
-   ```python
-   # ~/.hermes/plugins/remnic/__init__.py
-   """Remnic memory provider shim. Calls collector.register_memory_provider()."""
+3. Set `memory.provider: remnic` (and `memory_enabled: true`) in your Hermes `config.yaml`, then restart Hermes so it picks up the new config entry. (The installer creates the discovery shim for you; a pip-only install must create it manually — see [Manual configuration](#manual-configuration).)
 
-   from remnic_hermes import register  # register() handles config loading itself
-   ```
-   ```yaml
-   # config.yaml
-   memory:
-     provider: remnic
-     memory_enabled: true
-   ```
-
-4. Restart Hermes so it picks up the new config entry.
-
-5. Verify the connection:
+4. Verify the connection:
    ```bash
    hermes --version && pip show remnic-hermes
    ```
@@ -65,7 +51,18 @@ Your agent should now have structural memory on every turn plus explicit tools s
 
 ## Manual configuration
 
-If you prefer not to use `remnic connectors install`, add the following to your Hermes `config.yaml` directly:
+If you prefer not to use `remnic connectors install`, create the discovery shim yourself. Hermes finds memory providers by scanning `$HERMES_HOME/plugins/<name>/`, not pip metadata; when `HERMES_HOME` is unset the default home is `~/.hermes` on Linux/macOS and `%LOCALAPPDATA%\hermes` on Windows:
+
+```python
+# <hermes-home>/plugins/remnic/__init__.py
+# e.g. ~/.hermes/plugins/remnic/__init__.py (Linux/macOS)
+#      %LOCALAPPDATA%\hermes\plugins\remnic\__init__.py (Windows)
+"""Remnic memory provider shim. Calls collector.register_memory_provider()."""
+
+from remnic_hermes import register  # register() handles config loading itself
+```
+
+Then add the following to your Hermes `config.yaml` directly:
 
 ```yaml
 memory:
@@ -105,7 +102,8 @@ The auth token is not read from an environment variable. It is either set inline
 3. Adds the `remnic:` block to your Hermes `config.yaml` (with rollback on failure).
 4. Commits the token to `~/.remnic/tokens.json`.
 5. Writes the connector config file.
-6. Runs a health check against the daemon (does not start it — prints `remnic daemon start` if unreachable).
+6. Materializes the plugin discovery shim at `$HERMES_HOME/plugins/remnic/__init__.py` (honors `HERMES_HOME`, else `~/.hermes`) so Hermes can discover the provider. Best-effort — install still succeeds if it cannot be written, and a user-authored shim is left untouched.
+7. Runs a health check against the daemon (does not start it — prints `remnic daemon start` if unreachable).
 
 If you provision tokens manually, write a JSON file at `~/.remnic/tokens.json` in the format:
 
