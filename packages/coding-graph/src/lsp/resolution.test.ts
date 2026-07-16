@@ -295,9 +295,132 @@ test("executor: definition returns empty → unresolved", async () => {
     client: mockClient,
     nodeLocator: locator,
     applyUpgrades: async () => {},
+    // Warm-up retry (issue #1933) is exercised by its own tests below;
+    // this test asserts the definitive-empty path.
+    warmupRetryDelayMs: 0,
   });
 
   assert.equal(result.upgraded, 0);
+  assert.equal(result.unresolved, 1);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Warm-up retry (issue #1933): tsserver answers pre-project-load definition
+// requests with [] instead of an error. An empty result before the server
+// has proven warm is retried once; the retry's answer is final.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("executor: warm-up retry — empty first answer retried once, retry result upgrades", async () => {
+  const requests = planLspUpgrades(
+    [makeCallSite("src/a.ts", "target", 0, "a.caller")],
+    { maxRequests: 100 },
+  ).requests;
+
+  // Stateful mock: first definition call returns [], second returns the
+  // real location (project finished loading between the two).
+  let calls = 0;
+  const client = {
+    definition: async () => {
+      calls += 1;
+      if (calls === 1) return { ok: true as const, locations: [] };
+      return {
+        ok: true as const,
+        locations: [{
+          uri: "file:///src/target.ts",
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+        }],
+      };
+    },
+    didOpen: () => {},
+    dispose: async () => {},
+  } as unknown as LspClient;
+
+  const applied: EdgeUpgrade[] = [];
+  const result = await executeLspResolution(requests, {
+    client,
+    nodeLocator: () => "mod.target",
+    applyUpgrades: async (upgrades) => {
+      applied.push(...upgrades);
+    },
+    warmupRetryDelayMs: 5,
+  });
+
+  assert.equal(calls, 2, "empty pre-warm answer must be retried exactly once");
+  assert.equal(result.upgraded, 1, "the retry's location produces the upgrade");
+  assert.equal(result.unresolved, 0);
+  assert.equal(applied.length, 1);
+});
+
+test("executor: warm-up retry — only ONE retry is paid; later empties are definitive", async () => {
+  const requests = planLspUpgrades(
+    [
+      makeCallSite("src/a.ts", "missing1", 0, "a.caller"),
+      makeCallSite("src/a.ts", "missing2", 10, "a.caller"),
+    ],
+    { maxRequests: 100 },
+  ).requests;
+
+  let calls = 0;
+  const client = {
+    definition: async () => {
+      calls += 1;
+      return { ok: true as const, locations: [] };
+    },
+    didOpen: () => {},
+    dispose: async () => {},
+  } as unknown as LspClient;
+
+  const result = await executeLspResolution(requests, {
+    client,
+    nodeLocator: () => null,
+    applyUpgrades: async () => {},
+    warmupRetryDelayMs: 5,
+  });
+
+  // Site 1: initial + one warm-up retry = 2 calls; the server is then
+  // considered warm. Site 2: exactly 1 call, its empty answer is final.
+  assert.equal(calls, 3, "one warm-up retry total, not one per site");
+  assert.equal(result.upgraded, 0);
+  assert.equal(result.unresolved, 2);
+});
+
+test("executor: warm-up retry — a non-empty FIRST answer marks the server warm (no retry paid)", async () => {
+  const requests = planLspUpgrades(
+    [
+      makeCallSite("src/a.ts", "target", 0, "a.caller"),
+      makeCallSite("src/a.ts", "missing", 10, "a.caller"),
+    ],
+    { maxRequests: 100 },
+  ).requests;
+
+  let calls = 0;
+  const client = {
+    definition: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: true as const,
+          locations: [{
+            uri: "file:///src/target.ts",
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+          }],
+        };
+      }
+      return { ok: true as const, locations: [] };
+    },
+    didOpen: () => {},
+    dispose: async () => {},
+  } as unknown as LspClient;
+
+  const result = await executeLspResolution(requests, {
+    client,
+    nodeLocator: () => "mod.target",
+    applyUpgrades: async () => {},
+    warmupRetryDelayMs: 5,
+  });
+
+  assert.equal(calls, 2, "warm server: the second site's empty answer is definitive, no retry");
+  assert.equal(result.upgraded, 1);
   assert.equal(result.unresolved, 1);
 });
 
@@ -488,6 +611,8 @@ test("executor: workspaceRoot resolves repo-relative paths to absolute URIs", as
     nodeLocator: () => null,
     applyUpgrades: async () => {},
     workspaceRoot: "/workspace",
+    // This test asserts URI shapes, not warm-up behavior (issue #1933).
+    warmupRetryDelayMs: 0,
   });
 
   assert.equal(didOpenUris.length, 1);

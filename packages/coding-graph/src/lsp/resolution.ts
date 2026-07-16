@@ -210,6 +210,15 @@ export interface ResolveOptions {
   readonly client: LspClient;
   readonly nodeLocator: NodeLocator;
   /**
+   * Warm-up retry delay in ms (issue #1933). Language servers (tsserver
+   * in particular) load projects ASYNCHRONOUSLY after `didOpen`; a
+   * definition request that arrives too early returns an EMPTY location
+   * array — indistinguishable from "definitely no definition". Until the
+   * server has proven warm (any non-empty response), an empty result is
+   * retried ONCE after this delay. Default 2500. Set 0 to disable.
+   */
+  readonly warmupRetryDelayMs?: number;
+  /**
    * Apply a batch of edge upgrades atomically. Called once per file batch.
    * MUST be transactional — if it throws, zero upgrades from this batch
    * persist (rule 25). Each upgrade is an edge `{srcQualifiedName,
@@ -297,6 +306,14 @@ export async function executeLspResolution(
   let unresolved = 0;
   let degradation: LspDegradation | undefined;
 
+  // Warm-up tracking (issue #1933): false until the server returns its
+  // first NON-EMPTY definition, or until one warm-up retry has been paid.
+  // tsserver answers pre-project-load requests with [] instead of an
+  // error, so without the retry every first-run resolution silently
+  // reports unresolved and Phase B never upgrades anything.
+  let serverWarm = false;
+  const warmupRetryDelayMs = options.warmupRetryDelayMs ?? 2_500;
+
   for (const [filePath, batchReqs] of byFile) {
     // Send all definition requests for this file, collecting upgrades.
     const upgrades: EdgeUpgrade[] = [];
@@ -327,10 +344,27 @@ export async function executeLspResolution(
         break;
       }
 
-      const defResult = await client.definition({
+      let defResult = await client.definition({
         textDocument: { uri: filePathToUri(req.filePath, options.workspaceRoot) },
         position: req.position,
       });
+
+      // Warm-up retry (issue #1933): an empty result from a not-yet-warm
+      // server is indeterminate, not definitive. Pay ONE bounded delay,
+      // re-ask, and treat the server as warm from then on — whatever the
+      // retry returns is the real answer.
+      if (defResult.ok && defResult.locations.length === 0 && !serverWarm && warmupRetryDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, warmupRetryDelayMs));
+        serverWarm = true;
+        const retryResult = await client.definition({
+          textDocument: { uri: filePathToUri(req.filePath, options.workspaceRoot) },
+          position: req.position,
+        });
+        defResult = retryResult;
+      }
+      if (defResult.ok && defResult.locations.length > 0) {
+        serverWarm = true;
+      }
 
       if (!defResult.ok) {
         // Distinguish "server problem" (stop the whole pass) from
