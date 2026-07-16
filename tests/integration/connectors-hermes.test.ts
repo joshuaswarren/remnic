@@ -3839,6 +3839,11 @@ test("removeConnector hermes cleans the shim written under a since-changed HERME
         });
         const shimPath = path.join(customHermesHome, "plugins", "remnic", "__init__.py");
         assert.ok(fs.existsSync(shimPath), "sanity: shim exists under the custom HERMES_HOME");
+        const customConfigPath = path.join(customHermesHome, "config.yaml");
+        assert.ok(
+          fs.readFileSync(customConfigPath, "utf-8").includes("remnic:"),
+          "sanity: install wrote the remnic: block under the custom HERMES_HOME",
+        );
 
         // Remove with HERMES_HOME unset — the persisted pluginShimPath must
         // still direct cleanup at the file written during install.
@@ -3849,6 +3854,10 @@ test("removeConnector hermes cleans the shim written under a since-changed HERME
         assert.ok(
           !fs.existsSync(shimPath),
           "shim written under the install-time HERMES_HOME must be removed even after HERMES_HOME changes",
+        );
+        assert.ok(
+          !fs.readFileSync(customConfigPath, "utf-8").includes("remnic:"),
+          "the remnic: block written under the install-time HERMES_HOME must be cleaned via the persisted config path",
         );
       });
       resolve();
