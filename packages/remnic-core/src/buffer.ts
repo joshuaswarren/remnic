@@ -206,26 +206,38 @@ export class SmartBuffer {
     if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return;
 
     const insertionOrder = new Map(keys.map((key, index) => [key, index]));
-    const removable = keys
-      .filter((key) => key !== "default" && !retainKeys.includes(key))
-      .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
-      .sort((left, right) => {
-        const leftAt = this.entryActivityAt(entries[left] ?? {
-          turns: [],
-          lastExtractionAt: null,
-          extractionCount: 0,
-        });
-        const rightAt = this.entryActivityAt(entries[right] ?? {
-          turns: [],
-          lastExtractionAt: null,
-          extractionCount: 0,
-        });
-        if (leftAt !== rightAt) return leftAt - rightAt;
-        return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
+    const byOldestActivity = (left: string, right: string): number => {
+      const leftAt = this.entryActivityAt(entries[left] ?? {
+        turns: [],
+        lastExtractionAt: null,
+        extractionCount: 0,
       });
+      const rightAt = this.entryActivityAt(entries[right] ?? {
+        turns: [],
+        lastExtractionAt: null,
+        extractionCount: 0,
+      });
+      if (leftAt !== rightAt) return leftAt - rightAt;
+      return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
+    };
+    const candidates = keys.filter((key) => key !== "default" && !retainKeys.includes(key));
+    const emptyRemovable = candidates
+      .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
+      .sort(byOldestActivity);
 
     const removableCount = Math.max(0, keys.length - MAX_BUFFER_ENTRY_COUNT);
-    const evicted = removable.slice(0, removableCount);
+    let evicted = emptyRemovable.slice(0, removableCount);
+    if (evicted.length < removableCount) {
+      // Retained failed extractions (#1908 retry retention) keep their turns in
+      // the buffer, so empty entries alone may not bring the map back under the
+      // cap during a provider outage. The cap is the documented bound — evict
+      // the oldest NON-empty sessions too rather than growing unboundedly
+      // (codex review).
+      const nonEmptyRemovable = candidates
+        .filter((key) => (entries[key]?.turns.length ?? 0) > 0)
+        .sort(byOldestActivity);
+      evicted = evicted.concat(nonEmptyRemovable.slice(0, removableCount - evicted.length));
+    }
     for (const key of evicted) {
       delete entries[key];
     }

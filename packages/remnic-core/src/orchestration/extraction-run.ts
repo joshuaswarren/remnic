@@ -738,13 +738,30 @@ export class ExtractionRunCoordinator {
         meta ??= await storage.loadMeta();
         this.hydrateRetryStateFromMeta(selfNamespace, meta);
         const nowMs = Date.now();
+        let suppressReason: "provider_circuit_open" | "extraction_backoff" | null = null;
         if (this.isProviderBreakerOpen(nowMs)) {
-          return { status: "skipped", reason: "provider_circuit_open", persistedCount: 0, durableOutputCount: 0 };
+          suppressReason = "provider_circuit_open";
+        } else {
+          const st = this.extractionRetryState.get(selfNamespace)?.get(extractionFingerprint);
+          if (st && nowMs < st.nextEligibleAtMs) suppressReason = "extraction_backoff";
         }
-        const nsMap = this.extractionRetryState.get(selfNamespace);
-        const st = nsMap?.get(extractionFingerprint);
-        if (st && nowMs < st.nextEligibleAtMs) {
-          return { status: "skipped", reason: "extraction_backoff", persistedCount: 0, durableOutputCount: 0 };
+        if (suppressReason) {
+          // Parity with the other skip paths: passive correction capture is
+          // local (no provider call) and must not be delayed by a provider
+          // cooldown — "stop calling me X" style turns should register during
+          // a 30-minute breaker window too (codex review). Fail-open.
+          try {
+            await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+              sessionKey,
+              principal,
+              namespace: selfNamespace,
+              bufferKey,
+              isLiveSession: clearBufferAfterExtraction,
+            });
+          } catch (captureErr) {
+            log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
+          }
+          return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
         // Fail-open: a gate error must never block extraction.

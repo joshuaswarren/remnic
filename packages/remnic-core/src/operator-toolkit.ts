@@ -1286,14 +1286,17 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     const eligibleAt = Date.parse(entry.nextEligibleAt);
     return Number.isFinite(eligibleAt) && eligibleAt > nowMs;
   });
-  // Transient (provider_retryable) parked entries imply the in-memory circuit
-  // breaker is likely open in the daemon (it opens after N consecutive
-  // provider failures, each of which parks a fingerprint). The breaker itself
-  // is per-process (daemon-only), so doctor infers from this durable signal.
+  // The in-memory breaker opens only after extractionBreakerFailureThreshold
+  // CONSECUTIVE provider failures, each of which parks a fingerprint — so
+  // doctor infers "likely open" only when the parked transient count reaches
+  // that threshold. A single parked fingerprint is ordinary backoff, not a
+  // suspended-extraction signal (cursor review: don't overclaim). The breaker
+  // itself is per-process (daemon-only), hence the durable-signal inference.
   const providerRetryableParked = parkedFingerprints.filter(
     (entry) => entry.lastFailureClass === "provider_retryable",
   );
-  const breakerLikelyOpen = providerRetryableParked.length > 0;
+  const breakerLikelyOpen =
+    providerRetryableParked.length >= Math.max(1, config.extractionBreakerFailureThreshold);
   const resilienceStatus: "ok" | "warn" | "error" =
     authConfigFailures.length > 0 ? "error" : parkedFingerprints.length > 0 ? "warn" : "ok";
   checks.push({
