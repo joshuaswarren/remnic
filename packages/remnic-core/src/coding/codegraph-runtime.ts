@@ -117,10 +117,11 @@ export interface CodegraphStore {
   ): number;
   /** Callee names already CALLS-linked from a caller with a given provenance (issue #1917). */
   resolvedCalleeNames?(srcQualifiedName: string, provenance: string, filePath?: string): string[];
-  /** Current lsp CALLS edges owned by a caller symbol in a file (issue #1917). */
-  lspCallEdgesForCaller?(
+  /** Current CALLS edges of a provenance owned by a caller symbol in a file (issue #1917). */
+  callEdgesForCaller?(
     srcQualifiedName: string,
     filePath: string,
+    provenance: string,
   ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }>;
 }
 
@@ -689,13 +690,18 @@ export async function runCodegraphLspResolution(params: {
   if (engine === null) {
     return { ok: false, code: "engine_unavailable", message: "createCodingGraphEngine is not available." };
   }
+  // Resolve to an absolute root up front: the executor builds file://
+  // URIs by joining workspaceRoot, and a relative root (".") would yield
+  // malformed URIs like file://src/foo.ts (review thread). The reindex
+  // path resolves relative cwd values the same way.
+  const repoRoot = path.resolve(params.repoRoot);
   const gitFactory = mod.defaultCodingGitInvoker as
     | (() => { listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string } })
     | undefined;
   if (typeof gitFactory !== "function") {
     return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
   }
-  const tracked = gitFactory().listTrackedFiles(params.repoRoot);
+  const tracked = gitFactory().listTrackedFiles(repoRoot);
   if (!("paths" in tracked)) {
     return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
   }
@@ -745,9 +751,9 @@ export async function runCodegraphLspResolution(params: {
   // empty-set reconcile below.
   const parsedFiles = new Set<string>();
   for (const rel of tracked.paths) {
-    const absPath = path.join(params.repoRoot, rel);
+    const absPath = path.join(repoRoot, rel);
     // Same symlink containment the reindex path enforces (rule 3).
-    if (await lspPathEscapesRoot(params.repoRoot, absPath)) continue;
+    if (await lspPathEscapesRoot(repoRoot, absPath)) continue;
     let content: string;
     try {
       content = await readFile(absPath, "utf-8");
@@ -834,21 +840,28 @@ export async function runCodegraphLspResolution(params: {
   // stale edges in the same file without dropping preserved ones. When
   // the store predates lspCallEdgesForCaller, preservation is impossible,
   // so callers below fall back to skipping reconcile for such files.
-  const canPreserve = typeof params.store.lspCallEdgesForCaller === "function";
+  const canPreserve = typeof params.store.callEdgesForCaller === "function";
   const preservedEdgesForFile = (
     rel: string,
   ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> => {
     const srcs = filteredSrcByFile.get(rel);
     if (srcs === undefined || !canPreserve) return [];
     const preserved: Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> = [];
-    for (const [src, calleeNames] of srcs) {
-      for (const edge of params.store.lspCallEdgesForCaller!(src, rel)) {
-        // Preserve ONLY edges whose destination NAME matches a filtered
-        // site's callee — preserving every lsp edge of the caller would
-        // re-assert edges for calls that were REMOVED from the source
-        // (review thread: a deleted member call's edge would never
-        // retire while any bare call in the function stays filtered).
-        if (!calleeNames.has(edge.dstName)) continue;
+    for (const [src] of srcs) {
+      // Preserve ONLY lsp edges that DUPLICATE a current heuristic
+      // resolution (same src, same dst) — the covering edge a filtered
+      // bare call still asserts today. A dstName-only match would also
+      // re-assert a REMOVED member call's edge when a same-named bare
+      // call stays filtered (review thread); requiring the exact
+      // heuristic dst retires those while keeping the live coverage.
+      // Cost: an lsp edge MORE precise than its heuristic twin (rare
+      // re-export chains) is retired too — conservative, the heuristic
+      // edge still represents the call.
+      const heuristicDsts = new Set(
+        params.store.callEdgesForCaller!(src, rel, "heuristic").map((e) => e.dstQualifiedName),
+      );
+      for (const edge of params.store.callEdgesForCaller!(src, rel, "lsp")) {
+        if (!heuristicDsts.has(edge.dstQualifiedName)) continue;
         preserved.push({
           srcQualifiedName: edge.srcQualifiedName,
           dstQualifiedName: edge.dstQualifiedName,
@@ -873,22 +886,26 @@ export async function runCodegraphLspResolution(params: {
   // Group by language; each group gets its own server connection. The
   // budget is shared across groups (maxRequestsPerRun is per RUN).
   const byLanguage = new Map<string, GatheredLspSite[]>();
+  // Caller symbol -> file, for attributing apply-time skips to the file
+  // batch they belong to (the apply callback sees upgrades, not files).
+  const srcToFile = new Map<string, string>();
   for (const site of sites) {
     const group = byLanguage.get(site.language);
     if (group === undefined) byLanguage.set(site.language, [site]);
     else group.push(site);
+    srcToFile.set(site.srcQualifiedName, site.filePath);
   }
 
   const configServers = params.lspConfig.servers ?? {};
   const timeoutMs = params.lspConfig.timeoutMs ?? 3000;
   let remainingBudget = Math.max(1, Math.floor(params.lspConfig.maxRequestsPerRun ?? 500));
-  const rootUri = pathToFileURL(params.repoRoot).href;
+  const rootUri = pathToFileURL(repoRoot).href;
   // Cross-file definition targets need their bytes for position→offset
   // conversion (review thread: without resolveContent, cross-file
   // upgrades — the point of Phase B — stay unresolved).
   const resolveContent = (filePath: string): string | null => {
-    const absPath = path.join(params.repoRoot, filePath);
-    if (lspPathEscapesRootSync(params.repoRoot, absPath)) return null;
+    const absPath = path.join(repoRoot, filePath);
+    if (lspPathEscapesRootSync(repoRoot, absPath)) return null;
     try {
       return readFileSync(absPath, "utf-8");
     } catch {
@@ -954,17 +971,18 @@ export async function runCodegraphLspResolution(params: {
       continue;
     }
     const client = connected.client;
-    // Per-file-batch skip tracking: the executor applies then reconciles
-    // each file batch sequentially, so a skip observed in applyUpgrades
-    // must (a) not count as an upgrade and (b) suppress reconciliation
-    // for that batch — a skipped edge was never re-asserted, and retiring
-    // it would drop a still-valid prior edge (review thread).
+    // Skip tracking keyed by FILE (via the upgrades' caller symbols):
+    // a skip must (a) not count as an upgrade and (b) suppress
+    // reconciliation for exactly the file batch that observed it — a
+    // boolean flag went stale whenever the executor skipped a batch's
+    // reconcile (non-exhaustive) or never called apply (zero upgrades)
+    // (review threads).
     let skippedEdgesTotal = 0;
-    let lastApplySkipped = false;
+    const skippedFiles = new Set<string>();
     try {
       const result = await mod.executeLspResolution(plan.requests, {
         client,
-        workspaceRoot: params.repoRoot,
+        workspaceRoot: repoRoot,
         resolveContent,
         nodeLocator: (filePath: string, byteOffset: number) =>
           typeof params.store.findNodeBySpan === "function" ? params.store.findNodeBySpan(filePath, byteOffset) : null,
@@ -972,10 +990,6 @@ export async function runCodegraphLspResolution(params: {
           if (typeof params.store.upsertEdges !== "function") {
             throw new Error("store.upsertEdges is not available");
           }
-          // Each apply call starts a NEW file batch — reset the skip
-          // marker so a prior batch's skips cannot leak into this one
-          // (review thread: stale flag suppressed later files' reconcile).
-          lastApplySkipped = false;
           const result = await params.store.upsertEdges(upgrades);
           // Throw ONLY when nothing persisted (ok:false) — the executor's
           // transactional contract holds because no state changed. A
@@ -999,7 +1013,10 @@ export async function runCodegraphLspResolution(params: {
           }
           if (result.skipped > 0) {
             skippedEdgesTotal += result.skipped;
-            lastApplySkipped = true;
+            for (const upgrade of upgrades) {
+              const file = srcToFile.get(upgrade.srcQualifiedName);
+              if (file !== undefined) skippedFiles.add(file);
+            }
             degradations.push({
               language,
               code: "edges_skipped",
@@ -1011,18 +1028,12 @@ export async function runCodegraphLspResolution(params: {
           filePath: string,
           assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
         ) => {
-          // Consume the per-batch skip marker regardless of the decision
-          // below — reconcile is the last step of a file batch, and a
-          // stale marker must not suppress the NEXT file's reconcile
-          // (zero-upgrade batches never call applyUpgrades).
-          const batchHadSkips = lastApplySkipped;
-          lastApplySkipped = false;
           if (typeof params.store.reconcileLspEdges !== "function") return;
           if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
-          // This file batch had skipped writes — its asserted set is
+          // This file's batch had skipped writes — its asserted set is
           // incomplete, so reconciling would retire edges that were never
           // re-asserted (see skip tracking above).
-          if (batchHadSkips) return;
+          if (skippedFiles.has(filePath)) return;
           // Heuristic-filtered sites were NOT re-queried: their current
           // lsp edges are appended to the asserted set so they survive
           // while stale edges for RE-QUERIED sites still get retired.

@@ -2993,15 +2993,18 @@ export class GraphStore {
   }
 
   /**
-   * Current lsp-provenance CALLS edges owned by a caller symbol in a file
-   * (#1923 review thread). The LSP pass appends these to the asserted set
-   * for call sites it deliberately did NOT re-query (Phase-A-resolved
-   * sites), so reconciliation can retire genuinely stale edges in the
-   * same file without dropping the preserved ones.
+   * Current CALLS edges of a given provenance owned by a caller symbol in
+   * a file (#1923 review threads). The LSP pass uses this two ways:
+   * provenance "lsp" lists a filtered caller's existing lsp edges, and
+   * provenance "heuristic" lists its current Phase-A resolutions — an lsp
+   * edge is preserved at reconcile time only when it duplicates a current
+   * heuristic resolution (same dst), so removed member calls' edges retire
+   * while a filtered bare call's covering edge survives.
    */
-  lspCallEdgesForCaller(
+  callEdgesForCaller(
     srcQualifiedName: string,
     filePath: string,
+    provenance: string,
   ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }> {
     if (this.closed) return [];
     try {
@@ -3012,9 +3015,9 @@ export class GraphStore {
               JOIN nodes sn ON e.src = sn.id
               JOIN files f ON sn.file_id = f.id
               JOIN nodes dn ON e.dst = dn.id
-              WHERE sn.qualified_name = ? AND f.path = ? AND e.provenance = 'lsp' AND e.type = 'CALLS'`,
+              WHERE sn.qualified_name = ? AND f.path = ? AND e.provenance = ? AND e.type = 'CALLS'`,
           )
-          .all(srcQualifiedName, filePath),
+          .all(srcQualifiedName, filePath, provenance),
         ["src_q", "dst_q", "dst_n", "type"],
       );
       return rows.map((r) => ({
