@@ -290,69 +290,63 @@ async function executePlanTrials(
     return;
   }
 
-  const results: Array<TaskResult | undefined> = new Array(trials.length);
-  const completed: boolean[] = new Array(trials.length).fill(false);
-  let nextTrialIndex = 0;
-  let terminalTrialIndex = Number.POSITIVE_INFINITY;
-  let terminalError: unknown;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      if (terminalError !== undefined) {
-        return;
-      }
-      const trialIndex = nextTrialIndex;
-      nextTrialIndex += 1;
-      if (trialIndex >= trials.length) {
-        return;
-      }
-
-      try {
-        results[trialIndex] = await executeTrialWithFailure(
+  for (
+    let batchStart = 0;
+    batchStart < trials.length;
+    batchStart += options.trialConcurrency
+  ) {
+    const batch = trials.slice(
+      batchStart,
+      batchStart + options.trialConcurrency,
+    );
+    const settled = await Promise.allSettled(
+      batch.map((trial) =>
+        executeTrialWithFailure(
           ctx,
-          trials[trialIndex]!,
+          trial,
           options.planIndex,
           options.answerSupportGate,
-        );
-      } catch (error) {
-        const blocked = findBenchmarkRunBlockedError(error);
-        if (!blocked) {
-          throw error;
-        }
-        if (trialIndex < terminalTrialIndex) {
-          terminalTrialIndex = trialIndex;
-          terminalError = blocked;
-        }
-        return;
-      }
-      completed[trialIndex] = true;
-    }
-  };
+        ),
+      ),
+    );
 
-  const workerCount = Math.min(options.trialConcurrency, trials.length);
-  const settled = await Promise.allSettled(
-    Array.from({ length: workerCount }, () => worker()),
-  );
-  const rejected = settled.find(
-    (result): result is PromiseRejectedResult => result.status === "rejected",
-  );
-  if (rejected) {
-    throw rejected.reason;
-  }
-  const emitLimit = terminalError === undefined
-    ? trials.length
-    : terminalTrialIndex;
-  for (let trialIndex = 0; trialIndex < emitLimit; trialIndex += 1) {
-    const result = results[trialIndex];
-    if (!completed[trialIndex] || !result) {
-      throw new Error(
-        `PublishedBenchmarkHarness: concurrent trial ${trialIndex} did not settle before canonical emission.`,
-      );
+    const unexpectedRejection = settled.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected" &&
+        findBenchmarkRunBlockedError(result.reason) === undefined,
+    );
+    if (unexpectedRejection) {
+      throw unexpectedRejection.reason;
     }
-    appendCompletedTask(ctx, options.tasks, result);
-  }
-  if (terminalError !== undefined) {
-    throw terminalError;
+
+    const terminalOffset = settled.findIndex(
+      (result) =>
+        result.status === "rejected" &&
+        findBenchmarkRunBlockedError(result.reason) !== undefined,
+    );
+    const emitLimit = terminalOffset < 0 ? settled.length : terminalOffset;
+    for (let offset = 0; offset < emitLimit; offset += 1) {
+      const result = settled[offset];
+      if (result?.status !== "fulfilled") {
+        throw new Error(
+          `PublishedBenchmarkHarness: concurrent trial ${batchStart + offset} did not settle before canonical emission.`,
+        );
+      }
+      appendCompletedTask(ctx, options.tasks, result.value);
+    }
+
+    if (terminalOffset >= 0) {
+      const terminalResult = settled[terminalOffset];
+      const terminalError = terminalResult?.status === "rejected"
+        ? findBenchmarkRunBlockedError(terminalResult.reason)
+        : undefined;
+      if (!terminalError) {
+        throw new Error(
+          `PublishedBenchmarkHarness: concurrent trial ${batchStart + terminalOffset} lost its terminal error before canonical emission.`,
+        );
+      }
+      throw terminalError;
+    }
   }
 }
 

@@ -716,6 +716,84 @@ test("runPublishedHarness stops concurrent dequeue on a wrapped terminal error",
   );
 });
 
+test("runPublishedHarness does not launch a new wave while an earlier trial can still terminate the run", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  let pendingStarted = 0;
+  let releasePending!: () => void;
+  const pendingTogether = new Promise<void>((resolve) => {
+    releasePending = resolve;
+  });
+
+  system.responder.respond = async (question: string) => {
+    calls.push({ kind: "respond", question });
+    const taskQuestion = question.split("\n", 1)[0] ?? "";
+    if (taskQuestion === "Q1") {
+      return {
+        text: "answer:Q1",
+        tokens: { input: 1, output: 2 },
+        latencyMs: 1,
+        model: "smoke-responder",
+      };
+    }
+    if (taskQuestion === "Q4") {
+      throw new Error("Q4 must not start before the first wave settles");
+    }
+
+    pendingStarted += 1;
+    if (pendingStarted === 2) {
+      releasePending();
+    }
+    await pendingTogether;
+    if (taskQuestion === "Q2") {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "Q2 discovered a terminal accounting state",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return {
+      text: `answer:${taskQuestion}`,
+      tokens: { input: 1, output: 2 },
+      latencyMs: 1,
+      model: "smoke-responder",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        benchmarkOptions: { trialConcurrency: 3 },
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired,
+  );
+
+  assert.deepEqual(completedTaskIds, ["t1"]);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0])
+      .sort(),
+    ["Q1", "Q2", "Q3"],
+  );
+});
+
 test("runPublishedHarness emits only the prefix before the earliest of two concurrent terminal errors", async () => {
   const { system, calls } = makeFakeSystem();
   const completedTaskIds: string[] = [];
