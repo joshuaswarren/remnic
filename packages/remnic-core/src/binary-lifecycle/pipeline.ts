@@ -18,6 +18,21 @@ import type {
 import type { BinaryStorageBackend } from "./backend.js";
 import { readManifest, writeManifest } from "./manifest.js";
 import { scanForBinaries } from "./scanner.js";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+
+/**
+ * True when `mdPath` is an active recall-corpus memory file under `memoryDir`
+ * (a top-level RECALL_FALLBACK_DIRS category), so a redirect rewrite of it must
+ * bump the corpus sentinel to self-heal a warm hot-memories cache (#1902).
+ * entities/, artifacts/, and other non-recall paths need no bump.
+ */
+function isRecallCorpusMarkdown(mdPath: string, memoryDir: string): boolean {
+  const rel = path.relative(memoryDir, mdPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const top = rel.split(path.sep)[0];
+  return (RECALL_FALLBACK_DIRS as readonly string[]).includes(top);
+}
 
 /** Minimal logger interface so we don't depend on the full logger module. */
 interface PipelineLogger {
@@ -305,6 +320,13 @@ async function stageRedirect(
     for (const update of updates) {
       try {
         await writeMarkdownFile(update.mdPath, update.content);
+        // The redirect rewrote an on-disk memory file out-of-band (not through a
+        // StorageManager mutation). Bump the corpus sentinel per write so a warm
+        // hot-memories cache rescans — mid-batch too, never serving pre-redirect
+        // content (#1902). Only recall-corpus files affect that cache.
+        if (isRecallCorpusMarkdown(update.mdPath, memoryDir)) {
+          bumpMemoryCorpusVersionForDir(memoryDir);
+        }
       } catch (err) {
         writeFailCount++;
         const msg = `redirect write failed for ${update.mdPath}: ${err instanceof Error ? err.message : String(err)}`;

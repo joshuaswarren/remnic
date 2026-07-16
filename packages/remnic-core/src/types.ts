@@ -1027,6 +1027,33 @@ export interface PluginConfig {
    * once the benchmark shows precision tie-or-win.
    */
   recallMemoryWorthFilterEnabled: boolean;
+  /**
+   * Serve `StorageManager.readAllMemories()` from a version-keyed in-process
+   * cache of the full parsed corpus (issue #1902). Default true. When on, a
+   * scan-once-then-serve fast path eliminates the repeated full-corpus disk
+   * scans that dominate post-write recall latency on large collections
+   * (~99K files); coherence is preserved by the on-disk
+   * `.memory-corpus-version.log` sentinel (distinct from `.memory-status`,
+   * which is kept separate so plain creates don't invalidate the entity cache)
+   * and patch-on-write updates. Tradeoff: the cache holds
+   * one full-corpus entry per baseDir (hundreds of MB at ~99K files, already
+   * resident in the OS page cache). Set false to force disk scans on
+   * memory-constrained hosts — behavior then matches the pre-#1902 pure
+   * disk-scan + in-flight-dedup path exactly. Version invalidation is the
+   * primary correctness mechanism; `hotMemoriesCacheTtlMs` is a bounded safety
+   * net for external (user/git/editor) edits that bypass the sentinel.
+   */
+  hotMemoriesCacheEnabled: boolean;
+  /**
+   * Max age (ms) a version-keyed hot-cache entry is served before a fresh disk
+   * scan (issue #1902). The version sentinel gives immediate coherence for
+   * writers that go through StorageManager or bumpMemoryCorpusVersionForDir, but
+   * direct filesystem edits (manual, git checkout, external tools) don't bump
+   * it — this TTL bounds how long such an edit can be stale. Default 60000 (60s).
+   * Set 0 to disable the TTL (version invalidation only; max perf for
+   * pure-daemon deployments with no external edits).
+   */
+  hotMemoriesCacheTtlMs: number;
   // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
   // provenance, faithfulness, corroboration, contradiction, feedback, recency,
   // and optional domain calibration into one [0,1] trust score applied as a

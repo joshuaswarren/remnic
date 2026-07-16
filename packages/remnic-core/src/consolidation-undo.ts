@@ -25,6 +25,7 @@ import { mkdir, writeFile, access, realpath, lstat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import type { StorageManager } from "./storage.js";
 import type { VersioningConfig } from "./page-versioning.js";
+import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { getVersion } from "./page-versioning.js";
 
 /**
@@ -646,6 +647,13 @@ export async function runConsolidationUndo(options: {
         // write fails with EEXIST instead of silently overwriting the new
         // file (PR #637 round-11 review, codex P1).
         await writeFile(p.sourcePath, p.content, { encoding: "utf-8", flag: "wx" });
+        // Restore writes an active memory file back out-of-band (direct wx write,
+        // not a StorageManager mutation). Bump the corpus sentinel per successful
+        // restore so a warm hot-memories cache rescans — a later restore failure
+        // returns before archiveMemory() runs, so without this the already-written
+        // restores would stay invisible to recall until an unrelated mutation or
+        // restart (esp. with hotMemoriesCacheTtlMs: 0). Issue #1902, Codex Medium.
+        bumpMemoryCorpusVersionForDir(memoryDir);
         result.restores.push({
           entry: p.entry,
           sourcePath: p.sourcePath,

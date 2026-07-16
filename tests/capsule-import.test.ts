@@ -67,8 +67,15 @@ async function listMemoryFiles(root: string): Promise<string[]> {
     for (const e of entries) {
       const next = path.join(dir, e.name);
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
-      if (e.isDirectory()) await walk(next, rel);
-      else if (e.isFile()) out.push(rel);
+      if (e.isDirectory()) {
+        // Skip the state/ metadata dir (version sentinels, buffers) — it holds
+        // no memory records, and out-of-band writers now bump a corpus-version
+        // sentinel there for cache coherence (issue #1902).
+        if (prefix === "" && e.name === "state") continue;
+        await walk(next, rel);
+      } else if (e.isFile()) {
+        out.push(rel);
+      }
     }
   }
   await walk(root, "");

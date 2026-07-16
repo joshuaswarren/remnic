@@ -1334,6 +1334,17 @@ export class Orchestrator {
 
   constructor(config: PluginConfig) {
     this.config = config;
+    // Thread the hot-memories cache escape hatch (issue #1902) to the storage
+    // layer BEFORE any StorageManager is constructed below, so every instance
+    // — including the ephemeral ones recall sub-stages build over the same dir
+    // — honors the operator's setting. Destructured (not `config.<flag>`) so
+    // this single access-layer read stays off the scattered-flag ratchet.
+    const { hotMemoriesCacheEnabled } = config;
+    StorageManager.setHotMemoriesCacheDefault(
+      config.memoryDir,
+      hotMemoriesCacheEnabled,
+      config.hotMemoriesCacheTtlMs,
+    );
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
@@ -1490,7 +1501,20 @@ export class Orchestrator {
       tierMigrationStatus: this.tierMigrationStatus,
       getUtilityRuntimeValues: () => this.utilityRuntimeValues,
       getCompounding: () => this.compounding,
-      createColdStorage: (parentDir) => new StorageManager(parentDir),
+      createColdStorage: (parentDir) => {
+        // Register parentDir's gate AND TTL in the per-dir maps (issue #1902,
+        // Codex Medium) before constructing, mirroring the namespace-child fix.
+        // The constructor override only sets this manager's gate; its TTL is
+        // resolved via the per-dir map, so an unregistered cold root would fall
+        // back to the (first-writer) process-wide TTL and could inherit another
+        // orchestrator's value.
+        StorageManager.setHotMemoriesCacheDefault(
+          parentDir,
+          config.hotMemoriesCacheEnabled,
+          config.hotMemoriesCacheTtlMs,
+        );
+        return new StorageManager(parentDir, config.entitySchemas, config.hotMemoriesCacheEnabled);
+      },
     });
     this.compressionGuidelineCoordinator = new CompressionGuidelineCoordinator({
       config,

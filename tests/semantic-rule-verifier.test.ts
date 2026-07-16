@@ -15,6 +15,7 @@ import {
 } from "../src/semantic-rule-promotion.js";
 import { searchVerifiedSemanticRules } from "../src/semantic-rule-verifier.js";
 import { StorageManager } from "../src/storage.js";
+import { setInFlightRead } from "../src/in-flight-reads.js";
 
 async function createSemanticRuleHarness() {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-semantic-rule-verify-"));
@@ -131,7 +132,7 @@ test("semantic rule promotion refreshes duplicate scan after acquiring the lock"
       sourceMemoryId,
     }
   );
-  (StorageManager as any).allMemoriesInFlight.set(path.resolve(memoryDir), Promise.resolve([sourceMemory]));
+  setInFlightRead(path.resolve(memoryDir), "", Promise.resolve([sourceMemory]));
 
   const promotion = await promoteSemanticRuleFromMemory({
     memoryDir,
