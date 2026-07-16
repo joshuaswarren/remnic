@@ -1,5 +1,6 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import { isSameLcmRow, lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import {
   gatherAcrossReadSessions,
   resolveLcmReadSessionIds,
@@ -252,19 +253,26 @@ async function collectGuidanceItems(
       searchWindowTokens,
     );
     const candidates = expanded.length > 0
-      ? expanded.map((message) => ({
-          id: `${result.session_id}:${message.turn_index}`,
-          sessionId: result.session_id,
-          turnIndex: message.turn_index,
-          role: message.role,
-          content: message.content,
-          ...(message.turn_index === result.turn_index &&
-          typeof result.score === "number"
-            ? { score: result.score }
-            : {}),
-        }))
+      ? expanded.map((message) => {
+          const matchesSearchHit = isSameLcmRow(
+            message,
+            result.session_id,
+            result,
+            result.session_id,
+          );
+          return {
+            ...lcmEvidenceIdentity(message, result.session_id),
+            sessionId: message.session_id ?? result.session_id,
+            turnIndex: message.turn_index,
+            role: message.role,
+            content: message.content,
+            ...(matchesSearchHit && typeof result.score === "number"
+              ? { score: result.score }
+              : {}),
+          };
+        })
       : [{
-          id: `${result.session_id}:${result.turn_index}`,
+          ...lcmEvidenceIdentity(result, result.session_id),
           sessionId: result.session_id,
           turnIndex: result.turn_index,
           role: result.role,
@@ -331,8 +339,8 @@ async function collectGuidanceScanItems(
   for (const message of messages) {
     if (!isGuidanceEvidence(message.content, options.query, intents, options.forceGeneric === true)) continue;
     items.push({
-      id: `${options.sessionId}:${message.turn_index}`,
-      sessionId: options.sessionId,
+      ...lcmEvidenceIdentity(message, options.sessionId),
+      sessionId: message.session_id ?? options.sessionId,
       turnIndex: message.turn_index,
       role: message.role,
       content: message.content,

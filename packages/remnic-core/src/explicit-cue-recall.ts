@@ -4,6 +4,10 @@ import {
   resolveLcmReadSessionIds,
 } from "./lcm-fallback-read.js";
 import { unifiedDedupeAndRank } from "./recall-pipeline-stages.js";
+import {
+  lcmArchiveRowId,
+  lcmEvidenceIdentity,
+} from "./lcm/evidence-identity.js";
 
 export interface ExplicitCueRecallEngine {
   expandContext(
@@ -11,7 +15,15 @@ export interface ExplicitCueRecallEngine {
     fromTurn: number,
     toTurn: number,
     maxTokens: number,
-  ): Promise<Array<{ turn_index: number; role: string; content: string }>>;
+  ): Promise<
+    Array<{
+      id?: number;
+      session_id?: string;
+      turn_index: number;
+      role: string;
+      content: string;
+    }>
+  >;
   getStats?(sessionId?: string): Promise<{
     totalMessages: number;
     maxTurnIndex?: number;
@@ -22,6 +34,7 @@ export interface ExplicitCueRecallEngine {
     sessionId?: string,
   ): Promise<
     Array<{
+      id?: number;
       turn_index: number;
       role: string;
       content: string;
@@ -61,6 +74,16 @@ export type ExplicitTurnReference = {
   number: number;
   includeDirectTurn: boolean;
 };
+
+interface ExplicitCueEvidenceItem {
+  id: string;
+  archiveRowId?: number;
+  sessionId: string;
+  turnIndex: number;
+  role: string;
+  content: string;
+  score?: number;
+}
 
 const DEFAULT_MAX_CHARS = 2_400;
 const DEFAULT_MAX_ITEM_CHARS = 1_200;
@@ -326,23 +349,17 @@ export async function buildExplicitCueRecallSection(
     return "";
   }
 
-  const evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-    score?: number;
-  }> = [];
+  const evidenceItems: ExplicitCueEvidenceItem[] = [];
   const seenTurns = new Set<string>();
 
   // #1505 codex P2: gather cue evidence across the ordered LCM read key set
   // (primary overlay → project/root fallbacks) into ONE shared accumulator
   // (`evidenceItems` / `seenTurns`), so a branch-scoped session's project/root
   // fallback cues are RECOVERED instead of being skipped by the old
-  // first-non-empty short-circuit. `seenTurns` dedupes across keys by
-  // `session_id`+`turn_index`; the budget is applied exactly once in the
-  // `buildEvidencePack` call below. `gatherAcrossReadSessions` isolates a
+  // first-non-empty short-circuit. `seenTurns` is the historical local name;
+  // its keys use archive-row identity when available and fall back to
+  // `session_id`+`turn_index` for legacy engines. The budget is applied exactly
+  // once in the `buildEvidencePack` call below. `gatherAcrossReadSessions` isolates a
   // per-key read failure (a corrupt/locked fallback index must not discard the
   // other keys' cues); single-key recall runs each collector directly, so a
   // failure propagates exactly as before.
@@ -510,13 +527,7 @@ async function collectTurnReferenceEvidence(options: {
   sessionId?: string;
   query: string;
   maxReferences: number;
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-  }>;
+  evidenceItems: ExplicitCueEvidenceItem[];
   seenTurns: Set<string>;
 }): Promise<void> {
   if (!options.sessionId) {
@@ -575,13 +586,7 @@ async function collectFocusedTranscriptCueEvidence(options: {
   engine: ExplicitCueRecallEngine;
   sessionId?: string;
   query: string;
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-  }>;
+  evidenceItems: ExplicitCueEvidenceItem[];
   seenTurns: Set<string>;
 }): Promise<void> {
   if (!options.sessionId || !options.engine.getStats) {
@@ -611,8 +616,8 @@ async function collectFocusedTranscriptCueEvidence(options: {
         continue;
       }
       appendEvidenceItem(options.evidenceItems, options.seenTurns, {
-        id: `${options.sessionId}:${message.turn_index}`,
-        sessionId: options.sessionId,
+        ...lcmEvidenceIdentity(message, options.sessionId),
+        sessionId: message.session_id ?? options.sessionId,
         turnIndex: message.turn_index,
         role: message.role,
         content: message.content,
@@ -772,13 +777,7 @@ async function collectContentLabelReferenceEvidence(options: {
   sessionId?: string;
   query: string;
   references: ExplicitTurnReference[];
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-  }>;
+  evidenceItems: ExplicitCueEvidenceItem[];
   seenTurns: Set<string>;
 }): Promise<Set<number>> {
   const resolved = new Set<number>();
@@ -818,7 +817,7 @@ async function collectContentLabelReferenceEvidence(options: {
       }
       if (expanded.length === 0) {
         appendEvidenceItem(options.evidenceItems, options.seenTurns, {
-          id: `${hit.session_id}:${hit.turn_index}`,
+          ...lcmEvidenceIdentity(hit, hit.session_id),
           sessionId: hit.session_id,
           turnIndex: hit.turn_index,
           role: hit.role,
@@ -845,6 +844,7 @@ async function searchReferenceContentLabels(
   sessionId?: string,
 ): Promise<
   Array<{
+    id?: number;
     turn_index: number;
     role: string;
     content: string;
@@ -855,6 +855,7 @@ async function searchReferenceContentLabels(
   const hits = new Map<
     string,
     {
+      id?: number;
       turn_index: number;
       role: string;
       content: string;
@@ -878,7 +879,8 @@ async function searchReferenceContentLabels(
         ) {
           continue;
         }
-        hits.set(`${result.session_id}:${result.turn_index}:${labelKind}`, {
+        hits.set(`${lcmEvidenceIdentity(result, result.session_id).id}:${labelKind}`, {
+          ...(typeof result.id === "number" ? { id: result.id } : {}),
           turn_index: result.turn_index,
           role: result.role,
           content: result.content,
@@ -1054,14 +1056,7 @@ async function collectLexicalCueEvidence(options: {
   includeBenchmarkAnchorCues?: boolean;
   includeContentLexicalCues?: boolean;
   includeStructuredPlanCues?: boolean;
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-    score?: number;
-  }>;
+  evidenceItems: ExplicitCueEvidenceItem[];
   seenTurns: Set<string>;
 }): Promise<void> {
   const cues = prioritizeLexicalCueSearchCues(
@@ -1096,7 +1091,7 @@ async function collectLexicalCueEvidence(options: {
       );
       if (expanded.length === 0) {
         appendEvidenceItem(options.evidenceItems, options.seenTurns, {
-          id: `${result.session_id}:${result.turn_index}`,
+          ...lcmEvidenceIdentity(result, result.session_id),
           sessionId: result.session_id,
           turnIndex: result.turn_index,
           role: result.role,
@@ -1107,7 +1102,7 @@ async function collectLexicalCueEvidence(options: {
       }
       if (exactHitFirst) {
         appendEvidenceItem(options.evidenceItems, options.seenTurns, {
-          id: `${result.session_id}:${result.turn_index}`,
+          ...lcmEvidenceIdentity(result, result.session_id),
           sessionId: result.session_id,
           turnIndex: result.turn_index,
           role: result.role,
@@ -1131,6 +1126,8 @@ interface LabeledTrajectoryStep {
   observation?: string;
   actionTurnIndex?: number;
   observationTurnIndex?: number;
+  actionArchiveRowId?: number;
+  observationArchiveRowId?: number;
 }
 
 interface TrajectoryBounds {
@@ -1187,7 +1184,12 @@ function hasTrajectoryAnalysisIntent(query: string): boolean {
 }
 
 function parseLabeledTrajectory(
-  messages: Array<{ turn_index: number; role: string; content: string }>,
+  messages: Array<{
+    id?: number;
+    turn_index: number;
+    role: string;
+    content: string;
+  }>,
 ): LabeledTrajectoryStep[] {
   const byStep = new Map<number, LabeledTrajectoryStep>();
 
@@ -1197,6 +1199,8 @@ function parseLabeledTrajectory(
       const step = getOrCreateTrajectoryStep(byStep, action.step);
       step.action = action.value;
       step.actionTurnIndex = message.turn_index;
+      const archiveRowId = lcmArchiveRowId(message);
+      if (archiveRowId !== undefined) step.actionArchiveRowId = archiveRowId;
       continue;
     }
 
@@ -1205,6 +1209,10 @@ function parseLabeledTrajectory(
       const step = getOrCreateTrajectoryStep(byStep, observation.step);
       step.observation = observation.value;
       step.observationTurnIndex = message.turn_index;
+      const archiveRowId = lcmArchiveRowId(message);
+      if (archiveRowId !== undefined) {
+        step.observationArchiveRowId = archiveRowId;
+      }
     }
   }
 
@@ -4538,21 +4546,21 @@ function normalizeTrajectoryQuery(value: string): string {
 }
 
 function appendExpandedEvidence(
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
+  evidenceItems: ExplicitCueEvidenceItem[],
+  seenTurns: Set<string>,
+  sessionId: string,
+  expanded: Array<{
+    id?: number;
+    session_id?: string;
+    turn_index: number;
     role: string;
     content: string;
   }>,
-  seenTurns: Set<string>,
-  sessionId: string,
-  expanded: Array<{ turn_index: number; role: string; content: string }>,
 ): void {
   for (const message of expanded) {
     appendEvidenceItem(evidenceItems, seenTurns, {
-      id: `${sessionId}:${message.turn_index}`,
-      sessionId,
+      ...lcmEvidenceIdentity(message, sessionId),
+      sessionId: message.session_id ?? sessionId,
       turnIndex: message.turn_index,
       role: message.role,
       content: message.content,
@@ -4689,14 +4697,7 @@ async function collectNamedMeetingFactEvidence(options: {
   sessionId?: string;
   query: string;
   maxReferences: number;
-  evidenceItems: Array<{
-    id: string;
-    sessionId: string;
-    turnIndex: number;
-    role: string;
-    content: string;
-    score?: number;
-  }>;
+  evidenceItems: ExplicitCueEvidenceItem[];
   seenTurns: Set<string>;
 }): Promise<void> {
   const cues = collectMeetingFactCues(options.query)
@@ -4712,7 +4713,7 @@ async function collectNamedMeetingFactEvidence(options: {
     for (const result of results) {
       if (!isNamedMeetingFactEvidence(result.content, options.query)) continue;
       appendEvidenceItem(options.evidenceItems, options.seenTurns, {
-        id: `${result.session_id}:${result.turn_index}`,
+        ...lcmEvidenceIdentity(result, result.session_id),
         sessionId: result.session_id,
         turnIndex: result.turn_index,
         role: result.role,

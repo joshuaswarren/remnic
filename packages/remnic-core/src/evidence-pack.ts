@@ -1,5 +1,7 @@
 export interface EvidencePackItem {
   id?: string;
+  /** Stable SQLite row lineage for diagnostics; intentionally not rendered. */
+  archiveRowId?: number;
   sessionId?: string;
   turnIndex?: number;
   role?: string;
