@@ -3505,3 +3505,276 @@ test("PR#400 PRRT_kwDORJXyws56VQ76: reinstall with same profile name, different 
     }
   });
 });
+
+// ── Issue #1929: Hermes plugin-directory shim materialization ───────────────
+//
+// Hermes discovers memory providers by scanning $HERMES_HOME/plugins/<name>/
+// __init__.py (source text must contain `register_memory_provider`), NOT pip
+// metadata. `remnic connectors install hermes` must materialize that shim, and
+// `remnic connectors remove hermes` must clean up only the shim it generated.
+
+/** Set HERMES_HOME for the duration of fn and always restore it (teardown). */
+function withHermesHome(value: string | undefined, fn: () => void): void {
+  const original = process.env.HERMES_HOME;
+  try {
+    if (value === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = value;
+    }
+    fn();
+  } finally {
+    if (original === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = original;
+    }
+  }
+}
+
+/** Create the root-layout Hermes config so installConnector("hermes") succeeds. */
+function seedHermesRootConfig(tmpHome: string): string {
+  const hermesDir = path.join(tmpHome, ".hermes");
+  fs.mkdirSync(hermesDir, { recursive: true });
+  fs.writeFileSync(path.join(hermesDir, "config.yaml"), "memory:\n  provider: builtin\n", { mode: 0o600 });
+  return hermesDir;
+}
+
+test("installConnector hermes materializes the plugin-directory shim (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({
+          connectorId: "hermes",
+          config: { host: "127.0.0.1", port: 4318 },
+        });
+        assert.equal(install.status, "installed", install.message);
+
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "shim __init__.py must be created on install");
+        const shim = fs.readFileSync(shimPath, "utf-8");
+        assert.ok(
+          shim.includes("register_memory_provider"),
+          "shim must contain the discovery-heuristic literal `register_memory_provider`",
+        );
+        assert.ok(
+          shim.includes("from remnic_hermes import register"),
+          "shim must import register from the pip package",
+        );
+        assert.ok(install.message.includes(shimPath), "install message should reference the materialized shim path");
+        assert.ok(
+          install.message.includes("memory.provider: remnic"),
+          "install message should hint the manual activation step",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes reinstall overwrites a Remnic-generated shim (idempotent, #1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+
+        const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(first.status, "installed", first.message);
+        const canonical = fs.readFileSync(shimPath, "utf-8");
+
+        // Mutate the generated shim (keep the marker so it is still recognized
+        // as ours) — a correct reinstall must regenerate it, dropping the edit.
+        fs.appendFileSync(shimPath, "\n# stale user edit that must be overwritten\n");
+        assert.notEqual(fs.readFileSync(shimPath, "utf-8"), canonical, "sanity: shim mutated before reinstall");
+
+        const second = mod.installConnector({ connectorId: "hermes", force: true, config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(second.status, "installed", second.message);
+        assert.equal(
+          fs.readFileSync(shimPath, "utf-8"),
+          canonical,
+          "reinstall must overwrite our marker shim back to canonical content",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes leaves a user-authored shim untouched and notes it (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+        const shimDir = path.join(hermesDir, "plugins", "remnic");
+        fs.mkdirSync(shimDir, { recursive: true });
+        const shimPath = path.join(shimDir, "__init__.py");
+        const userContent = "# hand-written shim — no Remnic marker\nfrom remnic_hermes import register\n";
+        fs.writeFileSync(shimPath, userContent);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        assert.equal(
+          fs.readFileSync(shimPath, "utf-8"),
+          userContent,
+          "user-authored shim must be preserved byte-for-byte",
+        );
+        assert.ok(
+          install.message.includes("NOT generated by Remnic"),
+          `install message should note the user-authored shim was left untouched, got: ${install.message}`,
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes still succeeds when the shim cannot be materialized (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        // Point HERMES_HOME at a regular FILE so resolveHermesRoot throws —
+        // the shim write fails, but the install must still succeed.
+        const bogusHermesHome = path.join(tmpHome, "hermes-home-is-a-file");
+        fs.writeFileSync(bogusHermesHome, "not a directory\n");
+
+        withHermesHome(bogusHermesHome, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "installed", install.message);
+          assert.ok(
+            install.message.includes("could not materialize"),
+            `install should note the shim failure, got: ${install.message}`,
+          );
+          assert.ok(
+            fs.statSync(bogusHermesHome).isFile(),
+            "the pre-existing file at HERMES_HOME must be left intact",
+          );
+        });
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes honors HERMES_HOME for the shim location (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const customHermesHome = path.join(tmpHome, "custom-hermes");
+        fs.mkdirSync(customHermesHome, { recursive: true });
+
+        withHermesHome(customHermesHome, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "installed", install.message);
+
+          const shimPath = path.join(customHermesHome, "plugins", "remnic", "__init__.py");
+          assert.ok(fs.existsSync(shimPath), "shim must be created under HERMES_HOME");
+          assert.ok(
+            !fs.existsSync(path.join(tmpHome, ".hermes", "plugins", "remnic", "__init__.py")),
+            "shim must NOT be created under <home>/.hermes when HERMES_HOME is set",
+          );
+        });
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("removeConnector hermes deletes the Remnic-generated shim and its dir (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "sanity: shim exists after install");
+
+        const remove = mod.removeConnector("hermes");
+        assert.equal(remove.status, "removed", remove.message);
+        assert.ok(!fs.existsSync(shimPath), "shim must be deleted on remove");
+        assert.ok(
+          !fs.existsSync(path.dirname(shimPath)),
+          "the now-empty plugins/remnic/ dir must be removed",
+        );
+        assert.ok(
+          remove.message.includes("Removed Hermes plugin shim"),
+          `remove message should mention the shim deletion, got: ${remove.message}`,
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("removeConnector hermes preserves a user-authored shim (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+
+        // Replace our generated shim with a user-authored one (no marker).
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        const userContent = "# hand-written shim — no Remnic marker\nfrom remnic_hermes import register\n";
+        fs.writeFileSync(shimPath, userContent);
+
+        const remove = mod.removeConnector("hermes");
+        assert.equal(remove.status, "removed", remove.message);
+        assert.ok(fs.existsSync(shimPath), "user-authored shim must NOT be deleted on remove");
+        assert.equal(
+          fs.readFileSync(shimPath, "utf-8"),
+          userContent,
+          "user-authored shim content must be preserved byte-for-byte",
+        );
+        assert.ok(
+          remove.message.includes("left untouched (not Remnic-generated)"),
+          `remove message should note the shim was left untouched, got: ${remove.message}`,
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
