@@ -130,20 +130,42 @@ core/LCM structural-displacement explanation on the affected slice. It does
 not identify the July 14 historical cause, prove that answer scores are now
 equal, or show that a responder would treat identical context identically.
 
-## Acceptance remains blocked on paired scored evidence
+## Paired scored rerun narrows the remaining gap
 
-The retrieval capture now exists, but it finds no structural divergence on
-current main. Issue #1879's acceptance criterion therefore remains open until
-a same-selector scored baseline/real rerun either establishes parity or names
-a different mechanism with bounded evidence. That rerun must use identical
-responder, judge, seed, dataset, task order, and recall budget. It should start
-with a credit-metered smoke and expand only if the reconciled Codex-credit
-ledger can cover the selected slice while preserving its reserve.
+On July 16, the exact 321-task multi-hop selector was rerun as a paired
+`baseline`/`real` matrix with `gpt-5.6-luna` as responder and internal model
+and `gpt-5.6-terra` as judge. Both sides used dataset SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`,
+selector SHA-256
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`,
+the same 321 unique task ids, and launch SHA `3a8f9290`. All 642 tasks
+completed without a task-level failure, and both profiles retained a 1.0
+hidden-evidence-id safety score.
 
-Do not treat the current negative trace as a benchmark lift. It made no model
-calls and captured no answers or judge scores. Likewise, do not promote the
-historical baseline recommendation into permanent workload guidance unless a
-new scored comparison justifies it.
+| Metric | Baseline | Real | Delta (`real - baseline`) | Real wins | Real losses | Ties |
+|---|---:|---:|---:|---:|---:|---:|
+| `llm_judge` | 0.3050 | 0.2983 | -0.0067 | 11 | 14 | 296 |
+| F1 | 0.3100 | 0.3057 | -0.0044 | 16 | 22 | 283 |
+| `contains_answer` | 0.0903 | 0.0935 | +0.0031 | 5 | 4 | 312 |
+
+The new result is much closer than the historical multi-hop gap, but it does
+not establish parity: judge score and F1 remain slightly lower for `real`,
+while exact containment is slightly higher. Issue #1879 therefore remains
+open. Combined with the provider-free receipt showing no structural retrieval
+delta, the scored pair shifts the next investigation toward post-retrieval
+answer behavior, evidence ordering, or responder sensitivity rather than a
+demonstrated core/LCM displacement.
+
+The private result SHA-256 values are
+`21cd3c1f6f6c1a89a8d7d432d7004e08d575655e2cdca4addde0952852890397`
+(`baseline`) and
+`549c31e578a2269d2c4c49ea688a9de2ddeb097fcd9f627a312d1a95f6677708`
+(`real`). The run used 242.2365325 locally accounted Codex credits across
+1,329 Luna and 410 Terra calls, with zero Sol calls. It remains bounded
+diagnostic evidence, not a full-LoCoMo artifact. Its late reproducibility
+manifest also recorded an unrelated shared-checkout branch switch as dirty;
+the result files retain the launch-time SHA, but this envelope is deliberately
+not promoted or used for a leaderboard claim.
 
 ## Further questions
 
