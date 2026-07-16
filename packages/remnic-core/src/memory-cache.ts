@@ -295,6 +295,24 @@ export function invalidateAllForDir(baseDir: string): void {
   }
 }
 
+/**
+ * Invalidate every cache layer for `baseDir` EXCEPT the hot-memories layer
+ * (issue #1902). Single-file write paths use this instead of
+ * `invalidateAllForDir` because they patch the hot-memories entry in place
+ * (via `updateCacheOnWrite`/`updateCacheOnDelete`) and re-key it to the bumped
+ * version — so dropping it here would defeat the whole warm-cache fast path.
+ * The derived episode/rule views and the global QMD caches are cheap to
+ * rebuild and are not patched, so they are still evicted here. Every other
+ * layer remains reachable for the wholesale `invalidateAllForDir` /
+ * `clearMemoryCache` chokepoint used by bulk/ambiguous mutations.
+ */
+export function invalidateDerivedAndGlobalForDir(baseDir: string): void {
+  for (const layer of ALL_CACHE_LAYERS) {
+    if (layer.name === "hot-memories") continue;
+    layer.invalidateForDir(baseDir);
+  }
+}
+
 export function clearMemoryCache(baseDir?: string): void {
   if (baseDir) {
     invalidateAllForDir(baseDir);

@@ -4298,6 +4298,11 @@
         "default": true,
         "description": "When true, recall multiplies candidate scores by the Memory Worth factor (mw_success / mw_fail counters, see issue #560). Memories with a history of failed sessions sink; neutral/uninstrumented memories are untouched. PR 5 bench: +0.60 precision@5 vs baseline on all 50 seeded cases. Operators can opt out with false."
       },
+      "hotMemoriesCacheEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Serve StorageManager.readAllMemories() from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by the on-disk corpus version sentinel; writes patch the cache in place. Set false to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path)."
+      },
       "recallMemoryWorthHalfLifeMs": {
         "type": "number",
         "minimum": 0,

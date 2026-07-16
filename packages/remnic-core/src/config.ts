@@ -2106,6 +2106,10 @@ export function parseConfig(
     // opt out with recallMemoryWorthFilterEnabled=false.
     recallMemoryWorthFilterEnabled:
       coerceBool(cfg.recallMemoryWorthFilterEnabled) ?? true,
+    // Hot-memories result cache (issue #1902). Default on: readAllMemories()
+    // serves from the version-keyed in-process corpus cache. coerceBool
+    // handles "false"/"0" string forms; set false to force disk scans.
+    hotMemoriesCacheEnabled: coerceBool(cfg.hotMemoriesCacheEnabled) ?? true,
     recallMemoryWorthHalfLifeMs: (() => {
       const n = coerceNumber(cfg.recallMemoryWorthHalfLifeMs);
       return n !== undefined && n >= 0 ? n : 0;

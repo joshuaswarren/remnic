@@ -1027,6 +1027,20 @@ export interface PluginConfig {
    * once the benchmark shows precision tie-or-win.
    */
   recallMemoryWorthFilterEnabled: boolean;
+  /**
+   * Serve `StorageManager.readAllMemories()` from a version-keyed in-process
+   * cache of the full parsed corpus (issue #1902). Default true. When on, a
+   * scan-once-then-serve fast path eliminates the repeated full-corpus disk
+   * scans that dominate post-write recall latency on large collections
+   * (~99K files); coherence is preserved by the on-disk `.memory-status`
+   * version sentinel and patch-on-write updates. Tradeoff: the cache holds
+   * one full-corpus entry per baseDir (hundreds of MB at ~99K files, already
+   * resident in the OS page cache). Set false to force disk scans on
+   * memory-constrained hosts — behavior then matches the pre-#1902 pure
+   * disk-scan + in-flight-dedup path exactly. No TTL: version invalidation is
+   * the sole correctness mechanism.
+   */
+  hotMemoriesCacheEnabled: boolean;
   // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
   // provenance, faithfulness, corroboration, contradiction, feedback, recency,
   // and optional domain calibration into one [0,1] trust score applied as a

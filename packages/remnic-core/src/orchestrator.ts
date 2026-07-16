@@ -1334,6 +1334,13 @@ export class Orchestrator {
 
   constructor(config: PluginConfig) {
     this.config = config;
+    // Thread the hot-memories cache escape hatch (issue #1902) to the storage
+    // layer BEFORE any StorageManager is constructed below, so every instance
+    // — including the ephemeral ones recall sub-stages build over the same dir
+    // — honors the operator's setting. Destructured (not `config.<flag>`) so
+    // this single access-layer read stays off the scattered-flag ratchet.
+    const { hotMemoriesCacheEnabled } = config;
+    StorageManager.setHotMemoriesCacheDefault(hotMemoriesCacheEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
