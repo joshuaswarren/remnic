@@ -176,6 +176,7 @@ let completionQueue: Promise<void> = Promise.resolve();
 let failNextSettledLockWriteForTest = false;
 let failNextOwnedLockRemovalForTest = false;
 let failNextLedgerSetupForTest = false;
+let failNextLedgerWriteForTest = false;
 
 export class CodexCreditAccountingError extends Error {
   constructor(message: string) {
@@ -467,7 +468,11 @@ export async function runWithinCodexCreditBudget<T>(args: {
               : `Codex dispatch outcome is unknown after an unexpected error: ${safeErrorMessage(error)}`,
         },
       };
-      await writeLedger(args.config.ledgerPath, blockedLedger);
+      try {
+        await writeLedger(args.config.ledgerPath, blockedLedger);
+      } catch (persistenceError) {
+        throw accountingPersistenceBlockedError(persistenceError, error);
+      }
       ledgerCommitted = true;
       accountingSettled = true;
       await bestEffortSettleLock(lock);
@@ -497,7 +502,11 @@ export async function runWithinCodexCreditBudget<T>(args: {
         },
       ],
     };
-    await writeLedger(args.config.ledgerPath, nextLedger);
+    try {
+      await writeLedger(args.config.ledgerPath, nextLedger);
+    } catch (error) {
+      throw accountingPersistenceBlockedError(error);
+    }
     ledgerCommitted = true;
     accountingSettled = true;
     await bestEffortSettleLock(lock);
@@ -1172,6 +1181,10 @@ function summarizeUsage(entries: CodexCreditLedgerEntry[]): CodexCliNativeUsage 
 }
 
 async function writeLedger(filePath: string, ledger: CodexCreditLedger): Promise<{ contents: string; sha256: string }> {
+  if (failNextLedgerWriteForTest) {
+    failNextLedgerWriteForTest = false;
+    throw new Error(`injected ledger write failure for ${filePath}`);
+  }
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tempPath = `${filePath}.${process.pid}.tmp`;
   const contents = serializeLedger(ledger);
@@ -1214,6 +1227,26 @@ function infrastructureUnavailableError(cause: unknown): BenchmarkRunBlockedErro
     BenchmarkRunBlockReason.InfrastructureUnavailable,
     "Codex ledger infrastructure is unavailable.",
     { cause: original }
+  );
+}
+
+function accountingPersistenceBlockedError(
+  persistenceError: unknown,
+  underlyingRunError?: unknown
+): BenchmarkRunBlockedError {
+  const persistenceCause =
+    persistenceError instanceof Error ? persistenceError : new Error("Codex ledger persistence failed.");
+  const cause =
+    underlyingRunError === undefined
+      ? persistenceCause
+      : new AggregateError(
+          [persistenceCause, underlyingRunError],
+          "Codex ledger persistence failed after an uncertain dispatch outcome."
+        );
+  return new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.ManualReconciliationRequired,
+    "Codex usage accounting could not be persisted; manual reconciliation is required.",
+    { cause }
   );
 }
 
@@ -1424,6 +1457,8 @@ export const __codexCreditBudgetTestHooks = {
     completionQueue = Promise.resolve();
     failNextSettledLockWriteForTest = false;
     failNextOwnedLockRemovalForTest = false;
+    failNextLedgerSetupForTest = false;
+    failNextLedgerWriteForTest = false;
   },
   failNextSettledLockWrite: () => {
     failNextSettledLockWriteForTest = true;
@@ -1433,5 +1468,8 @@ export const __codexCreditBudgetTestHooks = {
   },
   failNextLedgerSetup: () => {
     failNextLedgerSetupForTest = true;
+  },
+  failNextLedgerWrite: () => {
+    failNextLedgerWriteForTest = true;
   },
 };

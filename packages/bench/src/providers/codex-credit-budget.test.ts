@@ -1121,6 +1121,64 @@ test("post-commit lock-state and cleanup failures cannot turn a committed comple
   }
 });
 
+test("post-dispatch ledger persistence failures terminally block further dispatch and retain the in-flight lock", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-post-dispatch-write-"));
+  const ledgerPath = path.join(directory, "token=secret-ledger.json");
+  const lockPath = `${ledgerPath}.lock`;
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    __codexCreditBudgetTestHooks.failNextLedgerWrite();
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "billed completion", usage }),
+      }),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired &&
+        error.message === "Codex usage accounting could not be persisted; manual reconciliation is required." &&
+        !error.message.includes(directory) &&
+        !error.message.includes("secret-ledger") &&
+        error.cause instanceof Error &&
+        error.cause.message.includes(ledgerPath)
+    );
+
+    const owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as {
+      pid: number;
+      phase: string;
+    };
+    assert.equal(owner.pid, process.pid);
+    assert.equal(owner.phase, "in-flight");
+    await assert.rejects(readFile(ledgerPath, "utf8"), { code: "ENOENT" });
+
+    let unsafeDispatchStarted = false;
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          unsafeDispatchStarted = true;
+          return { value: "unsafe continuation", usage };
+        },
+      }),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.ResourceLocked &&
+        error.message === "Codex credit ledger resource is locked."
+    );
+    assert.equal(unsafeDispatchStarted, false);
+    assert.equal(
+      (JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as { phase: string }).phase,
+      "in-flight"
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    __codexCreditBudgetTestHooks.resetQueue();
+  }
+});
+
 test("the first uncertain accounting failure persists a block and throws a terminal error with the original cause", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-unknown-"));
   const ledgerPath = path.join(directory, "ledger.json");
@@ -1163,6 +1221,68 @@ test("the first uncertain accounting failure persists a block and throws a termi
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an uncertain run plus blocked-ledger write failure terminally retains both private causes and the in-flight lock", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-block-write-"));
+  const ledgerPath = path.join(directory, "token=secret-block-ledger.json");
+  const lockPath = `${ledgerPath}.lock`;
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  const accountingError = new CodexCreditAccountingError("token=secret-accounting terminal usage missing");
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    __codexCreditBudgetTestHooks.failNextLedgerWrite();
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          throw accountingError;
+        },
+      }),
+      (error: unknown) => {
+        if (
+          !(error instanceof BenchmarkRunBlockedError) ||
+          error.reason !== BenchmarkRunBlockReason.ManualReconciliationRequired ||
+          error.message !== "Codex usage accounting could not be persisted; manual reconciliation is required." ||
+          error.message.includes(directory) ||
+          error.message.includes("secret-accounting") ||
+          !(error.cause instanceof AggregateError)
+        ) {
+          return false;
+        }
+        const privateCauses = error.cause.errors as unknown[];
+        return (
+          privateCauses.some(
+            (cause) => cause instanceof Error && cause.message.includes(ledgerPath)
+          ) && privateCauses.includes(accountingError)
+        );
+      }
+    );
+
+    assert.equal(
+      (JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as { phase: string }).phase,
+      "in-flight"
+    );
+    await assert.rejects(readFile(ledgerPath, "utf8"), { code: "ENOENT" });
+    let unsafeDispatchStarted = false;
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          unsafeDispatchStarted = true;
+          return { value: "unsafe continuation", usage };
+        },
+      }),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.ResourceLocked
+    );
+    assert.equal(unsafeDispatchStarted, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    __codexCreditBudgetTestHooks.resetQueue();
   }
 });
 
