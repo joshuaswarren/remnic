@@ -5,7 +5,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
-import { indexMemory } from "../packages/remnic-core/src/temporal-index.js";
+import { indexMemoryAsync as indexMemory } from "../packages/remnic-core/src/temporal-index.js";
 
 // #1495 P1: the namespaced LCM `session_id` is framed with a reserved sentinel
 // (U+001F UNIT SEPARATOR) — `\x1f<namespace>\x1f<sessionKey>` — kept in sync with

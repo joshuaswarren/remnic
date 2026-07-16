@@ -24,6 +24,14 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export {
+  clearIndexes,
+  deindexMemory,
+  indexMemoriesBatch,
+  indexMemory,
+  indexesExist,
+} from "./temporal-index-compat.js";
+
 export interface TemporalIndex {
   /** version bumped when schema changes */
   version: number;
@@ -788,6 +796,64 @@ function aliasPhrase(alias: string): string {
   return alias.replace(/\//g, " ").replace(/-/g, " ").replace(/\s+/g, " ").trim();
 }
 
+export type TemporalIndexCompatibilityMutation =
+  | { kind: "index"; entries: TemporalIndexEntry[] }
+  | { kind: "deindex"; entries: TemporalIndexEntry[] }
+  | { kind: "clear" };
+
+/** @internal Pure model shared by the deprecated synchronous compatibility surface. */
+export function applyTemporalIndexCompatibilityMutation(
+  raw: unknown,
+  mutation: TemporalIndexCompatibilityMutation,
+): TemporalIndex {
+  const index = structuredClone(normalizeTemporalIndex(raw as TemporalIndex));
+  if (mutation.kind === "clear") {
+    return emptyTemporalIndex();
+  }
+  if (mutation.kind === "index") index.version = INDEX_VERSION;
+  for (const entry of mutation.entries) {
+    const dateKey = isoDateFromTimestamp(entry.createdAt);
+    if (mutation.kind === "index") {
+      removePathFromAllSets(index.dates, entry.path);
+      addPathToSet(index.dates, dateKey, entry.path);
+      index.events[entry.path] = temporalEventFromEntry(entry);
+    } else {
+      removePathFromSet(index.dates, dateKey, entry.path);
+      delete index.events[entry.path];
+    }
+  }
+  return index;
+}
+
+/** @internal Pure model shared by the deprecated synchronous compatibility surface. */
+export function applyTagIndexCompatibilityMutation(
+  raw: unknown,
+  mutation: TemporalIndexCompatibilityMutation,
+): TagIndex {
+  const index = structuredClone(normalizeTagIndex(raw as TagIndex));
+  if (mutation.kind === "clear") {
+    return { version: TAG_INDEX_VERSION, tags: {}, aliases: {} };
+  }
+  for (const entry of mutation.entries) {
+    if (mutation.kind === "index") {
+      removePathFromAllTagEntries(index, entry.path);
+      for (const tag of entry.tags) {
+        if (tag && typeof tag === "string") addTagGraphEntry(index, tag, entry.path);
+      }
+    } else {
+      for (const tag of entry.tags) {
+        if (tag && typeof tag === "string") removeTagGraphEntry(index, tag, entry.path);
+      }
+    }
+  }
+  return index;
+}
+
+/** @internal Schema check shared by the deprecated synchronous compatibility surface. */
+export function hasCurrentTemporalIndexSchemaForCompatibility(raw: unknown): boolean {
+  return hasCurrentTemporalIndexSchema(raw);
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -798,7 +864,7 @@ function aliasPhrase(alias: string): string {
  * @param createdAt ISO timestamp of the memory's creation date
  * @param tags Array of tag strings from the memory's frontmatter
  */
-export async function indexMemory(
+export async function indexMemoryAsync(
   memoryDir: string,
   memoryPath: string,
   createdAt: string,
@@ -837,7 +903,7 @@ export async function indexMemory(
 /**
  * Remove a memory file from both indexes (called on deletion/archival).
  */
-export async function deindexMemory(
+export async function deindexMemoryAsync(
   memoryDir: string,
   memoryPath: string,
   createdAt: string,
@@ -869,7 +935,7 @@ export async function deindexMemory(
  * Called before a full-corpus rebuild so stale paths in any surviving index
  * file do not persist after the rebuild completes.
  */
-export async function clearIndexes(memoryDir: string): Promise<void> {
+export async function clearIndexesAsync(memoryDir: string): Promise<void> {
   try {
     await ensureStateDir(memoryDir);
     await updateTemporalIndex(memoryDir, (index) => {
@@ -893,7 +959,7 @@ export async function clearIndexes(memoryDir: string): Promise<void> {
  * Returns true when both index files exist on disk.
  * Used to detect first-time enablement so callers can trigger a full rebuild.
  */
-export async function indexesExist(memoryDir: string): Promise<boolean> {
+export async function indexesExistAsync(memoryDir: string): Promise<boolean> {
   try {
     await fs.promises.access(tagIndexPath(memoryDir));
     const loaded = await loadIndexCached(
@@ -909,9 +975,9 @@ export async function indexesExist(memoryDir: string): Promise<boolean> {
 
 /**
  * Batch-add multiple memories to both indexes in a single read-modify-write cycle.
- * More efficient than calling indexMemory() per file when adding many at once.
+ * More efficient than calling indexMemoryAsync() per file when adding many at once.
  */
-export async function indexMemoriesBatch(
+export async function indexMemoriesBatchAsync(
   memoryDir: string,
   entries: TemporalIndexEntry[]
 ): Promise<void> {

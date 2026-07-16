@@ -30,7 +30,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import { applyCommitmentLedgerLifecycle } from "../commitment-ledger.js";
 import { recordDreamsPhaseRun } from "../maintenance/dreams-ledger.js";
-import { clearIndexes, deindexMemory, indexMemoriesBatch, indexesExist } from "../temporal-index.js";
+import { deindexMemoryAsync } from "../temporal-index.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
   resolveConsolidationCapabilities,
@@ -165,7 +165,7 @@ export class ConsolidationRunCoordinator {
             memoryItemMutated = true;
             await this.deps.embeddingFallback.removeFromIndex(item.existingId);
             if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
-              await deindexMemory(
+              await deindexMemoryAsync(
                 config.memoryDir,
                 toInvalidate.path,
                 toInvalidate.frontmatter.created,
@@ -216,7 +216,7 @@ export class ConsolidationRunCoordinator {
                 toMergeInvalidate?.path &&
                 toMergeInvalidate.frontmatter?.created
               ) {
-                await deindexMemory(
+                await deindexMemoryAsync(
                   config.memoryDir,
                   toMergeInvalidate.path,
                   toMergeInvalidate.frontmatter.created,
@@ -293,7 +293,7 @@ export class ConsolidationRunCoordinator {
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
         for (const m of deletedCommitments) {
-          await deindexMemory(
+          await deindexMemoryAsync(
             config.memoryDir,
             m.path,
             m.frontmatter.created,
@@ -336,7 +336,7 @@ export class ConsolidationRunCoordinator {
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
         for (const m of deletedTTL) {
-          await deindexMemory(
+          await deindexMemoryAsync(
             config.memoryDir,
             m.path,
             m.frontmatter.created,

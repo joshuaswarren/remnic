@@ -42,7 +42,7 @@ import {
   gatewayTaskChainOptions,
 } from "../fallback-llm.js";
 import { resolveIndexingCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
-import { deindexMemory } from "../temporal-index.js";
+import { deindexMemoryAsync } from "../temporal-index.js";
 import { runPeerProfileReasoner } from "../peers/index.js";
 import type { StorageManager } from "../index.js";
 import type { LocalLlmClient } from "../local-llm.js";
@@ -342,7 +342,7 @@ export class SemanticConsolidationCoordinator {
                 m.path &&
                 m.frontmatter?.created
               ) {
-                await deindexMemory(
+                await deindexMemoryAsync(
                   targetStorage.dir,
                   m.path,
                   m.frontmatter.created,

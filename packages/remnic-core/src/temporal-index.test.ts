@@ -8,9 +8,14 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
-  deindexMemory,
-  indexMemory,
-  indexesExist,
+  clearIndexes,
+  deindexMemory as deindexMemorySync,
+  deindexMemoryAsync as deindexMemory,
+  indexMemoriesBatch,
+  indexMemory as indexMemorySync,
+  indexMemoryAsync as indexMemory,
+  indexesExist as indexesExistSync,
+  indexesExistAsync as indexesExist,
   queryByDateRangeAsync,
   queryByTagsAsync,
   queryTemporalTimelineAsync,
@@ -18,9 +23,71 @@ import {
   setIndexReadObserverForTest,
 } from "./temporal-index.js";
 
+test("legacy temporal-index exports preserve synchronous return timing and booleans", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-sync-compat-"));
+  const firstPath = "/tmp/remnic-temporal-sync-first.md";
+  const secondPath = "/tmp/remnic-temporal-sync-second.md";
+
+  const initiallyExists = indexesExistSync(memoryDir);
+  assert.equal(typeof initiallyExists, "boolean");
+  assert.equal(initiallyExists, false);
+
+  assert.equal(
+    indexMemorySync(memoryDir, firstPath, "2026-03-09T12:00:00.000Z", ["sync"]),
+    undefined,
+  );
+  const afterIndex = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterIndex.dates["2026-03-09"], [firstPath]);
+  assert.equal(indexesExistSync(memoryDir), true);
+
+  indexMemoriesBatch(memoryDir, [
+    {
+      path: secondPath,
+      createdAt: "2026-03-10T12:00:00.000Z",
+      tags: ["sync"],
+    },
+  ]);
+  const afterBatch = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterBatch.dates["2026-03-10"], [secondPath]);
+
+  deindexMemorySync(memoryDir, firstPath, "2026-03-09T12:00:00.000Z", ["sync"]);
+  const afterDeindex = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.equal(afterDeindex.dates["2026-03-09"], undefined);
+
+  clearIndexes(memoryDir);
+  const afterClear = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterClear, { version: 2, dates: {}, events: {} });
+});
+
+test("explicit async mutation exports return promises and complete when awaited", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-async-surface-"));
+  const memoryPath = "/tmp/remnic-temporal-async.md";
+  const pending = indexMemory(
+    memoryDir,
+    memoryPath,
+    "2026-03-09T12:00:00.000Z",
+    ["async"],
+  );
+  assert.ok(pending instanceof Promise);
+  await pending;
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["async"]),
+    new Set([memoryPath]),
+  );
+  assert.equal(await indexesExist(memoryDir), true);
+});
+
 async function runIndexWorker(moduleUrl: string, memoryDir: string, workerId: number, count: number): Promise<void> {
   const workerSource = `
-const { indexMemory } = await import(process.argv[1]);
+const { indexMemoryAsync: indexMemory } = await import(process.argv[1]);
 const memoryDir = process.argv[2];
 const workerId = Number(process.argv[3]);
 const count = Number(process.argv[4]);
@@ -266,7 +333,7 @@ test("temporal index writers wait for old locks owned by live processes", async 
   await utimes(lockDir, oldLockTime, oldLockTime);
 
   const workerSource = `
-const { indexMemory } = await import(process.argv[1]);
+const { indexMemoryAsync: indexMemory } = await import(process.argv[1]);
 await indexMemory(
   process.argv[2],
   "/tmp/remnic-temporal-live-lock-memory.md",

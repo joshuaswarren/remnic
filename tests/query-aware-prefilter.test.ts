@@ -7,7 +7,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
 import {
-  indexMemoriesBatch,
+  indexMemoriesBatchAsync as indexMemoriesBatch,
   queryByTagsAsync,
   resolvePromptTagPrefilterAsync,
 } from "../src/temporal-index.js";
