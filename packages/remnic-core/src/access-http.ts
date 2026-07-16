@@ -854,7 +854,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/mcp") {
-      await this.handleMcpRequest(req, res);
+      await this.handleMcpRequest(req, res, abortSignal);
       return;
     }
 
@@ -2982,7 +2982,11 @@ export class EngramAccessHttpServer {
     req.once("error", cleanup);
   }
 
-  private async handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleMcpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
     // Reject requests that advertise an unknown MCP protocol version in
     // the streamable-HTTP `MCP-Protocol-Version` header. Absent or
     // valid → proceed. Unknown → 400 with a JSON-RPC-shaped error so
@@ -3143,7 +3147,14 @@ export class EngramAccessHttpServer {
         ? () => this.ensureWriteRateLimitAvailable()
         : undefined,
       sourceConnector: this.resolveConnector(req),
+      abortSignal,
     });
+
+    if (abortSignal.aborted) {
+      throw isAbortError(abortSignal.reason)
+        ? abortSignal.reason
+        : abortError("HTTP client disconnected");
+    }
 
     if (isMcpWrite && response !== null) {
       const result = (response as Record<string, unknown>).result as Record<string, unknown> | undefined;
@@ -3176,6 +3187,11 @@ export class EngramAccessHttpServer {
     const assignedSessionId = this.mcpServer.popInitSessionId(mcpCorrelationId);
     if (assignedSessionId) {
       res.setHeader("mcp-session-id", assignedSessionId);
+    }
+    if (abortSignal.aborted) {
+      throw isAbortError(abortSignal.reason)
+        ? abortSignal.reason
+        : abortError("HTTP client disconnected");
     }
     this.respondJson(res, 200, response);
   }

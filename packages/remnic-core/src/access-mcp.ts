@@ -40,6 +40,7 @@ import { expandTildePath } from "./utils/path.js";
 
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
+import { abortError, isAbortError } from "./abort-error.js";
 type JsonRpcId = string | number | null;
 
 type JsonRpcRequest = {
@@ -48,6 +49,12 @@ type JsonRpcRequest = {
   method?: string;
   params?: Record<string, unknown>;
 };
+
+function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
+  if (!signal?.aborted) return;
+  if (isAbortError(signal.reason)) throw signal.reason;
+  throw abortError(message);
+}
 
 type McpRequestOptions = {
   principalOverride?: string;
@@ -67,6 +74,8 @@ type McpRequestOptions = {
    * the operation context so write handlers stamp it onto frontmatter.
    */
   sourceConnector?: string;
+  /** HTTP request lifetime; absent for the standalone stdio transport. */
+  abortSignal?: AbortSignal;
 };
 
 type McpTool = {
@@ -2652,8 +2661,10 @@ export class EngramMcpServer {
           options?.sessionId,
           mcpScope,
           options?.enforceWriteQuota,
-          options?.sourceConnector
+          options?.sourceConnector,
+          options?.abortSignal,
         );
+        throwMcpAbort(options?.abortSignal, "MCP request aborted before response");
         return {
           jsonrpc: "2.0",
           id,
@@ -2664,6 +2675,9 @@ export class EngramMcpServer {
           },
         };
       } catch (err) {
+        // Cancellation is transport control flow, not a JSON-RPC tool error.
+        // Preserve the original AbortError so HTTP can silently end a dead socket.
+        if (isAbortError(err)) throw err;
         const message = err instanceof Error ? err.message : String(err);
         return {
           jsonrpc: "2.0",
@@ -2862,6 +2876,7 @@ export class EngramMcpServer {
     scope?: { namespace?: string; sessionKey?: string },
     enforceWriteQuota?: () => void | Promise<void>,
     sourceConnector?: string,
+    abortSignal?: AbortSignal,
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
@@ -2941,7 +2956,9 @@ export class EngramMcpServer {
       const result = (await op.run(envelope, {
         service: this.service,
         authenticatedPrincipal: effectivePrincipal,
+        ...(abortSignal ? { abortSignal } : {}),
       })) as { result: unknown };
+      throwMcpAbort(abortSignal, "MCP recall aborted before postprocessing");
       const response = result.result as Record<string, unknown>;
       if (this.shouldEmitCitations(mcpSessionId)) {
         const citations = this.buildRecallCitations(response as unknown as EngramAccessRecallResponse);
@@ -2961,7 +2978,9 @@ export class EngramMcpServer {
       authenticatedPrincipal: effectivePrincipal,
       ...(enforceWriteQuota ? { hooks: { enforceWriteQuota } } : {}),
       ...(sourceConnector ? { sourceConnector } : {}),
+      ...(abortSignal ? { abortSignal } : {}),
     })) as { result: unknown };
+    throwMcpAbort(abortSignal, "MCP request aborted before postprocessing");
     return output.result;
   }
 }
