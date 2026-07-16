@@ -1064,8 +1064,39 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
   // saveMeta call), but MUST NOT record a processed fingerprint — the invariant
   // below (processedExtractionFingerprints stays []) is the real contract.
   assert.ok(saveMetaCalls <= 1, `expected at most one retry-state meta save, got ${saveMetaCalls}`);
-  assert.equal(clearCalls, 1);
+  // #1908: a retryable failure retains the buffer (clearCalls===0) so the backoff
+  // gate can re-attempt the turns after nextEligibleAt — clearing would orphan
+  // the persisted retry state (cursor high + codex P1).
+  assert.equal(clearCalls, 0);
   assert.deepEqual(meta.processedExtractionFingerprints, []);
+});
+
+test("runExtraction clears the buffer on a failed extraction when extractionRetryEnabled=false (behavior parity)", async () => {
+  // With retry disabled the failure path must match pre-#1908 behavior: the
+  // buffer is cleared (no retry state is recorded, so there is nothing to retain).
+  const config = parseConfig({ extractionRetryEnabled: false });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+  let clearCalls = 0;
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
+  orchestrator.storageRouter = {
+    storageFor: async () => ({
+      listEntityNames: async () => [],
+      loadMeta: async () => ({ extractionCount: 0, lastExtractionAt: null, lastConsolidationAt: null, totalMemories: 0, totalEntities: 0, processedExtractionFingerprints: [] }),
+      saveMeta: async () => {},
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [], extractionFailure: "gateway_unavailable" }),
+  };
+  orchestrator.persistExtraction = async () => [];
+  const turns = [{ ...makeTurn("session-retry-off", "failed gateway"), logicalSessionKey: "logical-thread:retry-off", turnFingerprint: "fp-retry-off", persistProcessedFingerprint: true }];
+  const result = await orchestrator.runExtraction(turns, { bufferKey: "logical-thread:retry-off" });
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(clearCalls, 1, "retry disabled → buffer cleared (pre-#1908 behavior)");
 });
 
 test("runExtraction preserves empty-result buffers when fingerprint persistence fails", async () => {

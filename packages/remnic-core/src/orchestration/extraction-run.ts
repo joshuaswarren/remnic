@@ -802,6 +802,7 @@ export class ExtractionRunCoordinator {
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure
         : undefined;
+    let recordedRetryFailure = false;
     // Record failure into backoff/breaker state, or heal on success. Runs for
     // every result path (empty and durable), before the fail-closed throw, so a
     // forced flush still records its failure (rule 18). Gated by
@@ -817,6 +818,9 @@ export class ExtractionRunCoordinator {
           meta,
           Date.now(),
         );
+        // The buffer is retained below so the backoff gate can re-attempt these
+        // turns after nextEligibleAt — clearing would orphan the retry state.
+        recordedRetryFailure = true;
       } else {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
@@ -870,7 +874,17 @@ export class ExtractionRunCoordinator {
         bufferKey,
         isLiveSession: clearBufferAfterExtraction,
       });
-      await clearBuffer();
+      if (recordedRetryFailure) {
+        // Retain the failed turns so the backoff gate can re-attempt them after
+        // nextEligibleAt. Clearing here would lose the data the retry state
+        // points at (cursor high + codex P1). Trigger/forced paths already
+        // retain via clearBufferAfterExtraction=false; this covers the normal
+        // live-session path. Overflow is bounded by MAX_BUFFER_ENTRY_COUNT
+        // with a loud eviction log.
+        log.debug("runExtraction: retaining buffer for backoff retry after failure");
+      } else {
+        await clearBuffer();
+      }
       return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
     }
 
