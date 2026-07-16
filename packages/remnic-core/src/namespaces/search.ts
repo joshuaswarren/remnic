@@ -379,10 +379,20 @@ export class NamespaceSearchRouter {
       });
       const collectionState = available
         ? await awaitWithAbort(
+          // The legacy default namespace at the flat root (`filtersNestedNamespaces`)
+          // shares its `memoryDir` with the `namespaces/` container, so its base
+          // collection is a "broad root" that also indexes nested-namespace files.
+          // We STILL auto-create it (issue #1929): the search side already targets
+          // this exact base collection and `filterNamespaceSubtreeResults` strips
+          // the nested `namespaces/` subtree out of its results, so index and
+          // search stay symmetric. Skipping creation left a configured default
+          // namespace (e.g. `geek`) with maintenance "ran" but no collection and 0
+          // recall results. `ensureCollection` is a no-op when the collection is
+          // already present, so legacy installs that pre-created the broad root are
+          // unaffected.
           this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
             autoCreate: options.autoCreateCollection,
             failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
-            skipAutoCreate: filtersNestedNamespaces,
             execution,
           }),
           execution?.signal,
@@ -417,11 +427,10 @@ export class NamespaceSearchRouter {
     options: {
       autoCreate: boolean;
       failOpenMissingGuardedCollection: boolean;
-      skipAutoCreate: boolean;
       execution?: SearchExecutionOptions;
     },
   ): Promise<CollectionState> {
-    if (!options.autoCreate || options.skipAutoCreate) {
+    if (!options.autoCreate) {
       if (!backend.checkCollection) return "unknown";
       const collectionState = await backend
         .checkCollection(collection, options.execution)
