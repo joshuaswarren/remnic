@@ -4354,7 +4354,7 @@
   },
   "config": {
     "limit": 20,
-    "datasetDir": "/Users/joshuawarren/src/openclaw-engram/evals/datasets/ama-bench",
+    "datasetDir": "evals/datasets/ama-bench",
     "episodes_run": 20
   },
   "durationMs": 37069
