@@ -98,11 +98,12 @@ export async function searchVerifiedEpisodes(options: {
   query: string;
   maxResults: number;
   boxRecallDays?: number;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedEpisodeResult[]> {
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
-  const storage = new StorageManager(options.memoryDir);
+  const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
   const version = storage.getMemoryStatusVersion();
 
   // Use derived episode cache to avoid O(146K) filter+map on every call.

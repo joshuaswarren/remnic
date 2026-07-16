@@ -39,7 +39,7 @@ test("hot cache: round-trips at a matching version", () => {
   clearMemoryCache();
 });
 
-test("hot cache: version 0 always misses (fresh/test dirs)", () => {
+test("hot cache: version 0 always misses as a defensive unavailable-sentinel guard", () => {
   const dir = "/tmp/remnic-hot-unit-b";
   clearMemoryCache();
   setCachedMemories(dir, [mem("a.md")], 0);

@@ -2272,6 +2272,7 @@ async function summarizeStorageFootprint(memoryDir: string): Promise<{ bytes: nu
 export async function runOperatorInventory(options: OperatorInventoryOptions): Promise<OperatorInventoryReport> {
   const now = options.now ?? new Date();
   const config = options.orchestrator.config;
+  const { entitySchemas, hotMemoriesCacheEnabled } = config;
   const namespaceEntries = await listNamespaces({ config });
   const uniqueRootEntries = new Map<string, { namespace: string; rootDir: string }>();
   for (const entry of namespaceEntries) {
@@ -2297,7 +2298,7 @@ export async function runOperatorInventory(options: OperatorInventoryOptions): P
   let rejected = 0;
 
   for (const entry of uniqueRootEntries.values()) {
-    const storage = new StorageManager(entry.rootDir);
+    const storage = new StorageManager(entry.rootDir, entitySchemas, hotMemoriesCacheEnabled);
     const memories = await storage.readAllMemories();
     const entities = await storage.readAllEntityFiles();
     namespaces.push({
@@ -2320,7 +2321,7 @@ export async function runOperatorInventory(options: OperatorInventoryOptions): P
     }
   }
 
-  const defaultStorage = new StorageManager(config.memoryDir);
+  const defaultStorage = new StorageManager(config.memoryDir, entitySchemas, hotMemoriesCacheEnabled);
   const profile = await defaultStorage.readProfile();
   const footprint = await summarizeStorageFootprint(config.memoryDir);
   const reviewRunId = (await listMemoryGovernanceRuns(config.memoryDir))[0];

@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -259,14 +260,18 @@ export function performReview(
   action: ReviewAction,
   options: ReviewActionOptions = {},
 ): ReviewResult {
-  switch (action) {
-    case "approve":
-      return approveItem(memoryDir, itemId, options);
-    case "dismiss":
-      return dismissItem(memoryDir, itemId, options);
-    case "flag":
-      return flagItem(memoryDir, itemId, options);
-  }
+  const result =
+    action === "approve"
+      ? approveItem(memoryDir, itemId, options)
+      : action === "dismiss"
+        ? dismissItem(memoryDir, itemId, options)
+        : flagItem(memoryDir, itemId, options);
+  // Review approval/dismissal/flagging edits, moves, or removes memory files
+  // directly (out-of-band — it does not go through a StorageManager mutation
+  // method), so bump the corpus sentinel to force the version-keyed hot cache
+  // to rescan on its next read (issue #1902).
+  bumpMemoryCorpusVersionForDir(memoryDir);
+  return result;
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────

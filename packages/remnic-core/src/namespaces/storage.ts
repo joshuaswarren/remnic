@@ -292,7 +292,8 @@ export class NamespaceStorageRouter {
       }
     }
 
-    const sm = new StorageManager(root, this.config.entitySchemas);
+    const { entitySchemas, hotMemoriesCacheEnabled } = this.config;
+    const sm = new StorageManager(root, entitySchemas, hotMemoriesCacheEnabled);
     // Propagate the inline-attribution template so that router-created storages
     // (used by extraction and shared-promotion paths) strip citations consistently,
     // matching the behaviour of the primary this.storage instance in the orchestrator.

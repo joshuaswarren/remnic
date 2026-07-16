@@ -1032,7 +1032,7 @@ export interface PluginConfig {
    * cache of the full parsed corpus (issue #1902). Default true. When on, a
    * scan-once-then-serve fast path eliminates the repeated full-corpus disk
    * scans that dominate post-write recall latency on large collections
-   * (~99K files); coherence is preserved by the on-disk `.memory-status`
+   * (~99K files); coherence is preserved by the on-disk memory-corpus
    * version sentinel and patch-on-write updates. Tradeoff: the cache holds
    * one full-corpus entry per baseDir (hundreds of MB at ~99K files, already
    * resident in the OS page cache). Set false to force disk scans on

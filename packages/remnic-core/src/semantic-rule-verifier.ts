@@ -116,11 +116,12 @@ export async function searchVerifiedSemanticRules(options: {
   query: string;
   maxResults: number;
   minEffectiveConfidence?: number;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedSemanticRuleResult[]> {
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
-  const storage = new StorageManager(options.memoryDir);
+  const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
   const version = storage.getMemoryStatusVersion();
 
   // Use derived rule cache to avoid O(146K) iteration on every call.

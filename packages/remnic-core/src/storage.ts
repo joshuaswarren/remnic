@@ -24,6 +24,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { classifyMemoryTierPath, readOrBootstrapMemoryCorpusVersion } from "./memory-corpus-version.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
@@ -2327,17 +2328,6 @@ export class StorageManager {
   // is not accessible).  The canonical source of truth is state/cold-write.log.
   private static readonly coldWriteVersionByDir = new Map<string, number>();
 
-  /**
-   * Process-wide default for the hot-memories result cache gate (issue #1902).
-   * Set once from config by the orchestrator/access layer via
-   * setHotMemoriesCacheDefault() so that EVERY StorageManager — including the
-   * ephemeral instances recall sub-stages (verified-recall, semantic-rule
-   * verification, ...) construct over the same dir — honors the operator's
-   * hotMemoriesCacheEnabled setting. The constructor option overrides this
-   * per-instance (tests). Defaults true (cache on).
-   */
-  private static hotMemoriesCacheDefault = true;
-
   // Module-level maps for readAllMemories() keyed by base directory, shared
   // across all StorageManager instances (static) so concurrent callers over
   // the same dir cooperate.
@@ -2348,8 +2338,8 @@ export class StorageManager {
   // `hotCacheByDir` in memory-cache.ts (issue #1902): readAllMemories()
   // consults it (getCachedMemories) before the in-flight dedup and populates
   // it (setCachedMemories) after a real scan, so repeat reads within a
-  // memory-status version epoch skip the full-corpus scan entirely. Writes
-  // patch that entry in place and bump the on-disk `.memory-status` version
+  // corpus-version epoch skip the full-corpus scan entirely. Writes patch that
+  // entry in place and bump the on-disk `.memory-corpus-version.log` sentinel
   // sentinel so peer processes rescan (cross-process coherence).
   private static readonly allMemoriesInFlight = new Map<string, Promise<MemoryFile[]>>();
 
@@ -2586,12 +2576,8 @@ export class StorageManager {
   constructor(
     private readonly baseDir: string,
     private readonly entitySchemas?: PluginConfig["entitySchemas"],
-    /**
-     * Hot-memories result cache gate (issue #1902). Defaults to the
-     * process-wide default (see hotMemoriesCacheDefault); pass an explicit
-     * boolean to override per-instance (tests, memory-constrained readers).
-     */
-    private readonly hotMemoriesCacheEnabled: boolean = StorageManager.hotMemoriesCacheDefault,
+    /** Instance-scoped hot-cache gate; direct callers default on (issue #1902). */
+    private readonly hotMemoriesCacheEnabled: boolean = true,
   ) {
     // Load this store's alias table at construction (#1534): StorageManager
     // is created in a dozen places (namespace router, operator toolkit,
@@ -2599,16 +2585,6 @@ export class StorageManager {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
-  }
-
-  /** Set the process-wide hot-memories cache default (issue #1902). The
-   *  orchestrator/access layer calls this with the operator's
-   *  hotMemoriesCacheEnabled config so the escape hatch reaches every
-   *  StorageManager, including ephemeral recall-sub-stage instances. Only an
-   *  explicit `false` disables; `undefined` (e.g. a cast test config missing
-   *  the field) leaves the cache on. */
-  static setHotMemoriesCacheDefault(enabled: boolean | undefined): void {
-    StorageManager.hotMemoriesCacheDefault = enabled !== false;
   }
 
   /**
@@ -2739,7 +2715,12 @@ export class StorageManager {
    * lifecycle/status/entity semantics unchanged.
    */
   getMemoryCorpusVersion(): number {
-    return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
+    const existing = this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
+    if (existing > 0) return existing;
+    const version = readOrBootstrapMemoryCorpusVersion(this.stateDir)
+      ?? Math.max(1, StorageManager.memoryCorpusVersionByDir.get(this.baseDir) ?? 0);
+    StorageManager.memoryCorpusVersionByDir.set(this.baseDir, version);
+    return version;
   }
 
   private bumpMemoryCorpusVersion(): void {
@@ -3148,7 +3129,7 @@ export class StorageManager {
       if (isErrnoCode(error, "ENOENT")) return;
       throw error;
     });
-    if (filePath.includes(`${path.sep}cold${path.sep}`)) {
+    if (this.classifyMemoryTierPath(filePath) === "cold") {
       this.invalidateColdMemoriesCache();
     }
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
@@ -3919,7 +3900,7 @@ export class StorageManager {
 
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
-    this.patchHotMemoriesCache({ added: { path: filePath, frontmatter: fm, content: sanitized.text } });
+    await this.patchHotMemoriesCache({ addedPath: filePath });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
       memoryId: id,
       eventType: "created",
@@ -4261,12 +4242,7 @@ export class StorageManager {
   }
 
   async readAllMemories(): Promise<MemoryFile[]> {
-    // Version-keyed hot-memories cache (issue #1902): once populated, serve the
-    // full parsed corpus from memory within a version epoch. getCachedMemories
-    // returns null when the sentinel is 0 (fresh/test dirs) or the stored
-    // version differs from the current on-disk sentinel (a peer or local write
-    // bumped it), so a stale entry is never served — the miss falls through to
-    // a fresh disk scan below.
+    // Legacy stores bootstrap a non-zero version; peer/local writes advance it.
     if (this.hotMemoriesCacheEnabled) {
       const cached = getCachedMemories(this.baseDir, this.getMemoryCorpusVersion());
       if (cached) return cached;
@@ -4324,15 +4300,15 @@ export class StorageManager {
     }
   }
 
-  /** Clear ALL static caches. Use in tests that write files directly
-   *  (bypassing StorageManager.writeMemory) to avoid stale reads. */
+  /** Clear all static caches, including direct-write test seams. */
   static clearAllStaticCaches(): void {
     StorageManager.allMemoriesInFlight.clear();
     StorageManager.questionsCache.clear();
     StorageManager.coldMemoriesCache.clear(); // also wipe the cold-scan TTL cache
-    // Also clear the module-level memory-cache layers (hot-memories result cache
-    // + entity/derived/QMD layers) so the reset seam is authoritative for tests
-    // that write files directly (issue #1902).
+    StorageManager.memoryCorpusVersionByDir.clear();
+    StorageManager.memoryStatusVersionByDir.clear();
+    StorageManager.artifactWriteVersionByDir.clear();
+    StorageManager.coldWriteVersionByDir.clear();
     clearMemoryCache();
   }
 
@@ -4372,53 +4348,50 @@ export class StorageManager {
     }
   }
 
-  /**
-   * Single-file write/delete fast path for the hot-memories cache (issue
-   * #1902). Keeps THIS process's version-keyed corpus entry warm by patching
-   * the changed memory in place, bumps the shared `.memory-status` version
-   * sentinel so PEER processes rescan (cross-process coherence via the on-disk
-   * sentinel is unchanged), and evicts only the derived/global layers (which
-   * are cheap to rebuild and are never patched). Mirrors the in-flight-dedup
-   * and tombstone-store invalidation that invalidateAllMemoriesCache() does.
-   *
-   * `added` is the written MemoryFile (writes/overwrites); `removedPath` is a
-   * deleted path. A path outside the active scan roots (under cold/ or
-   * archive/) is NOT applied to the hot map — that cache holds active memories
-   * only — but the version bump and derived/global eviction still run so
-   * coherence is preserved. Bulk/ambiguous mutations keep the wholesale
-   * invalidateAllMemoriesCache() drop instead (issue #1902 Step 5).
-   */
-  private patchHotMemoriesCache(opts: { added?: MemoryFile; removedPath?: string }): void {
+  /** Patch one active file locally and bump the shared corpus version for peers. */
+  private classifyMemoryTierPath(filePath: string): "active" | "cold" | "archive" | "outside" {
+    return classifyMemoryTierPath(this.baseDir, filePath);
+  }
+
+  private async patchHotMemoriesCache(opts: { addedPath?: string; removedPath?: string }): Promise<void> {
     const prevVersion = this.getMemoryCorpusVersion();
-    const warm = this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion) !== null;
-    if (warm) {
-      if (
-        opts.removedPath !== undefined &&
-        !opts.removedPath.includes(`${path.sep}cold${path.sep}`) &&
-        !opts.removedPath.includes(`${path.sep}archive${path.sep}`)
-      ) {
-        updateCacheOnDelete(this.baseDir, opts.removedPath);
-      }
-      if (
-        opts.added !== undefined &&
-        !opts.added.path.includes(`${path.sep}cold${path.sep}`) &&
-        !opts.added.path.includes(`${path.sep}archive${path.sep}`)
-      ) {
-        updateCacheOnWrite(this.baseDir, opts.added);
+    let warm = this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion) !== null;
+    if (
+      warm &&
+      opts.removedPath !== undefined &&
+      this.classifyMemoryTierPath(opts.removedPath) === "active"
+    ) {
+      updateCacheOnDelete(this.baseDir, opts.removedPath);
+    }
+    if (warm && opts.removedPath !== undefined && this.classifyMemoryTierPath(opts.removedPath) === "outside") {
+      warm = false;
+    }
+    if (
+      warm &&
+      opts.addedPath !== undefined &&
+      this.classifyMemoryTierPath(opts.addedPath) === "active"
+    ) {
+      // Parse the just-written file so the patch exactly matches disk normalization.
+      const [parsed] = await this.readParsedMemoriesFromPaths([opts.addedPath], 1);
+      if (parsed) {
+        updateCacheOnWrite(this.baseDir, parsed);
+      } else {
+        // Leave the old version tagged so the post-bump read rescans.
+        warm = false;
       }
     }
-    // Bump the corpus version sentinel (peer-process coherence for the hot
-    // cache) and evict every OTHER layer; the hot layer is patched above, not
-    // dropped. memory-status is deliberately NOT bumped here so plain creates/
-    // content edits don't invalidate the entity cache (issue #1902).
+    if (warm && opts.addedPath !== undefined && this.classifyMemoryTierPath(opts.addedPath) === "outside") {
+      warm = false;
+    }
+    // Do not bump memory-status for plain corpus edits (issue #1902).
     this.bumpMemoryCorpusVersion();
-    invalidateDerivedAndGlobalForDir(this.baseDir);
     if (warm) {
-      // Re-key the patched entry (still tagged prevVersion) to the new version
-      // so it survives the bump and serves the next read.
+      // Re-key the local patch to the new version.
       const patched = getCachedMemories(this.baseDir, prevVersion);
       if (patched) setCachedMemories(this.baseDir, patched, this.getMemoryCorpusVersion());
     }
+    // Evict other derived/global layers; retain only the patched hot entry.
+    invalidateDerivedAndGlobalForDir(this.baseDir);
     StorageManager.allMemoriesInFlight.delete(this.baseDir);
     if (this.tombstoneStore) {
       this.tombstoneStore.invalidate();
@@ -4715,7 +4688,7 @@ export class StorageManager {
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
     const fileContent = `${serializeFrontmatter(memory.frontmatter)}\n\n${memory.content}\n`;
     await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
-    this.invalidateAllMemoriesCache();
+    await this.patchHotMemoriesCache({ addedPath: targetPath });
     this.notifyCatalogWrite();
   }
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<void> {
@@ -4731,10 +4704,9 @@ export class StorageManager {
           throw err;
         }
       }
-      // Re-invalidate after the unlink — writeMemoryFileAtomic already
-      // invalidated, but a concurrent readAllMemories() may have re-populated
-      // the cache between the write and the unlink.
-      this.invalidateAllMemoriesCache();
+      // Patch the source removal separately: a concurrent read between the
+      // destination write and source unlink may have warmed either view.
+      await this.patchHotMemoriesCache({ removedPath: memory.path });
       updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
     }
   }
@@ -4761,12 +4733,12 @@ export class StorageManager {
         }
       }
       updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
+      await this.patchHotMemoriesCache({ removedPath: memory.path });
       this.bumpMemoryStatusVersion();
       return { changed: false, targetPath };
     }
 
     await this.moveMemoryToPath(memory, targetPath);
-    this.invalidateAllMemoriesCache();
     // If moving to cold, also invalidate the cold-scan cache so the next
     // readAllColdMemories() call sees the newly-demoted file (Finding UOGi fix).
     if (targetTier === "cold") {
@@ -4807,7 +4779,7 @@ export class StorageManager {
       await this.writeStorageSecureFile(destPath, fileContent);
       await unlink(memory.path);
       markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
-      this.invalidateAllMemoriesCache();
+      await this.patchHotMemoriesCache({ removedPath: memory.path });
       await this.appendGeneratedMemoryLifecycleEventFailOpen(
         "storage.archiveMemory",
         {
@@ -4908,7 +4880,7 @@ export class StorageManager {
     try {
       await unlink(memory.path);
       markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
+      await this.patchHotMemoriesCache({ removedPath: memory.path });
       this.bumpMemoryStatusVersion();
       log.debug(`invalidated memory ${id}`);
       return true;
@@ -4945,7 +4917,7 @@ export class StorageManager {
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
-    this.patchHotMemoriesCache({ added: { path: memory.path, frontmatter: updated, content: sanitized.text } });
+    await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
       eventType: "updated",
@@ -4980,11 +4952,11 @@ export class StorageManager {
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
-    this.patchHotMemoriesCache({ added: { path: memory.path, frontmatter: updated, content: memory.content } });
+    await this.patchHotMemoriesCache({ addedPath: memory.path });
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
     // call (Finding UvUy fix).
-    if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
+    if (this.classifyMemoryTierPath(memory.path) === "cold") {
       this.invalidateColdMemoriesCache();
     }
     try {
@@ -5047,6 +5019,9 @@ export class StorageManager {
         try {
           await unlink(m.path);
           markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          // Patch immediately after each unlink so concurrent readers cannot
+          // observe an already-deleted file while the batch is still running.
+          await this.patchHotMemoriesCache({ removedPath: m.path });
           deleted.push(m);
           log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
         } catch {
@@ -5056,7 +5031,6 @@ export class StorageManager {
     }
 
     if (deleted.length > 0) {
-      this.invalidateAllMemoriesCache();
       this.bumpMemoryStatusVersion();
     }
 
@@ -6062,6 +6036,7 @@ export class StorageManager {
         try {
           await unlink(m.path);
           markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          await this.patchHotMemoriesCache({ removedPath: m.path });
           deleted.push(m);
           log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
         } catch {
@@ -6105,6 +6080,7 @@ export class StorageManager {
       try {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        await this.patchHotMemoriesCache({ addedPath: memory.path });
         updated++;
       } catch (err) {
         log.debug(`failed to update access tracking for ${entry.memoryId}: ${err}`);
@@ -6308,6 +6284,9 @@ export class StorageManager {
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.writeStorageSecureFile(filePath, fileContent);
+    // Keep the version-keyed hot-memories cache coherent with the new chunk
+    // file (issue #1902) — same single-file patch path writeMemory uses.
+    await this.patchHotMemoriesCache({ addedPath: filePath });
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
     return id;
   }
@@ -6349,6 +6328,7 @@ export class StorageManager {
 
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
+      await this.patchHotMemoriesCache({ addedPath: oldMemory.path });
       await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
         memoryId: oldMemoryId,
         eventType: "superseded",
@@ -6468,6 +6448,7 @@ export class StorageManager {
       try {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        await this.patchHotMemoriesCache({ addedPath: memory.path });
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
           eventType: "archived",

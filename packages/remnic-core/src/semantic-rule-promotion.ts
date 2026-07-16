@@ -543,6 +543,7 @@ export async function promoteSemanticRuleFromMemory(options: {
   enabled: boolean;
   sourceMemoryId: string;
   dryRun?: boolean;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<SemanticRulePromotionReport> {
   const report: SemanticRulePromotionReport = {
     enabled: options.enabled,
@@ -558,7 +559,7 @@ export async function promoteSemanticRuleFromMemory(options: {
     return report;
   }
 
-  const storage = new StorageManager(options.memoryDir);
+  const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
   const sourceMemory = await storage.getMemoryById(options.sourceMemoryId);
   if (!sourceMemory) {
     report.skipped.push({

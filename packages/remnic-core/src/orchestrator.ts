@@ -1334,13 +1334,7 @@ export class Orchestrator {
 
   constructor(config: PluginConfig) {
     this.config = config;
-    // Thread the hot-memories cache escape hatch (issue #1902) to the storage
-    // layer BEFORE any StorageManager is constructed below, so every instance
-    // — including the ephemeral ones recall sub-stages build over the same dir
-    // — honors the operator's setting. Destructured (not `config.<flag>`) so
-    // this single access-layer read stays off the scattered-flag ratchet.
     const { hotMemoriesCacheEnabled } = config;
-    StorageManager.setHotMemoriesCacheDefault(hotMemoriesCacheEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
@@ -1365,7 +1359,11 @@ export class Orchestrator {
       config,
       this.storageRouter,
     );
-    this.storage = new StorageManager(config.memoryDir, config.entitySchemas);
+    this.storage = new StorageManager(
+      config.memoryDir,
+      config.entitySchemas,
+      hotMemoriesCacheEnabled,
+    );
     // Propagate the inline-attribution template so the storage layer can strip
     // citations from legacy facts during the hash-index rebuild path.
     this.storage.citationTemplate = config.inlineSourceAttributionFormat;
@@ -1497,7 +1495,8 @@ export class Orchestrator {
       tierMigrationStatus: this.tierMigrationStatus,
       getUtilityRuntimeValues: () => this.utilityRuntimeValues,
       getCompounding: () => this.compounding,
-      createColdStorage: (parentDir) => new StorageManager(parentDir),
+      createColdStorage: (parentDir) =>
+        new StorageManager(parentDir, config.entitySchemas, hotMemoriesCacheEnabled),
     });
     this.compressionGuidelineCoordinator = new CompressionGuidelineCoordinator({
       config,

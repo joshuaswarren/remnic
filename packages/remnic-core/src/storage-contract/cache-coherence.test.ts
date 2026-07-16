@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -193,7 +193,7 @@ test("hot cache (#1902): a delete rescans and drops the removed memory", async (
   }
 });
 
-test("hot cache (#1902/#1904 compat): a plain fact create does NOT bump memory-status (entity cache stays warm)", async () => {
+test("hot cache (#1902/#1904 compat): a plain fact create does NOT bump memory-status", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-status-"));
   try {
     resetStaticCaches();
@@ -224,6 +224,156 @@ test("hot cache (#1902): hotMemoriesCacheEnabled=false forces every read to resc
     await sm.readAllMemories();
     await sm.readAllMemories();
     assert.equal(spy.scans(), 2, "with the cache disabled, each sequential read scans disk");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): a legacy store bootstraps a non-zero sentinel and warms after one scan", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-bootstrap-"));
+  try {
+    resetStaticCaches();
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeMemory("fact", "legacy seed");
+    await unlink(path.join(dir, "state", ".memory-corpus-version.log"));
+    resetStaticCaches();
+
+    const sm = new StorageManager(dir);
+    const spy = installScanSpy(sm);
+    await sm.readAllMemories();
+    await sm.readAllMemories();
+    assert.equal(sm.getMemoryCorpusVersion() > 0, true);
+    assert.equal((await stat(path.join(dir, "state", ".memory-corpus-version.log"))).size > 0, true);
+    assert.equal(spy.scans(), 1, "read-only legacy corpora should scan once, then stay warm");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): a peer raw write plus sentinel bump is visible after exactly one rescan", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-peer-write-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    const { id } = await sm.writeMemory("fact", "local seed");
+    const seed = await sm.getMemoryById(id);
+    assert.ok(seed);
+    await sm.readAllMemories();
+    const spy = installScanSpy(sm);
+
+    const peerId = "peer-raw-write";
+    const peerPath = path.join(path.dirname(seed!.path), `${peerId}.md`);
+    const raw = await readFile(seed!.path, "utf-8");
+    await writeFile(
+      peerPath,
+      raw.replace(`id: ${id}`, `id: ${peerId}`).replace("local seed", "written by peer"),
+      "utf-8",
+    );
+    await appendFile(path.join(dir, "state", ".memory-corpus-version.log"), "x");
+
+    const after = await sm.readAllMemories();
+    assert.equal(spy.scans(), 1);
+    assert.ok(after.some((memory) => memory.frontmatter.id === peerId && memory.content === "written by peer"));
+    await sm.readAllMemories();
+    assert.equal(spy.scans(), 1, "the peer-rescan result should become the new warm entry");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): tier classification is relative to the store root", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-tier-"));
+  const dir = path.join(parent, "cold", "archive", "store");
+  try {
+    await mkdir(dir, { recursive: true });
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.writeMemory("fact", "A");
+    await sm.readAllMemories();
+    const spy = installScanSpy(sm);
+    await sm.writeMemory("fact", "B");
+    const after = await sm.readAllMemories();
+    assert.equal(spy.scans(), 0, "ancestor names cold/archive must not misclassify active files");
+    assert.deepEqual(after.map((memory) => memory.content).sort(), ["A", "B"]);
+  } finally {
+    resetStaticCaches();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): cache gating remains per instance", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-instance-gate-"));
+  try {
+    resetStaticCaches();
+    const enabled = new StorageManager(dir, undefined, true);
+    const disabled = new StorageManager(dir, undefined, false);
+    await enabled.writeMemory("fact", "A");
+    await enabled.readAllMemories();
+    const enabledSpy = installScanSpy(enabled);
+    const disabledSpy = installScanSpy(disabled);
+
+    await disabled.readAllMemories();
+    await disabled.readAllMemories();
+    await enabled.readAllMemories();
+    assert.equal(disabledSpy.scans(), 2, "disabled instance must ignore a peer's warm cache");
+    assert.equal(enabledSpy.scans(), 0, "enabled instance must remain warm");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): active mutation matrix never serves pre-mutation objects", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-mutations-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+
+    const { id: parentId } = await sm.writeMemory("fact", "parent");
+    await sm.readAllMemories();
+    const warmSpy = installScanSpy(sm);
+    await sm.writeChunk(parentId, 0, 1, "fact", "chunk body");
+    assert.ok((await sm.readAllMemories()).some((memory) => memory.frontmatter.parentId === parentId));
+    assert.equal(warmSpy.scans(), 0, "chunk writes should patch the warm entry");
+
+    await sm.flushAccessTracking([{
+      memoryId: parentId,
+      newCount: 7,
+      lastAccessed: "2026-07-16T00:00:00.000Z",
+    }]);
+    assert.equal((await sm.getMemoryById(parentId))?.frontmatter.accessCount, 7);
+    assert.equal(warmSpy.scans(), 0, "access tracking should patch the warm entry");
+
+    const { id: ttlId } = await sm.writeMemory("fact", "expired ttl", {
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+    await sm.cleanExpiredTTL();
+    assert.equal(await sm.getMemoryById(ttlId), null, "TTL cleanup must remove the warm object");
+
+    const { id: commitmentId } = await sm.writeMemory("commitment", "fulfilled", {
+      tags: ["fulfilled"],
+    });
+    const commitment = await sm.getMemoryById(commitmentId);
+    assert.ok(commitment);
+    await sm.writeMemoryFrontmatter(commitment!, { updated: "2000-01-01T00:00:00.000Z" });
+    await sm.cleanExpiredCommitments(1);
+    assert.equal(await sm.getMemoryById(commitmentId), null, "commitment decay must remove the warm object");
+
+    const { id: archivedId } = await sm.writeMemory("fact", "archive me");
+    const archived = await sm.getMemoryById(archivedId);
+    assert.ok(archived);
+    assert.ok(await sm.archiveMemory(archived!));
+    assert.equal(await sm.getMemoryById(archivedId), null, "archive moves must remove the active warm object");
+
+    const { id: oldId } = await sm.writeMemory("fact", "old truth");
+    const { id: newId } = await sm.writeMemory("fact", "new truth");
+    assert.equal(await sm.supersedeMemory(oldId, newId, "test"), true);
+    assert.equal((await sm.getMemoryById(oldId))?.frontmatter.status, "superseded");
   } finally {
     resetStaticCaches();
     await rm(dir, { recursive: true, force: true });

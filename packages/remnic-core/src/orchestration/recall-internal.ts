@@ -2073,6 +2073,7 @@ export class RecallInternalCoordinator {
       }
 
       const VERIFIED_RECALL_TIMEOUT_MS = 15_000;
+      const { boxRecallDays, hotMemoriesCacheEnabled } = this.deps.config;
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
         Promise.all(
@@ -2081,7 +2082,8 @@ export class RecallInternalCoordinator {
               memoryDir,
               query: retrievalQuery,
               maxResults,
-              boxRecallDays: this.deps.config.boxRecallDays,
+              boxRecallDays,
+              hotMemoriesCacheEnabled,
             }).catch((err) => {
               log.debug(`verified recall directory scan failed: ${err}`);
               return [] as VerifiedEpisodeResult[];
@@ -2162,6 +2164,7 @@ export class RecallInternalCoordinator {
       }
 
       const VERIFIED_RULES_TIMEOUT_MS = 15_000;
+      const { hotMemoriesCacheEnabled } = this.deps.config;
       let rulesTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
         Promise.all(
@@ -2170,6 +2173,7 @@ export class RecallInternalCoordinator {
               memoryDir,
               query: retrievalQuery,
               maxResults,
+              hotMemoriesCacheEnabled,
             }).catch((err) => {
               log.debug(`verified rules directory scan failed: ${err}`);
               return [] as VerifiedSemanticRuleResult[];

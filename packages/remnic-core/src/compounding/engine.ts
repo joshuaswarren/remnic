@@ -434,6 +434,11 @@ function cadenceStaleWindowMs(cadence: "daily" | "weekly" | "monthly" | "quarter
   }
 }
 
+function storageForConfig(config: PluginConfig): StorageManager {
+  const { memoryDir, entitySchemas, hotMemoriesCacheEnabled } = config;
+  return new StorageManager(memoryDir, entitySchemas, hotMemoriesCacheEnabled);
+}
+
 export class CompoundingEngine {
   private readonly weeklyDir: string;
   private readonly rubricsDir: string;
@@ -449,7 +454,7 @@ export class CompoundingEngine {
 
   constructor(
     private readonly config: PluginConfig,
-    private readonly storage: StorageManager = new StorageManager(config.memoryDir),
+    private readonly storage: StorageManager = storageForConfig(config),
   ) {
     this.weeklyDir = path.join(config.memoryDir, "compounding", "weekly");
     this.rubricsDir = path.join(config.memoryDir, "compounding", "rubrics");
@@ -668,7 +673,7 @@ export class CompoundingEngine {
 
     const content = normalizePromotedGuidanceContent(candidate.content);
     const persistedContent = sanitizeMemoryContent(content).text;
-    const storage = opts.storage ?? new StorageManager(this.config.memoryDir);
+    const storage = opts.storage ?? storageForConfig(this.config);
     const existing = (await storage.readAllMemories()).find((memory) =>
       memory.frontmatter.category === candidate.category &&
       memory.frontmatter.status !== "archived" &&

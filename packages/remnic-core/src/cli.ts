@@ -1392,13 +1392,13 @@ export async function runHarmonicSearchCliCommand(options: {
     anchorsEnabled: options.abstractionAnchorsEnabled,
   });
 }
-
 export async function runVerifiedRecallSearchCliCommand(options: {
   memoryDir: string;
   verifiedRecallEnabled: boolean;
   query: string;
   maxResults?: number;
   boxRecallDays?: number;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedEpisodeResult[]> {
   if (!options.verifiedRecallEnabled) return [];
   return searchVerifiedEpisodes({
@@ -1406,9 +1406,9 @@ export async function runVerifiedRecallSearchCliCommand(options: {
     query: options.query,
     maxResults: Math.max(1, Math.floor(options.maxResults ?? 3)),
     boxRecallDays: options.boxRecallDays,
+    hotMemoriesCacheEnabled: options.hotMemoriesCacheEnabled,
   });
 }
-
 export function isNormalRetrievalVisibleMemory(memory: MemoryFile): boolean {
   return memory.frontmatter.status !== "forgotten";
 }
@@ -1428,21 +1428,21 @@ export async function filterNormalMemorySearchResults(
   }
   return filtered;
 }
-
 export async function runSemanticRulePromoteCliCommand(options: {
   memoryDir: string;
   semanticRulePromotionEnabled: boolean;
   sourceMemoryId: string;
   dryRun?: boolean;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<SemanticRulePromotionReport> {
   return promoteSemanticRuleFromMemory({
     memoryDir: options.memoryDir,
     enabled: options.semanticRulePromotionEnabled,
     sourceMemoryId: options.sourceMemoryId,
     dryRun: options.dryRun,
+    hotMemoriesCacheEnabled: options.hotMemoriesCacheEnabled,
   });
 }
-
 export async function runCompoundingPromoteCliCommand(options: {
   memoryDir: string;
   compoundingEnabled: boolean;
@@ -1450,6 +1450,7 @@ export async function runCompoundingPromoteCliCommand(options: {
   weekId: string;
   candidateId: string;
   dryRun?: boolean;
+  hotMemoriesCacheEnabled?: boolean;
 }) {
   const { CompoundingEngine } = await import("./compounding/engine.js");
   const config = parseConfig({
@@ -1458,6 +1459,7 @@ export async function runCompoundingPromoteCliCommand(options: {
     sharedContextEnabled: false,
     compoundingEnabled: options.compoundingEnabled,
     compoundingSemanticEnabled: options.compoundingSemanticEnabled,
+    hotMemoriesCacheEnabled: options.hotMemoriesCacheEnabled,
   });
   const engine = new CompoundingEngine(config);
   return engine.promoteCandidate({
@@ -1466,21 +1468,21 @@ export async function runCompoundingPromoteCliCommand(options: {
     dryRun: options.dryRun,
   });
 }
-
 export async function runSemanticRuleVerifyCliCommand(options: {
   memoryDir: string;
   semanticRuleVerificationEnabled: boolean;
   query: string;
   maxResults?: number;
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedSemanticRuleResult[]> {
   if (!options.semanticRuleVerificationEnabled) return [];
   return searchVerifiedSemanticRules({
     memoryDir: options.memoryDir,
     query: options.query,
     maxResults: Math.max(1, Math.floor(options.maxResults ?? 3)),
+    hotMemoriesCacheEnabled: options.hotMemoriesCacheEnabled,
   });
 }
-
 export async function runWorkProductStatusCliCommand(options: {
   memoryDir: string;
   workProductLedgerDir?: string;
@@ -1492,7 +1494,6 @@ export async function runWorkProductStatusCliCommand(options: {
     enabled: options.creationMemoryEnabled,
   });
 }
-
 export async function runUtilityTelemetryStatusCliCommand(options: {
   memoryDir: string;
   memoryUtilityLearningEnabled: boolean;
@@ -1504,7 +1505,6 @@ export async function runUtilityTelemetryStatusCliCommand(options: {
     promotionByOutcomeEnabled: options.promotionByOutcomeEnabled,
   });
 }
-
 export async function runUtilityTelemetryRecordCliCommand(options: {
   memoryDir: string;
   memoryUtilityLearningEnabled: boolean;
@@ -3651,10 +3651,10 @@ export function registerCli(
 ): void {
   api.registerCli(
     ({ program }) => {
+      const { hotMemoriesCacheEnabled } = orchestrator.config;
       const cmd = program
         .command("engram")
         .description("Engram local memory commands");
-
       cmd
         .command("stats")
         .description("Show memory system statistics")
@@ -6288,11 +6288,11 @@ export function registerCli(
             query,
             maxResults: Number.isFinite(maxResults) ? maxResults : 3,
             boxRecallDays: orchestrator.config.boxRecallDays,
+            hotMemoriesCacheEnabled,
           });
           console.log(JSON.stringify(results, null, 2));
           console.log("OK");
         });
-
       cmd
         .command("semantic-rule-promote")
         .description("Promote an explicit IF/THEN rule from a verified episodic memory")
@@ -6305,11 +6305,11 @@ export function registerCli(
             semanticRulePromotionEnabled: resolveConversationContextCapabilities(orchestrator.config).semanticRulePromotion,
             sourceMemoryId: String(options.memoryId ?? ""),
             dryRun: options.dryRun === true,
+            hotMemoriesCacheEnabled,
           });
           console.log(JSON.stringify(result, null, 2));
           console.log("OK");
         });
-
       cmd
         .command("compounding-promote")
         .description("Promote an advisory compounding candidate into a durable rule/principle memory")
@@ -6325,11 +6325,11 @@ export function registerCli(
             weekId: String(options.weekId ?? ""),
             candidateId: String(options.candidateId ?? ""),
             dryRun: options.dryRun === true,
+            hotMemoriesCacheEnabled,
           });
           console.log(JSON.stringify(result, null, 2));
           console.log("OK");
         });
-
       cmd
         .command("semantic-rule-verify")
         .description("Preview verified semantic-rule recall with provenance-aware confidence downgrades")
@@ -6346,11 +6346,11 @@ export function registerCli(
             semanticRuleVerificationEnabled: resolveRecallAuxiliaryCapabilities(orchestrator.config).semanticRuleVerification,
             query,
             maxResults: Number.isFinite(maxResults) ? maxResults : 3,
+            hotMemoriesCacheEnabled,
           });
           console.log(JSON.stringify(results, null, 2));
           console.log("OK");
         });
-
       cmd
         .command("conversation-index-health")
         .description("Show conversation index backend health and index stats")

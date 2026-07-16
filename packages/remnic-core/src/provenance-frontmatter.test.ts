@@ -64,6 +64,11 @@ async function writeFactFile(
   const factsDir = path.join((storage as unknown as { baseDir: string }).baseDir, "facts", today);
   await mkdir(factsDir, { recursive: true });
   await writeFile(path.join(factsDir, `${id}.md`), `${lines.join("\n")}\n\n${body}\n`, "utf-8");
+  // This is an out-of-band write (bypasses StorageManager.writeMemory), so it
+  // must invalidate the version-keyed hot-memories cache (issue #1902) the same
+  // way the storage-contract harness does after a raw seed — otherwise a warm
+  // cache from a prior read serves a list missing this file.
+  storage.invalidateAllMemoriesCacheForDir();
   return id;
 }
 
