@@ -463,6 +463,80 @@ test("parseBenchArgs accepts --trial-limit for bench run locomo", () => {
   assert.equal(parsed.publishedTrialLimit, 3);
 });
 
+test("parseBenchArgs accepts hash-pinned task selection for one full LoCoMo run", () => {
+  const digest = "a".repeat(64);
+  const parsed = parseBenchArgs([
+    "run",
+    "locomo",
+    "--task-ids-file",
+    "./private/task-ids.json",
+    "--expected-task-id-list-sha256",
+    digest,
+  ]);
+
+  assert.equal(parsed.taskIdsFile, path.resolve("private/task-ids.json"));
+  assert.equal(parsed.expectedTaskIdListSha256, digest);
+});
+
+test("parseBenchArgs requires both hash-pinned task-selection flags", () => {
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--task-ids-file", "task-ids.json"]),
+    /must be supplied together/,
+  );
+  assert.throws(
+    () => parseBenchArgs([
+      "run",
+      "locomo",
+      "--expected-task-id-list-sha256",
+      "a".repeat(64),
+    ]),
+    /must be supplied together/,
+  );
+});
+
+test("parseBenchArgs rejects invalid task-selection hashes", () => {
+  assert.throws(
+    () => parseBenchArgs([
+      "run",
+      "locomo",
+      "--task-ids-file",
+      "task-ids.json",
+      "--expected-task-id-list-sha256",
+      "ABC",
+    ]),
+    /--expected-task-id-list-sha256 must be a lowercase SHA-256 hex digest/,
+  );
+});
+
+test("parseBenchArgs scopes explicit task selection to an uncapped full LoCoMo run", () => {
+  const selectorFlags = [
+    "--task-ids-file",
+    "task-ids.json",
+    "--expected-task-id-list-sha256",
+    "a".repeat(64),
+  ];
+
+  for (const argv of [
+    ["run", "longmemeval", ...selectorFlags],
+    ["run", "locomo", "longmemeval", ...selectorFlags],
+    ["run", "--all", ...selectorFlags],
+  ]) {
+    assert.throws(() => parseBenchArgs(argv), /only for a single LoCoMo run/);
+  }
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--quick", ...selectorFlags]),
+    /requires a full LoCoMo run/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--limit", "10", ...selectorFlags]),
+    /cannot be combined with --limit or --trial-limit/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--trial-limit", "10", ...selectorFlags]),
+    /cannot be combined with --limit or --trial-limit/,
+  );
+});
+
 test("parseBenchArgs accepts --trial-limit for bench run memoryagentbench", () => {
   const parsed = parseBenchArgs(["run", "memoryagentbench", "--trial-limit", "2"]);
 

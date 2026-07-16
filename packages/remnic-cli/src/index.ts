@@ -495,6 +495,12 @@ type PackageBenchProviderConfig = {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 };
 
+type PackageBenchTaskSelector = {
+  kind: "explicit-task-ids";
+  taskIds: string[];
+  expectedSelectedTaskIdsSha256: string;
+};
+
 type PackageBenchModule = {
   getBenchmark?: (id: string) => {
     runnerAvailable?: boolean;
@@ -1067,6 +1073,9 @@ Options:
                            Path to a local-lab manifest JSON file (required for --runtime-profile local-lab)
   --threshold <value>      Regression threshold for compare (default: 0.05)
   --trial-limit <n>        Cap scored LoCoMo or MemoryAgentBench QA trials for staged published runs
+  --task-ids-file <path>   Select an explicit JSON array of LoCoMo task IDs
+  --expected-task-id-list-sha256 <sha256>
+                           Pin the selected LoCoMo task-ID list
   --task-filter <pattern>  BEAM diagnostic filter; match task id, ability, or question text
   --detail                 Include per-task details for bench results
   --format <json|csv|html> Output format for bench export
@@ -1323,6 +1332,11 @@ async function runBenchViaFallback(
   benchmarkId: string,
   runtimeProfile: BenchRuntimeProfile,
 ): Promise<string> {
+  if (parsed.taskIdsFile) {
+    throw new Error(
+      "Fallback benchmark runner does not support hash-pinned LoCoMo task selection. Build/install @remnic/bench to use --task-ids-file.",
+    );
+  }
   if (runtimeProfile === "real" && parsed.remnicConfigPath) {
     resolveExistingBenchRemnicConfigPath(parsed.remnicConfigPath);
   }
@@ -1957,9 +1971,12 @@ export const __benchDatasetTestHooks = {
       publishedTrialConcurrency?: number;
       publishedTaskFilter?: string;
     },
+    taskSelector?: PackageBenchTaskSelector,
   ) {
-    return buildPublishedBenchmarkOptions(benchmarkId, args);
+    return buildPublishedBenchmarkOptions(benchmarkId, args, taskSelector);
   },
+  loadPinnedLoCoMoTaskSelectorForTest: loadPinnedLoCoMoTaskSelector,
+  redactBenchTaskIdsFilePathForTest: redactBenchTaskIdsFilePath,
   validateRunnerManagedPublishedDryRunDatasetForTest,
   validateRunnerManagedPublishedDryRunDatasetWithModuleForTest(
     benchModule: unknown,
@@ -2894,6 +2911,7 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     );
     process.exit(1);
   }
+  const taskSelector = loadPinnedLoCoMoTaskSelector(parsed);
 
   // Dry-run: validate config and load the dataset, but never touch the
   // model. Useful for pre-flight checking a long run. Prints a single
@@ -2920,6 +2938,7 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     const benchmarkOptions = buildPublishedBenchmarkOptions(
       benchmarkId,
       parsed,
+      taskSelector,
     );
     let itemCount: number | undefined;
     // Codex P2 review on PR #603: when the loader returns
@@ -3031,6 +3050,8 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       parsed,
       benchmarkId,
       runtimeProfile,
+      undefined,
+      taskSelector,
     );
     if (!result.ok) {
       console.error(
@@ -3117,6 +3138,7 @@ function buildPublishedBenchmarkOptions(
     publishedTaskFilter?: string;
     memcorrectAdapter?: "remnic" | "prompt-only";
   },
+  taskSelector?: PackageBenchTaskSelector,
 ): Record<string, unknown> | undefined {
   const trialLimitOptions =
     args.publishedTrialLimit !== undefined
@@ -3131,6 +3153,7 @@ function buildPublishedBenchmarkOptions(
       ...(trialLimitOptions ?? {}),
       ...(trialConcurrencyOptions ?? {}),
       replayExtractionMode: "skip",
+      ...(taskSelector ? { taskSelector } : {}),
     };
   }
   if (benchmarkId === "ama-bench") {
@@ -3146,6 +3169,53 @@ function buildPublishedBenchmarkOptions(
     return { adapter: args.memcorrectAdapter };
   }
   return undefined;
+}
+
+function loadPinnedLoCoMoTaskSelector(
+  parsed: Pick<ParsedBenchArgs, "taskIdsFile" | "expectedTaskIdListSha256">,
+): PackageBenchTaskSelector | undefined {
+  if (!parsed.taskIdsFile) return undefined;
+  if (!parsed.expectedTaskIdListSha256) {
+    throw new Error(
+      "--task-ids-file requires --expected-task-id-list-sha256.",
+    );
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(fs.readFileSync(parsed.taskIdsFile, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Unable to read --task-ids-file ${parsed.taskIdsFile}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!Array.isArray(decoded) || decoded.length === 0) {
+    throw new Error("--task-ids-file JSON must be a non-empty array of strings.");
+  }
+  if (decoded.some((taskId) => typeof taskId !== "string" || taskId.length === 0)) {
+    throw new Error("--task-ids-file JSON must contain only non-empty strings.");
+  }
+  const taskIds = decoded as string[];
+  if (new Set(taskIds).size !== taskIds.length) {
+    throw new Error("--task-ids-file must not contain duplicate task IDs.");
+  }
+
+  return {
+    kind: "explicit-task-ids",
+    taskIds,
+    expectedSelectedTaskIdsSha256: parsed.expectedTaskIdListSha256,
+  };
+}
+
+function redactBenchTaskIdsFilePath(argv: readonly string[]): string[] {
+  const redacted = [...argv];
+  for (let index = 0; index < redacted.length; index += 1) {
+    if (redacted[index] === "--task-ids-file" && index + 1 < redacted.length) {
+      redacted[index + 1] = "<task-ids-file>";
+      index += 1;
+    }
+  }
+  return redacted;
 }
 
 async function validateRunnerManagedPublishedDryRunDataset(
@@ -3360,6 +3430,7 @@ async function runBenchViaPackage(
   benchmarkId: string,
   runtimeProfile: BenchRuntimeProfile,
   benchStatusPath?: string,
+  taskSelector?: PackageBenchTaskSelector,
 ): Promise<{ ok: boolean; writtenPath?: string }> {
   const loaded = await tryLoadBenchModule();
   if (!loaded) return { ok: false };
@@ -3429,7 +3500,11 @@ async function runBenchViaPackage(
   // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
   // instead of the user-specified seed, breaking reproducibility.
   const effectiveSeed = parsed.publishedSeed;
-  let benchmarkOptions = buildPublishedBenchmarkOptions(benchmarkId, parsed);
+  let benchmarkOptions = buildPublishedBenchmarkOptions(
+    benchmarkId,
+    parsed,
+    taskSelector,
+  );
 
   try {
     const amaBenchProtocol = buildAmaBenchProtocolOptions(
@@ -4068,7 +4143,7 @@ async function writeBenchReproManifestForPackageRun(args: {
       datasetDirs: resolveBenchReproDatasetDirs(args.parsed, args.benchmarkIds),
       command: {
         cwd: process.cwd(),
-        argv: process.argv.slice(2),
+        argv: redactBenchTaskIdsFilePath(process.argv.slice(2)),
         env: process.env,
         envKeys: resolveBenchReproEnvKeys(),
       },
@@ -10721,6 +10796,7 @@ async function cmdBench(rest: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const taskSelector = loadPinnedLoCoMoTaskSelector(parsed);
   const runtimeProfiles = resolveBenchRunProfiles(parsed);
   let selectedWorkItems = createBenchWorkItems(selectedBenchmarks, runtimeProfiles);
 
@@ -10816,6 +10892,7 @@ async function cmdBench(rest: string[]): Promise<void> {
             benchmarkId,
             runtimeProfile,
             benchStatusPath,
+            taskSelector,
           );
           if (handledByPackage.ok) {
             if (handledByPackage.writtenPath) {

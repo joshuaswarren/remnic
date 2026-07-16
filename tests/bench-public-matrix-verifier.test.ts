@@ -727,6 +727,44 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
   assert.equal(limitedIssues.length, 1, JSON.stringify(filteredTrial.issues, null, 2));
   assert.match(limitedIssues[0]!.message, /taskFilter/);
 
+  result.config.benchmarkOptions = {
+    limit: 1,
+    taskSelection: {
+      algorithm: "explicit-task-ids",
+      version: 1,
+      candidateCount: 1_986,
+      selectedCount: 1,
+      selectedTaskIds: [result.results.tasks[0]!.taskId],
+      selectedTaskIdsSha256: "a".repeat(64),
+    },
+  };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
+  const selectedTrial = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  const selectedIssues = selectedTrial.issues.filter((issue) => issue.code === "limited-result");
+  assert.equal(selectedIssues.length, 1, JSON.stringify(selectedTrial.issues, null, 2));
+  assert.match(selectedIssues[0]!.message, /taskSelection/);
+
   result.config.benchmarkOptions = { limit: 1 };
   await writeResult(resultsDir, result);
   await writeManifest(

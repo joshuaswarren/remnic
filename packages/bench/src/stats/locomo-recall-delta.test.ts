@@ -4,6 +4,10 @@ import test from "node:test";
 
 import type { BenchmarkResult, TaskResult } from "../types.js";
 import {
+  selectLoCoMoTasks,
+  type LoCoMoTaskSelectionManifest,
+} from "../benchmarks/published/locomo/task-selection.js";
+import {
   LOCOMO_FULL_TASK_COUNT,
   diagnoseLoComoRecallDelta,
   renderLoComoRecallDeltaMarkdown,
@@ -42,15 +46,7 @@ function result(
   overrides: Partial<BenchmarkResult> = {}
 ): BenchmarkResult {
   const complete = completeTasks(tasks);
-  const aggregates = Object.fromEntries(
-    Object.keys(complete[0]?.scores ?? {}).map((metric) => {
-      const values = complete
-        .map((entry) => entry.scores[metric])
-        .filter((value): value is number => Number.isFinite(value));
-      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-      return [metric, { mean, median: mean, stdDev: 0, min: Math.min(...values), max: Math.max(...values) }];
-    })
-  );
+  const aggregates = aggregatesFor(complete);
   const value: BenchmarkResult = {
     meta: {
       id: `${profile}-id`,
@@ -84,6 +80,47 @@ function result(
     environment: { os: "linux", nodeVersion: "v22" },
   };
   return { ...value, ...overrides };
+}
+
+function aggregatesFor(tasks: TaskResult[]): BenchmarkResult["results"]["aggregates"] {
+  return Object.fromEntries(
+    Object.keys(tasks[0]?.scores ?? {}).map((metric) => {
+      const values = tasks
+        .map((entry) => entry.scores[metric])
+        .filter((value): value is number => Number.isFinite(value));
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      return [metric, { mean, median: mean, stdDev: 0, min: Math.min(...values), max: Math.max(...values) }];
+    })
+  );
+}
+
+function selectedResult(
+  profile: "baseline" | "real",
+  tasks: TaskResult[],
+  selectionOverride?: LoCoMoTaskSelectionManifest
+): BenchmarkResult {
+  const base = result(profile, tasks);
+  const candidates = [
+    ...tasks.map((entry) => ({ taskId: entry.taskId })),
+    ...Array.from(
+      { length: LOCOMO_FULL_TASK_COUNT - tasks.length },
+      (_, index) => ({ taskId: `selection-candidate-${index}` })
+    ),
+  ];
+  const taskSelection =
+    selectionOverride ??
+    selectLoCoMoTasks(candidates, { taskIds: tasks.map((entry) => entry.taskId) });
+  return {
+    ...base,
+    config: {
+      ...base.config,
+      benchmarkOptions: { taskSelection },
+    },
+    results: {
+      tasks,
+      aggregates: aggregatesFor(tasks),
+    },
+  };
 }
 
 function completeTasks(tasks: TaskResult[]): TaskResult[] {
@@ -243,6 +280,104 @@ test("rejects partial, limited, failed, wrong-profile, or wrong-sized results", 
   assert.throws(
     () => diagnose({ ...baseline, results: { ...baseline.results, tasks: [] } }, real),
     /exactly 1986 tasks/
+  );
+});
+
+test("accepts paired selected results only with identical canonical taskSelection provenance", () => {
+  const baselineTasks = [
+    task({ id: "conv-1-q0-single_hop", score: 1, recall: "needle answer" }),
+    task({ id: "conv-1-q1-multi_hop", score: 0, recall: "other evidence" }),
+  ];
+  const realTasks = [
+    task({ id: "conv-1-q0-single_hop", score: 0, recall: "unknown" }),
+    task({ id: "conv-1-q1-multi_hop", score: 1, recall: "other evidence" }),
+  ];
+  const baseline = selectedResult("baseline", baselineTasks);
+  const manifest = baseline.config.benchmarkOptions?.taskSelection as LoCoMoTaskSelectionManifest;
+  const real = selectedResult("real", realTasks, manifest);
+
+  const report = diagnoseLoComoRecallDelta({
+    baseline: evidence(baseline, "selected-b"),
+    real: evidence(real, "selected-r"),
+  });
+
+  assert.equal(report.taskCount, 2);
+  assert.deepEqual(report.comparison.baseline.taskSelection, manifest);
+  assert.deepEqual(report.comparison.real.taskSelection, manifest);
+});
+
+test("rejects missing, mismatched, malformed, or non-canonical selected provenance", () => {
+  const selectedTasks = [
+    task({ id: "conv-1-q0-single_hop", score: 1, recall: "needle answer" }),
+    task({ id: "conv-1-q1-multi_hop", score: 0, recall: "other evidence" }),
+  ];
+  const baseline = selectedResult("baseline", selectedTasks);
+  const manifest = baseline.config.benchmarkOptions?.taskSelection as LoCoMoTaskSelectionManifest;
+  const real = selectedResult("real", selectedTasks, manifest);
+  const diagnose = (left: BenchmarkResult, right: BenchmarkResult) =>
+    diagnoseLoComoRecallDelta({
+      baseline: evidence(left, "selected-b"),
+      real: evidence(right, "selected-r"),
+    });
+
+  assert.throws(
+    () => diagnose(baseline, result("real", selectedTasks)),
+    /taskSelection differs/
+  );
+  const differentSelectionTasks = [
+    selectedTasks[0]!,
+    task({ id: "conv-1-q2-temporal", score: 0, recall: "different evidence" }),
+  ];
+  assert.throws(
+    () => diagnose(baseline, selectedResult("real", differentSelectionTasks)),
+    /taskSelection differs/
+  );
+  assert.throws(
+    () => diagnose(
+      baseline,
+      selectedResult("real", selectedTasks, { ...manifest, candidateCount: 1_985 })
+    ),
+    /candidateCount must be 1986/
+  );
+  assert.throws(
+    () => diagnose(
+      baseline,
+      {
+        ...real,
+        config: {
+          ...real.config,
+          benchmarkOptions: {
+            taskSelection: { ...manifest, selectedCount: manifest.selectedCount + 1 },
+          },
+        },
+      }
+    ),
+    /selectedCount must equal selectedTaskIds.length/
+  );
+  assert.throws(
+    () => diagnose(
+      baseline,
+      {
+        ...real,
+        config: {
+          ...real.config,
+          benchmarkOptions: {
+            taskSelection: { ...manifest, selectedTaskIdsSha256: "0".repeat(64) },
+          },
+        },
+      }
+    ),
+    /selectedTaskIdsSha256 does not match selectedTaskIds/
+  );
+  assert.throws(
+    () => diagnose(
+      baseline,
+      {
+        ...real,
+        results: { ...real.results, tasks: [...real.results.tasks].reverse() },
+      }
+    ),
+    /exactly match taskSelection.selectedTaskIds in canonical order/
   );
 });
 
