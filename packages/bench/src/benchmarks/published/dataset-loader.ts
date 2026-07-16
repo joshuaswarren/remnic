@@ -22,16 +22,17 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { hashCanonicalJson, hashString } from "../../integrity/hash-verification.js";
 import type { BenchmarkMode } from "../../types.js";
-import {
-  LONG_MEM_EVAL_SMOKE_FIXTURE,
-  type LongMemEvalItem,
-} from "./longmemeval/fixture.js";
 import {
   LOCOMO_SMOKE_FIXTURE,
   type LoCoMoConversation,
   type LoCoMoQA,
 } from "./locomo/fixture.js";
+import {
+  LONG_MEM_EVAL_SMOKE_FIXTURE,
+  type LongMemEvalItem,
+} from "./longmemeval/fixture.js";
 
 /** Canonical LongMemEval-S filenames probed by the loader, in priority order. */
 export const LONG_MEM_EVAL_DATASET_FILENAMES = Object.freeze([
@@ -53,6 +54,8 @@ export interface LoadedDataset<T> {
   source: DatasetSource;
   /** Filename relative to `datasetDir` when source === "dataset". */
   filename?: string;
+  /** SHA-256 of the exact dataset file, or canonical bundled smoke fixture. */
+  sha256?: string;
   items: T[];
   /** Parse/read errors encountered while probing candidate filenames. */
   errors: string[];
@@ -126,6 +129,7 @@ async function loadDataset<T>(
         return {
           source: "dataset",
           filename,
+          sha256: hashString(raw),
           items: applyLimit(parsed, limit),
           errors,
         };
@@ -146,6 +150,7 @@ async function loadDataset<T>(
   // probe errors so operators can tell why the real dataset wasn't used.
   return {
     source: "smoke",
+    sha256: hashCanonicalJson(options.smokeFixture),
     items: applyLimit([...options.smokeFixture], limit),
     errors,
   };
