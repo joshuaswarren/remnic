@@ -4051,3 +4051,83 @@ test("installConnector hermes already_installed backfill cleans the shim from a 
     }
   });
 });
+
+test("removeConnector hermes fails closed when hermes.json is malformed (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "sanity: shim exists after install");
+
+        // Corrupt the connector JSON — the only record of the install-time
+        // shim location. Removal must abort instead of orphaning the shim.
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        fs.writeFileSync(connectorJsonPath, "{not json");
+
+        const remove = mod.removeConnector("hermes");
+        assert.equal(remove.status, "error", remove.message);
+        assert.ok(
+          remove.message.includes("malformed"),
+          `removal error should explain the malformed JSON, got: ${remove.message}`,
+        );
+        assert.ok(fs.existsSync(connectorJsonPath), "connector JSON must not be deleted on fail-closed abort");
+        assert.ok(fs.existsSync(shimPath), "shim must be left in place on fail-closed abort");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes rolls back the shim when the connector JSON write fails (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        // Pre-create the connectors dir read-only so the connector.json write
+        // fails AFTER yaml/token/shim work has happened.
+        const connectorsDir = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors",
+        );
+        fs.mkdirSync(connectorsDir, { recursive: true });
+        fs.chmodSync(connectorsDir, 0o500);
+        try {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "error", install.message);
+          assert.ok(
+            install.message.includes("plugin shim changes rolled back"),
+            `install error should report the shim rollback, got: ${install.message}`,
+          );
+          const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+          assert.ok(
+            !fs.existsSync(shimPath),
+            "the newly-written shim must be rolled back when connector JSON cannot be written",
+          );
+        } finally {
+          fs.chmodSync(connectorsDir, 0o700);
+        }
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});

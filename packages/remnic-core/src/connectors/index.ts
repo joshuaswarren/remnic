@@ -1251,6 +1251,42 @@ export function installConnector(options: InstallOptions): InstallResult {
       } catch (yamlRollbackErr) {
         yamlRollbackMsg = `config.yaml rollback failed: ${yamlRollbackErr instanceof Error ? yamlRollbackErr.message : String(yamlRollbackErr)}`;
       }
+      // Roll back the (d2) shim reconciliation: without a persisted
+      // pluginShimPath the registry cannot clean these effects later
+      // (Bugbot + Codex P2 on PR #1938, round 4). The shim content is
+      // deterministic, so a cleaned prior shim can be regenerated exactly.
+      let shimRollbackMsg = "no shim changes to roll back";
+      const shimRollbackFailures: string[] = [];
+      const priorPersisted =
+        typeof priorShimPathRaw === "string" && priorShimPathRaw.length > 0 ? priorShimPathRaw : null;
+      if (shimOutcome.materializedAt !== null && shimOutcome.materializedAt !== priorPersisted) {
+        // Newly created at a location the registry never tracked — delete it
+        // (marker-gated). When materializedAt === priorPersisted the shim was
+        // already there before this install and stays tracked by the existing
+        // connector JSON, so it is left in place.
+        try {
+          removeHermesShim([shimOutcome.materializedAt]);
+        } catch (err) {
+          shimRollbackFailures.push(
+            `could not remove the newly-written shim at ${shimOutcome.materializedAt} (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+      }
+      if (shimOutcome.priorCleanedAt !== null) {
+        try {
+          materializeHermesShim(shimOutcome.priorCleanedAt);
+        } catch (err) {
+          shimRollbackFailures.push(
+            `could not restore the prior shim at ${shimOutcome.priorCleanedAt} (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+      }
+      if (shimOutcome.materializedAt !== null || shimOutcome.priorCleanedAt !== null) {
+        shimRollbackMsg =
+          shimRollbackFailures.length === 0
+            ? "plugin shim changes rolled back"
+            : `plugin shim rollback incomplete: ${shimRollbackFailures.join("; ")}`;
+      }
       const urgentSuffix = tokenRollbackFailed
         ? ` tokens.json may be in an inconsistent state — manually restore hermes token with 'remnic token generate hermes'.`
         : "";
@@ -1260,7 +1296,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         message:
           `Hermes install aborted: connector config write failed — ` +
           `connector directory may not be writable. ` +
-          `Rollback: ${tokenRollbackMsg}; ${yamlRollbackMsg}.` +
+          `Rollback: ${tokenRollbackMsg}; ${yamlRollbackMsg}; ${shimRollbackMsg}.` +
           `${urgentSuffix} Resolve the permission issue, then reinstall.`,
       };
     }
@@ -1733,7 +1769,21 @@ export function removeConnector(connectorId: string): RemoveResult {
         savedHermesShimPath = parsed.pluginShimPath;
       }
     } catch {
-      // Malformed JSON — fall back to the environment-resolved shim path below.
+      // Fail closed, mirroring the codex-cli provenance guard: a malformed
+      // hermes.json is the only record of the install-time shim location.
+      // Proceeding would delete the registry entry while a Remnic-generated
+      // shim under a since-changed HERMES_HOME stays discoverable forever
+      // (Codex P2 on PR #1938).
+      return {
+        connectorId,
+        configPath,
+        status: "error",
+        message:
+          `Removal aborted: ${configPath} is malformed and cannot be parsed. ` +
+          `It records where the Hermes plugin shim was installed; removing the connector without it ` +
+          `could orphan the shim. Fix or delete the file (and remove any ` +
+          `plugins/remnic/__init__.py under your Hermes home manually), then re-run removal.`,
+      };
     }
   }
 
@@ -2033,9 +2083,9 @@ export function removeConnector(connectorId: string): RemoveResult {
       } catch {
         /* HERMES_HOME unresolved in the current environment — persisted path only */
       }
-      const shimNote = removeHermesShim(shimCandidates);
-      if (shimNote !== null) {
-        notes.push(shimNote);
+      const shimResult = removeHermesShim(shimCandidates);
+      if (shimResult.notes.length > 0) {
+        notes.push(shimResult.notes.join("; "));
       }
     } catch (shimErr) {
       notes.push(
@@ -2266,11 +2316,17 @@ function writePlainFileAtomicSync(filePath: string, data: string): void {
  */
 function materializeHermesShim(shimPath: string): string {
   if (fs.existsSync(shimPath)) {
-    let existing = "";
+    let existing: string;
     try {
       existing = fs.readFileSync(shimPath, "utf8");
-    } catch {
-      existing = "";
+    } catch (readErr) {
+      // An unreadable existing file cannot be classified as ours vs
+      // user-authored. Treating it as user-authored would silently skip a
+      // reinstall of OUR marker shim (Bugbot on PR #1938); surface the read
+      // failure instead so the caller emits the manual hint.
+      throw new Error(
+        `cannot read existing shim at ${shimPath}: ${readErr instanceof Error ? readErr.message : String(readErr)}`,
+      );
     }
     if (!existing.includes(HERMES_SHIM_MARKER)) {
       return (
@@ -2318,6 +2374,10 @@ function materializeHermesShim(shimPath: string): string {
 function reconcileHermesShim(priorPersistedPath: string | null): {
   notes: string[];
   persistPath: string | null;
+  /** Path where a shim was (re)written by this reconcile, or null. */
+  materializedAt: string | null;
+  /** Prior-install shim path this reconcile actually deleted, or null. */
+  priorCleanedAt: string | null;
 } {
   const notes: string[] = [];
   let target: string | null = null;
@@ -2343,24 +2403,31 @@ function reconcileHermesShim(priorPersistedPath: string | null): {
   if (!materialized) {
     // Nothing new confirmed on disk — keep tracking whatever the registry
     // already pointed at so `remove` still targets the surviving shim.
-    return { notes, persistPath: priorPersistedPath ?? target };
+    return {
+      notes,
+      persistPath: priorPersistedPath ?? target,
+      materializedAt: null,
+      priorCleanedAt: null,
+    };
   }
+  let priorCleanedAt: string | null = null;
   if (priorPersistedPath !== null && priorPersistedPath !== target) {
     // The prior install's shim lives elsewhere (HERMES_HOME changed). Clean it
     // now that the replacement is confirmed; marker-gating inside
     // removeHermesShim protects user-authored files.
     try {
-      const staleNote = removeHermesShim([priorPersistedPath]);
-      if (staleNote !== null) {
-        notes.push(`Cleaned prior-install shim: ${staleNote}`);
+      const stale = removeHermesShim([priorPersistedPath]);
+      if (stale.notes.length > 0) {
+        notes.push(`Cleaned prior-install shim: ${stale.notes.join("; ")}`);
       }
+      priorCleanedAt = stale.removedPaths.includes(priorPersistedPath) ? priorPersistedPath : null;
     } catch {
       notes.push(
         `Note: could not clean the prior-install Hermes plugin shim at ${priorPersistedPath} — remove it manually if present.`,
       );
     }
   }
-  return { notes, persistPath: target };
+  return { notes, persistPath: target, materializedAt: target, priorCleanedAt };
 }
 
 /**
@@ -2371,11 +2438,15 @@ function reconcileHermesShim(priorPersistedPath: string | null): {
  * install and remove cannot orphan the generated shim (Codex P2 on PR #1938).
  * After deleting, attempts to remove the now-empty `plugins/remnic/` directory
  * with rmdir — which fails harmlessly if the directory is non-empty or
- * missing. Never rm -rf. Returns a note, or null when there was nothing of
- * ours to remove.
+ * missing. Never rm -rf. Returns the paths actually deleted plus
+ * human-readable notes (empty when there was nothing of ours to act on).
  */
-function removeHermesShim(candidatePaths: readonly string[]): string | null {
+function removeHermesShim(candidatePaths: readonly string[]): {
+  removedPaths: string[];
+  notes: string[];
+} {
   const notes: string[] = [];
+  const removedPaths: string[] = [];
   for (const shimPath of new Set(candidatePaths)) {
     // Only ever touch a path with the exact generated-shim shape. The
     // persisted candidate comes from connector.json, which is on-disk state —
@@ -2386,17 +2457,21 @@ function removeHermesShim(candidatePaths: readonly string[]): string | null {
     if (!fs.existsSync(shimPath)) {
       continue;
     }
-    let content = "";
+    let content: string;
     try {
       content = fs.readFileSync(shimPath, "utf8");
     } catch {
-      content = "";
+      // Fail safe: an unreadable file cannot be verified as ours — never
+      // delete what we cannot positively identify.
+      notes.push(`Hermes plugin shim left untouched (unreadable): ${shimPath}`);
+      continue;
     }
     if (!content.includes(HERMES_SHIM_MARKER)) {
       notes.push(`Hermes plugin shim left untouched (not Remnic-generated): ${shimPath}`);
       continue;
     }
     fs.unlinkSync(shimPath);
+    removedPaths.push(shimPath);
     try {
       fs.rmdirSync(path.dirname(shimPath));
     } catch {
@@ -2404,7 +2479,7 @@ function removeHermesShim(candidatePaths: readonly string[]): string | null {
     }
     notes.push(`Removed Hermes plugin shim: ${shimPath}`);
   }
-  return notes.length > 0 ? notes.join("; ") : null;
+  return { removedPaths, notes };
 }
 
 /**
