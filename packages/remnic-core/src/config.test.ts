@@ -2149,7 +2149,7 @@ test("parseConfig rejects non-positive extraction retry/breaker numerics and fal
     extractionRetryJitterRatio: -0.5,
     extractionParseEmptyMaxAttempts: 0,
     extractionBreakerFailureThreshold: -1,
-    extractionBreakerCooldownMs: 0,
+    extractionBreakerCooldownMs: -5, // 0 is a valid "half-open immediately" escape hatch; only negative is rejected
     extractionBreakerAuthCooldownMs: -100,
     extractionRetryScheduleMs: [1000, 0, -5],
   });

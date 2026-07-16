@@ -2850,10 +2850,10 @@ export function parseConfig(
       Number.isInteger(cfg.extractionBreakerFailureThreshold) && cfg.extractionBreakerFailureThreshold > 0
         ? cfg.extractionBreakerFailureThreshold : 5,
     extractionBreakerCooldownMs:
-      typeof cfg.extractionBreakerCooldownMs === "number" && cfg.extractionBreakerCooldownMs > 0
+      typeof cfg.extractionBreakerCooldownMs === "number" && cfg.extractionBreakerCooldownMs >= 0
         ? cfg.extractionBreakerCooldownMs : 300_000,
     extractionBreakerAuthCooldownMs:
-      typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs > 0
+      typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs >= 0
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
     // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
