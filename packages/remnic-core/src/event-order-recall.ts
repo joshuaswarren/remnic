@@ -1,5 +1,6 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 
 import {
   unifiedDedupeAndRank,
@@ -205,13 +206,14 @@ async function collectEventOrderItems(
       windowTokens,
     );
     for (const message of messages) {
-      const id = `${options.sessionId}:${message.turn_index}`;
+      const identity = lcmEvidenceIdentity(message, options.sessionId);
+      const id = identity.id;
       if (seen.has(id)) continue;
       if (!isEventOrderCandidate(message.content, message.role, options.query)) continue;
       seen.add(id);
       items.push({
-        id,
-        sessionId: options.sessionId,
+        ...identity,
+        sessionId: message.session_id ?? options.sessionId,
         turnIndex: message.turn_index,
         role: message.role,
         content: appendChronologicalCues(message.content, options.query),

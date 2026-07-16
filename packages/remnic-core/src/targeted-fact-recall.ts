@@ -8,6 +8,7 @@ import {
   gatherAcrossReadSessions,
   resolveLcmReadSessionIds,
 } from "./lcm-fallback-read.js";
+import { isSameLcmRow, lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 
 import {
   unifiedDedupeAndRank,
@@ -124,27 +125,35 @@ async function collectTargetedFactSearchItems(
       result.turn_index + searchWindowAfter,
       searchWindowTokens,
     );
+    const searchIdentity = lcmEvidenceIdentity(result, result.session_id);
     const searchHit: EvidencePackItem = {
-      id: `${result.session_id}:${result.turn_index}`,
+      ...searchIdentity,
       sessionId: result.session_id,
       turnIndex: result.turn_index,
       role: result.role,
       content: result.content,
       ...(typeof result.score === "number" ? { score: result.score } : {}),
     };
-    const candidates: EvidencePackItem[] = expanded.map((message) => ({
-      id: `${result.session_id}:${message.turn_index}`,
-      sessionId: result.session_id,
-      turnIndex: message.turn_index,
-      role: message.role,
-      content: message.content,
-      ...(message.turn_index === result.turn_index &&
-      typeof result.score === "number"
-        ? { score: result.score }
-        : {}),
-    }));
-    const hitIndex = candidates.findIndex((candidate) =>
-      candidate.turnIndex === result.turn_index
+    const candidates: EvidencePackItem[] = expanded.map((message) => {
+      const matchesSearchHit = isSameLcmRow(
+        message,
+        result.session_id,
+        result,
+        result.session_id,
+      );
+      return {
+        ...lcmEvidenceIdentity(message, result.session_id),
+        sessionId: message.session_id ?? result.session_id,
+        turnIndex: message.turn_index,
+        role: message.role,
+        content: message.content,
+        ...(matchesSearchHit && typeof result.score === "number"
+          ? { score: result.score }
+          : {}),
+      };
+    });
+    const hitIndex = expanded.findIndex((message) =>
+      isSameLcmRow(message, result.session_id, result, result.session_id)
     );
     if (hitIndex >= 0) {
       candidates[hitIndex] = searchHit;
@@ -200,8 +209,8 @@ async function collectTargetedFactScanItems(
   for (const message of messages) {
     if (!isTargetedFactEvidence(message.content, options.query)) continue;
     items.push({
-      id: `${options.sessionId}:${message.turn_index}`,
-      sessionId: options.sessionId,
+      ...lcmEvidenceIdentity(message, options.sessionId),
+      sessionId: message.session_id ?? options.sessionId,
       turnIndex: message.turn_index,
       role: message.role,
       content: message.content,

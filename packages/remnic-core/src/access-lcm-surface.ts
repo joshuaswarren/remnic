@@ -11,6 +11,7 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { combineNamespaces, lcmSessionKeyForNamespace, resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { log } from "./logger.js";
+import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal } from "./namespaces/principal.js";
 import type { Orchestrator } from "./orchestrator.js";
 import {
@@ -207,8 +208,8 @@ export class AccessLcmSurface {
         lcmEnabled: true,
       };
     }
-    // Query each LCM read key in order, merging + deduping rows (by
-    // sessionId+turnIndex) and preserving first-seen order, capped at `limit`.
+    // Query each LCM read key in order, merging + deduping by stable archive-row
+    // identity and preserving first-seen order, capped at `limit`.
     // Use allSettled so one corrupt/failed namespace key cannot discard sibling
     // results from other authorized profile namespaces.
     const seenRows = new Set<string>();
@@ -216,7 +217,14 @@ export class AccessLcmSurface {
     const lcmSearches: Array<{
       key: string | undefined;
       prefix: string | undefined;
-      promise: Promise<Array<{ session_id: string; content: string; turn_index: number }>>;
+      promise: Promise<
+        Array<{
+          id?: number;
+          session_id: string;
+          content: string;
+          turn_index: number;
+        }>
+      >;
     }> = [];
     for (const lcmSessionKey of lcmSessionKeyIds) {
       for (const lcmSessionPrefix of lcmSessionPrefixes) {
@@ -228,7 +236,14 @@ export class AccessLcmSurface {
             limit,
             lcmSessionKey,
             lcmSessionPrefix,
-          ) as Promise<Array<{ session_id: string; content: string; turn_index: number }>>,
+          ) as Promise<
+            Array<{
+              id?: number;
+              session_id: string;
+              content: string;
+              turn_index: number;
+            }>
+          >,
         });
       }
     }
@@ -246,7 +261,7 @@ export class AccessLcmSurface {
         continue;
       }
       for (const r of settled.value) {
-        const dedupeKey = `${r.session_id}\0${r.turn_index}`;
+        const dedupeKey = lcmEvidenceIdentity(r, r.session_id).id;
         if (seenRows.has(dedupeKey)) continue;
         seenRows.add(dedupeKey);
         results.push({

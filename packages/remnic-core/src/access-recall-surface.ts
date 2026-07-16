@@ -18,6 +18,7 @@ import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { type BudgetDecision, CrossNamespaceBudget } from "./cross-namespace-budget.js";
+import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { canReadNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
@@ -593,7 +594,7 @@ export class AccessRecallSurface {
         if (excerpts.length >= limit) break;
         if (result.status !== "fulfilled") continue;
         for (const r of result.value) {
-          const dedupeKey = `${r.session_id} ${r.turn_index}`;
+          const dedupeKey = lcmEvidenceIdentity(r, r.session_id).id;
           if (seenRows.has(dedupeKey)) continue;
           seenRows.add(dedupeKey);
           excerpts.push({

@@ -4,6 +4,13 @@ export {
   type LcmEngineConfig,
   type LcmExpandedMessage,
 } from "./engine.js";
+export {
+  isSameLcmRow,
+  lcmArchiveRowId,
+  lcmEvidenceIdentity,
+  type LcmEvidenceIdentity,
+  type LcmRowIdentity,
+} from "./evidence-identity.js";
 export { LcmArchive, estimateTokens } from "./archive.js";
 export { LcmDag, type SummaryNode } from "./dag.js";
 export { LcmSummarizer, type SummarizeFn } from "./summarizer.js";
