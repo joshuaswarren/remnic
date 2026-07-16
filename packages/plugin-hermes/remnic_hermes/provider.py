@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from collections import OrderedDict
@@ -18,6 +19,8 @@ try:  # Hermes Agent is present when loaded as an installed memory provider.
     from agent.memory_provider import MemoryProvider as HermesMemoryProvider
 except Exception:  # pragma: no cover - keeps package importable outside Hermes.
     HermesMemoryProvider = object
+
+_log = logging.getLogger("remnic_hermes.provider")
 
 
 _NAMESPACE = {"type": "string"}
@@ -145,7 +148,10 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         self._prefetch_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
         self._prefetch_inflight: set[str] = set()
         self._prefetch_lock = threading.Lock()
-        self._prefetch_wait_timeout = min(cfg.timeout, 0.1)
+        # Cap the synchronous prefetch wait by the overall HTTP timeout.
+        # Default 2.0s: local daemons routinely take 250-500ms per recall
+        # (issue #1929); the old 100ms cap made prefetch always return "".
+        self._prefetch_wait_timeout = min(cfg.timeout, cfg.prefetch_wait_timeout)
         self._prefetch_cache_ttl = 60.0
         self._prefetch_cache_max_entries = 128
 
@@ -175,7 +181,10 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         try:
             await self._client.health()
         except Exception:
-            pass  # Non-fatal — daemon might start later.
+            # Non-fatal — daemon might start later.
+            _log.debug(
+                "initialize: daemon health check failed (%s:%s)", self._host, self._port, exc_info=True
+            )
 
     def system_prompt_block(self) -> str:
         return ""
@@ -200,8 +209,15 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             try:
                 return future.result(timeout=self._prefetch_wait_timeout) or ""
             except FutureTimeoutError:
+                _log.debug(
+                    "prefetch: recall still in flight after %.2fs wait (session=%s); "
+                    "result will populate the cache for the next turn",
+                    self._prefetch_wait_timeout,
+                    session_key,
+                )
                 return ""
             except Exception:
+                _log.debug("prefetch: recall failed (session=%s)", session_key, exc_info=True)
                 return ""
 
         return ""
@@ -289,6 +305,9 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
                     self._set_prefetch_cache_locked(cache_key, block)
             return block
         except Exception:
+            _log.debug(
+                "prefetch: background recall failed (session=%s)", session_key, exc_info=True
+            )
             return ""
         finally:
             with self._prefetch_lock:
@@ -306,8 +325,17 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         )
         context = result.get("context", "")
         count = result.get("count", 0)
-        if context and count > 0:
+        # The daemon returns useful context (profile, knowledge index) even when
+        # count == 0, i.e. no specific memory IDs matched. Gate on context only
+        # (issue #1929 bug 1) — count stays in the tag as daemon-reported truth.
+        if context:
             return f"<remnic-memory count=\"{count}\">\n{context}\n</remnic-memory>"
+        _log.debug(
+            "recall returned no context (session=%s, count=%s, sources=%s)",
+            session_key,
+            count,
+            result.get("sourcesUsed"),
+        )
         return ""
 
     async def pre_llm_call(self, messages: list[dict[str, str]]) -> str:
@@ -323,6 +351,9 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         try:
             return await self._recall_block(query=query, session_key=self._session_key)
         except Exception:
+            _log.debug(
+                "pre_llm_call: recall failed (session=%s)", self._session_key, exc_info=True
+            )
             return ""
 
     def sync_turn(

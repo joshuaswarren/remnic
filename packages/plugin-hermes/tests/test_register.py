@@ -190,3 +190,38 @@ def test_register_falls_back_to_engram_config_key():
     mock_provider.assert_called_once_with(
         {"token": "legacy-token", "host": "127.0.0.1"},
     )
+
+
+def test_register_handles_collector_without_config():
+    """Hermes memory-provider discovery passes a bare collector with no
+    .config attribute (issue #1929); register() must fall back to loading the
+    Hermes host config instead of crashing."""
+    ctx = SimpleNamespace(
+        register_memory_provider=lambda provider: None,
+        register_tool=lambda name, schema, handler: None,
+    )
+
+    with patch("remnic_hermes.RemnicMemoryProvider") as mock_provider:
+        _populate_provider_mock(mock_provider.return_value)
+        with patch(
+            "remnic_hermes._load_hermes_host_config",
+            return_value={"remnic": {"token": "host-token", "host": "10.0.0.7"}},
+        ):
+            register(ctx)
+
+    mock_provider.assert_called_once_with({"token": "host-token", "host": "10.0.0.7"})
+
+
+def test_register_without_config_and_without_hermes_cli_uses_empty_config():
+    """Outside a Hermes runtime (no hermes_cli importable), a config-less
+    context still registers a provider built from defaults."""
+    ctx = SimpleNamespace(
+        register_memory_provider=lambda provider: None,
+        register_tool=lambda name, schema, handler: None,
+    )
+
+    with patch("remnic_hermes.RemnicMemoryProvider") as mock_provider:
+        _populate_provider_mock(mock_provider.return_value)
+        register(ctx)
+
+    mock_provider.assert_called_once_with({})

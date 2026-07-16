@@ -201,11 +201,36 @@ class TestPrefetch:
             top_k=8,
         )
 
-    def test_prefetch_does_not_block_on_slow_daemon_recall(self, provider):
+    def test_prefetch_waits_out_a_moderately_slow_daemon_recall(self, provider):
+        """Issue #1929 bug 2: local daemons take 250-500ms per recall; the
+        default synchronous wait (2.0s) must cover that so the FIRST prefetch
+        already returns memory instead of always returning ""."""
         client = AsyncMock()
 
         async def slow_recall(**kwargs):
             await asyncio.sleep(0.25)
+            return {"context": "late prior", "count": 1}
+
+        client.recall = AsyncMock(side_effect=slow_recall)
+        provider._client = client
+
+        result = provider.prefetch("what did we decide last week")
+        assert result.startswith('<remnic-memory count="1">')
+        assert "late prior" in result
+
+    def test_prefetch_does_not_block_past_configured_wait_timeout(self):
+        provider = RemnicMemoryProvider(
+            {
+                "host": "127.0.0.1",
+                "port": 4318,
+                "token": "test-token",
+                "prefetch_wait_timeout": 0.05,
+            }
+        )
+        client = AsyncMock()
+
+        async def slow_recall(**kwargs):
+            await asyncio.sleep(0.5)
             return {"context": "late prior", "count": 1}
 
         client.recall = AsyncMock(side_effect=slow_recall)
@@ -216,8 +241,34 @@ class TestPrefetch:
         elapsed = time.monotonic() - started
 
         assert result == ""
-        assert elapsed < 0.15
+        assert elapsed < 0.4
         _wait_for_await(client.recall)
+
+    def test_prefetch_wait_timeout_defaults_capped_by_request_timeout(self):
+        default_provider = RemnicMemoryProvider({"token": "test-token"})
+        assert default_provider._prefetch_wait_timeout == 2.0
+
+        capped_provider = RemnicMemoryProvider({"token": "test-token", "timeout": 1.5})
+        assert capped_provider._prefetch_wait_timeout == 1.5
+
+    def test_prefetch_returns_profile_context_when_count_is_zero(self, provider):
+        """Issue #1929 bug 1: the daemon returns profile/knowledge-index context
+        even when no specific memory IDs matched (count == 0). That context must
+        still be injected."""
+        client = AsyncMock()
+        client.recall = AsyncMock(
+            return_value={
+                "context": "## User Profile\n\n# Behavioral Profile",
+                "count": 0,
+                "memoryIds": [],
+                "sourcesUsed": ["profile", "knowledge-index"],
+            }
+        )
+        provider._client = client
+
+        result = provider.prefetch("what did we decide last week")
+        assert result.startswith('<remnic-memory count="0">')
+        assert "Behavioral Profile" in result
 
     def test_prefetch_does_not_cache_transient_failures_as_empty(self, provider):
         client = AsyncMock()
