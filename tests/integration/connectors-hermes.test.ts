@@ -4141,7 +4141,7 @@ test("installConnector hermes rolls back the shim when the connector JSON write 
   });
 });
 
-test("removeConnector hermes cleans the shim even when config.yaml cleanup fails (#1929)", async (t) => {
+test("removeConnector hermes fails closed when a remnic: config target is unwritable (#1929)", async (t) => {
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     t.skip("running as root — directory permissions are not enforced");
     return;
@@ -4158,19 +4158,40 @@ test("removeConnector hermes cleans the shim even when config.yaml cleanup fails
         assert.equal(install.status, "installed", install.message);
         const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
         assert.ok(fs.existsSync(shimPath), "sanity: shim exists after install");
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
 
-        // Make config.yaml cleanup fail (its directory is read-only) while the
-        // shim's own directories stay writable. Shim cleanup runs FIRST and
-        // must succeed regardless of the yaml outcome.
+        // Make the config.yaml unwritable: the writability preflight must
+        // abort BEFORE any destructive step so registry, provenance, token,
+        // shim, and config all stay intact for a retry.
         fs.chmodSync(hermesDir, 0o500);
-        try {
-          mod.removeConnector("hermes");
-        } finally {
-          fs.chmodSync(hermesDir, 0o700);
-        }
+        const remove = (() => {
+          try {
+            return mod.removeConnector("hermes");
+          } finally {
+            fs.chmodSync(hermesDir, 0o700);
+          }
+        })();
+        assert.equal(remove.status, "error", remove.message);
         assert.ok(
-          !fs.existsSync(shimPath),
-          "the Remnic-generated shim must be cleaned even when config.yaml cleanup fails",
+          remove.message.includes("not writable"),
+          `abort message should name the unwritable target, got: ${remove.message}`,
+        );
+        assert.ok(fs.existsSync(shimPath), "shim must be left intact on preflight abort");
+        assert.ok(fs.existsSync(connectorJsonPath), "registry entry must be left intact on preflight abort");
+        assert.ok(
+          fs.readFileSync(path.join(hermesDir, "config.yaml"), "utf-8").includes("remnic:"),
+          "config must be left intact on preflight abort",
+        );
+
+        // After fixing permissions, a re-run completes the full cleanup.
+        const retry = mod.removeConnector("hermes");
+        assert.equal(retry.status, "removed", retry.message);
+        assert.ok(!fs.existsSync(shimPath), "retry must clean the shim");
+        assert.ok(
+          !fs.readFileSync(path.join(hermesDir, "config.yaml"), "utf-8").includes("remnic:"),
+          "retry must clean the remnic: block",
         );
       });
       resolve();
@@ -4502,6 +4523,39 @@ test("installConnector hermes preserves the prior config when the new home's shi
         assert.ok(
           !fs.readFileSync(path.join(homeB, "config.yaml"), "utf-8").includes("remnic:"),
           "remove must clean the new home's remnic: block",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes rejects a symlinked HERMES_HOME (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const realDir = path.join(tmpHome, "real-hermes-home");
+        fs.mkdirSync(realDir, { recursive: true });
+        const linkPath = path.join(tmpHome, "hermes-home-link");
+        fs.symlinkSync(realDir, linkPath);
+
+        withHermesHome(linkPath, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "error", install.message);
+          assert.ok(
+            install.message.includes("symbolic link"),
+            `install should reject the symlinked root, got: ${install.message}`,
+          );
+        });
+        assert.ok(
+          !fs.existsSync(path.join(realDir, "plugins")),
+          "nothing may be written through the symlinked root",
         );
       });
       resolve();

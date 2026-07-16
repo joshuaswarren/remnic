@@ -49,14 +49,25 @@ export function resolveHermesRoot(): string {
   const envHome = readEnvVar("HERMES_HOME");
   if (typeof envHome === "string" && envHome.trim().length > 0) {
     const expanded = path.resolve(expandTildePath(envHome.trim()));
-    let existsAsNonDirectory = false;
+    // lstat (no symlink following): an externally supplied HERMES_HOME that is
+    // a symlink could redirect config/shim writes and deletions to an
+    // arbitrary directory — reject symlinked roots outright, matching the
+    // repository's symlink-traversal guard for directory scans (Codex P1 on
+    // PR #1938, round 15). A non-directory (regular file) root is likewise a
+    // misconfiguration.
     try {
-      existsAsNonDirectory = !fs.statSync(expanded).isDirectory();
-    } catch {
-      existsAsNonDirectory = false; // does not exist yet — acceptable
-    }
-    if (existsAsNonDirectory) {
-      throw new Error(`HERMES_HOME is not a directory: ${expanded}`);
+      const stat = fs.lstatSync(expanded);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`HERMES_HOME must not be a symbolic link: ${expanded}`);
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`HERMES_HOME is not a directory: ${expanded}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+      // Does not exist yet — acceptable; install creates it.
     }
     return expanded;
   }
