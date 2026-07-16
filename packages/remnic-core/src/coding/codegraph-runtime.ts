@@ -23,8 +23,8 @@
  * by the surface handler via a context seam.
  */
 import path from "node:path";
-import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFile, realpath } from "node:fs/promises";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
@@ -589,6 +589,36 @@ export async function runCodegraphReindex(params: {
 
 
 /**
+ * True when a tracked path resolves — via a symlinked file or any symlinked
+ * parent — outside repoRoot. Mirrors the reindex path's guard (reindex.ts
+ * `symlinkEscapesRoot`, rule 3): without it, a tracked `*.ts` symlink to a
+ * private file outside the checkout would be parsed and sent to a language
+ * server. A realpath error returns false so the normal read path surfaces
+ * the natural failure.
+ */
+async function lspPathEscapesRoot(repoRoot: string, absPath: string): Promise<boolean> {
+  try {
+    const [realRoot, realAbs] = await Promise.all([realpath(repoRoot), realpath(absPath)]);
+    const rel = path.relative(realRoot, realAbs);
+    return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/** Sync variant for the executor's resolveContent seam. */
+function lspPathEscapesRootSync(repoRoot: string, absPath: string): boolean {
+  try {
+    const realRoot = realpathSync(repoRoot);
+    const realAbs = realpathSync(absPath);
+    const rel = path.relative(realRoot, realAbs);
+    return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default LSP server launch specs per language. The config's
  * `codingKnowledge.lsp.servers` overrides these; a language with neither
  * an override nor a default is skipped (degradation, not an error).
@@ -695,9 +725,12 @@ export async function runCodegraphLspResolution(params: {
   const sites: GatheredLspSite[] = [];
   const gatheredCountByFile = new Map<string, number>();
   for (const rel of tracked.paths) {
+    const absPath = path.join(params.repoRoot, rel);
+    // Same symlink containment the reindex path enforces (rule 3).
+    if (await lspPathEscapesRoot(params.repoRoot, absPath)) continue;
     let content: string;
     try {
-      content = await readFile(path.join(params.repoRoot, rel), "utf-8");
+      content = await readFile(absPath, "utf-8");
     } catch {
       continue;
     }
@@ -778,8 +811,10 @@ export async function runCodegraphLspResolution(params: {
   // conversion (review thread: without resolveContent, cross-file
   // upgrades — the point of Phase B — stay unresolved).
   const resolveContent = (filePath: string): string | null => {
+    const absPath = path.join(params.repoRoot, filePath);
+    if (lspPathEscapesRootSync(params.repoRoot, absPath)) return null;
     try {
-      return readFileSync(path.join(params.repoRoot, filePath), "utf-8");
+      return readFileSync(absPath, "utf-8");
     } catch {
       return null;
     }
@@ -823,11 +858,15 @@ export async function runCodegraphLspResolution(params: {
       const code =
         deg && typeof deg === "object" && "code" in deg && typeof deg.code === "string" ? deg.code : "connect_failed";
       const message =
-        deg && typeof deg === "object" && "message" in deg && typeof deg.message === "string"
-          ? deg.message
+        deg && typeof deg === "object" && "detail" in deg && typeof deg.detail === "string"
+          ? deg.detail
           : `LSP server for ${language} failed to connect.`;
       degradations.push({ language, code, message });
       unresolved += plan.requests.length;
+      // The planned requests never reached a server — hand their budget
+      // back so a missing server for one language cannot starve the
+      // remaining language groups (review thread).
+      remainingBudget += plan.requests.length;
       continue;
     }
     const client = connected.client;
@@ -863,6 +902,17 @@ export async function runCodegraphLspResolution(params: {
         upgraded += result.upgraded;
         unresolved += "unresolved" in result && typeof result.unresolved === "number" ? result.unresolved : 0;
         budgetExhausted += "budgetExhausted" in result && typeof result.budgetExhausted === "number" ? result.budgetExhausted : 0;
+        // A mid-run server crash / protocol error returns counts PLUS a
+        // degradation tag — dropping it would make the failure look like
+        // ordinary unresolved calls (review thread).
+        if ("degradation" in result && result.degradation && typeof result.degradation === "object") {
+          const rd = result.degradation;
+          degradations.push({
+            language,
+            code: "code" in rd && typeof rd.code === "string" ? rd.code : "lsp_degraded",
+            message: "detail" in rd && typeof rd.detail === "string" ? rd.detail : `LSP pass for ${language} degraded mid-run.`,
+          });
+        }
       } else {
         unresolved += plan.requests.length;
       }
