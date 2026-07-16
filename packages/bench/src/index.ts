@@ -223,6 +223,7 @@ export { createClaudeCliProvider } from "./providers/claude-cli.js";
 export { createCodexCliProvider } from "./providers/codex-cli.js";
 export {
   buildCodexCreditReceipt,
+  calculateCodexBudgetUnits,
   reconcileCodexCreditLedger,
 } from "./providers/codex-credit-budget.js";
 export type {

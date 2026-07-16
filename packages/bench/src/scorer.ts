@@ -4,6 +4,7 @@
 
 import type { AggregateMetrics } from "./types.js";
 import type { BenchJudgeResult } from "./adapters/types.js";
+import { findBenchmarkRunBlockedError } from "./benchmark-run-blocked-error.js";
 
 export function exactMatch(
   predicted: string,
@@ -164,7 +165,11 @@ export async function llmJudgeScoreDetailed(
       tokens: { input: 0, output: 0 },
       latencyMs: durationMs,
     };
-  } catch {
+  } catch (error) {
+    const blocked = findBenchmarkRunBlockedError(error);
+    if (blocked) {
+      throw blocked;
+    }
     return {
       score: deterministicJudgeFallback(predicted, expected),
       tokens: { input: 0, output: 0 },
@@ -197,7 +202,11 @@ export async function llmBinaryJudgeScoreDetailed(
   const startedAt = performance.now();
   try {
     return await judge.scoreBinaryPrompt(prompt);
-  } catch {
+  } catch (error) {
+    const blocked = findBenchmarkRunBlockedError(error);
+    if (blocked) {
+      throw blocked;
+    }
     return {
       score: deterministicJudgeFallback(fallback.predicted, fallback.expected),
       tokens: { input: 0, output: 0 },

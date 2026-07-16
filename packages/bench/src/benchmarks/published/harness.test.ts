@@ -416,6 +416,13 @@ test("runPublishedHarness forwards per-trial answer format to strict answering",
   assert.equal(result.results.tasks[0]?.details.answerFormat, "short");
 });
 
+import {
+  BenchmarkRunBlockedError,
+  BenchmarkRunBlockReason,
+  findBenchmarkRunBlockedError,
+  isBenchmarkRunBlockedError,
+} from "../../benchmark-run-blocked-error.ts";
+
 test("runPublishedHarness llm_judge metric suppressed when judge score negative", async () => {
   const { system } = makeFakeSystem({ judgeScore: -1 });
   const result = await runPublishedHarness({
@@ -511,6 +518,427 @@ test("runPublishedHarness marks caught provider failures partial without hiding 
     kind: "trial_execution_failure",
     message: "provider HTTP 400: model is unavailable",
   });
+});
+
+test("run-terminal detection follows wrapped causes and terminates on cyclic cause graphs", () => {
+  const blocked = new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.ManualReconciliationRequired,
+    "credit ledger requires reconciliation",
+  );
+  const wrapped = new Error("provider wrapper", { cause: blocked });
+  assert.equal(findBenchmarkRunBlockedError(wrapped), blocked);
+  assert.equal(isBenchmarkRunBlockedError(wrapped), true);
+
+  const first = new Error("first") as Error & { cause?: unknown };
+  const second = new Error("second") as Error & { cause?: unknown };
+  first.cause = second;
+  second.cause = first;
+  assert.equal(findBenchmarkRunBlockedError(first), undefined);
+  assert.equal(isBenchmarkRunBlockedError(first), false);
+});
+
+test("runPublishedHarness stops sequential plans on a terminal responder error", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  system.responder.respond = async (question: string) => {
+    calls.push({ kind: "respond", question });
+    if (question.includes("blocked")) {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.SpendHeadroomExhausted,
+        "credit headroom is exhausted",
+      );
+    }
+    return {
+      text: `answer:${question}`,
+      tokens: { input: 1, output: 2 },
+      latencyMs: 1,
+      model: "smoke-responder",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [
+        {
+          ingestSessions: [],
+          trials: [{
+            taskId: "before",
+            question: "before",
+            expected: "answer:before",
+            recallSessionIds: [],
+          }],
+        },
+        {
+          ingestSessions: [],
+          trials: [{
+            taskId: "blocked",
+            question: "blocked",
+            expected: "never",
+            recallSessionIds: [],
+            answerFallback: () => "must not mask a run-terminal error",
+          }],
+        },
+        {
+          ingestSessions: [],
+          trials: [{
+            taskId: "after",
+            question: "after",
+            expected: "answer:after",
+            recallSessionIds: [],
+          }],
+        },
+      ],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted,
+  );
+
+  assert.deepEqual(completedTaskIds, ["before"]);
+  assert.equal(calls.filter((call) => call.kind === "reset").length, 2);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0]),
+    ["before", "blocked"],
+  );
+});
+
+test("runPublishedHarness stops sequential trials on a terminal scoreWithMetrics error", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  system.judge.scoreWithMetrics = async (question, predicted, expected) => {
+    calls.push({ kind: "judge", question, predicted, expected });
+    throw new Error("judge wrapper", {
+      cause: new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "judge credits require reconciliation",
+      ),
+    });
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["llm_judge"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired,
+  );
+
+  assert.deepEqual(completedTaskIds, []);
+  assert.equal(calls.filter((call) => call.kind === "respond").length, 1);
+  assert.equal(calls.filter((call) => call.kind === "judge").length, 1);
+});
+
+test("runPublishedHarness stops concurrent dequeue on a wrapped terminal error", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  let started = 0;
+  let releaseStarted!: () => void;
+  const startedTogether = new Promise<void>((resolve) => {
+    releaseStarted = resolve;
+  });
+
+  system.responder.respond = async (question: string) => {
+    calls.push({ kind: "respond", question });
+    started += 1;
+    if (started === 3) {
+      releaseStarted();
+    }
+    await startedTogether;
+    if (question.includes("Q2")) {
+      throw new Error("provider wrapper", {
+        cause: new BenchmarkRunBlockedError(
+          BenchmarkRunBlockReason.ResourceLocked,
+          "credit ledger is locked",
+        ),
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return {
+      text: `answer:${question}`,
+      tokens: { input: 1, output: 2 },
+      latencyMs: 1,
+      model: "smoke-responder",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        benchmarkOptions: { trialConcurrency: 3 },
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.ResourceLocked,
+  );
+
+  assert.deepEqual(completedTaskIds, ["t1"]);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0])
+      .sort(),
+    ["Q1", "Q2", "Q3"],
+  );
+});
+
+test("runPublishedHarness does not launch a new wave while an earlier trial can still terminate the run", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  let pendingStarted = 0;
+  let releasePending!: () => void;
+  const pendingTogether = new Promise<void>((resolve) => {
+    releasePending = resolve;
+  });
+
+  system.responder.respond = async (question: string) => {
+    calls.push({ kind: "respond", question });
+    const taskQuestion = question.split("\n", 1)[0] ?? "";
+    if (taskQuestion === "Q1") {
+      return {
+        text: "answer:Q1",
+        tokens: { input: 1, output: 2 },
+        latencyMs: 1,
+        model: "smoke-responder",
+      };
+    }
+    if (taskQuestion === "Q4") {
+      throw new Error("Q4 must not start before the first wave settles");
+    }
+
+    pendingStarted += 1;
+    if (pendingStarted === 2) {
+      releasePending();
+    }
+    await pendingTogether;
+    if (taskQuestion === "Q2") {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "Q2 discovered a terminal accounting state",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return {
+      text: `answer:${taskQuestion}`,
+      tokens: { input: 1, output: 2 },
+      latencyMs: 1,
+      model: "smoke-responder",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        benchmarkOptions: { trialConcurrency: 3 },
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired,
+  );
+
+  assert.deepEqual(completedTaskIds, ["t1"]);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0])
+      .sort(),
+    ["Q1", "Q2", "Q3"],
+  );
+});
+
+test("runPublishedHarness emits only the prefix before the earliest of two concurrent terminal errors", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  const terminalOrder: string[] = [];
+  let started = 0;
+  let releaseStarted!: () => void;
+  const startedTogether = new Promise<void>((resolve) => {
+    releaseStarted = resolve;
+  });
+
+  system.responder.respond = async (question: string) => {
+    calls.push({ kind: "respond", question });
+    const taskQuestion = question.split("\n", 1)[0]!;
+    started += 1;
+    if (started === 3) {
+      releaseStarted();
+    }
+    await startedTogether;
+
+    if (taskQuestion === "Q3") {
+      terminalOrder.push("t3");
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ResourceLocked,
+        "later ordinal failed first",
+      );
+    }
+    if (taskQuestion === "Q2") {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      terminalOrder.push("t2");
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "earlier ordinal failed later",
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return {
+      text: `answer:${taskQuestion}`,
+      tokens: { input: 1, output: 2 },
+      latencyMs: 1,
+      model: "smoke-responder",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        benchmarkOptions: { trialConcurrency: 3 },
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired &&
+      error.message === "earlier ordinal failed later",
+  );
+
+  assert.deepEqual(terminalOrder, ["t3", "t2"]);
+  assert.deepEqual(completedTaskIds, ["t1"]);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0])
+      .sort(),
+    ["Q1", "Q2", "Q3"],
+  );
+});
+
+test("runPublishedHarness stops concurrent dequeue on a terminal binary judge error", async () => {
+  const { system, calls } = makeFakeSystem();
+  const completedTaskIds: string[] = [];
+  let startedJudges = 0;
+  let releaseJudges!: () => void;
+  const judgesStarted = new Promise<void>((resolve) => {
+    releaseJudges = resolve;
+  });
+
+  system.judge.scoreBinaryPrompt = async (prompt: string) => {
+    calls.push({ kind: "binaryJudge", prompt });
+    startedJudges += 1;
+    if (startedJudges === 2) {
+      releaseJudges();
+    }
+    await judgesStarted;
+    if (prompt.includes("Q2")) {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.SpendHeadroomExhausted,
+        "binary judge credit headroom is exhausted",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return {
+      score: 1,
+      tokens: { input: 0, output: 0 },
+      latencyMs: 0,
+      model: "smoke-judge",
+    };
+  };
+
+  await assert.rejects(
+    () => runPublishedHarness({
+      options: makeOptions(system, {
+        benchmarkOptions: { trialConcurrency: 2 },
+        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+      }),
+      metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
+      plans: [{
+        ingestSessions: [],
+        trials: ["Q1", "Q2", "Q3"].map((question, index) => ({
+          taskId: `t${index + 1}`,
+          question,
+          expected: `answer:${question}`,
+          recallSessionIds: [],
+          binaryJudgePrompt: () => `Official binary prompt for ${question}`,
+        })),
+      }],
+    }),
+    (error: unknown) =>
+      error instanceof BenchmarkRunBlockedError &&
+      error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted,
+  );
+
+  assert.deepEqual(completedTaskIds, ["t1"]);
+  assert.deepEqual(
+    calls
+      .filter((call): call is { kind: "respond"; question: string } =>
+        call.kind === "respond"
+      )
+      .map((call) => call.question.split("\n", 1)[0])
+      .sort(),
+    ["Q1", "Q2"],
+  );
+  assert.equal(calls.filter((call) => call.kind === "binaryJudge").length, 2);
 });
 
 test("runPublishedHarness supports benchmark-owned binary judge prompts", async () => {

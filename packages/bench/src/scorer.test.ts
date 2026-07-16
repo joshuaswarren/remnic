@@ -7,6 +7,10 @@ import {
   llmJudgeScoreDetailed,
   recallAtK,
 } from "./scorer.ts";
+import {
+  BenchmarkRunBlockedError,
+  BenchmarkRunBlockReason,
+} from "./benchmark-run-blocked-error.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -94,6 +98,71 @@ test("llmBinaryJudgeScoreDetailed falls back deterministically after prompt judg
   assert.equal(result.tokens.input, 0);
   assert.equal(result.tokens.output, 0);
   assert.equal(result.latencyMs >= 10, true);
+});
+
+test("llmJudgeScoreDetailed rethrows a terminal marker wrapped by scoreWithMetrics", async () => {
+  const blocked = new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.ManualReconciliationRequired,
+    "judge credits require reconciliation",
+  );
+
+  await assert.rejects(
+    llmJudgeScoreDetailed(
+      {
+        async score() {
+          throw new Error("unreachable fallback");
+        },
+        async scoreWithMetrics() {
+          throw new Error("structured judge wrapper", { cause: blocked });
+        },
+      },
+      "question",
+      "predicted",
+      "expected",
+    ),
+    (error: unknown) => error === blocked,
+  );
+});
+
+test("llmJudgeScoreDetailed rethrows a terminal marker from scalar score", async () => {
+  const blocked = new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.InfrastructureUnavailable,
+    "scalar judge infrastructure is unavailable",
+  );
+
+  await assert.rejects(
+    llmJudgeScoreDetailed(
+      {
+        async score() {
+          throw blocked;
+        },
+      },
+      "question",
+      "predicted",
+      "expected",
+    ),
+    (error: unknown) => error === blocked,
+  );
+});
+
+test("llmBinaryJudgeScoreDetailed rethrows a terminal marker from the binary judge", async () => {
+  const blocked = new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.SpendHeadroomExhausted,
+    "judge credit headroom is exhausted",
+  );
+
+  await assert.rejects(
+    llmBinaryJudgeScoreDetailed(
+      {
+        async scoreBinaryPrompt() {
+          throw blocked;
+        },
+      },
+      "Official yes/no prompt",
+      { predicted: "predicted", expected: "expected" },
+    ),
+    (error: unknown) => error === blocked,
+  );
 });
 
 test("containsAnswer ignores punctuation-only differences", () => {

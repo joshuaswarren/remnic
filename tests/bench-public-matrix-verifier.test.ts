@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import type { BenchmarkResult, ProviderConfig } from "@remnic/bench";
 
@@ -273,6 +273,42 @@ function validCodexCreditReceipt(): Record<string, unknown> {
     reasoningOutputTokens: 8_000,
   };
   const models = [
+    { model: "gpt-5.6-luna", calls: 1, budgetUnits: 3.55, ...usage },
+    { model: "gpt-5.6-terra", calls: 1, budgetUnits: 8.875, ...usage },
+  ];
+  const scope = {
+    calls: 2,
+    budgetUnits: 12.425,
+    accountBalanceResolutionCount: 0,
+    conservativeResolutionChargeUnits: 0,
+    inputTokens: 200_000,
+    cachedInputTokens: 40_000,
+    outputTokens: 20_000,
+    reasoningOutputTokens: 16_000,
+    models,
+  };
+  return {
+    schemaVersion: 2,
+    ledgerSha256: "c".repeat(64),
+    budgetUnits: 2_473,
+    reserveUnits: 473,
+    plannedSpendCeilingUnits: 2_000,
+    totalSpentUnits: 12.425,
+    remainingBudgetUnits: 2_460.575,
+    blocked: false,
+    cumulative: scope,
+    run: { id: "test-public-matrix-run", ...scope },
+  };
+}
+
+function validHistoricalCodexCreditReceiptV1(): Record<string, unknown> {
+  const usage = {
+    inputTokens: 100_000,
+    cachedInputTokens: 20_000,
+    outputTokens: 10_000,
+    reasoningOutputTokens: 8_000,
+  };
+  const models = [
     { model: "gpt-5.6-luna", calls: 1, credits: 3.55, ...usage },
     { model: "gpt-5.6-terra", calls: 1, credits: 8.875, ...usage },
   ];
@@ -307,18 +343,18 @@ function codexCreditReceiptWithUnexpectedModel(): Record<string, unknown> {
     outputTokens: 10_000,
     reasoningOutputTokens: 8_000,
   };
-  const extraModel = { model: "gpt-5.5", calls: 1, credits: 17.75, ...usage };
+  const extraModel = { model: "gpt-5.5", calls: 1, budgetUnits: 17.75, ...usage };
   for (const key of ["cumulative", "run"] as const) {
     const scope = receipt[key] as Record<string, unknown>;
     scope.calls = (scope.calls as number) + 1;
-    scope.credits = (scope.credits as number) + extraModel.credits;
+    scope.budgetUnits = (scope.budgetUnits as number) + extraModel.budgetUnits;
     for (const tokenKey of Object.keys(usage) as Array<keyof typeof usage>) {
       scope[tokenKey] = (scope[tokenKey] as number) + usage[tokenKey];
     }
     scope.models = [...(scope.models as unknown[]), extraModel];
   }
-  receipt.totalSpentCredits = 30.175;
-  receipt.totalRemainingCredits = 2_442.825;
+  receipt.totalSpentUnits = 30.175;
+  receipt.remainingBudgetUnits = 2_442.825;
   return receipt;
 }
 
@@ -326,12 +362,21 @@ function codexCreditReceiptWithRunAttributedReconciliation(): Record<string, unk
   const receipt = validCodexCreditReceipt();
   for (const key of ["cumulative", "run"] as const) {
     const scope = receipt[key] as Record<string, unknown>;
-    scope.unattributedReconciliationCount = 1;
-    scope.unattributedReconciledCredits = 1;
-    scope.credits = (scope.credits as number) + 1;
+    scope.accountBalanceResolutionCount = 1;
+    scope.conservativeResolutionChargeUnits = 1;
+    scope.budgetUnits = (scope.budgetUnits as number) + 1;
   }
-  receipt.totalSpentCredits = 13.425;
-  receipt.totalRemainingCredits = 2_459.575;
+  receipt.totalSpentUnits = 13.425;
+  receipt.remainingBudgetUnits = 2_459.575;
+  return receipt;
+}
+
+function codexBudgetReceiptWithSolModel(): Record<string, unknown> {
+  const receipt = validCodexCreditReceipt();
+  for (const key of ["cumulative", "run"] as const) {
+    const scope = receipt[key] as { models: Array<Record<string, unknown>> };
+    scope.models[0]!.model = "gpt-5.6-sol";
+  }
   return receipt;
 }
 
@@ -518,13 +563,41 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
   });
   assert.equal(report.ok, true, JSON.stringify(report.issues, null, 2));
 
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validHistoricalCodexCreditReceiptV1(),
+  );
+  const historicalV1Report = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  assert.equal(
+    historicalV1Report.ok,
+    true,
+    JSON.stringify(historicalV1Report.issues, null, 2),
+  );
+
   const reconciledReceipt = validCodexCreditReceipt();
   const cumulativeScope = reconciledReceipt.cumulative as Record<string, unknown>;
-  cumulativeScope.unattributedReconciliationCount = 1;
-  cumulativeScope.unattributedReconciledCredits = 1;
-  cumulativeScope.credits = (cumulativeScope.credits as number) + 1;
-  reconciledReceipt.totalSpentCredits = 13.425;
-  reconciledReceipt.totalRemainingCredits = 2_459.575;
+  cumulativeScope.accountBalanceResolutionCount = 1;
+  cumulativeScope.conservativeResolutionChargeUnits = 1;
+  cumulativeScope.budgetUnits = (cumulativeScope.budgetUnits as number) + 1;
+  reconciledReceipt.totalSpentUnits = 13.425;
+  reconciledReceipt.remainingBudgetUnits = 2_459.575;
   await writeManifest(
     resultsDir,
     [benchmark],
@@ -554,12 +627,12 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
     string,
     unknown
   >;
-  heavilyReconciledCumulative.unattributedReconciliationCount = 1;
-  heavilyReconciledCumulative.unattributedReconciledCredits = 1_987;
-  heavilyReconciledCumulative.credits =
-    (heavilyReconciledCumulative.credits as number) + 1_987;
-  heavilyReconciledReceipt.totalSpentCredits = 1_999.425;
-  heavilyReconciledReceipt.totalRemainingCredits = 473.575;
+  heavilyReconciledCumulative.accountBalanceResolutionCount = 1;
+  heavilyReconciledCumulative.conservativeResolutionChargeUnits = 1_987;
+  heavilyReconciledCumulative.budgetUnits =
+    (heavilyReconciledCumulative.budgetUnits as number) + 1_987;
+  heavilyReconciledReceipt.totalSpentUnits = 1_999.425;
+  heavilyReconciledReceipt.remainingBudgetUnits = 473.575;
   await writeManifest(
     resultsDir,
     [benchmark],
@@ -853,16 +926,16 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
     string,
     unknown
   >;
-  belowReserveCumulative.unattributedReconciliationCount = 1;
-  belowReserveCumulative.unattributedReconciledCredits = 2_000;
-  belowReserveCumulative.credits = (belowReserveCumulative.credits as number) + 2_000;
-  belowReserveReconciliation.totalSpentCredits = 2_012.425;
-  belowReserveReconciliation.totalRemainingCredits = 460.575;
+  belowReserveCumulative.accountBalanceResolutionCount = 1;
+  belowReserveCumulative.conservativeResolutionChargeUnits = 2_000;
+  belowReserveCumulative.budgetUnits = (belowReserveCumulative.budgetUnits as number) + 2_000;
+  belowReserveReconciliation.totalSpentUnits = 2_012.425;
+  belowReserveReconciliation.remainingBudgetUnits = 460.575;
   const overAttributedCeiling = validCodexCreditReceipt();
   for (const key of ["cumulative", "run"] as const) {
     const scope = overAttributedCeiling[key] as Record<string, unknown>;
     scope.calls = (scope.calls as number) * 162;
-    scope.credits = (scope.credits as number) * 162;
+    scope.budgetUnits = (scope.budgetUnits as number) * 162;
     for (const tokenKey of [
       "inputTokens",
       "cachedInputTokens",
@@ -874,28 +947,28 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
     scope.models = (scope.models as Array<Record<string, unknown>>).map((model) => ({
       ...model,
       calls: (model.calls as number) * 162,
-      credits: (model.credits as number) * 162,
+      budgetUnits: (model.budgetUnits as number) * 162,
       inputTokens: (model.inputTokens as number) * 162,
       cachedInputTokens: (model.cachedInputTokens as number) * 162,
       outputTokens: (model.outputTokens as number) * 162,
       reasoningOutputTokens: (model.reasoningOutputTokens as number) * 162,
     }));
   }
-  overAttributedCeiling.totalSpentCredits = 2_012.85;
-  overAttributedCeiling.totalRemainingCredits = 460.15;
+  overAttributedCeiling.totalSpentUnits = 2_012.85;
+  overAttributedCeiling.remainingBudgetUnits = 460.15;
   const variants: Array<Record<string, unknown>> = [
     { ...validCodexCreditReceipt(), blocked: true },
     {
       ...validCodexCreditReceipt(),
-      totalSpentCredits: 2_001,
-      totalRemainingCredits: 472,
+      totalSpentUnits: 2_001,
+      remainingBudgetUnits: 472,
     },
     { ...validCodexCreditReceipt(), ledgerSha256: "not-a-sha" },
     {
       ...validCodexCreditReceipt(),
-      budgetCredits: 2_300,
-      reserveCredits: 300,
-      totalRemainingCredits: 2_287.575,
+      budgetUnits: 2_300,
+      reserveUnits: 300,
+      remainingBudgetUnits: 2_287.575,
     },
     {
       ...validCodexCreditReceipt(),
@@ -909,7 +982,9 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       run: {
         id: "test-public-matrix-run",
         calls: 0,
-        credits: 0,
+        budgetUnits: 0,
+        accountBalanceResolutionCount: 0,
+        conservativeResolutionChargeUnits: 0,
         inputTokens: 0,
         cachedInputTokens: 0,
         outputTokens: 0,
@@ -922,7 +997,9 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       run: {
         id: "test-public-matrix-run",
         calls: 1,
-        credits: 3.55,
+        budgetUnits: 3.55,
+        accountBalanceResolutionCount: 0,
+        conservativeResolutionChargeUnits: 0,
         inputTokens: 100_000,
         cachedInputTokens: 20_000,
         outputTokens: 10_000,
@@ -931,7 +1008,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
           {
             model: "gpt-5.6-luna",
             calls: 1,
-            credits: 3.55,
+            budgetUnits: 3.55,
             inputTokens: 100_000,
             cachedInputTokens: 20_000,
             outputTokens: 10_000,
@@ -940,7 +1017,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
           {
             model: "gpt-5.6-terra",
             calls: 0,
-            credits: 0,
+            budgetUnits: 0,
             inputTokens: 0,
             cachedInputTokens: 0,
             outputTokens: 0,
@@ -954,7 +1031,9 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       run: {
         id: "test-public-matrix-run",
         calls: 2,
-        credits: 11.36,
+        budgetUnits: 11.36,
+        accountBalanceResolutionCount: 0,
+        conservativeResolutionChargeUnits: 0,
         inputTokens: 140_000,
         cachedInputTokens: 28_000,
         outputTokens: 14_000,
@@ -963,7 +1042,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
           {
             model: "gpt-5.6-luna",
             calls: 1,
-            credits: 0.71,
+            budgetUnits: 0.71,
             inputTokens: 20_000,
             cachedInputTokens: 4_000,
             outputTokens: 2_000,
@@ -972,7 +1051,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
           {
             model: "gpt-5.6-terra",
             calls: 1,
-            credits: 10.65,
+            budgetUnits: 10.65,
             inputTokens: 120_000,
             cachedInputTokens: 24_000,
             outputTokens: 12_000,
@@ -982,7 +1061,17 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       },
     },
     codexCreditReceiptWithUnexpectedModel(),
+    codexBudgetReceiptWithSolModel(),
     codexCreditReceiptWithRunAttributedReconciliation(),
+    { ...validCodexCreditReceipt(), beforeAccountBalance: "2473" },
+    { ...validCodexCreditReceipt(), blockedReason: "private failure detail" },
+    {
+      ...validCodexCreditReceipt(),
+      migrationWitnessV1: {
+        source: "private-ledger://account-balance?token=secret-bearing-witness",
+      },
+    },
+    { ...validCodexCreditReceipt(), migratedFromV1Sha256: "d".repeat(64) },
     belowReserveReconciliation,
     overAttributedCeiling,
   ];

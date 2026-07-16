@@ -8,6 +8,10 @@ import {
   __codexCliProviderTestHooks,
   createCodexCliProvider,
 } from "./codex-cli.ts";
+import {
+  BenchmarkRunBlockedError,
+  BenchmarkRunBlockReason,
+} from "../benchmark-run-blocked-error.ts";
 
 test("codex-cli provider invokes codex exec in an isolated benchmark mode", async () => {
   const captured: {
@@ -223,6 +227,82 @@ test("codex-cli structured judge distinguishes malformed output and caller abort
   });
   assert.equal(aborted.ok, false);
   if (!aborted.ok) assert.equal(aborted.error.code, "aborted");
+});
+
+test("codex-cli structured judge rethrows run-terminal completion failures", async () => {
+  const blocked = new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.ManualReconciliationRequired,
+    "credit ledger requires reconciliation",
+  );
+  const provider = createCodexCliProvider(
+    { provider: "codex-cli", model: "Terra" },
+    {
+      async runCodexCli() {
+        throw new Error("provider wrapper", { cause: blocked });
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.judge({
+      rubric: "rubric",
+      rubricVersion: "v1",
+      input: "input",
+    }),
+    (error: unknown) => error === blocked,
+  );
+});
+
+test("bounded codex-cli auth failures are sanitized run-terminal infrastructure errors", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-auth-failure-"));
+  const keys = [
+    "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+  ] as const;
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  process.env.REMNIC_BENCH_CODEX_CREDIT_BUDGET = "2473";
+  process.env.REMNIC_BENCH_CODEX_CREDIT_RESERVE = "473";
+  process.env.REMNIC_BENCH_CODEX_CREDIT_LEDGER = path.join(directory, "ledger.json");
+  const privateAuthDetail = "API key auth for account secret-user@example.test";
+
+  try {
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    let dispatched = false;
+    const provider = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexLoginStatus() {
+          return { status: 1, stdout: privateAuthDetail, stderr: "login failed" };
+        },
+        async runCodexCli() {
+          dispatched = true;
+          throw new Error("must not dispatch");
+        },
+      },
+    );
+
+    await assert.rejects(
+      provider.complete("hello"),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.InfrastructureUnavailable &&
+        error.message ===
+          "Codex CLI ChatGPT authentication is unavailable for this bounded benchmark run." &&
+        !error.message.includes(privateAuthDetail) &&
+        error.cause instanceof Error &&
+        error.cause.message.includes(privateAuthDetail),
+    );
+    assert.equal(dispatched, false);
+  } finally {
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("codex-cli provider does not expose unrelated process secrets to the child", async () => {
@@ -658,7 +738,14 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
         },
       },
     );
-    await assert.rejects(apiAuthed.complete("hello"), /require ChatGPT-backed/);
+    await assert.rejects(
+      apiAuthed.complete("hello"),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.InfrastructureUnavailable &&
+        error.cause instanceof Error &&
+        /require ChatGPT-backed/.test(error.cause.message),
+    );
     assert.equal(called, false);
 
     __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
@@ -687,7 +774,7 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
         at: string;
         model: string;
         runId: string;
-        credits: number;
+        budgetUnits: number;
         inputTokens: number;
         cachedInputTokens: number;
         outputTokens: number;
@@ -699,7 +786,7 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     assert.deepEqual(entry, {
       at: ledger.entries[0]?.at,
       model: "gpt-5.6-luna",
-      credits: 0.00355,
+      budgetUnits: 0.00355,
       inputTokens: 100,
       cachedInputTokens: 20,
       outputTokens: 10,
@@ -819,7 +906,15 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     releaseBlocker();
 
     assert.equal((await blockerCompletion).text, "blocker complete");
-    await assert.rejects(queuedCompletion, /queued cancellation/);
+    await assert.rejects(
+      queuedCompletion,
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.InfrastructureUnavailable &&
+        error.cause instanceof Error &&
+        error.cause.cause instanceof Error &&
+        error.cause.cause.message === "queued cancellation",
+    );
     assert.equal(queuedDispatched, false);
     assert.deepEqual(queued.getUsage(), {
       inputTokens: 0,
@@ -853,7 +948,13 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     );
     await assert.rejects(
       postDispatchFailure.complete("hello"),
-      /account balance must be reconciled.*output collection failed/i,
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired &&
+        error.cause instanceof Error &&
+        /account balance must be reconciled.*output collection failed/i.test(
+          error.cause.message,
+        ),
     );
     assert.deepEqual(postDispatchFailure.getUsage(), {
       inputTokens: 0,
@@ -862,9 +963,9 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
     });
     const blockedLedger = JSON.parse(
       await readFile(path.join(directory, "ledger.json"), "utf8"),
-    ) as { entries: unknown[]; blockedReason?: string };
+    ) as { entries: unknown[]; blockedEvent?: { reason?: string } };
     assert.equal(blockedLedger.entries.length, 5);
-    assert.match(blockedLedger.blockedReason ?? "", /output collection failed/);
+    assert.match(blockedLedger.blockedEvent?.reason ?? "", /output collection failed/);
   } finally {
     __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
     for (const key of keys) {
