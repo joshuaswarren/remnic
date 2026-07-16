@@ -129,6 +129,31 @@ test("integer nanounit accounting remains reproducible across the reported three
   }
 });
 
+test("fractional budget and reserve values compute dispatch headroom in exact nanounits", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-fractional-ceiling-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473.1, reserveCredits: 473.2, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "fractional dispatch", usage }),
+      }),
+      "fractional dispatch"
+    );
+    const receipt = await buildCodexCreditReceipt(ledgerPath);
+    assert.equal(receipt.plannedSpendCeilingUnits, 1_999.9);
+    assert.equal(receipt.totalSpentUnits, 3.55);
+    assert.equal(receipt.remainingBudgetUnits, 2_469.55);
+    assert.equal(receipt.cumulative.calls, 1);
+    assert.equal(receipt.cumulative.budgetUnits, 3.55);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("credit pricing fails closed for unlisted model variants", () => {
   for (const model of [
     "gpt-5.6-sol-preview",
@@ -725,6 +750,77 @@ test("unknown charged usage blocks the ledger until manual reconciliation", asyn
         error.message === "Codex credit ledger requires manual reconciliation."
     );
     assert.equal(called, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reconciling a blocked event without a run ID preserves its predecessor hash and permits continuation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-unbound-block-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          throw new CodexCreditAccountingError("missing terminal usage without run binding");
+        },
+      }),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired
+    );
+    const blockedContents = await readFile(ledgerPath);
+    const blockedLedger = JSON.parse(blockedContents.toString("utf8")) as {
+      blockedEvent: Record<string, unknown>;
+    };
+    assert.equal(blockedLedger.blockedEvent.runId, undefined);
+    const priorLedgerSha256 = createHash("sha256").update(blockedContents).digest("hex");
+
+    const reconciliation = await reconcileCodexCreditLedger({
+      ledgerPath,
+      priorLedgerSha256,
+      beforeAccountBalance: "2500.1250000000",
+      afterAccountBalance: "2500.1250000000",
+      affectedRunId: "operator-bound-run",
+      sameAccountConfirmed: true,
+      snapshotsBracketBlockedEventConfirmed: true,
+      balanceSettledConfirmed: true,
+      noCreditsAddedOrRefundedConfirmed: true,
+    });
+    assert.equal(reconciliation.affectedRunId, "operator-bound-run");
+    assert.equal(
+      reconciliation.affectedBlockedEventSha256,
+      createHash("sha256").update(JSON.stringify(blockedLedger.blockedEvent)).digest("hex")
+    );
+    assert.equal((await buildCodexCreditReceipt(ledgerPath)).blocked, false);
+
+    const reconciledLedger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      resolutions: Array<{
+        affectedRunId: string;
+        affectedBlockedEvent: Record<string, unknown>;
+        priorLedgerSha256: string;
+      }>;
+    };
+    assert.equal(reconciledLedger.resolutions[0]?.affectedRunId, "operator-bound-run");
+    assert.deepEqual(reconciledLedger.resolutions[0]?.affectedBlockedEvent, blockedLedger.blockedEvent);
+    assert.equal(reconciledLedger.resolutions[0]?.priorLedgerSha256, priorLedgerSha256);
+
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "continued", usage }),
+      }),
+      "continued"
+    );
+    const continuedReceipt = await buildCodexCreditReceipt(ledgerPath);
+    assert.equal(continuedReceipt.totalSpentUnits, 3.55);
+    assert.equal(continuedReceipt.cumulative.accountBalanceResolutionCount, 1);
+    assert.equal(continuedReceipt.cumulative.calls, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

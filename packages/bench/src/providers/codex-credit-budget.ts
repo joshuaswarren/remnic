@@ -87,7 +87,8 @@ interface CodexCreditLedgerResolution {
     noCreditsAddedOrRefunded: true;
     noInterveningCodexActivity?: true;
   };
-  affectedBlockedEvent: CodexCreditBlockedEvent & { runId: string };
+  affectedRunId: string;
+  affectedBlockedEvent: CodexCreditBlockedEvent;
 }
 
 interface CodexCreditLedger {
@@ -270,23 +271,22 @@ export async function reconcileCodexCreditLedger(args: {
         `affectedRunId does not match the blocked event run ID ${JSON.stringify(ledger.blockedEvent.runId)}`
       );
     }
-    const plannedSpendCeilingUnits = ledger.budgetUnits - ledger.reserveUnits;
-    const plannedSpendCeilingNanounits = budgetUnitsToNanounits(plannedSpendCeilingUnits);
+    const plannedSpendCeilingNanounits =
+      budgetUnitsToNanounits(ledger.budgetUnits) - budgetUnitsToNanounits(ledger.reserveUnits);
     const spentNanounits = ledgerSpentNanounits(ledger);
     const localBudgetChargeNanounits = budgetUnitsToNanounits(localBudgetChargeUnits);
     if (plannedSpendCeilingNanounits - spentNanounits < localBudgetChargeNanounits) {
       throw new Error(
         `reconciliation requires ${localBudgetChargeUnits} local budget units but only ` +
-          `${Math.max(0, plannedSpendCeilingUnits - ledger.spentUnits)} remain below the planned-spend ceiling`
+          `${nanounitsToBudgetUnits(
+            plannedSpendCeilingNanounits > spentNanounits ? plannedSpendCeilingNanounits - spentNanounits : 0n
+          )} remain below the planned-spend ceiling`
       );
     }
     const totalSpentNanounits = spentNanounits + localBudgetChargeNanounits;
     const totalSpentUnits = nanounitsToBudgetUnits(totalSpentNanounits);
     const at = new Date().toISOString();
-    const affectedBlockedEvent = {
-      ...ledger.blockedEvent,
-      runId: ledger.blockedEvent.runId ?? affectedRunId,
-    };
+    const affectedBlockedEvent = ledger.blockedEvent;
     const resolution: CodexCreditLedgerResolution = {
       at,
       basis: "operator-observed-account-balance-delta",
@@ -305,6 +305,7 @@ export async function reconcileCodexCreditLedger(args: {
         noCreditsAddedOrRefunded: true,
         ...(args.noInterveningCodexActivityConfirmed === true ? { noInterveningCodexActivity: true as const } : {}),
       },
+      affectedRunId,
       affectedBlockedEvent,
     };
     const nextLedger: CodexCreditLedger = {
@@ -424,9 +425,11 @@ export async function runWithinCodexCreditBudget<T>(args: {
         { cause: new Error(`Private ledger block: ${ledger.blockedEvent.reason}`) }
       );
     }
-    const usableCredits = args.config.budgetCredits - args.config.reserveCredits;
+    const usableNanounits =
+      budgetUnitsToNanounits(args.config.budgetCredits) - budgetUnitsToNanounits(args.config.reserveCredits);
+    const usableCredits = nanounitsToBudgetUnits(usableNanounits);
     const spentNanounits = ledgerSpentNanounits(ledger);
-    const dispatchHeadroomNanounits = budgetUnitsToNanounits(usableCredits) - spentNanounits;
+    const dispatchHeadroomNanounits = usableNanounits - spentNanounits;
     if (dispatchHeadroomNanounits < budgetUnitsToNanounits(MAX_BOUNDED_CALL_CREDITS)) {
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.SpendHeadroomExhausted,
@@ -515,7 +518,7 @@ export async function runWithinCodexCreditBudget<T>(args: {
     } catch {
       // The ledger commit is authoritative; an observer cannot roll it back.
     }
-    if (nextSpentNanounits > budgetUnitsToNanounits(usableCredits)) {
+    if (nextSpentNanounits > usableNanounits) {
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.SpendCeilingExceeded,
         "Codex planned-spend ceiling was exceeded by committed usage.",
@@ -971,8 +974,10 @@ function isLedgerResolution(value: unknown): value is CodexCreditLedgerResolutio
     candidate.confirmations.balanceSettled === true &&
     candidate.confirmations.noCreditsAddedOrRefunded === true &&
     (candidate.observedAccountDebit === "0" || candidate.confirmations.noInterveningCodexActivity === true) &&
+    isValidStoredRunId(candidate.affectedRunId) &&
     isBlockedEvent(candidate.affectedBlockedEvent) &&
-    isValidStoredRunId(candidate.affectedBlockedEvent.runId)
+    (candidate.affectedBlockedEvent.runId === undefined ||
+      candidate.affectedBlockedEvent.runId === candidate.affectedRunId)
   );
 }
 
