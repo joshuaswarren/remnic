@@ -830,18 +830,27 @@ export class ExtractionRunCoordinator {
     // extractionRetryEnabled so a disabled feature restores prior behavior.
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
-        meta ??= await storage.loadMeta();
-        await this.recordExtractionFailure(
-          storage,
-          selfNamespace,
-          extractionFingerprint,
-          result.extractionFailureClass ?? "provider_retryable",
-          meta,
-          Date.now(),
-        );
-        // The buffer is retained below so the backoff gate can re-attempt these
-        // turns after nextEligibleAt — clearing would orphan the retry state.
-        recordedRetryFailure = true;
+        try {
+          meta ??= await storage.loadMeta();
+          await this.recordExtractionFailure(
+            storage,
+            selfNamespace,
+            extractionFingerprint,
+            result.extractionFailureClass ?? "provider_retryable",
+            meta,
+            Date.now(),
+          );
+          // The buffer is retained below so the backoff gate can re-attempt
+          // these turns after nextEligibleAt — clearing would orphan the
+          // retry state.
+          recordedRetryFailure = true;
+        } catch (err) {
+          // Fail-open (codex review): retry bookkeeping is best-effort — a
+          // corrupt or locked meta store must not reject the extraction task.
+          // With no backoff recorded there is nothing to retain for, so the
+          // pre-#1908 clear-buffer behavior applies below.
+          log.warn("runExtraction: failed to load meta for retry bookkeeping (non-fatal)", err);
+        }
       } else {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
