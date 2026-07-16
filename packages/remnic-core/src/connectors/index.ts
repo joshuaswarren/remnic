@@ -816,6 +816,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         const profileRaw = parsed?.profile;
         let currentConfigPath: string | null = null;
         let activeConfigHasBlock = false;
+        let configResolutionError: string | null = null;
         try {
           currentConfigPath = hermesConfigPath(
             typeof profileRaw === "string" && profileRaw.length > 0 ? profileRaw : "default",
@@ -823,15 +824,21 @@ export function installConnector(options: InstallOptions): InstallResult {
           activeConfigHasBlock =
             fs.existsSync(currentConfigPath) &&
             /^remnic:/m.test(fs.readFileSync(currentConfigPath, "utf8"));
-        } catch {
+        } catch (resolveErr) {
+          // Surface the REAL failure (symlinked/invalid HERMES_HOME, bad
+          // profile) instead of masking it as a missing remnic: block
+          // (Bugbot on PR #1938, round 23).
+          configResolutionError = resolveErr instanceof Error ? resolveErr.message : String(resolveErr);
           activeConfigHasBlock = false;
         }
         if (!activeConfigHasBlock) {
-          backfillNote =
-            " Note: the active Hermes home's config.yaml has no remnic: block — skipped the shim backfill " +
-            "so Hermes cannot discover an unconfigured provider. If Hermes was installed under a different " +
-            "HERMES_HOME, re-run with --force to rewrite the config (and token) and migrate the shim " +
-            "under the current home.";
+          backfillNote = configResolutionError
+            ? ` Note: could not resolve the active Hermes home (${configResolutionError}) — skipped the shim backfill. ` +
+              `Fix the HERMES_HOME/profile configuration and re-run.`
+            : " Note: the active Hermes home's config.yaml has no remnic: block — skipped the shim backfill " +
+              "so Hermes cannot discover an unconfigured provider. If Hermes was installed under a different " +
+              "HERMES_HOME, re-run with --force to rewrite the config (and token) and migrate the shim " +
+              "under the current home.";
           return {
             connectorId: options.connectorId,
             status: "already_installed",
