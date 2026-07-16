@@ -16,8 +16,15 @@ import { launchProcessSync } from "../runtime/child-process.js";
 import { mergeEnv, readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { expandTildePath } from "../utils/path.js";
 import { coerceInstallExtension } from "./coerce.js";
-import { hermesShimPath, materializeHermesShim, reconcileHermesShim, removeHermesShim } from "./hermes-shim.js";
-import { resolveHermesRoot } from "./hermes-shim.js";
+import {
+  hermesShimPath,
+  isPlausibleHermesConfigPath,
+  materializeHermesShim,
+  reconcileHermesShim,
+  removeHermesShim,
+  resolveHermesRoot,
+  sameShimTarget,
+} from "./hermes-shim.js";
 import { getConnectorsDir, getRegistryPath } from "./paths.js";
 export { getConnectorsDir, getRegistryPath } from "./paths.js";
 
@@ -794,8 +801,43 @@ export function installConnector(options: InstallOptions): InstallResult {
         if (outcome.notes.length > 0) {
           backfillNote = ` ${outcome.notes.join(" ")}`;
         }
-        if (parsed !== null && outcome.persistPath !== null && parsed.pluginShimPath !== outcome.persistPath) {
-          parsed.pluginShimPath = outcome.persistPath;
+        let configProvenanceAdded = false;
+        if (parsed !== null) {
+          // Backfill config.yaml provenance too (Codex P2 on PR #1938,
+          // round 7): persist the current-environment config path when it
+          // actually carries a remnic: block, and warn when it does not —
+          // the block likely lives under a previous HERMES_HOME, and only a
+          // --force reinstall regenerates the token and rewrites config.yaml
+          // under the active home (this path never writes tokens).
+          if (typeof parsed.hermesConfigPath !== "string" || parsed.hermesConfigPath.length === 0) {
+            try {
+              const profileRaw = parsed.profile;
+              const currentConfigPath = hermesConfigPath(
+                typeof profileRaw === "string" && profileRaw.length > 0 ? profileRaw : "default",
+              );
+              if (
+                fs.existsSync(currentConfigPath) &&
+                /^remnic:/m.test(fs.readFileSync(currentConfigPath, "utf8"))
+              ) {
+                parsed.hermesConfigPath = currentConfigPath;
+                configProvenanceAdded = true;
+              } else {
+                backfillNote +=
+                  " Note: no remnic: block found in the active Hermes home's config.yaml — " +
+                  "if Hermes was installed under a different HERMES_HOME, re-run with --force " +
+                  "to rewrite the config (and token) under the current home.";
+              }
+            } catch {
+              /* config path unresolvable — leave provenance absent */
+            }
+          }
+        }
+        const shimPathChanged =
+          parsed !== null && outcome.persistPath !== null && parsed.pluginShimPath !== outcome.persistPath;
+        if (parsed !== null && (shimPathChanged || configProvenanceAdded)) {
+          if (outcome.persistPath !== null) {
+            parsed.pluginShimPath = outcome.persistPath;
+          }
           try {
             writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
           } catch (persistErr) {
@@ -805,7 +847,11 @@ export function installConnector(options: InstallOptions): InstallResult {
             // JSON on disk still matches reality. Shim content is
             // deterministic, so a cleaned prior shim regenerates exactly.
             const rollbackFailures: string[] = [];
-            if (outcome.materializedAt !== null && outcome.materializedAt !== priorPersisted) {
+            if (
+              outcome.materializedAt !== null &&
+              outcome.createdNew &&
+              (priorPersisted === null || !sameShimTarget(outcome.materializedAt, priorPersisted))
+            ) {
               try {
                 removeHermesShim([outcome.materializedAt]);
               } catch {
@@ -1294,11 +1340,16 @@ export function installConnector(options: InstallOptions): InstallResult {
       const shimRollbackFailures: string[] = [];
       const priorPersisted =
         typeof priorShimPathRaw === "string" && priorShimPathRaw.length > 0 ? priorShimPathRaw : null;
-      if (shimOutcome.materializedAt !== null && shimOutcome.materializedAt !== priorPersisted) {
+      if (
+        shimOutcome.materializedAt !== null &&
+        shimOutcome.createdNew &&
+        (priorPersisted === null || !sameShimTarget(shimOutcome.materializedAt, priorPersisted))
+      ) {
         // Newly created at a location the registry never tracked — delete it
-        // (marker-gated). When materializedAt === priorPersisted the shim was
-        // already there before this install and stays tracked by the existing
-        // connector JSON, so it is left in place.
+        // (marker-gated). A shim that pre-existed this install (createdNew ===
+        // false) is left in place: it was functional before and our overwrite
+        // is byte-identical deterministic content (Codex P2, round 7). Path
+        // comparison is by resolved file identity, not string equality.
         try {
           removeHermesShim([shimOutcome.materializedAt]);
         } catch (err) {
@@ -2563,9 +2614,7 @@ export function removeHermesConfig(opts: {
   const cfgPaths = [...hermesConfigCleanupPaths(opts.profile)];
   for (const extra of opts.extraConfigPaths ?? []) {
     if (
-      typeof extra === "string" &&
-      path.isAbsolute(extra) &&
-      path.basename(extra) === "config.yaml" &&
+      isPlausibleHermesConfigPath(extra) &&
       !cfgPaths.some((existing) => sameHermesConfigTarget(existing, extra))
     ) {
       cfgPaths.push(extra);

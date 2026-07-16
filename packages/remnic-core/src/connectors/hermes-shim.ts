@@ -170,16 +170,26 @@ export function reconcileHermesShim(priorPersistedPath: string | null): {
   persistPath: string | null;
   /** Path where a shim was (re)written by this reconcile, or null. */
   materializedAt: string | null;
+  /** True when the materialized shim did NOT exist before this reconcile. */
+  createdNew: boolean;
   /** Prior-install shim path this reconcile actually deleted, or null. */
   priorCleanedAt: string | null;
 } {
   const notes: string[] = [];
   let target: string | null = null;
   let materialized = false;
+  let createdNew = false;
   try {
     target = hermesShimPath();
+    // Record create-vs-overwrite BEFORE writing: a rollback must never delete
+    // a shim that pre-existed this reconcile (e.g. connector JSON deleted
+    // manually while the marker shim survived) — overwriting our own
+    // deterministic content is a no-op, but deleting it would break a
+    // functional install (Codex P2 on PR #1938, round 7).
+    const existedBefore = fs.existsSync(target);
     notes.push(materializeHermesShim(target));
     materialized = true;
+    createdNew = !existedBefore;
   } catch (shimErr) {
     const shimPathHint = target ?? "<hermesRoot>/plugins/remnic/__init__.py";
     // No shell one-liner here: the path may contain characters that break
@@ -190,21 +200,26 @@ export function reconcileHermesShim(priorPersistedPath: string | null): {
       `Note: could not materialize the Hermes plugin shim (${shimErr instanceof Error ? shimErr.message : String(shimErr)}). Create ${shimPathHint} manually with exactly these two lines:\n    """Remnic memory provider shim. Calls collector.register_memory_provider()."""\n    from remnic_hermes import register`
     );
   }
-  if (!materialized) {
+  if (!materialized || target === null) {
     // Nothing new confirmed on disk — keep tracking whatever the registry
     // already pointed at so `remove` still targets the surviving shim.
     return {
       notes,
       persistPath: priorPersistedPath ?? target,
       materializedAt: null,
+      createdNew: false,
       priorCleanedAt: null,
     };
   }
+  const confirmedTarget: string = target;
   let priorCleanedAt: string | null = null;
-  if (priorPersistedPath !== null && priorPersistedPath !== target) {
-    // The prior install's shim lives elsewhere (HERMES_HOME changed). Clean it
-    // now that the replacement is confirmed; marker-gating inside
-    // removeHermesShim protects user-authored files.
+  if (priorPersistedPath !== null && !sameShimTarget(priorPersistedPath, confirmedTarget)) {
+    // The prior install's shim lives elsewhere (HERMES_HOME changed). Compare
+    // by resolved file identity, not string equality — two spellings of the
+    // same directory (symlinks, case-insensitive volumes, tilde vs absolute)
+    // must not delete the shim that was just written (Bugbot on PR #1938,
+    // round 7). Clean it now that the replacement is confirmed; marker-gating
+    // inside removeHermesShim protects user-authored files.
     try {
       const stale = removeHermesShim([priorPersistedPath]);
       if (stale.notes.length > 0) {
@@ -217,7 +232,24 @@ export function reconcileHermesShim(priorPersistedPath: string | null): {
       );
     }
   }
-  return { notes, persistPath: target, materializedAt: target, priorCleanedAt };
+  return { notes, persistPath: target, materializedAt: target, createdNew, priorCleanedAt };
+}
+
+/**
+ * Compare two shim paths by resolved file identity (realpath when available),
+ * so symlinked, tilde-expanded, or differently-cased spellings of the same
+ * location are treated as equal.
+ */
+export function sameShimTarget(leftPath: string, rightPath: string): boolean {
+  return resolveShimTarget(leftPath) === resolveShimTarget(rightPath);
+}
+
+function resolveShimTarget(candidate: string): string {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    return path.resolve(candidate);
+  }
 }
 
 /**
@@ -286,4 +318,37 @@ function isPlausibleHermesShimPath(candidate: string): boolean {
     path.basename(dir) === "remnic" &&
     path.basename(path.dirname(dir)) === "plugins"
   );
+}
+
+/**
+ * Shape guard for config.yaml paths read back from connector.json: absolute,
+ * named `config.yaml`, and living in a directory that looks like a Hermes
+ * home or Hermes profile — the home directory is named `.hermes`/`hermes`,
+ * the path sits under a `profiles/` directory, or the directory carries a
+ * Hermes-layout sibling (`plugins/` or `profiles/`). A tampered connector
+ * JSON must not be able to point remnic:-block cleanup at an arbitrary
+ * config.yaml elsewhere on disk (Codex P2 on PR #1938, round 7).
+ */
+export function isPlausibleHermesConfigPath(candidate: string): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0 || !path.isAbsolute(candidate)) {
+    return false;
+  }
+  if (path.basename(candidate) !== "config.yaml") {
+    return false;
+  }
+  const dir = path.dirname(candidate);
+  const dirName = path.basename(dir).toLowerCase();
+  if (dirName === ".hermes" || dirName === "hermes") {
+    return true;
+  }
+  if (path.basename(path.dirname(dir)) === "profiles") {
+    return true;
+  }
+  return ["plugins", "profiles"].some((sibling) => {
+    try {
+      return fs.statSync(path.join(dir, sibling)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }

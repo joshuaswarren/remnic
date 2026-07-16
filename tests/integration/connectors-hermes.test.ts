@@ -4239,3 +4239,49 @@ test("installConnector hermes backfill rolls back shim changes when persistence 
     }
   });
 });
+
+test("installConnector hermes rollback preserves a pre-existing marker shim (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        // A functional install whose connector JSON was deleted manually: the
+        // marker shim already exists, but the registry has no record of it.
+        const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(first.status, "installed", first.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "sanity: shim exists after install");
+        const connectorsDir = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors",
+        );
+        fs.rmSync(path.join(connectorsDir, "hermes.json"));
+
+        // Reinstall with the connectors dir unwritable: the connector JSON
+        // write fails and rollback runs — but the shim PRE-EXISTED this
+        // install (createdNew === false), so rollback must NOT delete it.
+        fs.chmodSync(connectorsDir, 0o500);
+        try {
+          const second = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(second.status, "error", second.message);
+        } finally {
+          fs.chmodSync(connectorsDir, 0o700);
+        }
+        assert.ok(
+          fs.existsSync(shimPath),
+          "a shim that pre-existed the failed install must survive the rollback",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
