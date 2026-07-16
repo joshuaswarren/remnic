@@ -1286,6 +1286,14 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     const eligibleAt = Date.parse(entry.nextEligibleAt);
     return Number.isFinite(eligibleAt) && eligibleAt > nowMs;
   });
+  // Transient (provider_retryable) parked entries imply the in-memory circuit
+  // breaker is likely open in the daemon (it opens after N consecutive
+  // provider failures, each of which parks a fingerprint). The breaker itself
+  // is per-process (daemon-only), so doctor infers from this durable signal.
+  const providerRetryableParked = parkedFingerprints.filter(
+    (entry) => entry.lastFailureClass === "provider_retryable",
+  );
+  const breakerLikelyOpen = providerRetryableParked.length > 0;
   const resilienceStatus: "ok" | "warn" | "error" =
     authConfigFailures.length > 0 ? "error" : parkedFingerprints.length > 0 ? "warn" : "ok";
   checks.push({
@@ -1295,7 +1303,9 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       resilienceStatus === "error"
         ? `Extraction provider has ${authConfigFailures.length} auth/config failure(s); the circuit breaker opens immediately and extraction is suspended.`
         : resilienceStatus === "warn"
-          ? `${parkedFingerprints.length} extraction fingerprint(s) are in backoff after transient provider failures.`
+          ? `${parkedFingerprints.length} extraction fingerprint(s) in backoff after transient provider failures${
+              breakerLikelyOpen ? "; the provider circuit breaker is likely OPEN in the daemon (non-forced extraction is suspended until it half-opens)" : ""
+            }.`
           : "No extraction provider failures are currently parked.",
     remediation:
       resilienceStatus === "error"
@@ -1307,6 +1317,8 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       backoffFingerprintCount: retryEntries.length,
       authConfigFailureCount: authConfigFailures.length,
       parkedFingerprintCount: parkedFingerprints.length,
+      providerRetryableParkedCount: providerRetryableParked.length,
+      breakerLikelyOpen,
     },
   });
 
