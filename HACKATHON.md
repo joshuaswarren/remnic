@@ -272,6 +272,9 @@ umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
 chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
 
+# Set once per benchmark run and preserve unchanged across retries or resumption.
+export REMNIC_BENCH_RUN_ID="build-week-longmemeval-$(date -u +%Y%m%dT%H%M%SZ)"
+unset REMNIC_BENCH_CODEX_ALLOW_SOL
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
 export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
@@ -330,19 +333,12 @@ pnpm exec tsx packages/remnic-cli/src/index.ts bench run \
   --quick memcorrect-v1 --adapter mcp --mcp-demo
 ```
 
-To invoke GPT-5.6 as the structured-output judge:
-
-```bash
-export OPENAI_API_KEY=...
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
-```
-
-Without the judge flags, MemCorrect reports its deterministic contract metrics
-without making an OpenAI call. The OpenAI provider is selected only when the
-flags are present and reads `OPENAI_API_KEY`; the manifest records the provider,
-model, and rubric version but redacts the secret. Full reproduction paths live
-in `docs/paper/repro-appendix.md`.
+The separately billed Responses API integration remains available for API
+users, but it is not a competition reproduction path. The Build Week grant
+provides Codex CLI credits, not API credits, and no Responses API result is used
+as competition measurement evidence. Competition measurements must follow the
+guarded Codex CLI protocol above. API-provider setup remains documented in
+`docs/paper/repro-appendix.md`.
 
 ## Supported judge environment
 
