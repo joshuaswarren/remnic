@@ -10,6 +10,7 @@ import {
   serializeLoCoMoRetrievalTraceDelta,
 } from "@remnic/bench";
 import { expandTildePath } from "@remnic/core";
+import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 
 import { preparePrivateOutput, writePrivateOutput } from "./capture-locomo-retrieval-trace.js";
 
@@ -19,13 +20,29 @@ export interface CliOptions {
   out?: string;
 }
 
+interface TextSink {
+  write(chunk: string): unknown;
+}
+
+class OperatorFacingError extends Error {}
+
 export async function main(argv: string[]): Promise<string> {
-  const options = parseArgs(argv);
+  let options: CliOptions;
+  try {
+    options = parseArgs(argv);
+  } catch {
+    throw new OperatorFacingError("Invalid command-line arguments.");
+  }
   const [baseline, real] = await Promise.all([
     loadReceipt(options.baselinePath, "baseline"),
     loadReceipt(options.realPath, "real"),
   ]);
-  const report = diagnoseLoCoMoRetrievalTraceDelta(baseline, real);
+  let report;
+  try {
+    report = diagnoseLoCoMoRetrievalTraceDelta(baseline, real);
+  } catch (error) {
+    throw trustedOperatorError(error, "Unable to diagnose paired retrieval traces.");
+  }
   const outputContext = await preparePrivateOutput(options.out);
   const outputPath = path.resolve(
     outputContext.requestedOutput ??
@@ -76,19 +93,35 @@ async function loadReceipt(pathname: string, label: string): Promise<LoCoMoRetri
   try {
     parsed = JSON.parse(await readFile(pathname, "utf8"));
   } catch (error) {
-    throw new Error(
-      `Unable to read ${label} retrieval trace JSON: ${error instanceof Error ? error.message : String(error)}`
-    );
+    throw new OperatorFacingError(`Unable to read ${label} retrieval trace JSON: ${formatOperatorError(error)}`);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} retrieval trace JSON must contain an object.`);
+    throw new OperatorFacingError(`${label} retrieval trace JSON must contain an object.`);
   }
   return parsed as LoCoMoRetrievalTraceReceipt;
 }
 
+export function formatOperatorError(error: unknown): string {
+  if (error instanceof OperatorFacingError) return error.message;
+  return displayErrorDetail(error) || "Error";
+}
+
+function trustedOperatorError(error: unknown, fallback: string): OperatorFacingError {
+  return new OperatorFacingError(error instanceof Error && error.message.length > 0 ? error.message : fallback);
+}
+
+export async function runCli(argv: string[], stderr: TextSink = process.stderr): Promise<number> {
+  try {
+    await main(argv);
+    return 0;
+  } catch (error) {
+    stderr.write(`${formatOperatorError(error)}\n`);
+    return 1;
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
+  runCli(process.argv.slice(2)).then((exitCode) => {
+    process.exitCode = exitCode;
   });
 }

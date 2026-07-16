@@ -11,6 +11,7 @@ const MECHANISMS = [
   "real-core-visible-lcm-displacement",
   "lcm-selection-change",
   "composition-filter-displacement",
+  "composition-digest-change",
   "budget-truncation-change",
   "mixed",
   "no-structural-delta",
@@ -167,40 +168,91 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
     compositionPolicy: delta(signatures(baseline, "compositionPolicy"), signatures(real, "compositionPolicy")),
     compositionDigests: delta(signatures(baseline, "compositionDigests"), signatures(real, "compositionDigests")),
   };
-  const exact = [...baseline.sessions, ...real.sessions].every(
-    (session) =>
-      session.trace.selections.every(hasExactSelectionLineage) &&
-      session.trace.lcmCandidates.every(hasExactCandidateLineage) &&
-      (session.trace.coreCapture?.results.every(
-        (result) => isSha256Hex(result.memoryIdRef.sha256) && result.memoryIdRef.length > 0
-      ) ??
-        true)
-  );
+  const hasCompleteExactLineage = (task: LoCoMoRetrievalTaskReceipt): boolean => {
+    return task.sessions.every((session) => {
+      const renderedSections = session.trace.sections.filter(
+        (section) => section.source === "lcm-summary" || section.source === "raw-row"
+      );
+      const lcmSelections = session.trace.selections.filter(
+        (selection) => selection.kind === "lcm-summary" || selection.kind === "raw-row"
+      );
+      const selectionMatchesSection = (selection: (typeof session.trace.selections)[number]): boolean =>
+        renderedSections.some((section) => section.id === selection.sectionId && section.source === selection.kind);
+      const renderedLineageComplete = renderedSections.every((section) =>
+        lcmSelections.some(
+          (selection) =>
+            selection.sectionId === section.id &&
+            selection.kind === section.source &&
+            hasExactSelectionLineage(selection)
+        )
+      );
+      const candidateLineageComplete = session.trace.lcmCandidates.every(hasExactCandidateLineage);
+      const hasCarrier =
+        (renderedSections.length > 0 && renderedLineageComplete) ||
+        (renderedSections.length === 0 &&
+          lcmSelections.length === 0 &&
+          session.trace.lcmCandidates.length > 0 &&
+          candidateLineageComplete);
+      const hasLcmEvidence =
+        renderedSections.length > 0 || lcmSelections.length > 0 || session.trace.lcmCandidates.length > 0;
+      return (
+        (!hasLcmEvidence || hasCarrier) &&
+        lcmSelections.every(selectionMatchesSection) &&
+        lcmSelections.every(hasExactSelectionLineage) &&
+        (renderedSections.length > 0 || candidateLineageComplete) &&
+        (session.trace.coreCapture?.results.every(
+          (result) => isSha256Hex(result.memoryIdRef.sha256) && result.memoryIdRef.length > 0
+        ) ??
+          true)
+      );
+    });
+  };
+  const exact = hasCompleteExactLineage(baseline) && hasCompleteExactLineage(real);
+  const lcmSelectionsChanged = delta(
+    exactSelectionSignatures(baseline, "lcm"),
+    exactSelectionSignatures(real, "lcm")
+  ).changed;
+  const lcmArchiveRowsChanged = delta(
+    exactArchiveRowSignatures(baseline, "lcm"),
+    exactArchiveRowSignatures(real, "lcm")
+  ).changed;
+  const auxiliarySelectionsChanged = delta(
+    exactSelectionSignatures(baseline, "auxiliary"),
+    exactSelectionSignatures(real, "auxiliary")
+  ).changed;
+  const auxiliaryArchiveRowsChanged = delta(
+    exactArchiveRowSignatures(baseline, "auxiliary"),
+    exactArchiveRowSignatures(real, "auxiliary")
+  ).changed;
   const core = dimensions.coreResults.changed || dimensions.coreFilters.changed || dimensions.coreBudget.changed;
   const baselineVisible = visibleCharsByGroup(baseline);
   const realVisible = visibleCharsByGroup(real);
   const coreSections = sectionGroupChanged(baseline, real, "core");
   const lcmSections = sectionGroupChanged(baseline, real, "lcm");
   const otherSections = sectionGroupChanged(baseline, real, "other");
-  const lcm =
-    lcmSections || dimensions.selections.changed || dimensions.archiveRows.changed || dimensions.lcmCandidates.changed;
+  const lcm = lcmSections || lcmSelectionsChanged || lcmArchiveRowsChanged || dimensions.lcmCandidates.changed;
+  const auxiliary = auxiliarySelectionsChanged || auxiliaryArchiveRowsChanged;
+  const other = otherSections || auxiliary;
   const compositionPolicy = dimensions.compositionPolicy.changed;
+  const compositionDigests = dimensions.compositionDigests.changed;
   const budget = dimensions.recallBudget.changed;
   const coreVisibleLcmDisplacement =
     core &&
     lcm &&
     realVisible.core > baselineVisible.core &&
     realVisible.lcm < baselineVisible.lcm &&
-    !otherSections &&
+    !other &&
     !budget;
   let mechanism: LoCoMoRetrievalMechanism;
   if (!exact) mechanism = "insufficient-exact-lineage";
   else if (coreVisibleLcmDisplacement) mechanism = "real-core-visible-lcm-displacement";
-  else if (lcm && !core && !coreSections && !otherSections && !budget) mechanism = "lcm-selection-change";
-  else if (budget && !core && !coreSections && !lcm && !otherSections) mechanism = "budget-truncation-change";
-  else if (compositionPolicy && !core && !coreSections && !lcm && !otherSections && !budget)
+  else if (lcm && !core && !coreSections && !other && !budget) mechanism = "lcm-selection-change";
+  else if (budget && !core && !coreSections && !lcm && !other) mechanism = "budget-truncation-change";
+  else if (compositionPolicy && !core && !coreSections && !lcm && !other && !budget)
     mechanism = "composition-filter-displacement";
-  else if (!core && !coreSections && !lcm && !otherSections && !budget && !compositionPolicy)
+  else if (compositionDigests && !compositionPolicy && !core && !coreSections && !lcm && !other && !budget)
+    mechanism = "composition-digest-change";
+  else if (!core && !coreSections && !lcm && !other && !budget && !compositionPolicy && !compositionDigests)
     mechanism = "no-structural-delta";
   else mechanism = "mixed";
   return { taskRef: digestIdentifier(baseline.taskId), category, mechanism, dimensions };
@@ -232,13 +284,11 @@ function sectionGroupChanged(
   const signaturesFor = (task: LoCoMoRetrievalTaskReceipt): string[] => {
     const output: string[] = [];
     task.sessions.forEach((session, sessionOrdinal) => {
-      for (const section of session.trace.sections) {
+      session.trace.sections.forEach((section, sectionOrdinal) => {
         if (sectionGroup(section.source) === group) {
-          output.push(
-            hashCanonicalJson({ sessionOrdinal, source: section.source, visibleChars: section.visibleChars })
-          );
+          output.push(structuralSectionSignature(section, sessionOrdinal, sectionOrdinal));
         }
-      }
+      });
     });
     return output;
   };
@@ -253,13 +303,93 @@ function sectionGroup(
   return "other";
 }
 
+function structuralSectionSignature(
+  section: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["sections"][number],
+  sessionOrdinal: number,
+  sectionOrdinal: number
+): string {
+  return hashCanonicalJson({
+    sessionOrdinal,
+    sectionOrdinal,
+    sectionIdRef: digestIdentifier(section.id),
+    source: section.source,
+    separatorStart: section.separatorStart,
+    contentStart: section.contentStart,
+    contentEnd: section.contentEnd,
+    composedStart: section.composedStart,
+    composedEnd: section.composedEnd,
+    visibleStart: section.visibleStart,
+    visibleEnd: section.visibleEnd,
+    visibleChars: section.visibleChars,
+  });
+}
+
 type Dimension = keyof LoCoMoRetrievalTaskDelta["dimensions"];
+type SelectionScope = "all" | "lcm" | "auxiliary";
+
+function selectionInScope(
+  selection: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["selections"][number],
+  scope: SelectionScope
+): boolean {
+  const isLcm = selection.kind === "lcm-summary" || selection.kind === "raw-row";
+  return scope === "all" || (scope === "lcm" ? isLcm : !isLcm);
+}
+
+function exactSelectionSignatures(task: LoCoMoRetrievalTaskReceipt, scope: SelectionScope): string[] {
+  const output: string[] = [];
+  task.sessions.forEach((session, sessionOrdinal) => {
+    for (const value of session.trace.selections) {
+      if (!selectionInScope(value, scope) || !hasExactSelectionLineage(value)) continue;
+      output.push(
+        hashCanonicalJson({
+          sessionOrdinal,
+          kind: value.kind,
+          lineageStatus: value.lineageStatus,
+          turnIndex: value.turnIndex,
+          role: value.role,
+          score: value.score,
+          summary: value.summary,
+          archiveRowIds: value.archiveRowIds,
+          composedStart: value.composedStart,
+          composedEnd: value.composedEnd,
+          visibleStart: value.visibleStart,
+          visibleEnd: value.visibleEnd,
+        })
+      );
+    }
+  });
+  return output;
+}
+
+function exactArchiveRowSignatures(task: LoCoMoRetrievalTaskReceipt, scope: SelectionScope): string[] {
+  const output: string[] = [];
+  task.sessions.forEach((session, sessionOrdinal) => {
+    for (const value of session.trace.selections) {
+      if (!selectionInScope(value, scope) || !hasExactSelectionLineage(value)) continue;
+      for (const archiveRowId of value.archiveRowIds ?? []) {
+        output.push(hashCanonicalJson({ sessionOrdinal, archiveRowId }));
+      }
+    }
+  });
+  return output;
+}
 
 function hasExactSelectionLineage(
   selection: LoCoMoRetrievalTaskReceipt["sessions"][number]["trace"]["selections"][number]
 ): boolean {
+  if (selection.lineageStatus !== "exact") return false;
+  if (selection.kind === "lcm-summary") {
+    return (
+      selection.summary !== undefined &&
+      Number.isSafeInteger(selection.summary.depth) &&
+      selection.summary.depth >= 0 &&
+      Number.isSafeInteger(selection.summary.msgStart) &&
+      selection.summary.msgStart >= 0 &&
+      Number.isSafeInteger(selection.summary.msgEnd) &&
+      selection.summary.msgEnd >= selection.summary.msgStart
+    );
+  }
   return (
-    selection.lineageStatus === "exact" &&
     Array.isArray(selection.archiveRowIds) &&
     selection.archiveRowIds.length > 0 &&
     selection.archiveRowIds.every((id) => Number.isSafeInteger(id) && id > 0)
@@ -277,11 +407,16 @@ function hasExactCandidateLineage(
 }
 
 function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): string[] {
+  if (dimension === "selections") return exactSelectionSignatures(task, "all");
+  if (dimension === "archiveRows") return exactArchiveRowSignatures(task, "all");
   if (dimension === "recallBudget") {
     return [
       hashCanonicalJson({
         recallBudgetChars: task.recallBudgetChars,
-        budgets: task.sessions.map((s) => s.trace.budget),
+        budgets: task.sessions.map((session) => ({
+          requestedChars: session.trace.budget.requestedChars,
+          truncated: session.trace.budget.truncated,
+        })),
       }),
     ];
   }
@@ -312,33 +447,49 @@ function signatures(task: LoCoMoRetrievalTaskReceipt, dimension: Dimension): str
   task.sessions.forEach((session, sessionOrdinal) => {
     const trace = session.trace;
     if (dimension === "sectionVisibleChars") {
-      for (const value of trace.sections)
-        output.push(hashCanonicalJson({ sessionOrdinal, source: value.source, visibleChars: value.visibleChars }));
-    } else if (dimension === "selections") {
-      for (const value of trace.selections)
+      trace.sections.forEach((value, sectionOrdinal) => {
+        output.push(structuralSectionSignature(value, sessionOrdinal, sectionOrdinal));
+      });
+    } else if (dimension === "lcmCandidates") {
+      for (const value of trace.lcmCandidates) {
+        if (!hasExactCandidateLineage(value)) continue;
         output.push(
           hashCanonicalJson({
             sessionOrdinal,
-            kind: value.kind,
-            lineageStatus: value.lineageStatus,
+            rank: value.rank,
+            archiveRowId: value.archiveRowId,
             turnIndex: value.turnIndex,
             role: value.role,
             score: value.score,
-            summary: value.summary,
+            lineageStatus: value.lineageStatus,
           })
         );
-    } else if (dimension === "archiveRows") {
-      for (const value of trace.selections)
-        for (const archiveRowId of value.archiveRowIds ?? [])
-          output.push(hashCanonicalJson({ sessionOrdinal, archiveRowId }));
-    } else if (dimension === "lcmCandidates") {
-      for (const value of trace.lcmCandidates) output.push(hashCanonicalJson({ sessionOrdinal, ...value }));
+      }
     } else if (dimension === "coreResults") {
-      for (const value of trace.coreCapture?.results ?? [])
-        output.push(hashCanonicalJson({ sessionOrdinal, ...value }));
+      for (const [resultOrdinal, value] of (trace.coreCapture?.results ?? []).entries())
+        output.push(
+          hashCanonicalJson({
+            sessionOrdinal,
+            resultOrdinal,
+            memoryIdRef: value.memoryIdRef,
+            servedBy: value.servedBy,
+            scoreDecomposition: value.scoreDecomposition,
+            admittedBy: value.admittedBy,
+            rejectedBy: value.rejectedBy,
+            disclosure: value.disclosure,
+            estimatedTokens: value.estimatedTokens,
+          })
+        );
     } else if (dimension === "coreFilters") {
       for (const value of trace.coreCapture?.filters ?? [])
-        output.push(hashCanonicalJson({ sessionOrdinal, ...value }));
+        output.push(
+          hashCanonicalJson({
+            sessionOrdinal,
+            name: value.name,
+            considered: value.considered,
+            admitted: value.admitted,
+          })
+        );
     } else if (dimension === "coreBudget") {
       if (trace.coreCapture) output.push(hashCanonicalJson({ sessionOrdinal, ...trace.coreCapture.budget }));
     }
@@ -394,6 +545,42 @@ function categoryOf(taskId: string): LoCoMoCategory {
 function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): void {
   if (!receipt || typeof receipt !== "object") throw new Error(`${label} receipt must be an object.`);
   assertFiniteJson(receipt, `${label} receipt`);
+  assertExactKeys(
+    receipt,
+    ["schemaVersion", "benchmarkId", "captureKind", "artifactHash", "sensitivity", "provenance", "selection", "tasks"],
+    `${label} receipt`
+  );
+  assertExactKeys(
+    receipt.sensitivity,
+    ["classification", "contentEncoding", "containsGold", "containsRawContent"],
+    `${label} receipt.sensitivity`
+  );
+  assertExactKeys(
+    receipt.provenance,
+    [
+      "gitSha",
+      "remnicVersion",
+      "runtimeProfile",
+      "adapterMode",
+      "replayExtractionMode",
+      "providerFree",
+      "dataset",
+      "retrievalConfigSha256",
+      "recallBudget",
+    ],
+    `${label} receipt.provenance`
+  );
+  assertExactKeys(receipt.provenance.dataset, ["id", "sha256"], `${label} receipt.provenance.dataset`);
+  assertExactKeys(
+    receipt.provenance.recallBudget,
+    ["algorithm", "version"],
+    `${label} receipt.provenance.recallBudget`
+  );
+  assertExactKeys(
+    receipt.selection,
+    ["algorithm", "version", "seed", "candidateCount", "selectedCount", "selectedTaskIds", "selectedTaskIdsSha256"],
+    `${label} receipt.selection`
+  );
   const { artifactHash, ...withoutHash } = receipt;
   if (!isSha256Hex(artifactHash) || hashCanonicalJson(withoutHash) !== artifactHash) {
     throw new Error(`${label} retrieval trace artifact hash verification failed.`);
@@ -417,7 +604,11 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
     typeof receipt.provenance.remnicVersion !== "string" ||
     receipt.provenance.remnicVersion.length === 0 ||
     receipt.selection.version !== 1 ||
+    (receipt.selection.algorithm !== "explicit-task-ids" && receipt.selection.algorithm !== "sha256-seeded-sample") ||
+    (receipt.selection.algorithm === "explicit-task-ids" && receipt.selection.seed !== undefined) ||
+    (receipt.selection.algorithm === "sha256-seeded-sample" && !isNonNegativeSafeInteger(receipt.selection.seed)) ||
     !Array.isArray(receipt.selection.selectedTaskIds) ||
+    receipt.selection.selectedTaskIds.some((taskId) => typeof taskId !== "string" || taskId.length === 0) ||
     !Array.isArray(receipt.tasks) ||
     !Number.isSafeInteger(receipt.selection.candidateCount) ||
     !Number.isSafeInteger(receipt.selection.selectedCount) ||
@@ -437,10 +628,16 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
     throw new Error(`${label} retrieval trace receipt contains invalid provenance hashes.`);
   }
   for (const task of receipt.tasks) {
+    assertExactKeys(
+      task,
+      ["taskId", "question", "recallBudgetChars", "sessions", "composition"],
+      `${label} retrieval trace task`
+    );
     if (
       typeof task.taskId !== "string" ||
       task.taskId.length === 0 ||
       !Array.isArray(task.sessions) ||
+      task.sessions.length === 0 ||
       !isDigest(task.question) ||
       !Number.isSafeInteger(task.recallBudgetChars) ||
       task.recallBudgetChars < 0
@@ -450,7 +647,23 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
     categoryOf(task.taskId);
     assertComposition(task.composition, label);
     for (const session of task.sessions) {
+      assertExactKeys(session, ["session", "trace"], `${label} retrieval trace session`);
       const trace = session.trace;
+      assertExactKeys(
+        trace,
+        ["schemaVersion", "sensitivity", "sections", "selections", "lcmCandidates", "coreCapture", "budget"],
+        `${label} retrieval structural trace`
+      );
+      assertExactKeys(
+        trace.sensitivity,
+        ["classification", "contentEncoding", "containsGold"],
+        `${label} retrieval trace sensitivity`
+      );
+      assertExactKeys(
+        trace.budget,
+        ["requestedChars", "composedChars", "returnedChars", "truncated"],
+        `${label} retrieval trace budget`
+      );
       if (
         !isDigest(session.session) ||
         !trace ||
@@ -461,11 +674,31 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
         !Array.isArray(trace.sections) ||
         !Array.isArray(trace.selections) ||
         !Array.isArray(trace.lcmCandidates) ||
-        !isTraceBudget(trace.budget)
+        new Set(trace.sections.map((section) => section.id)).size !== trace.sections.length ||
+        !isTraceBudget(trace.budget) ||
+        trace.budget.requestedChars !== task.recallBudgetChars ||
+        trace.budget.returnedChars > trace.budget.composedChars ||
+        trace.budget.truncated !== trace.budget.returnedChars < trace.budget.composedChars
       ) {
         throw new Error(`${label} retrieval trace session structure is invalid.`);
       }
       for (const section of trace.sections) {
+        assertExactKeys(
+          section,
+          [
+            "id",
+            "source",
+            "separatorStart",
+            "contentStart",
+            "contentEnd",
+            "composedStart",
+            "composedEnd",
+            "visibleStart",
+            "visibleEnd",
+            "visibleChars",
+          ],
+          `${label} retrieval trace section`
+        );
         if (
           ![
             "derived",
@@ -476,6 +709,10 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
             "lcm-summary",
             "raw-row",
           ].includes(section.source) ||
+          typeof section.id !== "string" ||
+          section.id.length === 0 ||
+          !isTraceRange(section) ||
+          ![section.separatorStart, section.contentStart, section.contentEnd].every(isNonNegativeSafeInteger) ||
           !Number.isSafeInteger(section.visibleChars) ||
           section.visibleChars < 0
         ) {
@@ -483,9 +720,48 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
         }
       }
       for (const selection of trace.selections) {
+        assertExactKeys(
+          selection,
+          [
+            "sectionId",
+            "kind",
+            "lineageStatus",
+            "archiveRowIds",
+            "turnIndex",
+            "role",
+            "score",
+            "summary",
+            "composedStart",
+            "composedEnd",
+            "visibleStart",
+            "visibleEnd",
+          ],
+          `${label} retrieval trace selection`
+        );
+        if (selection.summary !== undefined) {
+          assertExactKeys(
+            selection.summary,
+            ["depth", "msgStart", "msgEnd"],
+            `${label} retrieval trace selection summary`
+          );
+        }
+        const selectedSection = trace.sections.find((section) => section.id === selection.sectionId);
         if (
           !["evidence-block", "trajectory-line", "lcm-summary", "raw-row"].includes(selection.kind) ||
+          typeof selection.sectionId !== "string" ||
+          selection.sectionId.length === 0 ||
+          selectedSection === undefined ||
+          (selection.kind === "lcm-summary" && selectedSection.source !== "lcm-summary") ||
+          (selection.kind === "raw-row" && selectedSection.source !== "raw-row") ||
+          !isTraceRange(selection) ||
           (selection.lineageStatus !== "exact" && selection.lineageStatus !== "unavailable") ||
+          (selection.turnIndex !== undefined && !isNonNegativeSafeInteger(selection.turnIndex)) ||
+          (selection.role !== undefined && typeof selection.role !== "string") ||
+          (selection.score !== undefined && !Number.isFinite(selection.score)) ||
+          (selection.summary !== undefined &&
+            ![selection.summary.depth, selection.summary.msgStart, selection.summary.msgEnd].every(
+              isNonNegativeSafeInteger
+            )) ||
           (selection.archiveRowIds !== undefined &&
             (!Array.isArray(selection.archiveRowIds) ||
               selection.archiveRowIds.some((id) => !Number.isSafeInteger(id) || id <= 0)))
@@ -494,10 +770,20 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
         }
       }
       for (const candidate of trace.lcmCandidates) {
+        assertExactKeys(
+          candidate,
+          ["rank", "archiveRowId", "turnIndex", "role", "score", "lineageStatus"],
+          `${label} retrieval trace LCM candidate`
+        );
         if (
           (candidate.lineageStatus !== "exact" && candidate.lineageStatus !== "unavailable") ||
           !Number.isSafeInteger(candidate.rank) ||
           candidate.rank < 0 ||
+          !isNonNegativeSafeInteger(candidate.turnIndex) ||
+          typeof candidate.role !== "string" ||
+          (candidate.score !== undefined && !Number.isFinite(candidate.score)) ||
+          (candidate.lineageStatus === "exact" && candidate.archiveRowId === undefined) ||
+          (candidate.lineageStatus === "unavailable" && candidate.archiveRowId !== undefined) ||
           (candidate.archiveRowId !== undefined &&
             (!Number.isSafeInteger(candidate.archiveRowId) || candidate.archiveRowId <= 0))
         ) {
@@ -505,6 +791,52 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
         }
       }
       if (trace.coreCapture) {
+        assertExactKeys(trace.coreCapture, ["budget", "filters", "results"], `${label} retrieval trace core capture`);
+        assertExactKeys(trace.coreCapture.budget, ["chars", "used"], `${label} retrieval trace core budget`);
+        for (const filter of trace.coreCapture.filters) {
+          assertExactKeys(filter, ["name", "considered", "admitted"], `${label} retrieval trace core filter`);
+          if (
+            typeof filter.name !== "string" ||
+            !isNonNegativeSafeInteger(filter.considered) ||
+            !isNonNegativeSafeInteger(filter.admitted) ||
+            filter.admitted > filter.considered
+          ) {
+            throw new Error(`${label} retrieval trace core filter structure is invalid.`);
+          }
+        }
+        for (const result of trace.coreCapture.results) {
+          assertExactKeys(
+            result,
+            [
+              "memoryIdRef",
+              "servedBy",
+              "scoreDecomposition",
+              "admittedBy",
+              "rejectedBy",
+              "disclosure",
+              "estimatedTokens",
+            ],
+            `${label} retrieval trace core result`
+          );
+          assertExactKeys(result.memoryIdRef, ["sha256", "length"], `${label} retrieval trace core memory reference`);
+          assertExactKeys(
+            result.scoreDecomposition,
+            ["vector", "bm25", "importance", "mmrPenalty", "tierPrior", "reinforcementBoost", "final"],
+            `${label} retrieval trace score decomposition`
+          );
+          if (
+            typeof result.servedBy !== "string" ||
+            !Number.isFinite(result.scoreDecomposition.final) ||
+            !Object.values(result.scoreDecomposition).every((score) => score === undefined || Number.isFinite(score)) ||
+            !Array.isArray(result.admittedBy) ||
+            result.admittedBy.some((reason) => typeof reason !== "string") ||
+            (result.rejectedBy !== undefined && typeof result.rejectedBy !== "string") ||
+            (result.disclosure !== undefined && !["chunk", "section", "raw"].includes(result.disclosure)) ||
+            (result.estimatedTokens !== undefined && !isNonNegativeSafeInteger(result.estimatedTokens))
+          ) {
+            throw new Error(`${label} retrieval trace core result structure is invalid.`);
+          }
+        }
         if (
           !isCountBudget(trace.coreCapture.budget) ||
           !Array.isArray(trace.coreCapture.filters) ||
@@ -524,6 +856,11 @@ function assertReceipt(receipt: LoCoMoRetrievalTraceReceipt, label: string): voi
 }
 
 function assertComposition(composition: LoCoMoRetrievalTaskReceipt["composition"], label: string): void {
+  assertExactKeys(
+    composition,
+    ["schemaVersion", "mode", "multiHopRecallComposition", "input", "output", "selectedLines"],
+    `${label} retrieval trace composition`
+  );
   if (
     !composition ||
     composition.schemaVersion !== 1 ||
@@ -535,6 +872,58 @@ function assertComposition(composition: LoCoMoRetrievalTaskReceipt["composition"
   ) {
     throw new Error(`${label} retrieval trace composition structure is invalid.`);
   }
+  for (const line of composition.selectedLines) {
+    assertExactKeys(
+      line,
+      [
+        "inputOrdinal",
+        "input",
+        "output",
+        "stage",
+        "hop",
+        "visible",
+        "outputStart",
+        "outputEnd",
+        "visibleStart",
+        "visibleEnd",
+      ],
+      `${label} retrieval trace composition line`
+    );
+    if (
+      !isNonNegativeSafeInteger(line.inputOrdinal) ||
+      !isDigest(line.input) ||
+      !isDigest(line.output) ||
+      (line.stage !== "direct" && line.stage !== "linked") ||
+      (line.hop !== undefined && !isNonNegativeSafeInteger(line.hop)) ||
+      typeof line.visible !== "boolean" ||
+      ![line.outputStart, line.outputEnd, line.visibleStart, line.visibleEnd].every(isNonNegativeSafeInteger)
+    ) {
+      throw new Error(`${label} retrieval trace composition line structure is invalid.`);
+    }
+  }
+}
+
+function assertExactKeys(value: unknown, allowed: readonly string[], label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`${label} contains an unsupported field.`);
+  }
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isTraceRange(value: {
+  composedStart?: unknown;
+  composedEnd?: unknown;
+  visibleStart?: unknown;
+  visibleEnd?: unknown;
+}): boolean {
+  return [value.composedStart, value.composedEnd, value.visibleStart, value.visibleEnd].every(isNonNegativeSafeInteger);
 }
 
 function isTraceBudget(value: unknown): boolean {
@@ -612,10 +1001,7 @@ function assertComparable(baseline: LoCoMoRetrievalTraceReceipt, real: LoCoMoRet
       if (!other || canonicalJsonStringify(session.session) !== canonicalJsonStringify(other.session)) {
         throw new Error(`Paired retrieval trace session mismatch at task ${index}, session ${sessionIndex}.`);
       }
-      if (
-        session.trace.budget.requestedChars !== other.trace.budget.requestedChars ||
-        session.trace.coreCapture?.budget.chars !== other.trace.coreCapture?.budget.chars
-      ) {
+      if (session.trace.budget.requestedChars !== other.trace.budget.requestedChars) {
         throw new Error(`Paired retrieval trace budget mismatch at task ${index}, session ${sessionIndex}.`);
       }
     });
@@ -624,6 +1010,7 @@ function assertComparable(baseline: LoCoMoRetrievalTraceReceipt, real: LoCoMoRet
 
 function isDigest(value: unknown): value is { sha256: string; charCount: number; lineCount: number } {
   if (!value || typeof value !== "object") return false;
+  if (Object.keys(value).some((key) => !["sha256", "charCount", "lineCount"].includes(key))) return false;
   const digest = value as { sha256?: unknown; charCount?: unknown; lineCount?: unknown };
   return (
     isSha256Hex(digest.sha256) &&
