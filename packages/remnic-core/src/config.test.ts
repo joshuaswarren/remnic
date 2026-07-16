@@ -2142,3 +2142,22 @@ test("parseConfig correction.maxAffected rejects non-integers (Number.isInteger,
   assert.equal(parseConfig({ correctionMaxAffected: 20 }).correctionMaxAffected, 20);
   assert.equal(parseConfig({}).correctionMaxAffected, 10, "absent → documented default");
 });
+
+test("parseConfig rejects non-positive extraction retry/breaker numerics and falls back to defaults (codex review, rule 17)", () => {
+  const c = parseConfig({
+    extractionRetryMaxBackoffMs: 0,
+    extractionRetryJitterRatio: -0.5,
+    extractionParseEmptyMaxAttempts: 0,
+    extractionBreakerFailureThreshold: -1,
+    extractionBreakerCooldownMs: 0,
+    extractionBreakerAuthCooldownMs: -100,
+    extractionRetryScheduleMs: [1000, 0, -5],
+  });
+  assert.equal(c.extractionRetryMaxBackoffMs, 21_600_000, "non-positive cap -> default");
+  assert.equal(c.extractionRetryJitterRatio, 0.2, "out-of-range jitter -> default");
+  assert.equal(c.extractionParseEmptyMaxAttempts, 3, "non-positive attempts -> default");
+  assert.equal(c.extractionBreakerFailureThreshold, 5, "non-positive threshold -> default");
+  assert.equal(c.extractionBreakerCooldownMs, 300_000, "non-positive cooldown -> default");
+  assert.equal(c.extractionBreakerAuthCooldownMs, 1_800_000, "non-positive auth cooldown -> default");
+  assert.deepEqual(c.extractionRetryScheduleMs, [60_000, 300_000, 1_800_000, 7_200_000], "schedule with non-positive entry -> default");
+});

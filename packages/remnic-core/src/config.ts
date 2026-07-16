@@ -2835,17 +2835,26 @@ export function parseConfig(
         ? (cfg.extractionRetryScheduleMs as number[])
         : [60_000, 300_000, 1_800_000, 7_200_000],
     extractionRetryMaxBackoffMs:
-      typeof cfg.extractionRetryMaxBackoffMs === "number" ? cfg.extractionRetryMaxBackoffMs : 21_600_000,
+      typeof cfg.extractionRetryMaxBackoffMs === "number" && cfg.extractionRetryMaxBackoffMs > 0
+        ? cfg.extractionRetryMaxBackoffMs : 21_600_000,
     extractionRetryJitterRatio:
-      typeof cfg.extractionRetryJitterRatio === "number" ? cfg.extractionRetryJitterRatio : 0.2,
+      typeof cfg.extractionRetryJitterRatio === "number" &&
+      cfg.extractionRetryJitterRatio >= 0 && cfg.extractionRetryJitterRatio <= 1
+        ? cfg.extractionRetryJitterRatio : 0.2,
     extractionParseEmptyMaxAttempts:
-      typeof cfg.extractionParseEmptyMaxAttempts === "number" ? cfg.extractionParseEmptyMaxAttempts : 3,
+      typeof cfg.extractionParseEmptyMaxAttempts === "number" &&
+      Number.isInteger(cfg.extractionParseEmptyMaxAttempts) && cfg.extractionParseEmptyMaxAttempts > 0
+        ? cfg.extractionParseEmptyMaxAttempts : 3,
     extractionBreakerFailureThreshold:
-      typeof cfg.extractionBreakerFailureThreshold === "number" ? cfg.extractionBreakerFailureThreshold : 5,
+      typeof cfg.extractionBreakerFailureThreshold === "number" &&
+      Number.isInteger(cfg.extractionBreakerFailureThreshold) && cfg.extractionBreakerFailureThreshold > 0
+        ? cfg.extractionBreakerFailureThreshold : 5,
     extractionBreakerCooldownMs:
-      typeof cfg.extractionBreakerCooldownMs === "number" ? cfg.extractionBreakerCooldownMs : 300_000,
+      typeof cfg.extractionBreakerCooldownMs === "number" && cfg.extractionBreakerCooldownMs > 0
+        ? cfg.extractionBreakerCooldownMs : 300_000,
     extractionBreakerAuthCooldownMs:
-      typeof cfg.extractionBreakerAuthCooldownMs === "number" ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
+      typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs > 0
+        ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
     // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
     localLlmFastModel:
