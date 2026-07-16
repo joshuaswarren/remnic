@@ -24,6 +24,7 @@ import {
   removeHermesShim,
   resolveHermesRoot,
   sameShimTarget,
+  survivingMarkerShims,
 } from "./hermes-shim.js";
 import { getConnectorsDir, getRegistryPath } from "./paths.js";
 export { getConnectorsDir, getRegistryPath } from "./paths.js";
@@ -840,9 +841,52 @@ export function installConnector(options: InstallOptions): InstallResult {
             }
           }
         }
+        // Prior-shim provenance parity (round 18): keep tracking any prior
+        // marker shim that survives (e.g. its cleanup failed), and clean
+        // inherited priors on a confirmed replacement.
+        let shimPriorsChanged = false;
+        if (parsed !== null) {
+          const shimPriorCandidates: string[] = [];
+          if (priorPersisted !== null) {
+            shimPriorCandidates.push(priorPersisted);
+          }
+          if (Array.isArray(parsed.priorPluginShimPaths)) {
+            for (const entry of parsed.priorPluginShimPaths) {
+              if (typeof entry === "string" && entry.length > 0) {
+                shimPriorCandidates.push(entry);
+              }
+            }
+          }
+          if (outcome.materializedAt !== null && shimPriorCandidates.length > 0) {
+            const cleanupTargets = shimPriorCandidates.filter(
+              (candidate) => outcome.persistPath === null || !sameShimTarget(candidate, outcome.persistPath),
+            );
+            if (cleanupTargets.length > 0) {
+              try {
+                removeHermesShim(cleanupTargets);
+              } catch {
+                /* survivors below stay tracked */
+              }
+            }
+          }
+          const survivingShims = survivingMarkerShims(shimPriorCandidates, outcome.persistPath);
+          const persistedShimPriors = Array.isArray(parsed.priorPluginShimPaths)
+            ? parsed.priorPluginShimPaths
+            : null;
+          shimPriorsChanged =
+            persistedShimPriors === null
+              ? survivingShims.length > 0
+              : persistedShimPriors.length !== survivingShims.length ||
+                survivingShims.some((entry, index) => persistedShimPriors[index] !== entry);
+          if (survivingShims.length > 0) {
+            parsed.priorPluginShimPaths = survivingShims;
+          } else {
+            delete parsed.priorPluginShimPaths;
+          }
+        }
         const shimPathChanged =
           parsed !== null && outcome.persistPath !== null && parsed.pluginShimPath !== outcome.persistPath;
-        if (parsed !== null && (shimPathChanged || configProvenanceAdded)) {
+        if (parsed !== null && (shimPathChanged || configProvenanceAdded || shimPriorsChanged)) {
           if (outcome.persistPath !== null) {
             parsed.pluginShimPath = outcome.persistPath;
           }
@@ -1304,6 +1348,47 @@ export function installConnector(options: InstallOptions): InstallResult {
     if (shimOutcome.persistPath !== null) {
       resolvedConfig.pluginShimPath = shimOutcome.persistPath;
     }
+    // Prior-shim provenance (Codex P2 on PR #1938, round 18): mirror the
+    // config handling — a prior marker shim whose cleanup failed or was
+    // skipped must stay tracked, or a later remove cannot discover it. On a
+    // confirmed replacement, inherited prior shims are actively cleaned
+    // (marker-gated); whatever still carries the marker afterwards persists
+    // as priorPluginShimPaths in the SAME registry write as everything else.
+    const cleanedInheritedShims: string[] = [];
+    {
+      const shimPriorCandidates: string[] = [];
+      if (typeof priorShimPathRaw === "string" && priorShimPathRaw.length > 0) {
+        shimPriorCandidates.push(priorShimPathRaw);
+      }
+      const inheritedShimPriorsRaw = savedConnectorConfig.priorPluginShimPaths;
+      if (Array.isArray(inheritedShimPriorsRaw)) {
+        for (const entry of inheritedShimPriorsRaw) {
+          if (typeof entry === "string" && entry.length > 0) {
+            shimPriorCandidates.push(entry);
+          }
+        }
+      }
+      if (shimOutcome.materializedAt !== null && shimPriorCandidates.length > 0) {
+        const cleanupTargets = shimPriorCandidates.filter(
+          (candidate) => shimOutcome.persistPath === null || !sameShimTarget(candidate, shimOutcome.persistPath),
+        );
+        if (cleanupTargets.length > 0) {
+          try {
+            const cleaned = removeHermesShim(cleanupTargets);
+            cleanedInheritedShims.push(...cleaned.removedPaths);
+          } catch {
+            /* survivors below stay tracked */
+          }
+        }
+      }
+      const survivingShims = survivingMarkerShims(shimPriorCandidates, shimOutcome.persistPath);
+      if (survivingShims.length > 0) {
+        resolvedConfig.priorPluginShimPaths = survivingShims;
+      } else {
+        delete resolvedConfig.priorPluginShimPaths;
+      }
+    }
+
     // Persist the config.yaml location used at install time (it honors the
     // active HERMES_HOME) so remove can clean the exact file even if
     // HERMES_HOME is unset or changed by then — same provenance rule as
@@ -1514,7 +1599,25 @@ export function installConnector(options: InstallOptions): InstallResult {
           );
         }
       }
-      if (shimOutcome.materializedAt !== null || shimOutcome.priorCleanedAt !== null) {
+      // Regenerate inherited prior shims the (d2) provenance pass cleaned —
+      // content is deterministic, so restoration is exact (round 18).
+      for (const cleanedPath of cleanedInheritedShims) {
+        if (shimOutcome.priorCleanedAt !== null && sameShimTarget(cleanedPath, shimOutcome.priorCleanedAt)) {
+          continue;
+        }
+        try {
+          materializeHermesShim(cleanedPath);
+        } catch (err) {
+          shimRollbackFailures.push(
+            `could not restore the prior shim at ${cleanedPath} (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+      }
+      if (
+        shimOutcome.materializedAt !== null ||
+        shimOutcome.priorCleanedAt !== null ||
+        cleanedInheritedShims.length > 0
+      ) {
         shimRollbackMsg =
           shimRollbackFailures.length === 0
             ? "plugin shim changes rolled back"
@@ -2022,6 +2125,7 @@ export function removeConnector(connectorId: string): RemoveResult {
   let savedHermesShimPath: string | null = null;
   let savedHermesConfigPath: string | null = null;
   const savedPriorHermesConfigPaths: string[] = [];
+  const savedPriorHermesShimPaths: string[] = [];
   if (connectorId === "hermes" && fs.existsSync(configPath)) {
     try {
       const parsedRaw: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -2036,6 +2140,15 @@ export function removeConnector(connectorId: string): RemoveResult {
       const parsed = parsedRaw as Record<string, unknown>;
       if (typeof parsed.pluginShimPath === "string" && parsed.pluginShimPath.length > 0) {
         savedHermesShimPath = parsed.pluginShimPath;
+      }
+      // Prior-shim provenance (round 18): shims whose cleanup failed on an
+      // earlier install move remain tracked here.
+      if (Array.isArray(parsed.priorPluginShimPaths)) {
+        for (const entry of parsed.priorPluginShimPaths) {
+          if (typeof entry === "string" && entry.length > 0) {
+            savedPriorHermesShimPaths.push(entry);
+          }
+        }
       }
       if (typeof parsed.hermesConfigPath === "string" && parsed.hermesConfigPath.length > 0) {
         savedHermesConfigPath = parsed.hermesConfigPath;
@@ -2397,6 +2510,7 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (savedHermesShimPath !== null) {
         shimCandidates.push(savedHermesShimPath);
       }
+      shimCandidates.push(...savedPriorHermesShimPaths);
       try {
         shimCandidates.push(hermesShimPath());
       } catch {

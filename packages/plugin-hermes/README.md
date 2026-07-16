@@ -51,10 +51,12 @@ Your agent should now have structural memory on every turn plus explicit tools s
 
 ## Manual configuration
 
-If you prefer not to use `remnic connectors install`, create the discovery shim yourself (Hermes finds memory providers by scanning `$HERMES_HOME/plugins/<name>/`, not pip metadata):
+If you prefer not to use `remnic connectors install`, create the discovery shim yourself. Hermes finds memory providers by scanning `$HERMES_HOME/plugins/<name>/`, not pip metadata; when `HERMES_HOME` is unset the default home is `~/.hermes` on Linux/macOS and `%LOCALAPPDATA%\hermes` on Windows:
 
 ```python
-# ~/.hermes/plugins/remnic/__init__.py
+# <hermes-home>/plugins/remnic/__init__.py
+# e.g. ~/.hermes/plugins/remnic/__init__.py (Linux/macOS)
+#      %LOCALAPPDATA%\hermes\plugins\remnic\__init__.py (Windows)
 """Remnic memory provider shim. Calls collector.register_memory_provider()."""
 
 from remnic_hermes import register  # register() handles config loading itself

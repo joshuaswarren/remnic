@@ -4653,3 +4653,65 @@ test("installConnector hermes refuses to write the shim through a symlinked plug
     }
   });
 });
+
+test("installConnector hermes keeps tracking a prior shim whose cleanup failed (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimA), "sanity: shim exists under home A");
+
+        // Make A's shim undeletable, then force-reinstall to B: the confirmed
+        // move cannot clean A's shim, so it must stay tracked in
+        // priorPluginShimPaths for a later remove.
+        fs.chmodSync(path.dirname(shimA), 0o500);
+        try {
+          withHermesHome(homeB, () => {
+            const second = mod.installConnector({ connectorId: "hermes", force: true });
+            assert.equal(second.status, "installed", second.message);
+          });
+        } finally {
+          fs.chmodSync(path.dirname(shimA), 0o700);
+        }
+        assert.ok(fs.existsSync(shimA), "sanity: A's shim survived the failed cleanup");
+
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.deepEqual(
+          saved.priorPluginShimPaths,
+          [shimA],
+          "the surviving prior shim must stay tracked in priorPluginShimPaths",
+        );
+
+        // With permissions fixed, remove cleans the tracked prior shim too.
+        withHermesHome(undefined, () => {
+          const remove = mod.removeConnector("hermes");
+          assert.equal(remove.status, "removed", remove.message);
+        });
+        assert.ok(!fs.existsSync(shimA), "remove must clean the tracked prior shim");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});

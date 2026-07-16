@@ -446,3 +446,39 @@ export function isPlausibleHermesConfigPath(candidate: string): boolean {
     return false;
   }
 }
+
+/**
+ * Return every candidate that still holds a Remnic marker shim on disk —
+ * shape-guarded, file-identity de-duplicated, and excluding `excludeTarget`
+ * (the currently-tracked shim). Callers persist the result as
+ * `priorPluginShimPaths` so a shim whose cleanup failed is never orphaned:
+ * a later install or remove keeps targeting it (Codex P2 on PR #1938,
+ * round 18).
+ */
+export function survivingMarkerShims(
+  candidates: readonly string[],
+  excludeTarget: string | null,
+): string[] {
+  const survivors: string[] = [];
+  for (const candidate of new Set(candidates)) {
+    if (!isPlausibleHermesShimPath(candidate)) {
+      continue;
+    }
+    if (excludeTarget !== null && sameShimTarget(candidate, excludeTarget)) {
+      continue;
+    }
+    if (survivors.some((kept) => sameShimTarget(kept, candidate))) {
+      continue;
+    }
+    let carriesMarker = false;
+    try {
+      carriesMarker = fs.readFileSync(candidate, "utf8").includes(HERMES_SHIM_MARKER);
+    } catch {
+      carriesMarker = false;
+    }
+    if (carriesMarker) {
+      survivors.push(candidate);
+    }
+  }
+  return survivors;
+}
