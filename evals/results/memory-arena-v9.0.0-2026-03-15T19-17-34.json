@@ -78537,7 +78537,7 @@
     "progressive_search_count": 1641
   },
   "config": {
-    "datasetDir": "/Users/joshuawarren/src/openclaw-engram/evals/datasets/memory-arena",
+    "datasetDir": "evals/datasets/memory-arena",
     "domains_run": [
       "bundled_shopping",
       "formal_reasoning_math",

@@ -84,7 +84,7 @@ Results are stored as versioned JSON in `evals/results/`:
 ama-bench-v9.0.0-2026-03-15T14-30-00.json
 ```
 
-Each result includes: engram version, git SHA, timestamp, per-task scores, aggregate metrics, adapter mode, and config snapshot.
+Each result includes: engram version, git SHA, timestamp, per-task scores, aggregate metrics, adapter mode, and config snapshot. Dataset locations inside the repository are stored as portable repo-relative paths; external dataset overrides are recorded as `<external>` so result artifacts do not expose machine-local paths.
 
 ## Dataset Download
 

@@ -40141,7 +40141,7 @@
     "adversarial_count": 446
   },
   "config": {
-    "datasetDir": "/Users/joshuawarren/src/openclaw-engram/evals/datasets/locomo",
+    "datasetDir": "evals/datasets/locomo",
     "conversations_run": 10
   },
   "durationMs": 1257099

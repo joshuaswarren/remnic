@@ -212,7 +212,7 @@ A prior experiment with multi-hop graph traversal and confidence gating showed n
 
 **Datasets:** All downloaded from official sources (HuggingFace, GitHub) using `evals/scripts/download-datasets.sh`. Formats match the published dataset schemas exactly.
 
-**Reproducibility:** Run with `tsx evals/run.ts --benchmark <name>`. Results are stored as versioned JSON in `evals/results/`.
+**Reproducibility:** Run with `tsx evals/run.ts --benchmark <name>`. Results are stored as versioned JSON in `evals/results/`. Historical dataset locations were normalized to portable repo-relative paths without changing scores or run metadata.
 
 ---
 

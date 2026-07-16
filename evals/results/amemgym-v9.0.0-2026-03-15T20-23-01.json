@@ -3822,7 +3822,7 @@
     "contains_answer_max": 0
   },
   "config": {
-    "datasetDir": "/Users/joshuawarren/src/openclaw-engram/evals/datasets/amemgym",
+    "datasetDir": "evals/datasets/amemgym",
     "profiles_run": 20
   },
   "durationMs": 26016

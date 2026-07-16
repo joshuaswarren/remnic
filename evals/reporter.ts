@@ -2,17 +2,49 @@
  * Results reporter — writes versioned JSON and prints console summary.
  */
 
-import { writeFile, mkdir } from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BenchmarkResult } from "./adapter/types.js";
 
+const REPO_ROOT = path.resolve(import.meta.dirname, "..");
+
+/**
+ * Keep persisted benchmark artifacts portable and free of developer-local
+ * directory names. Paths inside the repository are recorded repo-relative;
+ * external overrides are intentionally represented without their host path.
+ */
+export function portableDatasetDir(datasetDir: string, repoRoot = REPO_ROOT): string {
+  if (!path.isAbsolute(datasetDir)) {
+    return datasetDir;
+  }
+
+  const relative = path.relative(repoRoot, datasetDir);
+  const isInsideRepo =
+    relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+
+  return isInsideRepo ? relative.split(path.sep).join("/") : "<external>";
+}
+
+export function resultForPersistence(result: BenchmarkResult): BenchmarkResult {
+  const datasetDir = result.config.datasetDir;
+  if (typeof datasetDir !== "string") {
+    return result;
+  }
+
+  return {
+    ...result,
+    config: {
+      ...result.config,
+      datasetDir: portableDatasetDir(datasetDir),
+    },
+  };
+}
+
 function getEngramVersion(): string {
   try {
-    const pkg = JSON.parse(
-      readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf-8"),
-    );
+    const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf-8"));
     return typeof pkg.version === "string" ? pkg.version : "unknown";
   } catch {
     return "unknown";
@@ -36,24 +68,21 @@ export function enrichResult(result: BenchmarkResult): BenchmarkResult {
   };
 }
 
-export async function writeResult(
-  result: BenchmarkResult,
-  outputDir: string,
-): Promise<string> {
+export async function writeResult(result: BenchmarkResult, outputDir: string): Promise<string> {
   await mkdir(outputDir, { recursive: true });
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const filename = `${result.meta.name}-v${result.engramVersion}-${ts}.json`;
   const filePath = path.join(outputDir, filename);
 
-  await writeFile(filePath, JSON.stringify(result, null, 2) + "\n");
+  await writeFile(filePath, `${JSON.stringify(resultForPersistence(result), null, 2)}\n`);
   return filePath;
 }
 
 export function printSummary(result: BenchmarkResult): void {
   const { meta, aggregate, taskCount, durationMs, adapterMode } = result;
 
-  console.log("\n" + "=".repeat(60));
+  console.log(`\n${"=".repeat(60)}`);
   console.log(`Benchmark: ${meta.name} (${meta.category})`);
   console.log(`Adapter:   ${adapterMode}`);
   console.log(`Tasks:     ${taskCount}`);
@@ -71,5 +100,5 @@ export function printSummary(result: BenchmarkResult): void {
     }
   }
 
-  console.log("=".repeat(60) + "\n");
+  console.log(`${"=".repeat(60)}\n`);
 }
