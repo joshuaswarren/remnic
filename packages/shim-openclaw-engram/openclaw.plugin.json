@@ -1489,6 +1489,16 @@
         "default": true,
         "description": "Master gate for the Correction Contract (#1580) — the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
       },
+      "correctionIntentBaseUrl": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned correction-intent classifier (model-lab, issue #1585). Empty = rule-based detector only."
+      },
+      "correctionIntentModel": {
+        "type": "string",
+        "default": "",
+        "description": "Model name of a local fine-tuned correction-intent classifier (model-lab, issue #1581 / #1585). When set AND correctionIntentBaseUrl is set, passive-correction detection can route to it. Empty = rule-based detectPassiveCorrections is the sole detector."
+      },
       "correctionMaxAffected": {
         "type": "integer",
         "minimum": 1,
@@ -2017,6 +2027,21 @@
         "minimum": 0,
         "description": "Maximum query-visible cues expanded by explicit cue recall."
       },
+      "extractionBreakerAuthCooldownMs": {
+        "type": "number",
+        "default": 1800000,
+        "description": "Extraction circuit-breaker open cooldown (ms) for auth/config failures (401/403 or no models configured)."
+      },
+      "extractionBreakerCooldownMs": {
+        "type": "number",
+        "default": 300000,
+        "description": "Extraction circuit-breaker open cooldown (ms) for transient provider failures (429/5xx/network)."
+      },
+      "extractionBreakerFailureThreshold": {
+        "type": "number",
+        "default": 5,
+        "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
+      },
       "extractionDedupeEnabled": {
         "type": "boolean",
         "default": true,
@@ -2026,6 +2051,11 @@
         "type": "number",
         "default": 300000,
         "description": "Window for extraction dedupe fingerprints (ms)."
+      },
+      "extractionFaithfulnessBaseUrl": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned faithfulness gate (model-lab, issue #1585). When set AND extractionFaithfulnessModel is set, the gate routes there first and falls back to the configured chain on any failure. Empty = existing routing (byte-identical pre-feature path)."
       },
       "extractionFaithfulnessContextChars": {
         "type": "number",
@@ -2042,6 +2072,11 @@
         "default": "off",
         "description": "Extraction faithfulness gate (issue #1576). Entailment-verification of extracted facts against their verified source spans (#1575). 'off' (default) = byte-identical pre-feature pipeline; 'shadow' = record verdicts in frontmatter + telemetry only; 'enforce' = route unsupported/contradicted to pending_review."
       },
+      "extractionFaithfulnessLocalParseFallback": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resilient-fallback toggle for the local model-lab faithfulness endpoint (issue #1700). Default false surfaces malformed_output when the local endpoint returns 200 with non-verdict JSON (alerts the operator to a misconfigured endpoint). Set true to instead fall back to the configured chain on local parse failure."
+      },
       "extractionFaithfulnessModel": {
         "type": "string",
         "default": "",
@@ -2051,26 +2086,6 @@
         "type": "number",
         "default": 8000,
         "description": "Per-batch timeout in ms for the faithfulness check. Timeout produces a tagged error and never blocks memory writes (graceful degradation)."
-      },
-      "extractionFaithfulnessLocalParseFallback": {
-        "type": "boolean",
-        "default": false,
-        "description": "Resilient-fallback toggle for the local model-lab faithfulness endpoint (issue #1700). Default false surfaces malformed_output when the local endpoint returns 200 with non-verdict JSON (alerts the operator to a misconfigured endpoint). Set true to instead fall back to the configured chain on local parse failure."
-      },
-      "extractionFaithfulnessBaseUrl": {
-        "type": "string",
-        "default": "",
-        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned faithfulness gate (model-lab, issue #1585). When set AND extractionFaithfulnessModel is set, the gate routes there first and falls back to the configured chain on any failure. Empty = existing routing (byte-identical pre-feature path)."
-      },
-      "correctionIntentModel": {
-        "type": "string",
-        "default": "",
-        "description": "Model name of a local fine-tuned correction-intent classifier (model-lab, issue #1581 / #1585). When set AND correctionIntentBaseUrl is set, passive-correction detection can route to it. Empty = rule-based detectPassiveCorrections is the sole detector."
-      },
-      "correctionIntentBaseUrl": {
-        "type": "string",
-        "default": "",
-        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned correction-intent classifier (model-lab, issue #1585). Empty = rule-based detector only."
       },
       "extractionJudgeBatchSize": {
         "type": "number",
@@ -2155,6 +2170,39 @@
         "type": "number",
         "default": 1,
         "description": "Minimum number of user turns required before extraction runs."
+      },
+      "extractionParseEmptyMaxAttempts": {
+        "type": "number",
+        "default": 3,
+        "description": "Attempts for a parse_empty extraction fingerprint before it is long-parked (still never marked processed)."
+      },
+      "extractionRetryEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master gate for extraction retry backoff + circuit breaker. When false, restores pre-change behavior (extractor called on every triggered observe, no gate)."
+      },
+      "extractionRetryJitterRatio": {
+        "type": "number",
+        "default": 0.2,
+        "description": "Multiplicative jitter ratio (+/-) applied to each extraction backoff interval."
+      },
+      "extractionRetryMaxBackoffMs": {
+        "type": "number",
+        "default": 21600000,
+        "description": "Upper bound (ms) on any single extraction backoff interval and the long-park interval for exhausted parse_empty fingerprints."
+      },
+      "extractionRetryScheduleMs": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        },
+        "default": [
+          60000,
+          300000,
+          1800000,
+          7200000
+        ],
+        "description": "Per-fingerprint exponential extraction backoff schedule (ms), indexed by attempt."
       },
       "extractionScopeClassificationEnabled": {
         "type": "boolean",
@@ -3138,15 +3186,6 @@
         "default": false,
         "description": "Enable automatic memory linking to build knowledge graph"
       },
-      "offlineSyncExcludes": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "minLength": 1
-        },
-        "default": [],
-        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir; * within a segment, leading **/ across segments). Additive to the built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**). Issue #1786."
-      },
       "memoryOsPreset": {
         "type": "string",
         "enum": [
@@ -3517,6 +3556,15 @@
       "objectiveStateStoreDir": {
         "type": "string",
         "description": "Override the objective-state memory directory (defaults to {memoryDir}/state/objective-state)."
+      },
+      "offlineSyncExcludes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default": [],
+        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir; * within a segment, leading **/ across segments). Additive to the built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**). Issue #1786."
       },
       "openaiApiKey": {
         "anyOf": [

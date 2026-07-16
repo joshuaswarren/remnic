@@ -1060,7 +1060,10 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "empty_extraction_result");
   assert.equal(persistCalls, 0);
-  assert.equal(saveMetaCalls, 0);
+  // #1908: a failed extraction now persists per-fingerprint retry-state to meta (one
+  // saveMeta call), but MUST NOT record a processed fingerprint — the invariant
+  // below (processedExtractionFingerprints stays []) is the real contract.
+  assert.ok(saveMetaCalls <= 1, `expected at most one retry-state meta save, got ${saveMetaCalls}`);
   assert.equal(clearCalls, 1);
   assert.deepEqual(meta.processedExtractionFingerprints, []);
 });
