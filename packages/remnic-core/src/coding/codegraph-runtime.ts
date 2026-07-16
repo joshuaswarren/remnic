@@ -23,6 +23,7 @@
  * by the surface handler via a context seam.
  */
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
 
@@ -68,6 +69,10 @@ interface CodegraphModule {
   ): unknown;
   defaultCodingGitInvoker?: unknown;
   createCodingGraphEngine?(options?: unknown): { parseFile(input: unknown): Promise<unknown> };
+  // LSP resolution (issue #1917): present when @remnic/coding-graph ships
+  executeLspResolution?(requests: readonly unknown[], options: unknown): Promise<unknown>;
+  planLspUpgrades?(sites: readonly unknown[], budget: { maxRequests: number }): { requests: readonly unknown[]; budgetExhausted: number };
+  createLspClient?(options: unknown): unknown;
 }
 
 /**
@@ -95,6 +100,13 @@ export interface CodegraphStore {
   upsertEdges?(
     edges: readonly CodegraphEdgeInput[],
   ): Promise<{ ok: true; persisted: number; skipped: number } | { ok: false; code: string }>;
+  /** Find the node whose span contains the byte offset (issue #1917). */
+  findNodeBySpan?(filePath: string, byteOffset: number): string | null;
+  /** Retire stale lsp-provenance edges for a file (issue #1895). */
+  reconcileLspEdges?(
+    filePath: string,
+    assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
+  ): number;
 }
 
 /**
@@ -470,13 +482,14 @@ export async function closeAllCodegraphStores(): Promise<void> {
 
 export function makeCodegraphRuntimeDelegates(): Pick<
   CodegraphSurfaceContext,
-  "runReindex" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
+  "runReindex" | "runLspResolution" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
 > {
   return {
     runReindex: (store, repoRoot, mode) => runCodegraphReindex({ store, repoRoot, mode }),
     reportIndexStatus: (store, repoRoot) => reportCodegraphIndexStatus({ store, repoRoot }),
     detectChanges: (store, repoRoot, head) => detectCodegraphChanges({ store, repoRoot, head }),
     ingestTraces: (store, traces) => ingestCodegraphTraces({ store, traces }),
+    runLspResolution: (store, repoRoot, lspConfig) => runCodegraphLspResolution({ store, repoRoot, lspConfig }),
   };
 }
 
@@ -566,6 +579,93 @@ export async function runCodegraphReindex(params: {
   }
 }
 
+
+/**
+ * Run LSP type resolution after a heuristic reindex (issue #1917).
+ * Degrades cleanly when LSP functions are missing or the pass fails;
+ * heuristic edges from the prior reindex survive.
+ */
+export async function runCodegraphLspResolution(params: {
+  readonly store: CodegraphStore;
+  readonly repoRoot: string;
+  readonly lspConfig: NonNullable<CodingKnowledgeConfig["lsp"]>;
+}): Promise<CodegraphDelegateOutcome<{ upgraded: number; unresolved: number; budgetExhausted: number }>> {
+  const mod = await loadCodegraphModule();
+  if (mod === null) return { ok: false, code: "package_missing", message: "@remnic/coding-graph not installed." };
+  if (typeof mod.executeLspResolution !== "function" || typeof mod.planLspUpgrades !== "function") {
+    return { ok: false, code: "runtime_unavailable", message: "LSP resolution not available." };
+  }
+  const engine = mod.createCodingGraphEngine?.() ?? null;
+  if (!engine) return { ok: false, code: "engine_unavailable", message: "Engine unavailable." };
+  // Gather tracked files and collect unresolved call sites.
+  const gitFactory = mod.defaultCodingGitInvoker as (() => { listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string } }) | undefined;
+  if (!gitFactory) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  const tracked = gitFactory().listTrackedFiles(params.repoRoot);
+  if (!("paths" in tracked)) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  const sites: unknown[] = [];
+  for (const rel of tracked.paths) {
+    try {
+      const content = await readFile(path.join(params.repoRoot, rel), "utf-8");
+      const parsed = await engine.parseFile({ path: rel, content });
+      if (parsed && typeof parsed === "object" && "ok" in parsed && parsed.ok === true && "ir" in parsed) {
+        const ir = parsed.ir;
+        if (ir && typeof ir === "object" && "callSites" in ir) {
+          const cs = ir.callSites;
+          if (Array.isArray(cs)) {
+            for (const s of cs) {
+              if (s && typeof s === "object" && "span" in s) {
+                const sp = s.span;
+                if (sp && typeof sp === "object" && "startByte" in sp && typeof sp.startByte === "number") {
+                  // Find enclosing symbol for srcQualifiedName.
+                  let srcQName = "";
+                  if ("symbols" in ir && Array.isArray(ir.symbols)) {
+                    for (const sym of ir.symbols) {
+                      if (sym && typeof sym === "object" && "span" in sym && "qualifiedName" in sym) {
+                        const ss = sym.span;
+                        if (ss && typeof ss === "object" && "startByte" in ss && "endByte" in ss && typeof ss.startByte === "number" && typeof ss.endByte === "number") {
+                          if (ss.startByte <= sp.startByte && sp.startByte < ss.endByte) {
+                            srcQName = typeof sym.qualifiedName === "string" ? sym.qualifiedName : "";
+                            break;
+                          }
+                        }
+                      }
+                    }
+                  }
+                  const lang = "language" in ir && typeof ir.language === "string" ? ir.language : "";
+                  const callee = "calleeNameCandidates" in s && Array.isArray(s.calleeNameCandidates) && typeof s.calleeNameCandidates[0] === "string" ? s.calleeNameCandidates[0] : "";
+                  sites.push({ filePath: rel, language: lang, content, calleeByteOffset: sp.startByte, calleeName: callee, srcQualifiedName: srcQName });
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch { /* skip unparseable */ }
+  }
+  if (sites.length === 0) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  // Plan + execute LSP resolution.
+  const plan = mod.planLspUpgrades(sites, { maxRequests: params.lspConfig.maxRequestsPerRun ?? 500 });
+  if (!plan.requests.length) return { ok: true, upgraded: 0, unresolved: sites.length, budgetExhausted: plan.budgetExhausted };
+  const client = typeof mod.createLspClient === "function"
+    ? mod.createLspClient({ workspaceRoot: params.repoRoot, timeoutMs: params.lspConfig.timeoutMs ?? 3000, servers: params.lspConfig.servers ?? {} })
+    : null;
+  if (!client) return { ok: false, code: "lsp_client_error", message: "Could not create LSP client." };
+  try {
+    const r = await mod.executeLspResolution(plan.requests, {
+      client,
+      nodeLocator: (fp: string, off: number) => params.store.findNodeBySpan?.(fp, off) ?? null,
+      applyUpgrades: async (ups: readonly unknown[]) => { if (params.store.upsertEdges) await params.store.upsertEdges(ups as Parameters<typeof params.store.upsertEdges>[0]); },
+      reconcileLspEdges: (fp: string, edges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>) => { params.store.reconcileLspEdges?.(fp, edges); },
+    });
+    if (r && typeof r === "object" && "upgraded" in r) {
+      const rr = r as { upgraded: number; unresolved: number };
+      return { ok: true, upgraded: rr.upgraded ?? 0, unresolved: rr.unresolved ?? 0, budgetExhausted: plan.budgetExhausted };
+    }
+    return { ok: true, upgraded: 0, unresolved: sites.length, budgetExhausted: plan.budgetExhausted };
+  } catch (err) {
+    return { ok: false, code: "lsp_resolution_error", message: err instanceof Error ? err.message : String(err) };
+  }
+}
 /**
  * Report index status via @remnic/coding-graph's getIndexStatus. Never throws
  * — a git failure degrades to `mode: "git_unavailable"` in the status body.

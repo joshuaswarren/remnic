@@ -21,7 +21,7 @@
  * the existing `ENGRAM_*` env vars from earlier releases do not pair them up.
  */
 
-import type { CodingKnowledgeConfig } from "../types.js";
+import type { CodingKnowledgeConfig, CodingGraphLspConfig } from "../types.js";
 import { coerceBool } from "../connectors/coerce.js";
 
 export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
@@ -34,7 +34,10 @@ export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
   structuralProviderCommand: "",
   codegraphTools: false,
   codegraphDbDir: "",
-} satisfies Record<keyof CodingKnowledgeConfig, boolean | string>);
+  // `lsp` is excluded: it is an optional structured sub-config (issue #1917)
+  // with no flat boolean/string default; the parser returns `undefined` when
+  // absent (LSP off — rule 48 explicit opt-in).
+} satisfies Record<Exclude<keyof CodingKnowledgeConfig, "lsp">, boolean | string>);
 
 const VALID_STRUCTURAL_PROVIDERS = ["none", "subprocess", "native"] as const;
 type StructuralProvider = CodingKnowledgeConfig["structuralProvider"];
@@ -70,6 +73,9 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
       typeof record.codegraphDbDir === "string"
         ? record.codegraphDbDir.trim()
         : "",
+    lsp: record.lsp && typeof record.lsp === "object" && !Array.isArray(record.lsp)
+      ? parseLspConfig(record.lsp as Record<string, unknown>)
+      : undefined,
   };
 }
 
@@ -115,4 +121,39 @@ function readStructuralProvider(raw: unknown): StructuralProvider {
     `codingKnowledge.structuralProvider must be one of ` +
       `${VALID_STRUCTURAL_PROVIDERS.join(", ")}; got ${JSON.stringify(raw)}.`,
   );
+}
+
+/**
+ * Parse the `codingKnowledge.lsp` sub-object (issue #1917). Returns
+ * `{ enabled: false }` when absent or malformed — LSP is opt-in.
+ */
+function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
+  const enabled = readStrictBool(raw.enabled, "lsp.enabled", false);
+  if (!enabled) return { enabled: false };
+
+  const servers: CodingGraphLspConfig["servers"] = {};
+  if (raw.servers && typeof raw.servers === "object" && !Array.isArray(raw.servers)) {
+    for (const [lang, def] of Object.entries(raw.servers as Record<string, unknown>)) {
+      if (def && typeof def === "object" && !Array.isArray(def)) {
+        const d = def as Record<string, unknown>;
+        if (typeof d.command === "string" && d.command.length > 0) {
+          servers[lang] = {
+            command: d.command,
+            ...(Array.isArray(d.args) ? { args: d.args.filter((a) => typeof a === "string") as string[] } : {}),
+          };
+        }
+      }
+    }
+  }
+
+  const timeoutMs =
+    typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0
+      ? Math.min(Math.floor(raw.timeoutMs), 30_000)
+      : 3_000;
+  const maxRequestsPerRun =
+    typeof raw.maxRequestsPerRun === "number" && Number.isFinite(raw.maxRequestsPerRun) && raw.maxRequestsPerRun > 0
+      ? Math.min(Math.floor(raw.maxRequestsPerRun), 5_000)
+      : 500;
+
+  return { enabled: true, ...(Object.keys(servers).length > 0 ? { servers } : {}), timeoutMs, maxRequestsPerRun };
 }

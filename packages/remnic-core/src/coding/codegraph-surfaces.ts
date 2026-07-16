@@ -206,6 +206,12 @@ export interface CodegraphSurfaceContext {
    */
   runReindex?(store: CodegraphStore, repoRoot: string, mode: string): Promise<CodegraphReindexOutcome>;
   /**
+   * Run LSP type resolution after a heuristic reindex (issue #1917).
+   * Optional — when omitted or when codingKnowledge.lsp is not enabled,
+   * the heuristic edges stand alone.
+   */
+  runLspResolution?(store: CodegraphStore, repoRoot: string, lspConfig: NonNullable<PluginConfig["codingKnowledge"]["lsp"]>): Promise<{ ok: boolean; code?: string; upgraded?: number; unresolved?: number; budgetExhausted?: number; message?: string }>;
+  /**
    * Report index status via @remnic/coding-graph's getIndexStatus. Optional —
    * when omitted, index_status degrades with a clean code (no placeholder).
    */
@@ -548,6 +554,16 @@ async function handleIndex(
   if (!outcome.ok) {
     return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
   }
+  // LSP Phase B: upgrade unresolved call sites via language servers.
+  let lspUpgradeSummary: { upgraded: number; unresolved: number } | undefined;
+  const lspConfig = ctx.config.codingKnowledge.lsp;
+  if (lspConfig?.enabled === true && ctx.runLspResolution) {
+    const lspResult = await ctx.runLspResolution(store, repoRoot, lspConfig);
+    if (lspResult.ok) {
+      lspUpgradeSummary = { upgraded: lspResult.upgraded ?? 0, unresolved: lspResult.unresolved ?? 0 };
+    }
+    // LSP failure is non-fatal — heuristic edges survive.
+  }
   const stats = store.schemaStats();
   return {
     tool: request.tool,
@@ -558,6 +574,7 @@ async function handleIndex(
       filesIngested: outcome.filesIngested,
       head: outcome.head,
       stats,
+      ...(lspUpgradeSummary ? { lsp: lspUpgradeSummary } : {}),
     },
   };
 }

@@ -2910,6 +2910,33 @@ export class GraphStore {
   }
 
   /**
+   * Find the innermost node whose span contains a byte offset in a file
+   * (issue #1917). Used by the LSP resolution pass's NodeLocator to map
+   * definition locations back to indexed nodes. Returns the node's
+   * qualified name, or null when no node contains the offset.
+   */
+  findNodeBySpan(filePath: string, byteOffset: number): string | null {
+    if (this.closed) return null;
+    try {
+      const row = expectRow<{ qualified_name: string }>(
+        this.db
+          .prepare(
+            `SELECT n.qualified_name FROM nodes n
+              JOIN files f ON n.file_id = f.id
+              WHERE f.path = ? AND n.span_start <= ? AND n.span_end > ?
+              ORDER BY (n.span_end - n.span_start) ASC
+              LIMIT 1`,
+          )
+          .get(filePath, byteOffset, byteOffset),
+        ["qualified_name"],
+      );
+      return row ? row.qualified_name : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Read a symbol's source span from disk. The store NEVER persists
    * file contents (privacy + DB size — issue #1552 design); this
    * method resolves `files.path` against {@link GraphStoreOptions.repoRoot}
