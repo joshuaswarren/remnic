@@ -3,7 +3,8 @@
 Status: DRAFT. Do not paste this copy into Devpost yet. First, check every
 claim against shipped code. Add the Codex `/feedback` session ID and video URL.
 Any paid GPT-5.6 result named here also needs a committed, sanitized evidence
-receipt tied to its private hash-locked result and manifest.
+receipt tied to its private result hash. A leaderboard claim additionally
+requires a clean, committed artifact and manifest.
 `HACKATHON.md` tracks those gates. This file must pass voice-lint in article
 mode before each revision ships.
 
@@ -30,7 +31,7 @@ agent that acts on facts you already fixed is worse than an agent with no
 memory at all.
 
 We build Remnic, an open-source memory engine. We got tired of memory
-systems (ours included) making accuracy claims with no receipts. So we
+systems, ours included, making accuracy claims with no receipts. So we
 built the receipts machine.
 
 ## What it does
@@ -85,8 +86,9 @@ input, cached-input, and output usage after every completed turn and blocks
 further dispatch if exact usage is missing.
 `gpt-5.6-sol` is opt-in only and outside that bounded plan. We do not claim a
 published GPT-5.6 model result until a sanitized receipt is committed and tied
-to a private hash-locked result and manifest. Bounded evidence is labeled with
-its exact coverage and is never presented as a full benchmark run.
+to a private result hash. A leaderboard claim also requires a clean committed
+artifact and manifest. Bounded evidence is labeled with its exact coverage and
+is never presented as a full benchmark run.
 
 ## Challenges we ran into
 
@@ -102,7 +104,8 @@ contracts in the code.
 A keyless quick benchmark you can run after installation. One command
 exercises MCP correction uptake and stale-memory harm together. And the
 discipline behind it: every public submission number requires a committed
-artifact behind it.
+sanitized receipt, while every leaderboard number requires a clean committed
+artifact and manifest.
 
 ## What we learned
 
@@ -134,9 +137,9 @@ remnic bench export <run-id> --format html --output ./memcorrect-report.html
 The quick run uses a packaged stdio MCP server. The exact 9.6.34 registry
 install passed in a clean Linux x86_64 global prefix and produced a
 15,128-byte offline report. The run itself needs no
-dataset, key, or network, and it exercises the real adapter. To add GPT-5.6
-judging with Codex credits, append `--judge-provider codex-cli
---judge-model gpt-5.6-terra --judge-codex-reasoning-effort high`. This path
-uses the operator's Codex CLI login and does not require `OPENAI_API_KEY`.
-Reproduction paths live in
+dataset, key, or network, and it exercises the real adapter. Paid GPT-5.6
+reproduction is intentionally not a copy-paste judge step: it requires the
+exclusive-account, budget, reserve, private-ledger, and no-Sol guards in
+`HACKATHON.md`. That guarded path uses the operator's Codex CLI login and does
+not require `OPENAI_API_KEY`. Reproduction paths live in
 `docs/paper/repro-appendix.md`.
