@@ -21,6 +21,7 @@ import {
   sessionStoragePaths,
   StorageManager,
 } from "@remnic/core";
+import type { RecallXraySnapshot } from "@remnic/core";
 import { LcmEngine } from "@remnic/core/lcm";
 
 import {
@@ -79,6 +80,22 @@ function hourlySummarySnapshotForTest(sessionKey: string, bullet: string): strin
     null,
     2,
   );
+}
+
+function recallXraySnapshotForTest(
+  snapshotId: string,
+  query: string,
+): RecallXraySnapshot {
+  return {
+    schemaVersion: "1",
+    query,
+    snapshotId,
+    capturedAt: 123,
+    tierExplain: null,
+    results: [],
+    filters: [],
+    budget: { chars: 100, used: 10 },
+  };
 }
 
 async function assertPathMissingForTest(filePath: string): Promise<void> {
@@ -151,6 +168,410 @@ test("adapter sandbox QMD index settings cannot be overridden by runtime config"
   assert.equal(lightweight.qmdCollection, "remnic-bench-hot");
   assert.equal(lightweight.qmdColdCollection, "remnic-bench-cold");
   assert.equal(lightweight.qmdPath, "/tmp/remnic-bench-qmd");
+});
+
+test("recallWithTrace preserves recall text and emits content-free row lineage", async () => {
+  const adapter = await createLightweightAdapter({ replayExtractionMode: "skip" });
+  const secret = "cobalt-orchid deployment target";
+
+  try {
+    await adapter.store("trace-session", [
+      { role: "user", content: `Remember the ${secret}.` },
+      { role: "assistant", content: "Acknowledged." },
+    ]);
+    // The first search initializes the in-memory index. Compare two calls only
+    // after that normal lazy-initialization boundary has settled.
+    await adapter.recall(
+      "trace-session",
+      "What is the cobalt-orchid deployment target?",
+      4_000,
+    );
+    const traced = await adapter.recallWithTrace!(
+      "trace-session",
+      "What is the cobalt-orchid deployment target?",
+      4_000,
+    );
+    const plain = await adapter.recall(
+      "trace-session",
+      "What is the cobalt-orchid deployment target?",
+      4_000,
+    );
+
+    assert.equal(traced.text, plain);
+    assert.equal(traced.trace.budget.returnedChars, traced.text.length);
+    assert.equal(JSON.stringify(traced.trace).includes(secret), false);
+    assert.ok(traced.trace.sections.length > 0);
+    assert.ok(traced.trace.lcmCandidates.length > 0);
+    for (const candidate of traced.trace.lcmCandidates) {
+      if (candidate.lineageStatus === "exact") {
+        assert.equal(typeof candidate.archiveRowId, "number");
+      }
+    }
+    for (const selection of traced.trace.selections) {
+      assert.ok(selection.composedStart <= selection.composedEnd);
+      assert.ok(selection.visibleStart <= selection.visibleEnd);
+      assert.ok(selection.visibleEnd <= traced.text.length);
+    }
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("concurrent traced recalls keep atomic core captures isolated and skipped calls fresh", async () => {
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  const capturedQueries: string[] = [];
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(
+    prompt,
+  ) {
+    capturedQueries.push(prompt);
+    if (prompt === "slow-alpha") {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return {
+      result: `core-${prompt}`,
+      snapshot: recallXraySnapshotForTest(`snapshot-${prompt}`, prompt),
+      recallStartedAt: 1,
+    };
+  };
+  const adapter = await createRemnicAdapter({
+    configOverrides: { transcriptEnabled: true },
+  });
+
+  try {
+    const [alpha, beta] = await Promise.all([
+      adapter.recallWithTrace!("atomic-session", "slow-alpha", 1_000),
+      adapter.recallWithTrace!("atomic-session", "fast-beta", 1_000),
+    ]);
+    assert.equal(alpha.trace.coreCapture?.snapshotId, "snapshot-slow-alpha");
+    assert.equal(beta.trace.coreCapture?.snapshotId, "snapshot-fast-beta");
+
+    const skipped = await adapter.recallWithTrace!(
+      "atomic-session",
+      "What previous projects have I worked on?",
+      1_000,
+    );
+    assert.equal(skipped.trace.coreCapture, undefined);
+    assert.deepEqual(capturedQueries.sort(), ["fast-beta", "slow-alpha"]);
+  } finally {
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter.destroy();
+  }
+});
+
+test("traced core recall abort settles before timeout returns", async () => {
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  let sawAbort = false;
+  let settled = false;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(
+    _prompt,
+    _sessionKey,
+    options,
+  ) {
+    const signal = options?.abortSignal;
+    return new Promise<never>((_resolve, reject) => {
+      const abort = () => {
+        sawAbort = true;
+        settled = true;
+        reject(signal?.reason);
+      };
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  };
+  const adapter = await createRemnicAdapter({
+    configOverrides: { transcriptEnabled: true },
+  });
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "trace-timeout",
+    timeoutMs: 5,
+  });
+
+  try {
+    await assert.rejects(
+      () => guarded.recallWithTrace!("atomic-session", "timeout-query", 1_000),
+      /benchmark phase timed out/,
+    );
+    assert.equal(sawAbort, true);
+    assert.equal(settled, true);
+  } finally {
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter.destroy();
+  }
+});
+
+test("trace keeps duplicate same-turn LCM sibling row ids distinct", async () => {
+  const originalSearch = LcmEngine.prototype.searchContextFull;
+  const originalExpand = LcmEngine.prototype.expandContext;
+  type SearchHit = Awaited<ReturnType<LcmEngine["searchContextFull"]>>[number];
+  type ExpandedRow = Awaited<ReturnType<LcmEngine["expandContext"]>>[number];
+  const legacySearchHit = (
+    role: string,
+    content: string,
+    score: number,
+    turnIndex: number,
+  ): SearchHit => {
+    const hit: SearchHit = {
+      id: 900 + turnIndex,
+      session_id: "sibling-session",
+      turn_index: turnIndex,
+      role,
+      content,
+      score,
+    };
+    Reflect.deleteProperty(hit, "id");
+    return hit;
+  };
+  const legacyExpandedRow = (
+    role: string,
+    content: string,
+    turnIndex: number,
+  ): ExpandedRow => {
+    const row: ExpandedRow = {
+      id: 900 + turnIndex,
+      session_id: "sibling-session",
+      turn_index: turnIndex,
+      role,
+      content,
+    };
+    Reflect.deleteProperty(row, "id");
+    return row;
+  };
+  LcmEngine.prototype.searchContextFull = async () => [
+    {
+      id: 101,
+      session_id: "sibling-session",
+      turn_index: 7,
+      role: "user",
+      content: "first sibling deployment detail",
+      token_count: 4,
+      created_at: 1,
+      score: 0.9,
+    },
+    {
+      id: 102,
+      session_id: "sibling-session",
+      turn_index: 7,
+      role: "assistant",
+      content: "second sibling deployment detail",
+      token_count: 4,
+      created_at: 2,
+      score: 0.8,
+    },
+  ];
+  LcmEngine.prototype.expandContext = async () => [
+    {
+      id: 101,
+      session_id: "sibling-session",
+      turn_index: 7,
+      role: "user",
+      content: "first sibling deployment detail",
+    },
+    {
+      id: 102,
+      session_id: "sibling-session",
+      turn_index: 7,
+      role: "assistant",
+      content: "second sibling deployment detail",
+    },
+  ];
+  const adapter = await createLightweightAdapter();
+
+  try {
+    const traced = await adapter.recallWithTrace!(
+      "sibling-session",
+      "What was the sibling deployment detail?",
+      4_000,
+    );
+    assert.deepEqual(
+      traced.trace.lcmCandidates.map((candidate) => candidate.archiveRowId),
+      [101, 102],
+    );
+    assert.deepEqual(
+      traced.trace.selections
+        .filter((selection) => selection.kind === "evidence-block")
+        .map((selection) => ({
+          archiveRowId: selection.archiveRowIds?.[0],
+          score: selection.score,
+        })),
+      [
+        { archiveRowId: 101, score: 0.9 },
+        { archiveRowId: 102, score: 0.8 },
+      ],
+    );
+
+    LcmEngine.prototype.searchContextFull = async () => [
+      legacySearchHit("user", "unique legacy deployment detail", 0.7, 9),
+    ];
+    LcmEngine.prototype.expandContext = async () => [
+      legacyExpandedRow("user", "unique legacy deployment detail", 9),
+    ];
+    const unambiguousLegacy = await adapter.recallWithTrace!(
+      "sibling-session",
+      "What was the unique legacy deployment detail?",
+      4_000,
+    );
+    const unambiguousSelections = unambiguousLegacy.trace.selections.filter(
+      (selection) => selection.kind === "evidence-block",
+    );
+    assert.ok(unambiguousSelections.length > 0);
+    assert.equal(unambiguousSelections[0]?.score, 0.7);
+
+    LcmEngine.prototype.searchContextFull = async () => [
+      legacySearchHit("user", "first ambiguous legacy detail", 0.6, 10),
+      legacySearchHit("assistant", "second ambiguous legacy detail", 0.5, 10),
+    ];
+    LcmEngine.prototype.expandContext = async () => [
+      legacyExpandedRow("user", "first ambiguous legacy detail", 10),
+      legacyExpandedRow("assistant", "second ambiguous legacy detail", 10),
+    ];
+    const ambiguousLegacy = await adapter.recallWithTrace!(
+      "sibling-session",
+      "What was the ambiguous legacy detail?",
+      4_000,
+    );
+    const ambiguousSelections = ambiguousLegacy.trace.selections.filter(
+      (selection) => selection.kind === "evidence-block",
+    );
+    assert.ok(ambiguousSelections.length > 0);
+    assert.ok(ambiguousSelections.every((selection) => selection.score === undefined));
+  } finally {
+    LcmEngine.prototype.searchContextFull = originalSearch;
+    LcmEngine.prototype.expandContext = originalExpand;
+    await adapter.destroy();
+  }
+});
+
+test("trace records exact summary offsets without scanning rendered text", async () => {
+  const originalSearch = LcmEngine.prototype.searchContextFull;
+  const originalTracedSummary = LcmEngine.prototype.assembleRecallWithTrace;
+  const summaryText = "## Compressed history\nsummary receipt";
+  LcmEngine.prototype.searchContextFull = async () => [];
+  LcmEngine.prototype.assembleRecallWithTrace = async () => ({
+    text: summaryText,
+    selectedSummaries: [{
+      id: "summary-1",
+      depth: 2,
+      msgStart: 3,
+      msgEnd: 8,
+      entryStart: 22,
+      entryEnd: summaryText.length,
+    }],
+  });
+  const adapter = await createLightweightAdapter();
+
+  try {
+    const traced = await adapter.recallWithTrace!("summary-session", "summary query", 1_000);
+    assert.equal(traced.text, summaryText);
+    const selection = traced.trace.selections.find(
+      (entry) => entry.kind === "lcm-summary",
+    );
+    assert.equal(selection?.composedStart, 22);
+    assert.equal(selection?.composedEnd, summaryText.length);
+  } finally {
+    LcmEngine.prototype.searchContextFull = originalSearch;
+    LcmEngine.prototype.assembleRecallWithTrace = originalTracedSummary;
+    await adapter.destroy();
+  }
+});
+
+test("raw fallback offsets, truncation, and zero budget keep character accounting exact", async () => {
+  const adapter = await createLightweightAdapter({ replayExtractionMode: "skip" });
+  try {
+    await adapter.store("raw-trace-session", [
+      { role: "user", content: "raw alpha" },
+      { role: "assistant", content: "raw beta" },
+    ]);
+    const traced = await adapter.recallWithTrace!(
+      "raw-trace-session",
+      "unindexed first recall",
+      24,
+    );
+    assert.equal(traced.text.length, 24);
+    assert.equal(traced.trace.budget.truncated, true);
+    assert.equal(
+      traced.trace.sections.reduce((total, section) => total + section.visibleChars, 0),
+      traced.text.length,
+    );
+    assert.ok(traced.trace.selections.some((selection) => selection.kind === "raw-row"));
+
+    const zero = await adapter.recallWithTrace!("raw-trace-session", "anything", 0);
+    assert.equal(zero.text, "");
+    assert.equal(zero.trace.budget.returnedChars, 0);
+    assert.deepEqual(zero.trace.sections, []);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("explicit and trajectory traced recall remains character-identical after index warmup", async () => {
+  const adapter = await createLightweightAdapter();
+  const query = "At Step 8, why did the agent's action matter?";
+  try {
+    const messages = Array.from({ length: 12 }, (_, index) => [
+      { role: "user" as const, content: `[Action ${index}]: move-${index}` },
+      { role: "assistant" as const, content: `[Observation ${index}]: state-${index}` },
+    ]).flat();
+    await adapter.store("ama-trace-session", messages);
+    await adapter.drain?.();
+    await adapter.recall("ama-trace-session", query, 24_000);
+
+    const traced = await adapter.recallWithTrace!("ama-trace-session", query, 24_000);
+    const plain = await adapter.recall("ama-trace-session", query, 24_000);
+    assert.equal(traced.text, plain);
+    assert.ok(traced.trace.sections.some((section) => section.id === "explicit-cue"));
+    assert.ok(
+      traced.trace.sections.some((section) => section.id === "trajectory-analysis"),
+    );
+    assert.ok(
+      traced.trace.selections.some((selection) => selection.kind === "evidence-block"),
+    );
+    assert.ok(
+      traced.trace.selections.some((selection) => selection.kind === "trajectory-line"),
+    );
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("historical traced recall uses the atomic capture without changing characters", async () => {
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  const originalRecall = Orchestrator.prototype.recall;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(prompt) {
+    return {
+      result: "historically valid core result",
+      snapshot: recallXraySnapshotForTest("historical-snapshot", prompt),
+      recallStartedAt: 1,
+    };
+  };
+  Orchestrator.prototype.recall = async () => "historically valid core result";
+  const adapter = await createRemnicAdapter({
+    configOverrides: { transcriptEnabled: true },
+  });
+  const recallOptions = { asOf: "2026-01-01T00:00:00.000Z" };
+
+  try {
+    const traced = await adapter.recallWithTrace!(
+      "historical-trace-session",
+      "historical query",
+      1_000,
+      recallOptions,
+    );
+    const plain = await adapter.recall(
+      "historical-trace-session",
+      "historical query",
+      1_000,
+      recallOptions,
+    );
+    assert.equal(traced.text, plain);
+    assert.equal(traced.trace.coreCapture?.snapshotId, "historical-snapshot");
+  } finally {
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    Orchestrator.prototype.recall = originalRecall;
+    await adapter.destroy();
+  }
 });
 
 test("runtime-backed adapter waits for full reset rebuild to settle after abort", async () => {
