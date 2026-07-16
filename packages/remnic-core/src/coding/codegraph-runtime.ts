@@ -908,7 +908,19 @@ export async function runCodegraphLspResolution(params: {
           // executor's view from the DB (skipped reconciliation +
           // undercounted upgrades while edges persist — review thread).
           // Skips are surfaced as a degradation instead of a silent drop.
-          if (!result.ok) throw new Error(`upsertEdges failed: ${result.code}`);
+          if (!result.ok) {
+            // The executor catches this throw and counts the batch as
+            // unresolved — record the failure as a degradation FIRST so
+            // a failed write (store_closed, SQLite error) is diagnosable
+            // from the index summary, not indistinguishable from
+            // "no definitions found" (review thread).
+            degradations.push({
+              language,
+              code: "edge_write_failed",
+              message: `upsertEdges failed for ${language}: ${result.code}.`,
+            });
+            throw new Error(`upsertEdges failed: ${result.code}`);
+          }
           if (result.skipped > 0) {
             skippedEdgesTotal += result.skipped;
             lastApplySkipped = true;
