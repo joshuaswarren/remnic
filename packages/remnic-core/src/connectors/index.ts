@@ -1149,6 +1149,23 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // When HERMES_HOME is explicitly set to a not-yet-created directory, the
+    // user has stated where Hermes lives — create it so the config write does
+    // not abort while the shim step (recursive mkdir) would have created the
+    // same tree anyway (Bugbot on PR #1938, round 11). Without HERMES_HOME the
+    // missing-profile-dir skip below stays load-bearing: it is the signal
+    // that Hermes is not installed at all.
+    {
+      const envHermesHome = readEnvVar("HERMES_HOME");
+      if (typeof envHermesHome === "string" && envHermesHome.trim().length > 0) {
+        try {
+          fs.mkdirSync(path.dirname(hermesConfigPath(hermesProfile)), { recursive: true });
+        } catch {
+          /* resolution or mkdir failure — the config write below reports it */
+        }
+      }
+    }
+
     // (c) Write config.yaml. If the profile dir does not exist (skipped) or
     // the write throws, abort WITHOUT committing the token or writing connector.json.
     let yamlResult: HermesConfigResult;
@@ -1400,21 +1417,31 @@ export function installConnector(options: InstallOptions): InstallResult {
     // forgotten — otherwise switching Hermes back to the old home loads a
     // stale, revoked Remnic config (Codex P2 on PR #1938, round 9).
     // Best-effort and provenance-guarded, mirroring the shim reconciliation.
+    // GATED on a confirmed shim at the new home (round 11): when the shim
+    // could not be materialized (user-authored collision or write failure),
+    // the old installation is the only one guaranteed discoverable — leave its
+    // config intact as a fallback instead of stripping it.
     const priorConfigPathRaw = savedConnectorConfig.hermesConfigPath;
-    if (
-      typeof priorConfigPathRaw === "string" &&
-      priorConfigPathRaw.length > 0 &&
-      !sameHermesConfigTarget(priorConfigPathRaw, yamlResult.configPath) &&
-      isPlausibleHermesConfigPath(priorConfigPathRaw)
-    ) {
+    const priorConfigPath =
+      typeof priorConfigPathRaw === "string" && priorConfigPathRaw.length > 0 ? priorConfigPathRaw : null;
+    const priorConfigDiffers =
+      priorConfigPath !== null && !sameHermesConfigTarget(priorConfigPath, yamlResult.configPath);
+    if (priorConfigDiffers && shimOutcome.materializedAt === null) {
+      notes.push(
+        `Note: left the prior-install Hermes config untouched at ${priorConfigPath} — ` +
+          `no Remnic shim could be written under the current Hermes home, so the prior ` +
+          `installation remains the working fallback. Resolve the shim collision/failure ` +
+          `above and re-run with --force to complete the migration.`,
+      );
+    } else if (priorConfigDiffers && priorConfigPath !== null && isPlausibleHermesConfigPath(priorConfigPath)) {
       try {
-        const priorCleanup = removeHermesConfigFile(priorConfigPathRaw);
+        const priorCleanup = removeHermesConfigFile(priorConfigPath);
         if (priorCleanup.updated) {
-          notes.push(`Cleaned remnic: block from prior-install Hermes config: ${priorConfigPathRaw}`);
+          notes.push(`Cleaned remnic: block from prior-install Hermes config: ${priorConfigPath}`);
         }
       } catch {
         notes.push(
-          `Note: could not clean the remnic: block from the prior-install Hermes config at ${priorConfigPathRaw} — remove it manually.`,
+          `Note: could not clean the remnic: block from the prior-install Hermes config at ${priorConfigPath} — remove it manually.`,
         );
       }
     }

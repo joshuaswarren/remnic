@@ -4401,3 +4401,86 @@ test("removeConnector hermes fails closed when hermes.json is a non-object paylo
     }
   });
 });
+
+test("installConnector hermes creates a not-yet-existing HERMES_HOME (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        // Explicitly set HERMES_HOME to a directory that does not exist yet:
+        // the user has stated where Hermes lives, so install must create it
+        // rather than aborting at the config step.
+        const newHome = path.join(tmpHome, "brand-new-hermes-home");
+        assert.ok(!fs.existsSync(newHome), "sanity: HERMES_HOME does not exist yet");
+
+        withHermesHome(newHome, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "installed", install.message);
+        });
+        assert.ok(
+          fs.readFileSync(path.join(newHome, "config.yaml"), "utf-8").includes("remnic:"),
+          "config.yaml must be written under the newly-created HERMES_HOME",
+        );
+        assert.ok(
+          fs.existsSync(path.join(newHome, "plugins", "remnic", "__init__.py")),
+          "shim must be materialized under the newly-created HERMES_HOME",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes preserves the prior config when the new home's shim collides (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        // User-authored shim (no marker) already occupies the target in home B.
+        const shimDirB = path.join(homeB, "plugins", "remnic");
+        fs.mkdirSync(shimDirB, { recursive: true });
+        fs.writeFileSync(path.join(shimDirB, "__init__.py"), "# custom, no marker\n");
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const configA = path.join(homeA, "config.yaml");
+        assert.ok(fs.readFileSync(configA, "utf-8").includes("remnic:"), "sanity: home A config written");
+
+        withHermesHome(homeB, () => {
+          const second = mod.installConnector({ connectorId: "hermes", force: true });
+          assert.equal(second.status, "installed", second.message);
+          assert.ok(
+            second.message.includes("left the prior-install Hermes config untouched"),
+            `reinstall should note the preserved fallback, got: ${second.message}`,
+          );
+        });
+        // No Remnic shim was written at home B, so the prior install must be
+        // preserved as the working fallback.
+        assert.ok(
+          fs.readFileSync(configA, "utf-8").includes("remnic:"),
+          "the prior home's remnic: block must be preserved when no shim was written at the new home",
+        );
+        assert.ok(
+          fs.existsSync(path.join(homeA, "plugins", "remnic", "__init__.py")),
+          "the prior home's shim must be preserved",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
