@@ -4370,3 +4370,34 @@ test("removeConnector hermes cleans a custom-basename HERMES_HOME config without
     }
   });
 });
+
+test("removeConnector hermes fails closed when hermes.json is a non-object payload (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+
+        // Syntactically valid JSON that is not a connector record.
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        fs.writeFileSync(connectorJsonPath, "[]");
+
+        const remove = mod.removeConnector("hermes");
+        assert.equal(remove.status, "error", remove.message);
+        assert.ok(fs.existsSync(connectorJsonPath), "connector JSON must not be deleted on fail-closed abort");
+        assert.ok(fs.existsSync(shimPath), "shim must be left in place on fail-closed abort");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});

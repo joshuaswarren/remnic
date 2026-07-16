@@ -1876,7 +1876,16 @@ export function removeConnector(connectorId: string): RemoveResult {
   let savedHermesConfigPath: string | null = null;
   if (connectorId === "hermes" && fs.existsSync(configPath)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      const parsedRaw: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      // A syntactically valid but non-object payload ([], null, "x", 5) is as
+      // untrustworthy as unparseable JSON — fail closed like the catch below
+      // (Codex P2 on PR #1938, round 10). A plain object that merely LACKS
+      // provenance fields is a legitimate pre-#1929 install and must still be
+      // removable (cleanup then uses the environment-resolved paths).
+      if (parsedRaw === null || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) {
+        throw new Error("hermes.json is not a JSON object");
+      }
+      const parsed = parsedRaw as Record<string, unknown>;
       if (typeof parsed.pluginShimPath === "string" && parsed.pluginShimPath.length > 0) {
         savedHermesShimPath = parsed.pluginShimPath;
       }
