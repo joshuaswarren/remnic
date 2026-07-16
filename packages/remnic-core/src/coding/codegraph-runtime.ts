@@ -24,6 +24,8 @@
  */
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
 
@@ -72,7 +74,13 @@ interface CodegraphModule {
   // LSP resolution (issue #1917): present when @remnic/coding-graph ships
   executeLspResolution?(requests: readonly unknown[], options: unknown): Promise<unknown>;
   planLspUpgrades?(sites: readonly unknown[], budget: { maxRequests: number }): { requests: readonly unknown[]; budgetExhausted: number };
-  createLspClient?(options: unknown): unknown;
+  LspClient?: {
+    connect(options: {
+      launchSpec: { command: string; args: readonly string[] };
+      rootUri: string | null;
+      timeoutMs: number;
+    }): Promise<{ ok: true; client: unknown } | { ok: false; degradation: unknown }>;
+  };
 }
 
 /**
@@ -581,91 +589,278 @@ export async function runCodegraphReindex(params: {
 
 
 /**
+ * Default LSP server launch specs per language. The config's
+ * `codingKnowledge.lsp.servers` overrides these; a language with neither
+ * an override nor a default is skipped (degradation, not an error).
+ */
+const DEFAULT_LSP_SERVERS: Record<string, { command: string; args: string[] }> = {
+  typescript: { command: "typescript-language-server", args: ["--stdio"] },
+  tsx: { command: "typescript-language-server", args: ["--stdio"] },
+  javascript: { command: "typescript-language-server", args: ["--stdio"] },
+  python: { command: "pyright-langserver", args: ["--stdio"] },
+  go: { command: "gopls", args: [] },
+  rust: { command: "rust-analyzer", args: [] },
+};
+
+/** One gathered candidate call site (pre-planner shape). */
+interface GatheredLspSite {
+  filePath: string;
+  language: string;
+  content: string;
+  calleeByteOffset: number;
+  calleeName: string;
+  srcQualifiedName: string;
+}
+
+/**
  * Run LSP type resolution after a heuristic reindex (issue #1917).
- * Degrades cleanly when LSP functions are missing or the pass fails;
- * heuristic edges from the prior reindex survive.
+ * Re-parses tracked files, gathers call sites Phase A left unresolved
+ * (member accesses plus bare calls with no existing CALLS edge), groups
+ * them by language, and per language connects a real language server via
+ * `LspClient.connect` and invokes `executeLspResolution`.
+ *
+ * Degrades cleanly at every seam: missing package/functions, no language
+ * server for a language, or a failed handshake all leave the heuristic
+ * edges standing (soft-fail, mirrors #1894's documented posture).
  */
 export async function runCodegraphLspResolution(params: {
   readonly store: CodegraphStore;
   readonly repoRoot: string;
   readonly lspConfig: NonNullable<CodingKnowledgeConfig["lsp"]>;
-}): Promise<CodegraphDelegateOutcome<{ upgraded: number; unresolved: number; budgetExhausted: number }>> {
+}): Promise<
+  | { ok: true; upgraded: number; unresolved: number; budgetExhausted: number }
+  | { ok: false; code: string; message: string }
+> {
   const mod = await loadCodegraphModule();
-  if (mod === null) return { ok: false, code: "package_missing", message: "@remnic/coding-graph not installed." };
-  if (typeof mod.executeLspResolution !== "function" || typeof mod.planLspUpgrades !== "function") {
-    return { ok: false, code: "runtime_unavailable", message: "LSP resolution not available." };
+  if (mod === null) {
+    return { ok: false, code: "package_missing", message: "@remnic/coding-graph is not installed." };
+  }
+  if (
+    typeof mod.executeLspResolution !== "function" ||
+    typeof mod.planLspUpgrades !== "function" ||
+    typeof mod.LspClient?.connect !== "function"
+  ) {
+    return { ok: false, code: "runtime_unavailable", message: "LSP resolution is not available in the installed @remnic/coding-graph." };
   }
   const engine = mod.createCodingGraphEngine?.() ?? null;
-  if (!engine) return { ok: false, code: "engine_unavailable", message: "Engine unavailable." };
-  // Gather tracked files and collect unresolved call sites.
-  const gitFactory = mod.defaultCodingGitInvoker as (() => { listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string } }) | undefined;
-  if (!gitFactory) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  if (engine === null) {
+    return { ok: false, code: "engine_unavailable", message: "createCodingGraphEngine is not available." };
+  }
+  const gitFactory = mod.defaultCodingGitInvoker as
+    | (() => { listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string } })
+    | undefined;
+  if (typeof gitFactory !== "function") {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
   const tracked = gitFactory().listTrackedFiles(params.repoRoot);
-  if (!("paths" in tracked)) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
-  const sites: unknown[] = [];
-  for (const rel of tracked.paths) {
-    try {
-      const content = await readFile(path.join(params.repoRoot, rel), "utf-8");
-      const parsed = await engine.parseFile({ path: rel, content });
-      if (parsed && typeof parsed === "object" && "ok" in parsed && parsed.ok === true && "ir" in parsed) {
-        const ir = parsed.ir;
-        if (ir && typeof ir === "object" && "callSites" in ir) {
-          const cs = ir.callSites;
-          if (Array.isArray(cs)) {
-            for (const s of cs) {
-              if (s && typeof s === "object" && "span" in s) {
-                const sp = s.span;
-                if (sp && typeof sp === "object" && "startByte" in sp && typeof sp.startByte === "number") {
-                  // Find enclosing symbol for srcQualifiedName.
-                  let srcQName = "";
-                  if ("symbols" in ir && Array.isArray(ir.symbols)) {
-                    for (const sym of ir.symbols) {
-                      if (sym && typeof sym === "object" && "span" in sym && "qualifiedName" in sym) {
-                        const ss = sym.span;
-                        if (ss && typeof ss === "object" && "startByte" in ss && "endByte" in ss && typeof ss.startByte === "number" && typeof ss.endByte === "number") {
-                          if (ss.startByte <= sp.startByte && sp.startByte < ss.endByte) {
-                            srcQName = typeof sym.qualifiedName === "string" ? sym.qualifiedName : "";
-                            break;
-                          }
-                        }
-                      }
-                    }
-                  }
-                  const lang = "language" in ir && typeof ir.language === "string" ? ir.language : "";
-                  const callee = "calleeNameCandidates" in s && Array.isArray(s.calleeNameCandidates) && typeof s.calleeNameCandidates[0] === "string" ? s.calleeNameCandidates[0] : "";
-                  sites.push({ filePath: rel, language: lang, content, calleeByteOffset: sp.startByte, calleeName: callee, srcQualifiedName: srcQName });
-                }
-              }
-            }
+  if (!("paths" in tracked)) {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
+
+  // Memoized per-caller lookup of already-resolved callee names: a bare
+  // call whose (src)-[CALLS]->(dst.name == callee) edge already exists was
+  // resolved by Phase A and must not consume LSP budget (review thread:
+  // budget starvation). Member accesses are Phase A's deliberate skips —
+  // always candidates.
+  const resolvedCalleesBySrc = new Map<string, Set<string>>();
+  const alreadyResolved = (srcQualifiedName: string, calleeName: string): boolean => {
+    let names = resolvedCalleesBySrc.get(srcQualifiedName);
+    if (names === undefined) {
+      names = new Set<string>();
+      const result = params.store.traverse({
+        start: srcQualifiedName,
+        direction: "outgoing",
+        edgeTypes: ["CALLS"],
+        maxDepth: 1,
+      });
+      if (result.ok) {
+        for (const hit of result.hits) {
+          if (hit && typeof hit === "object" && "name" in hit && "depth" in hit && hit.depth === 1 && typeof hit.name === "string") {
+            names.add(hit.name);
           }
         }
       }
-    } catch { /* skip unparseable */ }
-  }
-  if (sites.length === 0) return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
-  // Plan + execute LSP resolution.
-  const plan = mod.planLspUpgrades(sites, { maxRequests: params.lspConfig.maxRequestsPerRun ?? 500 });
-  if (!plan.requests.length) return { ok: true, upgraded: 0, unresolved: sites.length, budgetExhausted: plan.budgetExhausted };
-  const client = typeof mod.createLspClient === "function"
-    ? mod.createLspClient({ workspaceRoot: params.repoRoot, timeoutMs: params.lspConfig.timeoutMs ?? 3000, servers: params.lspConfig.servers ?? {} })
-    : null;
-  if (!client) return { ok: false, code: "lsp_client_error", message: "Could not create LSP client." };
-  try {
-    const r = await mod.executeLspResolution(plan.requests, {
-      client,
-      nodeLocator: (fp: string, off: number) => params.store.findNodeBySpan?.(fp, off) ?? null,
-      applyUpgrades: async (ups: readonly unknown[]) => { if (params.store.upsertEdges) await params.store.upsertEdges(ups as Parameters<typeof params.store.upsertEdges>[0]); },
-      reconcileLspEdges: (fp: string, edges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>) => { params.store.reconcileLspEdges?.(fp, edges); },
-    });
-    if (r && typeof r === "object" && "upgraded" in r) {
-      const rr = r as { upgraded: number; unresolved: number };
-      return { ok: true, upgraded: rr.upgraded ?? 0, unresolved: rr.unresolved ?? 0, budgetExhausted: plan.budgetExhausted };
+      resolvedCalleesBySrc.set(srcQualifiedName, names);
     }
-    return { ok: true, upgraded: 0, unresolved: sites.length, budgetExhausted: plan.budgetExhausted };
-  } catch (err) {
-    return { ok: false, code: "lsp_resolution_error", message: err instanceof Error ? err.message : String(err) };
+    return names.has(calleeName);
+  };
+
+  // Gather unresolved call sites from the freshly indexed source.
+  const sites: GatheredLspSite[] = [];
+  const gatheredCountByFile = new Map<string, number>();
+  for (const rel of tracked.paths) {
+    let content: string;
+    try {
+      content = await readFile(path.join(params.repoRoot, rel), "utf-8");
+    } catch {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = await engine.parseFile({ path: rel, content });
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || !("ok" in parsed) || parsed.ok !== true || !("ir" in parsed)) continue;
+    const ir = parsed.ir;
+    if (!ir || typeof ir !== "object" || !("callSites" in ir) || !Array.isArray(ir.callSites)) continue;
+    const language = "language" in ir && typeof ir.language === "string" ? ir.language : "";
+    const symbols = "symbols" in ir && Array.isArray(ir.symbols) ? ir.symbols : [];
+    for (const site of ir.callSites) {
+      if (!site || typeof site !== "object" || !("span" in site)) continue;
+      const span = site.span;
+      if (!span || typeof span !== "object" || !("startByte" in span) || typeof span.startByte !== "number") continue;
+      const calleeName =
+        "calleeNameCandidates" in site && Array.isArray(site.calleeNameCandidates) && typeof site.calleeNameCandidates[0] === "string"
+          ? site.calleeNameCandidates[0]
+          : "";
+      if (calleeName.length === 0) continue;
+      // Innermost enclosing symbol = SMALLEST containing span (review
+      // thread: first-match picks the outermost container for nested
+      // symbols, attaching edges to the wrong caller).
+      let srcQualifiedName = "";
+      let bestSpanSize = Number.POSITIVE_INFINITY;
+      for (const sym of symbols) {
+        if (!sym || typeof sym !== "object" || !("span" in sym) || !("qualifiedName" in sym)) continue;
+        const ss = sym.span;
+        if (!ss || typeof ss !== "object" || !("startByte" in ss) || !("endByte" in ss)) continue;
+        if (typeof ss.startByte !== "number" || typeof ss.endByte !== "number") continue;
+        if (ss.startByte <= span.startByte && span.startByte < ss.endByte) {
+          const size = ss.endByte - ss.startByte;
+          if (size < bestSpanSize) {
+            bestSpanSize = size;
+            srcQualifiedName = typeof sym.qualifiedName === "string" ? sym.qualifiedName : "";
+          }
+        }
+      }
+      if (srcQualifiedName.length === 0) continue;
+      const memberAccess = "memberAccess" in site && site.memberAccess === true;
+      if (!memberAccess && alreadyResolved(srcQualifiedName, calleeName)) continue;
+      // Position the definition query on the callee NAME, not the call
+      // expression start (member calls: `obj.save()` must query at `save`).
+      // The search is bounded to this call site's span, so repeated line
+      // text elsewhere in the file cannot mislead it (parser rule 20).
+      const nameIdx = content.indexOf(calleeName, span.startByte);
+      const endByte = "endByte" in span && typeof span.endByte === "number" ? span.endByte : span.startByte + calleeName.length;
+      const calleeByteOffset = nameIdx >= 0 && nameIdx < endByte ? nameIdx : span.startByte;
+      sites.push({ filePath: rel, language, content, calleeByteOffset, calleeName, srcQualifiedName });
+      gatheredCountByFile.set(rel, (gatheredCountByFile.get(rel) ?? 0) + 1);
+    }
   }
+  if (sites.length === 0) {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
+
+  // Group by language; each group gets its own server connection. The
+  // budget is shared across groups (maxRequestsPerRun is per RUN).
+  const byLanguage = new Map<string, GatheredLspSite[]>();
+  for (const site of sites) {
+    const group = byLanguage.get(site.language);
+    if (group === undefined) byLanguage.set(site.language, [site]);
+    else group.push(site);
+  }
+
+  const configServers = params.lspConfig.servers ?? {};
+  const timeoutMs = params.lspConfig.timeoutMs ?? 3000;
+  let remainingBudget = Math.max(1, Math.floor(params.lspConfig.maxRequestsPerRun ?? 500));
+  const rootUri = pathToFileURL(params.repoRoot).href;
+  // Cross-file definition targets need their bytes for position→offset
+  // conversion (review thread: without resolveContent, cross-file
+  // upgrades — the point of Phase B — stay unresolved).
+  const resolveContent = (filePath: string): string | null => {
+    try {
+      return readFileSync(path.join(params.repoRoot, filePath), "utf-8");
+    } catch {
+      return null;
+    }
+  };
+
+  let upgraded = 0;
+  let unresolved = 0;
+  let budgetExhausted = 0;
+  for (const [language, group] of byLanguage) {
+    if (remainingBudget <= 0) {
+      budgetExhausted += group.length;
+      continue;
+    }
+    const rawSpec = configServers[language] ?? DEFAULT_LSP_SERVERS[language];
+    if (rawSpec === undefined) {
+      unresolved += group.length;
+      continue;
+    }
+    const launchSpec = { command: rawSpec.command, args: rawSpec.args ?? [] };
+    const plan = mod.planLspUpgrades(group, { maxRequests: remainingBudget });
+    budgetExhausted += plan.budgetExhausted;
+    remainingBudget -= plan.requests.length;
+    if (plan.requests.length === 0) continue;
+    // Reconciliation is only safe for files whose gathered sites ALL made
+    // it into the plan — a budget-truncated file would otherwise retire
+    // valid lsp edges its omitted call sites still assert (review thread).
+    const plannedCountByFile = new Map<string, number>();
+    for (const req of plan.requests) {
+      if (req && typeof req === "object" && "filePath" in req && typeof req.filePath === "string") {
+        plannedCountByFile.set(req.filePath, (plannedCountByFile.get(req.filePath) ?? 0) + 1);
+      }
+    }
+    const connected = await mod.LspClient.connect({ launchSpec, rootUri, timeoutMs });
+    if (!connected.ok) {
+      unresolved += plan.requests.length;
+      continue;
+    }
+    const client = connected.client;
+    try {
+      const result = await mod.executeLspResolution(plan.requests, {
+        client,
+        workspaceRoot: params.repoRoot,
+        resolveContent,
+        nodeLocator: (filePath: string, byteOffset: number) =>
+          typeof params.store.findNodeBySpan === "function" ? params.store.findNodeBySpan(filePath, byteOffset) : null,
+        applyUpgrades: async (upgrades: readonly CodegraphEdgeInput[]) => {
+          if (typeof params.store.upsertEdges !== "function") {
+            throw new Error("store.upsertEdges is not available");
+          }
+          const result = await params.store.upsertEdges(upgrades);
+          // The executor's contract: a throwing apply means the batch did
+          // not persist and must not be counted as upgraded (review
+          // thread: silently skipped edges inflate the upgraded count and
+          // let reconciliation retire edges that were never re-asserted).
+          if (!result.ok) throw new Error(`upsertEdges failed: ${result.code}`);
+          if (result.skipped > 0) throw new Error(`upsertEdges skipped ${result.skipped} edge(s)`);
+        },
+        reconcileLspEdges: (
+          filePath: string,
+          assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
+        ) => {
+          if (typeof params.store.reconcileLspEdges !== "function") return;
+          if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
+          params.store.reconcileLspEdges(filePath, assertedEdges);
+        },
+      });
+      if (result && typeof result === "object" && "upgraded" in result && typeof result.upgraded === "number") {
+        upgraded += result.upgraded;
+        unresolved += "unresolved" in result && typeof result.unresolved === "number" ? result.unresolved : 0;
+        budgetExhausted += "budgetExhausted" in result && typeof result.budgetExhausted === "number" ? result.budgetExhausted : 0;
+      } else {
+        unresolved += plan.requests.length;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, code: "lsp_resolution_error", message: msg };
+    } finally {
+      const disposable = client as { dispose?: () => Promise<void> };
+      if (typeof disposable.dispose === "function") {
+        try {
+          await disposable.dispose();
+        } catch {
+          // Disposal failure is not actionable — the child process is
+          // reaped by the OS when the parent exits.
+        }
+      }
+    }
+  }
+  return { ok: true, upgraded, unresolved, budgetExhausted };
 }
+
 /**
  * Report index status via @remnic/coding-graph's getIndexStatus. Never throws
  * — a git failure degrades to `mode: "git_unavailable"` in the status body.

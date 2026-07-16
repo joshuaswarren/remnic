@@ -878,3 +878,77 @@ test("resolveCodegraphDbPath: accepts an absolute codegraphDbDir", () => {
   assert.ok(p.startsWith("/var/lib/remnic/codegraph/"), p);
   assert.ok(p.endsWith(".sqlite"), p);
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// LSP Phase B wiring (issue #1917): handleIndex invokes runLspResolution
+// after a successful reindex iff codingKnowledge.lsp.enabled — and LSP
+// failure is non-fatal (heuristic edges stand).
+// ──────────────────────────────────────────────────────────────────────────
+
+function makeLspCtx(
+  lsp: { enabled: boolean } | undefined,
+  overrides: Partial<CodegraphSurfaceContext> = {},
+): CodegraphSurfaceContext {
+  const pluginConfig = {
+    codingKnowledge: { ...GATE_ON_CONFIG, lsp },
+  } as unknown as PluginConfig;
+  return makeEnabledCtx({ config: pluginConfig, ...overrides });
+}
+
+test("LSP wiring: handleIndex invokes runLspResolution after reindex when lsp.enabled", async () => {
+  const calls: Array<{ repoRoot: string; lspEnabled: boolean }> = [];
+  const ctx = makeLspCtx(
+    { enabled: true },
+    {
+      runReindex: async () => ({ ok: true, mode: "full", filesIngested: 2, head: "h1" }),
+      runLspResolution: async (_store, repoRoot, lspConfig) => {
+        calls.push({ repoRoot, lspEnabled: lspConfig.enabled });
+        return { ok: true, upgraded: 4, unresolved: 1, budgetExhausted: 0 };
+      },
+    },
+  );
+  const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repo", mode: "auto" }, ctx);
+  assert.equal(response.ok, true);
+  assert.equal(calls.length, 1, "runLspResolution must be invoked exactly once");
+  assert.equal(calls[0]?.repoRoot, "/repo", "repoRoot forwards to the LSP pass");
+  assert.equal(calls[0]?.lspEnabled, true, "the parsed lsp config forwards");
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { lsp?: { upgraded: number; unresolved: number } };
+  assert.equal(result.lsp?.upgraded, 4, "LSP upgrade summary surfaces in the index result");
+  assert.equal(result.lsp?.unresolved, 1);
+});
+
+test("LSP wiring: handleIndex does NOT invoke runLspResolution when lsp is disabled or absent", async () => {
+  for (const lsp of [{ enabled: false }, undefined]) {
+    let called = false;
+    const ctx = makeLspCtx(lsp, {
+      runReindex: async () => ({ ok: true, mode: "full", filesIngested: 1, head: "h2" }),
+      runLspResolution: async () => {
+        called = true;
+        return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+      },
+    });
+    const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repo", mode: "auto" }, ctx);
+    assert.equal(response.ok, true);
+    assert.equal(called, false, `lsp=${JSON.stringify(lsp)} must not trigger the LSP pass`);
+    if (!response.ok) throw new Error("expected ok");
+    const result = response.result as { lsp?: unknown };
+    assert.equal(result.lsp, undefined, "no LSP summary when the pass did not run");
+  }
+});
+
+test("LSP wiring: a failed LSP pass is non-fatal — index still reports ok with reindex stats", async () => {
+  const ctx = makeLspCtx(
+    { enabled: true },
+    {
+      runReindex: async () => ({ ok: true, mode: "incremental", filesIngested: 5, head: "h3" }),
+      runLspResolution: async () => ({ ok: false, code: "lsp_resolution_error", message: "server crashed" }),
+    },
+  );
+  const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repo", mode: "auto" }, ctx);
+  assert.equal(response.ok, true, "LSP failure must not fail the index (heuristic edges stand)");
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { filesIngested: number; lsp?: unknown };
+  assert.equal(result.filesIngested, 5, "reindex stats survive the failed LSP pass");
+  assert.equal(result.lsp, undefined, "no LSP summary on a failed pass");
+});
