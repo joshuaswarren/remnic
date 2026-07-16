@@ -555,14 +555,23 @@ async function handleIndex(
     return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
   }
   // LSP Phase B: upgrade unresolved call sites via language servers.
-  let lspUpgradeSummary: { upgraded: number; unresolved: number } | undefined;
+  // Failure is non-fatal (heuristic edges survive) but NEVER silent — the
+  // degradation code/message surface in the result so a misconfigured
+  // server is diagnosable from the index response (review thread).
+  let lspUpgradeSummary:
+    | { upgraded: number; unresolved: number; budgetExhausted: number }
+    | { error: string; message: string }
+    | undefined;
   const lspConfig = ctx.config.codingKnowledge.lsp;
   if (lspConfig?.enabled === true && ctx.runLspResolution) {
     const lspResult = await ctx.runLspResolution(store, repoRoot, lspConfig);
-    if (lspResult.ok) {
-      lspUpgradeSummary = { upgraded: lspResult.upgraded ?? 0, unresolved: lspResult.unresolved ?? 0 };
-    }
-    // LSP failure is non-fatal — heuristic edges survive.
+    lspUpgradeSummary = lspResult.ok
+      ? {
+          upgraded: lspResult.upgraded ?? 0,
+          unresolved: lspResult.unresolved ?? 0,
+          budgetExhausted: lspResult.budgetExhausted ?? 0,
+        }
+      : { error: lspResult.code ?? "lsp_error", message: lspResult.message ?? "" };
   }
   const stats = store.schemaStats();
   return {

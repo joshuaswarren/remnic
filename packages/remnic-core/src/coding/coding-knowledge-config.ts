@@ -73,10 +73,27 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
       typeof record.codegraphDbDir === "string"
         ? record.codegraphDbDir.trim()
         : "",
-    lsp: record.lsp && typeof record.lsp === "object" && !Array.isArray(record.lsp)
-      ? parseLspConfig(record.lsp as Record<string, unknown>)
-      : undefined,
+    // `lsp` is spread conditionally so an absent key stays ABSENT — an own
+    // `lsp: undefined` property would change the pinned defaults shape
+    // (config.test.ts) and leak a new key into serialized configs.
+    ...readLspField(record.lsp),
   };
+}
+
+/**
+ * Read the optional `codingKnowledge.lsp` sub-object. Absent → empty
+ * spread (no own key). Present-but-malformed (string/number/array) is
+ * REJECTED, consistent with `readStrictBool`'s posture — a typo like
+ * `"lsp": true` must alert the operator, not silently disable Phase B.
+ */
+function readLspField(raw: unknown): { lsp?: CodingGraphLspConfig } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(
+      `codingKnowledge.lsp must be an object ({ enabled, servers?, timeoutMs?, maxRequestsPerRun? }); got ${JSON.stringify(raw)}`,
+    );
+  }
+  return { lsp: parseLspConfig(raw as Record<string, unknown>) };
 }
 
 const STRICT_BOOL_ACCEPTED = "true/false/1/0/yes/no/on/off";

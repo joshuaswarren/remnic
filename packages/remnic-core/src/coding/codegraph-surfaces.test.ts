@@ -948,7 +948,8 @@ test("LSP wiring: a failed LSP pass is non-fatal — index still reports ok with
   const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repo", mode: "auto" }, ctx);
   assert.equal(response.ok, true, "LSP failure must not fail the index (heuristic edges stand)");
   if (!response.ok) throw new Error("expected ok");
-  const result = response.result as { filesIngested: number; lsp?: unknown };
+  const result = response.result as { filesIngested: number; lsp?: { error?: string; message?: string } };
   assert.equal(result.filesIngested, 5, "reindex stats survive the failed LSP pass");
-  assert.equal(result.lsp, undefined, "no LSP summary on a failed pass");
+  assert.equal(result.lsp?.error, "lsp_resolution_error", "the degradation code surfaces (never silent)");
+  assert.equal(result.lsp?.message, "server crashed", "the degradation message surfaces");
 });
