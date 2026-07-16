@@ -117,6 +117,29 @@ function writePlainFileAtomicSync(filePath: string, data: string): void {
 }
 
 /**
+ * Reject symlinked path components between the Hermes root and the shim file
+ * (`plugins/`, `plugins/remnic/`, and the `__init__.py` itself). The root-only
+ * lstat in `resolveHermesRoot` does not cover these; a symlinked component
+ * would let mkdir/write/unlink escape the selected Hermes home (Codex P1 on
+ * PR #1938, round 16). Missing components are fine — they get created.
+ */
+function assertShimComponentsNotSymlinked(shimPath: string): void {
+  const remnicDir = path.dirname(shimPath);
+  const pluginsDir = path.dirname(remnicDir);
+  for (const component of [pluginsDir, remnicDir, shimPath]) {
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(component).isSymbolicLink();
+    } catch {
+      continue; // does not exist yet
+    }
+    if (isLink) {
+      throw new Error(`refusing to operate through a symbolic link: ${component}`);
+    }
+  }
+}
+
+/**
  * Materialize the Hermes plugin-directory shim. Idempotent:
  * - A shim already carrying our marker is overwritten (reinstall).
  * - A shim WITHOUT our marker is user-authored → left untouched
@@ -128,6 +151,7 @@ function writePlainFileAtomicSync(filePath: string, data: string): void {
  * never fails on the shim.
  */
 export function materializeHermesShim(shimPath: string): { note: string; wrote: boolean } {
+  assertShimComponentsNotSymlinked(shimPath);
   if (fs.existsSync(shimPath)) {
     let existing: string;
     try {
@@ -301,6 +325,12 @@ export function removeHermesShim(candidatePaths: readonly string[]): {
     // persisted candidate comes from connector.json, which is on-disk state —
     // do not let a tampered value point this cleanup at an arbitrary file.
     if (!isPlausibleHermesShimPath(shimPath)) {
+      continue;
+    }
+    try {
+      assertShimComponentsNotSymlinked(shimPath);
+    } catch {
+      notes.push(`Hermes plugin shim left untouched (symlinked path component): ${shimPath}`);
       continue;
     }
     if (!fs.existsSync(shimPath)) {

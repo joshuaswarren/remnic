@@ -1322,6 +1322,10 @@ export function installConnector(options: InstallOptions): InstallResult {
       typeof priorConfigPathRaw === "string" && priorConfigPathRaw.length > 0 ? priorConfigPathRaw : null;
     const priorConfigDiffers =
       priorConfigPath !== null && !sameHermesConfigTarget(priorConfigPath, yamlResult.configPath);
+    // Every prior-config mutation performed before the registry write records
+    // the file's pre-mutation content here, so the connector.json-write
+    // failure path can restore it (Bugbot + Codex P2 on PR #1938, round 16).
+    const hermesPriorConfigMutations: Array<{ mutatedPath: string; priorContent: string }> = [];
     if (priorConfigDiffers && priorConfigPath !== null && shimOutcome.materializedAt === null) {
       // Unconfirmed shim move: the prior installation stays the working
       // fallback. Refresh its config with the ACTIVE token — the install just
@@ -1331,11 +1335,15 @@ export function installConnector(options: InstallOptions): InstallResult {
       let fallbackDetail = "";
       if (isPlausibleHermesConfigPath(priorConfigPath)) {
         try {
+          const beforeRefresh = fs.readFileSync(priorConfigPath, "utf8");
           const refresh = upsertHermesConfigAt(priorConfigPath, {
             host: hermesHost,
             port: hermesPort,
             token: tokenEntry.token,
           });
+          if (refresh.updated) {
+            hermesPriorConfigMutations.push({ mutatedPath: priorConfigPath, priorContent: beforeRefresh });
+          }
           fallbackDetail = refresh.updated
             ? " Its remnic: block was refreshed with the newly-issued token so it keeps working."
             : ` Note: its token could not be refreshed (${refresh.reason ?? "config not writable"}) — re-run install with HERMES_HOME pointing there to restore daemon auth.`;
@@ -1385,8 +1393,10 @@ export function installConnector(options: InstallOptions): InstallResult {
             continue;
           }
           try {
+            const beforeCleanup = fs.readFileSync(candidate, "utf8");
             const cleanup = removeHermesConfigFile(candidate);
             if (cleanup.updated) {
+              hermesPriorConfigMutations.push({ mutatedPath: candidate, priorContent: beforeCleanup });
               hermesPriorNotes.push(`Cleaned remnic: block from prior-install Hermes config: ${candidate}`);
             }
           } catch {
@@ -1510,6 +1520,28 @@ export function installConnector(options: InstallOptions): InstallResult {
             ? "plugin shim changes rolled back"
             : `plugin shim rollback incomplete: ${shimRollbackFailures.join("; ")}`;
       }
+      // Roll back the (d2) prior-config mutations from their recorded
+      // pre-mutation content: a stripped old-home remnic: block or a
+      // token-refreshed fallback must revert alongside tokens.json, or the
+      // previously working install is left broken (Bugbot + Codex P2 on
+      // PR #1938, round 16). Restore in reverse mutation order.
+      let priorConfigRollbackMsg = "no prior-config changes to roll back";
+      if (hermesPriorConfigMutations.length > 0) {
+        const priorConfigRollbackFailures: string[] = [];
+        for (const mutation of [...hermesPriorConfigMutations].reverse()) {
+          try {
+            writeSecretFileSync(mutation.mutatedPath, mutation.priorContent);
+          } catch (restoreErr) {
+            priorConfigRollbackFailures.push(
+              `could not restore ${mutation.mutatedPath} (${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)})`,
+            );
+          }
+        }
+        priorConfigRollbackMsg =
+          priorConfigRollbackFailures.length === 0
+            ? "prior-install config(s) restored"
+            : `prior-install config rollback incomplete: ${priorConfigRollbackFailures.join("; ")}`;
+      }
       const urgentSuffix = tokenRollbackFailed
         ? ` tokens.json may be in an inconsistent state — manually restore hermes token with 'remnic token generate hermes'.`
         : "";
@@ -1519,7 +1551,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         message:
           `Hermes install aborted: connector config write failed — ` +
           `connector directory may not be writable. ` +
-          `Rollback: ${tokenRollbackMsg}; ${yamlRollbackMsg}; ${shimRollbackMsg}.` +
+          `Rollback: ${tokenRollbackMsg}; ${yamlRollbackMsg}; ${shimRollbackMsg}; ${priorConfigRollbackMsg}.` +
           `${urgentSuffix} Resolve the permission issue, then reinstall.`,
       };
     }

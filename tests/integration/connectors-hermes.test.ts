@@ -4564,3 +4564,92 @@ test("installConnector hermes rejects a symlinked HERMES_HOME (#1929)", async ()
     }
   });
 });
+
+test("installConnector hermes restores the prior home's config when the registry write fails (#1929)", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("running as root — directory permissions are not enforced");
+    return;
+  }
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const configA = path.join(homeA, "config.yaml");
+        const tokenLineBefore = fs.readFileSync(configA, "utf-8").match(/token:.*$/m)?.[0];
+        assert.ok(tokenLineBefore, "sanity: home A config carries a token");
+
+        // Force reinstall to home B with the connectors dir unwritable: the
+        // confirmed move strips A's block pre-write, the registry write fails,
+        // and the rollback must restore A's config byte-for-byte.
+        const connectorsDir = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors",
+        );
+        fs.chmodSync(connectorsDir, 0o500);
+        try {
+          withHermesHome(homeB, () => {
+            const second = mod.installConnector({ connectorId: "hermes", force: true });
+            assert.equal(second.status, "error", second.message);
+            assert.ok(
+              second.message.includes("prior-install config(s) restored"),
+              `rollback should report the prior-config restore, got: ${second.message}`,
+            );
+          });
+        } finally {
+          fs.chmodSync(connectorsDir, 0o700);
+        }
+        const configAAfter = fs.readFileSync(configA, "utf-8");
+        assert.ok(configAAfter.includes("remnic:"), "home A's remnic: block must be restored");
+        assert.ok(
+          configAAfter.includes(tokenLineBefore!),
+          "home A's original inline token must be restored so the prior install keeps working",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes refuses to write the shim through a symlinked plugins dir (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+        // plugins/ is a symlink escaping the Hermes home.
+        const outside = path.join(tmpHome, "outside-target");
+        fs.mkdirSync(outside, { recursive: true });
+        fs.symlinkSync(outside, path.join(hermesDir, "plugins"));
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+        assert.ok(
+          install.message.includes("could not materialize"),
+          `install should surface the symlink refusal, got: ${install.message}`,
+        );
+        assert.ok(
+          !fs.existsSync(path.join(outside, "remnic")),
+          "nothing may be written through the symlinked plugins dir",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
