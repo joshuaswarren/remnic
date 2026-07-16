@@ -90,6 +90,15 @@ Security rules:
 
 When namespaces are enabled, QMD needs entries for namespace-specific collections in `~/.config/qmd/index.yml`. The collection names follow the pattern `<qmdCollection>--ns--<namespace>`, where `<qmdCollection>` is the base collection name from your Remnic config (default: `openclaw-engram`, an intentional compatibility name). This matches the runtime logic in `namespaceCollectionName()` (`src/namespaces/search.ts`). Check the gateway log for the exact names — Remnic logs `QMD collection "..." not found` with the expected name when entries are missing.
 
+> **Auto-creation (#1929):** When Remnic runs QMD in daemon-managed mode it now
+> auto-creates every namespace collection it needs on startup and during
+> maintenance — including the base collection that serves the default namespace
+> at the flat `memoryDir` root. The manual `index.yml` entries below are only
+> required when you run QMD yourself (self-managed indexes). Earlier builds
+> skipped auto-creating the default-namespace base collection, so a configured
+> default namespace (e.g. `geek`) whose data lived at the flat root returned 0
+> recall results until the entry was added by hand.
+
 ```yaml
 # Base collection (default namespace root)
 openclaw-engram:
