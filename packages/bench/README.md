@@ -156,6 +156,30 @@ printed by the CLI, or recover it only from this run store with
 `remnic bench runs list --results-dir "$BUILD_WEEK_RESULTS_DIR"`; use that ID
 for export and artifact promotion rather than an ambiguous “latest” run.
 
+Commit only a sanitized evidence receipt, never the private result or manifest:
+
+```bash
+pnpm exec tsx scripts/bench/generate-build-week-evidence-receipt.ts \
+  --result "$BUILD_WEEK_RESULTS_DIR/<result>.json" \
+  --manifest "$BUILD_WEEK_RESULTS_DIR/MANIFEST.json" \
+  --output docs/benchmarks/results/<public-receipt>.json \
+  --dataset-version longmemeval-oracle-v1 \
+  --bounded-task-count 300 \
+  --confirm-fresh-isolated-store \
+  --limitations boundedSubset,singleRun,estimatedAccounting,modelJudged
+```
+
+Use `--full-task-count <DATASET_TASK_COUNT>` instead of
+`--bounded-task-count` only for a genuinely complete, unlimited run. The
+fresh-store confirmation is mandatory: never generate a competition receipt
+from a production Remnic store. The generator binds the exact private source
+bytes, runner dataset payload, and manifest file inventory with SHA-256 hashes,
+then emits aggregate metrics, model provenance, and explicitly estimated usage
+only. It refuses partial, failed, task-count-mismatched, hash-mismatched, Sol,
+or falsely full evidence. Its fixed output schema cannot copy questions,
+answers, recall text, private paths, environment values, ledger details, or
+account balances into the repository.
+
 Codex built and adversarially reviewed the Build Week adapter, Responses
 provider, and report card. The underlying Remnic engine and original benchmark
 harness are prior work. The evidence ledger, credit-backed frontier-run
