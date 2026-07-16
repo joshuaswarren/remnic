@@ -2367,11 +2367,18 @@ export function removeConnector(connectorId: string): RemoveResult {
       preflightCandidates.push(savedHermesConfigPath);
     }
     preflightCandidates.push(...savedPriorHermesConfigPaths.filter(isPlausibleHermesConfigPath));
-    const blocked: string[] = [];
-    for (const candidate of new Set(preflightCandidates)) {
-      if (blocked.some((known) => sameHermesConfigTarget(known, candidate))) {
-        continue;
+    // De-duplicate by resolved file identity first (matching cleanup): in the
+    // legacy alias layout profiles/default/config.yaml symlinks to the root
+    // config — the alias collapses onto its non-symlinked representative and
+    // must not trip the component guard below.
+    const uniqueCandidates: string[] = [];
+    for (const candidate of preflightCandidates) {
+      if (!uniqueCandidates.some((kept) => sameHermesConfigTarget(kept, candidate))) {
+        uniqueCandidates.push(candidate);
       }
+    }
+    const blocked: string[] = [];
+    for (const candidate of uniqueCandidates) {
       let needsCleanup = false;
       try {
         needsCleanup = /^remnic:/m.test(fs.readFileSync(candidate, "utf8"));
@@ -2381,13 +2388,23 @@ export function removeConnector(connectorId: string): RemoveResult {
       if (!needsCleanup) {
         continue;
       }
+      // Cleanup refuses symlinked components (round 19); a target that would
+      // be skipped that way must abort HERE, while registry/provenance/token
+      // are intact, instead of surfacing as a post-unlink note that strands
+      // the block without provenance (Codex P2 on PR #1938, round 22).
+      try {
+        assertConfigComponentsNotSymlinked(candidate);
+      } catch {
+        blocked.push(`${candidate} (symlinked path component)`);
+        continue;
+      }
       try {
         // writeSecretFileSync rewrites via temp file + rename, so BOTH the
         // file and its directory must be writable.
         fs.accessSync(candidate, fs.constants.W_OK);
         fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
       } catch {
-        blocked.push(candidate);
+        blocked.push(`${candidate} (not writable)`);
       }
     }
     if (blocked.length > 0) {
@@ -2396,9 +2413,9 @@ export function removeConnector(connectorId: string): RemoveResult {
         configPath,
         status: "error",
         message:
-          `Hermes remove aborted: the following config.yaml path(s) hold a remnic: block but are not writable: ` +
+          `Hermes remove aborted: the following config.yaml path(s) hold a remnic: block but cannot be cleaned: ` +
           `${blocked.join(", ")}. The connector registry entry, provenance, and token were left untouched — ` +
-          `fix the permissions and re-run removal.`,
+          `fix the permissions or resolve the symlink and re-run removal.`,
       };
     }
   }
