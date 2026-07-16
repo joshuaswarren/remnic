@@ -2960,6 +2960,33 @@ export class GraphStore {
   }
 
   /**
+   * Callee NAMES already linked from a caller symbol via CALLS edges of a
+   * given provenance (issue #1917 wiring). The LSP pass uses this to skip
+   * call sites Phase A (provenance "heuristic") already resolved WITHOUT
+   * also skipping sites whose only edge is a prior "lsp" edge — those must
+   * be re-asserted each run or reconciliation would retire them.
+   */
+  resolvedCalleeNames(srcQualifiedName: string, provenance: string): string[] {
+    if (this.closed) return [];
+    try {
+      const rows = expectRows<{ name: string }>(
+        this.db
+          .prepare(
+            `SELECT DISTINCT dn.name AS name FROM edges e
+              JOIN nodes sn ON e.src = sn.id
+              JOIN nodes dn ON e.dst = dn.id
+              WHERE sn.qualified_name = ? AND e.type = 'CALLS' AND e.provenance = ?`,
+          )
+          .all(srcQualifiedName, provenance),
+        ["name"],
+      );
+      return rows.map((r) => r.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Read a symbol's source span from disk. The store NEVER persists
    * file contents (privacy + DB size — issue #1552 design); this
    * method resolves `files.path` against {@link GraphStoreOptions.repoRoot}

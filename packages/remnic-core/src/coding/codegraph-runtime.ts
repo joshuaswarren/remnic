@@ -115,6 +115,8 @@ export interface CodegraphStore {
     filePath: string,
     assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
   ): number;
+  /** Callee names already CALLS-linked from a caller with a given provenance (issue #1917). */
+  resolvedCalleeNames?(srcQualifiedName: string, provenance: string): string[];
 }
 
 /**
@@ -698,22 +700,20 @@ export async function runCodegraphLspResolution(params: {
   // resolved by Phase A and must not consume LSP budget (review thread:
   // budget starvation). Member accesses are Phase A's deliberate skips —
   // always candidates.
+  // Provenance matters: only HEURISTIC edges mark a site as Phase-A
+  // resolved. A site whose only edge is a prior "lsp" edge MUST be
+  // re-planned — excluding it from the plan while reconciling the file
+  // would retire that still-valid lsp edge (review thread). When the
+  // installed store predates resolvedCalleeNames, nothing is treated as
+  // resolved (conservative: spends budget, never mis-retires).
   const resolvedCalleesBySrc = new Map<string, Set<string>>();
   const alreadyResolved = (srcQualifiedName: string, calleeName: string): boolean => {
     let names = resolvedCalleesBySrc.get(srcQualifiedName);
     if (names === undefined) {
       names = new Set<string>();
-      const result = params.store.traverse({
-        start: srcQualifiedName,
-        direction: "outgoing",
-        edgeTypes: ["CALLS"],
-        maxDepth: 1,
-      });
-      if (result.ok) {
-        for (const hit of result.hits) {
-          if (hit && typeof hit === "object" && "name" in hit && "depth" in hit && hit.depth === 1 && typeof hit.name === "string") {
-            names.add(hit.name);
-          }
+      if (typeof params.store.resolvedCalleeNames === "function") {
+        for (const name of params.store.resolvedCalleeNames(srcQualifiedName, "heuristic")) {
+          names.add(name);
         }
       }
       resolvedCalleesBySrc.set(srcQualifiedName, names);
@@ -896,6 +896,10 @@ export async function runCodegraphLspResolution(params: {
           if (typeof params.store.upsertEdges !== "function") {
             throw new Error("store.upsertEdges is not available");
           }
+          // Each apply call starts a NEW file batch — reset the skip
+          // marker so a prior batch's skips cannot leak into this one
+          // (review thread: stale flag suppressed later files' reconcile).
+          lastApplySkipped = false;
           const result = await params.store.upsertEdges(upgrades);
           // Throw ONLY when nothing persisted (ok:false) — the executor's
           // transactional contract holds because no state changed. A
@@ -913,20 +917,24 @@ export async function runCodegraphLspResolution(params: {
               code: "edges_skipped",
               message: `upsertEdges persisted ${result.persisted} and skipped ${result.skipped} edge(s) for ${language} (unresolvable endpoints).`,
             });
-          } else {
-            lastApplySkipped = false;
           }
         },
         reconcileLspEdges: (
           filePath: string,
           assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
         ) => {
+          // Consume the per-batch skip marker regardless of the decision
+          // below — reconcile is the last step of a file batch, and a
+          // stale marker must not suppress the NEXT file's reconcile
+          // (zero-upgrade batches never call applyUpgrades).
+          const batchHadSkips = lastApplySkipped;
+          lastApplySkipped = false;
           if (typeof params.store.reconcileLspEdges !== "function") return;
           if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
           // This file batch had skipped writes — its asserted set is
           // incomplete, so reconciling would retire edges that were never
           // re-asserted (see skip tracking above).
-          if (lastApplySkipped) return;
+          if (batchHadSkips) return;
           params.store.reconcileLspEdges(filePath, assertedEdges);
         },
       });
