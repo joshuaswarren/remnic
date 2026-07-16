@@ -844,9 +844,12 @@ function isLedgerV1(value: unknown): value is CodexCreditLedgerV1 {
   return (
     candidate.schemaVersion === 1 &&
     isPositiveFinite(candidate.budgetCredits) &&
+    isSupportedBudgetUnits(candidate.budgetCredits) &&
     isNonNegativeFinite(candidate.reserveCredits) &&
+    isSupportedBudgetUnits(candidate.reserveCredits) &&
     candidate.reserveCredits < candidate.budgetCredits &&
     isNonNegativeFinite(candidate.spentCredits) &&
+    isSupportedBudgetUnits(candidate.spentCredits) &&
     Array.isArray(entries) &&
     entries.every(isLedgerEntryV1) &&
     (reconciliations === undefined ||
@@ -898,15 +901,19 @@ function isLedgerReconciliationV1(value: unknown): value is CodexCreditLedgerRec
     typeof candidate.originalBudgetCredits === "number" &&
     Number.isFinite(candidate.originalBudgetCredits) &&
     candidate.originalBudgetCredits > 0 &&
+    isSupportedBudgetUnits(candidate.originalBudgetCredits) &&
     typeof candidate.priorRecordedSpentCredits === "number" &&
     Number.isFinite(candidate.priorRecordedSpentCredits) &&
     candidate.priorRecordedSpentCredits >= 0 &&
+    isSupportedBudgetUnits(candidate.priorRecordedSpentCredits) &&
     typeof candidate.observedRemainingCredits === "number" &&
     Number.isFinite(candidate.observedRemainingCredits) &&
     candidate.observedRemainingCredits >= 0 &&
+    isSupportedBudgetUnits(candidate.observedRemainingCredits) &&
     typeof candidate.credits === "number" &&
     Number.isFinite(candidate.credits) &&
     candidate.credits >= 0 &&
+    isSupportedBudgetUnits(candidate.credits) &&
     candidate.confirmations?.observedBalanceBelongsToOriginalBudget === true &&
     candidate.confirmations.noCreditsAddedOrRefunded === true &&
     candidate.confirmations.accountWideUnattributedChargeAccepted === true &&
@@ -1063,6 +1070,7 @@ function isLedgerEntryV1(entry: unknown): entry is CodexCreditLedgerEntryV1 {
   return (
     isLedgerEntryCommon(candidate) &&
     isNonNegativeFinite(candidate.credits) &&
+    isSupportedBudgetUnits(candidate.credits) &&
     isEntryCreditConsistentV1(candidate as CodexCreditLedgerEntryV1)
   );
 }

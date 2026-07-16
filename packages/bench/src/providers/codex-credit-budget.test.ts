@@ -555,6 +555,22 @@ test("credit receipt rejects token accounting that does not reproduce recorded c
       { mode: 0o600 }
     );
     await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
+    let dispatched = false;
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config: { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false },
+        model: "gpt-5.6-luna",
+        run: async () => {
+          dispatched = true;
+          return { value: "unexpected", usage };
+        },
+      }),
+      (error: unknown) =>
+        error instanceof BenchmarkRunBlockedError &&
+        error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired &&
+        error.message === "Codex credit ledger is invalid or incompatible with this run."
+    );
+    assert.equal(dispatched, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -605,6 +621,69 @@ test("credit receipt rejects malformed reconciliation accounting", async () => {
     reconciliation.attribution = "account-wide-unattributed";
     reconciliation.originalBudgetCredits = 2_472;
     await writeFile(ledgerPath, `${JSON.stringify(wrongBudget)}\n`, { mode: 0o600 });
+    await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v1 migration rejects sub-nanounit values and accepts the exact nanounit boundary", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-v1-precision-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const reconciliation = {
+    at: "2026-07-15T00:00:00.000Z",
+    basis: "operator-observed-original-budget-balance",
+    attribution: "account-wide-unattributed",
+    priorLedgerSha256: "a".repeat(64),
+    originalBudgetCredits: 2_473,
+    priorRecordedSpentCredits: 0,
+    observedRemainingCredits: 2_472.999999999,
+    credits: 0.000000001,
+    confirmations: {
+      observedBalanceBelongsToOriginalBudget: true,
+      noCreditsAddedOrRefunded: true,
+      accountWideUnattributedChargeAccepted: true,
+    },
+    affectedBlockedEvent: {
+      runId: "run-a",
+      blockedReason: "unknown usage",
+    },
+  };
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 0.000000001,
+        entries: [],
+        reconciliations: [reconciliation],
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const receipt = await buildCodexCreditReceipt(ledgerPath);
+    assert.equal(receipt.totalSpentUnits, 0.000000001);
+    assert.equal(receipt.cumulative.conservativeResolutionChargeUnits, 0.000000001);
+
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 0.0000000001,
+        entries: [],
+        reconciliations: [
+          {
+            ...reconciliation,
+            observedRemainingCredits: 2_472.9999999999,
+            credits: 0.0000000001,
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 }
+    );
     await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
   } finally {
     await rm(directory, { recursive: true, force: true });
