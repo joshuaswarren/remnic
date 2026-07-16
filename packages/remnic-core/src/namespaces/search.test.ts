@@ -461,7 +461,7 @@ test("ensureNamespaceCollection forwards abort signals to backend collection che
   assert.deepEqual(backend.ensureCollections, ["openclaw-engram--ns-6d61696e"]);
 });
 
-test("legacy default namespace root checks collection without auto-creating broad root", async () => {
+test("legacy default namespace root auto-creates its base collection (broad root, #1929)", async () => {
   const backend = new FakeBackend(false);
   const router = new NamespaceSearchRouter(
     config(),
@@ -474,14 +474,17 @@ test("legacy default namespace root checks collection without auto-creating broa
     signal: controller.signal,
   });
 
+  // The default namespace at the flat root targets the BASE collection (not a
+  // tokenized name) on both index and search sides, and that collection is now
+  // auto-created so recall has something to read. Skipping creation left a
+  // configured default namespace with maintenance "ran" but 0 results (#1929).
   assert.equal(state, "present");
-  assert.deepEqual(backend.checkSignals, [controller.signal]);
-  assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
-  assert.deepEqual(backend.ensureCollections, []);
+  assert.deepEqual(backend.ensureSignals, [controller.signal]);
+  assert.deepEqual(backend.ensureCollections, ["openclaw-engram"]);
 });
 
-test("legacy default namespace root fail-opens missing guarded collections", async () => {
-  const backend = new FakeBackend(false, [], { check: "missing" });
+test("legacy default namespace root auto-creates a missing base collection (#1929)", async () => {
+  const backend = new FakeBackend(false, [], { check: "missing", ensure: "present" });
   const router = new NamespaceSearchRouter(
     config(),
     { storageFor: async () => ({ dir: "/tmp/remnic" }) },
@@ -490,9 +493,71 @@ test("legacy default namespace root fail-opens missing guarded collections", asy
 
   const state = await router.ensureNamespaceCollection("main");
 
-  assert.equal(state, "unknown");
-  assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
-  assert.deepEqual(backend.ensureCollections, []);
+  // A missing base collection is no longer left missing (the old fail-open path);
+  // it is created so a fresh install with a flat-root default namespace gets a
+  // working QMD collection instead of silently returning 0 results.
+  assert.equal(state, "present");
+  assert.deepEqual(backend.ensureCollections, ["openclaw-engram"]);
+});
+
+test("configured non-legacy default namespace still recalls from its flat-root base collection (#1929)", async () => {
+  // Reporter's config: defaultNamespace "geek", data at the flat root. The
+  // default record must search the SAME base collection the index side creates,
+  // so recall returns results instead of 0.
+  const geekConfig = { ...config(), defaultNamespace: "geek" } as PluginConfig;
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    geekConfig,
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => {
+      const backend = new FakeBackend(false, [
+        { docid: "1", path: "facts/geek-fact.md", snippet: "geek", score: 1 },
+      ]);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const ensured = await router.ensureNamespaceCollection("geek");
+  assert.equal(ensured, "present");
+  assert.deepEqual(created[0]?.ensureCollections, ["openclaw-engram"]);
+
+  const results = await router.searchAcrossNamespaces({
+    query: "geek",
+    namespaces: ["geek"],
+    maxResults: 10,
+  });
+
+  assert.deepEqual(
+    created.flatMap((backend) => backend.calls.map((call) => call.collection)),
+    ["openclaw-engram"],
+  );
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.snippet, "geek");
+});
+
+test("configured non-legacy default namespace filters nested namespace files from its base collection (#1929)", async () => {
+  // The broad-root base collection also indexes nested `namespaces/` files; the
+  // default namespace search must strip them so auto-creation does not leak
+  // cross-namespace data into the default recall path.
+  const geekConfig = { ...config(), defaultNamespace: "geek" } as PluginConfig;
+  const backend = new FakeBackend(false, [
+    { docid: "1", path: "facts/geek-fact.md", snippet: "geek", score: 2 },
+    { docid: "2", path: "namespaces/ns-736861726564/facts/shared.md", snippet: "shared", score: 1 },
+  ]);
+  const router = new NamespaceSearchRouter(
+    geekConfig,
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => backend,
+  );
+
+  const results = await router.searchAcrossNamespaces({
+    query: "geek",
+    namespaces: ["geek"],
+    maxResults: 10,
+  });
+
+  assert.deepEqual(results.map((result) => result.snippet), ["geek"]);
 });
 
 test("healthForNamespace checks namespace collection without auto-creating or caching state", async () => {
