@@ -2918,19 +2918,27 @@ export class GraphStore {
   findNodeBySpan(filePath: string, byteOffset: number): string | null {
     if (this.closed) return null;
     try {
-      const row = expectRow<{ qualified_name: string }>(
+      // Fetch the two smallest containing spans: nested containment is
+      // normal (a method inside a class both contain the offset) and the
+      // INNERMOST (smallest) wins — but a TIE at the smallest size means
+      // the offset cannot be attributed to exactly one node, and the
+      // NodeLocator contract requires null over an arbitrary pick
+      // (review thread: a wrong winner persists incorrect CALLS edges).
+      const rows = expectRows<{ qualified_name: string; size: number }>(
         this.db
           .prepare(
-            `SELECT n.qualified_name FROM nodes n
+            `SELECT n.qualified_name, (n.span_end - n.span_start) AS size FROM nodes n
               JOIN files f ON n.file_id = f.id
               WHERE f.path = ? AND n.span_start <= ? AND n.span_end > ?
-              ORDER BY (n.span_end - n.span_start) ASC
-              LIMIT 1`,
+              ORDER BY size ASC
+              LIMIT 2`,
           )
-          .get(filePath, byteOffset, byteOffset),
-        ["qualified_name"],
+          .all(filePath, byteOffset, byteOffset),
+        ["qualified_name", "size"],
       );
-      return row ? row.qualified_name : null;
+      if (rows.length === 0) return null;
+      if (rows.length > 1 && rows[1] !== undefined && rows[0]!.size === rows[1].size) return null;
+      return rows[0]!.qualified_name;
     } catch {
       return null;
     }

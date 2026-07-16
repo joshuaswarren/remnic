@@ -210,7 +210,7 @@ export interface CodegraphSurfaceContext {
    * Optional — when omitted or when codingKnowledge.lsp is not enabled,
    * the heuristic edges stand alone.
    */
-  runLspResolution?(store: CodegraphStore, repoRoot: string, lspConfig: NonNullable<PluginConfig["codingKnowledge"]["lsp"]>): Promise<{ ok: boolean; code?: string; upgraded?: number; unresolved?: number; budgetExhausted?: number; message?: string }>;
+  runLspResolution?(store: CodegraphStore, repoRoot: string, lspConfig: NonNullable<PluginConfig["codingKnowledge"]["lsp"]>): Promise<{ ok: boolean; code?: string; upgraded?: number; unresolved?: number; budgetExhausted?: number; message?: string; degradations?: Array<{ language: string; code: string; message: string }> }>;
   /**
    * Report index status via @remnic/coding-graph's getIndexStatus. Optional —
    * when omitted, index_status degrades with a clean code (no placeholder).
@@ -559,7 +559,12 @@ async function handleIndex(
   // degradation code/message surface in the result so a misconfigured
   // server is diagnosable from the index response (review thread).
   let lspUpgradeSummary:
-    | { upgraded: number; unresolved: number; budgetExhausted: number }
+    | {
+        upgraded: number;
+        unresolved: number;
+        budgetExhausted: number;
+        degradations?: ReadonlyArray<{ language: string; code: string; message: string }>;
+      }
     | { error: string; message: string }
     | undefined;
   const lspConfig = ctx.config.codingKnowledge.lsp;
@@ -570,6 +575,9 @@ async function handleIndex(
           upgraded: lspResult.upgraded ?? 0,
           unresolved: lspResult.unresolved ?? 0,
           budgetExhausted: lspResult.budgetExhausted ?? 0,
+          ...(lspResult.degradations !== undefined && lspResult.degradations.length > 0
+            ? { degradations: lspResult.degradations }
+            : {}),
         }
       : { error: lspResult.code ?? "lsp_error", message: lspResult.message ?? "" };
   }

@@ -163,14 +163,27 @@ function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
     }
   }
 
-  const timeoutMs =
-    typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0
-      ? Math.min(Math.floor(raw.timeoutMs), 30_000)
-      : 3_000;
-  const maxRequestsPerRun =
-    typeof raw.maxRequestsPerRun === "number" && Number.isFinite(raw.maxRequestsPerRun) && raw.maxRequestsPerRun > 0
-      ? Math.min(Math.floor(raw.maxRequestsPerRun), 5_000)
-      : 500;
+  const timeoutMs = readPositiveInt(raw.timeoutMs, "lsp.timeoutMs", 3_000, 30_000);
+  const maxRequestsPerRun = readPositiveInt(raw.maxRequestsPerRun, "lsp.maxRequestsPerRun", 500, 5_000);
 
   return { enabled: true, ...(Object.keys(servers).length > 0 ? { servers } : {}), timeoutMs, maxRequestsPerRun };
+}
+
+/**
+ * Strict positive-integer parse for LSP numeric knobs (rule 51 + CLI
+ * string parity, pattern 17). `undefined` falls back to the default;
+ * strings coerce via Number() (CLI values arrive as strings); anything
+ * non-integer, < 1 (0 is NOT a disable value here — set lsp.enabled:false
+ * to disable), or > max is REJECTED instead of silently replaced.
+ */
+function readPositiveInt(value: unknown, keyName: string, defaultValue: number, max: number): number {
+  if (value === undefined) return defaultValue;
+  const coerced = typeof value === "string" && value.trim().length > 0 ? Number(value) : value;
+  if (typeof coerced !== "number" || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < 1 || coerced > max) {
+    throw new Error(
+      `codingKnowledge.${keyName} must be an integer in [1, ${max}]; got ${JSON.stringify(value)}. ` +
+        `To disable LSP resolution set codingKnowledge.lsp.enabled to false.`,
+    );
+  }
+  return coerced;
 }

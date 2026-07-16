@@ -628,7 +628,13 @@ export async function runCodegraphLspResolution(params: {
   readonly repoRoot: string;
   readonly lspConfig: NonNullable<CodingKnowledgeConfig["lsp"]>;
 }): Promise<
-  | { ok: true; upgraded: number; unresolved: number; budgetExhausted: number }
+  | {
+      ok: true;
+      upgraded: number;
+      unresolved: number;
+      budgetExhausted: number;
+      degradations?: Array<{ language: string; code: string; message: string }>;
+    }
   | { ok: false; code: string; message: string }
 > {
   const mod = await loadCodegraphModule();
@@ -706,6 +712,8 @@ export async function runCodegraphLspResolution(params: {
     if (!ir || typeof ir !== "object" || !("callSites" in ir) || !Array.isArray(ir.callSites)) continue;
     const language = "language" in ir && typeof ir.language === "string" ? ir.language : "";
     const symbols = "symbols" in ir && Array.isArray(ir.symbols) ? ir.symbols : [];
+    // UTF-8 view of the source for byte-exact callee-name searches.
+    const contentBytes = Buffer.from(content, "utf-8");
     for (const site of ir.callSites) {
       if (!site || typeof site !== "object" || !("span" in site)) continue;
       const span = site.span;
@@ -738,9 +746,11 @@ export async function runCodegraphLspResolution(params: {
       if (!memberAccess && alreadyResolved(srcQualifiedName, calleeName)) continue;
       // Position the definition query on the callee NAME, not the call
       // expression start (member calls: `obj.save()` must query at `save`).
-      // The search is bounded to this call site's span, so repeated line
-      // text elsewhere in the file cannot mislead it (parser rule 20).
-      const nameIdx = content.indexOf(calleeName, span.startByte);
+      // The search runs in Buffer space because span offsets are UTF-8
+      // BYTES while string indexOf returns UTF-16 code units — non-ASCII
+      // source before the callee would skew a string-index search (review
+      // thread). Bounded to this call site's span (parser rule 20).
+      const nameIdx = contentBytes.indexOf(Buffer.from(calleeName, "utf-8"), span.startByte);
       const endByte = "endByte" in span && typeof span.endByte === "number" ? span.endByte : span.startByte + calleeName.length;
       const calleeByteOffset = nameIdx >= 0 && nameIdx < endByte ? nameIdx : span.startByte;
       sites.push({ filePath: rel, language, content, calleeByteOffset, calleeName, srcQualifiedName });
@@ -778,6 +788,7 @@ export async function runCodegraphLspResolution(params: {
   let upgraded = 0;
   let unresolved = 0;
   let budgetExhausted = 0;
+  const degradations: Array<{ language: string; code: string; message: string }> = [];
   for (const [language, group] of byLanguage) {
     if (remainingBudget <= 0) {
       budgetExhausted += group.length;
@@ -804,6 +815,18 @@ export async function runCodegraphLspResolution(params: {
     }
     const connected = await mod.LspClient.connect({ launchSpec, rootUri, timeoutMs });
     if (!connected.ok) {
+      // A missing/misconfigured server is a DIAGNOSABLE condition, not a
+      // silent count (review thread): record the degradation so
+      // codegraph_index can distinguish "server absent" from "LSP found
+      // no definitions".
+      const deg = connected.degradation;
+      const code =
+        deg && typeof deg === "object" && "code" in deg && typeof deg.code === "string" ? deg.code : "connect_failed";
+      const message =
+        deg && typeof deg === "object" && "message" in deg && typeof deg.message === "string"
+          ? deg.message
+          : `LSP server for ${language} failed to connect.`;
+      degradations.push({ language, code, message });
       unresolved += plan.requests.length;
       continue;
     }
@@ -858,7 +881,13 @@ export async function runCodegraphLspResolution(params: {
       }
     }
   }
-  return { ok: true, upgraded, unresolved, budgetExhausted };
+  return {
+    ok: true,
+    upgraded,
+    unresolved,
+    budgetExhausted,
+    ...(degradations.length > 0 ? { degradations } : {}),
+  };
 }
 
 /**
