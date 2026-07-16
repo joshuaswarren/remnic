@@ -3025,13 +3025,24 @@ export function removeHermesConfig(opts: {
   // regular file at remove time). That must not abort cleanup of the VALID
   // persisted install-time path — seed from whatever resolves and continue
   // (Codex P2 on PR #1938, round 8).
-  let cfgPaths: string[];
+  let envCfgPaths: string[];
   let envResolutionError: string | null = null;
   try {
-    cfgPaths = [...hermesConfigCleanupPaths(opts.profile)];
+    envCfgPaths = [...hermesConfigCleanupPaths(opts.profile)];
   } catch (err) {
-    cfgPaths = [];
+    envCfgPaths = [];
     envResolutionError = err instanceof Error ? err.message : String(err);
+  }
+  // De-duplicate ALL candidates by resolved file identity, not string
+  // equality: in the legacy layout profiles/default/config.yaml is commonly a
+  // SYMLINK to the root config.yaml — cleaning the real file and then hitting
+  // the symlinked alias would trip the component guard and report a phantom
+  // partial failure (Bugbot on PR #1938, round 21).
+  const cfgPaths: string[] = [];
+  for (const candidate of envCfgPaths) {
+    if (!cfgPaths.some((existing) => sameHermesConfigTarget(existing, candidate))) {
+      cfgPaths.push(candidate);
+    }
   }
   for (const extra of opts.extraConfigPaths ?? []) {
     if (
@@ -3104,9 +3115,21 @@ export function removeHermesConfig(opts: {
 
 function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
   // Symlinked components below the Hermes root must not redirect the cleanup
-  // rewrite (Codex P1 on PR #1938, round 19). Throwing surfaces as a
-  // "cleanup failed" result at the caller.
-  assertConfigComponentsNotSymlinked(cfgPath);
+  // rewrite (Codex P1 on PR #1938, round 19). A symlinked candidate is either
+  // an alias of another candidate (already de-duplicated by file identity) or
+  // a redirect we refuse to follow — report it as SKIPPED, not as a cleanup
+  // failure, so it cannot manufacture a phantom partial-failure abort
+  // (Bugbot on PR #1938, round 21).
+  try {
+    assertConfigComponentsNotSymlinked(cfgPath);
+  } catch (err) {
+    return {
+      updated: false,
+      skipped: true,
+      reason: `Hermes config cleanup skipped: ${err instanceof Error ? err.message : String(err)}`,
+      configPath: cfgPath,
+    };
+  }
   if (!fs.existsSync(cfgPath)) {
     return {
       updated: false,
