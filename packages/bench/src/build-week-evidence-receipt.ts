@@ -156,9 +156,9 @@ function providerReceipt(
     provider: providerName,
     model,
     reasoningEffort: provider.reasoningEffort ?? null,
-    // Codex CLI currently records the default service tier in diagnostics, not BenchmarkResult.
-    // Do not invent a tier for transports that do not persist one.
-    serviceTier: providerName === "codex-cli" ? "default" : null,
+    // BenchmarkResult does not persist transport service-tier diagnostics.
+    // Keep the public receipt honest instead of inferring a tier from provider type.
+    serviceTier: null,
   };
 }
 

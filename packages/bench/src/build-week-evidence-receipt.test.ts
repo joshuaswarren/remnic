@@ -243,9 +243,9 @@ test("buildBuildWeekEvidenceReceipt emits deterministic aggregate-only evidence"
   assert.equal(first.integrity.resultSha256, sha256(sources.resultJson));
   assert.equal(first.integrity.manifestSha256, sha256(sources.manifestJson));
   assert.deepEqual(first.provenance.providers, [
-    { role: "system", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: "default" },
-    { role: "internal", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: "default" },
-    { role: "judge", provider: "codex-cli", model: "gpt-5.6-terra", reasoningEffort: "high", serviceTier: "default" },
+    { role: "system", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: null },
+    { role: "internal", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: null },
+    { role: "judge", provider: "codex-cli", model: "gpt-5.6-terra", reasoningEffort: "high", serviceTier: null },
   ]);
 
   const serialized = serializeBuildWeekEvidenceReceipt(first);
