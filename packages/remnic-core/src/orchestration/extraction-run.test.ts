@@ -385,6 +385,43 @@ test("recovery: half-open probe succeeds → breaker closes", async () => {
   }
 });
 
+test("recovery: a FAILED half-open probe re-opens the breaker (cursor review)", async () => {
+  // An auth_config failure trips the breaker below the consecutive-failure
+  // threshold. After the auth cooldown elapses (half_open), a transient probe
+  // failure must re-open the breaker — not leave it stuck half_open where it
+  // no longer suppresses anything.
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 100, // auth trips below threshold
+    extractionBreakerAuthCooldownMs: 0, // half-open on the next call
+    extractionBreakerCooldownMs: 3_600_000, // a re-open parks for a long time
+  });
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("auth_config"));
+    await h.run(coord, "fp-a"); // auth failure → breaker opens immediately
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+
+    // Auth cooldown 0 → this call flips open→half_open and probes; the probe
+    // fails transiently → the breaker must re-open with the transient cooldown.
+    h.setRespond(() => failureResult("provider_retryable"));
+    await h.run(coord, "fp-b");
+    assert.equal(
+      coord.getExtractionResilienceStatus().breaker.state,
+      "open",
+      "failed half-open probe re-opens the breaker",
+    );
+
+    // While re-opened, a third fingerprint is suppressed without calling extract().
+    const calls = h.engineCalls();
+    const r3 = await h.run(coord, "fp-c");
+    assert.equal(r3.reason, "provider_circuit_open", "re-opened breaker suppresses");
+    assert.equal(h.engineCalls(), calls, "no extract() call while re-opened");
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("recovery: a successful extract clears the fingerprint's retry state so it proceeds again", async () => {
   const h = await makeHarness({
     extractionRetryScheduleMs: [3_600_000],

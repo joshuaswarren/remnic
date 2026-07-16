@@ -364,6 +364,11 @@ export class ExtractionRunCoordinator {
     this.providerBreaker.consecutiveFailures += 1;
     const trip =
       cls === "auth_config" ||
+      // A failed half-open probe re-opens immediately (standard breaker
+      // semantics). Without this, an auth_config-opened breaker (which trips
+      // below the threshold) would get stuck half_open after a transient
+      // probe failure and stop suppressing (cursor review).
+      this.providerBreaker.state === "half_open" ||
       this.providerBreaker.consecutiveFailures >= this.config.extractionBreakerFailureThreshold;
     if (!trip) return;
     const cooldown =
