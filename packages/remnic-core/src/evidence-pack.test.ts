@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEvidencePack } from "./evidence-pack.js";
+import {
+  buildEvidencePack,
+  type EvidencePackSelectionReceipt,
+} from "./evidence-pack.js";
 
 test("buildEvidencePack deduplicates evidence and stays within budget", () => {
   const pack = buildEvidencePack(
@@ -86,4 +89,66 @@ test("buildEvidencePack keeps query-focused evidence from later long turns", () 
   assert.match(pack, /source_chat_id=2/);
   assert.match(pack, /Dec 16, 2023 - Jan 15, 2024/);
   assert.match(pack, /Feb 16 - Mar 15, 2024/);
+});
+
+test("buildEvidencePack reports only appended blocks with exact content-free offsets", () => {
+  const receipts: EvidencePackSelectionReceipt[] = [];
+  const items = [
+    {
+      id: "selected",
+      archiveRowId: 41,
+      sessionId: "private-session",
+      turnIndex: 7,
+      role: "user",
+      content: "selected private evidence",
+      score: 2,
+    },
+    {
+      id: "duplicate-content",
+      archiveRowId: 42,
+      sessionId: "private-session",
+      turnIndex: 8,
+      role: "assistant",
+      content: "selected private evidence",
+      score: 1,
+    },
+    {
+      id: "budget-rejected",
+      archiveRowId: 43,
+      sessionId: "private-session",
+      turnIndex: 9,
+      role: "assistant",
+      content: "this block cannot fit inside the remaining budget",
+    },
+  ];
+  const options = {
+    title: "Receipt evidence",
+    maxChars:
+      "## Receipt evidence".length +
+      2 +
+      "[private-session, turn 7, user, score 2.000]: selected private evidence".length,
+    maxItemChars: 200,
+  };
+
+  const baseline = buildEvidencePack(items, options);
+  const traced = buildEvidencePack(items, {
+    ...options,
+    onSelection: (receipt) => receipts.push(receipt),
+  });
+
+  assert.equal(traced, baseline);
+  assert.equal(receipts.length, 1);
+  const receipt = receipts[0]!;
+  assert.equal(
+    traced.slice(receipt.blockStart, receipt.blockEnd),
+    "[private-session, turn 7, user, score 2.000]: selected private evidence",
+  );
+  assert.deepEqual(receipt.item, {
+    archiveRowId: 41,
+    turnIndex: 7,
+    role: "user",
+    score: 2,
+  });
+  assert.equal("content" in receipt.item, false);
+  assert.equal("sessionId" in receipt.item, false);
 });

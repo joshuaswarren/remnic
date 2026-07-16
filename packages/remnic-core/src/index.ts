@@ -58,6 +58,8 @@ export {
   buildEvidencePack,
   type EvidencePackItem,
   type EvidencePackOptions,
+  type EvidencePackSelectedItem,
+  type EvidencePackSelectionReceipt,
 } from "./evidence-pack.js";
 export {
   buildExplicitCueRecallSection,
@@ -74,6 +76,7 @@ export {
   type ExplicitCueRecallOptions,
   type ExplicitTurnReference,
   type TrajectoryAnalysisRecallOptions,
+  type TrajectoryAnalysisLineReceipt,
 } from "./explicit-cue-recall.js";
 export {
   buildTargetedFactRecallSection,

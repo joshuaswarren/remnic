@@ -7,6 +7,21 @@ export interface LcmRecallConfig {
   budgetChars: number;
 }
 
+export interface LcmSummarySelectionReceipt {
+  id: string;
+  depth: number;
+  msgStart: number;
+  msgEnd: number;
+  /** Half-open offsets within the returned compressed-history string. */
+  entryStart: number;
+  entryEnd: number;
+}
+
+export interface LcmRecallWithTraceResult {
+  text: string;
+  selectedSummaries: LcmSummarySelectionReceipt[];
+}
+
 /**
  * Assemble a compressed session history section from the summary DAG.
  *
@@ -21,14 +36,24 @@ export function assembleCompressedHistory(
   sessionId: string,
   config: LcmRecallConfig,
 ): string {
+  return assembleCompressedHistoryWithTrace(dag, archive, sessionId, config).text;
+}
+
+export function assembleCompressedHistoryWithTrace(
+  dag: LcmDag,
+  archive: LcmArchive,
+  sessionId: string,
+  config: LcmRecallConfig,
+): LcmRecallWithTraceResult {
   const maxTurn = archive.getMaxTurnIndex(sessionId);
-  if (maxTurn < 0) return "";
+  if (maxTurn < 0) return { text: "", selectedSummaries: [] };
 
   const allNodes = dag.getAllNodes(sessionId);
-  if (allNodes.length === 0) return "";
+  if (allNodes.length === 0) return { text: "", selectedSummaries: [] };
 
   const freshTailStart = Math.max(0, maxTurn - config.freshTailTurns + 1);
   const sections: string[] = [];
+  const selectedNodes: SummaryNode[] = [];
   let usedChars = 0;
 
   // Collect nodes covering the "old" portion (before fresh tail)
@@ -39,6 +64,7 @@ export function assembleCompressedHistory(
       const entry = `**${label}** (depth ${node.depth}):\n${node.summary_text}`;
       if (usedChars + entry.length > config.budgetChars) break;
       sections.push(entry);
+      selectedNodes.push(node);
       usedChars += entry.length;
     }
   }
@@ -58,12 +84,29 @@ export function assembleCompressedHistory(
     const entry = `**${label}**:\n${node.summary_text}`;
     if (usedChars + entry.length > config.budgetChars) break;
     sections.push(entry);
+    selectedNodes.push(node);
     usedChars += entry.length;
   }
 
-  if (sections.length === 0) return "";
+  if (sections.length === 0) return { text: "", selectedSummaries: [] };
 
-  return `## Session History (Compressed)\n\n${sections.join("\n\n")}`;
+  const prefix = "## Session History (Compressed)\n\n";
+  const text = `${prefix}${sections.join("\n\n")}`;
+  let entryStart = prefix.length;
+  const selectedSummaries = selectedNodes.map((node, index) => {
+    const entryEnd = entryStart + sections[index]!.length;
+    const receipt: LcmSummarySelectionReceipt = {
+      id: node.id,
+      depth: node.depth,
+      msgStart: node.msg_start,
+      msgEnd: node.msg_end,
+      entryStart,
+      entryEnd,
+    };
+    entryStart = entryEnd + 2;
+    return receipt;
+  });
+  return { text, selectedSummaries };
 }
 
 /**
