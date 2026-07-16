@@ -791,7 +791,15 @@ export function installConnector(options: InstallOptions): InstallResult {
         const hermesJsonPath = path.join(getConnectorsDir(), "hermes.json");
         let parsed: Record<string, unknown> | null = null;
         try {
-          parsed = JSON.parse(fs.readFileSync(hermesJsonPath, "utf8")) as Record<string, unknown>;
+          const parsedRaw: unknown = JSON.parse(fs.readFileSync(hermesJsonPath, "utf8"));
+          // Same shape guard as removeConnector (Bugbot on PR #1938, round
+          // 14): a non-object payload ([], null, scalar) is not a connector
+          // record — writes onto it would not survive JSON.stringify, so the
+          // shim must not be moved on its authority. Reconcile without a
+          // prior path and skip persistence.
+          if (parsedRaw !== null && typeof parsedRaw === "object" && !Array.isArray(parsedRaw)) {
+            parsed = parsedRaw as Record<string, unknown>;
+          }
         } catch {
           /* connector JSON unreadable — reconcile without a prior path */
         }
@@ -1455,18 +1463,9 @@ export function installConnector(options: InstallOptions): InstallResult {
           `installation remains the working fallback.${fallbackDetail} Resolve the shim ` +
           `collision/failure above and re-run with --force to complete the migration.`,
       );
-    } else if (priorConfigDiffers && priorConfigPath !== null && isPlausibleHermesConfigPath(priorConfigPath)) {
-      try {
-        const priorCleanup = removeHermesConfigFile(priorConfigPath);
-        if (priorCleanup.updated) {
-          notes.push(`Cleaned remnic: block from prior-install Hermes config: ${priorConfigPath}`);
-        }
-      } catch {
-        notes.push(
-          `Note: could not clean the remnic: block from the prior-install Hermes config at ${priorConfigPath} — remove it manually.`,
-        );
-      }
     }
+    // The confirmed-replacement cleanup of displaced/inherited prior configs
+    // happens in the provenance-reconcile loop below.
     // Reconcile the persisted prior-config provenance with reality (Codex P2
     // on PR #1938, rounds 12-13): EVERY displaced or previously-tracked config
     // that still carries a remnic: block (preserved fallback, failed cleanup,
@@ -1491,6 +1490,31 @@ export function installConnector(options: InstallOptions): InstallResult {
       const inheritedLegacyRaw = savedConnectorConfig.priorHermesConfigPath;
       if (typeof inheritedLegacyRaw === "string" && inheritedLegacyRaw.length > 0) {
         candidates.push(inheritedLegacyRaw);
+      }
+      // On a CONFIRMED replacement, actively clean inherited priors instead of
+      // merely re-tracking them (Codex P2 on PR #1938, round 14): after an
+      // A→B collision preserved A, a later successful B→C move removed A's
+      // shim, so A's config is a stale, nonfunctional remnant — strip it now.
+      // On an unconfirmed move (collision/failure) priors stay preserved.
+      if (shimOutcome.materializedAt !== null) {
+        for (const candidate of candidates) {
+          if (sameHermesConfigTarget(candidate, yamlResult.configPath)) {
+            continue;
+          }
+          if (!isPlausibleHermesConfigPath(candidate)) {
+            continue;
+          }
+          try {
+            const cleanup = removeHermesConfigFile(candidate);
+            if (cleanup.updated) {
+              notes.push(`Cleaned remnic: block from prior-install Hermes config: ${candidate}`);
+            }
+          } catch {
+            notes.push(
+              `Note: could not clean the remnic: block from the prior-install Hermes config at ${candidate} — remove it manually.`,
+            );
+          }
+        }
       }
       const survivingPriors: string[] = [];
       for (const candidate of candidates) {
