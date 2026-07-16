@@ -1159,6 +1159,19 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
+    // Resolve the shim path NOW (honoring the HERMES_HOME active at install
+    // time) and persist it into connector.json so a later `remove` cleans the
+    // exact file we wrote even if HERMES_HOME is unset or changed by then
+    // (Codex P2 on PR #1938). Resolution failure is non-fatal: the shim step
+    // below degrades to a manual hint.
+    let hermesShimTarget: string | null = null;
+    try {
+      hermesShimTarget = hermesShimPath();
+      resolvedConfig.pluginShimPath = hermesShimTarget;
+    } catch {
+      /* HERMES_HOME unresolved — shim step below reports the manual hint */
+    }
+
     // (e) Both YAML write and token commit succeeded — now attempt to write connector.json.
     // If this write fails (e.g. connectors dir is not writable), roll back Phase D (token
     // commit) and Phase C (YAML upsert) so no partial-install state is left behind.
@@ -1227,19 +1240,22 @@ export function installConnector(options: InstallOptions): InstallResult {
     // and token commit succeed. Wrapped in try-catch: a shim failure must NEVER
     // fail an otherwise-successful install — we surface a manual-creation note.
     try {
-      notes.push(materializeHermesShim());
-    } catch (shimErr) {
-      let shimPathHint = "<hermesRoot>/plugins/remnic/__init__.py";
-      try {
-        shimPathHint = hermesShimPath();
-      } catch {
-        /* HERMES_HOME unresolved — keep the generic hint */
+      if (hermesShimTarget === null) {
+        throw new Error("HERMES_HOME could not be resolved to a directory");
       }
+      notes.push(materializeHermesShim(hermesShimTarget));
+    } catch (shimErr) {
+      const shimPathHint = hermesShimTarget ?? "<hermesRoot>/plugins/remnic/__init__.py";
+      // No shell one-liner here: the path may contain characters that break
+      // quoting, and the shim content MUST include the literal text
+      // `register_memory_provider` (or `MemoryProvider`) or Hermes' discovery
+      // text-scan skips the directory (Bugbot + Codex P2 on PR #1938).
       notes.push(
         `Note: could not materialize the Hermes plugin shim ` +
           `(${shimErr instanceof Error ? shimErr.message : String(shimErr)}). ` +
-          `Create it manually: mkdir -p "$(dirname "${shimPathHint}")" && ` +
-          `printf 'from remnic_hermes import register\\n' > "${shimPathHint}"`,
+          `Create ${shimPathHint} manually with exactly these two lines:\n` +
+          `    """Remnic memory provider shim. Calls collector.register_memory_provider()."""\n` +
+          `    from remnic_hermes import register`,
       );
     }
     // Provider activation is a manual, non-destructive step: we never edit the
@@ -1693,6 +1709,21 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
+  // For hermes, read the shim path persisted at install time BEFORE the
+  // connector JSON is deleted, so removal targets the file written under the
+  // HERMES_HOME that was active during install (Codex P2 on PR #1938).
+  let savedHermesShimPath: string | null = null;
+  if (connectorId === "hermes" && fs.existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      if (typeof parsed.pluginShimPath === "string" && parsed.pluginShimPath.length > 0) {
+        savedHermesShimPath = parsed.pluginShimPath;
+      }
+    } catch {
+      // Malformed JSON — fall back to the environment-resolved shim path below.
+    }
+  }
+
   if (!fs.existsSync(configPath)) {
     // Best-effort: revoke any orphan token that may have survived a prior partial
     // cleanup (e.g. connector JSON deleted manually or XDG_CONFIG_HOME change).
@@ -1973,11 +2004,23 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
 
     // Remove the Hermes plugin-directory shim (Issue #1929). removeHermesShim
-    // deletes the file ONLY when it carries our generated marker, then rmdir's
-    // the now-empty plugins/remnic/ dir. Never rm -rf; never touch a
-    // user-authored __init__.py. Best-effort: a failure here never aborts remove.
+    // deletes candidates ONLY when they carry our generated marker, then
+    // rmdir's the now-empty plugins/remnic/ dir. Never rm -rf; never touch a
+    // user-authored __init__.py. Candidates: the path persisted at install
+    // time plus the path resolved from the current environment, so a
+    // HERMES_HOME change between install and remove cannot orphan the shim.
+    // Best-effort: a failure here never aborts remove.
     try {
-      const shimNote = removeHermesShim();
+      const shimCandidates: string[] = [];
+      if (savedHermesShimPath !== null) {
+        shimCandidates.push(savedHermesShimPath);
+      }
+      try {
+        shimCandidates.push(hermesShimPath());
+      } catch {
+        /* HERMES_HOME unresolved in the current environment — persisted path only */
+      }
+      const shimNote = removeHermesShim(shimCandidates);
       if (shimNote !== null) {
         notes.push(shimNote);
       }
@@ -2197,8 +2240,7 @@ function writePlainFileAtomicSync(filePath: string, data: string): void {
  * Returns a human-readable note describing what happened. Throws only on a real
  * filesystem failure; the caller wraps this so install never fails on the shim.
  */
-function materializeHermesShim(): string {
-  const shimPath = hermesShimPath();
+function materializeHermesShim(shimPath: string): string {
   if (fs.existsSync(shimPath)) {
     let existing = "";
     try {
@@ -2230,32 +2272,62 @@ function materializeHermesShim(): string {
 
 /**
  * Remove the Hermes plugin-directory shim ONLY when it carries our generated
- * marker (never delete a user-authored `__init__.py`). After deleting, attempt
- * to remove the now-empty `plugins/remnic/` directory with rmdir — which fails
- * harmlessly if the directory is non-empty or missing. Never rm -rf. Returns a
- * note, or null when there was nothing of ours to remove.
+ * marker (never delete a user-authored `__init__.py`). Accepts every candidate
+ * location — the path persisted in connector.json at install time plus the
+ * path resolved from the CURRENT environment — so a HERMES_HOME change between
+ * install and remove cannot orphan the generated shim (Codex P2 on PR #1938).
+ * After deleting, attempts to remove the now-empty `plugins/remnic/` directory
+ * with rmdir — which fails harmlessly if the directory is non-empty or
+ * missing. Never rm -rf. Returns a note, or null when there was nothing of
+ * ours to remove.
  */
-function removeHermesShim(): string | null {
-  const shimPath = hermesShimPath();
-  if (!fs.existsSync(shimPath)) {
-    return null;
+function removeHermesShim(candidatePaths: readonly string[]): string | null {
+  const notes: string[] = [];
+  for (const shimPath of new Set(candidatePaths)) {
+    // Only ever touch a path with the exact generated-shim shape. The
+    // persisted candidate comes from connector.json, which is on-disk state —
+    // do not let a tampered value point this cleanup at an arbitrary file.
+    if (!isPlausibleHermesShimPath(shimPath)) {
+      continue;
+    }
+    if (!fs.existsSync(shimPath)) {
+      continue;
+    }
+    let content = "";
+    try {
+      content = fs.readFileSync(shimPath, "utf8");
+    } catch {
+      content = "";
+    }
+    if (!content.includes(HERMES_SHIM_MARKER)) {
+      notes.push(`Hermes plugin shim left untouched (not Remnic-generated): ${shimPath}`);
+      continue;
+    }
+    fs.unlinkSync(shimPath);
+    try {
+      fs.rmdirSync(path.dirname(shimPath));
+    } catch {
+      /* directory non-empty or already gone — leave it in place */
+    }
+    notes.push(`Removed Hermes plugin shim: ${shimPath}`);
   }
-  let content = "";
-  try {
-    content = fs.readFileSync(shimPath, "utf8");
-  } catch {
-    content = "";
+  return notes.length > 0 ? notes.join("; ") : null;
+}
+
+/**
+ * Shape guard for shim paths read back from connector.json: absolute, named
+ * `__init__.py`, and living under a `plugins/remnic/` directory.
+ */
+function isPlausibleHermesShimPath(candidate: string): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0 || !path.isAbsolute(candidate)) {
+    return false;
   }
-  if (!content.includes(HERMES_SHIM_MARKER)) {
-    return `Hermes plugin shim left untouched (not Remnic-generated): ${shimPath}`;
-  }
-  fs.unlinkSync(shimPath);
-  try {
-    fs.rmdirSync(path.dirname(shimPath));
-  } catch {
-    /* directory non-empty or already gone — leave it in place */
-  }
-  return `Removed Hermes plugin shim: ${shimPath}`;
+  const dir = path.dirname(candidate);
+  return (
+    path.basename(candidate) === "__init__.py" &&
+    path.basename(dir) === "remnic" &&
+    path.basename(path.dirname(dir)) === "plugins"
+  );
 }
 
 /**

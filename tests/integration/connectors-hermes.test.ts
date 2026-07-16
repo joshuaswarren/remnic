@@ -3667,6 +3667,14 @@ test("installConnector hermes still succeeds when the shim cannot be materialize
             `install should note the shim failure, got: ${install.message}`,
           );
           assert.ok(
+            install.message.includes("register_memory_provider"),
+            `manual-creation hint must include the discovery-heuristic literal, got: ${install.message}`,
+          );
+          assert.ok(
+            !install.message.includes("mkdir -p"),
+            `manual-creation hint must not embed a copy-paste shell command (quoting hazard), got: ${install.message}`,
+          );
+          assert.ok(
             fs.statSync(bogusHermesHome).isFile(),
             "the pre-existing file at HERMES_HOME must be left intact",
           );
@@ -3770,6 +3778,79 @@ test("removeConnector hermes preserves a user-authored shim (#1929)", async () =
         assert.ok(
           remove.message.includes("left untouched (not Remnic-generated)"),
           `remove message should note the shim was left untouched, got: ${remove.message}`,
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes persists pluginShimPath in connector JSON (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+
+        // getConnectorsDir() resolves to the canonical
+        // ~/.config/remnic/.remnic-connectors/connectors on a fresh install.
+        const connectorJsonPath = path.join(
+          tmpHome,
+          ".config",
+          "remnic",
+          ".remnic-connectors",
+          "connectors",
+          "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(
+          saved.pluginShimPath,
+          path.join(hermesDir, "plugins", "remnic", "__init__.py"),
+          "connector JSON must persist the shim path used at install time",
+        );
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("removeConnector hermes cleans the shim written under a since-changed HERMES_HOME (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const customHermesHome = path.join(tmpHome, "custom-hermes");
+        fs.mkdirSync(customHermesHome, { recursive: true });
+
+        // Install with HERMES_HOME set → shim lands under the custom home.
+        withHermesHome(customHermesHome, () => {
+          const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(install.status, "installed", install.message);
+        });
+        const shimPath = path.join(customHermesHome, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimPath), "sanity: shim exists under the custom HERMES_HOME");
+
+        // Remove with HERMES_HOME unset — the persisted pluginShimPath must
+        // still direct cleanup at the file written during install.
+        withHermesHome(undefined, () => {
+          const remove = mod.removeConnector("hermes");
+          assert.equal(remove.status, "removed", remove.message);
+        });
+        assert.ok(
+          !fs.existsSync(shimPath),
+          "shim written under the install-time HERMES_HOME must be removed even after HERMES_HOME changes",
         );
       });
       resolve();
