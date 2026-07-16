@@ -831,6 +831,14 @@ export async function runCodegraphLspResolution(params: {
     }
     const rawSpec = configServers[language] ?? DEFAULT_LSP_SERVERS[language];
     if (rawSpec === undefined) {
+      // A language with candidates but no launch spec is a DIAGNOSABLE
+      // gap, not ordinary unresolved calls (review thread): surface it so
+      // the operator knows to configure codingKnowledge.lsp.servers.
+      degradations.push({
+        language,
+        code: "no_launch_spec",
+        message: `No LSP server configured for ${language} (${group.length} candidate call site(s)); set codingKnowledge.lsp.servers.${language}.`,
+      });
       unresolved += group.length;
       continue;
     }
@@ -870,6 +878,13 @@ export async function runCodegraphLspResolution(params: {
       continue;
     }
     const client = connected.client;
+    // Per-file-batch skip tracking: the executor applies then reconciles
+    // each file batch sequentially, so a skip observed in applyUpgrades
+    // must (a) not count as an upgrade and (b) suppress reconciliation
+    // for that batch — a skipped edge was never re-asserted, and retiring
+    // it would drop a still-valid prior edge (review thread).
+    let skippedEdgesTotal = 0;
+    let lastApplySkipped = false;
     try {
       const result = await mod.executeLspResolution(plan.requests, {
         client,
@@ -891,11 +906,15 @@ export async function runCodegraphLspResolution(params: {
           // Skips are surfaced as a degradation instead of a silent drop.
           if (!result.ok) throw new Error(`upsertEdges failed: ${result.code}`);
           if (result.skipped > 0) {
+            skippedEdgesTotal += result.skipped;
+            lastApplySkipped = true;
             degradations.push({
               language,
               code: "edges_skipped",
               message: `upsertEdges persisted ${result.persisted} and skipped ${result.skipped} edge(s) for ${language} (unresolvable endpoints).`,
             });
+          } else {
+            lastApplySkipped = false;
           }
         },
         reconcileLspEdges: (
@@ -904,11 +923,18 @@ export async function runCodegraphLspResolution(params: {
         ) => {
           if (typeof params.store.reconcileLspEdges !== "function") return;
           if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
+          // This file batch had skipped writes — its asserted set is
+          // incomplete, so reconciling would retire edges that were never
+          // re-asserted (see skip tracking above).
+          if (lastApplySkipped) return;
           params.store.reconcileLspEdges(filePath, assertedEdges);
         },
       });
       if (result && typeof result === "object" && "upgraded" in result && typeof result.upgraded === "number") {
-        upgraded += result.upgraded;
+        // The executor counts every upgrade it HANDED to applyUpgrades;
+        // subtract the writes the store skipped so the reported number
+        // reflects edges that actually persisted (review thread).
+        upgraded += Math.max(0, result.upgraded - skippedEdgesTotal);
         unresolved += "unresolved" in result && typeof result.unresolved === "number" ? result.unresolved : 0;
         budgetExhausted += "budgetExhausted" in result && typeof result.budgetExhausted === "number" ? result.budgetExhausted : 0;
         // A mid-run server crash / protocol error returns counts PLUS a

@@ -2938,7 +2938,22 @@ export class GraphStore {
       );
       if (rows.length === 0) return null;
       if (rows.length > 1 && rows[1] !== undefined && rows[0]!.size === rows[1].size) return null;
-      return rows[0]!.qualified_name;
+      const qualifiedName = rows[0]!.qualified_name;
+      // The span lookup disambiguated by file, but the returned QUALIFIED
+      // NAME is the edge key downstream (upsertEdges resolves names, not
+      // ids). If another file defines the same qualified name (common for
+      // top-level `main`/`handler`/`init`), an edge written against the
+      // name could bind to the wrong node — return null and skip the
+      // upgrade instead (conservative; id-carrying upgrades are the
+      // follow-up, review thread on #1923).
+      const dupRow = expectRow<{ n: number }>(
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM nodes WHERE qualified_name = ?`)
+          .get(qualifiedName),
+        ["n"],
+      );
+      if (dupRow && dupRow.n > 1) return null;
+      return qualifiedName;
     } catch {
       return null;
     }
