@@ -230,7 +230,7 @@ export type {
   CodexCreditReceiptScope,
   CodexCreditReconciliationReceipt,
 } from "./providers/codex-credit-budget.js";
-export { getRemnicVersion } from "./reporter.js";
+export { getGitSha, getRemnicVersion } from "./reporter.js";
 export {
   createProvider,
   discoverAllProviders,
@@ -418,6 +418,26 @@ export {
   renderLoComoRecallDeltaMarkdown,
   sanitizeLoComoResultReference,
 } from "./stats/locomo-recall-delta.js";
+export {
+  LOCOMO_RETRIEVAL_TRACE_BUDGET_VERSION,
+  LOCOMO_RETRIEVAL_TRACE_SCHEMA_VERSION,
+  LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION,
+  buildProviderFreeLoCoMoRetrievalConfig,
+  captureLoCoMoRetrievalTrace,
+  preflightLoCoMoRetrievalTraceCapture,
+  serializeLoCoMoRetrievalTraceReceipt,
+} from "./benchmarks/published/locomo/retrieval-trace-runner.js";
+export type {
+  CaptureLoCoMoRetrievalTraceOptions,
+  LoCoMoRetrievalSessionReceipt,
+  LoCoMoRetrievalStructuralTrace,
+  LoCoMoRetrievalTaskReceipt,
+  LoCoMoRetrievalTraceCoreCaptureReceipt,
+  LoCoMoRetrievalTraceProfile,
+  LoCoMoRetrievalTraceReceipt,
+  LoCoMoRetrievalTraceSelectionManifest,
+  LoCoMoRetrievalTraceSelector,
+} from "./benchmarks/published/locomo/retrieval-trace-runner.js";
 export type {
   DiagnoseLoComoRecallDeltaOptions,
   LoComoFinalContextRegression,

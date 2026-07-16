@@ -8,11 +8,8 @@
  */
 
 import type { Message } from "../../../adapters/types.js";
-import {
-  type LoCoMoConversation,
-  type LoCoMoQA,
-  type LoCoMoTurn,
-} from "./fixture.js";
+import { hashString } from "../../../integrity/hash-verification.js";
+import type { LoCoMoConversation, LoCoMoQA, LoCoMoTurn } from "./fixture.js";
 import {
   LOCOMO_DATASET_FILENAMES,
   formatMissingDatasetError,
@@ -340,11 +337,12 @@ export const locomoDefinition: BenchmarkDefinition = {
 export async function runLoCoMoBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
-  const conversations = await loadDataset(
+  const loaded = await loadLoCoMoDataset(
     options.mode,
     options.datasetDir,
     options.limit,
   );
+  const conversations = loaded.items;
   const trialLimit = resolveTrialLimit(options.benchmarkOptions?.trialLimit);
   const multiHopRecallComposition = resolveLoCoMoBooleanOption(
     options.benchmarkOptions?.multiHopRecallComposition,
@@ -353,7 +351,7 @@ export async function runLoCoMoBenchmark(
   );
   const plans = applyTrialLimit(
     conversations.map((conversation) =>
-      buildPlan(conversation, multiHopRecallComposition)
+      buildLoCoMoPlan(conversation, multiHopRecallComposition)
     ),
     trialLimit,
   );
@@ -437,7 +435,7 @@ function applyTrialLimit(
   return limitedPlans;
 }
 
-function buildPlan(
+export function buildLoCoMoPlan(
   conversation: LoCoMoConversation,
   multiHopRecallComposition: boolean,
 ): HarnessPlan {
@@ -491,9 +489,9 @@ function buildTrial(
     recallSessionIds: sessionIds,
     answerFormat: "short-with-specifics",
     recallTextTransform: ({ question, recalledText }) =>
-      prioritizeLoCoMoRecallText({
+      transformLoCoMoRecallText({
         question,
-        recalledText: sanitizeLoCoMoRecallText({ question, recalledText }),
+        recalledText,
         multiHopRecallComposition,
       }),
     answerFallback: ({ question, recalledText }) =>
@@ -771,7 +769,7 @@ function stripTrailingLoCoMoPunctuation(value: string): string {
   return value.replace(/[.,;:)\]]+$/g, "").trim();
 }
 
-function sanitizeLoCoMoRecallText(args: {
+export function sanitizeLoCoMoRecallText(args: {
   question: string;
   recalledText: string;
 }): string {
@@ -785,19 +783,67 @@ function sanitizeLoCoMoRecallText(args: {
     );
 }
 
-function prioritizeLoCoMoRecallText(args: {
+export interface LoCoMoContentDigest {
+  sha256: string;
+  charCount: number;
+  lineCount: number;
+}
+
+export interface LoCoMoCompositionLineReceipt {
+  inputOrdinal: number;
+  input: LoCoMoContentDigest;
+  output: LoCoMoContentDigest;
+  stage: "direct" | "linked";
+  hop?: number;
+  visible: boolean;
+  outputStart: number;
+  outputEnd: number;
+  visibleStart: number;
+  visibleEnd: number;
+}
+
+export interface LoCoMoRecallCompositionReceipt {
+  schemaVersion: 1;
+  mode: "focused" | "fallback";
+  multiHopRecallComposition: boolean;
+  input: LoCoMoContentDigest;
+  output: LoCoMoContentDigest;
+  selectedLines: LoCoMoCompositionLineReceipt[];
+}
+
+export interface LoCoMoRecallCompositionResult {
+  text: string;
+  receipt: LoCoMoRecallCompositionReceipt;
+}
+
+export function transformLoCoMoRecallText(args: {
   question: string;
   recalledText: string;
   multiHopRecallComposition: boolean;
 }): string {
-  const lines = dedupePreserveOrder(
-    args.recalledText
+  const sanitized = sanitizeLoCoMoRecallText(args);
+  return prioritizeLoCoMoRecallTextWithTrace({
+    ...args,
+    recalledText: sanitized,
+  }).text;
+}
+
+export function prioritizeLoCoMoRecallTextWithTrace(args: {
+  question: string;
+  recalledText: string;
+  multiHopRecallComposition: boolean;
+}): LoCoMoRecallCompositionResult {
+  const inputLines = args.recalledText
       .replaceAll("\r\n", "\n")
       .replaceAll("\r", "\n")
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => line.length > 0),
-  );
+      .filter((line) => line.length > 0);
+  const lines = dedupePreserveOrder(inputLines);
+  const inputOrdinalByLine = new Map<string, number>();
+  inputLines.forEach((line, index) => {
+    if (!inputOrdinalByLine.has(line)) inputOrdinalByLine.set(line, index);
+  });
   const questionTokens = expandLoCoMoQuestionTokens(
     tokenizeForLoCoMo(args.question),
   );
@@ -839,25 +885,117 @@ function prioritizeLoCoMoRecallText(args: {
     ),
   ];
   if (direct.length === 0 && linkedHops.length === 0) {
-    return truncateLoCoMoContext(
+    const { text } = truncateLoCoMoContext(
       args.recalledText,
       LOCOMO_FALLBACK_CONTEXT_MAX_CHARS,
     );
+    return {
+      text,
+      receipt: {
+        schemaVersion: 1,
+        mode: "fallback",
+        multiHopRecallComposition: args.multiHopRecallComposition,
+        input: digestLoCoMoContent(args.recalledText),
+        output: digestLoCoMoContent(text),
+        selectedLines: [],
+      },
+    };
   }
-  const sections = [
-    "## LoCoMo Question-Focused Evidence",
-    ...direct.map((entry) => truncateLoCoMoLine(entry.line)),
-  ];
+  const sections = ["## LoCoMo Question-Focused Evidence"];
+  const selectedRanges: Array<{
+    input: string;
+    output: string;
+    inputOrdinal: number;
+    stage: "direct" | "linked";
+    hop?: number;
+    outputStart: number;
+    outputEnd: number;
+  }> = [];
+  const appendSelectedLine = (
+    input: string,
+    stage: "direct" | "linked",
+    hop?: number,
+  ): void => {
+    const output = truncateLoCoMoLine(input);
+    const inputOrdinal = inputOrdinalByLine.get(input);
+    if (inputOrdinal === undefined) {
+      throw new Error("LoCoMo composition selected a line outside its normalized input.");
+    }
+    const outputStart = sections.join("\n").length + 1;
+    sections.push(output);
+    selectedRanges.push({
+      input,
+      output,
+      inputOrdinal,
+      stage,
+      ...(hop === undefined ? {} : { hop }),
+      outputStart,
+      outputEnd: outputStart + output.length,
+    });
+  };
+  for (const entry of direct) appendSelectedLine(entry.line, "direct");
   for (const hop of linkedHops) {
-    sections.push(
-      `## LoCoMo Linked Evidence (hop ${hop.hop})`,
-      ...hop.lines.map(truncateLoCoMoLine),
-    );
+    sections.push(`## LoCoMo Linked Evidence (hop ${hop.hop})`);
+    for (const line of hop.lines) appendSelectedLine(line, "linked", hop.hop);
   }
-  return truncateLoCoMoContext(
+  const truncation = truncateLoCoMoContext(
     sections.join("\n"),
     LOCOMO_FOCUSED_CONTEXT_MAX_CHARS,
   );
+  const { text, safePrefixEnd } = truncation;
+  const selectedLines = selectedRanges.map((entry) => {
+    const visibleStart = Math.min(entry.outputStart, safePrefixEnd);
+    const visibleEnd = Math.min(entry.outputEnd, safePrefixEnd);
+    const visible = visibleEnd - visibleStart === entry.output.length;
+    return buildCompositionLineReceipt(entry, visible, visibleStart, visibleEnd);
+  });
+  return {
+    text,
+    receipt: {
+      schemaVersion: 1,
+      mode: "focused",
+      multiHopRecallComposition: args.multiHopRecallComposition,
+      input: digestLoCoMoContent(args.recalledText),
+      output: digestLoCoMoContent(text),
+      selectedLines,
+    },
+  };
+}
+
+function buildCompositionLineReceipt(
+  entry: {
+    input: string;
+    output: string;
+    inputOrdinal: number;
+    stage: "direct" | "linked";
+    hop?: number;
+    outputStart: number;
+    outputEnd: number;
+  },
+  visible: boolean,
+  visibleStart: number,
+  visibleEnd: number,
+): LoCoMoCompositionLineReceipt {
+  return {
+    inputOrdinal: entry.inputOrdinal,
+    input: digestLoCoMoContent(entry.input),
+    output: digestLoCoMoContent(entry.output),
+    stage: entry.stage,
+    ...(entry.hop === undefined ? {} : { hop: entry.hop }),
+    visible,
+    outputStart: entry.outputStart,
+    outputEnd: entry.outputEnd,
+    visibleStart,
+    visibleEnd,
+  };
+}
+
+function digestLoCoMoContent(value: string): LoCoMoContentDigest {
+  return {
+    sha256: hashString(value),
+    charCount: value.length,
+    lineCount: value.length === 0 ? 0 : value.split("\n").length,
+  };
 }
 
 type LoCoMoScoredLine = {
@@ -1180,14 +1318,17 @@ function truncateLoCoMoLine(line: string): string {
     : `${line.slice(0, LOCOMO_FOCUSED_LINE_MAX_CHARS)}...`;
 }
 
-function truncateLoCoMoContext(text: string, maxChars: number): string {
+function truncateLoCoMoContext(text: string, maxChars: number): { text: string; safePrefixEnd: number } {
   if (text.length <= maxChars) {
-    return text;
+    return { text, safePrefixEnd: text.length };
   }
   const truncated = text.slice(0, maxChars);
   const lastNewline = truncated.lastIndexOf("\n");
   const safePrefix = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated;
-  return `${safePrefix}\n[LoCoMo context truncated to ${maxChars} characters]`;
+  return {
+    text: `${safePrefix}\n[LoCoMo context truncated to ${maxChars} characters]`,
+    safePrefixEnd: safePrefix.length,
+  };
 }
 
 function countHiddenEvidenceIdsInRecall(
@@ -1216,11 +1357,18 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function loadDataset(
+export interface LoadedLoCoMoDataset {
+  source: "dataset" | "smoke";
+  filename?: string;
+  sha256: string;
+  items: LoCoMoConversation[];
+}
+
+export async function loadLoCoMoDataset(
   mode: "full" | "quick",
   datasetDir: string | undefined,
   limit?: number,
-): Promise<LoCoMoConversation[]> {
+): Promise<LoadedLoCoMoDataset> {
   // Limit normalization happens inside `loadLoCoMo10`; do not re-validate
   // here (the shared loader's `normalizeLimit` is the single source of
   // truth).
@@ -1261,7 +1409,15 @@ async function loadDataset(
     );
   }
 
-  return loaded.items;
+  if (!loaded.sha256) {
+    throw new Error("LoCoMo dataset loader did not provide a content hash.");
+  }
+  return {
+    source: loaded.source,
+    ...(loaded.filename === undefined ? {} : { filename: loaded.filename }),
+    sha256: loaded.sha256,
+    items: loaded.items,
+  };
 }
 
 function parseDataset(
