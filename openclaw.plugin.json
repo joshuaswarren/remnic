@@ -947,6 +947,52 @@
             "type": "string",
             "default": "",
             "description": "Root directory for per-project graph SQLite DBs. Empty string = derive from memoryDir (<memoryDir>/codegraph/<principal>/<projectId>.sqlite). Absolute path required when set explicitly (rule 11)."
+          },
+          "lsp": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Phase B type resolution via LSP (issue #1917). When enabled, codegraph_index invokes the LSP resolution pass after the heuristic reindex to upgrade unresolved call-site edges with real language-server definitions. Requires installed language servers on the host. Off by default (rule 48 - explicit opt-in for subprocess spawning).",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Master gate for LSP resolution. Off = heuristic edges only."
+              },
+              "servers": {
+                "type": "object",
+                "description": "Per-language server launch-spec overrides. Keys are language ids (typescript, python, go, rust, ...); values replace the built-in default command for that language.",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "description": "Server executable (resolved on PATH or absolute)."
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Arguments (e.g. --stdio)."
+                    }
+                  }
+                }
+              },
+              "timeoutMs": {
+                "type": "number",
+                "default": 3000,
+                "description": "Handshake + per-request timeout in ms."
+              },
+              "maxRequestsPerRun": {
+                "type": "number",
+                "default": 500,
+                "description": "Max LSP definition requests per index run."
+              }
+            }
           }
         }
       },

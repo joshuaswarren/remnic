@@ -21,7 +21,8 @@
  * the existing `ENGRAM_*` env vars from earlier releases do not pair them up.
  */
 
-import type { CodingKnowledgeConfig } from "../types.js";
+import type { CodingKnowledgeConfig, CodingGraphLspConfig } from "../types.js";
+import { TIER_1_LANGUAGES } from "./coding-graph-types.js";
 import { coerceBool } from "../connectors/coerce.js";
 
 export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
@@ -34,7 +35,10 @@ export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
   structuralProviderCommand: "",
   codegraphTools: false,
   codegraphDbDir: "",
-} satisfies Record<keyof CodingKnowledgeConfig, boolean | string>);
+  // `lsp` is excluded: it is an optional structured sub-config (issue #1917)
+  // with no flat boolean/string default; the parser returns `undefined` when
+  // absent (LSP off — rule 48 explicit opt-in).
+} satisfies Record<Exclude<keyof CodingKnowledgeConfig, "lsp">, boolean | string>);
 
 const VALID_STRUCTURAL_PROVIDERS = ["none", "subprocess", "native"] as const;
 type StructuralProvider = CodingKnowledgeConfig["structuralProvider"];
@@ -70,7 +74,27 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
       typeof record.codegraphDbDir === "string"
         ? record.codegraphDbDir.trim()
         : "",
+    // `lsp` is spread conditionally so an absent key stays ABSENT — an own
+    // `lsp: undefined` property would change the pinned defaults shape
+    // (config.test.ts) and leak a new key into serialized configs.
+    ...readLspField(record.lsp),
   };
+}
+
+/**
+ * Read the optional `codingKnowledge.lsp` sub-object. Absent → empty
+ * spread (no own key). Present-but-malformed (string/number/array) is
+ * REJECTED, consistent with `readStrictBool`'s posture — a typo like
+ * `"lsp": true` must alert the operator, not silently disable Phase B.
+ */
+function readLspField(raw: unknown): { lsp?: CodingGraphLspConfig } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(
+      `codingKnowledge.lsp must be an object ({ enabled, servers?, timeoutMs?, maxRequestsPerRun? }); got ${JSON.stringify(raw)}`,
+    );
+  }
+  return { lsp: parseLspConfig(raw as Record<string, unknown>) };
 }
 
 const STRICT_BOOL_ACCEPTED = "true/false/1/0/yes/no/on/off";
@@ -115,4 +139,78 @@ function readStructuralProvider(raw: unknown): StructuralProvider {
     `codingKnowledge.structuralProvider must be one of ` +
       `${VALID_STRUCTURAL_PROVIDERS.join(", ")}; got ${JSON.stringify(raw)}.`,
   );
+}
+
+/**
+ * Parse the `codingKnowledge.lsp` sub-object (issue #1917). Returns
+ * `{ enabled: false }` when absent or malformed — LSP is opt-in.
+ */
+function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
+  const enabled = readStrictBool(raw.enabled, "lsp.enabled", false);
+  if (!enabled) return { enabled: false };
+
+  // Server overrides are validated STRICTLY (rule 51): a malformed entry
+  // or a misspelled language key must not silently fall through to the
+  // built-in default server — the operator configured an override for a
+  // reason. Keys validate against TIER_1_LANGUAGES (core owns the tier-1
+  // list in coding-graph-types.ts, so there is no drift risk).
+  const servers: CodingGraphLspConfig["servers"] = {};
+  if (raw.servers !== undefined && raw.servers !== null) {
+    if (typeof raw.servers !== "object" || Array.isArray(raw.servers)) {
+      throw new Error(
+        `codingKnowledge.lsp.servers must be an object mapping language ids to { command, args? }; got ${JSON.stringify(raw.servers)}.`,
+      );
+    }
+    for (const [lang, def] of Object.entries(raw.servers as Record<string, unknown>)) {
+      if (!(TIER_1_LANGUAGES as readonly string[]).includes(lang)) {
+        throw new Error(
+          `codingKnowledge.lsp.servers has unknown language key ${JSON.stringify(lang)}; valid keys: ${TIER_1_LANGUAGES.join(", ")}.`,
+        );
+      }
+      if (!def || typeof def !== "object" || Array.isArray(def)) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang} must be an object ({ command, args? }); got ${JSON.stringify(def)}.`,
+        );
+      }
+      const d = def as Record<string, unknown>;
+      if (typeof d.command !== "string" || d.command.trim().length === 0) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang}.command must be a non-empty string; got ${JSON.stringify(d.command)}.`,
+        );
+      }
+      if (d.args !== undefined && (!Array.isArray(d.args) || !d.args.every((a) => typeof a === "string"))) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang}.args must be an array of strings; got ${JSON.stringify(d.args)}.`,
+        );
+      }
+      servers[lang] = {
+        command: d.command.trim(),
+        ...(Array.isArray(d.args) ? { args: d.args as string[] } : {}),
+      };
+    }
+  }
+
+  const timeoutMs = readPositiveInt(raw.timeoutMs, "lsp.timeoutMs", 3_000, 30_000);
+  const maxRequestsPerRun = readPositiveInt(raw.maxRequestsPerRun, "lsp.maxRequestsPerRun", 500, 5_000);
+
+  return { enabled: true, ...(Object.keys(servers).length > 0 ? { servers } : {}), timeoutMs, maxRequestsPerRun };
+}
+
+/**
+ * Strict positive-integer parse for LSP numeric knobs (rule 51 + CLI
+ * string parity, pattern 17). `undefined` falls back to the default;
+ * strings coerce via Number() (CLI values arrive as strings); anything
+ * non-integer, < 1 (0 is NOT a disable value here — set lsp.enabled:false
+ * to disable), or > max is REJECTED instead of silently replaced.
+ */
+function readPositiveInt(value: unknown, keyName: string, defaultValue: number, max: number): number {
+  if (value === undefined) return defaultValue;
+  const coerced = typeof value === "string" && value.trim().length > 0 ? Number(value) : value;
+  if (typeof coerced !== "number" || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < 1 || coerced > max) {
+    throw new Error(
+      `codingKnowledge.${keyName} must be an integer in [1, ${max}]; got ${JSON.stringify(value)}. ` +
+        `To disable LSP resolution set codingKnowledge.lsp.enabled to false.`,
+    );
+  }
+  return coerced;
 }

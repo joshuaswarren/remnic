@@ -2910,6 +2910,128 @@ export class GraphStore {
   }
 
   /**
+   * Find the innermost node whose span contains a byte offset in a file
+   * (issue #1917). Used by the LSP resolution pass's NodeLocator to map
+   * definition locations back to indexed nodes. Returns the node's
+   * qualified name, or null when no node contains the offset.
+   */
+  findNodeBySpan(filePath: string, byteOffset: number): string | null {
+    if (this.closed) return null;
+    try {
+      // Fetch the two smallest containing spans: nested containment is
+      // normal (a method inside a class both contain the offset) and the
+      // INNERMOST (smallest) wins — but a TIE at the smallest size means
+      // the offset cannot be attributed to exactly one node, and the
+      // NodeLocator contract requires null over an arbitrary pick
+      // (review thread: a wrong winner persists incorrect CALLS edges).
+      const rows = expectRows<{ qualified_name: string; size: number }>(
+        this.db
+          .prepare(
+            `SELECT n.qualified_name, (n.span_end - n.span_start) AS size FROM nodes n
+              JOIN files f ON n.file_id = f.id
+              WHERE f.path = ? AND n.span_start <= ? AND n.span_end > ?
+              ORDER BY size ASC
+              LIMIT 2`,
+          )
+          .all(filePath, byteOffset, byteOffset),
+        ["qualified_name", "size"],
+      );
+      if (rows.length === 0) return null;
+      if (rows.length > 1 && rows[1] !== undefined && rows[0]!.size === rows[1].size) return null;
+      const qualifiedName = rows[0]!.qualified_name;
+      // The span lookup disambiguated by file, but the returned QUALIFIED
+      // NAME is the edge key downstream (upsertEdges resolves names, not
+      // ids). If another file defines the same qualified name (common for
+      // top-level `main`/`handler`/`init`), an edge written against the
+      // name could bind to the wrong node — return null and skip the
+      // upgrade instead (conservative; id-carrying upgrades are the
+      // follow-up, review thread on #1923).
+      const dupRow = expectRow<{ n: number }>(
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM nodes WHERE qualified_name = ?`)
+          .get(qualifiedName),
+        ["n"],
+      );
+      if (dupRow && dupRow.n > 1) return null;
+      return qualifiedName;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Callee NAMES already linked from a caller symbol via CALLS edges of a
+   * given provenance (issue #1917 wiring). The LSP pass uses this to skip
+   * call sites Phase A (provenance "heuristic") already resolved WITHOUT
+   * also skipping sites whose only edge is a prior "lsp" edge — those must
+   * be re-asserted each run or reconciliation would retire them.
+   */
+  resolvedCalleeNames(srcQualifiedName: string, provenance: string, filePath?: string): string[] {
+    if (this.closed) return [];
+    try {
+      // Scoped to the caller FILE when provided: two files defining the
+      // same top-level qualified name (main/handler/init) must not leak
+      // each other's resolutions (#1923 review thread).
+      const fileClause = filePath !== undefined ? " AND f.path = ?" : "";
+      const bind = filePath !== undefined ? [srcQualifiedName, provenance, filePath] : [srcQualifiedName, provenance];
+      const rows = expectRows<{ name: string }>(
+        this.db
+          .prepare(
+            `SELECT DISTINCT dn.name AS name FROM edges e
+              JOIN nodes sn ON e.src = sn.id
+              JOIN files f ON sn.file_id = f.id
+              JOIN nodes dn ON e.dst = dn.id
+              WHERE sn.qualified_name = ? AND e.type = 'CALLS' AND e.provenance = ?${fileClause}`,
+          )
+          .all(...bind),
+        ["name"],
+      );
+      return rows.map((r) => r.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Current CALLS edges of a given provenance owned by a caller symbol in
+   * a file (#1923 review threads). The LSP pass uses this two ways:
+   * provenance "lsp" lists a filtered caller's existing lsp edges, and
+   * provenance "heuristic" lists its current Phase-A resolutions — an lsp
+   * edge is preserved at reconcile time only when it duplicates a current
+   * heuristic resolution (same dst), so removed member calls' edges retire
+   * while a filtered bare call's covering edge survives.
+   */
+  callEdgesForCaller(
+    srcQualifiedName: string,
+    filePath: string,
+    provenance: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }> {
+    if (this.closed) return [];
+    try {
+      const rows = expectRows<{ src_q: string; dst_q: string; dst_n: string; type: string }>(
+        this.db
+          .prepare(
+            `SELECT sn.qualified_name AS src_q, dn.qualified_name AS dst_q, dn.name AS dst_n, e.type AS type FROM edges e
+              JOIN nodes sn ON e.src = sn.id
+              JOIN files f ON sn.file_id = f.id
+              JOIN nodes dn ON e.dst = dn.id
+              WHERE sn.qualified_name = ? AND f.path = ? AND e.provenance = ? AND e.type = 'CALLS'`,
+          )
+          .all(srcQualifiedName, filePath, provenance),
+        ["src_q", "dst_q", "dst_n", "type"],
+      );
+      return rows.map((r) => ({
+        srcQualifiedName: r.src_q,
+        dstQualifiedName: r.dst_q,
+        dstName: r.dst_n,
+        type: r.type,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Read a symbol's source span from disk. The store NEVER persists
    * file contents (privacy + DB size — issue #1552 design); this
    * method resolves `files.path` against {@link GraphStoreOptions.repoRoot}

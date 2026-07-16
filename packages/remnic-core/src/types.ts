@@ -492,6 +492,36 @@ export interface CodingKnowledgeConfig {
    * Absolute path required when set explicitly (rule 11 -- no relative paths).
    */
   codegraphDbDir: string;
+  /**
+   * Phase B type resolution via LSP (issue #1917). When enabled, the
+   * reindex pipeline invokes `executeLspResolution` after the heuristic
+   * pass to upgrade unresolved call-site edges with real language-server
+   * definitions. Requires installed language servers on the host.
+   * Off by default (rule 48 — explicit opt-in for subprocess spawning).
+   */
+  lsp?: CodingGraphLspConfig;
+}
+
+/**
+ * Per-language LSP server configuration (issue #1917). Keys are
+ * `CodingGraphLanguage` values (typescript, python, go, rust, ...).
+ * When a language is not listed, the default server command for that
+ * language is used (typescript-language-server, pyright, gopls,
+ * rust-analyzer).
+ */
+export interface CodingGraphLspConfig {
+  /** Master gate for LSP resolution. Off = heuristic edges only. */
+  enabled: boolean;
+  /**
+   * Per-language server overrides. Each value is an argv array's first
+   * element (command) plus optional args. When absent for a language,
+   * the default server command is probed on PATH.
+   */
+  servers?: Record<string, { command: string; args?: string[] }>;
+  /** Per-request timeout in ms (default 3000). */
+  timeoutMs?: number;
+  /** Max LSP requests per reindex run (default 500). */
+  maxRequestsPerRun?: number;
 }
 
 // ChatConfig — conversational memory inspection and correction (issue #1583).

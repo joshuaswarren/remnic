@@ -23,11 +23,15 @@
  * by the surface handler via a context seam.
  */
 import path from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { readFileSync, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
 import { isCodingGraphInstalled } from "./optional-coding-graph.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 // Type-only reference to the surface context shape (ts-import-type rule).
 // Erased at compile time, so the runtime → surfaces → runtime import cycle is
 // type-only and has no runtime effect.
@@ -68,6 +72,16 @@ interface CodegraphModule {
   ): unknown;
   defaultCodingGitInvoker?: unknown;
   createCodingGraphEngine?(options?: unknown): { parseFile(input: unknown): Promise<unknown> };
+  // LSP resolution (issue #1917): present when @remnic/coding-graph ships
+  executeLspResolution?(requests: readonly unknown[], options: unknown): Promise<unknown>;
+  planLspUpgrades?(sites: readonly unknown[], budget: { maxRequests: number }): { requests: readonly unknown[]; budgetExhausted: number };
+  LspClient?: {
+    connect(options: {
+      launchSpec: { command: string; args: readonly string[] };
+      rootUri: string | null;
+      timeoutMs: number;
+    }): Promise<{ ok: true; client: unknown } | { ok: false; degradation: unknown }>;
+  };
 }
 
 /**
@@ -95,6 +109,21 @@ export interface CodegraphStore {
   upsertEdges?(
     edges: readonly CodegraphEdgeInput[],
   ): Promise<{ ok: true; persisted: number; skipped: number } | { ok: false; code: string }>;
+  /** Find the node whose span contains the byte offset (issue #1917). */
+  findNodeBySpan?(filePath: string, byteOffset: number): string | null;
+  /** Retire stale lsp-provenance edges for a file (issue #1895). */
+  reconcileLspEdges?(
+    filePath: string,
+    assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
+  ): number;
+  /** Callee names already CALLS-linked from a caller with a given provenance (issue #1917). */
+  resolvedCalleeNames?(srcQualifiedName: string, provenance: string, filePath?: string): string[];
+  /** Current CALLS edges of a provenance owned by a caller symbol in a file (issue #1917). */
+  callEdgesForCaller?(
+    srcQualifiedName: string,
+    filePath: string,
+    provenance: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }>;
 }
 
 /**
@@ -470,13 +499,14 @@ export async function closeAllCodegraphStores(): Promise<void> {
 
 export function makeCodegraphRuntimeDelegates(): Pick<
   CodegraphSurfaceContext,
-  "runReindex" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
+  "runReindex" | "runLspResolution" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
 > {
   return {
     runReindex: (store, repoRoot, mode) => runCodegraphReindex({ store, repoRoot, mode }),
     reportIndexStatus: (store, repoRoot) => reportCodegraphIndexStatus({ store, repoRoot }),
     detectChanges: (store, repoRoot, head) => detectCodegraphChanges({ store, repoRoot, head }),
     ingestTraces: (store, traces) => ingestCodegraphTraces({ store, traces }),
+    runLspResolution: (store, repoRoot, lspConfig) => runCodegraphLspResolution({ store, repoRoot, lspConfig }),
   };
 }
 
@@ -564,6 +594,514 @@ export async function runCodegraphReindex(params: {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, code: "store_error", message: msg };
   }
+}
+
+
+/**
+ * True when a tracked path resolves — via a symlinked file or any symlinked
+ * parent — outside repoRoot. Mirrors the reindex path's guard (reindex.ts
+ * `symlinkEscapesRoot`, rule 3): without it, a tracked `*.ts` symlink to a
+ * private file outside the checkout would be parsed and sent to a language
+ * server. A realpath error returns false so the normal read path surfaces
+ * the natural failure.
+ */
+async function lspPathEscapesRoot(repoRoot: string, absPath: string): Promise<boolean> {
+  try {
+    const [realRoot, realAbs] = await Promise.all([realpath(repoRoot), realpath(absPath)]);
+    const rel = path.relative(realRoot, realAbs);
+    return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/** Sync variant for the executor's resolveContent seam. */
+function lspPathEscapesRootSync(repoRoot: string, absPath: string): boolean {
+  try {
+    const realRoot = realpathSync(repoRoot);
+    const realAbs = realpathSync(absPath);
+    const rel = path.relative(realRoot, realAbs);
+    return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Default LSP server launch specs per language. The config's
+ * `codingKnowledge.lsp.servers` overrides these; a language with neither
+ * an override nor a default is skipped (degradation, not an error).
+ */
+const DEFAULT_LSP_SERVERS: Record<string, { command: string; args: string[] }> = {
+  typescript: { command: "typescript-language-server", args: ["--stdio"] },
+  tsx: { command: "typescript-language-server", args: ["--stdio"] },
+  javascript: { command: "typescript-language-server", args: ["--stdio"] },
+  python: { command: "pyright-langserver", args: ["--stdio"] },
+  go: { command: "gopls", args: [] },
+  rust: { command: "rust-analyzer", args: [] },
+};
+
+/** One gathered candidate call site (pre-planner shape). */
+interface GatheredLspSite {
+  filePath: string;
+  language: string;
+  content: string;
+  calleeByteOffset: number;
+  calleeName: string;
+  srcQualifiedName: string;
+}
+
+/**
+ * Run LSP type resolution after a heuristic reindex (issue #1917).
+ * Re-parses tracked files, gathers call sites Phase A left unresolved
+ * (member accesses plus bare calls with no existing CALLS edge), groups
+ * them by language, and per language connects a real language server via
+ * `LspClient.connect` and invokes `executeLspResolution`.
+ *
+ * Degrades cleanly at every seam: missing package/functions, no language
+ * server for a language, or a failed handshake all leave the heuristic
+ * edges standing (soft-fail, mirrors #1894's documented posture).
+ */
+export async function runCodegraphLspResolution(params: {
+  readonly store: CodegraphStore;
+  readonly repoRoot: string;
+  readonly lspConfig: NonNullable<CodingKnowledgeConfig["lsp"]>;
+}): Promise<
+  | {
+      ok: true;
+      upgraded: number;
+      unresolved: number;
+      budgetExhausted: number;
+      degradations?: Array<{ language: string; code: string; message: string }>;
+    }
+  | { ok: false; code: string; message: string }
+> {
+  const mod = await loadCodegraphModule();
+  if (mod === null) {
+    return { ok: false, code: "package_missing", message: "@remnic/coding-graph is not installed." };
+  }
+  if (
+    typeof mod.executeLspResolution !== "function" ||
+    typeof mod.planLspUpgrades !== "function" ||
+    typeof mod.LspClient?.connect !== "function"
+  ) {
+    return { ok: false, code: "runtime_unavailable", message: "LSP resolution is not available in the installed @remnic/coding-graph." };
+  }
+  const engine = mod.createCodingGraphEngine?.() ?? null;
+  if (engine === null) {
+    return { ok: false, code: "engine_unavailable", message: "createCodingGraphEngine is not available." };
+  }
+  // Resolve to an absolute root up front: the executor builds file://
+  // URIs by joining workspaceRoot, and a relative root (".") would yield
+  // malformed URIs like file://src/foo.ts (review thread). The reindex
+  // path resolves relative cwd values the same way.
+  const repoRoot = path.resolve(params.repoRoot);
+  const gitFactory = mod.defaultCodingGitInvoker as
+    | (() => { listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string } })
+    | undefined;
+  if (typeof gitFactory !== "function") {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
+  const tracked = gitFactory().listTrackedFiles(repoRoot);
+  if (!("paths" in tracked)) {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
+
+  // Memoized per-caller lookup of already-resolved callee names: a bare
+  // call whose (src)-[CALLS]->(dst.name == callee) edge already exists was
+  // resolved by Phase A and must not consume LSP budget (review thread:
+  // budget starvation). Member accesses are Phase A's deliberate skips —
+  // always candidates.
+  // Provenance matters: only HEURISTIC edges mark a site as Phase-A
+  // resolved. A site whose only edge is a prior "lsp" edge MUST be
+  // re-planned — excluding it from the plan while reconciling the file
+  // would retire that still-valid lsp edge (review thread). When the
+  // installed store predates resolvedCalleeNames, nothing is treated as
+  // resolved (conservative: spends budget, never mis-retires).
+  // Memo key includes the caller FILE: duplicate top-level qualified
+  // names across files must not leak each other's resolutions.
+  const resolvedCalleesBySrc = new Map<string, Set<string>>();
+  const alreadyResolved = (filePath: string, srcQualifiedName: string, calleeName: string): boolean => {
+    const key = `${filePath}\u0000${srcQualifiedName}`;
+    let names = resolvedCalleesBySrc.get(key);
+    if (names === undefined) {
+      names = new Set<string>();
+      if (typeof params.store.resolvedCalleeNames === "function") {
+        for (const name of params.store.resolvedCalleeNames(srcQualifiedName, "heuristic", filePath)) {
+          names.add(name);
+        }
+      }
+      resolvedCalleesBySrc.set(key, names);
+    }
+    return names.has(calleeName);
+  };
+
+  // Gather unresolved call sites from the freshly indexed source.
+  const sites: GatheredLspSite[] = [];
+  const gatheredCountByFile = new Map<string, number>();
+  // Sites excluded because Phase A already resolved them (heuristic edge).
+  // A file with ANY filtered site must not reconcile: those sites are not
+  // in the asserted set, so reconciliation would retire their prior lsp
+  // edges even though the sites were never re-queried (review thread).
+  const filteredCountByFile = new Map<string, number>();
+  // Caller symbols of filtered sites per file — their CURRENT lsp edges
+  // are appended to the asserted set at reconcile time so stale cleanup
+  // still runs for the rest of the file without dropping them.
+  const filteredSrcByFile = new Map<string, Map<string, Set<string>>>();
+  // Files that parsed cleanly this run — the safe candidates for the
+  // empty-set reconcile below.
+  const parsedFiles = new Set<string>();
+  for (const rel of tracked.paths) {
+    const absPath = path.join(repoRoot, rel);
+    // Same symlink containment the reindex path enforces (rule 3).
+    if (await lspPathEscapesRoot(repoRoot, absPath)) continue;
+    let content: string;
+    try {
+      content = await readFile(absPath, "utf-8");
+    } catch {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = await engine.parseFile({ path: rel, content });
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || !("ok" in parsed) || parsed.ok !== true || !("ir" in parsed)) continue;
+    const ir = parsed.ir;
+    if (!ir || typeof ir !== "object" || !("callSites" in ir) || !Array.isArray(ir.callSites)) continue;
+    parsedFiles.add(rel);
+    const language = "language" in ir && typeof ir.language === "string" ? ir.language : "";
+    const symbols = "symbols" in ir && Array.isArray(ir.symbols) ? ir.symbols : [];
+    // UTF-8 view of the source for byte-exact callee-name searches.
+    const contentBytes = Buffer.from(content, "utf-8");
+    for (const site of ir.callSites) {
+      if (!site || typeof site !== "object" || !("span" in site)) continue;
+      const span = site.span;
+      if (!span || typeof span !== "object" || !("startByte" in span) || typeof span.startByte !== "number") continue;
+      const calleeName =
+        "calleeNameCandidates" in site && Array.isArray(site.calleeNameCandidates) && typeof site.calleeNameCandidates[0] === "string"
+          ? site.calleeNameCandidates[0]
+          : "";
+      if (calleeName.length === 0) continue;
+      // Innermost enclosing symbol = SMALLEST containing span (review
+      // thread: first-match picks the outermost container for nested
+      // symbols, attaching edges to the wrong caller).
+      let srcQualifiedName = "";
+      let bestSpanSize = Number.POSITIVE_INFINITY;
+      for (const sym of symbols) {
+        if (!sym || typeof sym !== "object" || !("span" in sym) || !("qualifiedName" in sym)) continue;
+        const ss = sym.span;
+        if (!ss || typeof ss !== "object" || !("startByte" in ss) || !("endByte" in ss)) continue;
+        if (typeof ss.startByte !== "number" || typeof ss.endByte !== "number") continue;
+        if (ss.startByte <= span.startByte && span.startByte < ss.endByte) {
+          const size = ss.endByte - ss.startByte;
+          if (size < bestSpanSize) {
+            bestSpanSize = size;
+            srcQualifiedName = typeof sym.qualifiedName === "string" ? sym.qualifiedName : "";
+          }
+        }
+      }
+      if (srcQualifiedName.length === 0) continue;
+      const memberAccess = "memberAccess" in site && site.memberAccess === true;
+      if (!memberAccess && alreadyResolved(rel, srcQualifiedName, calleeName)) {
+        filteredCountByFile.set(rel, (filteredCountByFile.get(rel) ?? 0) + 1);
+        let srcs = filteredSrcByFile.get(rel);
+        if (srcs === undefined) {
+          srcs = new Map<string, Set<string>>();
+          filteredSrcByFile.set(rel, srcs);
+        }
+        const callees = srcs.get(srcQualifiedName);
+        if (callees === undefined) srcs.set(srcQualifiedName, new Set([calleeName]));
+        else callees.add(calleeName);
+        continue;
+      }
+      // Position the definition query on the callee NAME, not the call
+      // expression start (member calls: `obj.save()` must query at `save`).
+      // The search runs in Buffer space because span offsets are UTF-8
+      // BYTES while string indexOf returns UTF-16 code units — non-ASCII
+      // source before the callee would skew a string-index search (review
+      // thread). Bounded to this call site's span (parser rule 20).
+      const nameIdx = contentBytes.indexOf(Buffer.from(calleeName, "utf-8"), span.startByte);
+      const endByte = "endByte" in span && typeof span.endByte === "number" ? span.endByte : span.startByte + calleeName.length;
+      const calleeByteOffset = nameIdx >= 0 && nameIdx < endByte ? nameIdx : span.startByte;
+      sites.push({ filePath: rel, language, content, calleeByteOffset, calleeName, srcQualifiedName });
+      gatheredCountByFile.set(rel, (gatheredCountByFile.get(rel) ?? 0) + 1);
+    }
+  }
+  // Retire stale lsp edges for files that parsed cleanly and have NO LSP
+  // candidates at all this run (e.g. a previously upgraded member call was
+  // deleted while its containing function remains). The heuristic reindex
+  // deliberately keeps lsp-provenance rows out of its stale-delete scope,
+  // so this pass is the only owner of that cleanup (review thread). Files
+  // with filtered (heuristic-resolved) sites are left alone — their prior
+  // lsp edges were not re-queried.
+  // Filtered (Phase-A-resolved) sites keep their CURRENT lsp edges by
+  // asserting them explicitly — reconciliation can then retire genuinely
+  // stale edges in the same file without dropping preserved ones. When
+  // the store predates callEdgesForCaller, preservation is impossible,
+  // so callers below fall back to skipping reconcile for such files.
+  const canPreserve = typeof params.store.callEdgesForCaller === "function";
+  const preservedEdgesForFile = (
+    rel: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> => {
+    const srcs = filteredSrcByFile.get(rel);
+    if (srcs === undefined || !canPreserve) return [];
+    const preserved: Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> = [];
+    for (const [src] of srcs) {
+      // Preserve ONLY lsp edges that DUPLICATE a current heuristic
+      // resolution (same src, same dst) — the covering edge a filtered
+      // bare call still asserts today. A dstName-only match would also
+      // re-assert a REMOVED member call's edge when a same-named bare
+      // call stays filtered (review thread); requiring the exact
+      // heuristic dst retires those while keeping the live coverage.
+      // Cost: an lsp edge MORE precise than its heuristic twin (rare
+      // re-export chains) is retired too — conservative, the heuristic
+      // edge still represents the call.
+      const heuristicDsts = new Set(
+        params.store.callEdgesForCaller!(src, rel, "heuristic").map((e) => e.dstQualifiedName),
+      );
+      for (const edge of params.store.callEdgesForCaller!(src, rel, "lsp")) {
+        if (!heuristicDsts.has(edge.dstQualifiedName)) continue;
+        preserved.push({
+          srcQualifiedName: edge.srcQualifiedName,
+          dstQualifiedName: edge.dstQualifiedName,
+          type: edge.type,
+        });
+      }
+    }
+    return preserved;
+  };
+  if (typeof params.store.reconcileLspEdges === "function") {
+    for (const rel of parsedFiles) {
+      if ((gatheredCountByFile.get(rel) ?? 0) !== 0) continue;
+      const filteredCount = filteredCountByFile.get(rel) ?? 0;
+      if (filteredCount > 0 && !canPreserve) continue;
+      params.store.reconcileLspEdges(rel, preservedEdgesForFile(rel));
+    }
+  }
+  if (sites.length === 0) {
+    return { ok: true, upgraded: 0, unresolved: 0, budgetExhausted: 0 };
+  }
+
+  // Group by language; each group gets its own server connection. The
+  // budget is shared across groups (maxRequestsPerRun is per RUN).
+  const byLanguage = new Map<string, GatheredLspSite[]>();
+  // Caller symbol -> FILES, for attributing apply-time skips to the file
+  // batches they may belong to (the apply callback sees upgrades, not
+  // files). A SET because duplicate caller qualified names can exist in
+  // multiple tracked files — a skip conservatively suppresses reconcile
+  // in every file that could own the skipped edge (review thread: a
+  // single-file map was overwritten by the later file).
+  const srcToFiles = new Map<string, Set<string>>();
+  for (const site of sites) {
+    const group = byLanguage.get(site.language);
+    if (group === undefined) byLanguage.set(site.language, [site]);
+    else group.push(site);
+    const files = srcToFiles.get(site.srcQualifiedName);
+    if (files === undefined) srcToFiles.set(site.srcQualifiedName, new Set([site.filePath]));
+    else files.add(site.filePath);
+  }
+
+  const configServers = params.lspConfig.servers ?? {};
+  const timeoutMs = params.lspConfig.timeoutMs ?? 3000;
+  let remainingBudget = Math.max(1, Math.floor(params.lspConfig.maxRequestsPerRun ?? 500));
+  const rootUri = pathToFileURL(repoRoot).href;
+  // Cross-file definition targets need their bytes for position→offset
+  // conversion (review thread: without resolveContent, cross-file
+  // upgrades — the point of Phase B — stay unresolved).
+  const resolveContent = (filePath: string): string | null => {
+    const absPath = path.join(repoRoot, filePath);
+    if (lspPathEscapesRootSync(repoRoot, absPath)) return null;
+    try {
+      return readFileSync(absPath, "utf-8");
+    } catch {
+      return null;
+    }
+  };
+
+  let upgraded = 0;
+  let unresolved = 0;
+  let budgetExhausted = 0;
+  const degradations: Array<{ language: string; code: string; message: string }> = [];
+  for (const [language, group] of byLanguage) {
+    if (remainingBudget <= 0) {
+      budgetExhausted += group.length;
+      continue;
+    }
+    const rawSpec = configServers[language] ?? DEFAULT_LSP_SERVERS[language];
+    if (rawSpec === undefined) {
+      // A language with candidates but no launch spec is a DIAGNOSABLE
+      // gap, not ordinary unresolved calls (review thread): surface it so
+      // the operator knows to configure codingKnowledge.lsp.servers.
+      degradations.push({
+        language,
+        code: "no_launch_spec",
+        message: `No LSP server configured for ${language} (${group.length} candidate call site(s)); set codingKnowledge.lsp.servers.${language}.`,
+      });
+      unresolved += group.length;
+      continue;
+    }
+    const launchSpec = { command: rawSpec.command, args: rawSpec.args ?? [] };
+    const plan = mod.planLspUpgrades(group, { maxRequests: remainingBudget });
+    budgetExhausted += plan.budgetExhausted;
+    remainingBudget -= plan.requests.length;
+    if (plan.requests.length === 0) continue;
+    // Reconciliation is only safe for files whose gathered sites ALL made
+    // it into the plan — a budget-truncated file would otherwise retire
+    // valid lsp edges its omitted call sites still assert (review thread).
+    const plannedCountByFile = new Map<string, number>();
+    for (const req of plan.requests) {
+      if (req && typeof req === "object" && "filePath" in req && typeof req.filePath === "string") {
+        plannedCountByFile.set(req.filePath, (plannedCountByFile.get(req.filePath) ?? 0) + 1);
+      }
+    }
+    const connected = await mod.LspClient.connect({ launchSpec, rootUri, timeoutMs });
+    if (!connected.ok) {
+      // A missing/misconfigured server is a DIAGNOSABLE condition, not a
+      // silent count (review thread): record the degradation so
+      // codegraph_index can distinguish "server absent" from "LSP found
+      // no definitions".
+      const deg = connected.degradation;
+      const code =
+        deg && typeof deg === "object" && "code" in deg && typeof deg.code === "string" ? deg.code : "connect_failed";
+      const message =
+        deg && typeof deg === "object" && "detail" in deg && typeof deg.detail === "string"
+          ? deg.detail
+          : `LSP server for ${language} failed to connect.`;
+      degradations.push({ language, code, message });
+      unresolved += plan.requests.length;
+      // The planned requests never reached a server — hand their budget
+      // back so a missing server for one language cannot starve the
+      // remaining language groups (review thread).
+      remainingBudget += plan.requests.length;
+      continue;
+    }
+    const client = connected.client;
+    // Skip tracking keyed by FILE (via the upgrades' caller symbols):
+    // a skip must (a) not count as an upgrade and (b) suppress
+    // reconciliation for exactly the file batch that observed it — a
+    // boolean flag went stale whenever the executor skipped a batch's
+    // reconcile (non-exhaustive) or never called apply (zero upgrades)
+    // (review threads).
+    let skippedEdgesTotal = 0;
+    const skippedFiles = new Set<string>();
+    try {
+      const result = await mod.executeLspResolution(plan.requests, {
+        client,
+        workspaceRoot: repoRoot,
+        resolveContent,
+        nodeLocator: (filePath: string, byteOffset: number) =>
+          typeof params.store.findNodeBySpan === "function" ? params.store.findNodeBySpan(filePath, byteOffset) : null,
+        applyUpgrades: async (upgrades: readonly CodegraphEdgeInput[]) => {
+          if (typeof params.store.upsertEdges !== "function") {
+            throw new Error("store.upsertEdges is not available");
+          }
+          const result = await params.store.upsertEdges(upgrades);
+          // Throw ONLY when nothing persisted (ok:false) — the executor's
+          // transactional contract holds because no state changed. A
+          // skipped>0 result has ALREADY committed the resolvable edges in
+          // one transaction, so throwing after the fact would desync the
+          // executor's view from the DB (skipped reconciliation +
+          // undercounted upgrades while edges persist — review thread).
+          // Skips are surfaced as a degradation instead of a silent drop.
+          if (!result.ok) {
+            // The executor catches this throw and counts the batch as
+            // unresolved — record the failure as a degradation FIRST so
+            // a failed write (store_closed, SQLite error) is diagnosable
+            // from the index summary, not indistinguishable from
+            // "no definitions found" (review thread).
+            degradations.push({
+              language,
+              code: "edge_write_failed",
+              message: `upsertEdges failed for ${language}: ${result.code}.`,
+            });
+            throw new Error(`upsertEdges failed: ${result.code}`);
+          }
+          if (result.skipped > 0) {
+            skippedEdgesTotal += result.skipped;
+            for (const upgrade of upgrades) {
+              for (const file of srcToFiles.get(upgrade.srcQualifiedName) ?? []) {
+                skippedFiles.add(file);
+              }
+            }
+            degradations.push({
+              language,
+              code: "edges_skipped",
+              message: `upsertEdges persisted ${result.persisted} and skipped ${result.skipped} edge(s) for ${language} (unresolvable endpoints).`,
+            });
+          }
+        },
+        reconcileLspEdges: (
+          filePath: string,
+          assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
+        ) => {
+          if (typeof params.store.reconcileLspEdges !== "function") return;
+          if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
+          // This file's batch had skipped writes — its asserted set is
+          // incomplete, so reconciling would retire edges that were never
+          // re-asserted (see skip tracking above).
+          if (skippedFiles.has(filePath)) return;
+          // Heuristic-filtered sites were NOT re-queried: their current
+          // lsp edges are appended to the asserted set so they survive
+          // while stale edges for RE-QUERIED sites still get retired.
+          // Without the preservation seam, skip (conservative).
+          if ((filteredCountByFile.get(filePath) ?? 0) > 0 && !canPreserve) return;
+          params.store.reconcileLspEdges(filePath, [...assertedEdges, ...preservedEdgesForFile(filePath)]);
+        },
+      });
+      if (result && typeof result === "object" && "upgraded" in result && typeof result.upgraded === "number") {
+        // The executor counts every upgrade it HANDED to applyUpgrades;
+        // subtract the writes the store skipped so the reported number
+        // reflects edges that actually persisted (review thread).
+        upgraded += Math.max(0, result.upgraded - skippedEdgesTotal);
+        unresolved += "unresolved" in result && typeof result.unresolved === "number" ? result.unresolved : 0;
+        budgetExhausted += "budgetExhausted" in result && typeof result.budgetExhausted === "number" ? result.budgetExhausted : 0;
+        // A mid-run server crash / protocol error returns counts PLUS a
+        // degradation tag — dropping it would make the failure look like
+        // ordinary unresolved calls (review thread).
+        if ("degradation" in result && result.degradation && typeof result.degradation === "object") {
+          const rd = result.degradation;
+          degradations.push({
+            language,
+            code: "code" in rd && typeof rd.code === "string" ? rd.code : "lsp_degraded",
+            message: "detail" in rd && typeof rd.detail === "string" ? rd.detail : `LSP pass for ${language} degraded mid-run.`,
+          });
+        }
+      } else {
+        unresolved += plan.requests.length;
+      }
+    } catch (err) {
+      // Sanitized detail only (class name + Node error code) — this
+      // message reaches client surfaces via result.lsp and must not leak
+      // absolute paths or stack fragments (review thread; mirrors
+      // displayErrorDetail's contract). The full error is recoverable
+      // from server logs, not from the tool response.
+      const detail = displayErrorDetail(err);
+      return {
+        ok: false,
+        code: "lsp_resolution_error",
+        message: detail.length > 0 ? `LSP resolution failed: ${detail}.` : "LSP resolution failed.",
+      };
+    } finally {
+      const disposable = client as { dispose?: () => Promise<void> };
+      if (typeof disposable.dispose === "function") {
+        try {
+          await disposable.dispose();
+        } catch {
+          // Disposal failure is not actionable — the child process is
+          // reaped by the OS when the parent exits.
+        }
+      }
+    }
+  }
+  return {
+    ok: true,
+    upgraded,
+    unresolved,
+    budgetExhausted,
+    ...(degradations.length > 0 ? { degradations } : {}),
+  };
 }
 
 /**
