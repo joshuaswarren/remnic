@@ -2611,7 +2611,18 @@ export function removeHermesConfig(opts: {
   profile: string;
   extraConfigPaths?: readonly string[];
 }): HermesConfigResult {
-  const cfgPaths = [...hermesConfigCleanupPaths(opts.profile)];
+  // Environment-resolved candidates can fail (e.g. HERMES_HOME points at a
+  // regular file at remove time). That must not abort cleanup of the VALID
+  // persisted install-time path — seed from whatever resolves and continue
+  // (Codex P2 on PR #1938, round 8).
+  let cfgPaths: string[];
+  let envResolutionError: string | null = null;
+  try {
+    cfgPaths = [...hermesConfigCleanupPaths(opts.profile)];
+  } catch (err) {
+    cfgPaths = [];
+    envResolutionError = err instanceof Error ? err.message : String(err);
+  }
   for (const extra of opts.extraConfigPaths ?? []) {
     if (
       isPlausibleHermesConfigPath(extra) &&
@@ -2619,6 +2630,16 @@ export function removeHermesConfig(opts: {
     ) {
       cfgPaths.push(extra);
     }
+  }
+  if (cfgPaths.length === 0) {
+    return {
+      updated: false,
+      skipped: true,
+      reason: envResolutionError
+        ? `Hermes config cleanup failed: ${envResolutionError}`
+        : "Hermes config.yaml not found",
+      configPath: "<unresolved>",
+    };
   }
   const results = cfgPaths.map((cfgPath) => {
     try {
@@ -2659,11 +2680,15 @@ export function removeHermesConfig(opts: {
   }
 
   const existingWithoutBlock = results.find((result) => result.reason !== "Hermes config.yaml not found");
-  return existingWithoutBlock ?? results[0] ?? {
+  const fallbackResult = existingWithoutBlock ?? results[0];
+  if (fallbackResult) {
+    return fallbackResult;
+  }
+  return {
     updated: false,
     skipped: true,
     reason: "Hermes config.yaml not found",
-    configPath: hermesConfigPath(opts.profile),
+    configPath: cfgPaths[0] ?? "<unresolved>",
   };
 }
 

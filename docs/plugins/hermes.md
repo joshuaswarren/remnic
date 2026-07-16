@@ -103,7 +103,7 @@ pip install -e ".[dev]"
 Hermes memory providers are discovered by directory scan, not by pip metadata. Upstream (`plugins/memory/__init__.py`, verified against `NousResearch/hermes-agent` commit `53adb3f`, 2026-07-16) scans:
 
 1. Bundled providers: `<hermes-repo>/plugins/memory/<name>/`
-2. User-installed providers: `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
+2. User-installed providers: `$HERMES_HOME/plugins/<name>/` — when `HERMES_HOME` is unset, Hermes falls back to its platform-native default home: `~/.hermes/plugins/<name>/` on Linux/macOS, `%LOCALAPPDATA%\hermes\plugins\<name>\` on Windows (`hermes_constants.py:_get_platform_default_hermes_home`). `remnic connectors install hermes` resolves the same home for the shim and the `remnic:` config block.
 
 A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. `remnic connectors install hermes` materializes the required shim for you; for pip-only installs, create a small shim directory whose `__init__.py` bridges to the pip package:
 
