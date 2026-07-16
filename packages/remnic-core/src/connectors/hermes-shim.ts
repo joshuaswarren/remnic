@@ -74,9 +74,27 @@ export function resolveHermesRoot(): string {
   if (process.platform === "win32") {
     const localAppData = (readEnvVar("LOCALAPPDATA") ?? "").trim();
     const base = localAppData.length > 0 ? path.resolve(localAppData) : path.join(resolveHomeDir(), "AppData", "Local");
-    return path.join(base, "hermes");
+    return resolveDefaultRoot(path.join(base, "hermes"));
   }
-  return path.resolve(resolveHomeDir(), ".hermes");
+  return resolveDefaultRoot(path.resolve(resolveHomeDir(), ".hermes"));
+}
+
+/**
+ * Normalize the platform-default Hermes root. Unlike an explicitly supplied
+ * `HERMES_HOME` (external input — symlinks rejected outright above), the
+ * default `~/.hermes` / `%LOCALAPPDATA%\hermes` is commonly a symlink under
+ * dotfile managers, and Hermes itself follows it. Resolving to the realpath
+ * (rather than rejecting) removes the divergence a symlinked root could
+ * introduce: every subsequent read/write/remove derives from the SAME
+ * resolved base, and the component-level symlink guard still protects the
+ * subtree below it (Codex P1 on PR #1938, round 17).
+ */
+function resolveDefaultRoot(candidate: string): string {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    return candidate; // does not exist yet — created on demand
+  }
 }
 
 export function hermesShimPath(): string {

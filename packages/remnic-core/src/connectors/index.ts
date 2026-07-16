@@ -2221,10 +2221,13 @@ export function removeConnector(connectorId: string): RemoveResult {
     } catch {
       /* current-environment resolution failed — persisted paths still checked */
     }
-    if (savedHermesConfigPath !== null) {
+    // Persisted provenance is filtered through the SAME guard cleanup uses
+    // (Bugbot on PR #1938, round 17): a tampered/implausible path that
+    // removeHermesConfig would never touch must not be able to block removal.
+    if (savedHermesConfigPath !== null && isPlausibleHermesConfigPath(savedHermesConfigPath)) {
       preflightCandidates.push(savedHermesConfigPath);
     }
-    preflightCandidates.push(...savedPriorHermesConfigPaths);
+    preflightCandidates.push(...savedPriorHermesConfigPaths.filter(isPlausibleHermesConfigPath));
     const blocked: string[] = [];
     for (const candidate of new Set(preflightCandidates)) {
       if (blocked.some((known) => sameHermesConfigTarget(known, candidate))) {
