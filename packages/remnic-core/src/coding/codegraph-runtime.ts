@@ -724,6 +724,14 @@ export async function runCodegraphLspResolution(params: {
   // Gather unresolved call sites from the freshly indexed source.
   const sites: GatheredLspSite[] = [];
   const gatheredCountByFile = new Map<string, number>();
+  // Sites excluded because Phase A already resolved them (heuristic edge).
+  // A file with ANY filtered site must not reconcile: those sites are not
+  // in the asserted set, so reconciliation would retire their prior lsp
+  // edges even though the sites were never re-queried (review thread).
+  const filteredCountByFile = new Map<string, number>();
+  // Files that parsed cleanly this run — the safe candidates for the
+  // empty-set reconcile below.
+  const parsedFiles = new Set<string>();
   for (const rel of tracked.paths) {
     const absPath = path.join(params.repoRoot, rel);
     // Same symlink containment the reindex path enforces (rule 3).
@@ -743,6 +751,7 @@ export async function runCodegraphLspResolution(params: {
     if (!parsed || typeof parsed !== "object" || !("ok" in parsed) || parsed.ok !== true || !("ir" in parsed)) continue;
     const ir = parsed.ir;
     if (!ir || typeof ir !== "object" || !("callSites" in ir) || !Array.isArray(ir.callSites)) continue;
+    parsedFiles.add(rel);
     const language = "language" in ir && typeof ir.language === "string" ? ir.language : "";
     const symbols = "symbols" in ir && Array.isArray(ir.symbols) ? ir.symbols : [];
     // UTF-8 view of the source for byte-exact callee-name searches.
@@ -776,7 +785,10 @@ export async function runCodegraphLspResolution(params: {
       }
       if (srcQualifiedName.length === 0) continue;
       const memberAccess = "memberAccess" in site && site.memberAccess === true;
-      if (!memberAccess && alreadyResolved(srcQualifiedName, calleeName)) continue;
+      if (!memberAccess && alreadyResolved(srcQualifiedName, calleeName)) {
+        filteredCountByFile.set(rel, (filteredCountByFile.get(rel) ?? 0) + 1);
+        continue;
+      }
       // Position the definition query on the callee NAME, not the call
       // expression start (member calls: `obj.save()` must query at `save`).
       // The search runs in Buffer space because span offsets are UTF-8
@@ -788,6 +800,20 @@ export async function runCodegraphLspResolution(params: {
       const calleeByteOffset = nameIdx >= 0 && nameIdx < endByte ? nameIdx : span.startByte;
       sites.push({ filePath: rel, language, content, calleeByteOffset, calleeName, srcQualifiedName });
       gatheredCountByFile.set(rel, (gatheredCountByFile.get(rel) ?? 0) + 1);
+    }
+  }
+  // Retire stale lsp edges for files that parsed cleanly and have NO LSP
+  // candidates at all this run (e.g. a previously upgraded member call was
+  // deleted while its containing function remains). The heuristic reindex
+  // deliberately keeps lsp-provenance rows out of its stale-delete scope,
+  // so this pass is the only owner of that cleanup (review thread). Files
+  // with filtered (heuristic-resolved) sites are left alone — their prior
+  // lsp edges were not re-queried.
+  if (typeof params.store.reconcileLspEdges === "function") {
+    for (const rel of parsedFiles) {
+      if ((gatheredCountByFile.get(rel) ?? 0) === 0 && (filteredCountByFile.get(rel) ?? 0) === 0) {
+        params.store.reconcileLspEdges(rel, []);
+      }
     }
   }
   if (sites.length === 0) {
@@ -943,6 +969,10 @@ export async function runCodegraphLspResolution(params: {
           lastApplySkipped = false;
           if (typeof params.store.reconcileLspEdges !== "function") return;
           if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
+          // Any heuristic-filtered site in this file was NOT re-queried;
+          // its prior lsp edge is absent from the asserted set and must
+          // survive (review thread).
+          if ((filteredCountByFile.get(filePath) ?? 0) > 0) return;
           // This file batch had skipped writes — its asserted set is
           // incomplete, so reconciling would retire edges that were never
           // re-asserted (see skip tracking above).
