@@ -321,6 +321,18 @@
             "default": 4318,
             "description": "Bind port for the Engram HTTP access server. Use 0 for an ephemeral port."
           },
+          "writeRateLimitMaxRequests": {
+            "type": "number",
+            "minimum": 1,
+            "default": 30,
+            "description": "Max write requests (memory stores, observes) per rolling window before the HTTP API returns 429 write_rate_limited. Positive integer."
+          },
+          "writeRateLimitWindowMs": {
+            "type": "number",
+            "minimum": 1,
+            "default": 60000,
+            "description": "Rolling window for the write rate limit, in milliseconds. Positive integer."
+          },
           "authToken": {
             "description": "Bearer token for the local Remnic HTTP API. Either a literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object (e.g. {\"source\":\"exec\",\"provider\":\"kc_openclaw_remnic_token\",\"id\":\"value\"}) resolved at startup via the OpenClaw gateway secret resolver (issue #757). If omitted, OPENCLAW_REMNIC_ACCESS_TOKEN / OPENCLAW_ENGRAM_ACCESS_TOKEN is used.",
             "anyOf": [

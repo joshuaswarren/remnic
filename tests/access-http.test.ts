@@ -2709,3 +2709,83 @@ test("access HTTP coding/architecture route forwards connector from auth boundar
     await server.stop();
   }
 });
+
+test("access HTTP server honors a configured write rate limit (issue #1937)", async () => {
+  const server = new EngramAccessHttpServer({
+    service: createFakeService(),
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    writeRateLimitMaxRequests: 2,
+    writeRateLimitWindowMs: 60_000,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  const headers = { Authorization: "Bearer secret-token", "Content-Type": "application/json" };
+
+  try {
+    for (const n of [1, 2]) {
+      const res = await fetch(`${base}/engram/v1/memories`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          schemaVersion: 1,
+          idempotencyKey: `rate-limit-${n}`,
+          content: "A durable explicit memory for the rate limit test.",
+          category: "fact",
+        }),
+      });
+      assert.equal(res.status, 201, `write ${n} of 2 must be admitted`);
+    }
+
+    const limited = await fetch(`${base}/engram/v1/memories`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        schemaVersion: 1,
+        idempotencyKey: "rate-limit-3",
+        content: "A durable explicit memory beyond the configured limit.",
+        category: "fact",
+      }),
+    });
+    assert.equal(limited.status, 429, "write beyond the configured limit must be rejected");
+    const payload = (await limited.json()) as { code: string };
+    assert.equal(payload.code, "write_rate_limited");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("access HTTP server falls back to the default write rate limit on invalid overrides (issue #1937)", async () => {
+  // 0 / negative / non-integer overrides must NOT produce a zero-width
+  // limiter — the constructor falls back to the 30-request default.
+  const server = new EngramAccessHttpServer({
+    service: createFakeService(),
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    writeRateLimitMaxRequests: 0,
+    writeRateLimitWindowMs: -1,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  const headers = { Authorization: "Bearer secret-token", "Content-Type": "application/json" };
+
+  try {
+    for (const n of [1, 2, 3]) {
+      const res = await fetch(`${base}/engram/v1/memories`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          schemaVersion: 1,
+          idempotencyKey: `rate-limit-default-${n}`,
+          content: "A durable explicit memory under the default limit.",
+          category: "fact",
+        }),
+      });
+      assert.equal(res.status, 201, `write ${n} must be admitted under the default limit`);
+    }
+  } finally {
+    await server.stop();
+  }
+});

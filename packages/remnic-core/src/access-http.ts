@@ -86,6 +86,13 @@ export interface EngramAccessHttpServerOptions {
   tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   principal?: string;
   maxBodyBytes?: number;
+  /**
+   * Max non-replayed write requests per rolling window before 429
+   * `write_rate_limited` (issue #1937). Positive integer; defaults to 30.
+   */
+  writeRateLimitMaxRequests?: number;
+  /** Rolling window for the write rate limit, in ms. Positive integer; defaults to 60000. */
+  writeRateLimitWindowMs?: number;
   adminConsoleEnabled?: boolean;
   adminConsolePublicDir?: string;
   /** Inject the primary auth token into the admin console shell for trusted launch surfaces. */
@@ -206,6 +213,8 @@ function resolveDefaultAdminConsolePublicDir(): string {
 const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
 const correlationIdStore = new AsyncLocalStorage<string>();
 
+// Defaults for the write rate limit; overridable per instance via
+// `writeRateLimitWindowMs` / `writeRateLimitMaxRequests` (issue #1937).
 const WRITE_RATE_LIMIT_WINDOW_MS = 60_000;
 const WRITE_RATE_LIMIT_MAX_REQUESTS = 30;
 const TRUST_ZONE_RECORD_KINDS = ["memory", "artifact", "state", "trajectory", "external"] as const;
@@ -370,6 +379,8 @@ export class EngramAccessHttpServer {
     ctx: { authorized: boolean },
   ) => Promise<boolean>;
   private readonly writeRequestTimestamps: number[] = [];
+  private readonly writeRateLimitMaxRequests: number;
+  private readonly writeRateLimitWindowMs: number;
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
   private boundPort = 0;
@@ -406,6 +417,20 @@ export class EngramAccessHttpServer {
     this.maxBodyBytes = Number.isFinite(options.maxBodyBytes)
       ? Math.max(1, Math.floor(options.maxBodyBytes ?? 131072))
       : 131072;
+    // Defensive inline validation (config parsers reject invalid values
+    // loudly upstream; this only guards direct programmatic constructions).
+    this.writeRateLimitMaxRequests =
+      typeof options.writeRateLimitMaxRequests === "number" &&
+      Number.isInteger(options.writeRateLimitMaxRequests) &&
+      options.writeRateLimitMaxRequests >= 1
+        ? options.writeRateLimitMaxRequests
+        : WRITE_RATE_LIMIT_MAX_REQUESTS;
+    this.writeRateLimitWindowMs =
+      typeof options.writeRateLimitWindowMs === "number" &&
+      Number.isInteger(options.writeRateLimitWindowMs) &&
+      options.writeRateLimitWindowMs >= 1
+        ? options.writeRateLimitWindowMs
+        : WRITE_RATE_LIMIT_WINDOW_MS;
     this.adminConsoleEnabled = options.adminConsoleEnabled !== false;
     this.adminConsolePublicDir = options.adminConsolePublicDir ?? defaultAdminConsolePublicDir;
     this.adminConsolePrefillToken = options.adminConsolePrefillToken === true ? this.authToken : undefined;
@@ -3674,11 +3699,11 @@ export class EngramAccessHttpServer {
     const now = Date.now();
     while (
       this.writeRequestTimestamps.length > 0 &&
-      now - (this.writeRequestTimestamps[0] ?? 0) > WRITE_RATE_LIMIT_WINDOW_MS
+      now - (this.writeRequestTimestamps[0] ?? 0) > this.writeRateLimitWindowMs
     ) {
       this.writeRequestTimestamps.shift();
     }
-    if (this.writeRequestTimestamps.length >= WRITE_RATE_LIMIT_MAX_REQUESTS) {
+    if (this.writeRequestTimestamps.length >= this.writeRateLimitMaxRequests) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
   }

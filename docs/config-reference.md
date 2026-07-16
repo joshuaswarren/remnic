@@ -51,6 +51,8 @@ Backward compatibility note:
 | `agentAccessHttp.port` | `4318` | Bind port for the Remnic HTTP API (`0` = ephemeral port) |
 | `agentAccessHttp.authToken` | `OPENCLAW_REMNIC_ACCESS_TOKEN` / `OPENCLAW_ENGRAM_ACCESS_TOKEN` | Bearer token for the local HTTP API. Accepts a literal string (with `${ENV_VAR}` expansion) or — under OpenClaw — a SecretRef object such as `{"source":"exec","provider":"kc_openclaw_remnic_token","id":"value"}` resolved at startup via the gateway secret resolver (issue #757). Standalone Remnic accepts strings only. |
 | `agentAccessHttp.maxBodyBytes` | `131072` | Maximum accepted JSON request body size |
+| `agentAccessHttp.writeRateLimitMaxRequests` | `30` | Max write requests (memory stores, observes) per rolling window before the HTTP API returns `429 write_rate_limited`. Positive integer; invalid values are rejected at config parse time (issue #1937). |
+| `agentAccessHttp.writeRateLimitWindowMs` | `60000` | Rolling window for the write rate limit, in milliseconds. Positive integer (issue #1937). |
 
 When `agentAccessHttp.enabled` is on (or `openclaw engram access http-serve` is running), the same loopback server also serves the browser-based admin console shell at `/engram/ui/`. The shell is static, ships with packaged plugin builds, and still requires the configured bearer token over `/engram/v1/...` for memory data and operator actions.
 
@@ -58,7 +60,7 @@ Access-layer safety notes:
 
 - HTTP startup fails closed when no bearer token is configured.
 - Request bodies are capped by `agentAccessHttp.maxBodyBytes`.
-- Explicit write routes are rate-limited and support `schemaVersion`, `idempotencyKey`, and `dryRun` envelopes.
+- Explicit write routes are rate-limited (tunable via `agentAccessHttp.writeRateLimitMaxRequests` / `agentAccessHttp.writeRateLimitWindowMs`; standalone daemon: `server.writeRateLimitMaxRequests` / `server.writeRateLimitWindowMs`) and support `schemaVersion`, `idempotencyKey`, and `dryRun` envelopes.
 - The stdio MCP server (`openclaw engram access mcp-serve`) uses the same internal access service as HTTP, so recall/read/write behavior stays aligned across both transports.
 - MCP is intentionally zero-config on the Remnic side: launch `openclaw engram access mcp-serve` from the client and it will use the same local memory directory, namespace rules, and explicit-capture policy as the in-process plugin runtime.
 
@@ -1220,12 +1222,14 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `nativeKnowledge.obsidianVaults[].folderRules[].privacyClass` | (unset) | (unset) |
 | `nativeKnowledge.obsidianVaults[].dailyNotePatterns` | `["YYYY-MM-DD"]` | `["YYYY-MM-DD"]` |
 | `nativeKnowledge.obsidianVaults[].materializeBacklinks` | `false` | `false` |
-| `agentAccessHttp` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072}` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072}` |
+| `agentAccessHttp` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000}` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000}` |
 | `agentAccessHttp.enabled` | `false` | `false` unless you need the local HTTP bridge |
 | `agentAccessHttp.host` | `127.0.0.1` | `127.0.0.1` |
 | `agentAccessHttp.port` | `4318` | `4318` |
 | `agentAccessHttp.authToken` | (unset) | set explicitly whenever `agentAccessHttp.enabled=true` |
 | `agentAccessHttp.maxBodyBytes` | `131072` | `131072` |
+| `agentAccessHttp.writeRateLimitMaxRequests` | `30` | `30`; raise (e.g. `120`) for multi-agent deployments sharing one daemon (issue #1937) |
+| `agentAccessHttp.writeRateLimitWindowMs` | `60000` | `60000` |
 | `accessTrackingEnabled` | `true` | `true` |
 | `accessTrackingBufferMaxSize` | `100` | `100` |
 | `recencyWeight` | `0.2` | `0.2` |

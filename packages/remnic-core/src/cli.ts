@@ -747,6 +747,8 @@ export interface AccessHttpServeCliCommandOptions {
   authToken?: string;
   principal?: string;
   maxBodyBytes?: number;
+  writeRateLimitMaxRequests?: number;
+  writeRateLimitWindowMs?: number;
   trustPrincipalHeader?: boolean;
   citationsEnabled?: boolean;
   citationsAutoDetect?: boolean;
@@ -758,6 +760,8 @@ export interface AccessHttpServeCliCommandOptions {
     authToken?: string;
     principal?: string;
     maxBodyBytes?: number;
+    writeRateLimitMaxRequests?: number;
+    writeRateLimitWindowMs?: number;
     trustPrincipalHeader?: boolean;
     citationsEnabled?: boolean;
     citationsAutoDetect?: boolean;
@@ -2749,6 +2753,8 @@ export async function runAccessHttpServeCliCommand(
         authToken: input.authToken,
         principal: input.principal,
         maxBodyBytes: input.maxBodyBytes,
+        writeRateLimitMaxRequests: input.writeRateLimitMaxRequests,
+        writeRateLimitWindowMs: input.writeRateLimitWindowMs,
         trustPrincipalHeader: input.trustPrincipalHeader,
         citationsEnabled: input.citationsEnabled,
         citationsAutoDetect: input.citationsAutoDetect,
@@ -6821,6 +6827,8 @@ export function registerCli(
             authToken: cliTokenOverride ?? resolvedConfigAuthToken,
             principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
             maxBodyBytes: Number.isFinite(maxBodyBytesRaw) ? maxBodyBytesRaw : 131072,
+            writeRateLimitMaxRequests: orchestrator.config.agentAccessHttp.writeRateLimitMaxRequests,
+            writeRateLimitWindowMs: orchestrator.config.agentAccessHttp.writeRateLimitWindowMs,
             trustPrincipalHeader: options.trustPrincipalHeader === true,
             citationsEnabled: resolveConversationContextCapabilities(orchestrator.config).citations,
             citationsAutoDetect: orchestrator.config.citationsAutoDetect,

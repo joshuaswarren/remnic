@@ -28,6 +28,10 @@ export interface ServerConfig {
     authToken?: string;
     principal?: string;
     maxBodyBytes?: number;
+    /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
+    writeRateLimitMaxRequests?: number;
+    /** Rolling window for the write rate limit, in ms (issue #1937). */
+    writeRateLimitWindowMs?: number;
     adminConsoleEnabled?: boolean;
     adminConsolePublicDir?: string;
     adminConsolePrefillToken?: boolean;
@@ -101,6 +105,8 @@ export interface ParsedServerConfig {
   authToken?: string;
   principal?: string;
   maxBodyBytes?: number;
+  writeRateLimitMaxRequests?: number;
+  writeRateLimitWindowMs?: number;
   adminConsoleEnabled: boolean;
   adminConsolePublicDir?: string;
   adminConsolePrefillToken: boolean;
@@ -119,6 +125,14 @@ export function parseServerConfig(
     authToken: parseOptionalString(raw.authToken, "server.authToken"),
     principal: parseOptionalString(raw.principal, "server.principal"),
     maxBodyBytes: parseOptionalPositiveInteger(raw.maxBodyBytes, "server.maxBodyBytes"),
+    writeRateLimitMaxRequests: parseOptionalPositiveInteger(
+      raw.writeRateLimitMaxRequests,
+      "server.writeRateLimitMaxRequests",
+    ),
+    writeRateLimitWindowMs: parseOptionalPositiveInteger(
+      raw.writeRateLimitWindowMs,
+      "server.writeRateLimitWindowMs",
+    ),
     adminConsoleEnabled: parseOptionalBoolean(raw.adminConsoleEnabled, "server.adminConsoleEnabled") ?? false,
     adminConsolePublicDir: parseOptionalString(raw.adminConsolePublicDir, "server.adminConsolePublicDir"),
     adminConsolePrefillToken: parseOptionalBoolean(raw.adminConsolePrefillToken, "server.adminConsolePrefillToken") ?? false,
@@ -994,6 +1008,8 @@ export async function startServer(options?: {
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
+    writeRateLimitMaxRequests: parsedServerConfig.writeRateLimitMaxRequests,
+    writeRateLimitWindowMs: parsedServerConfig.writeRateLimitWindowMs,
     adminConsoleEnabled: parsedServerConfig.adminConsoleEnabled,
     adminConsolePublicDir: parsedServerConfig.adminConsolePublicDir
       ? path.resolve(expandTildePath(parsedServerConfig.adminConsolePublicDir))
