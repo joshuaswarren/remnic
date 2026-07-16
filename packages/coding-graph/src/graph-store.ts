@@ -2966,21 +2966,58 @@ export class GraphStore {
    * also skipping sites whose only edge is a prior "lsp" edge — those must
    * be re-asserted each run or reconciliation would retire them.
    */
-  resolvedCalleeNames(srcQualifiedName: string, provenance: string): string[] {
+  resolvedCalleeNames(srcQualifiedName: string, provenance: string, filePath?: string): string[] {
     if (this.closed) return [];
     try {
+      // Scoped to the caller FILE when provided: two files defining the
+      // same top-level qualified name (main/handler/init) must not leak
+      // each other's resolutions (#1923 review thread).
+      const fileClause = filePath !== undefined ? " AND f.path = ?" : "";
+      const bind = filePath !== undefined ? [srcQualifiedName, provenance, filePath] : [srcQualifiedName, provenance];
       const rows = expectRows<{ name: string }>(
         this.db
           .prepare(
             `SELECT DISTINCT dn.name AS name FROM edges e
               JOIN nodes sn ON e.src = sn.id
+              JOIN files f ON sn.file_id = f.id
               JOIN nodes dn ON e.dst = dn.id
-              WHERE sn.qualified_name = ? AND e.type = 'CALLS' AND e.provenance = ?`,
+              WHERE sn.qualified_name = ? AND e.type = 'CALLS' AND e.provenance = ?${fileClause}`,
           )
-          .all(srcQualifiedName, provenance),
+          .all(...bind),
         ["name"],
       );
       return rows.map((r) => r.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Current lsp-provenance CALLS edges owned by a caller symbol in a file
+   * (#1923 review thread). The LSP pass appends these to the asserted set
+   * for call sites it deliberately did NOT re-query (Phase-A-resolved
+   * sites), so reconciliation can retire genuinely stale edges in the
+   * same file without dropping the preserved ones.
+   */
+  lspCallEdgesForCaller(
+    srcQualifiedName: string,
+    filePath: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> {
+    if (this.closed) return [];
+    try {
+      const rows = expectRows<{ src_q: string; dst_q: string; type: string }>(
+        this.db
+          .prepare(
+            `SELECT sn.qualified_name AS src_q, dn.qualified_name AS dst_q, e.type AS type FROM edges e
+              JOIN nodes sn ON e.src = sn.id
+              JOIN files f ON sn.file_id = f.id
+              JOIN nodes dn ON e.dst = dn.id
+              WHERE sn.qualified_name = ? AND f.path = ? AND e.provenance = 'lsp' AND e.type = 'CALLS'`,
+          )
+          .all(srcQualifiedName, filePath),
+        ["src_q", "dst_q", "type"],
+      );
+      return rows.map((r) => ({ srcQualifiedName: r.src_q, dstQualifiedName: r.dst_q, type: r.type }));
     } catch {
       return [];
     }

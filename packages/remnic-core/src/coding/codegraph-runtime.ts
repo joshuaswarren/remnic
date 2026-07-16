@@ -116,7 +116,12 @@ export interface CodegraphStore {
     assertedEdges: ReadonlyArray<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>,
   ): number;
   /** Callee names already CALLS-linked from a caller with a given provenance (issue #1917). */
-  resolvedCalleeNames?(srcQualifiedName: string, provenance: string): string[];
+  resolvedCalleeNames?(srcQualifiedName: string, provenance: string, filePath?: string): string[];
+  /** Current lsp CALLS edges owned by a caller symbol in a file (issue #1917). */
+  lspCallEdgesForCaller?(
+    srcQualifiedName: string,
+    filePath: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>;
 }
 
 /**
@@ -706,17 +711,20 @@ export async function runCodegraphLspResolution(params: {
   // would retire that still-valid lsp edge (review thread). When the
   // installed store predates resolvedCalleeNames, nothing is treated as
   // resolved (conservative: spends budget, never mis-retires).
+  // Memo key includes the caller FILE: duplicate top-level qualified
+  // names across files must not leak each other's resolutions.
   const resolvedCalleesBySrc = new Map<string, Set<string>>();
-  const alreadyResolved = (srcQualifiedName: string, calleeName: string): boolean => {
-    let names = resolvedCalleesBySrc.get(srcQualifiedName);
+  const alreadyResolved = (filePath: string, srcQualifiedName: string, calleeName: string): boolean => {
+    const key = `${filePath}\u0000${srcQualifiedName}`;
+    let names = resolvedCalleesBySrc.get(key);
     if (names === undefined) {
       names = new Set<string>();
       if (typeof params.store.resolvedCalleeNames === "function") {
-        for (const name of params.store.resolvedCalleeNames(srcQualifiedName, "heuristic")) {
+        for (const name of params.store.resolvedCalleeNames(srcQualifiedName, "heuristic", filePath)) {
           names.add(name);
         }
       }
-      resolvedCalleesBySrc.set(srcQualifiedName, names);
+      resolvedCalleesBySrc.set(key, names);
     }
     return names.has(calleeName);
   };
@@ -729,6 +737,10 @@ export async function runCodegraphLspResolution(params: {
   // in the asserted set, so reconciliation would retire their prior lsp
   // edges even though the sites were never re-queried (review thread).
   const filteredCountByFile = new Map<string, number>();
+  // Caller symbols of filtered sites per file — their CURRENT lsp edges
+  // are appended to the asserted set at reconcile time so stale cleanup
+  // still runs for the rest of the file without dropping them.
+  const filteredSrcByFile = new Map<string, Set<string>>();
   // Files that parsed cleanly this run — the safe candidates for the
   // empty-set reconcile below.
   const parsedFiles = new Set<string>();
@@ -785,8 +797,11 @@ export async function runCodegraphLspResolution(params: {
       }
       if (srcQualifiedName.length === 0) continue;
       const memberAccess = "memberAccess" in site && site.memberAccess === true;
-      if (!memberAccess && alreadyResolved(srcQualifiedName, calleeName)) {
+      if (!memberAccess && alreadyResolved(rel, srcQualifiedName, calleeName)) {
         filteredCountByFile.set(rel, (filteredCountByFile.get(rel) ?? 0) + 1);
+        const srcs = filteredSrcByFile.get(rel);
+        if (srcs === undefined) filteredSrcByFile.set(rel, new Set([srcQualifiedName]));
+        else srcs.add(srcQualifiedName);
         continue;
       }
       // Position the definition query on the callee NAME, not the call
@@ -809,11 +824,29 @@ export async function runCodegraphLspResolution(params: {
   // so this pass is the only owner of that cleanup (review thread). Files
   // with filtered (heuristic-resolved) sites are left alone — their prior
   // lsp edges were not re-queried.
+  // Filtered (Phase-A-resolved) sites keep their CURRENT lsp edges by
+  // asserting them explicitly — reconciliation can then retire genuinely
+  // stale edges in the same file without dropping preserved ones. When
+  // the store predates lspCallEdgesForCaller, preservation is impossible,
+  // so callers below fall back to skipping reconcile for such files.
+  const canPreserve = typeof params.store.lspCallEdgesForCaller === "function";
+  const preservedEdgesForFile = (
+    rel: string,
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> => {
+    const srcs = filteredSrcByFile.get(rel);
+    if (srcs === undefined || !canPreserve) return [];
+    const preserved: Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> = [];
+    for (const src of srcs) {
+      preserved.push(...params.store.lspCallEdgesForCaller!(src, rel));
+    }
+    return preserved;
+  };
   if (typeof params.store.reconcileLspEdges === "function") {
     for (const rel of parsedFiles) {
-      if ((gatheredCountByFile.get(rel) ?? 0) === 0 && (filteredCountByFile.get(rel) ?? 0) === 0) {
-        params.store.reconcileLspEdges(rel, []);
-      }
+      if ((gatheredCountByFile.get(rel) ?? 0) !== 0) continue;
+      const filteredCount = filteredCountByFile.get(rel) ?? 0;
+      if (filteredCount > 0 && !canPreserve) continue;
+      params.store.reconcileLspEdges(rel, preservedEdgesForFile(rel));
     }
   }
   if (sites.length === 0) {
@@ -969,15 +1002,16 @@ export async function runCodegraphLspResolution(params: {
           lastApplySkipped = false;
           if (typeof params.store.reconcileLspEdges !== "function") return;
           if (plannedCountByFile.get(filePath) !== gatheredCountByFile.get(filePath)) return;
-          // Any heuristic-filtered site in this file was NOT re-queried;
-          // its prior lsp edge is absent from the asserted set and must
-          // survive (review thread).
-          if ((filteredCountByFile.get(filePath) ?? 0) > 0) return;
           // This file batch had skipped writes — its asserted set is
           // incomplete, so reconciling would retire edges that were never
           // re-asserted (see skip tracking above).
           if (batchHadSkips) return;
-          params.store.reconcileLspEdges(filePath, assertedEdges);
+          // Heuristic-filtered sites were NOT re-queried: their current
+          // lsp edges are appended to the asserted set so they survive
+          // while stale edges for RE-QUERIED sites still get retired.
+          // Without the preservation seam, skip (conservative).
+          if ((filteredCountByFile.get(filePath) ?? 0) > 0 && !canPreserve) return;
+          params.store.reconcileLspEdges(filePath, [...assertedEdges, ...preservedEdgesForFile(filePath)]);
         },
       });
       if (result && typeof result === "object" && "upgraded" in result && typeof result.upgraded === "number") {
