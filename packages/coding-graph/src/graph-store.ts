@@ -3002,22 +3002,27 @@ export class GraphStore {
   lspCallEdgesForCaller(
     srcQualifiedName: string,
     filePath: string,
-  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> {
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }> {
     if (this.closed) return [];
     try {
-      const rows = expectRows<{ src_q: string; dst_q: string; type: string }>(
+      const rows = expectRows<{ src_q: string; dst_q: string; dst_n: string; type: string }>(
         this.db
           .prepare(
-            `SELECT sn.qualified_name AS src_q, dn.qualified_name AS dst_q, e.type AS type FROM edges e
+            `SELECT sn.qualified_name AS src_q, dn.qualified_name AS dst_q, dn.name AS dst_n, e.type AS type FROM edges e
               JOIN nodes sn ON e.src = sn.id
               JOIN files f ON sn.file_id = f.id
               JOIN nodes dn ON e.dst = dn.id
               WHERE sn.qualified_name = ? AND f.path = ? AND e.provenance = 'lsp' AND e.type = 'CALLS'`,
           )
           .all(srcQualifiedName, filePath),
-        ["src_q", "dst_q", "type"],
+        ["src_q", "dst_q", "dst_n", "type"],
       );
-      return rows.map((r) => ({ srcQualifiedName: r.src_q, dstQualifiedName: r.dst_q, type: r.type }));
+      return rows.map((r) => ({
+        srcQualifiedName: r.src_q,
+        dstQualifiedName: r.dst_q,
+        dstName: r.dst_n,
+        type: r.type,
+      }));
     } catch {
       return [];
     }

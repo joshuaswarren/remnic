@@ -121,7 +121,7 @@ export interface CodegraphStore {
   lspCallEdgesForCaller?(
     srcQualifiedName: string,
     filePath: string,
-  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }>;
+  ): Array<{ srcQualifiedName: string; dstQualifiedName: string; dstName: string; type: string }>;
 }
 
 /**
@@ -740,7 +740,7 @@ export async function runCodegraphLspResolution(params: {
   // Caller symbols of filtered sites per file — their CURRENT lsp edges
   // are appended to the asserted set at reconcile time so stale cleanup
   // still runs for the rest of the file without dropping them.
-  const filteredSrcByFile = new Map<string, Set<string>>();
+  const filteredSrcByFile = new Map<string, Map<string, Set<string>>>();
   // Files that parsed cleanly this run — the safe candidates for the
   // empty-set reconcile below.
   const parsedFiles = new Set<string>();
@@ -799,9 +799,14 @@ export async function runCodegraphLspResolution(params: {
       const memberAccess = "memberAccess" in site && site.memberAccess === true;
       if (!memberAccess && alreadyResolved(rel, srcQualifiedName, calleeName)) {
         filteredCountByFile.set(rel, (filteredCountByFile.get(rel) ?? 0) + 1);
-        const srcs = filteredSrcByFile.get(rel);
-        if (srcs === undefined) filteredSrcByFile.set(rel, new Set([srcQualifiedName]));
-        else srcs.add(srcQualifiedName);
+        let srcs = filteredSrcByFile.get(rel);
+        if (srcs === undefined) {
+          srcs = new Map<string, Set<string>>();
+          filteredSrcByFile.set(rel, srcs);
+        }
+        const callees = srcs.get(srcQualifiedName);
+        if (callees === undefined) srcs.set(srcQualifiedName, new Set([calleeName]));
+        else callees.add(calleeName);
         continue;
       }
       // Position the definition query on the callee NAME, not the call
@@ -836,8 +841,20 @@ export async function runCodegraphLspResolution(params: {
     const srcs = filteredSrcByFile.get(rel);
     if (srcs === undefined || !canPreserve) return [];
     const preserved: Array<{ srcQualifiedName: string; dstQualifiedName: string; type: string }> = [];
-    for (const src of srcs) {
-      preserved.push(...params.store.lspCallEdgesForCaller!(src, rel));
+    for (const [src, calleeNames] of srcs) {
+      for (const edge of params.store.lspCallEdgesForCaller!(src, rel)) {
+        // Preserve ONLY edges whose destination NAME matches a filtered
+        // site's callee — preserving every lsp edge of the caller would
+        // re-assert edges for calls that were REMOVED from the source
+        // (review thread: a deleted member call's edge would never
+        // retire while any bare call in the function stays filtered).
+        if (!calleeNames.has(edge.dstName)) continue;
+        preserved.push({
+          srcQualifiedName: edge.srcQualifiedName,
+          dstQualifiedName: edge.dstQualifiedName,
+          type: edge.type,
+        });
+      }
     }
     return preserved;
   };
