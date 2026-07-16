@@ -31,8 +31,21 @@ remnic xray "<query>" [--format json|text|markdown] [--budget N] [--namespace ns
 The OpenClaw-hosted equivalent is `openclaw engram xray "<query>"`, which adds a
 `--disclosure chunk|section|raw` flag for the per-disclosure token-spend summary.
 Both handlers delegate to a shared `EngramAccessService.recallXray(...)` so the
-CLI, HTTP, and MCP surfaces share the same `xrayQueue` mutex and cannot race each
-other.
+CLI, HTTP, and MCP surfaces share the mutex owned by their common
+`Orchestrator` instance and cannot race each other. Core callers that need an
+owned snapshot should use
+`orchestrator.recallWithXrayCapture(prompt, sessionKey, options)`, which returns
+the recall string and a deep-cloned snapshot from the same atomic invocation.
+The older sequence of `clearLastXraySnapshot()`, `recall()`, and
+`getLastXraySnapshot()` is non-atomic and retained only for compatibility and
+explicit test/reset use.
+
+`recallWithXrayCapture` accepts the recall `abortSignal`. A signal that fires
+while the call is queued rejects promptly without letting later captures
+overtake the active recall; after recall starts, ownership is retained until
+that recall settles. Access-surface cancellation covers queueing and the recall
+capture itself. The access layer checks once more before snapshot shaping, but
+does not interrupt shaping I/O already in progress.
 
 Flags (standalone), validated by `parseXrayCliOptions` in
 `packages/remnic-core/src/recall-xray-cli.ts` — an empty or missing query throws

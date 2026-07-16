@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { EngramAccessService } from "../src/access-service.js";
+import { Orchestrator } from "../src/orchestrator.js";
+import { XrayCaptureQueue } from "../packages/remnic-core/src/orchestration/xray-capture-queue.js";
 import type { RecallXraySnapshot } from "../src/recall-xray.js";
 import type { MemoryFile } from "../src/types.js";
 
@@ -53,6 +55,9 @@ function stubOrchestrator(opts: {
     snapshot: opts.snapshot ?? null,
   };
   const orchestrator = {
+    recallWithXrayCapture: Orchestrator.prototype.recallWithXrayCapture,
+    runRecallWithXrayCapture: (Orchestrator.prototype as any).runRecallWithXrayCapture,
+    xrayCaptureQueue: new XrayCaptureQueue(),
     config: {
       memoryDir: "/tmp/engram",
       namespacesEnabled: opts.namespacesEnabled ?? false,
@@ -103,6 +108,11 @@ function stubOrchestrator(opts: {
       getMemoryTimeline: async () => [],
     }),
   };
+  (orchestrator as any).invokeRecall = (
+    prompt: string,
+    sessionKey: string | undefined,
+    options: Record<string, unknown>,
+  ) => orchestrator.recall(prompt, sessionKey, options);
   return { orchestrator, state };
 }
 
@@ -333,11 +343,67 @@ test("recallXray includeRecall latency starts after waiting for the snapshot mut
   }
 });
 
-test("recallXray forwards xrayCapture:true to orchestrator.recall", async () => {
+test("recallXray delegates capture through orchestrator.recallWithXrayCapture", async () => {
   const { orchestrator, state } = stubOrchestrator({ snapshot: null });
   const service = new EngramAccessService(orchestrator as any);
   await service.recallXray({ query: "q" });
   assert.equal(state.lastOptions?.xrayCapture, true);
+});
+
+test("recallXray forwards the exact abort signal through the atomic capture API", async () => {
+  const { orchestrator, state } = stubOrchestrator({ snapshot: null });
+  const service = new EngramAccessService(orchestrator as any);
+  const controller = new AbortController();
+
+  await service.recallXray({ query: "q", abortSignal: controller.signal });
+
+  assert.equal(state.lastOptions?.abortSignal, controller.signal);
+});
+
+test("recallXray rejects a pre-aborted request without clearing or invoking recall", async () => {
+  const { orchestrator, state } = stubOrchestrator({
+    snapshot: fakeSnapshot({ snapshotId: "prior" }),
+  });
+  const service = new EngramAccessService(orchestrator as any);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    service.recallXray({ query: "q", abortSignal: controller.signal }),
+    { name: "AbortError" },
+  );
+  assert.equal(state.clearedSnapshot, 0);
+  assert.equal(state.lastOptions, undefined);
+  assert.equal(state.snapshot?.snapshotId, "prior");
+});
+
+test("queued recallXray abort rejects before the active recall is released", async () => {
+  const { orchestrator, state } = stubOrchestrator({});
+  let releaseFirst: () => void = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const prompts: string[] = [];
+  orchestrator.recall = async (prompt: string) => {
+    prompts.push(prompt);
+    if (prompt === "first") await firstGate;
+    state.snapshot = fakeSnapshot({ query: prompt, snapshotId: `${prompt}-id` });
+    return "ctx";
+  };
+  const service = new EngramAccessService(orchestrator as any);
+  const first = service.recallXray({ query: "first" });
+  await Promise.resolve();
+  const controller = new AbortController();
+  const queued = service.recallXray({
+    query: "queued",
+    abortSignal: controller.signal,
+  });
+  controller.abort();
+
+  await assert.rejects(queued, { name: "AbortError" });
+  assert.deepEqual(prompts, ["first"]);
+  releaseFirst();
+  assert.equal((await first).snapshot?.snapshotId, "first-id");
 });
 
 test("recallXray forwards current context scopes through invocation options", async () => {

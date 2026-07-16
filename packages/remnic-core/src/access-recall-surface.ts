@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
+import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { type BudgetDecision, CrossNamespaceBudget } from "./cross-namespace-budget.js";
@@ -173,7 +174,6 @@ export interface AccessRecallSurfaceDeps {
     primaryNamespace: string,
     recallNamespaces?: readonly string[],
   ): Promise<{ storage: StorageManager; dir: string } | null>;
-  xrayQueue: Promise<void>;
 }
 
 export class AccessRecallSurface {
@@ -1117,6 +1117,8 @@ export class AccessRecallSurface {
      * regular X-ray API/CLI/MCP surfaces keep their existing payload shape.
      */
     includeRecall?: boolean;
+    /** Cancel the capture before it starts and propagate cancellation to recall. */
+    abortSignal?: AbortSignal;
   }): Promise<{
     snapshotFound: boolean;
     snapshot?: RecallXraySnapshot;
@@ -1195,21 +1197,9 @@ export class AccessRecallSurface {
     const mode = this.deps.normalizeRecallMode(request.mode);
     const disclosure = request.disclosure ?? DEFAULT_RECALL_DISCLOSURE;
 
-    // Serialize x-ray invocations behind a per-service mutex so the
-    // per-process `getLastXraySnapshot()` slot cannot be clobbered by
-    // a concurrent capturing call before this caller reads it back.
-    // Budget and principal are now threaded through
-    // `RecallInvocationOptions`, so global config mutation is gone
-    // (CLAUDE.md rule 47: no shared mutable state across async
-    // boundaries).  The mutex stays only for the snapshot-slot
-    // ordering guarantee.
-    const previousQueue = this.deps.xrayQueue;
-    let release: () => void = () => {};
-    this.deps.xrayQueue = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previousQueue;
-    const recallStartedAt = Date.now();
+    // Reset when the orchestrator-owned snapshot lock is actually acquired so
+    // queue wait is not misreported as recall latency.
+    let recallStartedAt = Date.now();
 
     const recallSessionKey = request.sessionKey?.trim() || undefined;
     let xrayResponse: {
@@ -1217,37 +1207,46 @@ export class AccessRecallSurface {
       snapshot?: RecallXraySnapshot;
     } = { snapshotFound: false };
 
-    try {
-      // Clear any prior snapshot so a capture failure surfaces as
-      // `{snapshotFound: false}` rather than returning stale data
-      // from an earlier call on the same orchestrator.
-      this.deps.orchestrator.clearLastXraySnapshot();
-      await this.deps.orchestrator.recall(query, recallSessionKey, {
-        xrayCapture: true,
-        ...(requestedNamespace ? { namespace: requestedNamespace } : {}),
-        ...(budgetOverride !== undefined
-          ? { budgetCharsOverride: budgetOverride }
-          : {}),
-        ...(mode !== undefined ? { mode } : {}),
-        // When the caller supplies an authenticated principal, forward
-        // it via the dedicated override channel so orchestrator-side
-        // ACL decisions use the SAME principal the access-surface
-        // pre-check above authorized.  Threading an
-        // `authenticatedPrincipal` through `sessionKey` would be wrong:
-        // `resolvePrincipal(sessionKey)` only maps configured raw
-        // session keys and otherwise collapses to `"default"`, which
-        // in namespace-enabled deployments produces false denials /
-        // wrong-scope serving despite the pre-check passing
-        // (CLAUDE.md rule 42).
-        ...(authenticatedPrincipal
-          ? { principalOverride: authenticatedPrincipal }
-          : {}),
-        ...(request.currentContextScopes !== undefined
-          ? { currentContextScopes: request.currentContextScopes }
-          : {}),
-      });
-
-      const rawSnapshot = this.deps.orchestrator.getLastXraySnapshot();
+    {
+      // Capture through the orchestrator-owned critical section so every
+      // consumer of its mutable snapshot slot shares the same queue. The
+      // returned clone remains owned by this call after the lock is released.
+      const {
+        snapshot: rawSnapshot,
+        recallStartedAt: capturedRecallStartedAt,
+      } = await this.deps.orchestrator.recallWithXrayCapture(
+        query,
+        recallSessionKey,
+        {
+          ...(requestedNamespace ? { namespace: requestedNamespace } : {}),
+          ...(budgetOverride !== undefined
+            ? { budgetCharsOverride: budgetOverride }
+            : {}),
+          ...(mode !== undefined ? { mode } : {}),
+          // When the caller supplies an authenticated principal, forward
+          // it via the dedicated override channel so orchestrator-side
+          // ACL decisions use the SAME principal the access-surface
+          // pre-check above authorized.  Threading an
+          // `authenticatedPrincipal` through `sessionKey` would be wrong:
+          // `resolvePrincipal(sessionKey)` only maps configured raw
+          // session keys and otherwise collapses to `"default"`, which
+          // in namespace-enabled deployments produces false denials /
+          // wrong-scope serving despite the pre-check passing
+          // (CLAUDE.md rule 42).
+          ...(authenticatedPrincipal
+            ? { principalOverride: authenticatedPrincipal }
+            : {}),
+          ...(request.currentContextScopes !== undefined
+            ? { currentContextScopes: request.currentContextScopes }
+            : {}),
+          ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+        },
+      );
+      recallStartedAt = capturedRecallStartedAt;
+      // Cancellation covers queueing + recall/capture. Post-capture shaping is
+      // intentionally not wired for mid-I/O abort in this change, but do not
+      // begin that work after the caller has already canceled.
+      throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
       // the snapshot rather than leak cross-tenant data (CLAUDE.md
@@ -1483,8 +1482,6 @@ export class AccessRecallSurface {
           };
         }
       }
-    } finally {
-      release();
     }
 
     if (
