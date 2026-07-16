@@ -15,6 +15,7 @@ Canonical upstream references:
 - [Why MemoryProvider](#why-memoryprovider)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [How Hermes discovers the provider](#how-hermes-discovers-the-provider)
 - [Configuration reference](#configuration-reference)
 - [Environment variable overrides](#environment-variable-overrides)
 - [Token bootstrap](#token-bootstrap)
@@ -36,7 +37,7 @@ Remnic registers as a Hermes **memory provider** (`plugin.yaml` declares `kind: 
 
 The manifest declares Hermes-supported capability metadata with `provides_tools` and `provides_hooks`. It does not declare or register a context engine.
 
-**Remnic does not, and should not, register as a Hermes `context_engine`.** Hermes' `context_engine` slot replaces the built-in `ContextCompressor` — it controls how Hermes compresses *its own outgoing conversation history* before sending to the LLM. That is a different concern from external memory recall. Remnic delivers all of the following through the `memory_provider` hook chain (`pre_llm_call` → recall envelope), with no `context_engine` registration involved:
+**Remnic does not, and should not, register as a Hermes `context_engine`.** Hermes' `context_engine` slot replaces the built-in `ContextCompressor` — it controls how Hermes compresses *its own outgoing conversation history* before sending to the LLM. That is a different concern from external memory recall. Remnic delivers all of the following through the MemoryProvider protocol (`prefetch()` → recall envelope), with no `context_engine` registration involved:
 
 - Recalled memories from the Remnic store
 - Lossless Context Management (LCM) compressed-history sections, when the Remnic daemon has `lcmEnabled: true`
@@ -88,7 +89,7 @@ remnic connectors install hermes
 pip install --upgrade remnic-hermes
 ```
 
-Then add the config block manually — see [Configuration reference](#configuration-reference).
+Then add the config block manually and create the memory-provider shim — see [Configuration reference](#configuration-reference) and [How Hermes discovers the provider](#how-hermes-discovers-the-provider).
 
 ### Option C: editable install from source
 
@@ -97,17 +98,46 @@ cd packages/plugin-hermes
 pip install -e ".[dev]"
 ```
 
+### How Hermes discovers the provider
+
+Hermes memory providers are discovered by directory scan, not by pip metadata. Upstream (`plugins/memory/__init__.py`, verified against `NousResearch/hermes-agent` commit `53adb3f`, 2026-07-16) scans:
+
+1. Bundled providers: `<hermes-repo>/plugins/memory/<name>/`
+2. User-installed providers: `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
+
+A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. You need a small shim directory whose `__init__.py` bridges to the pip package:
+
+```python
+# $HERMES_HOME/plugins/remnic/__init__.py
+"""Remnic memory provider shim. Calls collector.register_memory_provider()."""
+
+from remnic_hermes import register  # register() handles config loading itself
+```
+
+Hermes' discovery heuristic requires the literal text `register_memory_provider` or `MemoryProvider` to appear in the shim's `__init__.py` source (cheap text scan before import), which the docstring above satisfies. Hermes calls the module's `register(collector)`; the collector exposes `register_memory_provider()` but carries **no** `.config` attribute, so `remnic_hermes.register()` falls back to reading the Hermes host config via `hermes_cli.config.load_config_readonly()` (added in `remnic-hermes` 1.0.5, issue #1929).
+
+Then select the provider in `config.yaml`:
+
+```yaml
+memory:
+  provider: remnic
+  memory_enabled: true
+```
+
+Only one memory provider can be active at a time (`kind: exclusive`).
+
 ---
 
 ## Configuration reference
 
-The plugin entry point is `register(ctx)` in `remnic_hermes/__init__.py`. It reads configuration from `ctx.config["remnic"]`, falling back to `ctx.config["engram"]` if the `remnic` key is absent. The extracted dict is passed directly to `RemnicMemoryProvider`.
+The plugin entry point is `register(ctx)` in `remnic_hermes/__init__.py`. It reads configuration from `ctx.config["remnic"]`, falling back to `ctx.config["engram"]` if the `remnic` key is absent. When the context carries no `config` attribute at all (Hermes' memory-provider discovery collector), the Hermes host config is loaded directly via `hermes_cli.config.load_config_readonly()`. The extracted dict is passed to `RemnicMemoryProvider`.
 
-In Hermes `config.yaml`, the config block sits at the **top level** under a `remnic:` key (or `engram:` for legacy configs), alongside the `plugins:` list:
+In Hermes `config.yaml`, the config block sits at the **top level** under a `remnic:` key (or `engram:` for legacy configs), alongside the `memory:` block that selects the provider:
 
 ```yaml
-plugins:
-  - remnic_hermes
+memory:
+  provider: remnic        # must match the shim directory name under $HERMES_HOME/plugins/
+  memory_enabled: true
 
 remnic:
   host: "127.0.0.1"
@@ -115,6 +145,7 @@ remnic:
   token: ""
   session_key: ""
   timeout: 30.0
+  prefetch_wait_timeout: 2.0
 ```
 
 ### Field reference
@@ -126,6 +157,7 @@ remnic:
 | `token` | string | `""` | Auth token for the daemon. If empty, auto-loaded from the token store (see [Token bootstrap](#token-bootstrap)). |
 | `session_key` | string | `""` | Session identifier passed on every recall/observe call. If empty, auto-generated as `hermes-<12 random hex chars>` at startup. |
 | `timeout` | float | `30.0` | HTTP request timeout in seconds applied to all daemon calls. |
+| `prefetch_wait_timeout` | float | `2.0` | Maximum seconds `prefetch()` blocks the turn waiting for a first-fetch recall (always additionally capped by `timeout`). Set `0` for pure fire-and-forget: prefetch only ever returns cached results and never waits. Invalid values (negative, non-numeric, NaN/inf) are rejected at load. Added in 1.0.5 (issue #1929). |
 
 No other fields are read. Fields documented elsewhere (such as `namespace`, `recall_top_k`, `recall_mode`, or `token_env`) do not exist in this implementation.
 
@@ -198,15 +230,21 @@ Called when the plugin loads. Creates an `httpx.AsyncClient` pointed at `http://
 
 Note: the HTTP base path currently uses `/engram/v1` because the Remnic daemon exposes a legacy surface during the v1.x compat window. This will change to `/remnic/v1` once the daemon ships the dual-path rollout.
 
+### `prefetch` / `queue_prefetch` — the Hermes injection path
+
+**This is how memory reaches the model in Hermes.** Verified against upstream `NousResearch/hermes-agent` commit `53adb3f` (2026-07-16): `agent/turn_context.py` calls `MemoryManager.prefetch_all()` → `provider.prefetch(query, session_id=...)` **synchronously** on the turn hot path, and the returned text is injected into the current turn's user message. Hermes imposes no timeout of its own on `prefetch()`, so the provider is responsible for bounding its own latency. After each completed turn, Hermes calls `queue_prefetch()` and `sync_turn()` on a background executor.
+
+`prefetch()` behavior:
+
+1. **Skips recall entirely** if the query is absent or fewer than 3 words (whitespace-split). This avoids triggering recall on very short acknowledgments like "ok" or "thanks".
+2. Serves from a per-session in-memory cache (60s TTL, invalidated by `sync_turn` and session switches) when possible.
+3. On a cache miss, starts `POST /recall` (query, `sessionKey`, `topK: 8`) on a background event loop and waits up to `prefetch_wait_timeout` seconds (default 2.0, capped by `timeout`) for the result. If the recall is still in flight when the wait expires, `prefetch()` returns `""` for this turn and the completed result populates the cache for the next turn.
+4. A non-empty `context` in the daemon response is wrapped in a `<remnic-memory count="N">` block. **`count` may be `0` with a populated `context`** — the daemon returns profile and knowledge-index sections even when no specific memory IDs matched the query. The block is injected either way; only an empty `context` yields `""` (fixed in 1.0.5, issue #1929).
+5. Exceptions are swallowed (logged at DEBUG on the `remnic_hermes.provider` logger); returns `""` on any error so the LLM call proceeds normally.
+
 ### `pre_llm_call`
 
-Called before every LLM request. Behavior:
-
-1. Scans `messages` in reverse to find the last message with `role: "user"`.
-2. **Skips recall entirely** if the user message is absent or fewer than 3 words (whitespace-split). This avoids triggering recall on very short acknowledgments like "ok" or "thanks".
-3. Issues `POST /recall` with the user message as the query, `sessionKey`, and `topK: 8`. The plugin leaves recall mode unset so the daemon default can include LCM compressed-history sections when `lcmEnabled: true`.
-4. If the response has a non-empty `context` field and `count > 0`, returns a `<remnic-memory count="N">` block that Hermes injects into the system prompt.
-5. Exceptions are swallowed; returns `""` on any error so the LLM call proceeds normally.
+Retained for hosts that embed the provider directly, but **Hermes never calls `pre_llm_call` on memory providers** — the `pre_llm_call` hook exists only in Hermes' general plugin system (`hermes_cli.plugins`), a separate registration path from the MemoryProvider protocol. Do not describe `pre_llm_call` as the Hermes injection path; that is `prefetch()` above. `pre_llm_call(messages)` performs the same recall as `prefetch()` (last user message as query, same 3-word gate, same `<remnic-memory>` block) without the cache/wait machinery.
 
 ### `sync_turn`
 
@@ -431,6 +469,8 @@ Install into the correct environment: `<path-to-hermes-python> -m pip install --
 2. Confirm the query is at least 3 words — `pre_llm_call` skips recall for shorter messages.
 3. Confirm the token is valid: a 401 is swallowed silently, so daemon health does not catch it.
 4. Use the explicit tool to test the round-trip: call `remnic_recall` with a query. If it returns `{"error": "Not connected to Remnic"}`, `initialize` never completed successfully.
+5. Enable debug logging for the provider's critical path (added in 1.0.5): configure Python logging so the `remnic_hermes.provider` logger emits DEBUG. It reports prefetch wait expiries, background recall failures, and recalls that returned no context (with `count` and `sourcesUsed`).
+6. If your daemon is slow (e.g. Docker with a bind-mounted memory dir), recall can exceed the prefetch wait. Raise `prefetch_wait_timeout` (trades turn latency for first-turn injection) — the background recall still completes and feeds the cache for the next turn either way.
 
 ### Memories from a previous session are not recalled
 

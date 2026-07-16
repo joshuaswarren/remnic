@@ -12,16 +12,16 @@ MCP tools give an agent the ability to call memory functions, but only when the 
 |--------|----------|---------------|
 | Recall | Agent must call `remnic_recall` | Automatic on every turn |
 | Observe | Agent must call `remnic_store` | Automatic after every response |
-| Latency | Tool call overhead | Pre-fetched, non-blocking |
+| Latency | Tool call overhead | Bounded synchronous wait on first fetch (`prefetch_wait_timeout`, default 2.0s), cached and non-blocking on subsequent turns |
 | Reliability | Agent may forget to call | Structural — cannot be skipped |
 
 ## Which Hermes plugin slot does Remnic use?
 
 Remnic ships as a Hermes memory provider plugin (declared in `plugin.yaml` as `kind: exclusive`, the Hermes manifest kind used for provider plugins selected through `memory.provider`).
 
-**Remnic does not use, and does not need to use, Hermes' `context_engine` slot.** That slot replaces the built-in `ContextCompressor` — it is for *compressing the agent's own outgoing conversation history*. Remnic delivers external memory recall (and, when enabled daemon-side, Lossless Context Management archive content) through the `memory_provider` hook (`pre_llm_call`), which is the correct slot for this concern.
+**Remnic does not use, and does not need to use, Hermes' `context_engine` slot.** That slot replaces the built-in `ContextCompressor` — it is for *compressing the agent's own outgoing conversation history*. Remnic delivers external memory recall (and, when enabled daemon-side, Lossless Context Management archive content) through the MemoryProvider protocol's `prefetch()` hot path, which is the correct slot for this concern.
 
-If you have read documentation or third-party reviews suggesting Remnic must register as a `context_engine` to enable LCM in Hermes, that is incorrect. LCM runs on the Remnic daemon and arrives in Hermes through the recall envelope returned by the memory_provider — no `context_engine` registration is involved. The two slots are orthogonal: a future Remnic-backed `ContextEngine` plugin would be a separate, additive feature for replacing Hermes' local compressor, not a prerequisite for memory or LCM.
+If you have read documentation or third-party reviews suggesting Remnic must register as a `context_engine` to enable LCM in Hermes, that is incorrect. LCM runs on the Remnic daemon and arrives in Hermes through the recall envelope returned by the memory provider's `prefetch()` — no `context_engine` registration is involved. The two slots are orthogonal: a future Remnic-backed `ContextEngine` plugin would be a separate, additive feature for replacing Hermes' local compressor, not a prerequisite for memory or LCM.
 
 ## Prerequisites
 
@@ -41,9 +41,23 @@ If you have read documentation or third-party reviews suggesting Remnic must reg
    remnic connectors install hermes
    ```
 
-3. Restart Hermes so it picks up the new config entry.
+3. Create the memory-provider shim and select the provider (Hermes discovers memory providers by scanning `$HERMES_HOME/plugins/<name>/`, not pip metadata):
+   ```python
+   # ~/.hermes/plugins/remnic/__init__.py
+   """Remnic memory provider shim. Calls collector.register_memory_provider()."""
 
-4. Verify the connection:
+   from remnic_hermes import register  # register() handles config loading itself
+   ```
+   ```yaml
+   # config.yaml
+   memory:
+     provider: remnic
+     memory_enabled: true
+   ```
+
+4. Restart Hermes so it picks up the new config entry.
+
+5. Verify the connection:
    ```bash
    hermes --version && pip show remnic-hermes
    ```
@@ -54,8 +68,9 @@ Your agent should now have structural memory on every turn plus explicit tools s
 If you prefer not to use `remnic connectors install`, add the following to your Hermes `config.yaml` directly:
 
 ```yaml
-plugins:
-  - remnic_hermes
+memory:
+  provider: remnic       # matches the shim directory name under $HERMES_HOME/plugins/
+  memory_enabled: true
 
 remnic:
   host: "127.0.0.1"      # Remnic daemon host. Default: 127.0.0.1
@@ -63,6 +78,7 @@ remnic:
   token: ""              # Auth token. Leave empty to auto-load from ~/.remnic/tokens.json.
   session_key: ""        # Session identifier. Auto-generated as hermes-<12hex> if not set.
   timeout: 30.0          # HTTP request timeout in seconds. Default: 30.0
+  prefetch_wait_timeout: 2.0  # Max seconds prefetch() blocks a turn on a first-fetch recall. 0 = never wait (cache-only). Default: 2.0
 ```
 
 A legacy `engram:` config block is also accepted during the Engram to Remnic transition. The plugin reads `remnic:` first and falls back to `engram:` when the `remnic:` key is absent, so existing configs continue working without edits.
@@ -108,7 +124,9 @@ The plugin searches for a `connector: "hermes"` entry first, then falls back to 
 | Method | Trigger | Behavior |
 |--------|---------|----------|
 | `initialize` | Plugin loads | Opens an HTTP client to the Remnic daemon and pings `/health`. A failed health check is non-fatal — the daemon may start later. |
-| `pre_llm_call` | Before every LLM call | Recalls up to 8 memories using the last user message as the query. Skipped if the user message is fewer than 3 words. Injects a `<remnic-memory>` block into the system prompt when results are found. |
+| `prefetch` | Before every LLM call (synchronous, Hermes hot path) | Recalls up to 8 memories using the user message as the query (skipped under 3 words). Serves from a per-session cache when warm; on a cache miss waits up to `prefetch_wait_timeout` (default 2.0s) for the recall, else returns `""` and lets the completed recall warm the cache for the next turn. Injects a `<remnic-memory count="N">` block — including when `count` is `0` but the daemon returned profile/knowledge-index context. |
+| `queue_prefetch` | After every turn (background) | Warms the prefetch cache for the next turn. |
+| `pre_llm_call` | Not called by Hermes | Compatibility method for hosts that embed the provider directly; Hermes injects via `prefetch`, not `pre_llm_call`. |
 | `sync_turn` | After every response | Sends the last 2 messages (user + assistant) to the Remnic daemon for real-time observation. |
 | `extract_memories` | Session ends | Sends the full session transcript to the daemon for deep structured extraction. |
 | `on_session_switch` / `on_session_reset` | Hermes session boundary | Keeps generated session keys aligned with the active Hermes session while preserving configured stable keys. |
@@ -234,6 +252,8 @@ Memories are only injected when the last user message is 3 or more words and the
 ```bash
 remnic daemon status
 ```
+
+If recall works via the tool but nothing is injected automatically, enable DEBUG logging on the `remnic_hermes.provider` logger — it reports prefetch wait expiries, background recall failures, and recalls that returned no context. On slow daemons (e.g. Docker bind mounts), raise `prefetch_wait_timeout` so the first fetch can complete within the turn.
 
 ## Uninstall
 

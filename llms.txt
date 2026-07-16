@@ -236,7 +236,17 @@ CONNECTING OTHER AGENTS
   remnic connectors install claude-code
   remnic connectors install codex-cli
   remnic connectors install replit
-  pip install remnic-hermes
+  pip install remnic-hermes && remnic connectors install hermes
+
+Hermes discovers memory providers by scanning $HERMES_HOME/plugins/<name>/,
+not pip metadata: the pip package must be bridged by a shim
+(~/.hermes/plugins/remnic/__init__.py re-exporting remnic_hermes.register)
+and selected via memory.provider in Hermes config.yaml. Memory is injected
+through the provider's synchronous prefetch() (bounded by the
+prefetch_wait_timeout config, default 2.0s); Hermes never calls
+pre_llm_call on memory providers. The daemon's /recall returns profile and
+knowledge-index context even when count == 0; the plugin injects it either
+way. See docs/plugins/hermes.md.
 
 Built-in connector ids: claude-code, codex-cli, cursor, cline,
 github-copilot, roo-code, windsurf, amp, pi, omp, replit, generic-mcp,

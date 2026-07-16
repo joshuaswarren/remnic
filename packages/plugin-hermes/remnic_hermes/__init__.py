@@ -325,11 +325,44 @@ def _register_issue_815_hooks(ctx, provider: RemnicMemoryProvider):  # type: ign
     register_hook("on_session_reset", _on_session_reset)
 
 
+def _load_hermes_host_config() -> dict:  # type: ignore[type-arg]
+    """Load Hermes config.yaml when the registration context carries no config.
+
+    Hermes' memory-provider discovery (`plugins/memory/__init__.py`) invokes
+    ``register()`` with a bare collector that exposes
+    ``register_memory_provider()`` but has NO ``.config`` attribute. Reading
+    the host config here lets a `$HERMES_HOME/plugins/<name>/` directory shim
+    simply re-export this ``register`` instead of duplicating config loading
+    (issue #1929).
+
+    Prefers ``load_config_readonly()`` (fast, no deepcopy) and falls back to
+    ``load_config()`` on older Hermes releases (v0.7.0+ supported floor) that
+    predate the readonly helper.
+    """
+    try:
+        from hermes_cli import config as hermes_config
+    except Exception:
+        return {}
+    loader = getattr(hermes_config, "load_config_readonly", None)
+    if not callable(loader):
+        loader = getattr(hermes_config, "load_config", None)
+    if not callable(loader):
+        return {}
+    try:
+        loaded = loader()
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
 def register(ctx):  # type: ignore[no-untyped-def]
     """Hermes plugin entry point. Registers the MemoryProvider and explicit tools."""
-    config = ctx.config.get("remnic")
+    raw_config = getattr(ctx, "config", None)
+    if not isinstance(raw_config, dict):
+        raw_config = _load_hermes_host_config()
+    config = raw_config.get("remnic")
     if not isinstance(config, dict):
-        config = ctx.config.get("engram", {})
+        config = raw_config.get("engram", {})
 
     provider = RemnicMemoryProvider(config)
     ctx.register_memory_provider(provider)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ class RemnicHermesConfig:
     token: str = ""
     session_key: str = ""
     timeout: float = 30.0
+    prefetch_wait_timeout: float = 2.0
 
     @classmethod
     def from_hermes_config(cls, config: dict[str, object]) -> RemnicHermesConfig:
@@ -44,11 +46,26 @@ class RemnicHermesConfig:
             token=token,
             session_key=str(section.get("session_key", "")),
             timeout=float(section.get("timeout", 30.0)),
+            prefetch_wait_timeout=_parse_prefetch_wait_timeout(section.get("prefetch_wait_timeout", 2.0)),
         )
 
 
 # Legacy class alias — import path compat for pre-rename consumers.
 EngramHermesConfig = RemnicHermesConfig
+
+
+def _parse_prefetch_wait_timeout(raw: object) -> float:
+    """Parse and validate prefetch_wait_timeout: a finite float >= 0.
+
+    0 disables synchronous waiting entirely (prefetch becomes fire-and-forget:
+    it queues the recall and only ever returns cached results).
+    """
+    value = float(raw)  # type: ignore[arg-type]
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(
+            f"remnic prefetch_wait_timeout must be a finite number >= 0, got {raw!r}"
+        )
+    return value
 
 
 def _read_compat_env(primary: str, legacy: str, default: str) -> str:

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from remnic_hermes import EngramHermesConfig
 from remnic_hermes.config import RemnicHermesConfig, _load_token_from_file
 
@@ -13,6 +15,7 @@ def test_default_config():
     assert config.port == 4318
     assert config.token == ""
     assert config.timeout == 30.0
+    assert config.prefetch_wait_timeout == 2.0
 
 
 def test_custom_config():
@@ -27,6 +30,26 @@ def test_from_hermes_config_empty():
     config = RemnicHermesConfig.from_hermes_config({})
     assert config.host == "127.0.0.1"
     assert config.port == 4318
+    assert config.prefetch_wait_timeout == 2.0
+
+
+def test_from_hermes_config_parses_prefetch_wait_timeout():
+    """prefetch_wait_timeout accepts numeric and string-typed values (issue #1929)."""
+    config = RemnicHermesConfig.from_hermes_config({"remnic": {"prefetch_wait_timeout": 0.5}})
+    assert config.prefetch_wait_timeout == 0.5
+
+    coerced = RemnicHermesConfig.from_hermes_config({"remnic": {"prefetch_wait_timeout": "1.25"}})
+    assert coerced.prefetch_wait_timeout == 1.25
+
+    disabled = RemnicHermesConfig.from_hermes_config({"remnic": {"prefetch_wait_timeout": 0}})
+    assert disabled.prefetch_wait_timeout == 0.0
+
+
+@pytest.mark.parametrize("invalid", [-1, -0.5, float("nan"), float("inf"), "abc"])
+def test_from_hermes_config_rejects_invalid_prefetch_wait_timeout(invalid):
+    """Invalid prefetch_wait_timeout values must be rejected, not silently defaulted."""
+    with pytest.raises(ValueError):
+        RemnicHermesConfig.from_hermes_config({"remnic": {"prefetch_wait_timeout": invalid}})
 
 
 def test_from_hermes_config_prefers_remnic_section():
