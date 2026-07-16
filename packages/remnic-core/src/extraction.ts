@@ -1171,11 +1171,16 @@ export class ExtractionEngine {
       localLlm: resolveLocalLlmCapabilities(this.config).localLlm,
     });
     this.profiler.startSpan("total", extractionTraceId);
+    // True when a local or direct extractor was attempted before the gateway
+    // fallback, so a gateway "no models" result doesn't re-classify a real
+    // primary failure as auth_config (codex review: preserve direct/local failures).
+    let primaryExtractorAttempted = false;
 
     try {
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       this.profiler.startSpan("local-llm", extractionTraceId);
+      primaryExtractorAttempted = true;
       try {
         const localResult = await this.extractWithLocalLlm(conversation, existingEntities);
         if (localResult) {
@@ -1222,6 +1227,7 @@ export class ExtractionEngine {
     // Try direct OpenAI-compatible client (Scryr, OpenRouter, etc.)
     if (this.shouldUseDirectClient) {
       this.profiler.startSpan("direct-client", extractionTraceId);
+      primaryExtractorAttempted = true;
       try {
         const directResult = await this.extractWithDirectClient(conversation, existingEntities);
         if (directResult) {
@@ -1354,7 +1360,13 @@ export class ExtractionEngine {
       });
       log.warn("extraction fallback returned no parsed output");
       const fallbackParseFailureClass: ExtractionFailureClass =
-        detailed.result === null ? classifyFallbackParseFailure(detailed.failureReason) : "parse_empty";
+        detailed.result === null
+          ? detailed.failureReason === "no_models" && primaryExtractorAttempted
+            ? // Gateway had no models, but a local/direct extractor already failed —
+              // the root cause is the primary (transient), not gateway auth/config.
+              "provider_retryable"
+            : classifyFallbackParseFailure(detailed.failureReason)
+          : "parse_empty";
       return {
         facts: [],
         profileUpdates: [],
