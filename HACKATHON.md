@@ -155,6 +155,13 @@ and HTML export succeeded; the report was 15,144 bytes; and the test ended in
 `PACKAGED_SANDBOX_OK`. This verifies the current source package set on Linux
 x64. It does not claim that version 9.6.33 is published or that a model ran.
 
+On July 16, merged head `2b98fbff` also passed the cold package test at
+version 9.6.34. Separately, an exact registry install of
+`@remnic/cli@9.6.34` and `@remnic/bench@9.6.34` into a clean Linux x86_64
+prefix completed the keyless MCP MemCorrect smoke, run listing, and HTML
+export. The registry-installed report was 15,128 bytes. No judge or provider
+ran. This is the current judge install path below.
+
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
 paste the real session ID here before submission.
@@ -272,7 +279,7 @@ queued internal work can finish after the last scored task.
 After the npm packages are installed, no datasets, API keys, or network:
 
 ```bash
-npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
+npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
 remnic bench export <run-id> --format html --output ./memcorrect-report.html
@@ -311,7 +318,7 @@ in `docs/paper/repro-appendix.md`.
 | Environment | Build Week support statement |
 |---|---|
 | Node.js | 22.12 or newer |
-| Linux | Source-checkout and version 9.6.24 packed-tarball global-prefix paths verified on Linux x64 |
+| Linux | Source-checkout, packed-tarball, and version 9.6.34 registry-install paths verified on Linux x64 |
 | macOS | Supported by the Node CLI; final global-install receipt pending |
 | Windows | Use WSL2 for the claimed path; native Windows is not claimed as verified |
 | MCP transport | stdio and Streamable HTTP |
@@ -321,7 +328,8 @@ Both `@remnic/cli` and `@remnic/bench` are published at 9.6.24. This receipt
 does not claim a macOS or native Windows verification. The version 9.6.33
 source package set also passed the same Linux x64 cold global-prefix test on
 July 16; that newer receipt is a source-package check, not a publication
-claim.
+claim. Version 9.6.34 of both judge-facing packages is now published, and the
+exact registry install plus keyless flow is verified on Linux x86_64.
 
 ## Honest framing of the novelty claim
 

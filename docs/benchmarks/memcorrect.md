@@ -39,7 +39,7 @@ stdio MCP demo backend, scores the generic MCP adapter against it, and writes
 an offline HTML report:
 
 ```bash
-npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
+npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
 remnic bench export <run-id> --format html --output ./memcorrect-report.html
@@ -47,9 +47,9 @@ remnic bench export <run-id> --format html --output ./memcorrect-report.html
 
 The test asks three questions: did recall find the right fact, did the memory
 accept a correction, and did the stale fact stay gone? We verified this exact
-flow against the 9.6.24 packed tarballs from a clean global prefix on Linux
-x86_64 with Node 22.23.1; newer releases work the same way without the version
-pins.
+flow against the published 9.6.34 packages from a clean global prefix on Linux
+x86_64; the registry-installed run produced its result, manifest, run-listing
+entry, and offline HTML report without a provider call.
 
 ## OpenAI Build Week 2026 provenance
 
