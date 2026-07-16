@@ -1445,6 +1445,53 @@ export function installConnector(options: InstallOptions): InstallResult {
         );
       }
     }
+    // Reconcile the persisted priorHermesConfigPath with reality (Codex P2 on
+    // PR #1938, round 12): if a displaced or previously-tracked config still
+    // carries a remnic: block (deliberately preserved on an unconfirmed shim
+    // move, cleanup failed, or the provenance guard declined), keep tracking
+    // it so a later `remove` cleans BOTH configs; if nothing survives, drop a
+    // stale inherited key. Best-effort second write — the primary connector
+    // JSON is already committed.
+    {
+      const inheritedPriorRaw = savedConnectorConfig.priorHermesConfigPath;
+      const candidates: string[] = [];
+      if (priorConfigDiffers && priorConfigPath !== null) {
+        candidates.push(priorConfigPath);
+      }
+      if (typeof inheritedPriorRaw === "string" && inheritedPriorRaw.length > 0) {
+        candidates.push(inheritedPriorRaw);
+      }
+      const survivingPrior =
+        candidates.find((candidate) => {
+          if (sameHermesConfigTarget(candidate, yamlResult.configPath)) {
+            return false;
+          }
+          try {
+            return /^remnic:/m.test(fs.readFileSync(candidate, "utf8"));
+          } catch {
+            return false;
+          }
+        }) ?? null;
+      try {
+        const committed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+        const persistedPrior =
+          typeof committed.priorHermesConfigPath === "string" ? committed.priorHermesConfigPath : null;
+        if (survivingPrior !== null && persistedPrior !== survivingPrior) {
+          committed.priorHermesConfigPath = survivingPrior;
+          writeSecretFileSync(configPath, JSON.stringify(committed, null, 2));
+        } else if (survivingPrior === null && persistedPrior !== null) {
+          delete committed.priorHermesConfigPath;
+          writeSecretFileSync(configPath, JSON.stringify(committed, null, 2));
+        }
+      } catch {
+        if (survivingPrior !== null) {
+          notes.push(
+            `Note: could not record the prior Hermes config location (${survivingPrior}) in the connector registry — ` +
+              `clean its remnic: block manually when decommissioning that home.`,
+          );
+        }
+      }
+    }
     // Provider activation is a manual, non-destructive step: we never edit the
     // exclusive `memory.provider` slot in the user's Hermes config.yaml.
     notes.push(
@@ -1901,6 +1948,7 @@ export function removeConnector(connectorId: string): RemoveResult {
   // under the HERMES_HOME that was active during install (Codex P2 on PR #1938).
   let savedHermesShimPath: string | null = null;
   let savedHermesConfigPath: string | null = null;
+  let savedPriorHermesConfigPath: string | null = null;
   if (connectorId === "hermes" && fs.existsSync(configPath)) {
     try {
       const parsedRaw: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -1918,6 +1966,9 @@ export function removeConnector(connectorId: string): RemoveResult {
       }
       if (typeof parsed.hermesConfigPath === "string" && parsed.hermesConfigPath.length > 0) {
         savedHermesConfigPath = parsed.hermesConfigPath;
+      }
+      if (typeof parsed.priorHermesConfigPath === "string" && parsed.priorHermesConfigPath.length > 0) {
+        savedPriorHermesConfigPath = parsed.priorHermesConfigPath;
       }
     } catch {
       // Fail closed, mirroring the codex-cli provenance guard: a malformed
@@ -2224,7 +2275,9 @@ export function removeConnector(connectorId: string): RemoveResult {
     try {
       const yamlResult = removeHermesConfig({
         profile: storedProfile,
-        extraConfigPaths: savedHermesConfigPath !== null ? [savedHermesConfigPath] : [],
+        extraConfigPaths: [savedHermesConfigPath, savedPriorHermesConfigPath].filter(
+          (candidate): candidate is string => candidate !== null,
+        ),
       });
       if (yamlResult.updated) {
         notes.push(`Removed remnic: block from Hermes config: ${yamlResult.configPath}`);

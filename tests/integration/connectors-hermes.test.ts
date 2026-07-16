@@ -4477,6 +4477,31 @@ test("installConnector hermes preserves the prior config when the new home's shi
           fs.existsSync(path.join(homeA, "plugins", "remnic", "__init__.py")),
           "the prior home's shim must be preserved",
         );
+
+        // The surviving prior config must be tracked so a later remove cleans
+        // BOTH configs (round 12).
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(
+          saved.priorHermesConfigPath,
+          configA,
+          "the surviving prior config must be persisted as priorHermesConfigPath",
+        );
+
+        withHermesHome(undefined, () => {
+          const remove = mod.removeConnector("hermes");
+          assert.equal(remove.status, "removed", remove.message);
+        });
+        assert.ok(
+          !fs.readFileSync(configA, "utf-8").includes("remnic:"),
+          "remove must clean the tracked prior config's remnic: block",
+        );
+        assert.ok(
+          !fs.readFileSync(path.join(homeB, "config.yaml"), "utf-8").includes("remnic:"),
+          "remove must clean the new home's remnic: block",
+        );
       });
       resolve();
     } catch (err) {
