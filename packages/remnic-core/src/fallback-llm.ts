@@ -288,8 +288,10 @@ export class FallbackLlmClient {
     try {
       response = await this.chatCompletion(messages, options);
     } catch (err) {
-      // chatCompletion only throws on caller abort / unexpected fatal errors;
-      // treat as a transient provider failure so the retry layer backs off.
+      // Caller aborts must propagate (e.g. recall planner cancellation) — do
+      // not swallow them as a provider failure, or abort-driven callers lose
+      // cancellation and treat it as an extraction error (codex review).
+      if (options.signal?.aborted) throw err;
       log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
       return { result: null, failureReason: "http_error" };
     }

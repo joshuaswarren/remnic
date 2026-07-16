@@ -414,7 +414,6 @@ export class ExtractionRunCoordinator {
       }
     }
   }
-
   /** Record an extraction failure into per-fingerprint backoff state + breaker,
    *  persisting to namespace meta. Fail-open: never throws upward. */
   private async recordExtractionFailure(
