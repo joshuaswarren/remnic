@@ -3946,3 +3946,108 @@ test("installConnector hermes force-reinstall cleans the shim from a prior HERME
     }
   });
 });
+
+test("installConnector hermes force-reinstall keeps tracking the prior shim when the new one cannot be written (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        fs.mkdirSync(homeA, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
+
+        // Force-reinstall pointing HERMES_HOME at a regular FILE: the new shim
+        // cannot be materialized, so the OLD shim must survive AND stay
+        // referenced by connector JSON (never discard a live shim's path).
+        const bogusHome = path.join(tmpHome, "hermes-home-is-a-file");
+        fs.writeFileSync(bogusHome, "not a directory\n");
+        withHermesHome(bogusHome, () => {
+          const second = mod.installConnector({ connectorId: "hermes", force: true });
+          assert.equal(second.status, "installed", second.message);
+          assert.ok(
+            second.message.includes("could not materialize"),
+            `reinstall should note the shim failure, got: ${second.message}`,
+          );
+        });
+        assert.ok(fs.existsSync(shimA), "prior shim must NOT be cleaned when the replacement failed");
+
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(
+          saved.pluginShimPath,
+          shimA,
+          "connector JSON must keep referencing the shim that survives on disk",
+        );
+
+        // And a later remove (HERMES_HOME unset) must still clean it.
+        withHermesHome(undefined, () => {
+          const remove = mod.removeConnector("hermes");
+          assert.equal(remove.status, "removed", remove.message);
+        });
+        assert.ok(!fs.existsSync(shimA), "remove must clean the tracked prior shim");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes already_installed backfill cleans the shim from a prior HERMES_HOME (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
+
+        // Rerun WITHOUT --force under a different HERMES_HOME: backfill must
+        // materialize the new shim, clean the old one, and re-point the JSON.
+        let rerunMessage = "";
+        withHermesHome(homeB, () => {
+          const rerun = mod.installConnector({ connectorId: "hermes" });
+          assert.equal(rerun.status, "already_installed", rerun.message);
+          rerunMessage = rerun.message;
+        });
+        const shimB = path.join(homeB, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimB), "backfill must materialize the shim under the new HERMES_HOME");
+        assert.ok(
+          !fs.existsSync(shimA),
+          `backfill must clean the Remnic-generated shim from the prior HERMES_HOME, got message: ${rerunMessage}`,
+        );
+
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(saved.pluginShimPath, shimB, "backfill must re-point pluginShimPath at the new shim");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});

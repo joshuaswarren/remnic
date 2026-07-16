@@ -772,24 +772,30 @@ export function installConnector(options: InstallOptions): InstallResult {
   if (existing && !options.force) {
     // Hermes backfill (Issue #1929): connectors installed before shim
     // materialization shipped are exactly the installs missing the discovery
-    // shim, and rerunning `install` without --force lands here. Materialize
-    // the shim (idempotent, marker-gated) and persist its path so `remove`
-    // can clean it later. Best-effort: failures never change the status.
+    // shim, and rerunning `install` without --force lands here. Reconcile the
+    // shim (idempotent, marker-gated, cleans a prior-HERMES_HOME shim) and
+    // persist the surviving path so `remove` can clean it later. Best-effort:
+    // failures never change the status.
     let backfillNote = "";
     if (options.connectorId === "hermes") {
       try {
-        const shimTarget = hermesShimPath();
-        const shimNote = materializeHermesShim(shimTarget);
-        backfillNote = ` ${shimNote}.`;
         const hermesJsonPath = path.join(getConnectorsDir(), "hermes.json");
+        let parsed: Record<string, unknown> | null = null;
         try {
-          const parsed = JSON.parse(fs.readFileSync(hermesJsonPath, "utf8")) as Record<string, unknown>;
-          if (parsed.pluginShimPath !== shimTarget) {
-            parsed.pluginShimPath = shimTarget;
-            writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
-          }
+          parsed = JSON.parse(fs.readFileSync(hermesJsonPath, "utf8")) as Record<string, unknown>;
         } catch {
-          /* connector JSON unreadable — leave it as-is; remove falls back to env resolution */
+          /* connector JSON unreadable — reconcile without a prior path */
+        }
+        const priorRaw = parsed?.pluginShimPath;
+        const outcome = reconcileHermesShim(
+          typeof priorRaw === "string" && priorRaw.length > 0 ? priorRaw : null,
+        );
+        if (outcome.notes.length > 0) {
+          backfillNote = ` ${outcome.notes.join(" ")}`;
+        }
+        if (parsed !== null && outcome.persistPath !== null && parsed.pluginShimPath !== outcome.persistPath) {
+          parsed.pluginShimPath = outcome.persistPath;
+          writeSecretFileSync(hermesJsonPath, JSON.stringify(parsed, null, 2));
         }
       } catch {
         /* best-effort backfill — install status is unchanged */
@@ -1184,17 +1190,19 @@ export function installConnector(options: InstallOptions): InstallResult {
       };
     }
 
-    // Resolve the shim path NOW (honoring the HERMES_HOME active at install
-    // time) and persist it into connector.json so a later `remove` cleans the
-    // exact file we wrote even if HERMES_HOME is unset or changed by then
-    // (Codex P2 on PR #1938). Resolution failure is non-fatal: the shim step
-    // below degrades to a manual hint.
-    let hermesShimTarget: string | null = null;
-    try {
-      hermesShimTarget = hermesShimPath();
-      resolvedConfig.pluginShimPath = hermesShimTarget;
-    } catch {
-      /* HERMES_HOME unresolved — shim step below reports the manual hint */
+    // (d2) Reconcile the on-disk shim BEFORE connector.json is written so the
+    // persisted pluginShimPath always references the shim that actually
+    // survives on disk. Invariant (PR #1938 review, third round): a
+    // Remnic-generated shim on disk is either removed or referenced by the
+    // connector JSON — the registry never silently discards the path of a
+    // shim that is still present (e.g. when materialization at the NEW
+    // HERMES_HOME fails during a force-reinstall).
+    const priorShimPathRaw = savedConnectorConfig.pluginShimPath;
+    const shimOutcome = reconcileHermesShim(
+      typeof priorShimPathRaw === "string" && priorShimPathRaw.length > 0 ? priorShimPathRaw : null,
+    );
+    if (shimOutcome.persistPath !== null) {
+      resolvedConfig.pluginShimPath = shimOutcome.persistPath;
     }
 
     // (e) Both YAML write and token commit succeeded — now attempt to write connector.json.
@@ -1260,45 +1268,9 @@ export function installConnector(options: InstallOptions): InstallResult {
     const notes: string[] = [];
     notes.push(`Updated Hermes config: ${yamlResult.configPath}`);
 
-    // (g) Materialize the Hermes plugin-directory shim (Issue #1929) so a bare
-    // `pip install remnic-hermes` becomes discoverable. Runs AFTER config write
-    // and token commit succeed. Wrapped in try-catch: a shim failure must NEVER
-    // fail an otherwise-successful install — we surface a manual-creation note.
-    try {
-      if (hermesShimTarget === null) {
-        throw new Error("HERMES_HOME could not be resolved to a directory");
-      }
-      notes.push(materializeHermesShim(hermesShimTarget));
-      // Reinstall under a changed HERMES_HOME: the shim written by the PRIOR
-      // install lives at the previously persisted pluginShimPath. Clean it
-      // AFTER the new shim is confirmed (never destroy old state first), so a
-      // later `remove` — which only knows the latest persisted path plus the
-      // current environment — cannot orphan it (Bugbot on PR #1938).
-      const priorShimPath = savedConnectorConfig.pluginShimPath;
-      if (typeof priorShimPath === "string" && priorShimPath !== hermesShimTarget) {
-        try {
-          const staleNote = removeHermesShim([priorShimPath]);
-          if (staleNote !== null) {
-            notes.push(`Cleaned prior-install shim: ${staleNote}`);
-          }
-        } catch {
-          notes.push(`Note: could not clean the prior-install Hermes plugin shim at ${priorShimPath}.`);
-        }
-      }
-    } catch (shimErr) {
-      const shimPathHint = hermesShimTarget ?? "<hermesRoot>/plugins/remnic/__init__.py";
-      // No shell one-liner here: the path may contain characters that break
-      // quoting, and the shim content MUST include the literal text
-      // `register_memory_provider` (or `MemoryProvider`) or Hermes' discovery
-      // text-scan skips the directory (Bugbot + Codex P2 on PR #1938).
-      notes.push(
-        `Note: could not materialize the Hermes plugin shim ` +
-          `(${shimErr instanceof Error ? shimErr.message : String(shimErr)}). ` +
-          `Create ${shimPathHint} manually with exactly these two lines:\n` +
-          `    """Remnic memory provider shim. Calls collector.register_memory_provider()."""\n` +
-          `    from remnic_hermes import register`,
-      );
-    }
+    // (g) Report the shim reconciliation performed in (d2) — materialization
+    // itself already ran before connector.json was written (Issue #1929).
+    notes.push(...shimOutcome.notes);
     // Provider activation is a manual, non-destructive step: we never edit the
     // exclusive `memory.provider` slot in the user's Hermes config.yaml.
     notes.push(
@@ -2303,7 +2275,9 @@ function materializeHermesShim(shimPath: string): string {
     if (!existing.includes(HERMES_SHIM_MARKER)) {
       return (
         `Hermes plugin shim already exists and was NOT generated by Remnic — left untouched: ${shimPath}. ` +
-        `If the provider is not discovered, ensure that file imports remnic_hermes.register.`
+        `If the provider is not discovered, ensure that file imports remnic_hermes.register AND contains ` +
+        `the literal text register_memory_provider (or MemoryProvider) — Hermes' discovery text-scan ` +
+        `skips the directory without it.`
       );
     }
   }
@@ -2320,6 +2294,73 @@ function materializeHermesShim(shimPath: string): string {
   ].join("\n");
   writePlainFileAtomicSync(shimPath, content);
   return `Materialized Hermes plugin shim: ${shimPath}`;
+}
+
+/**
+ * Reconcile the on-disk Remnic shim with the shim location resolved from the
+ * CURRENT environment. One routine for both install paths (fresh/force install
+ * and the already_installed backfill) so they enforce the same invariant: a
+ * Remnic-generated shim on disk is either removed or referenced by the
+ * returned `persistPath` — the caller must persist that path in the connector
+ * JSON and never silently discard the location of a shim that survives on
+ * disk.
+ *
+ * Behavior:
+ * - Resolves the target path (`hermesShimPath()`), materializes the shim
+ *   there, THEN removes a marker shim at `priorPersistedPath` when it differs
+ *   (never destroy old state before the new state is confirmed).
+ * - On resolution/materialization failure: emits a manual-creation hint with
+ *   the exact required contents (including the `register_memory_provider`
+ *   discovery literal) and returns the PRIOR path as `persistPath`, so the
+ *   registry keeps tracking the shim that is still on disk.
+ * - Never throws.
+ */
+function reconcileHermesShim(priorPersistedPath: string | null): {
+  notes: string[];
+  persistPath: string | null;
+} {
+  const notes: string[] = [];
+  let target: string | null = null;
+  let materialized = false;
+  try {
+    target = hermesShimPath();
+    notes.push(materializeHermesShim(target));
+    materialized = true;
+  } catch (shimErr) {
+    const shimPathHint = target ?? "<hermesRoot>/plugins/remnic/__init__.py";
+    // No shell one-liner here: the path may contain characters that break
+    // quoting, and the shim content MUST include the literal text
+    // `register_memory_provider` (or `MemoryProvider`) or Hermes' discovery
+    // text-scan skips the directory (PR #1938 review).
+    notes.push(
+      `Note: could not materialize the Hermes plugin shim ` +
+        `(${shimErr instanceof Error ? shimErr.message : String(shimErr)}). ` +
+        `Create ${shimPathHint} manually with exactly these two lines:\n` +
+        `    """Remnic memory provider shim. Calls collector.register_memory_provider()."""\n` +
+        `    from remnic_hermes import register`,
+    );
+  }
+  if (!materialized) {
+    // Nothing new confirmed on disk — keep tracking whatever the registry
+    // already pointed at so `remove` still targets the surviving shim.
+    return { notes, persistPath: priorPersistedPath ?? target };
+  }
+  if (priorPersistedPath !== null && priorPersistedPath !== target) {
+    // The prior install's shim lives elsewhere (HERMES_HOME changed). Clean it
+    // now that the replacement is confirmed; marker-gating inside
+    // removeHermesShim protects user-authored files.
+    try {
+      const staleNote = removeHermesShim([priorPersistedPath]);
+      if (staleNote !== null) {
+        notes.push(`Cleaned prior-install shim: ${staleNote}`);
+      }
+    } catch {
+      notes.push(
+        `Note: could not clean the prior-install Hermes plugin shim at ${priorPersistedPath} — remove it manually if present.`,
+      );
+    }
+  }
+  return { notes, persistPath: target };
 }
 
 /**
