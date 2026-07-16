@@ -757,7 +757,7 @@ test("writeBenchmarkReproManifest writes MANIFEST.json beside results", async ()
   assert.equal(manifest.results[0]?.benchmark, "longmemeval");
 });
 
-test("manifest binds sanitized Codex credit totals and public env-key provenance", async () => {
+test("manifest binds sanitized Codex local-budget-unit totals and public env-key provenance", async () => {
   const root = await createTempRoot("remnic-repro-codex-credit-");
   const resultsDir = path.join(root, "results");
   const ledgerPath = path.join(root, "private-credit-ledger.json");
@@ -803,9 +803,12 @@ test("manifest binds sanitized Codex credit totals and public env-key provenance
     },
   });
 
-  assert.equal(manifest.codexCredit?.plannedSpendCeilingCredits, 2_000);
+  assert.equal(manifest.codexCredit?.schemaVersion, 2);
+  assert.equal(manifest.codexCredit?.plannedSpendCeilingUnits, 2_000);
   assert.equal(manifest.codexCredit?.run?.id, "frontier-smoke");
-  assert.equal(manifest.codexCredit?.run?.credits, 3.55);
+  assert.equal(manifest.codexCredit?.run?.budgetUnits, 3.55);
+  assert.equal(manifest.codexCredit?.run?.accountBalanceResolutionCount, 0);
+  assert.equal(manifest.codexCredit?.run?.conservativeResolutionChargeUnits, 0);
   assert.deepEqual(manifest.command.envKeys, [
     "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
     "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
@@ -813,6 +816,12 @@ test("manifest binds sanitized Codex credit totals and public env-key provenance
     "REMNIC_BENCH_RUN_ID",
   ]);
   assert.doesNotMatch(JSON.stringify(manifest), /private-credit-ledger\.json/);
+  assert.equal(Object.hasOwn(manifest.codexCredit ?? {}, "budgetCredits"), false);
+  assert.equal(Object.hasOwn(manifest.codexCredit ?? {}, "totalRemainingCredits"), false);
+  assert.doesNotMatch(
+    JSON.stringify(manifest.codexCredit),
+    /beforeAccountBalance|afterAccountBalance|observedAccountDebit|blockedReason/,
+  );
 
   const firstArtifactHash = manifest.artifactHash;
   const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {

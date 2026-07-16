@@ -3,6 +3,8 @@ import { mkdir, open, readFile, rename, rmdir, unlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 
+import { BenchmarkRunBlockReason, BenchmarkRunBlockedError } from "../benchmark-run-blocked-error.js";
+
 export interface CodexCliNativeUsage {
   inputTokens: number;
   cachedInputTokens: number;
@@ -16,14 +18,14 @@ interface CodexCreditRate {
   output: number;
 }
 
-interface CodexCreditLedgerEntry extends CodexCliNativeUsage {
+interface CodexCreditLedgerEntryV1 extends CodexCliNativeUsage {
   at: string;
   model: string;
   credits: number;
   runId?: string;
 }
 
-interface CodexCreditLedgerReconciliation {
+interface CodexCreditLedgerReconciliationV1 {
   at: string;
   basis: "operator-observed-original-budget-balance";
   attribution: "account-wide-unattributed";
@@ -43,14 +45,62 @@ interface CodexCreditLedgerReconciliation {
   };
 }
 
-interface CodexCreditLedger {
+interface CodexCreditLedgerV1 {
   schemaVersion: 1;
   budgetCredits: number;
   reserveCredits: number;
   spentCredits: number;
-  entries: CodexCreditLedgerEntry[];
-  reconciliations?: CodexCreditLedgerReconciliation[];
+  entries: CodexCreditLedgerEntryV1[];
+  reconciliations?: CodexCreditLedgerReconciliationV1[];
   blockedReason?: string;
+}
+
+interface CodexCreditLedgerEntry extends CodexCliNativeUsage {
+  at: string;
+  model: string;
+  budgetUnits: number;
+  runId?: string;
+}
+
+interface CodexCreditBlockedEvent {
+  reason: string;
+  at?: string;
+  runId?: string;
+  model?: string;
+}
+
+interface CodexCreditLedgerResolution {
+  at: string;
+  basis: "operator-observed-account-balance-delta";
+  attribution: "account-wide-observation-window";
+  priorLedgerSha256: string;
+  priorRecordedSpentUnits: number;
+  priorEntryCount: number;
+  beforeAccountBalance: string;
+  afterAccountBalance: string;
+  observedAccountDebit: string;
+  localBudgetChargeUnits: number;
+  confirmations: {
+    sameAccount: true;
+    snapshotsBracketBlockedEvent: true;
+    balanceSettled: true;
+    noCreditsAddedOrRefunded: true;
+    noInterveningCodexActivity?: true;
+  };
+  affectedBlockedEvent: CodexCreditBlockedEvent & { runId: string };
+}
+
+interface CodexCreditLedger {
+  schemaVersion: 2;
+  budgetUnits: number;
+  reserveUnits: number;
+  spentUnits: number;
+  entries: CodexCreditLedgerEntry[];
+  resolutions?: CodexCreditLedgerResolution[];
+  legacyReconciliations?: CodexCreditLedgerReconciliationV1[];
+  migratedFromV1Sha256?: string;
+  migrationWitnessV1?: { source: string };
+  blockedEvent?: CodexCreditBlockedEvent;
 }
 
 type LedgerLockPhase = "preflight" | "in-flight" | "settled";
@@ -65,49 +115,48 @@ export interface CodexCreditBudgetConfig {
 
 export interface CodexCreditReceiptScope extends CodexCliNativeUsage {
   calls: number;
-  credits: number;
-  unattributedReconciliationCount: number;
-  unattributedReconciledCredits: number;
+  budgetUnits: number;
+  accountBalanceResolutionCount: number;
+  conservativeResolutionChargeUnits: number;
   models: Array<
     CodexCliNativeUsage & {
       model: string;
       calls: number;
-      credits: number;
+      budgetUnits: number;
     }
   >;
 }
 
 export interface CodexCreditReconciliationReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   priorLedgerSha256: string;
   ledgerSha256: string;
   at: string;
-  attribution: "account-wide-unattributed";
+  attribution: "account-wide-observation-window";
   affectedRunId: string;
-  originalBudgetCredits: number;
-  priorRecordedSpentCredits: number;
-  observedRemainingCredits: number;
-  unattributedCredits: number;
-  totalSpentCredits: number;
-  totalRemainingCredits: number;
+  priorRecordedSpentUnits: number;
+  beforeAccountBalance: string;
+  afterAccountBalance: string;
+  observedAccountDebit: string;
+  localBudgetChargeUnits: number;
+  totalSpentUnits: number;
+  remainingPlannedSpendUnits: number;
   affectedBlockedEventSha256: string;
 }
 
 export interface CodexCreditReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   ledgerSha256: string;
-  budgetCredits: number;
-  reserveCredits: number;
-  plannedSpendCeilingCredits: number;
-  totalSpentCredits: number;
-  totalRemainingCredits: number;
+  budgetUnits: number;
+  reserveUnits: number;
+  plannedSpendCeilingUnits: number;
+  totalSpentUnits: number;
+  remainingBudgetUnits: number;
   blocked: boolean;
   cumulative: CodexCreditReceiptScope;
   run?: CodexCreditReceiptScope & { id: string };
 }
 
-const ONE_MILLION = 1_000_000;
-const CREDIT_EPSILON = 1e-9;
 // Conservative upper bound for one supported text-model turn. GPT-5.6 Terra's
 // full 1.05M-token context plus 128K output costs well under this amount.
 const MAX_BOUNDED_CALL_CREDITS = 300;
@@ -124,6 +173,9 @@ const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
 ];
 
 let completionQueue: Promise<void> = Promise.resolve();
+let failNextSettledLockWriteForTest = false;
+let failNextOwnedLockRemovalForTest = false;
+let failNextLedgerSetupForTest = false;
 
 export class CodexCreditAccountingError extends Error {
   constructor(message: string) {
@@ -143,32 +195,43 @@ export class CodexCreditDispatchError extends Error {
 export async function reconcileCodexCreditLedger(args: {
   ledgerPath: string;
   priorLedgerSha256: string;
-  observedRemainingCredits: number;
-  originalBudgetBalanceConfirmed: true;
+  beforeAccountBalance: string;
+  afterAccountBalance: string;
+  sameAccountConfirmed: true;
+  snapshotsBracketBlockedEventConfirmed: true;
+  balanceSettledConfirmed: true;
   noCreditsAddedOrRefundedConfirmed: true;
-  accountWideUnattributedChargeAccepted: true;
+  noInterveningCodexActivityConfirmed?: true;
   affectedRunId: string;
 }): Promise<CodexCreditReconciliationReceipt> {
-  if (args.originalBudgetBalanceConfirmed !== true) {
-    throw new Error(
-      "Codex credit reconciliation requires confirmation that the observed balance belongs to the ledger's original budget",
-    );
+  if (args.sameAccountConfirmed !== true) {
+    throw new Error("Codex credit reconciliation requires confirmation that both balances belong to the same account");
+  }
+  if (args.snapshotsBracketBlockedEventConfirmed !== true) {
+    throw new Error("Codex credit reconciliation requires confirmation that the snapshots bracket the blocked event");
+  }
+  if (args.balanceSettledConfirmed !== true) {
+    throw new Error("Codex credit reconciliation requires confirmation that the displayed balances are settled");
   }
   if (args.noCreditsAddedOrRefundedConfirmed !== true) {
     throw new Error(
-      "Codex credit reconciliation requires confirmation that no credits were added or refunded after the original budget was established",
-    );
-  }
-  if (args.accountWideUnattributedChargeAccepted !== true) {
-    throw new Error(
-      "Codex credit reconciliation requires acknowledgment that all unexplained account activity will be charged as account-wide unattributed spend",
+      "Codex credit reconciliation requires confirmation that no credits were added or refunded between snapshots"
     );
   }
   if (!isSha256(args.priorLedgerSha256)) {
     throw new Error("priorLedgerSha256 must be a lowercase SHA-256 digest");
   }
-  if (!Number.isFinite(args.observedRemainingCredits) || args.observedRemainingCredits < 0) {
-    throw new Error("observedRemainingCredits must be a finite non-negative number");
+  const beforeAccountBalance = parseExactDecimal(args.beforeAccountBalance, "beforeAccountBalance");
+  const afterAccountBalance = parseExactDecimal(args.afterAccountBalance, "afterAccountBalance");
+  const observedAccountDebit = subtractExactDecimals(beforeAccountBalance, afterAccountBalance);
+  if (observedAccountDebit.startsWith("-")) {
+    throw new Error("afterAccountBalance exceeds beforeAccountBalance; reconciliation refused");
+  }
+  const localBudgetChargeUnits = observedAccountDebit === "0" ? 0 : MAX_BOUNDED_CALL_CREDITS;
+  if (localBudgetChargeUnits > 0 && args.noInterveningCodexActivityConfirmed !== true) {
+    throw new Error(
+      "a positive account-wide debit requires confirmation that no other Codex activity occurred between snapshots"
+    );
   }
   const affectedRunId = parseRequiredRunId(args.affectedRunId, "affectedRunId");
   const ledgerPath = path.resolve(expandHomeRelativePath(args.ledgerPath));
@@ -183,91 +246,97 @@ export async function reconcileCodexCreditLedger(args: {
   const lockPath = `${ledgerPath}.lock`;
   let lock: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+    try {
+      await prepareLedgerDirectory(lockPath);
+    } catch (error) {
+      throw infrastructureUnavailableError(error);
+    }
     lock = await acquireLedgerLock(lockPath);
     const contents = await readFile(ledgerPath);
     const currentSha256 = sha256(contents);
     if (currentSha256 !== args.priorLedgerSha256) {
       throw new Error(
         `Codex credit ledger changed since operator observation: expected ${args.priorLedgerSha256}, ` +
-          `found ${currentSha256}; obtain a fresh ledger hash and remaining balance`,
+          `found ${currentSha256}; obtain a fresh ledger hash and remaining balance`
       );
     }
-    const ledger = parseLedger(JSON.parse(contents.toString("utf8")) as Partial<CodexCreditLedger>);
-    if (!ledger.blockedReason) {
+    const ledger = parseLedger(JSON.parse(contents.toString("utf8")), contents);
+    if (!ledger.blockedEvent) {
       throw new Error("Codex credit ledger is not blocked; reconciliation is not permitted");
     }
-    if (args.observedRemainingCredits > ledger.budgetCredits) {
-      throw new Error("observedRemainingCredits cannot exceed the ledger budget");
-    }
-    const rawUnattributedCredits =
-      ledger.budgetCredits - args.observedRemainingCredits - ledger.spentCredits;
-    if (
-      !Number.isFinite(rawUnattributedCredits) ||
-      rawUnattributedCredits < -CREDIT_EPSILON
-    ) {
+    if (ledger.blockedEvent.runId && ledger.blockedEvent.runId !== affectedRunId) {
       throw new Error(
-        "observedRemainingCredits implies less spend than the ledger already records; reconciliation refused",
+        `affectedRunId does not match the blocked event run ID ${JSON.stringify(ledger.blockedEvent.runId)}`
       );
     }
-    const unattributedCredits =
-      Math.abs(rawUnattributedCredits) <= CREDIT_EPSILON
-        ? 0
-        : rawUnattributedCredits;
-    const observedSpentCredits = ledger.spentCredits + unattributedCredits;
+    const plannedSpendCeilingUnits = ledger.budgetUnits - ledger.reserveUnits;
+    const plannedSpendCeilingNanounits = budgetUnitsToNanounits(plannedSpendCeilingUnits);
+    const spentNanounits = ledgerSpentNanounits(ledger);
+    const localBudgetChargeNanounits = budgetUnitsToNanounits(localBudgetChargeUnits);
+    if (plannedSpendCeilingNanounits - spentNanounits < localBudgetChargeNanounits) {
+      throw new Error(
+        `reconciliation requires ${localBudgetChargeUnits} local budget units but only ` +
+          `${Math.max(0, plannedSpendCeilingUnits - ledger.spentUnits)} remain below the planned-spend ceiling`
+      );
+    }
+    const totalSpentNanounits = spentNanounits + localBudgetChargeNanounits;
+    const totalSpentUnits = nanounitsToBudgetUnits(totalSpentNanounits);
     const at = new Date().toISOString();
-    const reconciliation: CodexCreditLedgerReconciliation = {
+    const affectedBlockedEvent = {
+      ...ledger.blockedEvent,
+      runId: ledger.blockedEvent.runId ?? affectedRunId,
+    };
+    const resolution: CodexCreditLedgerResolution = {
       at,
-      basis: "operator-observed-original-budget-balance",
-      attribution: "account-wide-unattributed",
+      basis: "operator-observed-account-balance-delta",
+      attribution: "account-wide-observation-window",
       priorLedgerSha256: currentSha256,
-      originalBudgetCredits: ledger.budgetCredits,
-      priorRecordedSpentCredits: ledger.spentCredits,
-      observedRemainingCredits: args.observedRemainingCredits,
-      credits: normalizeZero(unattributedCredits),
+      priorRecordedSpentUnits: nanounitsToBudgetUnits(spentNanounits),
+      priorEntryCount: ledger.entries.length,
+      beforeAccountBalance,
+      afterAccountBalance,
+      observedAccountDebit,
+      localBudgetChargeUnits,
       confirmations: {
-        observedBalanceBelongsToOriginalBudget: true,
+        sameAccount: true,
+        snapshotsBracketBlockedEvent: true,
+        balanceSettled: true,
         noCreditsAddedOrRefunded: true,
-        accountWideUnattributedChargeAccepted: true,
+        ...(args.noInterveningCodexActivityConfirmed === true ? { noInterveningCodexActivity: true as const } : {}),
       },
-      affectedBlockedEvent: {
-        runId: affectedRunId,
-        blockedReason: ledger.blockedReason,
-      },
+      affectedBlockedEvent,
     };
     const nextLedger: CodexCreditLedger = {
       ...ledger,
-      spentCredits: observedSpentCredits,
-      reconciliations: [...(ledger.reconciliations ?? []), reconciliation],
-      blockedReason: undefined,
+      spentUnits: totalSpentUnits,
+      resolutions: [...(ledger.resolutions ?? []), resolution],
+      blockedEvent: undefined,
     };
-    await writeLedger(ledgerPath, nextLedger);
-    await writeLockState(lock, "settled");
-    const nextContents = await readFile(ledgerPath);
+    const committed = await writeLedger(ledgerPath, nextLedger);
+    await bestEffortSettleLock(lock);
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       priorLedgerSha256: currentSha256,
-      ledgerSha256: sha256(nextContents),
+      ledgerSha256: committed.sha256,
       at,
-      attribution: "account-wide-unattributed",
+      attribution: "account-wide-observation-window",
       affectedRunId,
-      originalBudgetCredits: ledger.budgetCredits,
-      priorRecordedSpentCredits: ledger.spentCredits,
-      observedRemainingCredits: args.observedRemainingCredits,
-      unattributedCredits: reconciliation.credits,
-      totalSpentCredits: observedSpentCredits,
-      totalRemainingCredits: args.observedRemainingCredits,
-      affectedBlockedEventSha256: sha256(
-        JSON.stringify(reconciliation.affectedBlockedEvent),
-      ),
+      priorRecordedSpentUnits: nanounitsToBudgetUnits(spentNanounits),
+      beforeAccountBalance,
+      afterAccountBalance,
+      observedAccountDebit,
+      localBudgetChargeUnits,
+      totalSpentUnits,
+      remainingPlannedSpendUnits: nanounitsToBudgetUnits(plannedSpendCeilingNanounits - totalSpentNanounits),
+      affectedBlockedEventSha256: sha256(JSON.stringify(affectedBlockedEvent)),
     };
   } finally {
     try {
       if (lock) {
         try {
-          await lock.close();
+          await bestEffortCloseLock(lock);
         } finally {
-          await removeOwnedLedgerLock(lockPath);
+          await bestEffortRemoveOwnedLedgerLock(lockPath);
         }
       }
     } finally {
@@ -278,45 +347,34 @@ export async function reconcileCodexCreditLedger(args: {
 
 export function resolveCodexCreditBudgetConfig(
   env: NodeJS.ProcessEnv = process.env,
-  fallbackRunId?: string,
+  fallbackRunId?: string
 ): CodexCreditBudgetConfig | undefined {
   const rawBudget = env.REMNIC_BENCH_CODEX_CREDIT_BUDGET?.trim();
   if (!rawBudget) return undefined;
 
-  const budgetCredits = parsePositiveNumber(
-    rawBudget,
-    "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
-  );
+  const budgetCredits = parsePositiveNumber(rawBudget, "REMNIC_BENCH_CODEX_CREDIT_BUDGET");
   const reserveCredits = parseNonNegativeNumber(
     env.REMNIC_BENCH_CODEX_CREDIT_RESERVE?.trim() ?? "473",
-    "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    "REMNIC_BENCH_CODEX_CREDIT_RESERVE"
   );
   if (reserveCredits >= budgetCredits) {
-    throw new Error(
-      "REMNIC_BENCH_CODEX_CREDIT_RESERVE must be smaller than REMNIC_BENCH_CODEX_CREDIT_BUDGET",
-    );
+    throw new Error("REMNIC_BENCH_CODEX_CREDIT_RESERVE must be smaller than REMNIC_BENCH_CODEX_CREDIT_BUDGET");
   }
   if (reserveCredits < MAX_BOUNDED_CALL_CREDITS) {
     throw new Error(
-      `REMNIC_BENCH_CODEX_CREDIT_RESERVE must be at least ${MAX_BOUNDED_CALL_CREDITS} credits ` +
-        "to cover the conservative maximum cost of the one serialized in-flight call",
+      `REMNIC_BENCH_CODEX_CREDIT_RESERVE must be at least ${MAX_BOUNDED_CALL_CREDITS} credits to cover the conservative maximum cost of the one serialized in-flight call`
     );
   }
 
   const ledgerPath = path.resolve(
-    expandHomeRelativePath(
-      env.REMNIC_BENCH_CODEX_CREDIT_LEDGER?.trim() ||
-        ".remnic/bench/codex-credit-ledger.json",
-    ),
+    expandHomeRelativePath(env.REMNIC_BENCH_CODEX_CREDIT_LEDGER?.trim() || ".remnic/bench/codex-credit-ledger.json")
   );
   const runId = parseOptionalRunId(env.REMNIC_BENCH_RUN_ID) ?? parseOptionalRunId(fallbackRunId);
   return {
     budgetCredits,
     reserveCredits,
     ledgerPath,
-    allowSol: /^(?:1|true|yes|on)$/i.test(
-      env.REMNIC_BENCH_CODEX_ALLOW_SOL?.trim() ?? "",
-    ),
+    allowSol: /^(?:1|true|yes|on)$/i.test(env.REMNIC_BENCH_CODEX_ALLOW_SOL?.trim() ?? ""),
     ...(runId ? { runId } : {}),
   };
 }
@@ -330,6 +388,12 @@ export async function runWithinCodexCreditBudget<T>(args: {
   if (!args.config) {
     return (await args.run()).value;
   }
+  try {
+    budgetUnitsToNanounits(args.config.budgetCredits);
+    budgetUnitsToNanounits(args.config.reserveCredits);
+  } catch (error) {
+    throw infrastructureUnavailableError(error);
+  }
 
   const previous = completionQueue;
   let release!: () => void;
@@ -342,23 +406,37 @@ export async function runWithinCodexCreditBudget<T>(args: {
   let lock: Awaited<ReturnType<typeof open>> | undefined;
   let dispatchStarted = false;
   let accountingSettled = false;
+  let ledgerCommitted = false;
   try {
-    await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+    try {
+      await prepareLedgerDirectory(lockPath);
+    } catch (error) {
+      throw infrastructureUnavailableError(error);
+    }
     lock = await acquireLedgerLock(lockPath);
     assertModelAllowed(args.model, args.config);
     const ledger = await readLedger(args.config);
-    if (ledger.blockedReason) {
-      throw new Error(
-        `Codex credit ledger is blocked pending manual reconciliation: ${ledger.blockedReason}`,
+    if (ledger.blockedEvent) {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "Codex credit ledger requires manual reconciliation.",
+        { cause: new Error(`Private ledger block: ${ledger.blockedEvent.reason}`) }
       );
     }
     const usableCredits = args.config.budgetCredits - args.config.reserveCredits;
-    const dispatchHeadroom = usableCredits - ledger.spentCredits;
-    if (dispatchHeadroom < MAX_BOUNDED_CALL_CREDITS) {
-      throw new Error(
-        `Codex credit budget cannot safely dispatch another call: ${ledger.spentCredits.toFixed(3)} spent; ` +
-          `${dispatchHeadroom.toFixed(3)} remains below the ${usableCredits.toFixed(3)} planned-spend ceiling, ` +
-          `but ${MAX_BOUNDED_CALL_CREDITS.toFixed(3)} credits of worst-case call headroom are required.`,
+    const spentNanounits = ledgerSpentNanounits(ledger);
+    const dispatchHeadroomNanounits = budgetUnitsToNanounits(usableCredits) - spentNanounits;
+    if (dispatchHeadroomNanounits < budgetUnitsToNanounits(MAX_BOUNDED_CALL_CREDITS)) {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.SpendHeadroomExhausted,
+        "Codex credit budget lacks conservative dispatch headroom.",
+        {
+          cause: new Error(
+            `${nanounitsToBudgetUnits(spentNanounits)} local units spent; ` +
+              `${nanounitsToBudgetUnits(dispatchHeadroomNanounits)} available; ` +
+              `${MAX_BOUNDED_CALL_CREDITS} required.`
+          ),
+        }
       );
     }
 
@@ -369,45 +447,70 @@ export async function runWithinCodexCreditBudget<T>(args: {
       result = await args.run();
     } catch (error) {
       if (error instanceof CodexCreditDispatchError) {
-        await writeLockState(lock, "settled");
         accountingSettled = true;
-      } else {
-        const blockedLedger: CodexCreditLedger = {
-          ...ledger,
-          blockedReason: error instanceof CodexCreditAccountingError
-            ? error.message
-            : `Codex dispatch outcome is unknown after an unexpected error: ${safeErrorMessage(error)}`,
-        };
-        await writeLedger(args.config.ledgerPath, blockedLedger);
-        await writeLockState(lock, "settled");
-        accountingSettled = true;
+        await bestEffortSettleLock(lock);
+        throw new BenchmarkRunBlockedError(
+          BenchmarkRunBlockReason.InfrastructureUnavailable,
+          "Codex CLI infrastructure was unavailable before dispatch.",
+          { cause: error }
+        );
       }
-      throw error;
+      const blockedLedger: CodexCreditLedger = {
+        ...ledger,
+        blockedEvent: {
+          at: new Date().toISOString(),
+          ...(args.config.runId ? { runId: args.config.runId } : {}),
+          model: args.model,
+          reason:
+            error instanceof CodexCreditAccountingError
+              ? error.message
+              : `Codex dispatch outcome is unknown after an unexpected error: ${safeErrorMessage(error)}`,
+        },
+      };
+      await writeLedger(args.config.ledgerPath, blockedLedger);
+      ledgerCommitted = true;
+      accountingSettled = true;
+      await bestEffortSettleLock(lock);
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "Codex usage accounting is uncertain; manual reconciliation is required.",
+        {
+          cause: error,
+        }
+      );
     }
-    const credits = calculateCodexCredits(args.model, result.usage);
-    const nextSpent = ledger.spentCredits + credits;
+    const creditNanounits = calculateCodexBudgetNanounits(args.model, result.usage);
+    const credits = nanounitsToBudgetUnits(creditNanounits);
+    const nextSpentNanounits = spentNanounits + creditNanounits;
+    const nextSpent = nanounitsToBudgetUnits(nextSpentNanounits);
     const nextLedger: CodexCreditLedger = {
       ...ledger,
-      spentCredits: nextSpent,
+      spentUnits: nextSpent,
       entries: [
         ...ledger.entries,
         {
           at: new Date().toISOString(),
           model: args.model,
-          credits,
+          budgetUnits: credits,
           ...(args.config.runId ? { runId: args.config.runId } : {}),
           ...result.usage,
         },
       ],
     };
     await writeLedger(args.config.ledgerPath, nextLedger);
-    await writeLockState(lock, "settled");
+    ledgerCommitted = true;
     accountingSettled = true;
-    args.onUsagePersisted?.(result.usage);
-    if (nextSpent > usableCredits) {
-      throw new Error(
-        `Codex planned-spend ceiling exceeded by completed call: ${nextSpent.toFixed(3)} > ` +
-          `${usableCredits.toFixed(3)} credits. Usage was persisted; stop the benchmark immediately.`,
+    await bestEffortSettleLock(lock);
+    try {
+      args.onUsagePersisted?.(result.usage);
+    } catch {
+      // The ledger commit is authoritative; an observer cannot roll it back.
+    }
+    if (nextSpentNanounits > budgetUnitsToNanounits(usableCredits)) {
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.SpendCeilingExceeded,
+        "Codex planned-spend ceiling was exceeded by committed usage.",
+        { cause: new Error(`${nextSpent} local units spent exceeds the ${usableCredits} planned ceiling.`) }
       );
     }
     return result.value;
@@ -415,10 +518,10 @@ export async function runWithinCodexCreditBudget<T>(args: {
     try {
       if (lock) {
         try {
-          await lock.close();
+          await bestEffortCloseLock(lock);
         } finally {
-          if (!dispatchStarted || accountingSettled) {
-            await removeOwnedLedgerLock(lockPath);
+          if (!dispatchStarted || accountingSettled || ledgerCommitted) {
+            await bestEffortRemoveOwnedLedgerLock(lockPath);
           }
         }
       }
@@ -428,23 +531,19 @@ export async function runWithinCodexCreditBudget<T>(args: {
   }
 }
 
-async function acquireLedgerLock(
-  lockPath: string,
-): Promise<Awaited<ReturnType<typeof open>>> {
+async function acquireLedgerLock(lockPath: string): Promise<Awaited<ReturnType<typeof open>>> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       await mkdir(lockPath, { mode: 0o700 });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw infrastructureUnavailableError(error);
       const owner = await readLockOwner(lockPath);
-      if (
-        !owner ||
-        isProcessAlive(owner.pid) ||
-        owner.phase === "in-flight"
-      ) {
-        throw new Error(
-          `Codex credit ledger is locked${owner?.phase === "in-flight" ? " with unreconciled in-flight usage" : " by another benchmark process"} ` +
-            `(${lockPath}); refusing credit spend.`,
+      if (!owner || isProcessAlive(owner.pid) || owner.phase === "in-flight") {
+        throw resourceLockedError(
+          new Error(
+            `Codex credit ledger is locked${owner?.phase === "in-flight" ? " with unreconciled in-flight usage" : " by another benchmark process"} ` +
+              `(${lockPath}); refusing credit spend.`
+          )
         );
       }
       await reclaimStaleLedgerLock(lockPath, owner);
@@ -462,15 +561,13 @@ async function acquireLedgerLock(
       await unlink(lockOwnerPath(lockPath)).catch(() => undefined);
       await rmdir(lockHeldPath(lockPath)).catch(() => undefined);
       await rmdir(lockPath).catch(() => undefined);
-      throw error;
+      throw infrastructureUnavailableError(error);
     }
   }
-  throw new Error(`Unable to acquire Codex credit ledger lock (${lockPath})`);
+  throw resourceLockedError(new Error(`Unable to acquire Codex credit ledger lock (${lockPath})`));
 }
 
-async function readLockOwner(
-  lockPath: string,
-): Promise<{ pid: number; phase: LedgerLockPhase } | undefined> {
+async function readLockOwner(lockPath: string): Promise<{ pid: number; phase: LedgerLockPhase } | undefined> {
   try {
     const parsed = JSON.parse(await readFile(lockOwnerPath(lockPath), "utf8")) as {
       pid?: unknown;
@@ -479,9 +576,7 @@ async function readLockOwner(
     if (
       !Number.isSafeInteger(parsed.pid) ||
       (parsed.pid as number) <= 0 ||
-      (parsed.phase !== "preflight" &&
-        parsed.phase !== "in-flight" &&
-        parsed.phase !== "settled")
+      (parsed.phase !== "preflight" && parsed.phase !== "in-flight" && parsed.phase !== "settled")
     ) {
       return undefined;
     }
@@ -493,14 +588,16 @@ async function readLockOwner(
 
 async function reclaimStaleLedgerLock(
   lockPath: string,
-  expectedOwner: { pid: number; phase: LedgerLockPhase },
+  expectedOwner: { pid: number; phase: LedgerLockPhase }
 ): Promise<void> {
   try {
     await rmdir(lockHeldPath(lockPath));
   } catch (error) {
-    throw new Error(
-      `Codex credit ledger stale-lock reclamation is already claimed or incomplete ` +
-        `(${lockPath}); refusing credit spend: ${safeErrorMessage(error)}`,
+    throw resourceLockedError(
+      new Error(
+        `Codex credit ledger stale-lock reclamation is already claimed or incomplete (${lockPath}); refusing credit spend: ${safeErrorMessage(error)}`,
+        { cause: error }
+      )
     );
   }
 
@@ -512,9 +609,8 @@ async function reclaimStaleLedgerLock(
     isProcessAlive(currentOwner.pid) ||
     currentOwner.phase === "in-flight"
   ) {
-    throw new Error(
-      `Codex credit ledger owner changed during stale-lock reclamation ` +
-        `(${lockPath}); refusing credit spend.`,
+    throw resourceLockedError(
+      new Error(`Codex credit ledger owner changed during stale-lock reclamation (${lockPath}); refusing credit spend.`)
     );
   }
 
@@ -536,10 +632,11 @@ function lockHeldPath(lockPath: string): string {
   return path.join(lockPath, "held");
 }
 
-async function writeLockState(
-  lock: Awaited<ReturnType<typeof open>>,
-  phase: LedgerLockPhase,
-): Promise<void> {
+async function writeLockState(lock: Awaited<ReturnType<typeof open>>, phase: LedgerLockPhase): Promise<void> {
+  if (phase === "settled" && failNextSettledLockWriteForTest) {
+    failNextSettledLockWriteForTest = false;
+    throw new Error("injected settled lock-state failure");
+  }
   const contents = `${JSON.stringify({
     pid: process.pid,
     phase,
@@ -572,12 +669,8 @@ export function parseCodexJsonlUsage(output: string): CodexCliNativeUsage | unde
       if (event.type !== "turn.completed" || !event.usage) continue;
       const inputTokens = readCounter(event.usage.input_tokens);
       const outputTokens = readCounter(event.usage.output_tokens);
-      const cachedInputTokens = readOptionalCounter(
-        event.usage.cached_input_tokens,
-      );
-      const reasoningOutputTokens = readOptionalCounter(
-        event.usage.reasoning_output_tokens,
-      );
+      const cachedInputTokens = readOptionalCounter(event.usage.cached_input_tokens);
+      const reasoningOutputTokens = readOptionalCounter(event.usage.reasoning_output_tokens);
       if (
         inputTokens !== undefined &&
         outputTokens !== undefined &&
@@ -598,41 +691,49 @@ export function parseCodexJsonlUsage(output: string): CodexCliNativeUsage | unde
   return usage;
 }
 
-export function calculateCodexCredits(
-  model: string,
-  usage: CodexCliNativeUsage,
-): number {
+export function calculateCodexBudgetUnits(model: string, usage: CodexCliNativeUsage): number {
+  return nanounitsToBudgetUnits(calculateCodexBudgetNanounits(model, usage));
+}
+
+function calculateCodexBudgetNanounits(model: string, usage: CodexCliNativeUsage): bigint {
   const rate = resolveRate(model);
   const cached = Math.min(usage.inputTokens, usage.cachedInputTokens);
   const uncached = usage.inputTokens - cached;
   return (
-    (uncached * rate.input + cached * rate.cachedInput + usage.outputTokens * rate.output) /
-    ONE_MILLION
+    BigInt(uncached) * rateNanounitsPerToken(rate.input) +
+    BigInt(cached) * rateNanounitsPerToken(rate.cachedInput) +
+    BigInt(usage.outputTokens) * rateNanounitsPerToken(rate.output)
   );
 }
 
-export async function buildCodexCreditReceipt(
-  ledgerPath: string,
-  runId?: string,
-): Promise<CodexCreditReceipt> {
+/** @deprecated Use calculateCodexBudgetUnits; this value is a local budget unit, not an account debit. */
+export function calculateCodexCredits(model: string, usage: CodexCliNativeUsage): number {
+  return calculateCodexBudgetUnits(model, usage);
+}
+
+export async function buildCodexCreditReceipt(ledgerPath: string, runId?: string): Promise<CodexCreditReceipt> {
   const resolvedPath = path.resolve(expandHomeRelativePath(ledgerPath));
   const contents = await readFile(resolvedPath);
-  const ledger = parseLedger(JSON.parse(contents.toString("utf8")) as Partial<CodexCreditLedger>);
+  const ledger = parseLedger(JSON.parse(contents.toString("utf8")), contents);
   const normalizedRunId = parseOptionalRunId(runId);
-  const reconciliations = ledger.reconciliations ?? [];
-  const cumulative = summarizeLedgerEntries(ledger.entries, reconciliations);
-  const runEntries = normalizedRunId
-    ? ledger.entries.filter((entry) => entry.runId === normalizedRunId)
-    : [];
+  const spentNanounits = ledgerSpentNanounits(ledger);
+  const budgetNanounits = budgetUnitsToNanounits(ledger.budgetUnits);
+  const reserveNanounits = budgetUnitsToNanounits(ledger.reserveUnits);
+  const cumulative = summarizeLedgerEntries(
+    ledger.entries,
+    ledger.resolutions ?? [],
+    ledger.legacyReconciliations ?? []
+  );
+  const runEntries = normalizedRunId ? ledger.entries.filter((entry) => entry.runId === normalizedRunId) : [];
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ledgerSha256: sha256(contents),
-    budgetCredits: ledger.budgetCredits,
-    reserveCredits: ledger.reserveCredits,
-    plannedSpendCeilingCredits: ledger.budgetCredits - ledger.reserveCredits,
-    totalSpentCredits: ledger.spentCredits,
-    totalRemainingCredits: ledger.budgetCredits - ledger.spentCredits,
-    blocked: ledger.blockedReason !== undefined,
+    budgetUnits: ledger.budgetUnits,
+    reserveUnits: ledger.reserveUnits,
+    plannedSpendCeilingUnits: nanounitsToBudgetUnits(budgetNanounits - reserveNanounits),
+    totalSpentUnits: nanounitsToBudgetUnits(spentNanounits),
+    remainingBudgetUnits: nanounitsToBudgetUnits(budgetNanounits - spentNanounits),
+    blocked: ledger.blockedEvent !== undefined,
     cumulative,
     ...(normalizedRunId
       ? {
@@ -649,102 +750,136 @@ function resolveRate(model: string): CodexCreditRate {
   const match = CREDIT_RATES.find(([pattern]) => pattern.test(model));
   if (!match) {
     throw new Error(
-      `No Codex credit rate is configured for model ${JSON.stringify(model)}; ` +
-        "refusing to run under a bounded credit budget.",
+      `No Codex credit rate is configured for model ${JSON.stringify(model)}; refusing to run under a bounded credit budget.`
     );
   }
   return match[1];
 }
 
 function assertModelAllowed(model: string, config: CodexCreditBudgetConfig): void {
-  resolveRate(model);
+  try {
+    resolveRate(model);
+  } catch (error) {
+    throw new BenchmarkRunBlockedError(
+      BenchmarkRunBlockReason.InfrastructureUnavailable,
+      "Configured Codex model is unsupported by the bounded budget.",
+      { cause: error }
+    );
+  }
   if (SOL_MODEL.test(model) && !config.allowSol) {
-    throw new Error(
-      "gpt-5.6-sol is disabled for bounded benchmark runs because it is the most expensive GPT-5.6 tier. " +
-        "Use gpt-5.6-terra or gpt-5.6-luna, or explicitly set REMNIC_BENCH_CODEX_ALLOW_SOL=1.",
+    throw new BenchmarkRunBlockedError(
+      BenchmarkRunBlockReason.InfrastructureUnavailable,
+      "Configured Codex model is disallowed by bounded-budget policy.",
+      {
+        cause: new Error(
+          "gpt-5.6-sol is disabled for bounded benchmark runs because it is the most expensive GPT-5.6 tier. " +
+            "Use gpt-5.6-terra or gpt-5.6-luna, or explicitly set REMNIC_BENCH_CODEX_ALLOW_SOL=1."
+        ),
+      }
     );
   }
 }
 
 async function readLedger(config: CodexCreditBudgetConfig): Promise<CodexCreditLedger> {
   try {
-    const parsed = parseLedger(
-      JSON.parse(await readFile(config.ledgerPath, "utf8")) as Partial<CodexCreditLedger>,
-    );
-    if (
-      parsed.budgetCredits !== config.budgetCredits ||
-      parsed.reserveCredits !== config.reserveCredits
-    ) {
+    const contents = await readFile(config.ledgerPath);
+    const parsed = parseLedger(JSON.parse(contents.toString("utf8")), contents);
+    if (parsed.budgetUnits !== config.budgetCredits || parsed.reserveUnits !== config.reserveCredits) {
       throw new Error("ledger schema or budget does not match this run");
     }
     return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new Error(`Invalid Codex credit ledger at ${config.ledgerPath}: ${String(error)}`);
+      throw new BenchmarkRunBlockedError(
+        BenchmarkRunBlockReason.ManualReconciliationRequired,
+        "Codex credit ledger is invalid or incompatible with this run.",
+        { cause: new Error(`Invalid Codex credit ledger at ${config.ledgerPath}: ${String(error)}`, { cause: error }) }
+      );
     }
     return {
-      schemaVersion: 1,
-      budgetCredits: config.budgetCredits,
-      reserveCredits: config.reserveCredits,
-      spentCredits: 0,
+      schemaVersion: 2,
+      budgetUnits: config.budgetCredits,
+      reserveUnits: config.reserveCredits,
+      spentUnits: 0,
       entries: [],
     };
   }
 }
 
-function parseLedger(parsed: Partial<CodexCreditLedger>): CodexCreditLedger {
-  const entryCredits = Array.isArray(parsed.entries)
-    ? parsed.entries.reduce(
-        (sum, entry) =>
-          sum +
-          (typeof (entry as Partial<CodexCreditLedgerEntry>)?.credits === "number"
-            ? (entry as Partial<CodexCreditLedgerEntry>).credits ?? 0
-            : 0),
-        0,
-      )
-    : Number.NaN;
-  const reconciliationCredits = parsed.reconciliations === undefined
-    ? 0
-    : Array.isArray(parsed.reconciliations)
-      ? parsed.reconciliations.reduce(
-          (sum, reconciliation) =>
-            sum +
-            (typeof (reconciliation as Partial<CodexCreditLedgerReconciliation>)?.credits === "number"
-              ? (reconciliation as Partial<CodexCreditLedgerReconciliation>).credits ?? 0
-              : 0),
-          0,
-        )
-      : Number.NaN;
+function parseLedger(parsed: unknown, sourceContents?: string | Uint8Array): CodexCreditLedger {
+  if (isLedgerV1(parsed)) return migrateLedgerV1(parsed, sourceContents);
+  if (!parsed || typeof parsed !== "object") throw new Error("ledger schema is invalid");
+  const candidate = parsed as Partial<CodexCreditLedger>;
   if (
-    parsed.schemaVersion !== 1 ||
-    typeof parsed.budgetCredits !== "number" ||
-    !Number.isFinite(parsed.budgetCredits) ||
-    parsed.budgetCredits <= 0 ||
-    typeof parsed.reserveCredits !== "number" ||
-    !Number.isFinite(parsed.reserveCredits) ||
-    parsed.reserveCredits < 0 ||
-    parsed.reserveCredits >= parsed.budgetCredits ||
-    typeof parsed.spentCredits !== "number" ||
-    !Number.isFinite(parsed.spentCredits) ||
-    parsed.spentCredits < 0 ||
-    !Array.isArray(parsed.entries) ||
-    !parsed.entries.every(isLedgerEntry) ||
-    (parsed.reconciliations !== undefined &&
-      (!Array.isArray(parsed.reconciliations) ||
-        !parsed.reconciliations.every((reconciliation) =>
-          isLedgerReconciliationWithinBudget(reconciliation, parsed.budgetCredits),
-        ))) ||
-    Math.abs(entryCredits + reconciliationCredits - parsed.spentCredits) > 1e-9 ||
-    (parsed.blockedReason !== undefined && typeof parsed.blockedReason !== "string")
+    candidate.schemaVersion !== 2 ||
+    !isPositiveFinite(candidate.budgetUnits) ||
+    !isSupportedBudgetUnits(candidate.budgetUnits) ||
+    !isNonNegativeFinite(candidate.reserveUnits) ||
+    !isSupportedBudgetUnits(candidate.reserveUnits) ||
+    candidate.reserveUnits >= candidate.budgetUnits ||
+    !isNonNegativeFinite(candidate.spentUnits) ||
+    !Array.isArray(candidate.entries) ||
+    !candidate.entries.every(isLedgerEntry) ||
+    (candidate.resolutions !== undefined &&
+      (!Array.isArray(candidate.resolutions) || !candidate.resolutions.every(isLedgerResolution))) ||
+    (candidate.legacyReconciliations !== undefined &&
+      (!Array.isArray(candidate.legacyReconciliations) ||
+        !candidate.legacyReconciliations.every(isLedgerReconciliationV1))) ||
+    !isLedgerSpentConsistent(candidate as CodexCreditLedger) ||
+    !isResolutionHistoryConsistent(candidate as CodexCreditLedger) ||
+    !isMigrationWitnessConsistent(candidate as CodexCreditLedger) ||
+    (candidate.blockedEvent !== undefined && !isBlockedEvent(candidate.blockedEvent)) ||
+    (candidate.migratedFromV1Sha256 !== undefined && !isSha256(candidate.migratedFromV1Sha256))
   ) {
     throw new Error("ledger schema is invalid");
   }
-  return parsed as CodexCreditLedger;
+  return candidate as CodexCreditLedger;
 }
 
-function isLedgerReconciliation(value: unknown): value is CodexCreditLedgerReconciliation {
+function isLedgerV1(value: unknown): value is CodexCreditLedgerV1 {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<CodexCreditLedgerReconciliation>;
+  const candidate = value as Partial<CodexCreditLedgerV1>;
+  const entries = candidate.entries;
+  const reconciliations = candidate.reconciliations;
+  return (
+    candidate.schemaVersion === 1 &&
+    isPositiveFinite(candidate.budgetCredits) &&
+    isNonNegativeFinite(candidate.reserveCredits) &&
+    candidate.reserveCredits < candidate.budgetCredits &&
+    isNonNegativeFinite(candidate.spentCredits) &&
+    Array.isArray(entries) &&
+    entries.every(isLedgerEntryV1) &&
+    (reconciliations === undefined ||
+      (Array.isArray(reconciliations) &&
+        reconciliations.every((item) => isLedgerReconciliationWithinBudgetV1(item, candidate.budgetCredits)))) &&
+    Math.abs(
+      entries.reduce((sum, entry) => sum + entry.credits, 0) +
+        (reconciliations ?? []).reduce((sum, item) => sum + item.credits, 0) -
+        candidate.spentCredits
+    ) <= 1e-9 &&
+    (candidate.blockedReason === undefined ||
+      (typeof candidate.blockedReason === "string" && candidate.blockedReason.length > 0))
+  );
+}
+
+function migrateLedgerV1(ledger: CodexCreditLedgerV1, sourceContents?: string | Uint8Array): CodexCreditLedger {
+  const source = sourceContents ? Buffer.from(sourceContents).toString("utf8") : `${JSON.stringify(ledger)}\n`;
+  return {
+    schemaVersion: 2,
+    budgetUnits: ledger.budgetCredits,
+    reserveUnits: ledger.reserveCredits,
+    spentUnits: ledger.spentCredits,
+    entries: ledger.entries.map(({ credits, ...entry }) => ({ ...entry, budgetUnits: credits })),
+    ...(ledger.reconciliations?.length ? { legacyReconciliations: ledger.reconciliations } : {}),
+    migratedFromV1Sha256: sha256(source),
+    migrationWitnessV1: { source },
+    ...(ledger.blockedReason ? { blockedEvent: { reason: ledger.blockedReason } } : {}),
+  };
+}
+
+function isLedgerReconciliationV1(value: unknown): value is CodexCreditLedgerReconciliationV1 {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CodexCreditLedgerReconciliationV1>;
   const forbiddenUsageFields = [
     "runId",
     "unknownEvent",
@@ -781,19 +916,154 @@ function isLedgerReconciliation(value: unknown): value is CodexCreditLedgerRecon
   );
 }
 
-function isLedgerReconciliationWithinBudget(value: unknown, budget: unknown): boolean {
+function isLedgerReconciliationWithinBudgetV1(value: unknown, budget: unknown): boolean {
   return (
     typeof budget === "number" &&
-    isLedgerReconciliation(value) &&
+    isLedgerReconciliationV1(value) &&
     value.originalBudgetCredits === budget &&
     value.observedRemainingCredits <= budget &&
     value.credits <= budget &&
-    Math.abs(
-      value.priorRecordedSpentCredits +
-        value.credits +
-        value.observedRemainingCredits -
-        budget,
-    ) <= 1e-9
+    Math.abs(value.priorRecordedSpentCredits + value.credits + value.observedRemainingCredits - budget) <= 1e-9
+  );
+}
+
+function isLedgerResolution(value: unknown): value is CodexCreditLedgerResolution {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CodexCreditLedgerResolution>;
+  return (
+    isIsoTimestamp(candidate.at) &&
+    candidate.basis === "operator-observed-account-balance-delta" &&
+    candidate.attribution === "account-wide-observation-window" &&
+    isSha256(candidate.priorLedgerSha256) &&
+    isNonNegativeFinite(candidate.priorRecordedSpentUnits) &&
+    Number.isSafeInteger(candidate.priorEntryCount) &&
+    (candidate.priorEntryCount as number) >= 0 &&
+    typeof candidate.beforeAccountBalance === "string" &&
+    isExactDecimal(candidate.beforeAccountBalance) &&
+    typeof candidate.afterAccountBalance === "string" &&
+    isExactDecimal(candidate.afterAccountBalance) &&
+    typeof candidate.observedAccountDebit === "string" &&
+    isExactDecimal(candidate.observedAccountDebit) &&
+    subtractExactDecimals(candidate.beforeAccountBalance, candidate.afterAccountBalance) ===
+      candidate.observedAccountDebit &&
+    (candidate.localBudgetChargeUnits === 0 || candidate.localBudgetChargeUnits === MAX_BOUNDED_CALL_CREDITS) &&
+    (candidate.observedAccountDebit === "0"
+      ? candidate.localBudgetChargeUnits === 0
+      : candidate.localBudgetChargeUnits === MAX_BOUNDED_CALL_CREDITS) &&
+    candidate.confirmations?.sameAccount === true &&
+    candidate.confirmations.snapshotsBracketBlockedEvent === true &&
+    candidate.confirmations.balanceSettled === true &&
+    candidate.confirmations.noCreditsAddedOrRefunded === true &&
+    (candidate.observedAccountDebit === "0" || candidate.confirmations.noInterveningCodexActivity === true) &&
+    isBlockedEvent(candidate.affectedBlockedEvent) &&
+    isValidStoredRunId(candidate.affectedBlockedEvent.runId)
+  );
+}
+
+function isResolutionHistoryConsistent(ledger: CodexCreditLedger): boolean {
+  const resolutions = ledger.resolutions ?? [];
+  if (resolutions.length === 0) return true;
+  const legacyNanounits = sumBudgetUnitNanounits(
+    (ledger.legacyReconciliations ?? []).map((reconciliation) => reconciliation.credits)
+  );
+  let priorResolutionNanounits = 0n;
+  let priorEntryCount = 0;
+  const seenHashes = new Set<string>();
+
+  for (let index = 0; index < resolutions.length; index += 1) {
+    const resolution = resolutions[index];
+    if (!resolution) return false;
+    if (seenHashes.has(resolution.priorLedgerSha256)) return false;
+    seenHashes.add(resolution.priorLedgerSha256);
+    if (resolution.priorEntryCount < priorEntryCount || resolution.priorEntryCount > ledger.entries.length)
+      return false;
+    const entriesBeforeResolution = ledger.entries.slice(0, resolution.priorEntryCount);
+    const expectedPriorSpentNanounits =
+      sumBudgetUnitNanounits(entriesBeforeResolution.map((entry) => entry.budgetUnits)) +
+      legacyNanounits +
+      priorResolutionNanounits;
+    if (budgetUnitsToNanounits(resolution.priorRecordedSpentUnits) !== expectedPriorSpentNanounits) return false;
+
+    if (!(index === 0 && isDirectV1PredecessorResolution(ledger, resolution))) {
+      const priorLedger: CodexCreditLedger = {
+        ...ledger,
+        spentUnits: resolution.priorRecordedSpentUnits,
+        entries: entriesBeforeResolution,
+        resolutions: index > 0 ? resolutions.slice(0, index) : undefined,
+        blockedEvent: resolution.affectedBlockedEvent,
+      };
+      if (sha256(serializeLedger(priorLedger)) !== resolution.priorLedgerSha256) return false;
+    }
+    priorResolutionNanounits += budgetUnitsToNanounits(resolution.localBudgetChargeUnits);
+    priorEntryCount = resolution.priorEntryCount;
+  }
+  return true;
+}
+
+function isMigrationWitnessConsistent(ledger: CodexCreditLedger): boolean {
+  if (!ledger.migratedFromV1Sha256 && !ledger.migrationWitnessV1) return true;
+  if (!ledger.migratedFromV1Sha256 || !ledger.migrationWitnessV1) return false;
+  const source = ledger.migrationWitnessV1.source;
+  if (typeof source !== "string" || sha256(source) !== ledger.migratedFromV1Sha256) return false;
+  let predecessor: unknown;
+  try {
+    predecessor = JSON.parse(source);
+  } catch {
+    return false;
+  }
+  if (!isLedgerV1(predecessor)) return false;
+  if (predecessor.budgetCredits !== ledger.budgetUnits || predecessor.reserveCredits !== ledger.reserveUnits)
+    return false;
+  if (JSON.stringify(predecessor.reconciliations ?? []) !== JSON.stringify(ledger.legacyReconciliations ?? [])) {
+    return false;
+  }
+  const migratedEntries = predecessor.entries.map(({ credits, ...entry }) => ({ ...entry, budgetUnits: credits }));
+  const firstResolution = ledger.resolutions?.[0];
+  const entriesAtMigration = firstResolution
+    ? ledger.entries.slice(0, firstResolution.priorEntryCount)
+    : ledger.entries.slice(0, migratedEntries.length);
+  if (JSON.stringify(migratedEntries) !== JSON.stringify(entriesAtMigration.slice(0, migratedEntries.length))) {
+    return false;
+  }
+  return true;
+}
+
+function isDirectV1PredecessorResolution(ledger: CodexCreditLedger, resolution: CodexCreditLedgerResolution): boolean {
+  if (!ledger.migratedFromV1Sha256 || !ledger.migrationWitnessV1) return false;
+  let predecessor: unknown;
+  try {
+    predecessor = JSON.parse(ledger.migrationWitnessV1.source);
+  } catch {
+    return false;
+  }
+  return (
+    isLedgerV1(predecessor) &&
+    resolution.priorEntryCount === predecessor.entries.length &&
+    resolution.priorLedgerSha256 === ledger.migratedFromV1Sha256 &&
+    budgetUnitsToNanounits(resolution.priorRecordedSpentUnits) === budgetUnitsToNanounits(predecessor.spentCredits) &&
+    predecessor.blockedReason === resolution.affectedBlockedEvent.reason
+  );
+}
+
+function isBlockedEvent(value: unknown): value is CodexCreditBlockedEvent {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CodexCreditBlockedEvent>;
+  return (
+    typeof candidate.reason === "string" &&
+    candidate.reason.length > 0 &&
+    (candidate.at === undefined || isIsoTimestamp(candidate.at)) &&
+    (candidate.runId === undefined || isValidStoredRunId(candidate.runId)) &&
+    (candidate.model === undefined || (typeof candidate.model === "string" && candidate.model.length > 0))
+  );
+}
+
+function isLedgerEntryV1(entry: unknown): entry is CodexCreditLedgerEntryV1 {
+  if (!entry || typeof entry !== "object") return false;
+  const candidate = entry as Partial<CodexCreditLedgerEntryV1>;
+  return (
+    isLedgerEntryCommon(candidate) &&
+    isNonNegativeFinite(candidate.credits) &&
+    isEntryCreditConsistentV1(candidate as CodexCreditLedgerEntryV1)
   );
 }
 
@@ -801,25 +1071,45 @@ function isLedgerEntry(entry: unknown): entry is CodexCreditLedgerEntry {
   if (!entry || typeof entry !== "object") return false;
   const candidate = entry as Partial<CodexCreditLedgerEntry>;
   return (
-    typeof candidate.at === "string" &&
+    isIsoTimestamp(candidate.at) &&
     typeof candidate.model === "string" &&
     candidate.model.length > 0 &&
-    typeof candidate.credits === "number" &&
-    Number.isFinite(candidate.credits) &&
-    candidate.credits >= 0 &&
+    isNonNegativeFinite(candidate.budgetUnits) &&
     (candidate.runId === undefined || isValidStoredRunId(candidate.runId)) &&
     readCounter(candidate.inputTokens) !== undefined &&
     readCounter(candidate.cachedInputTokens) !== undefined &&
     readCounter(candidate.outputTokens) !== undefined &&
     readCounter(candidate.reasoningOutputTokens) !== undefined &&
     (candidate.cachedInputTokens ?? 0) <= (candidate.inputTokens ?? 0) &&
-    isEntryCreditConsistent(candidate as CodexCreditLedgerEntry)
+    isEntryBudgetUnitConsistent(candidate as CodexCreditLedgerEntry)
   );
 }
 
-function isEntryCreditConsistent(entry: CodexCreditLedgerEntry): boolean {
+function isLedgerEntryCommon(candidate: Partial<CodexCreditLedgerEntryV1>): boolean {
+  return (
+    isIsoTimestamp(candidate.at) &&
+    typeof candidate.model === "string" &&
+    candidate.model.length > 0 &&
+    (candidate.runId === undefined || isValidStoredRunId(candidate.runId)) &&
+    readCounter(candidate.inputTokens) !== undefined &&
+    readCounter(candidate.cachedInputTokens) !== undefined &&
+    readCounter(candidate.outputTokens) !== undefined &&
+    readCounter(candidate.reasoningOutputTokens) !== undefined &&
+    (candidate.cachedInputTokens ?? 0) <= (candidate.inputTokens ?? 0)
+  );
+}
+
+function isEntryCreditConsistentV1(entry: CodexCreditLedgerEntryV1): boolean {
   try {
-    return Math.abs(calculateCodexCredits(entry.model, entry) - entry.credits) <= 1e-9;
+    return Math.abs(calculateCodexBudgetUnits(entry.model, entry) - entry.credits) <= 1e-9;
+  } catch {
+    return false;
+  }
+}
+
+function isEntryBudgetUnitConsistent(entry: CodexCreditLedgerEntry): boolean {
+  try {
+    return Math.abs(calculateCodexBudgetUnits(entry.model, entry) - entry.budgetUnits) <= 1e-9;
   } catch {
     return false;
   }
@@ -827,7 +1117,8 @@ function isEntryCreditConsistent(entry: CodexCreditLedgerEntry): boolean {
 
 function summarizeLedgerEntries(
   entries: CodexCreditLedgerEntry[],
-  reconciliations: CodexCreditLedgerReconciliation[] = [],
+  resolutions: CodexCreditLedgerResolution[] = [],
+  legacyReconciliations: CodexCreditLedgerReconciliationV1[] = []
 ): CodexCreditReceiptScope {
   const byModel = new Map<string, CodexCreditLedgerEntry[]>();
   for (const entry of entries) {
@@ -838,13 +1129,15 @@ function summarizeLedgerEntries(
   const totals = summarizeUsage(entries);
   return {
     calls: entries.length,
-    credits:
-      entries.reduce((sum, entry) => sum + entry.credits, 0) +
-      reconciliations.reduce((sum, reconciliation) => sum + reconciliation.credits, 0),
-    unattributedReconciliationCount: reconciliations.length,
-    unattributedReconciledCredits: reconciliations.reduce(
-      (sum, reconciliation) => sum + reconciliation.credits,
-      0,
+    budgetUnits: nanounitsToBudgetUnits(
+      sumBudgetUnitNanounits(entries.map((entry) => entry.budgetUnits)) +
+        sumBudgetUnitNanounits(resolutions.map((resolution) => resolution.localBudgetChargeUnits)) +
+        sumBudgetUnitNanounits(legacyReconciliations.map((reconciliation) => reconciliation.credits))
+    ),
+    accountBalanceResolutionCount: resolutions.length + legacyReconciliations.length,
+    conservativeResolutionChargeUnits: nanounitsToBudgetUnits(
+      sumBudgetUnitNanounits(resolutions.map((resolution) => resolution.localBudgetChargeUnits)) +
+        sumBudgetUnitNanounits(legacyReconciliations.map((reconciliation) => reconciliation.credits))
     ),
     ...totals,
     models: [...byModel.entries()]
@@ -852,7 +1145,7 @@ function summarizeLedgerEntries(
       .map(([model, modelEntries]) => ({
         model,
         calls: modelEntries.length,
-        credits: modelEntries.reduce((sum, entry) => sum + entry.credits, 0),
+        budgetUnits: nanounitsToBudgetUnits(sumBudgetUnitNanounits(modelEntries.map((entry) => entry.budgetUnits))),
         ...summarizeUsage(modelEntries),
       })),
   };
@@ -866,24 +1159,28 @@ function summarizeUsage(entries: CodexCreditLedgerEntry[]): CodexCliNativeUsage 
       outputTokens: totals.outputTokens + entry.outputTokens,
       reasoningOutputTokens: totals.reasoningOutputTokens + entry.reasoningOutputTokens,
     }),
-    { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+    { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }
   );
 }
 
-async function writeLedger(filePath: string, ledger: CodexCreditLedger): Promise<void> {
+async function writeLedger(filePath: string, ledger: CodexCreditLedger): Promise<{ contents: string; sha256: string }> {
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tempPath = `${filePath}.${process.pid}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(ledger, null, 2)}\n`, {
+  const contents = serializeLedger(ledger);
+  await writeFile(tempPath, contents, {
     encoding: "utf8",
     mode: 0o600,
   });
   await rename(tempPath, filePath);
+  return { contents, sha256: sha256(contents) };
+}
+
+function serializeLedger(ledger: CodexCreditLedger): string {
+  return `${JSON.stringify(ledger, null, 2)}\n`;
 }
 
 function readCounter(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && (value as number) >= 0
-    ? (value as number)
-    : undefined;
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
 }
 
 function readOptionalCounter(value: unknown): number | undefined {
@@ -892,6 +1189,49 @@ function readOptionalCounter(value: unknown): number | undefined {
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function resourceLockedError(cause: unknown): BenchmarkRunBlockedError {
+  const original = cause instanceof Error ? cause : new Error("Codex credit ledger lock acquisition failed.");
+  return new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.ResourceLocked,
+    "Codex credit ledger resource is locked.",
+    { cause: original }
+  );
+}
+
+function infrastructureUnavailableError(cause: unknown): BenchmarkRunBlockedError {
+  const original = cause instanceof Error ? cause : new Error("Codex ledger infrastructure setup failed.");
+  return new BenchmarkRunBlockedError(
+    BenchmarkRunBlockReason.InfrastructureUnavailable,
+    "Codex ledger infrastructure is unavailable.",
+    { cause: original }
+  );
+}
+
+async function prepareLedgerDirectory(lockPath: string): Promise<void> {
+  if (failNextLedgerSetupForTest) {
+    failNextLedgerSetupForTest = false;
+    throw new Error(`injected setup failure for ${lockPath}`);
+  }
+  await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+}
+
+async function bestEffortSettleLock(lock: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await writeLockState(lock, "settled").catch(() => undefined);
+}
+
+async function bestEffortCloseLock(lock: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await lock.close().catch(() => undefined);
+}
+
+async function bestEffortRemoveOwnedLedgerLock(lockPath: string): Promise<void> {
+  if (failNextOwnedLockRemovalForTest) {
+    failNextOwnedLockRemovalForTest = false;
+    failNextLedgerSetupForTest = false;
+    return;
+  }
+  await removeOwnedLedgerLock(lockPath).catch(() => undefined);
 }
 
 function expandHomeRelativePath(value: string): string {
@@ -916,6 +1256,107 @@ function parseNonNegativeNumber(value: string, name: string): number {
     throw new Error(`${name} must be a finite non-negative number`);
   }
   return parsed;
+}
+
+function isPositiveFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isSupportedBudgetUnits(value: unknown): value is number {
+  if (typeof value !== "number") return false;
+  try {
+    budgetUnitsToNanounits(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const BUDGET_UNIT_SCALE = 1_000_000_000;
+
+function rateNanounitsPerToken(rate: number): bigint {
+  const scaled = rate * 1_000;
+  if (!Number.isSafeInteger(scaled)) throw new Error("Codex credit rate exceeds nanounit precision");
+  return BigInt(scaled);
+}
+
+function budgetUnitsToNanounits(value: number): bigint {
+  if (!Number.isFinite(value) || value < 0) throw new Error("budget units must be finite and non-negative");
+  const fixed = value.toFixed(9);
+  if (Number(fixed) !== value) {
+    throw new Error("budget units exceed supported nanounit precision");
+  }
+  const [integer = "0", fraction = ""] = fixed.split(".");
+  const nanounits = BigInt(integer) * BigInt(BUDGET_UNIT_SCALE) + BigInt(fraction.padEnd(9, "0"));
+  if (nanounits > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("budget units exceed safe integer range");
+  return nanounits;
+}
+
+function nanounitsToBudgetUnits(value: bigint): number {
+  return Number(value) / BUDGET_UNIT_SCALE;
+}
+
+function sumBudgetUnitNanounits(values: number[]): bigint {
+  return values.reduce((sum, value) => sum + budgetUnitsToNanounits(value), 0n);
+}
+
+function ledgerSpentNanounits(ledger: CodexCreditLedger): bigint {
+  return (
+    sumBudgetUnitNanounits(ledger.entries.map((entry) => entry.budgetUnits)) +
+    sumBudgetUnitNanounits((ledger.resolutions ?? []).map((resolution) => resolution.localBudgetChargeUnits)) +
+    sumBudgetUnitNanounits((ledger.legacyReconciliations ?? []).map((reconciliation) => reconciliation.credits))
+  );
+}
+
+function isLedgerSpentConsistent(ledger: CodexCreditLedger): boolean {
+  try {
+    return budgetUnitsToNanounits(ledger.spentUnits) === ledgerSpentNanounits(ledger);
+  } catch {
+    return false;
+  }
+}
+
+function sameBudgetUnits(left: number, right: number): boolean {
+  try {
+    return budgetUnitsToNanounits(left) === budgetUnitsToNanounits(right);
+  } catch {
+    return false;
+  }
+}
+
+function parseExactDecimal(value: string, name: string): string {
+  if (typeof value !== "string" || value !== value.trim() || !isExactDecimal(value)) {
+    throw new Error(`${name} must be a non-negative plain decimal string`);
+  }
+  return value;
+}
+
+function isExactDecimal(value: string): boolean {
+  return /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value) && value.length <= 128;
+}
+
+function subtractExactDecimals(before: string, after: string): string {
+  const beforeParts = splitExactDecimal(before);
+  const afterParts = splitExactDecimal(after);
+  const scale = Math.max(beforeParts.fraction.length, afterParts.fraction.length);
+  const beforeScaled = BigInt(`${beforeParts.integer}${beforeParts.fraction.padEnd(scale, "0")}`);
+  const afterScaled = BigInt(`${afterParts.integer}${afterParts.fraction.padEnd(scale, "0")}`);
+  const difference = beforeScaled - afterScaled;
+  const sign = difference < 0n ? "-" : "";
+  const digits = (difference < 0n ? -difference : difference).toString().padStart(scale + 1, "0");
+  if (scale === 0) return `${sign}${digits}`;
+  const integer = digits.slice(0, -scale);
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return fraction ? `${sign}${integer}.${fraction}` : `${sign}${integer}`;
+}
+
+function splitExactDecimal(value: string): { integer: string; fraction: string } {
+  const [integer, fraction = ""] = value.split(".");
+  return { integer: integer ?? "", fraction };
 }
 
 function parseOptionalRunId(value: string | undefined): string | undefined {
@@ -961,10 +1402,6 @@ function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function normalizeZero(value: number): number {
-  return Object.is(value, -0) ? 0 : value;
-}
-
 function isIsoTimestamp(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
@@ -977,5 +1414,16 @@ function isIsoTimestamp(value: unknown): value is string {
 export const __codexCreditBudgetTestHooks = {
   resetQueue: () => {
     completionQueue = Promise.resolve();
+    failNextSettledLockWriteForTest = false;
+    failNextOwnedLockRemovalForTest = false;
+  },
+  failNextSettledLockWrite: () => {
+    failNextSettledLockWriteForTest = true;
+  },
+  failNextOwnedLockRemoval: () => {
+    failNextOwnedLockRemovalForTest = true;
+  },
+  failNextLedgerSetup: () => {
+    failNextLedgerSetupForTest = true;
   },
 };

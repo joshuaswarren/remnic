@@ -28,6 +28,11 @@ import {
   runWithinCodexCreditBudget,
   type CodexCliNativeUsage,
 } from "./codex-credit-budget.js";
+import {
+  BenchmarkRunBlockedError,
+  BenchmarkRunBlockReason,
+  findBenchmarkRunBlockedError,
+} from "../benchmark-run-blocked-error.js";
 import { resolveBenchmarkRunId } from "../run-identity.js";
 
 interface CodexCliRunRequest {
@@ -221,7 +226,15 @@ class CodexCliProvider implements StructuredJudgeProvider {
       resolveBenchmarkRunId(),
     );
     if (creditBudget) {
-      await this.assertChatGptCreditAuth();
+      try {
+        await this.assertChatGptCreditAuth();
+      } catch (error) {
+        throw new BenchmarkRunBlockedError(
+          BenchmarkRunBlockReason.InfrastructureUnavailable,
+          "Codex CLI ChatGPT authentication is unavailable for this bounded benchmark run.",
+          { cause: error },
+        );
+      }
     }
 
     const maxAttempts = normalizeCodexCliMaxAttempts(
@@ -389,6 +402,10 @@ class CodexCliProvider implements StructuredJudgeProvider {
       }
       return { ok: true, verdict, telemetry };
     } catch (error) {
+      const blocked = findBenchmarkRunBlockedError(error);
+      if (blocked) {
+        throw blocked;
+      }
       const aborted = isCodexStructuredJudgeAbort(error, request.signal);
       const errorCode = aborted ? "aborted" : "transport_error";
       return {

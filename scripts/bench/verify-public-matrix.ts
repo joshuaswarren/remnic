@@ -15,21 +15,21 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { calculateCodexBudgetUnits } from "../../packages/bench/src/providers/codex-credit-budget.ts";
 import { PUBLISHED_BENCHMARK_ARTIFACT_IDS } from "../../packages/bench/src/published-artifact.ts";
-import { calculateCodexCredits } from "../../packages/bench/src/providers/codex-credit-budget.ts";
 import {
   listBenchmarkResults,
   loadBenchmarkResult,
 } from "../../packages/bench/src/results-store.ts";
 import type {
-  BenchmarkResult,
   BenchReasoningEffort,
   BenchRuntimeProfile,
+  BenchmarkResult,
   ProviderConfig,
 } from "../../packages/bench/src/types.ts";
 
@@ -54,7 +54,7 @@ interface CodexDiagnosticRecord {
   };
 }
 
-interface CodexCreditReceiptScope {
+interface CodexCreditReceiptScopeV1 {
   calls?: number;
   credits?: number;
   unattributedReconciliationCount?: number;
@@ -63,11 +63,11 @@ interface CodexCreditReceiptScope {
   cachedInputTokens?: number;
   outputTokens?: number;
   reasoningOutputTokens?: number;
-  models?: Array<CodexCreditReceiptScope & { model?: string }>;
+  models?: Array<CodexCreditReceiptScopeV1 & { model?: string }>;
 }
 
-interface CodexCreditReceipt {
-  schemaVersion?: number;
+interface CodexCreditReceiptV1 {
+  schemaVersion?: 1;
   ledgerSha256?: string;
   budgetCredits?: number;
   reserveCredits?: number;
@@ -75,9 +75,40 @@ interface CodexCreditReceipt {
   totalSpentCredits?: number;
   totalRemainingCredits?: number;
   blocked?: boolean;
-  cumulative?: CodexCreditReceiptScope;
-  run?: CodexCreditReceiptScope & { id?: string };
+  cumulative?: CodexCreditReceiptScopeV1;
+  run?: CodexCreditReceiptScopeV1 & { id?: string };
 }
+
+interface CodexCreditReceiptScopeV2 {
+  calls?: number;
+  budgetUnits?: number;
+  accountBalanceResolutionCount?: number;
+  conservativeResolutionChargeUnits?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  models?: Array<
+    Omit<CodexCreditReceiptScopeV2, "accountBalanceResolutionCount" | "conservativeResolutionChargeUnits" | "models"> & {
+      model?: string;
+    }
+  >;
+}
+
+interface CodexCreditReceiptV2 {
+  schemaVersion?: 2;
+  ledgerSha256?: string;
+  budgetUnits?: number;
+  reserveUnits?: number;
+  plannedSpendCeilingUnits?: number;
+  totalSpentUnits?: number;
+  remainingBudgetUnits?: number;
+  blocked?: boolean;
+  cumulative?: CodexCreditReceiptScopeV2;
+  run?: CodexCreditReceiptScopeV2 & { id?: string };
+}
+
+type CodexCreditReceipt = CodexCreditReceiptV1 | CodexCreditReceiptV2;
 
 interface ReproManifest {
   schemaVersion?: number;
@@ -755,6 +786,29 @@ function validateCodexCreditReceipt(
   manifestPath: string,
   issues: PublicMatrixEvidenceIssue[],
 ): void {
+  const accountingValid = receipt.schemaVersion === 1
+    ? isValidCodexCreditReceiptV1(receipt, manifestRunId, expectedModels)
+    : receipt.schemaVersion === 2
+      ? isValidCodexCreditReceiptV2(receipt, manifestRunId, expectedModels)
+      : false;
+  if (!accountingValid) {
+    issues.push({
+      code: "manifest-invalid-codex-credit-receipt",
+      path: manifestPath,
+      message:
+        "Codex budget receipt must be an immutable v1 receipt or a sanitized v2 local-budget-unit receipt, " +
+        "be unblocked, preserve the 473-unit reserve, stay within the total budget and 2,000-unit " +
+        "benchmark-attributed planned-spend ceiling, exclude Sol, and be scoped to manifest run.id without " +
+        "run-attributed account-balance resolutions.",
+    });
+  }
+}
+
+function isValidCodexCreditReceiptV1(
+  receipt: CodexCreditReceiptV1,
+  manifestRunId: string | undefined,
+  expectedModels: string[],
+): boolean {
   const numericFields = [
     receipt.budgetCredits,
     receipt.reserveCredits,
@@ -768,13 +822,13 @@ function validateCodexCreditReceipt(
     numericFields.every(isFiniteNonNegativeNumber) &&
     (receipt.budgetCredits ?? 0) > 0 &&
     receipt.blocked === false &&
-    isValidCreditScope(receipt.cumulative) &&
-    isValidCreditScope(receipt.run) &&
+    isValidCreditScopeV1(receipt.cumulative) &&
+    isValidCreditScopeV1(receipt.run) &&
     isNonEmptyString(receipt.run?.id) &&
     receipt.run?.id === manifestRunId &&
     receipt.run!.calls! > 0 &&
     receipt.run!.credits! > 0;
-  const accountingValid =
+  return Boolean(
     structurallyValid &&
     nearlyEqual(
       receipt.plannedSpendCeilingCredits!,
@@ -798,20 +852,96 @@ function validateCodexCreditReceipt(
     receipt.run!.models!.every(
       (entry) =>
         expectedModels.includes(entry.model!) && entry.calls! > 0 && entry.credits! > 0,
-    );
-  if (!accountingValid) {
-    issues.push({
-      code: "manifest-invalid-codex-credit-receipt",
-      path: manifestPath,
-      message:
-        "Codex credit receipt must be unblocked, preserve the 473-credit reserve, stay within " +
-        "the total budget and 2,000-credit benchmark-attributed planned-spend ceiling, be internally " +
-        "consistent, and be scoped to manifest run.id.",
-    });
-  }
+    ),
+  );
 }
 
-function isValidCreditScope(scope: CodexCreditReceiptScope | undefined): boolean {
+function isValidCodexCreditReceiptV2(
+  receipt: CodexCreditReceiptV2,
+  manifestRunId: string | undefined,
+  expectedModels: string[],
+): boolean {
+  const numericFields = [
+    receipt.budgetUnits,
+    receipt.reserveUnits,
+    receipt.plannedSpendCeilingUnits,
+    receipt.totalSpentUnits,
+    receipt.remainingBudgetUnits,
+  ];
+  const structurallyValid =
+    receipt.schemaVersion === 2 &&
+    isSha256(receipt.ledgerSha256) &&
+    numericFields.every(isFiniteNonNegativeNumber) &&
+    (receipt.budgetUnits ?? 0) > 0 &&
+    receipt.blocked === false &&
+    !containsForbiddenV2ReceiptFields(receipt) &&
+    isValidBudgetScopeV2(receipt.cumulative) &&
+    isValidBudgetScopeV2(receipt.run) &&
+    isNonEmptyString(receipt.run?.id) &&
+    receipt.run?.id === manifestRunId &&
+    receipt.run!.calls! > 0 &&
+    receipt.run!.budgetUnits! > 0;
+  return Boolean(
+    structurallyValid &&
+    nearlyEqual(
+      receipt.plannedSpendCeilingUnits!,
+      receipt.budgetUnits! - receipt.reserveUnits!,
+    ) &&
+    receipt.budgetUnits === 2_473 &&
+    receipt.reserveUnits === 473 &&
+    receipt.plannedSpendCeilingUnits! <= 2_000 &&
+    receipt.totalSpentUnits! <= receipt.budgetUnits! &&
+    receipt.remainingBudgetUnits! >= receipt.reserveUnits! &&
+    receipt.cumulative!.budgetUnits! -
+      receipt.cumulative!.conservativeResolutionChargeUnits! <=
+      receipt.plannedSpendCeilingUnits! + 1e-9 &&
+    nearlyEqual(
+      receipt.remainingBudgetUnits!,
+      receipt.budgetUnits! - receipt.totalSpentUnits!,
+    ) &&
+    nearlyEqual(receipt.cumulative!.budgetUnits!, receipt.totalSpentUnits!) &&
+    scopeDoesNotExceedV2(receipt.run!, receipt.cumulative!) &&
+    receipt.run!.accountBalanceResolutionCount === 0 &&
+    receipt.run!.conservativeResolutionChargeUnits === 0 &&
+    receipt.run!.models!.length === expectedModels.length &&
+    receipt.run!.models!.every(
+      (entry) =>
+        expectedModels.includes(entry.model!) &&
+        entry.calls! > 0 &&
+        entry.budgetUnits! > 0,
+    ),
+  );
+}
+
+function containsForbiddenV2ReceiptFields(value: unknown): boolean {
+  const forbidden = new Set([
+    "credits",
+    "budgetCredits",
+    "reserveCredits",
+    "plannedSpendCeilingCredits",
+    "totalSpentCredits",
+    "totalRemainingCredits",
+    "unattributedReconciliationCount",
+    "unattributedReconciledCredits",
+    "beforeAccountBalance",
+    "afterAccountBalance",
+    "observedAccountDebit",
+    "blockedReason",
+    "blockedEvent",
+    "affectedBlockedEvent",
+    "resolutions",
+    "legacyReconciliations",
+    "migrationWitnessV1",
+    "migratedFromV1Sha256",
+  ]);
+  if (Array.isArray(value)) return value.some(containsForbiddenV2ReceiptFields);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, entry]) => forbidden.has(key) || containsForbiddenV2ReceiptFields(entry),
+  );
+}
+
+function isValidCreditScopeV1(scope: CodexCreditReceiptScopeV1 | undefined): boolean {
   if (!scope || !isValidCreditTotals(scope) || !Array.isArray(scope.models)) return false;
   const modelNames = new Set<string>();
   for (const model of scope.models) {
@@ -847,11 +977,11 @@ function isValidCreditScope(scope: CodexCreditReceiptScope | undefined): boolean
 }
 
 function isModelCreditConsistent(
-  model: CodexCreditReceiptScope & { model?: string },
+  model: CodexCreditReceiptScopeV1 & { model?: string },
 ): boolean {
   try {
     return nearlyEqual(
-      calculateCodexCredits(model.model!, {
+      calculateCodexBudgetUnits(model.model!, {
         inputTokens: model.inputTokens!,
         cachedInputTokens: model.cachedInputTokens!,
         outputTokens: model.outputTokens!,
@@ -864,7 +994,7 @@ function isModelCreditConsistent(
   }
 }
 
-function isValidCreditTotals(scope: CodexCreditReceiptScope): boolean {
+function isValidCreditTotals(scope: CodexCreditReceiptScopeV1): boolean {
   const counters = [
     scope.inputTokens,
     scope.cachedInputTokens,
@@ -884,8 +1014,8 @@ function isValidCreditTotals(scope: CodexCreditReceiptScope): boolean {
 }
 
 function scopeDoesNotExceed(
-  run: CodexCreditReceiptScope,
-  cumulative: CodexCreditReceiptScope,
+  run: CodexCreditReceiptScopeV1,
+  cumulative: CodexCreditReceiptScopeV1,
 ): boolean {
   const tokenKeys = [
     "inputTokens",
@@ -907,6 +1037,105 @@ function scopeDoesNotExceed(
         cumulativeModel &&
         runModel.calls! <= cumulativeModel.calls! &&
         runModel.credits! <= cumulativeModel.credits! + 1e-9 &&
+        tokenKeys.every((key) => runModel[key]! <= cumulativeModel[key]!),
+      );
+    })
+  );
+}
+
+function isValidBudgetScopeV2(scope: CodexCreditReceiptScopeV2 | undefined): boolean {
+  if (!scope || !isValidBudgetTotalsV2(scope) || !Array.isArray(scope.models)) return false;
+  const modelNames = new Set<string>();
+  for (const model of scope.models) {
+    if (
+      !isNonEmptyString(model.model) ||
+      /gpt-5\.6-sol/i.test(model.model) ||
+      modelNames.has(model.model) ||
+      !isValidBudgetTotalsV2(model) ||
+      !isModelBudgetUnitConsistent(model)
+    ) {
+      return false;
+    }
+    modelNames.add(model.model);
+  }
+  return (
+    Number.isSafeInteger(scope.accountBalanceResolutionCount) &&
+    (scope.accountBalanceResolutionCount ?? -1) >= 0 &&
+    isFiniteNonNegativeNumber(scope.conservativeResolutionChargeUnits) &&
+    ((scope.accountBalanceResolutionCount ?? 0) > 0 ||
+      scope.conservativeResolutionChargeUnits === 0) &&
+    scope.models.reduce((sum, model) => sum + (model.calls ?? 0), 0) === scope.calls &&
+    nearlyEqual(
+      scope.models.reduce((sum, model) => sum + (model.budgetUnits ?? 0), 0) +
+        scope.conservativeResolutionChargeUnits!,
+      scope.budgetUnits!,
+    ) &&
+    (["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const)
+      .every(
+        (key) =>
+          scope.models!.reduce((sum, model) => sum + (model[key] ?? 0), 0) === scope[key],
+      )
+  );
+}
+
+function isModelBudgetUnitConsistent(
+  model: NonNullable<CodexCreditReceiptScopeV2["models"]>[number],
+): boolean {
+  try {
+    return nearlyEqual(
+      calculateCodexBudgetUnits(model.model!, {
+        inputTokens: model.inputTokens!,
+        cachedInputTokens: model.cachedInputTokens!,
+        outputTokens: model.outputTokens!,
+        reasoningOutputTokens: model.reasoningOutputTokens!,
+      }),
+      model.budgetUnits!,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isValidBudgetTotalsV2(
+  scope: Omit<CodexCreditReceiptScopeV2, "models">,
+): boolean {
+  const counters = [
+    scope.inputTokens,
+    scope.cachedInputTokens,
+    scope.outputTokens,
+    scope.reasoningOutputTokens,
+  ];
+  return (
+    Number.isSafeInteger(scope.calls) &&
+    (scope.calls ?? -1) >= 0 &&
+    isFiniteNonNegativeNumber(scope.budgetUnits) &&
+    counters.every((value) => Number.isSafeInteger(value) && (value ?? -1) >= 0) &&
+    (scope.cachedInputTokens ?? 0) <= (scope.inputTokens ?? 0)
+  );
+}
+
+function scopeDoesNotExceedV2(
+  run: CodexCreditReceiptScopeV2,
+  cumulative: CodexCreditReceiptScopeV2,
+): boolean {
+  const tokenKeys = [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ] as const;
+  return (
+    run.calls! <= cumulative.calls! &&
+    run.budgetUnits! <= cumulative.budgetUnits! + 1e-9 &&
+    tokenKeys.every((key) => run[key]! <= cumulative[key]!) &&
+    run.models!.every((runModel) => {
+      const cumulativeModel = cumulative.models!.find(
+        (candidate) => candidate.model === runModel.model,
+      );
+      return Boolean(
+        cumulativeModel &&
+        runModel.calls! <= cumulativeModel.calls! &&
+        runModel.budgetUnits! <= cumulativeModel.budgetUnits! + 1e-9 &&
         tokenKeys.every((key) => runModel[key]! <= cumulativeModel[key]!),
       );
     })

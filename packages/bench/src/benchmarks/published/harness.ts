@@ -36,6 +36,10 @@ import {
   type BenchmarkAnswerResult,
   type BenchmarkAnswerFormat,
 } from "../../answering.js";
+import {
+  findBenchmarkRunBlockedError,
+  isBenchmarkRunBlockedError,
+} from "../../benchmark-run-blocked-error.js";
 import { benchmarkRecallBudgetForSessionCount } from "../../recall-budget.js";
 import { getGitSha, getRemnicVersion } from "../../reporter.js";
 import {
@@ -289,38 +293,67 @@ async function executePlanTrials(
   const results: Array<TaskResult | undefined> = new Array(trials.length);
   const completed: boolean[] = new Array(trials.length).fill(false);
   let nextTrialIndex = 0;
-  let nextEmitIndex = 0;
-
-  const emitCompletedPrefix = (): void => {
-    while (completed[nextEmitIndex]) {
-      appendCompletedTask(ctx, options.tasks, results[nextEmitIndex]!);
-      nextEmitIndex += 1;
-    }
-  };
+  let terminalTrialIndex = Number.POSITIVE_INFINITY;
+  let terminalError: unknown;
 
   const worker = async (): Promise<void> => {
     while (true) {
+      if (terminalError !== undefined) {
+        return;
+      }
       const trialIndex = nextTrialIndex;
       nextTrialIndex += 1;
       if (trialIndex >= trials.length) {
         return;
       }
 
-      results[trialIndex] = await executeTrialWithFailure(
-        ctx,
-        trials[trialIndex]!,
-        options.planIndex,
-        options.answerSupportGate,
-      );
+      try {
+        results[trialIndex] = await executeTrialWithFailure(
+          ctx,
+          trials[trialIndex]!,
+          options.planIndex,
+          options.answerSupportGate,
+        );
+      } catch (error) {
+        const blocked = findBenchmarkRunBlockedError(error);
+        if (!blocked) {
+          throw error;
+        }
+        if (trialIndex < terminalTrialIndex) {
+          terminalTrialIndex = trialIndex;
+          terminalError = blocked;
+        }
+        return;
+      }
       completed[trialIndex] = true;
-      emitCompletedPrefix();
     }
   };
 
   const workerCount = Math.min(options.trialConcurrency, trials.length);
-  await Promise.all(
+  const settled = await Promise.allSettled(
     Array.from({ length: workerCount }, () => worker()),
   );
+  const rejected = settled.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (rejected) {
+    throw rejected.reason;
+  }
+  const emitLimit = terminalError === undefined
+    ? trials.length
+    : terminalTrialIndex;
+  for (let trialIndex = 0; trialIndex < emitLimit; trialIndex += 1) {
+    const result = results[trialIndex];
+    if (!completed[trialIndex] || !result) {
+      throw new Error(
+        `PublishedBenchmarkHarness: concurrent trial ${trialIndex} did not settle before canonical emission.`,
+      );
+    }
+    appendCompletedTask(ctx, options.tasks, result);
+  }
+  if (terminalError !== undefined) {
+    throw terminalError;
+  }
 }
 
 function appendCompletedTask(
@@ -345,6 +378,10 @@ async function executeTrialWithFailure(
   try {
     return await executeTrial(ctx, trial, answerSupportGate);
   } catch (err) {
+    const blocked = findBenchmarkRunBlockedError(err);
+    if (blocked) {
+      throw blocked;
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error(`  [WARN] harness trial plan-${planIndex}/${trialId} failed: ${message}`);
     return {
@@ -647,6 +684,10 @@ async function assessRecallSupport(
     validateRecallSupportAssessment(assessment);
     return assessment;
   } catch (error) {
+    const blocked = findBenchmarkRunBlockedError(error);
+    if (blocked) {
+      throw blocked;
+    }
     return {
       status: "backend_failure",
       reason: error instanceof Error ? error.message : String(error),
@@ -743,6 +784,9 @@ function answerWithTrialFallback(
   recalledText: string,
   error: unknown,
 ): HarnessAnswerResult {
+  if (isBenchmarkRunBlockedError(error)) {
+    throw error;
+  }
   const fallback = trial.answerFallback?.({
     question: trial.question,
     recalledText,
