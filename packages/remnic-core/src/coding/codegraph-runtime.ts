@@ -31,6 +31,7 @@ import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
 import { isCodingGraphInstalled } from "./optional-coding-graph.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 // Type-only reference to the surface context shape (ts-import-type rule).
 // Erased at compile time, so the runtime → surfaces → runtime import cycle is
 // type-only and has no runtime effect.
@@ -838,7 +839,7 @@ export async function runCodegraphLspResolution(params: {
   // Filtered (Phase-A-resolved) sites keep their CURRENT lsp edges by
   // asserting them explicitly — reconciliation can then retire genuinely
   // stale edges in the same file without dropping preserved ones. When
-  // the store predates lspCallEdgesForCaller, preservation is impossible,
+  // the store predates callEdgesForCaller, preservation is impossible,
   // so callers below fall back to skipping reconcile for such files.
   const canPreserve = typeof params.store.callEdgesForCaller === "function";
   const preservedEdgesForFile = (
@@ -886,14 +887,20 @@ export async function runCodegraphLspResolution(params: {
   // Group by language; each group gets its own server connection. The
   // budget is shared across groups (maxRequestsPerRun is per RUN).
   const byLanguage = new Map<string, GatheredLspSite[]>();
-  // Caller symbol -> file, for attributing apply-time skips to the file
-  // batch they belong to (the apply callback sees upgrades, not files).
-  const srcToFile = new Map<string, string>();
+  // Caller symbol -> FILES, for attributing apply-time skips to the file
+  // batches they may belong to (the apply callback sees upgrades, not
+  // files). A SET because duplicate caller qualified names can exist in
+  // multiple tracked files — a skip conservatively suppresses reconcile
+  // in every file that could own the skipped edge (review thread: a
+  // single-file map was overwritten by the later file).
+  const srcToFiles = new Map<string, Set<string>>();
   for (const site of sites) {
     const group = byLanguage.get(site.language);
     if (group === undefined) byLanguage.set(site.language, [site]);
     else group.push(site);
-    srcToFile.set(site.srcQualifiedName, site.filePath);
+    const files = srcToFiles.get(site.srcQualifiedName);
+    if (files === undefined) srcToFiles.set(site.srcQualifiedName, new Set([site.filePath]));
+    else files.add(site.filePath);
   }
 
   const configServers = params.lspConfig.servers ?? {};
@@ -1014,8 +1021,9 @@ export async function runCodegraphLspResolution(params: {
           if (result.skipped > 0) {
             skippedEdgesTotal += result.skipped;
             for (const upgrade of upgrades) {
-              const file = srcToFile.get(upgrade.srcQualifiedName);
-              if (file !== undefined) skippedFiles.add(file);
+              for (const file of srcToFiles.get(upgrade.srcQualifiedName) ?? []) {
+                skippedFiles.add(file);
+              }
             }
             degradations.push({
               language,
@@ -1064,8 +1072,17 @@ export async function runCodegraphLspResolution(params: {
         unresolved += plan.requests.length;
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, code: "lsp_resolution_error", message: msg };
+      // Sanitized detail only (class name + Node error code) — this
+      // message reaches client surfaces via result.lsp and must not leak
+      // absolute paths or stack fragments (review thread; mirrors
+      // displayErrorDetail's contract). The full error is recoverable
+      // from server logs, not from the tool response.
+      const detail = displayErrorDetail(err);
+      return {
+        ok: false,
+        code: "lsp_resolution_error",
+        message: detail.length > 0 ? `LSP resolution failed: ${detail}.` : "LSP resolution failed.",
+      };
     } finally {
       const disposable = client as { dispose?: () => Promise<void> };
       if (typeof disposable.dispose === "function") {
