@@ -77,27 +77,30 @@ keeps a backend failure separate from an empty recall."
 ## 2:10-2:35: Codex and GPT-5.6 roles
 
 Picture: Show the dated implementation commit, selected test names, and the
-model provenance from a real artifact. If available, briefly show
+model provenance from a sanitized evidence receipt. If available, briefly show
 `[CODEX_FEEDBACK_SESSION_ID]`, `[GPT_5_6_ARTIFACT_URL]`, and the sanitized
 credit summary. Do not show the private JSON ledger.
 
 ```bash
-export OPENAI_API_KEY=...
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 ```
 
 Voiceover: "Codex built and adversarially reviewed the new MCP adapter,
-Responses provider, and report card during Build Week. GPT-5.6 is the optional
-structured-output judge inside the harness. Our bounded CLI protocol assigns
+providers, and report card during Build Week. GPT-5.6 is the optional
+structured-output judge inside the harness. The competition run uses the Codex
+CLI because its event grant is in Codex credits rather than API credits. Our
+bounded CLI protocol assigns
 Luna to bulk work and Terra to quality-critical judging. It charges each
 completed turn to the harness ledger and requires exclusive account use during
 the run. Missing usage blocks further dispatch. Remnic itself and the original
 benchmark package are prior work; our public evidence ledger draws that line
 commit by commit."
 
-The API model id above is `gpt-5.6`. The Codex CLI uses the separate slugs
-`gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI artifact is shown, its run must
+The optional API provider uses model id `gpt-5.6`; the command above
+intentionally uses the Codex CLI slug `gpt-5.6-terra`. Bulk responder and
+internal work use `gpt-5.6-luna`. If a CLI result is shown, its run must
 use isolated one-shot `codex exec` calls and normal service, not fast mode. It
 must show the 2,473-credit budget, 473-credit reserve, and real model labels.
 `gpt-5.6-sol` is opt-in only and is outside the bounded plan. Right before

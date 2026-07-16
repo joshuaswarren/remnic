@@ -2,7 +2,8 @@
 
 Status: DRAFT. Do not paste this copy into Devpost yet. First, check every
 claim against shipped code. Add the Codex `/feedback` session ID and video URL.
-Any paid GPT-5.6 result named here also needs a committed artifact and manifest.
+Any paid GPT-5.6 result named here also needs a committed, sanitized evidence
+receipt tied to its private hash-locked result and manifest.
 `HACKATHON.md` tracks those gates. This file must pass voice-lint in article
 mode before each revision ships.
 
@@ -49,7 +50,8 @@ after a fix, does the old fact ever come back?
 It runs against Remnic or another conforming MCP memory backend. A generic MCP
 adapter supports stdio and Streamable HTTP plus explicit tool and argument
 mapping for non-canonical surfaces. When selected, GPT-5.6 grades answers
-through the OpenAI Responses API. Every run
+through either the OpenAI Responses API or an isolated, one-shot Codex CLI
+provider. Every run
 writes a locked manifest: dataset hashes, seeds, git state, config. The
 output is a memory report card you can share. "Our memory is good" becomes
 a scored claim anyone can re-run.
@@ -57,7 +59,9 @@ a scored claim anyone can re-run.
 ## How we built it
 
 The new work for Build Week was built in Codex sessions. GPT-5.6 was integrated
-as the opt-in judge through the OpenAI Responses API. The Codex `/feedback`
+as an opt-in judge through both the OpenAI Responses API and the Codex CLI. The
+competition measurements use the CLI because the event grant is denominated in
+Codex credits rather than API credits. The Codex `/feedback`
 session ID remains operator input and must be added to the form before
 submission. The line between prior work and hackathon work is drawn commit by
 commit in
@@ -69,9 +73,9 @@ at all. It wired GPT-5.6 in as the judge and implemented the versioned rubric.
 Codex then polished the HTML export into one scored report card you can
 hand to your team.
 
-GPT-5.6 is the opt-in judge inside the tool through the OpenAI Responses API.
-That exact API model id is `gpt-5.6`. Our separate ChatGPT-backed Codex CLI
-measurement protocol assigns `gpt-5.6-luna` to bulk responder and internal
+The API provider remains available with model id `gpt-5.6`, but it is not the
+provider used for the competition measurements. The ChatGPT-backed Codex CLI
+provider assigns `gpt-5.6-luna` to bulk responder and internal
 work, and `gpt-5.6-terra` to quality-critical judging. Each completion is a
 fresh, isolated `codex exec`; the protocol forbids fast mode. During a
 benchmark window, it requires exclusive account use and keeps 473 of the
@@ -80,8 +84,9 @@ Bounded mode verifies ChatGPT authentication. The harness records actual
 input, cached-input, and output usage after every completed turn and blocks
 further dispatch if exact usage is missing.
 `gpt-5.6-sol` is opt-in only and outside that bounded plan. We do not claim a
-published GPT-5.6 model result until a committed artifact and manifest exist,
-and a bounded artifact is labeled as partial coverage.
+published GPT-5.6 model result until a sanitized receipt is committed and tied
+to a private hash-locked result and manifest. Bounded evidence is labeled with
+its exact coverage and is never presented as a full benchmark run.
 
 ## Challenges we ran into
 
@@ -130,6 +135,8 @@ The quick run uses a packaged stdio MCP server. The exact 9.6.34 registry
 install passed in a clean Linux x86_64 global prefix and produced a
 15,128-byte offline report. The run itself needs no
 dataset, key, or network, and it exercises the real adapter. To add GPT-5.6
-judging, export `OPENAI_API_KEY` and append `--judge-provider openai
---judge-model gpt-5.6`. Reproduction paths live in
+judging with Codex credits, append `--judge-provider codex-cli
+--judge-model gpt-5.6-terra --judge-codex-reasoning-effort high`. This path
+uses the operator's Codex CLI login and does not require `OPENAI_API_KEY`.
+Reproduction paths live in
 `docs/paper/repro-appendix.md`.
