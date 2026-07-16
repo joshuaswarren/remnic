@@ -159,6 +159,43 @@ test("MCP recall_xray forwards the signal and preserves the original AbortError"
   assert.equal(observedSignal, controller.signal);
 });
 
+test("MCP memory inspector forwards cancellation to its full recall", async () => {
+  const controller = new AbortController();
+  const reason = abortError("inspector caller disconnected");
+  let observedSignal: AbortSignal | undefined;
+  let actionConfidenceStarted = false;
+  const service = {
+    recallXray: async (input: { abortSignal?: AbortSignal }) => {
+      observedSignal = input.abortSignal;
+      controller.abort(reason);
+      throw input.abortSignal?.reason;
+    },
+    actionConfidence: async () => {
+      actionConfidenceStarted = true;
+      return {} as never;
+    },
+  } as unknown as EngramAccessService;
+  const mcp = new EngramMcpServer(service);
+
+  await assert.rejects(
+    mcp.handleRequest(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remnic.chatgpt_memory_inspector",
+          arguments: { query: "inspect this" },
+        },
+      },
+      { abortSignal: controller.signal },
+    ),
+    (error: unknown) => error === reason,
+  );
+  assert.equal(observedSignal, controller.signal);
+  assert.equal(actionConfidenceStarted, false);
+});
+
 test("standalone MCP calls leave recall cancellation undefined", async () => {
   let observedSignal: AbortSignal | undefined;
   const service = {
