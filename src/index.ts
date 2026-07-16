@@ -1551,6 +1551,8 @@ const pluginDefinition = {
               : undefined,
             principal: cfg.agentAccessHttp.principal,
             maxBodyBytes: cfg.agentAccessHttp.maxBodyBytes,
+            writeRateLimitMaxRequests: cfg.agentAccessHttp.writeRateLimitMaxRequests,
+            writeRateLimitWindowMs: cfg.agentAccessHttp.writeRateLimitWindowMs,
             citationsEnabled: cfg.citationsEnabled,
             citationsAutoDetect: cfg.citationsAutoDetect,
             emitLegacyTools: cfg.emitLegacyTools,
