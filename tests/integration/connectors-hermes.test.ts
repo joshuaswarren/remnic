@@ -3859,3 +3859,90 @@ test("removeConnector hermes cleans the shim written under a since-changed HERME
     }
   });
 });
+
+test("installConnector hermes backfills the shim on already_installed (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        const hermesDir = seedHermesRootConfig(tmpHome);
+
+        const install = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+        assert.equal(install.status, "installed", install.message);
+
+        // Simulate a pre-shim-era install: delete the shim and strip the
+        // persisted pluginShimPath from the connector JSON.
+        const shimPath = path.join(hermesDir, "plugins", "remnic", "__init__.py");
+        fs.rmSync(shimPath);
+        fs.rmdirSync(path.dirname(shimPath));
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const stripped = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        delete stripped.pluginShimPath;
+        fs.writeFileSync(connectorJsonPath, JSON.stringify(stripped, null, 2));
+
+        // Re-run install WITHOUT --force: still already_installed, but the
+        // shim must be backfilled and its path re-persisted.
+        const rerun = mod.installConnector({ connectorId: "hermes" });
+        assert.equal(rerun.status, "already_installed", rerun.message);
+        assert.ok(fs.existsSync(shimPath), "shim must be backfilled on already_installed rerun");
+        assert.ok(
+          rerun.message.includes("Materialized Hermes plugin shim"),
+          `already_installed message should note the backfill, got: ${rerun.message}`,
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(saved.pluginShimPath, shimPath, "pluginShimPath must be re-persisted by the backfill");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
+
+test("installConnector hermes force-reinstall cleans the shim from a prior HERMES_HOME (#1929)", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+
+  await new Promise<void>((resolve, reject) => {
+    try {
+      withTempHome((tmpHome) => {
+        mod.removeConnector("hermes");
+        seedHermesRootConfig(tmpHome);
+        const homeA = path.join(tmpHome, "hermes-home-a");
+        const homeB = path.join(tmpHome, "hermes-home-b");
+        fs.mkdirSync(homeA, { recursive: true });
+        fs.mkdirSync(homeB, { recursive: true });
+
+        withHermesHome(homeA, () => {
+          const first = mod.installConnector({ connectorId: "hermes", config: { host: "127.0.0.1", port: 4318 } });
+          assert.equal(first.status, "installed", first.message);
+        });
+        const shimA = path.join(homeA, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimA), "sanity: shim exists under the first HERMES_HOME");
+
+        withHermesHome(homeB, () => {
+          const second = mod.installConnector({ connectorId: "hermes", force: true });
+          assert.equal(second.status, "installed", second.message);
+        });
+        const shimB = path.join(homeB, "plugins", "remnic", "__init__.py");
+        assert.ok(fs.existsSync(shimB), "shim must be written under the new HERMES_HOME");
+        assert.ok(
+          !fs.existsSync(shimA),
+          "the Remnic-generated shim from the prior HERMES_HOME must be cleaned on reinstall",
+        );
+
+        const connectorJsonPath = path.join(
+          tmpHome, ".config", "remnic", ".remnic-connectors", "connectors", "hermes.json",
+        );
+        const saved = JSON.parse(fs.readFileSync(connectorJsonPath, "utf-8"));
+        assert.equal(saved.pluginShimPath, shimB, "connector JSON must point at the latest shim");
+      });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+});
