@@ -148,18 +148,40 @@ function parseLspConfig(raw: Record<string, unknown>): CodingGraphLspConfig {
   const enabled = readStrictBool(raw.enabled, "lsp.enabled", false);
   if (!enabled) return { enabled: false };
 
+  // Server overrides are validated STRICTLY (rule 51): a malformed entry
+  // must not silently fall through to the built-in default server — the
+  // operator configured an override for a reason. Unknown language KEYS
+  // are allowed (forward-compat: the optional @remnic/coding-graph package
+  // owns the language list and may grow it independently of core; an
+  // unmatched key is inert at the runtime seam).
   const servers: CodingGraphLspConfig["servers"] = {};
-  if (raw.servers && typeof raw.servers === "object" && !Array.isArray(raw.servers)) {
+  if (raw.servers !== undefined && raw.servers !== null) {
+    if (typeof raw.servers !== "object" || Array.isArray(raw.servers)) {
+      throw new Error(
+        `codingKnowledge.lsp.servers must be an object mapping language ids to { command, args? }; got ${JSON.stringify(raw.servers)}.`,
+      );
+    }
     for (const [lang, def] of Object.entries(raw.servers as Record<string, unknown>)) {
-      if (def && typeof def === "object" && !Array.isArray(def)) {
-        const d = def as Record<string, unknown>;
-        if (typeof d.command === "string" && d.command.length > 0) {
-          servers[lang] = {
-            command: d.command,
-            ...(Array.isArray(d.args) ? { args: d.args.filter((a) => typeof a === "string") as string[] } : {}),
-          };
-        }
+      if (!def || typeof def !== "object" || Array.isArray(def)) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang} must be an object ({ command, args? }); got ${JSON.stringify(def)}.`,
+        );
       }
+      const d = def as Record<string, unknown>;
+      if (typeof d.command !== "string" || d.command.trim().length === 0) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang}.command must be a non-empty string; got ${JSON.stringify(d.command)}.`,
+        );
+      }
+      if (d.args !== undefined && (!Array.isArray(d.args) || !d.args.every((a) => typeof a === "string"))) {
+        throw new Error(
+          `codingKnowledge.lsp.servers.${lang}.args must be an array of strings; got ${JSON.stringify(d.args)}.`,
+        );
+      }
+      servers[lang] = {
+        command: d.command.trim(),
+        ...(Array.isArray(d.args) ? { args: d.args as string[] } : {}),
+      };
     }
   }
 
