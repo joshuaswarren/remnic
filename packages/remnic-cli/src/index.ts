@@ -1997,6 +1997,25 @@ export const __benchDatasetTestHooks = {
       benchmarkOptions,
     );
   },
+  validatePinnedLoCoMoPublishedDryRunSelectorWithModuleForTest(
+    benchModule: unknown,
+    mode: "quick" | "full",
+    datasetDir: string | undefined,
+    limit: number | undefined,
+    seed: number | undefined,
+    benchmarkOptions: Record<string, unknown> | undefined,
+    taskSelector: PackageBenchTaskSelector | undefined,
+  ) {
+    return validatePinnedLoCoMoPublishedDryRunSelector(
+      benchModule as PackageBenchModule,
+      mode,
+      datasetDir,
+      limit,
+      seed,
+      benchmarkOptions,
+      taskSelector,
+    );
+  },
   printBenchStatusLineForTest: printBenchStatusLine,
 };
 
@@ -3031,6 +3050,24 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       );
       process.exit(1);
     }
+    if (benchmarkId === "locomo") {
+      try {
+        await validatePinnedLoCoMoPublishedDryRunSelector(
+          benchModule,
+          mode,
+          parsed.datasetDir,
+          effectiveLimit,
+          parsed.publishedSeed,
+          benchmarkOptions,
+          taskSelector,
+        );
+      } catch (error) {
+        console.error(
+          `ERROR: [dry-run] ${benchmarkId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        process.exit(1);
+      }
+    }
     return;
   }
 
@@ -3257,6 +3294,29 @@ async function validateRunnerManagedPublishedDryRunDataset(
     }
     throw error;
   }
+}
+
+async function validatePinnedLoCoMoPublishedDryRunSelector(
+  benchModule: PackageBenchModule,
+  mode: "quick" | "full",
+  datasetDir: string | undefined,
+  limit: number | undefined,
+  seed: number | undefined,
+  benchmarkOptions: Record<string, unknown> | undefined,
+  taskSelector: PackageBenchTaskSelector | undefined,
+): Promise<void> {
+  if (taskSelector === undefined) {
+    return;
+  }
+  await validateRunnerManagedPublishedDryRunDataset(
+    benchModule,
+    "locomo",
+    mode,
+    datasetDir,
+    limit,
+    seed,
+    benchmarkOptions,
+  );
 }
 
 async function validateRunnerManagedPublishedDryRunDatasetForTest(
