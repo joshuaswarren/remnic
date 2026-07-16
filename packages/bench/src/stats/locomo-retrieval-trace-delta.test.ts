@@ -461,6 +461,20 @@ test("does not claim core-visible LCM displacement across composition policy cha
   assert.equal(delta?.mechanism, "mixed");
 });
 
+test("does not claim LCM selection change across composition policy changes", () => {
+  const id = "fixture-q0-multi_hop";
+  const baselineTask = task(id);
+  const realTask = task(id, { sectionChars: 19, compositionMode: "fallback" });
+  realTask.composition.output = baselineTask.composition.output;
+
+  const delta = diagnoseLoCoMoRetrievalTraceDelta(receipt("baseline", [baselineTask]), receipt("real", [realTask]))
+    .tasks[0];
+  assert.equal(delta?.dimensions.sectionVisibleChars.changed, true);
+  assert.equal(delta?.dimensions.compositionPolicy.changed, true);
+  assert.equal(delta?.dimensions.compositionDigests.changed, false);
+  assert.equal(delta?.mechanism, "mixed");
+});
+
 test("does not classify rendered character counts as recall-budget changes", () => {
   const id = "fixture-q0-multi_hop";
   const baselineTask = task(id);

@@ -261,7 +261,8 @@ function compareTask(baseline: LoCoMoRetrievalTaskReceipt, real: LoCoMoRetrieval
   let mechanism: LoCoMoRetrievalMechanism;
   if (!exact) mechanism = "insufficient-exact-lineage";
   else if (coreVisibleLcmDisplacement) mechanism = "real-core-visible-lcm-displacement";
-  else if (lcm && !core && !coreSections && !other && !budget) mechanism = "lcm-selection-change";
+  else if (lcm && !core && !coreSections && !other && !budget && !compositionPolicy)
+    mechanism = "lcm-selection-change";
   else if (budgetTailGeometryTransition) mechanism = "budget-truncation-change";
   else if (compositionPolicy && !core && !coreSections && !lcm && !other && !budget)
     mechanism = "composition-filter-displacement";
