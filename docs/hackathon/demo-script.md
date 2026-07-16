@@ -3,8 +3,8 @@
 Target duration: 2 minutes 40 seconds. Hard limit: 3 minutes.
 
 Operator gate before recording: replace every bracketed placeholder used in the
-video with real evidence. The version 9.6.24 packed-tarball path is verified on
-Linux x86_64. The Codex `/feedback` session ID is still required. If the GPT-5.6
+video with real evidence. The version 9.6.34 registry-install path is verified
+on Linux x86_64. The Codex `/feedback` session ID is still required. If the GPT-5.6
 frontier artifact does not land, omit that result and its URL. Do not substitute
 another model or turn a bounded trial into a full-run claim.
 
@@ -41,7 +41,7 @@ HTML report.
 
 Voiceover: "These are separate checks. Uptake asks whether the next answer
 uses the correction. Non-resurrection asks whether the old fact returns later.
-In the verified version 9.6.24 packaged run, uptake was 1. Non-resurrection was
+In the verified version 9.6.34 packaged run, uptake was 1. Non-resurrection was
 0: the correction appeared at once, but the stale fact returned later.
 MemCorrect catches both behaviors instead of hiding them in one score."
 
@@ -120,7 +120,7 @@ database."
 - [ ] Runtime is under 3 minutes and audio is present.
 - [ ] Audio explicitly explains both Codex and GPT-5.6 usage.
 - [ ] Commands shown match the released packages or the disclosed source path.
-- [ ] The keyless package receipt identifies version 9.6.24 and does not imply
+- [ ] The keyless package receipt identifies version 9.6.34 and does not imply
   a paid-model run.
 - [ ] No API key, token, personal data, or private terminal history is visible.
 - [ ] Every narrated score appears in the recorded artifact.

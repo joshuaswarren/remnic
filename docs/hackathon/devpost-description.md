@@ -8,6 +8,9 @@ mode before each revision ships.
 
 Project name: MemCorrect: benchmark an AI agent's memory.
 
+Category: Developer Tools. MemCorrect is infrastructure for developers to test
+and compare an agent's memory backend, not an end-user memory assistant.
+
 Tagline: Agent memory without evals is vibes with a database. MemCorrect
 scores Remnic or another conforming memory backend with one command. It checks
 recall quality, correction handling, and stale-memory harm. GPT-5.6 can grade
@@ -113,19 +116,19 @@ honestly. This is a protocol claim, not a "first to think of it" claim.
 
 ## Try it (judges)
 
-Version 9.6.24 of both packages is published. After installation, the smoke
+Version 9.6.34 of both packages is published. After installation, the smoke
 path needs no dataset, API key, or network:
 
 ```bash
-npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
+npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
 remnic bench export <run-id> --format html --output ./memcorrect-report.html
 ```
 
-The quick run uses a packaged stdio MCP server. The corresponding 9.6.24
-packed-tarball path passed in a clean Linux x86_64 global prefix with Node
-22.23.1 and produced a 15,144-byte offline report. The run itself needs no
+The quick run uses a packaged stdio MCP server. The exact 9.6.34 registry
+install passed in a clean Linux x86_64 global prefix and produced a
+15,128-byte offline report. The run itself needs no
 dataset, key, or network, and it exercises the real adapter. To add GPT-5.6
 judging, export `OPENAI_API_KEY` and append `--judge-provider openai
 --judge-model gpt-5.6`. Reproduction paths live in

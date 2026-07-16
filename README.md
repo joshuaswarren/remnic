@@ -197,6 +197,50 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 - [Shared context](docs/shared-context.md) — cross-agent shared intelligence for multi-agent teams.
 - [Coding-agent memory](docs/coding-agent.md) — repo conventions, review behavior, and ask-before rules for coding tools.
 
+## OpenAI Build Week: MemCorrect
+
+MemCorrect is Remnic's Developer Tools entry for OpenAI Build Week 2026. It
+benchmarks the memory system behind an AI agent through a generic MCP adapter,
+then writes a provenance-locked result and offline HTML report. The keyless
+test path takes about two minutes and needs no dataset, API key, or model call:
+
+```bash
+npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
+remnic bench runs list
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
+```
+
+That exact 9.6.34 registry install and run passed in a clean Linux x86_64
+prefix. The Node CLI also supports macOS; the submission does not claim a
+final macOS global-install receipt. On Windows, use WSL2; native Windows is not
+claimed. The MCP adapter supports stdio and Streamable HTTP.
+
+Codex accelerated three concrete in-window decisions: it shaped the generic
+MCP tool/argument mapping and backend safety checks, implemented the sealed
+structured-output judge and fail-closed provider semantics, and built the
+single-file report/provenance flow plus the isolated one-shot Codex CLI credit
+guard. GPT-5.6 is integrated as the opt-in Responses API judge under model id
+`gpt-5.6`. The separate ChatGPT-backed benchmark path uses
+`gpt-5.6-luna` for bulk work and `gpt-5.6-terra` for quality-critical judging;
+`gpt-5.6-sol` is outside the bounded plan. We do not claim a GPT-5.6 score
+until a successful artifact and manifest are committed.
+
+To exercise the optional API judge, provide your own key and add the judge
+flags to the same smoke command:
+
+```bash
+export OPENAI_API_KEY=...
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
+  --judge-provider openai --judge-model gpt-5.6
+```
+
+Remnic and the original benchmark package predate Build Week. The
+[submission evidence ledger](HACKATHON.md) draws the prior-work boundary
+commit by commit, while the [demo script](docs/hackathon/demo-script.md) and
+[Devpost draft](docs/hackathon/devpost-description.md) keep model and package
+claims tied to reproducible receipts.
+
 ## Privacy and your data
 
 Local-first is a trust feature, not a tagline.
