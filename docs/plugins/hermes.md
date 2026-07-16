@@ -105,7 +105,7 @@ Hermes memory providers are discovered by directory scan, not by pip metadata. U
 1. Bundled providers: `<hermes-repo>/plugins/memory/<name>/`
 2. User-installed providers: `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
 
-A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. `remnic connectors install hermes` materializes the required shim automatically; for pip-only installs, create a small shim directory whose `__init__.py` bridges to the pip package:
+A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. `remnic connectors install hermes` materializes the required shim for you; for pip-only installs, create a small shim directory whose `__init__.py` bridges to the pip package:
 
 ```python
 # $HERMES_HOME/plugins/remnic/__init__.py
