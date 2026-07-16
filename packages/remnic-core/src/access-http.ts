@@ -854,7 +854,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/mcp") {
-      await this.handleMcpRequest(req, res);
+      await this.handleMcpRequest(req, res, abortSignal);
       return;
     }
 
@@ -2982,7 +2982,11 @@ export class EngramAccessHttpServer {
     req.once("error", cleanup);
   }
 
-  private async handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleMcpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
     // Reject requests that advertise an unknown MCP protocol version in
     // the streamable-HTTP `MCP-Protocol-Version` header. Absent or
     // valid → proceed. Unknown → 400 with a JSON-RPC-shaped error so
@@ -3143,6 +3147,7 @@ export class EngramAccessHttpServer {
         ? () => this.ensureWriteRateLimitAvailable()
         : undefined,
       sourceConnector: this.resolveConnector(req),
+      abortSignal,
     });
 
     if (isMcpWrite && response !== null) {
@@ -3165,6 +3170,14 @@ export class EngramAccessHttpServer {
       if (!isError && !isRejectedCodegraph && counts) {
         this.recordWriteRateLimitHit();
       }
+    }
+    // A mutating tool may have committed just before the client disconnected.
+    // Record that side effect above, then honor cancellation before emitting
+    // any response. Read-only calls reach this guard without accounting.
+    if (abortSignal.aborted) {
+      throw isAbortError(abortSignal.reason)
+        ? abortSignal.reason
+        : abortError("HTTP client disconnected");
     }
     if (response === null) {
       res.statusCode = 202;
