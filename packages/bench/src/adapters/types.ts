@@ -146,6 +146,17 @@ export interface BenchMemoryAdapter {
     control?: BenchPhaseControl,
   ): Promise<string>;
   /**
+   * Optional diagnostic recall surface. The trace contains only structural
+   * lineage and budget metadata; it never includes recalled or source text.
+   */
+  recallWithTrace?(
+    sessionId: string,
+    query: string,
+    budgetChars?: number,
+    options?: BenchRecallOptions,
+    control?: BenchPhaseControl,
+  ): Promise<BenchRecallWithTraceResult>;
+  /**
    * Optionally assess support using the exact, final recall context that will
    * be sent to the responder. Implementations may return `weak` only from
    * explicit evidence-confidence signals derived from that context.
@@ -186,6 +197,114 @@ export interface BenchMemoryAdapter {
 export interface BenchRecallOptions {
   /** Optional historical recall timestamp for benchmarks that expose query time. */
   asOf?: string;
+}
+
+export type BenchRecallLineageStatus = "exact" | "unavailable";
+
+/**
+ * Half-open offsets measured in JavaScript string characters (UTF-16 code
+ * units), matching `String.length` and `String.prototype.slice`.
+ */
+export interface BenchRecallTraceRange {
+  composedStart: number;
+  composedEnd: number;
+  visibleStart: number;
+  visibleEnd: number;
+}
+
+export interface BenchRecallTraceSection extends BenchRecallTraceRange {
+  id: string;
+  source:
+    | "derived"
+    | "explicit-cue"
+    | "trajectory-analysis"
+    | "core"
+    | "evidence-pack"
+    | "lcm-summary"
+    | "raw-row";
+  /** Character offset where this section's leading separator starts. */
+  separatorStart: number;
+  /** Character offset where content starts after the optional `\n\n` separator. */
+  contentStart: number;
+  /** Exclusive character offset where section content ends. */
+  contentEnd: number;
+  /** Visible separator plus content characters attributed to this section. */
+  visibleChars: number;
+}
+
+export interface BenchRecallTraceSelection extends BenchRecallTraceRange {
+  sectionId: string;
+  kind: "evidence-block" | "trajectory-line" | "lcm-summary" | "raw-row";
+  lineageStatus: BenchRecallLineageStatus;
+  archiveRowIds?: number[];
+  turnIndex?: number;
+  role?: string;
+  score?: number;
+  summary?: {
+    id: string;
+    depth: number;
+    msgStart: number;
+    msgEnd: number;
+  };
+}
+
+export interface BenchRecallTraceLcmCandidate {
+  rank: number;
+  archiveRowId?: number;
+  turnIndex: number;
+  role: string;
+  score?: number;
+  lineageStatus: BenchRecallLineageStatus;
+}
+
+export interface BenchRecallTraceCoreCapture {
+  snapshotId: string;
+  capturedAt: number;
+  traceId?: string;
+  budget: { chars: number; used: number };
+  filters: Array<{ name: string; considered: number; admitted: number }>;
+  results: Array<{
+    /** Content-free reference to the UTF-8 encoded core memory id. */
+    memoryIdRef: { sha256: string; length: number };
+    servedBy: string;
+    scoreDecomposition: {
+      vector?: number;
+      bm25?: number;
+      importance?: number;
+      mmrPenalty?: number;
+      tierPrior?: number;
+      reinforcementBoost?: number;
+      final: number;
+    };
+    admittedBy: string[];
+    rejectedBy?: string;
+    disclosure?: "chunk" | "section" | "raw";
+    estimatedTokens?: number;
+  }>;
+}
+
+export interface BenchRecallTrace {
+  schemaVersion: 1;
+  sensitivity: {
+    classification: "restricted";
+    contentEncoding: "sha256+length";
+    containsGold: false;
+  };
+  sections: BenchRecallTraceSection[];
+  selections: BenchRecallTraceSelection[];
+  lcmCandidates: BenchRecallTraceLcmCandidate[];
+  coreCapture?: BenchRecallTraceCoreCapture;
+  budget: {
+    requestedChars: number;
+    composedChars: number;
+    returnedChars: number;
+    truncated: boolean;
+  };
+}
+
+export interface BenchRecallWithTraceResult {
+  text: string;
+  trace: BenchRecallTrace;
 }
 
 // Legacy aliases preserved while the old eval adapters finish migrating into

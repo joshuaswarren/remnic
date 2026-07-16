@@ -180,6 +180,40 @@ export function createTimeoutGuardedAdapter(
     },
   };
 
+  if (adapter.recallWithTrace) {
+    wrapped.recallWithTrace = (
+      sessionId,
+      query,
+      budgetChars,
+      recallOptions,
+      control,
+    ) => {
+      if (phaseTimeoutMs === undefined) {
+        return adapter.recallWithTrace!(
+          sessionId,
+          query,
+          budgetChars,
+          recallOptions,
+          control,
+        );
+      }
+      return run(`recallWithTrace session=${sessionId}`, async (signal) => {
+        const merged = mergeBenchPhaseControl(signal, control);
+        try {
+          return await adapter.recallWithTrace!(
+            sessionId,
+            query,
+            budgetChars,
+            recallOptions,
+            merged.control,
+          );
+        } finally {
+          merged.cleanup();
+        }
+      });
+    };
+  }
+
   if (adapter.drain) {
     wrapped.drain = (control?: BenchPhaseControl): Promise<void> =>
       drainTimeoutMs === undefined

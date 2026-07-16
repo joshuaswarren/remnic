@@ -34,7 +34,16 @@ import {
   parseEntityFile,
   serializeEntityFile,
 } from "@remnic/core";
-import type { EntityStructuredSection, MemoryFile } from "@remnic/core";
+import type {
+  EntityStructuredSection,
+  EvidencePackSelectionReceipt,
+  MemoryFile,
+  TrajectoryAnalysisLineReceipt,
+} from "@remnic/core";
+import {
+  lcmEvidenceIdentity,
+  type LcmSummarySelectionReceipt,
+} from "@remnic/core/lcm";
 import type {
   BenchPhaseControl,
   BenchJudge,
@@ -42,11 +51,16 @@ import type {
   BenchRecallOptions,
   BenchRecallSupportAssessment,
   BenchRecallSupportRequest,
+  BenchRecallWithTraceResult,
   BenchResponder,
   MemoryStats,
   Message,
   SearchResult,
 } from "./types.js";
+import {
+  createBenchRecallTraceRecorder,
+  type BenchRecallTraceRecorder,
+} from "./remnic-recall-trace.js";
 import { DEFAULT_BENCH_RECALL_BUDGET_CHARS } from "../recall-budget.js";
 
 export interface RemnicAdapterOptions {
@@ -310,7 +324,18 @@ type BenchRecallEngine = {
     fromTurn: number,
     toTurn: number,
     maxTokens: number,
-  ): Promise<Array<{ turn_index: number; role: string; content: string }>>;
+  ): Promise<Array<{
+    id?: number;
+    session_id?: string;
+    turn_index: number;
+    role: string;
+    content: string;
+  }>>;
+  assembleRecall(sessionId: string, budgetChars: number): Promise<string>;
+  assembleRecallWithTrace?(
+    sessionId: string,
+    budgetChars: number,
+  ): Promise<{ text: string; selectedSummaries: LcmSummarySelectionReceipt[] }>;
   getStats(sessionId?: string): Promise<{
     totalMessages: number;
     totalSummaryNodes: number;
@@ -1932,7 +1957,19 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       return correctionAccess.service;
     };
 
-    return {
+    const composeRecall = Symbol("benchRecallComposer");
+    type BenchRecallComposerAdapter = BenchMemoryAdapter & {
+      [composeRecall](
+        sessionId: string,
+        query: string,
+        budgetChars?: number,
+        recallOptions?: BenchRecallOptions,
+        control?: BenchPhaseControl,
+        traceRecorder?: BenchRecallTraceRecorder,
+      ): Promise<string>;
+    };
+
+    const adapter: BenchRecallComposerAdapter = {
       async store(
         sessionId: string,
         messages: Message[],
@@ -2074,12 +2111,13 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
       },
 
-      async recall(
+      async [composeRecall](
         sessionId: string,
         query: string,
         budgetChars?: number,
         recallOptions: BenchRecallOptions = {},
         control?: BenchPhaseControl,
+        traceRecorder?: BenchRecallTraceRecorder,
       ): Promise<string> {
         throwIfBenchPhaseAborted(control, "recall");
         const waitForRecall = <T>(promise: Promise<T>): Promise<T> =>
@@ -2109,6 +2147,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           );
         }
         const sections: string[] = [];
+        const appendSection = (
+          id: string,
+          source: Parameters<BenchRecallTraceRecorder["appendSection"]>[1],
+          rendered: string,
+        ): void => {
+          traceRecorder?.appendSection(id, source, rendered.length);
+          sections.push(rendered);
+        };
         let usedChars = 0;
         const explicitReferences = historicalRecall
           ? []
@@ -2147,7 +2193,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
           if (temporalIntervalEvidence) {
             hasTemporalIntervalEvidence = true;
-            sections.push(temporalIntervalEvidence);
+            appendSection("temporal-interval", "derived", temporalIntervalEvidence);
             usedChars += temporalIntervalEvidence.length;
           }
         }
@@ -2161,7 +2207,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
           if (dependencyVersionEvidence) {
             hasDependencyVersionEvidence = true;
-            sections.push(dependencyVersionEvidence);
+            appendSection("dependency-version", "derived", dependencyVersionEvidence);
             usedChars += dependencyVersionEvidence.length;
           }
         }
@@ -2175,7 +2221,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               maxChars: Math.min(3_000, Math.floor(budget * 0.25)),
             }));
           if (latestQuantitativeEvidence) {
-            sections.push(latestQuantitativeEvidence);
+            appendSection("latest-quantitative", "derived", latestQuantitativeEvidence);
             usedChars += latestQuantitativeEvidence.length;
           }
         }
@@ -2189,11 +2235,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
           if (userImplementationTargetEvidence) {
             hasUserImplementationTargetEvidence = true;
-            sections.push(userImplementationTargetEvidence);
+            appendSection("implementation-targets", "derived", userImplementationTargetEvidence);
             usedChars += userImplementationTargetEvidence.length;
           }
         }
 
+        const explicitCueSelections: EvidencePackSelectionReceipt[] = [];
         const exactReferenceEvidence =
           historicalRecall || hasDependencyVersionEvidence
             ? ""
@@ -2206,12 +2253,19 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               maxReferences: CORE_EXPLICIT_CUE_MAX_REFERENCES,
               includeBenchmarkAnchorCues: sessionId.startsWith("beam-"),
               includeStructuredPlanCues: sessionId.startsWith("arena-"),
+              ...(traceRecorder
+                ? { onEvidenceSelected: (receipt: EvidencePackSelectionReceipt) => {
+                    explicitCueSelections.push(receipt);
+                  } }
+                : {}),
             }));
         if (exactReferenceEvidence) {
-          sections.push(exactReferenceEvidence);
+          appendSection("explicit-cue", "explicit-cue", exactReferenceEvidence);
+          traceRecorder?.recordEvidenceSelections("explicit-cue", explicitCueSelections);
           usedChars += exactReferenceEvidence.length;
         }
 
+        const trajectorySelections: TrajectoryAnalysisLineReceipt[] = [];
         const trajectoryAnalysisEvidence = !historicalRecall && sessionId.startsWith("ama-")
           ? await waitForRecall(buildTrajectoryAnalysisRecallSection({
               engine,
@@ -2221,10 +2275,19 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 CORE_TRAJECTORY_ANALYSIS_MAX_CHARS,
                 Math.max(0, Math.floor((budget - usedChars) * 0.55)),
               ),
+              ...(traceRecorder
+                ? { onLineSelected: (receipt: TrajectoryAnalysisLineReceipt) => {
+                    trajectorySelections.push(receipt);
+                  } }
+                : {}),
             }))
           : "";
         if (trajectoryAnalysisEvidence) {
-          sections.push(trajectoryAnalysisEvidence);
+          appendSection("trajectory-analysis", "trajectory-analysis", trajectoryAnalysisEvidence);
+          traceRecorder?.recordTrajectorySelections(
+            "trajectory-analysis",
+            trajectorySelections,
+          );
           usedChars += trajectoryAnalysisEvidence.length;
         }
 
@@ -2247,16 +2310,28 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   ),
                 ),
               );
-          const coreRecall = await waitForRecall(
-            state.orchestrator.recall(query, sessionId, {
+          const coreOptions = {
               budgetCharsOverride: coreBudget,
               mode: "full",
+              ...(control?.signal ? { abortSignal: control.signal } : {}),
               ...(recallAsOf ? { asOf: recallAsOf } : {}),
-            }),
-          );
+            } as const;
+          const coreRecall = traceRecorder
+            ? await withBenchPhaseAbort(
+                state.orchestrator.recallWithXrayCapture(query, sessionId, coreOptions),
+                control,
+                "recall",
+                { waitForCompletionOnAbort: true },
+              ).then((capture) => {
+                traceRecorder.recordCoreCapture(capture.snapshot);
+                return capture.result;
+              })
+            : await waitForRecall(
+                state.orchestrator.recall(query, sessionId, coreOptions),
+              );
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;
-            sections.push(section);
+            appendSection("core", "core", section);
             usedChars += section.length;
           }
         }
@@ -2268,7 +2343,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               "## Remnic historical recall",
               `No historically valid Remnic memories matched this query as of ${recallAsOf}.`,
             ].join("\n");
-            sections.push(section);
+            appendSection("historical-empty", "derived", section);
             usedChars += section.length;
           }
         }
@@ -2301,9 +2376,43 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               sessionId,
             ),
           );
+          const exactSearchHits = new Map<string, (typeof searchResults)[number]>();
+          const uniqueLegacySearchHits = new Map<
+            string,
+            (typeof searchResults)[number]
+          >();
+          const ambiguousLegacySearchHitIds = new Set<string>();
+          searchResults.forEach((result, rank) => {
+            const identity = lcmEvidenceIdentity(result, result.session_id);
+            if (
+              identity.archiveRowId !== undefined &&
+              !exactSearchHits.has(identity.id)
+            ) {
+              exactSearchHits.set(identity.id, result);
+            } else if (identity.archiveRowId === undefined) {
+              if (uniqueLegacySearchHits.has(identity.id)) {
+                uniqueLegacySearchHits.delete(identity.id);
+                ambiguousLegacySearchHitIds.add(identity.id);
+              } else if (!ambiguousLegacySearchHitIds.has(identity.id)) {
+                uniqueLegacySearchHits.set(identity.id, result);
+              }
+            }
+            traceRecorder?.recordLcmCandidate({
+              rank: rank + 1,
+              ...(identity.archiveRowId === undefined
+                ? {}
+                : { archiveRowId: identity.archiveRowId }),
+              turnIndex: result.turn_index,
+              role: result.role,
+              ...(typeof result.score === "number" ? { score: result.score } : {}),
+              lineageStatus:
+                identity.archiveRowId === undefined ? "unavailable" : "exact",
+            });
+          });
           if (searchResults.length > 0) {
             const evidenceItems: Array<{
               id: string;
+              archiveRowId?: number;
               sessionId: string;
               turnIndex: number;
               role: string;
@@ -2312,6 +2421,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }> = [];
             const directTemporalEvidenceItems: Array<{
               id: string;
+              archiveRowId?: number;
               sessionId: string;
               turnIndex: number;
               role: string;
@@ -2338,9 +2448,21 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   includeCoreRecall ? 1_600 : 600,
                 ),
               );
+              const expandedIdentityCounts = new Map<string, number>();
+              for (const message of expanded) {
+                const expandedIdentity = lcmEvidenceIdentity(
+                  message,
+                  result.session_id,
+                );
+                expandedIdentityCounts.set(
+                  expandedIdentity.id,
+                  (expandedIdentityCounts.get(expandedIdentity.id) ?? 0) + 1,
+                );
+              }
 
               if (expanded.length === 0) {
-                const id = `${result.session_id}:${result.turn_index}`;
+                const identity = lcmEvidenceIdentity(result, result.session_id);
+                const { id } = identity;
                 if (
                   !directTemporalTurnIds.has(id) &&
                   shouldIncludeDirectTemporalEvidence(
@@ -2352,6 +2474,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   directTemporalTurnIds.add(id);
                   directTemporalEvidenceItems.push({
                     id,
+                    ...(identity.archiveRowId === undefined
+                      ? {}
+                      : { archiveRowId: identity.archiveRowId }),
                     sessionId: result.session_id,
                     turnIndex: result.turn_index,
                     role: result.role,
@@ -2377,6 +2502,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   seenTurns.add(id);
                   evidenceItems.push({
                     id,
+                    ...(identity.archiveRowId === undefined
+                      ? {}
+                      : { archiveRowId: identity.archiveRowId }),
                     sessionId: result.session_id,
                     turnIndex: result.turn_index,
                     role: result.role,
@@ -2390,7 +2518,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               }
 
               for (const message of expanded) {
-                const id = `${result.session_id}:${message.turn_index}`;
+                const identity = lcmEvidenceIdentity(message, result.session_id);
+                const { id } = identity;
+                const attributableSearchHit = identity.archiveRowId === undefined
+                  ? expandedIdentityCounts.get(identity.id) === 1
+                    ? uniqueLegacySearchHits.get(identity.id)
+                    : undefined
+                  : exactSearchHits.get(identity.id);
+                const attributableScore = typeof attributableSearchHit?.score === "number"
+                  ? attributableSearchHit.score
+                  : undefined;
                 if (seenTurns.has(id)) continue;
                 if (
                   !directTemporalTurnIds.has(id) &&
@@ -2403,14 +2540,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   directTemporalTurnIds.add(id);
                   directTemporalEvidenceItems.push({
                     id,
+                    ...(identity.archiveRowId === undefined
+                      ? {}
+                      : { archiveRowId: identity.archiveRowId }),
                     sessionId: result.session_id,
                     turnIndex: message.turn_index,
                     role: message.role,
                     content: message.content,
-                    ...(message.turn_index === result.turn_index &&
-                    typeof result.score === "number"
-                      ? { score: result.score }
-                      : {}),
+                    ...(attributableScore === undefined
+                      ? {}
+                      : { score: attributableScore }),
                   });
                 }
                 if (
@@ -2430,22 +2569,30 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 seenTurns.add(id);
                 evidenceItems.push({
                   id,
+                  ...(identity.archiveRowId === undefined
+                    ? {}
+                    : { archiveRowId: identity.archiveRowId }),
                   sessionId: result.session_id,
                   turnIndex: message.turn_index,
                   role: message.role,
                   content: message.content,
-                  ...(message.turn_index === result.turn_index &&
-                  typeof result.score === "number"
-                    ? { score: result.score }
-                    : {}),
+                  ...(attributableScore === undefined
+                    ? {}
+                    : { score: attributableScore }),
                 });
               }
             }
 
+            const directTemporalSelections: EvidencePackSelectionReceipt[] = [];
             const directTemporalEvidence = buildEvidencePack(directTemporalEvidenceItems, {
               title: "Direct temporal evidence",
               maxChars: Math.min(searchBudget, 3_000),
               maxItemChars: 900,
+              ...(traceRecorder
+                ? { onSelection: (receipt: EvidencePackSelectionReceipt) => {
+                    directTemporalSelections.push(receipt);
+                  } }
+                : {}),
             });
             let remainingSearchBudget = searchBudget;
             if (directTemporalEvidence) {
@@ -2453,7 +2600,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 directTemporalEvidence,
                 "These direct temporal statements match the question wording. Prefer them over indirect schedule-update context unless the question asks for the latest or current value.",
               ].join("\n\n");
-              sections.push(section);
+              appendSection("direct-temporal", "evidence-pack", section);
+              traceRecorder?.recordEvidenceSelections(
+                "direct-temporal",
+                directTemporalSelections,
+              );
               usedChars += section.length;
               remainingSearchBudget = 0;
             }
@@ -2463,10 +2614,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               evidenceItems,
             );
             if (contradictionGuidance) {
-              sections.push(contradictionGuidance);
+              appendSection("contradiction-guidance", "derived", contradictionGuidance);
               usedChars += contradictionGuidance.length;
             }
 
+            const searchSelections: EvidencePackSelectionReceipt[] = [];
             const searchEvidence = buildEvidencePack(
               directTemporalEvidence
                 ? evidenceItems.filter((item) => !directTemporalTurnIds.has(item.id))
@@ -2475,10 +2627,19 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 title: "Search evidence",
                 maxChars: remainingSearchBudget,
                 maxItemChars: 900,
+                ...(traceRecorder
+                  ? { onSelection: (receipt: EvidencePackSelectionReceipt) => {
+                      searchSelections.push(receipt);
+                    } }
+                  : {}),
               },
             );
             if (searchEvidence) {
-              sections.push(searchEvidence);
+              appendSection("search-evidence", "evidence-pack", searchEvidence);
+              traceRecorder?.recordEvidenceSelections(
+                "search-evidence",
+                searchSelections,
+              );
               usedChars += searchEvidence.length;
             }
           }
@@ -2491,18 +2652,29 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               "## Remnic recall sufficiency",
               "No direct evidence found for the requested personal background or previous development projects in this session.",
             ].join("\n");
-            sections.push(section);
+            appendSection("personal-history-empty", "derived", section);
             usedChars += section.length;
           }
         }
 
         if (!suppressBroadSummary) {
           const summaryBudget = Math.max(0, budget - usedChars - 4);
-          const recallText = await waitForRecall(
+          const summaryCapture = traceRecorder && engine.assembleRecallWithTrace
+            ? await waitForRecall(
+                engine.assembleRecallWithTrace(sessionId, summaryBudget),
+              )
+            : undefined;
+          const recallText = summaryCapture?.text ?? await waitForRecall(
             engine.assembleRecall(sessionId, summaryBudget),
           );
           if (recallText) {
-            sections.push(recallText);
+            appendSection("lcm-summary", "lcm-summary", recallText);
+            if (summaryCapture) {
+              traceRecorder?.recordSummarySelections(
+                "lcm-summary",
+                summaryCapture.selectedSummaries,
+              );
+            }
           }
         }
 
@@ -2519,17 +2691,64 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               ),
             );
             if (expanded.length > 0) {
-              sections.push(
-                `## Raw messages\n${expanded
-                  .map((message) => `[${message.role}]: ${message.content}`)
-                  .join("\n")}`,
+              const prefix = "## Raw messages\n";
+              const rows = expanded.map(
+                (message) => `[${message.role}]: ${message.content}`,
               );
+              const rawSection = `${prefix}${rows.join("\n")}`;
+              appendSection("raw-messages", "raw-row", rawSection);
+              let rowStart = prefix.length;
+              expanded.forEach((message, index) => {
+                const rowEnd = rowStart + rows[index]!.length;
+                traceRecorder?.recordRawRow(
+                  "raw-messages",
+                  { start: rowStart, end: rowEnd },
+                  message,
+                );
+                rowStart = rowEnd + 1;
+              });
             }
           }
         }
 
         const joined = sections.join("\n\n");
         return joined.length > budget ? joined.slice(0, budget) : joined;
+      },
+
+      recall(
+        sessionId: string,
+        query: string,
+        budgetChars?: number,
+        recallOptions: BenchRecallOptions = {},
+        control?: BenchPhaseControl,
+      ): Promise<string> {
+        return adapter[composeRecall](
+          sessionId,
+          query,
+          budgetChars,
+          recallOptions,
+          control,
+        );
+      },
+
+      async recallWithTrace(
+        sessionId: string,
+        query: string,
+        budgetChars?: number,
+        recallOptions: BenchRecallOptions = {},
+        control?: BenchPhaseControl,
+      ): Promise<BenchRecallWithTraceResult> {
+        const budget = budgetChars ?? DEFAULT_BENCH_RECALL_BUDGET_CHARS;
+        const traceRecorder = createBenchRecallTraceRecorder(Math.max(0, budget));
+        const text = await adapter[composeRecall](
+          sessionId,
+          query,
+          budgetChars,
+          recallOptions,
+          control,
+          traceRecorder,
+        );
+        return { text, trace: traceRecorder.finalize(text.length) };
       },
 
       async assessRecallSupport(
@@ -2841,6 +3060,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       responder: options.responder,
       judge: options.judge,
     };
+    return adapter;
   };
 }
 

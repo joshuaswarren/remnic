@@ -45,6 +45,56 @@ test("timeout guard rejects a stuck adapter phase", async () => {
   assert.equal(timedOutPhase, "timeout-test:recall session=s");
 });
 
+test("timeout guard preserves and forwards recallWithTrace", async () => {
+  const adapter = makeAdapter();
+  let receivedSignal: AbortSignal | undefined;
+  adapter.recallWithTrace = async (_sessionId, _query, _budget, _options, control) => {
+    receivedSignal = control?.signal;
+    return {
+      text: "ok",
+      trace: {
+        schemaVersion: 1,
+        sensitivity: {
+          classification: "restricted",
+          contentEncoding: "sha256+length",
+          containsGold: false,
+        },
+        sections: [],
+        selections: [],
+        lcmCandidates: [],
+        budget: {
+          requestedChars: 10,
+          composedChars: 2,
+          returnedChars: 2,
+          truncated: false,
+        },
+      },
+    };
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 1_000,
+  });
+
+  const result = await guarded.recallWithTrace!("s", "q", 10);
+  assert.equal(result.text, "ok");
+  assert.ok(receivedSignal);
+});
+
+test("timeout guard times out recallWithTrace independently", async () => {
+  const adapter = makeAdapter();
+  adapter.recallWithTrace = async () => new Promise(() => {});
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    () => guarded.recallWithTrace!("s", "q"),
+    /benchmark phase timed out after 5ms: timeout-test:recallWithTrace session=s/,
+  );
+});
+
 test("timeout guard forwards the optional correct surface with phase guarding", async () => {
   const adapter = makeAdapter();
   const correctCalls: Array<{ session: string; text: string; at?: string }> = [];
