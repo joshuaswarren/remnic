@@ -3,7 +3,11 @@ import { openLcmDatabase, ensureLcmStateDir } from "./schema.js";
 import { LcmArchive, type LcmStructuredRecallMatch } from "./archive.js";
 import { LcmDag } from "./dag.js";
 import { LcmSummarizer, type SummarizeFn } from "./summarizer.js";
-import { assembleCompressedHistory, type LcmRecallConfig } from "./recall.js";
+import {
+  assembleCompressedHistoryWithTrace,
+  type LcmRecallConfig,
+  type LcmRecallWithTraceResult,
+} from "./recall.js";
 import { LcmWorkQueue, type LcmObserveMessage } from "./queue.js";
 import type { PluginConfig } from "../types.js";
 import { log } from "../logger.js";
@@ -336,17 +340,25 @@ export class LcmEngine {
     sessionId: string,
     budgetChars: number,
   ): Promise<string> {
-    if (!this.config.enabled) return "";
+    return (await this.assembleRecallWithTrace(sessionId, budgetChars)).text;
+  }
+
+  /** Build compressed recall plus content-free selected-summary receipts. */
+  async assembleRecallWithTrace(
+    sessionId: string,
+    budgetChars: number,
+  ): Promise<LcmRecallWithTraceResult> {
+    if (!this.config.enabled) return { text: "", selectedSummaries: [] };
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
-    if (!normalizedSessionId) return "";
+    if (!normalizedSessionId) return { text: "", selectedSummaries: [] };
     await this.ensureInitialized();
 
     const effectiveBudget = Math.ceil(
       budgetChars * this.config.recallBudgetShare,
     );
-    if (effectiveBudget <= 0) return "";
+    if (effectiveBudget <= 0) return { text: "", selectedSummaries: [] };
 
-    return assembleCompressedHistory(this.dag!, this.archive!, normalizedSessionId, {
+    return assembleCompressedHistoryWithTrace(this.dag!, this.archive!, normalizedSessionId, {
       freshTailTurns: this.config.freshTailTurns,
       budgetChars: effectiveBudget,
     });

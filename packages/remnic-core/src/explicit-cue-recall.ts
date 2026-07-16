@@ -1,4 +1,7 @@
-import { buildEvidencePack } from "./evidence-pack.js";
+import {
+  buildEvidencePack,
+  type EvidencePackSelectionReceipt,
+} from "./evidence-pack.js";
 import {
   gatherAcrossReadSessions,
   resolveLcmReadSessionIds,
@@ -61,6 +64,8 @@ export interface ExplicitCueRecallOptions {
   includeBenchmarkAnchorCues?: boolean;
   includeContentLexicalCues?: boolean;
   includeStructuredPlanCues?: boolean;
+  /** Observe selected evidence blocks without changing rendered output. */
+  onEvidenceSelected?: (receipt: EvidencePackSelectionReceipt) => void;
 }
 
 export interface TrajectoryAnalysisRecallOptions {
@@ -68,6 +73,18 @@ export interface TrajectoryAnalysisRecallOptions {
   sessionId?: string;
   query: string;
   maxChars: number;
+  /** Observe only emitted lines; unavailable lineage is never guessed. */
+  onLineSelected?: (receipt: TrajectoryAnalysisLineReceipt) => void;
+}
+
+export interface TrajectoryAnalysisLineReceipt {
+  /** Half-open offsets within the returned trajectory section. */
+  lineStart: number;
+  lineEnd: number;
+  /** Whether the source row set is structurally exact or unavailable. */
+  lineageStatus: "exact" | "unavailable";
+  actionArchiveRowIds: number[];
+  observationArchiveRowIds: number[];
 }
 
 export type ExplicitTurnReference = {
@@ -455,6 +472,9 @@ export async function buildExplicitCueRecallSection(
       options.maxItemChars,
       DEFAULT_MAX_ITEM_CHARS,
     ),
+    ...(options.onEvidenceSelected
+      ? { onSelection: options.onEvidenceSelected }
+      : {}),
   });
 }
 
@@ -519,7 +539,32 @@ export async function buildTrajectoryAnalysisRecallSection(
   }
 
   const clipped = truncateTrajectoryAnalysisLines(lines, bodyBudget);
-  return clipped.length === 0 ? "" : `${header}\n${clipped.join("\n")}`;
+  if (clipped.length === 0) return "";
+  const text = `${header}\n${clipped.map((line) => line.text).join("\n")}`;
+  if (options.onLineSelected) {
+    let lineStart = header.length + 1;
+    for (const line of clipped) {
+      const lineEnd = lineStart + line.text.length;
+      options.onLineSelected({
+        lineStart,
+        lineEnd,
+        lineageStatus: line.lineageStatus,
+        actionArchiveRowIds: [...line.actionArchiveRowIds],
+        observationArchiveRowIds: [...line.observationArchiveRowIds],
+      });
+      lineStart = lineEnd + 1;
+    }
+  }
+  return text;
+}
+
+function uniqueSortedArchiveRowIds(
+  values: readonly (number | undefined)[],
+): number[] {
+  return [...new Set(values.filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0,
+  ))].sort((left, right) => left - right);
 }
 
 async function collectTurnReferenceEvidence(options: {
@@ -1130,6 +1175,65 @@ interface LabeledTrajectoryStep {
   observationArchiveRowId?: number;
 }
 
+interface TrajectoryLineSource {
+  lineageStatus: "exact" | "unavailable";
+  actionArchiveRowIds: number[];
+  observationArchiveRowIds: number[];
+}
+
+interface SelectedTrajectoryLine extends TrajectoryLineSource {
+  text: string;
+}
+
+class TrajectoryAnalysisLines extends Array<string> {
+  private readonly sources = new Map<number, TrajectoryLineSource>();
+
+  pushWithSources(
+    text: string,
+    actionSteps: readonly LabeledTrajectoryStep[] = [],
+    observationSteps: readonly LabeledTrajectoryStep[] = [],
+  ): number {
+    const index = this.length;
+    const length = super.push(text);
+    const hasUnavailableSource =
+      actionSteps.some((step) =>
+        lcmArchiveRowId({ id: step.actionArchiveRowId }) === undefined
+      ) ||
+      observationSteps.some((step) =>
+        lcmArchiveRowId({ id: step.observationArchiveRowId }) === undefined
+      );
+    this.sources.set(index, {
+      lineageStatus: hasUnavailableSource ? "unavailable" : "exact",
+      actionArchiveRowIds: hasUnavailableSource
+        ? []
+        : uniqueSortedArchiveRowIds(
+            actionSteps.map((step) => step.actionArchiveRowId),
+          ),
+      observationArchiveRowIds: hasUnavailableSource
+        ? []
+        : uniqueSortedArchiveRowIds(
+            observationSteps.map((step) => step.observationArchiveRowId),
+          ),
+    });
+    return length;
+  }
+
+  sourceAt(index: number): TrajectoryLineSource {
+    const source = this.sources.get(index);
+    return source
+      ? {
+          lineageStatus: source.lineageStatus,
+          actionArchiveRowIds: [...source.actionArchiveRowIds],
+          observationArchiveRowIds: [...source.observationArchiveRowIds],
+        }
+      : {
+          lineageStatus: "unavailable",
+          actionArchiveRowIds: [],
+          observationArchiveRowIds: [],
+        };
+  }
+}
+
 interface TrajectoryBounds {
   start: number;
   end: number;
@@ -1315,12 +1419,13 @@ function buildTrajectoryAnalysisLines(
   query: string,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
-): string[] {
+): TrajectoryAnalysisLines {
   const normalized = normalizeTrajectoryQuery(query);
   const explicitReferences = collectExplicitTurnReferences(query);
-  const lines: string[] = [
+  const lines = new TrajectoryAnalysisLines();
+  lines.pushWithSources(
     `Analyzed labeled action/observation transcript window: steps ${bounds.start}-${bounds.end} (${bounds.reason}).`,
-  ];
+  );
   const hasQuotedObservationPair = extractQuotedObservations(query).length >= 2;
   const transition = findObservationTransition(query, trajectory);
   const entities = extractNumberedEntities(query);
@@ -1340,8 +1445,14 @@ function buildTrajectoryAnalysisLines(
     /\bwhat\s+will\s+be\s+the\s+resulting\b/.test(normalized);
 
   if (transition) {
-    lines.push(
+    const fromStep = trajectory.find((step) => step.step === transition.fromStep);
+    const toStep = trajectory.find((step) => step.step === transition.toStep);
+    lines.pushWithSources(
       `Matched quoted observations: Observation ${transition.fromStep} -> Observation ${transition.toStep}.`,
+      [],
+      [fromStep, toStep].filter(
+        (step): step is LabeledTrajectoryStep => step !== undefined,
+      ),
     );
     appendActionSequenceSummary(
       lines,
@@ -1424,11 +1535,11 @@ function buildTrajectoryAnalysisLines(
     }
   }
 
-  return lines.length === 1 ? [] : lines;
+  return lines.length === 1 ? new TrajectoryAnalysisLines() : lines;
 }
 
 function appendReferencedTrajectoryLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   references: readonly ExplicitTurnReference[],
   options: { includeObservations: boolean; heading: string },
@@ -1442,19 +1553,23 @@ function appendReferencedTrajectoryLines(
     return;
   }
 
-  lines.push(options.heading);
+  lines.pushWithSources(options.heading);
   for (const step of window) {
     if (step.action) {
-      lines.push(`[Action ${step.step}]: ${step.action}`);
+      lines.pushWithSources(`[Action ${step.step}]: ${step.action}`, [step]);
     }
     if (options.includeObservations && step.observation) {
-      lines.push(`[Observation ${step.step}]: ${oneLine(step.observation)}`);
+      lines.pushWithSources(
+        `[Observation ${step.step}]: ${oneLine(step.observation)}`,
+        [],
+        [step],
+      );
     }
   }
 }
 
 function appendActionRangeLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   start: number,
   end: number,
@@ -1470,19 +1585,23 @@ function appendActionRangeLines(
   if (window.length === 0) {
     return;
   }
-  lines.push(options.heading);
+  lines.pushWithSources(options.heading);
   for (const step of window) {
     if (step.action) {
-      lines.push(`[Action ${step.step}]: ${step.action}`);
+      lines.pushWithSources(`[Action ${step.step}]: ${step.action}`, [step]);
     }
     if (options.includeObservations && step.observation) {
-      lines.push(`[Observation ${step.step}]: ${oneLine(step.observation)}`);
+      lines.pushWithSources(
+        `[Observation ${step.step}]: ${oneLine(step.observation)}`,
+        [],
+        [step],
+      );
     }
   }
 }
 
 function appendActionSequenceSummary(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   start: number,
   end: number,
@@ -1490,17 +1609,18 @@ function appendActionSequenceSummary(
 ): void {
   const low = Math.min(start, end);
   const high = Math.max(start, end);
-  const actions = trajectory
-    .filter((step) => step.step >= low && step.step <= high && step.action)
+  const actionSteps = trajectory
+    .filter((step) => step.step >= low && step.step <= high && step.action);
+  const actions = actionSteps
     .map((step) => `step ${step.step}: ${step.action}`);
   if (actions.length === 0) {
     return;
   }
-  lines.push(`${heading} ${actions.join("; ")}.`);
+  lines.pushWithSources(`${heading} ${actions.join("; ")}.`, actionSteps);
 }
 
 function appendResultingObservationLine(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   stepNumber: number,
 ): void {
@@ -1508,11 +1628,15 @@ function appendResultingObservationLine(
   if (!step?.observation) {
     return;
   }
-  lines.push(`Resulting observation after Action ${step.step}: ${oneLine(step.observation)}`);
+  lines.pushWithSources(
+    `Resulting observation after Action ${step.step}: ${oneLine(step.observation)}`,
+    [],
+    [step],
+  );
 }
 
 function appendSpatialTrajectoryInferenceLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   query: string,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
@@ -1536,23 +1660,23 @@ function appendSpatialTrajectoryInferenceLines(
   const window = spatialTrajectoryWindowForQuery(query, trajectory, bounds);
   const counterfactualContactLines = collectCounterfactualContactLines(query, trajectory, normalized);
   if (counterfactualContactLines.length > 0) {
-    lines.push("Counterfactual contact cues:");
+    lines.pushWithSources("Counterfactual contact cues:");
     lines.push(...counterfactualContactLines);
   }
 
   const selfReversingLines = collectSelfReversingProgressLines(query, window, normalized);
   if (selfReversingLines.length > 0) {
-    lines.push("Self-reversing sequence cues:");
+    lines.pushWithSources("Self-reversing sequence cues:");
     lines.push(...selfReversingLines);
   }
   const onlyEffectiveActionLines = collectOnlyEffectiveActionLines(window, normalized);
   if (onlyEffectiveActionLines.length > 0) {
-    lines.push("Only-effective action cues:");
+    lines.pushWithSources("Only-effective action cues:");
     lines.push(...onlyEffectiveActionLines);
   }
   const pushedPhraseGroupLines = collectPushedPhraseGroupShiftLines(query, window, normalized);
   if (pushedPhraseGroupLines.length > 0) {
-    lines.push("Pushed phrase-group shift cues:");
+    lines.pushWithSources("Pushed phrase-group shift cues:");
     lines.push(...pushedPhraseGroupLines);
   }
   const suppressMovementProgressEvidence = onlyEffectiveActionLines.length > 0 ||
@@ -1566,7 +1690,7 @@ function appendSpatialTrajectoryInferenceLines(
     ? []
     : collectActionMovementSummaryLines(query, window, bounds);
   if (actionMovementLines.length > 0) {
-    lines.push("Action movement summary cues:");
+    lines.pushWithSources("Action movement summary cues:");
     lines.push(...actionMovementLines);
   }
 
@@ -1574,7 +1698,7 @@ function appendSpatialTrajectoryInferenceLines(
     ? []
     : collectMovementDeltaLines(query, window);
   if (movementLines.length > 0) {
-    lines.push("Relative-position movement cues:");
+    lines.pushWithSources("Relative-position movement cues:");
     lines.push(...movementLines);
   }
 
@@ -1585,37 +1709,37 @@ function appendSpatialTrajectoryInferenceLines(
     normalized,
   );
   if (objectAlignmentLines.length > 0) {
-    lines.push("Object alignment cues:");
+    lines.pushWithSources("Object alignment cues:");
     lines.push(...objectAlignmentLines);
   }
 
   const alternativeActionLines = collectAlternativeActionLines(query, trajectory);
   if (alternativeActionLines.length > 0) {
-    lines.push("Counterfactual action cues:");
+    lines.pushWithSources("Counterfactual action cues:");
     lines.push(...alternativeActionLines);
   }
 
   const adjacentRuleSetupLines = collectAdjacentRuleSetupLines(window, normalized);
   if (adjacentRuleSetupLines.length > 0) {
-    lines.push("Adjacent rule-block setup cues:");
+    lines.pushWithSources("Adjacent rule-block setup cues:");
     lines.push(...adjacentRuleSetupLines);
   }
 
   const blockedMoveLines = collectBlockedMoveLines(query, window, normalized);
   if (blockedMoveLines.length > 0) {
-    lines.push("Blocked-move cues:");
+    lines.pushWithSources("Blocked-move cues:");
     lines.push(...blockedMoveLines);
   }
 
   const failedEscapeLines = collectFailedEscapeLines(query, trajectory, normalized);
   if (failedEscapeLines.length > 0) {
-    lines.push("Failed-move escape cues:");
+    lines.pushWithSources("Failed-move escape cues:");
     lines.push(...failedEscapeLines);
   }
 
   const sameRelativeTextPushLines = collectSameRelativeTextPushLines(window, normalized);
   if (sameRelativeTextPushLines.length > 0) {
-    lines.push("Same-relative text-push cues:");
+    lines.pushWithSources("Same-relative text-push cues:");
     lines.push(...sameRelativeTextPushLines);
   }
 
@@ -1623,43 +1747,43 @@ function appendSpatialTrajectoryInferenceLines(
     ? []
     : collectFailedContactBoundaryLines(window, normalized);
   if (failedContactLines.length > 0) {
-    lines.push("Failed-push boundary cues:");
+    lines.pushWithSources("Failed-push boundary cues:");
     lines.push(...failedContactLines);
   }
 
   const transformationLines = collectTemporaryRuleTransformationLines(window, normalized);
   if (transformationLines.length > 0) {
-    lines.push("Temporary transformation cues:");
+    lines.pushWithSources("Temporary transformation cues:");
     lines.push(...transformationLines);
   }
 
   const wholeConfigurationShiftLines = collectWholeConfigurationShiftLines(window, normalized);
   if (wholeConfigurationShiftLines.length > 0) {
-    lines.push("Whole-configuration shift cues:");
+    lines.pushWithSources("Whole-configuration shift cues:");
     lines.push(...wholeConfigurationShiftLines);
   }
 
   const ruleInterventionLines = collectRuleInterventionStrategyLines(window, normalized);
   if (ruleInterventionLines.length > 0) {
-    lines.push("Rule-intervention strategy cues:");
+    lines.pushWithSources("Rule-intervention strategy cues:");
     lines.push(...ruleInterventionLines);
   }
 
   const missingPushTargetLines = collectMissingPushTargetLines(window, normalized);
   if (missingPushTargetLines.length > 0) {
-    lines.push("Missing-interaction cues:");
+    lines.pushWithSources("Missing-interaction cues:");
     lines.push(...missingPushTargetLines);
   }
 
   const rulePhraseAlignmentLines = collectRulePhraseAlignmentLines(window, normalized);
   if (rulePhraseAlignmentLines.length > 0) {
-    lines.push("Rule-phrase alignment cues:");
+    lines.pushWithSources("Rule-phrase alignment cues:");
     lines.push(...rulePhraseAlignmentLines);
   }
 
   const controlRuleInteractionLines = collectControlRuleInteractionLines(window, normalized);
   if (controlRuleInteractionLines.length > 0) {
-    lines.push("Control-rule interaction cues:");
+    lines.pushWithSources("Control-rule interaction cues:");
     lines.push(...controlRuleInteractionLines);
   }
 
@@ -1667,13 +1791,13 @@ function appendSpatialTrajectoryInferenceLines(
     ? []
     : collectRuleTextPositionLines(window, normalized);
   if (ruleTextPositionLines.length > 0) {
-    lines.push("Rule-text positioning cues:");
+    lines.pushWithSources("Rule-text positioning cues:");
     lines.push(...ruleTextPositionLines);
   }
 
   const ruleLines = collectRuleStateLines(window, normalized);
   if (ruleLines.length > 0) {
-    lines.push("Rule-state cues:");
+    lines.pushWithSources("Rule-state cues:");
     lines.push(...ruleLines);
   }
 }
@@ -3466,12 +3590,15 @@ function uniqueLines(lines: readonly string[]): string[] {
 }
 
 function appendActionFrequencyLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
 ): void {
+  const actionSteps = boundedTrajectory(trajectory, bounds).filter(
+    (step) => step.action !== undefined,
+  );
   const counts = new Map<string, number>();
-  for (const step of boundedTrajectory(trajectory, bounds)) {
+  for (const step of actionSteps) {
     if (!step.action) continue;
     const verb = normalizeActionVerb(step.action);
     if (!verb) continue;
@@ -3483,15 +3610,16 @@ function appendActionFrequencyLines(
   const frequencies = [...counts.entries()].sort((left, right) =>
     right[1] - left[1] || left[0].localeCompare(right[0]),
   );
-  lines.push(
+  lines.pushWithSources(
     `Action frequency through requested window: ${frequencies
       .map(([verb, count]) => `${verb}=${count}`)
       .join(", ")}.`,
+    actionSteps,
   );
 }
 
 function appendInventoryChangeLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
 ): void {
@@ -3507,16 +3635,24 @@ function appendInventoryChangeLines(
   if (changes.length === 0) {
     return;
   }
-  lines.push("Inventory changes from action transcript:");
+  const changeSteps = changes
+    .map((change) => trajectory.find((step) => step.step === change.step))
+    .filter((step): step is LabeledTrajectoryStep => step !== undefined);
+  lines.pushWithSources("Inventory changes from action transcript:");
   if (changes.length > 5) {
-    lines.push(
+    lines.pushWithSources(
       `First five inventory changes: ${formatInventoryChangeSummary(changes.slice(0, 5))}.`,
+      changeSteps.slice(0, 5),
     );
-    lines.push(
+    lines.pushWithSources(
       `Complete inventory changes: ${formatInventoryChangeSummary(changes)}.`,
+      changeSteps,
     );
   }
   for (const change of changes) {
+    // The rendered change is stateful: whether a place/move removes an item
+    // depends on earlier take actions in `held`. Until the parser returns that
+    // full dependency chain, do not publish a misleading partial row receipt.
     lines.push(`[Action ${change.step}]: ${change.action} => ${change.change}`);
   }
 }
@@ -3543,7 +3679,7 @@ function summarizeInventoryChange(change: string): string {
 }
 
 function appendContainerStateChangeLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
 ): void {
@@ -3551,14 +3687,18 @@ function appendContainerStateChangeLines(
   if (changes.length === 0) {
     return;
   }
-  lines.push("Container open/close state changes:");
+  lines.pushWithSources("Container open/close state changes:");
   for (const change of changes) {
-    lines.push(`[Action ${change.step}]: ${change.action} => ${change.entity} ${change.state}`);
+    const step = trajectory.find((candidate) => candidate.step === change.step);
+    lines.pushWithSources(
+      `[Action ${change.step}]: ${change.action} => ${change.entity} ${change.state}`,
+      step ? [step] : [],
+    );
   }
 }
 
 function appendEntityTimelineLines(
-  lines: string[],
+  lines: TrajectoryAnalysisLines,
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
   entities: readonly string[],
@@ -3594,28 +3734,37 @@ function appendEntityTimelineLines(
       continue;
     }
 
-    lines.push(`Timeline for ${entity}:`);
+    lines.pushWithSources(`Timeline for ${entity}:`);
     for (const step of directActions) {
-      lines.push(`[Action ${step.step}]: ${step.action}`);
+      lines.pushWithSources(`[Action ${step.step}]: ${step.action}`, [step]);
     }
     if (objectTransfers.length > 0) {
-      lines.push(`Object transfers involving ${entity}:`);
+      lines.pushWithSources(`Object transfers involving ${entity}:`);
       for (const transfer of objectTransfers) {
-        lines.push(`[Action ${transfer.step}]: ${transfer.action} => ${formatContainerTransfer(transfer)}`);
+        const step = trajectory.find((candidate) => candidate.step === transfer.step);
+        lines.pushWithSources(
+          `[Action ${transfer.step}]: ${transfer.action} => ${formatContainerTransfer(transfer)}`,
+          step ? [step] : [],
+        );
       }
     }
     const inferredLocation = inferEntityLocation(trajectory, bounds, entity);
     if (inferredLocation) {
-      lines.push(
-        `Inferred ${entity} location at step ${bounds.end}: ${inferredLocation}.`,
+      lines.pushWithSources(
+        `Inferred ${entity} location at step ${bounds.end}: ${inferredLocation.location}.`,
+        [inferredLocation.sourceStep],
       );
     }
     if (stateChanges.length > 0) {
       const latest = stateChanges[stateChanges.length - 1]!;
-      lines.push(
+      const stateSteps = stateChanges
+        .map((change) => trajectory.find((step) => step.step === change.step))
+        .filter((step): step is LabeledTrajectoryStep => step !== undefined);
+      lines.pushWithSources(
         `Latest ${entity} state at step ${bounds.end}: ${latest.state}; state changes: ${stateChanges
           .map((change) => `${change.step}:${change.state}`)
           .join(", ")}.`,
+        stateSteps,
       );
     }
   }
@@ -3966,15 +4115,17 @@ function inferEntityLocation(
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
   entity: string,
-): string | undefined {
+): { location: string; sourceStep: LabeledTrajectoryStep } | undefined {
   const normalizedEntity = normalizeEntity(entity);
   let location: string | undefined;
+  let sourceStep: LabeledTrajectoryStep | undefined;
   for (const step of boundedTrajectory(trajectory, bounds)) {
     if (!step.action) continue;
     const action = step.action.trim();
     const take = /^take\s+(.+?)\s+from\s+(.+)$/i.exec(action);
     if (take && normalizeEntity(take[1]!) === normalizedEntity) {
       location = "inventory";
+      sourceStep = step;
       continue;
     }
     const move = /^(?:move|put|place|insert)\s+(.+?)\s+(?:to|in|into|on)\s+(.+)$/i.exec(
@@ -3982,9 +4133,10 @@ function inferEntityLocation(
     );
     if (move && normalizeEntity(move[1]!) === normalizedEntity) {
       location = move[2]!.trim();
+      sourceStep = step;
     }
   }
-  return location;
+  return location && sourceStep ? { location, sourceStep } : undefined;
 }
 
 function normalizeActionVerb(action: string): string | undefined {
@@ -4028,10 +4180,15 @@ export function normalizeTurnExpansionEnd(stats: {
   return Math.max(messageCountEnd, Math.floor(stats.maxTurnIndex));
 }
 
-function truncateTrajectoryAnalysisLines(lines: string[], maxChars: number): string[] {
-  const result: string[] = [];
+function truncateTrajectoryAnalysisLines(
+  lines: TrajectoryAnalysisLines,
+  maxChars: number,
+): SelectedTrajectoryLine[] {
+  const result: SelectedTrajectoryLine[] = [];
   let used = 0;
-  for (const line of lines.slice(0, TRAJECTORY_ANALYSIS_MAX_LINES)) {
+  const limit = Math.min(lines.length, TRAJECTORY_ANALYSIS_MAX_LINES);
+  for (let index = 0; index < limit; index += 1) {
+    const line = lines[index]!;
     const separator = result.length === 0 ? 0 : 1;
     const remaining = maxChars - used - separator;
     if (remaining <= 0) {
@@ -4045,7 +4202,7 @@ function truncateTrajectoryAnalysisLines(lines: string[], maxChars: number): str
     if (clipped.length === 0) {
       break;
     }
-    result.push(clipped);
+    result.push({ text: clipped, ...lines.sourceAt(index) });
     used += separator + clipped.length;
   }
   return result;

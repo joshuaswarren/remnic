@@ -676,6 +676,52 @@ test("expandContext preserves first, middle, and last row identity when truncate
   }
 });
 
+test("assembleRecallWithTrace preserves text and reports selected summary metadata", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-summary-receipts-"),
+  );
+
+  try {
+    const engine = new LcmEngine(
+      createPluginConfig(memoryDir),
+      async () => "private summary body",
+    );
+    await engine.observeMessages(
+      "private-session",
+      Array.from({ length: 8 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `private message ${index}`,
+      })),
+    );
+    await engine.waitForSessionObserveIdle("private-session");
+
+    const baseline = await engine.assembleRecall("private-session", 10_000);
+    const traced = await engine.assembleRecallWithTrace(
+      "private-session",
+      10_000,
+    );
+
+    assert.equal(traced.text, baseline);
+    assert.ok(traced.selectedSummaries.length > 0);
+    assert.ok(
+      traced.selectedSummaries.every((receipt) =>
+        receipt.entryStart < receipt.entryEnd &&
+        receipt.msgStart <= receipt.msgEnd
+      ),
+    );
+    assert.equal(
+      JSON.stringify(traced.selectedSummaries).includes("private summary body"),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(traced.selectedSummaries).includes("private-session"),
+      false,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("close prevents deferred observe work from reinitializing the engine", async () => {
   const memoryDir = await mkdtemp(
     path.join(os.tmpdir(), "engram-lcm-engine-close-"),

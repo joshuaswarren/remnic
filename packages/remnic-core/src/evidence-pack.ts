@@ -14,6 +14,23 @@ export interface EvidencePackOptions {
   maxChars: number;
   maxItemChars?: number;
   query?: string;
+  /** Optional non-rendering receipt for each block actually appended. */
+  onSelection?: (receipt: EvidencePackSelectionReceipt) => void;
+}
+
+/** Content-free identity fields for an evidence item that survived selection. */
+export interface EvidencePackSelectedItem {
+  archiveRowId?: number;
+  turnIndex?: number;
+  role?: string;
+  score?: number;
+}
+
+export interface EvidencePackSelectionReceipt {
+  item: EvidencePackSelectedItem;
+  /** Half-open offsets within the returned evidence-pack string. */
+  blockStart: number;
+  blockEnd: number;
 }
 
 const DEFAULT_MAX_ITEM_CHARS = 1_200;
@@ -96,13 +113,35 @@ export function buildEvidencePack(
       block.length > remaining ? clipText(block, remaining) : block;
     if (!finalBlock.trim()) break;
 
+    const blockStart = used + separatorLength;
+    const blockEnd = blockStart + finalBlock.length;
     lines.push(finalBlock);
     used += separatorLength + finalBlock.length;
     if (id) seenIds.add(id);
     seenContent.add(contentKey);
+    options.onSelection?.({
+      item: evidencePackSelectedItem(item),
+      blockStart,
+      blockEnd,
+    });
   }
 
   return lines.length === 1 ? "" : lines.join("\n\n");
+}
+
+function evidencePackSelectedItem(
+  item: EvidencePackItem,
+): EvidencePackSelectedItem {
+  return {
+    ...(typeof item.archiveRowId === "number"
+      ? { archiveRowId: item.archiveRowId }
+      : {}),
+    ...(typeof item.turnIndex === "number" ? { turnIndex: item.turnIndex } : {}),
+    ...(typeof item.role === "string" ? { role: item.role } : {}),
+    ...(typeof item.score === "number" && Number.isFinite(item.score)
+      ? { score: item.score }
+      : {}),
+  };
 }
 
 export function insertAfterEvidenceHeading(

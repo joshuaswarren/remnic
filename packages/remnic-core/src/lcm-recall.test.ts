@@ -6,7 +6,10 @@ import test from "node:test";
 
 import { LcmArchive } from "./lcm/archive.js";
 import { LcmDag } from "./lcm/dag.js";
-import { assembleCompressedHistory } from "./lcm/recall.js";
+import {
+  assembleCompressedHistory,
+  assembleCompressedHistoryWithTrace,
+} from "./lcm/recall.js";
 import { ensureLcmStateDir, openLcmDatabase } from "./lcm/schema.js";
 
 test("assembleCompressedHistory excludes old summaries that straddle the fresh tail", async () => {
@@ -58,12 +61,56 @@ test("assembleCompressedHistory excludes old summaries that straddle the fresh t
       freshTailTurns: 16,
       budgetChars: 10_000,
     });
+    const traced = assembleCompressedHistoryWithTrace(
+      dag,
+      archive,
+      sessionId,
+      { freshTailTurns: 16, budgetChars: 10_000 },
+    );
 
+    assert.equal(traced.text, section);
     assert.doesNotMatch(section, /parent summary 0-31/);
     assert.match(section, /leaf summary 0-7/);
     assert.match(section, /leaf summary 8-15/);
     assert.match(section, /leaf summary 16-23/);
     assert.match(section, /leaf summary 24-31/);
+    assert.deepEqual(
+      traced.selectedSummaries.map(({ id, depth, msgStart, msgEnd }) => ({
+        id,
+        depth,
+        msgStart,
+        msgEnd,
+      })),
+      [
+        { id: "leaf-0-7", depth: 0, msgStart: 0, msgEnd: 7 },
+        { id: "leaf-8-15", depth: 0, msgStart: 8, msgEnd: 15 },
+        { id: "leaf-16-23", depth: 0, msgStart: 16, msgEnd: 23 },
+        { id: "leaf-24-31", depth: 0, msgStart: 24, msgEnd: 31 },
+      ],
+    );
+    for (const receipt of traced.selectedSummaries) {
+      assert.ok(receipt.entryStart < receipt.entryEnd);
+      const expectedSummary = receipt.id.replace("leaf-", "leaf summary ");
+      assert.equal(
+        traced.text.slice(receipt.entryStart, receipt.entryEnd).includes(expectedSummary),
+        true,
+      );
+      assert.equal("summary" in receipt, false);
+      assert.equal("sessionId" in receipt, false);
+    }
+
+    const first = traced.selectedSummaries[0]!;
+    const firstEntryBudget = first.entryEnd - first.entryStart;
+    const limited = assembleCompressedHistoryWithTrace(
+      dag,
+      archive,
+      sessionId,
+      { freshTailTurns: 16, budgetChars: firstEntryBudget },
+    );
+    assert.deepEqual(
+      limited.selectedSummaries.map((receipt) => receipt.id),
+      ["leaf-0-7"],
+    );
   } finally {
     db.close();
     await rm(memoryDir, { recursive: true, force: true });
