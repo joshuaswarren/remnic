@@ -366,6 +366,7 @@ const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string
   extractionScopeClassification: "extractionScopeClassificationEnabled",
   extractionJudge: "extractionJudgeEnabled",
   extractionDedupe: "extractionDedupeEnabled",
+  extractionRetry: "extractionRetryEnabled",
   extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
   extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
   embeddingFallback: "embeddingFallbackEnabled",

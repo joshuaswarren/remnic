@@ -1564,6 +1564,23 @@ export interface PluginConfig {
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
   localLlm400CooldownMs: number;
+  // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
+  /** Master gate. When false, restores pre-change behavior (extractor called on every triggered observe; no gate). */
+  extractionRetryEnabled: boolean;
+  /** Per-fingerprint exponential backoff schedule (ms), indexed by attempt number. */
+  extractionRetryScheduleMs: number[];
+  /** Upper bound on any single backoff interval (ms). */
+  extractionRetryMaxBackoffMs: number;
+  /** Jitter ratio applied to each backoff interval (±ratio). */
+  extractionRetryJitterRatio: number;
+  /** Max attempts for a `parse_empty` fingerprint before it is long-parked. */
+  extractionParseEmptyMaxAttempts: number;
+  /** Consecutive provider failures before the circuit breaker opens. */
+  extractionBreakerFailureThreshold: number;
+  /** Breaker open cooldown (ms) for transient provider failures. */
+  extractionBreakerCooldownMs: number;
+  /** Breaker open cooldown (ms) for auth/config failures (longer — provider is misconfigured). */
+  extractionBreakerAuthCooldownMs: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;
@@ -3162,6 +3179,15 @@ export interface QuestionEntry {
   resolvedAt?: string;
 }
 
+/**
+ * Coarse failure class consumed by the extraction retry/backoff + circuit
+ * breaker layer (extraction hot-loop hardening). Kept deliberately small:
+ * - `provider_retryable`: transient provider failure (429/5xx/network) — back off and retry.
+ * - `parse_empty`: provider responded but produced no parseable output — retry with a low attempt cap.
+ * - `auth_config`: auth/config failure (401/403/"no models configured") — open the breaker immediately.
+ */
+export type ExtractionFailureClass = "provider_retryable" | "parse_empty" | "auth_config";
+
 export interface ExtractionResult {
   facts: ExtractedFact[];
   profileUpdates: string[];
@@ -3170,6 +3196,8 @@ export interface ExtractionResult {
   identityReflection?: string;
   relationships?: ExtractedRelationship[];
   extractionFailure?: string;
+  /** Coarse class used by the retry/backoff + circuit-breaker layer (extraction hot loop). */
+  extractionFailureClass?: ExtractionFailureClass;
 }
 
 export interface EntityMention {
@@ -3321,6 +3349,18 @@ export interface MetaState {
   processedExtractionFingerprints?: Array<{
     fingerprint: string;
     observedAt: string;
+  }>;
+  /**
+   * Per-fingerprint extraction retry/backoff state (extraction hot-loop
+   * hardening). Optional and default-safe: older meta files without it load
+   * unchanged. Bounded to the newest entries at write time.
+   */
+  extractionRetryState?: Array<{
+    fingerprint: string;
+    attempts: number;
+    nextEligibleAt: string; // ISO
+    firstFailedAt: string; // ISO
+    lastFailureClass: ExtractionFailureClass;
   }>;
 }
 

@@ -26,6 +26,7 @@ import type {
   GatewayConfig,
   MemoryCategory,
   DaySummaryResult as DaySummaryResultShape,
+  ExtractionFailureClass,
 } from "./types.js";
 import { ModelRegistry } from "./model-registry.js";
 import { extractJsonCandidates } from "./json-extract.js";
@@ -38,6 +39,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { isTransientHttpError } from "./connectors/live/transient-errors.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { resolveMemoryLifecycleCapabilities,
   resolveLocalLlmCapabilities,resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
@@ -46,6 +48,56 @@ type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
 type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
+
+/**
+ * Read a numeric HTTP status off a thrown error without re-implementing the
+ * shared transient classifier. Uses `in`/typeof narrowing (no inline casts).
+ */
+function httpStatusFromError(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  if ("status" in err && typeof err.status === "number" && Number.isFinite(err.status)) return err.status;
+  if ("statusCode" in err && typeof err.statusCode === "number" && Number.isFinite(err.statusCode)) {
+    return err.statusCode;
+  }
+  return undefined;
+}
+
+/**
+ * Map a thrown extraction error to a coarse failure class for the retry/breaker
+ * layer. 401/403 → `auth_config` (misconfigured provider, open the breaker);
+ * transient (429/5xx/network, per the shared `isTransientHttpError`) → back off;
+ * anything else defaults to `provider_retryable` (fail-open toward retry, but
+ * capped by the per-fingerprint attempt budget). Never throws.
+ */
+export function classifyExtractionThrownError(err: unknown): ExtractionFailureClass {
+  try {
+    const status = httpStatusFromError(err);
+    if (status === 401 || status === 403) return "auth_config";
+    if (isTransientHttpError(err)) return "provider_retryable";
+    return "provider_retryable";
+  } catch {
+    return "provider_retryable";
+  }
+}
+
+/**
+ * Map the gateway fallback's discriminated parse-failure reason to a coarse
+ * extraction failure class. "no models configured" is an auth/config problem;
+ * an HTTP/transport failure backs off; an unparseable-but-present response is a
+ * genuine empty-parse.
+ */
+export function classifyFallbackParseFailure(
+  reason: "no_models" | "empty" | "http_error",
+): ExtractionFailureClass {
+  switch (reason) {
+    case "no_models":
+      return "auth_config";
+    case "http_error":
+      return "provider_retryable";
+    case "empty":
+      return "parse_empty";
+  }
+}
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "items": [
@@ -975,7 +1027,7 @@ export class ExtractionEngine {
     options: { temperature?: number; maxTokens?: number } = {},
   ): Promise<T | null> {
     const detailed = await this.fallbackLlm.parseWithSchemaDetailed(messages, schema, this.withGatewayAgent(options));
-    if (detailed?.result) {
+    if ("modelUsed" in detailed) {
       const durationMs = Date.now() - startedAtMs;
       this.emit({
         kind: "llm_end",
@@ -1119,11 +1171,16 @@ export class ExtractionEngine {
       localLlm: resolveLocalLlmCapabilities(this.config).localLlm,
     });
     this.profiler.startSpan("total", extractionTraceId);
+    // True when a local or direct extractor was attempted before the gateway
+    // fallback, so a gateway "no models" result doesn't re-classify a real
+    // primary failure as auth_config (codex review: preserve direct/local failures).
+    let primaryExtractorAttempted = false;
 
     try {
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       this.profiler.startSpan("local-llm", extractionTraceId);
+      primaryExtractorAttempted = true;
       try {
         const localResult = await this.extractWithLocalLlm(conversation, existingEntities);
         if (localResult) {
@@ -1144,6 +1201,7 @@ export class ExtractionEngine {
             entities: [],
             questions: [],
             extractionFailure: "local_llm_unavailable",
+            extractionFailureClass: "provider_retryable",
           };
         }
         log.info("extraction: local LLM unavailable, falling back to gateway default AI");
@@ -1156,6 +1214,7 @@ export class ExtractionEngine {
             entities: [],
             questions: [],
             extractionFailure: "local_llm_error",
+            extractionFailureClass: "provider_retryable",
           };
         }
         log.info("extraction: local LLM error, falling back to gateway default AI:", err);
@@ -1168,6 +1227,7 @@ export class ExtractionEngine {
     // Try direct OpenAI-compatible client (Scryr, OpenRouter, etc.)
     if (this.shouldUseDirectClient) {
       this.profiler.startSpan("direct-client", extractionTraceId);
+      primaryExtractorAttempted = true;
       try {
         const directResult = await this.extractWithDirectClient(conversation, existingEntities);
         if (directResult) {
@@ -1250,7 +1310,7 @@ export class ExtractionEngine {
 
       const fallbackDurationMs = Date.now() - fallbackStartTime;
 
-      if (detailed?.result && Array.isArray(detailed.result.facts)) {
+      if ("modelUsed" in detailed && Array.isArray(detailed.result.facts)) {
         const result = detailed.result;
         this.emit({
           kind: "llm_end", traceId: fallbackTraceId, model: detailed.modelUsed, operation: "extraction",
@@ -1299,12 +1359,21 @@ export class ExtractionEngine {
         durationMs: fallbackDurationMs, error: "fallback returned no parsed output",
       });
       log.warn("extraction fallback returned no parsed output");
+      const fallbackParseFailureClass: ExtractionFailureClass =
+        detailed.result === null
+          ? detailed.failureReason === "no_models" && primaryExtractorAttempted
+            ? // Gateway had no models, but a local/direct extractor already failed —
+              // the root cause is the primary (transient), not gateway auth/config.
+              "provider_retryable"
+            : classifyFallbackParseFailure(detailed.failureReason)
+          : "parse_empty";
       return {
         facts: [],
         profileUpdates: [],
         entities: [],
         questions: [],
         extractionFailure: "fallback_no_parsed_output",
+        extractionFailureClass: fallbackParseFailureClass,
       };
     } catch (err) {
       this.emit({
@@ -1318,6 +1387,7 @@ export class ExtractionEngine {
         entities: [],
         questions: [],
         extractionFailure: "fallback_failed",
+        extractionFailureClass: classifyExtractionThrownError(err),
       };
     } finally {
       try { this.profiler.endSpan("gateway-fallback", extractionTraceId); } catch { /* span may already be closed */ }

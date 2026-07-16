@@ -19,7 +19,7 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
   );
   assert.match(
     source,
-    /skipDedupeCheck:\s*true,\s*clearBufferAfterExtraction:\s*false,\s*skipCharThreshold:\s*true,/m,
+    /skipDedupeCheck:\s*true,\s*forceExtractionAttempt:\s*true,\s*clearBufferAfterExtraction:\s*false,\s*skipCharThreshold:\s*true,/m,
     "replay ingestion should bypass dedupe/minimum thresholds and preserve the live smart buffer",
   );
   assert.match(

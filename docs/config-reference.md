@@ -72,6 +72,8 @@ Access-layer safety notes:
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
+> **Overflow policy (provider outage).** While the extraction circuit breaker is open during a prolonged provider outage, buffered turns are retained (not dropped) so no extractable turn is lost — they are re-extracted once the provider recovers. Buffered *session entries* are bounded to `MAX_BUFFER_ENTRY_COUNT` (200); once exceeded, the oldest empty session entries are pruned oldest-first and the pruning is logged loudly (a `warn`) so overflow degrades observably rather than silently. See the `extractionBreaker*` / `extractionRetry*` settings under **Local LLM**.
+
 ## Extraction Guardrails
 
 | Setting | Default | Description |
@@ -608,6 +610,14 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
 | `localLlm400CooldownMs` | `120000` | Cooldown window before retrying a tripped local endpoint |
+| `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, restores pre-change behavior exactly: the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). |
+| `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | Per-fingerprint exponential backoff schedule (1m, 5m, 30m, 2h), indexed by attempt. After a failed extraction, that fingerprint is not re-attempted until its backoff elapses. |
+| `extractionRetryMaxBackoffMs` | `21600000` | Upper bound (6h) on any single backoff interval, and the long-park interval once `parse_empty` exhausts its attempt cap. |
+| `extractionRetryJitterRatio` | `0.2` | Multiplicative jitter (±ratio) applied to each backoff interval to avoid synchronized retries. |
+| `extractionParseEmptyMaxAttempts` | `3` | Attempts for a `parse_empty` fingerprint (provider responded but produced no parseable output) before it is long-parked for `extractionRetryMaxBackoffMs`. Still never marked processed. |
+| `extractionBreakerFailureThreshold` | `5` | Consecutive provider failures before the process-level circuit breaker opens and short-circuits extraction for all fingerprints. |
+| `extractionBreakerCooldownMs` | `300000` | Breaker open cooldown (5m) for transient provider failures (429/5xx/network). A half-open probe after cooldown closes the breaker on one success. |
+| `extractionBreakerAuthCooldownMs` | `1800000` | Breaker open cooldown (30m) for auth/config failures (401/403 or "no models configured"), which open the breaker immediately instead of hot-looping. |
 | `localLlmMaxContext` | `(unset)` | Override context window size |
 | `localLlmFastEnabled` | `false` | Enable a separate fast local tier for short planner/rerank/helper calls |
 | `localLlmFastModel` | `""` | Optional model id for the fast local tier |
@@ -1404,6 +1414,14 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `localLlmRetryBackoffMs` | `400` | `400` |
 | `localLlm400TripThreshold` | `5` | `5` |
 | `localLlm400CooldownMs` | `120000` | `120000` |
+| `extractionRetryEnabled` | `true` | `true` (set `false` to fully restore pre-change extraction behavior — the config-only rollback) |
+| `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | `[60000, 300000, 1800000, 7200000]` |
+| `extractionRetryMaxBackoffMs` | `21600000` | `21600000` |
+| `extractionRetryJitterRatio` | `0.2` | `0.2` |
+| `extractionParseEmptyMaxAttempts` | `3` | `3` |
+| `extractionBreakerFailureThreshold` | `5` | `5` |
+| `extractionBreakerCooldownMs` | `300000` | `300000` |
+| `extractionBreakerAuthCooldownMs` | `1800000` | `1800000` |
 | `localLlmMaxContext` | (unset) | (unset) |
 | `localLlmFastEnabled` | `false` | `false` unless you have a separate fast local tier |
 | `localLlmFastModel` | `""` | `""` |

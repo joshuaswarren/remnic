@@ -52,6 +52,7 @@ export interface SessionContextDeps {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
         result?: ExtractionRunResult,
@@ -347,6 +348,7 @@ export class SessionContextCoordinator {
             bufferKey,
             clearBufferAfterExtraction: true,
             skipDedupeCheck: true,
+            forceExtractionAttempt: true,
             abortSignal: options.abortSignal,
             onTaskSettled: (error) => (error ? reject(error) : resolve()),
           })
