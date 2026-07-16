@@ -419,6 +419,19 @@ export {
   sanitizeLoComoResultReference,
 } from "./stats/locomo-recall-delta.js";
 export {
+  LOCOMO_RETRIEVAL_TRACE_DELTA_SCHEMA_VERSION,
+  diagnoseLoCoMoRetrievalTraceDelta,
+  serializeLoCoMoRetrievalTraceDelta,
+} from "./stats/locomo-retrieval-trace-delta.js";
+export type {
+  LoCoMoCategory,
+  LoCoMoRetrievalMechanism,
+  LoCoMoRetrievalMechanismSummary,
+  LoCoMoRetrievalTaskDelta,
+  LoCoMoRetrievalTraceDeltaReport,
+  LoCoMoStructuralMultisetDelta,
+} from "./stats/locomo-retrieval-trace-delta.js";
+export {
   LOCOMO_RETRIEVAL_TRACE_BUDGET_VERSION,
   LOCOMO_RETRIEVAL_TRACE_SCHEMA_VERSION,
   LOCOMO_RETRIEVAL_TRACE_SELECTION_VERSION,
