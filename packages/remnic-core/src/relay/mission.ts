@@ -787,6 +787,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   if (corruptLines > 0) missingEvidence.add("mission:corrupt-events");
   const substantiveAgentIds = new Set<string>();
   const substantiveSessionIds = new Set<string>();
+  const conflictDisagreementIds = new Set<string>();
   const groundedCorrectionIds = new Set<string>();
   let title: string | null = null;
   let objective: string | null = null;
@@ -909,6 +910,18 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       }
       case "conflict_detected": {
         recordEarliestAppendPosition(conflictAppendPositions, payload.conflictId, appendPosition);
+        const normalizedDecisionStatements = payload.decisionIds
+          .map((decisionId) => decisions.get(decisionId)?.statement)
+          .filter((statement): statement is string => statement !== undefined)
+          .map(normalizeDecisionStatement);
+        if (
+          normalizedDecisionStatements.length !== payload.decisionIds.length ||
+          new Set(normalizedDecisionStatements).size < 2
+        ) {
+          missingEvidence.add(`conflict:${payload.conflictId}:distinct-decision-statements`);
+        } else {
+          conflictDisagreementIds.add(payload.conflictId);
+        }
         const participantHoldings = payload.agentIds.map((agentId) => ({
           agentId,
           decisionIds: uniqueSorted(
@@ -1039,7 +1052,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           }
           if (!correctionCoversConflict(correction, conflict)) {
             missingEvidence.add(`conflict:${payload.conflictId}:decision-link`);
-          } else if (sourceLinked && conflictPredatesProposal) {
+          } else if (sourceLinked && conflictPredatesProposal && conflictDisagreementIds.has(payload.conflictId)) {
             groundedCorrectionIds.add(payload.correctionId);
             conflict.status = "proposed";
             conflict.correctionId = payload.correctionId;
@@ -1075,6 +1088,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
             }
             correctionApprovalAppendPositions.set(payload.correctionId, appendPosition);
             if (correction.status === "proposed") correction.status = "approved";
+            status = "correcting";
           } else {
             missingEvidence.add(`correction:${payload.correctionId}:duplicate-approval`);
           }
@@ -1082,7 +1096,6 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         } else {
           missingEvidence.add(`correction:${payload.correctionId}:proposal`);
         }
-        status = "correcting";
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
       }
@@ -1559,6 +1572,15 @@ function compareTimedIds<T extends { occurredAt: string }, K extends keyof T>(a:
 
 function beliefAppendPositionKey(agentId: string, decisionId: string): string {
   return `${agentId}\0${decisionId}`;
+}
+
+function normalizeDecisionStatement(statement: string): string {
+  return statement
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/, "");
 }
 
 function recordEarliestAppendPosition(positions: Map<string, number>, key: string, position: number): void {

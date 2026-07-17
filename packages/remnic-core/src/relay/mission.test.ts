@@ -421,6 +421,32 @@ test("conflict participants must hold distinct conflicting decisions at detectio
   );
 });
 
+test("conflict decisions must contain genuinely distinct normalized statements", () => {
+  const identicalPolicies = fixtureEvents().map((event) =>
+    event.payload.kind === "belief_observed" && event.payload.decisionId === "decision-refresh-after-expiry"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            statement: "  MINT a new checkout token for every request and retry!!!  ",
+          },
+        }
+      : event
+  );
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: identicalPolicies,
+  });
+
+  assert.equal(snapshot.receipt.complete, false);
+  assert.deepEqual(snapshot.receipt.supersededDecisionIds, []);
+  assert.equal(snapshot.conflicts[0]?.status, "open");
+  assert.ok(
+    snapshot.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:distinct-decision-statements")
+  );
+});
+
 test("a correction must account for every decision in its observed conflict", () => {
   const events = fixtureEvents();
   const belief = events.find((event) => event.payload.kind === "belief_observed");
@@ -682,10 +708,21 @@ test("receipt requires human approval and a passing test after verified propagat
     agentApprovedSnapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:human-approval")
   );
 
+  const forgedHumanEvents = liveFixtureEvents("agent-runner");
+  const forgedApprovalIndex = forgedHumanEvents.findIndex((event) => event.payload.kind === "correction_approved");
+  assert.notEqual(forgedApprovalIndex, -1);
+  const forgedApprovalSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: forgedHumanEvents.slice(0, forgedApprovalIndex + 1),
+  });
+  assert.equal(forgedApprovalSnapshot.status, "awaiting_approval");
+  assert.equal(forgedApprovalSnapshot.corrections[0]?.status, "proposed");
+
   const forgedHumanSnapshot = reduceRelayMission({
     missionId: RELAY_DEMO_MISSION_ID,
     namespace: RELAY_DEMO_NAMESPACE,
-    events: liveFixtureEvents("agent-runner"),
+    events: forgedHumanEvents,
   });
   assert.equal(forgedHumanSnapshot.receipt.complete, false);
   assert.ok(
