@@ -576,10 +576,26 @@ export function buildBuildWeekEvidenceReceipt(
   for (const code of options.limitationCodes) {
     if (!(code in BUILD_WEEK_LIMITATIONS)) throw new Error(`unknown Build Week limitation code ${String(code)}`);
   }
-  const limitations = [...new Set(options.limitationCodes)].sort().map((code) => BUILD_WEEK_LIMITATIONS[code]);
+  const limitationCodes = new Set(options.limitationCodes);
   if (options.publicationScope.kind === "bounded-subset" && !options.limitationCodes.includes("boundedSubset")) {
     throw new Error("bounded-subset receipts must include the boundedSubset limitation");
   }
+  if (!limitationCodes.has("estimatedAccounting")) {
+    throw new Error("Build Week evidence receipts must include the estimatedAccounting limitation");
+  }
+  if (providers.some((provider) => provider.role === "judge") && !limitationCodes.has("modelJudged")) {
+    throw new Error("receipts with a judge provider must include the modelJudged limitation");
+  }
+  if (!Number.isInteger(result.meta.runCount) || result.meta.runCount <= 0) {
+    throw new Error("benchmark runCount must be a positive integer");
+  }
+  if (result.meta.runCount === 1 && !limitationCodes.has("singleRun")) {
+    throw new Error("single-run receipts must include the singleRun limitation");
+  }
+  if (result.meta.runCount !== 1 && limitationCodes.has("singleRun")) {
+    throw new Error("the singleRun limitation is only valid when runCount is 1");
+  }
+  const limitations = [...limitationCodes].sort().map((code) => BUILD_WEEK_LIMITATIONS[code]);
 
   return {
     schemaVersion: BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION,

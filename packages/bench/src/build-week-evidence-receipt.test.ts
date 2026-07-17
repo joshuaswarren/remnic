@@ -415,7 +415,7 @@ test("canonical successful results may omit status and derive LongMem payload ha
     resultJson: sources.resultJson,
     manifestJson: JSON.stringify(manifest),
     datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
-    limitationCodes: ["singleRun"],
+    limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
     freshIsolatedStoreConfirmed: true,
     publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
   });
@@ -429,7 +429,7 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
     buildBuildWeekEvidenceReceipt({
       ...syntheticSources({ result }),
       datasetVersion,
-      limitationCodes: ["singleRun"],
+      limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
       freshIsolatedStoreConfirmed: true,
       publicationScope: { kind: "full", expectedTaskCount: result.results.tasks.length },
     });
@@ -532,7 +532,7 @@ test("bounded receipts require matching limit and limitation; Sol is always reje
     buildBuildWeekEvidenceReceipt({
       ...bounded,
       datasetVersion: "oracle-v1",
-      limitationCodes: ["boundedSubset", "singleRun"],
+      limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
       freshIsolatedStoreConfirmed: true,
       publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
     }),
@@ -542,11 +542,42 @@ test("bounded receipts require matching limit and limitation; Sol is always reje
       buildBuildWeekEvidenceReceipt({
         ...syntheticSources({ limit: 2, usageModel: "gpt-5.6-sol" }),
         datasetVersion: "oracle-v1",
-        limitationCodes: ["boundedSubset"],
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
         freshIsolatedStoreConfirmed: true,
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /forbidden gpt-5\.6-sol/,
+  );
+});
+
+test("receipt limitations are required by the recorded run", () => {
+  const build = (result: BenchmarkResult, limitationCodes: Parameters<typeof buildBuildWeekEvidenceReceipt>[0]["limitationCodes"]) =>
+    buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result, limit: 2 }),
+      datasetVersion: "oracle-v1",
+      limitationCodes,
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    });
+
+  assert.throws(
+    () => build(syntheticResult(), ["boundedSubset", "singleRun", "modelJudged"]),
+    /estimatedAccounting limitation/,
+  );
+  assert.throws(
+    () => build(syntheticResult(), ["boundedSubset", "singleRun", "estimatedAccounting"]),
+    /modelJudged limitation/,
+  );
+  assert.throws(
+    () => build(syntheticResult(), ["boundedSubset", "estimatedAccounting", "modelJudged"]),
+    /singleRun limitation/,
+  );
+
+  const repeated = syntheticResult();
+  repeated.meta.runCount = 2;
+  assert.throws(
+    () => build(repeated, ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"]),
+    /singleRun limitation is only valid when runCount is 1/,
   );
 });
 
@@ -707,7 +738,7 @@ test("receipt rejects a tampered manifest artifact hash", () => {
         ...sources,
         manifestJson: JSON.stringify(manifest),
         datasetVersion: "longmemeval-oracle-v1",
-        limitationCodes: ["boundedSubset", "singleRun"],
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
         freshIsolatedStoreConfirmed: true,
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
@@ -722,7 +753,7 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
       buildBuildWeekEvidenceReceipt({
         ...sources,
         datasetVersion: "/home/private/dataset-v1",
-        limitationCodes: ["boundedSubset"],
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
         freshIsolatedStoreConfirmed: true,
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
@@ -734,7 +765,7 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
       buildBuildWeekEvidenceReceipt({
         ...syntheticSources({ result: unsafe, limit: 2 }),
         datasetVersion: "oracle-v1",
-        limitationCodes: ["boundedSubset"],
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
         freshIsolatedStoreConfirmed: true,
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
@@ -793,7 +824,7 @@ test("receipt writer rejects output paths that alias private source files", asyn
         manifestPath,
         outputPath,
         datasetVersion: "longmemeval-oracle-v1",
-        limitationCodes: ["boundedSubset", "singleRun"],
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
         freshIsolatedStoreConfirmed: true,
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       });
