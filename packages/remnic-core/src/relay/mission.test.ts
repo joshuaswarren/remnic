@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -839,6 +839,27 @@ test("append remains pinned inside the Relay root when the missions pathname is 
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+test("mission files reject hard links before append and read", async () => {
+  await withTempRoot(async (root) => {
+    const store = deterministicStore(root);
+    const outsideFile = path.join(root, "outside-mission.jsonl");
+    const missionFile = path.join(root, "state", "relay", "missions", `${RELAY_DEMO_MISSION_ID}.jsonl`);
+    await writeFile(outsideFile, "outside remains unchanged\n", { mode: 0o600 });
+
+    await assert.rejects(
+      store.append(RELAY_DEMO_MISSION_ID, firstFixtureInput(), {
+        beforeAppend: () => link(outsideFile, missionFile),
+      }),
+      (error: unknown) => error instanceof RelayMissionStoreError && error.code === "unsafe_path"
+    );
+    assert.equal(await readFile(outsideFile, "utf8"), "outside remains unchanged\n");
+    await assert.rejects(
+      store.read(RELAY_DEMO_MISSION_ID),
+      (error: unknown) => error instanceof RelayMissionStoreError && error.code === "unsafe_path"
+    );
   });
 });
 

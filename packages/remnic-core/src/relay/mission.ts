@@ -682,6 +682,9 @@ export class RelayMissionStore {
       if (!info.isFile()) {
         throw new RelayMissionStoreError("unsafe_path", "Relay mission path is not a file");
       }
+      if (info.nlink !== 1) {
+        throw new RelayMissionStoreError("unsafe_path", "Relay mission hard links are rejected");
+      }
       if (info.size > this.maxFileBytes) {
         throw new RelayMissionStoreError(
           "limit_exceeded",
@@ -715,6 +718,9 @@ export class RelayMissionStore {
       const info = await handle.stat();
       if (!info.isFile()) {
         throw new RelayMissionStoreError("unsafe_path", "Relay mission path is not a file");
+      }
+      if (info.nlink !== 1) {
+        throw new RelayMissionStoreError("unsafe_path", "Relay mission hard links are rejected");
       }
       await handle.chmod(0o600);
       await handle.writeFile(line, "utf8");
