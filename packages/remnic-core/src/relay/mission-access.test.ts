@@ -67,6 +67,13 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
     const base = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}`;
     try {
       const fixture = createRelayMissionFixture();
+      const blankNamespace = await fetch(`${base}/events`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ namespace: "", event: fixture[0] }),
+      });
+      assert.equal(blankNamespace.status, 400);
+
       const flatBody = await fetch(`${base}/events`, {
         method: "POST",
         headers: authHeaders(),
@@ -149,6 +156,11 @@ test("HTTP Relay surface distinguishes empty, invalid, unauthorized, and backend
         headers: authHeaders("read-token"),
       });
       assert.equal(badLimit.status, 400);
+
+      const blankNamespace = await fetch(`${origin}/engram/v1/relay/missions/empty-mission?namespace=`, {
+        headers: authHeaders("read-token"),
+      });
+      assert.equal(blankNamespace.status, 400);
 
       const badSince = await fetch(`${emptyUrl}&since=${encodeURIComponent("2026-01-01T00:00:00+99:99")}`, {
         headers: authHeaders("read-token"),

@@ -350,6 +350,12 @@ function decodeRelayMissionIdSegment(raw: string): string {
   }
 }
 
+function rejectBlankRelayNamespace(value: string | null | undefined): void {
+  if (value !== undefined && value !== null && value.trim().length === 0) {
+    throw new EngramAccessInputError("Relay namespace must not be blank when provided");
+  }
+}
+
 function codingContextFromProjectTag(projectTag: string): {
   projectId: string;
   branch: string | null;
@@ -1722,6 +1728,9 @@ export class EngramAccessHttpServer {
       ) {
         throw new EngramAccessInputError("namespace must be a string when provided");
       }
+      rejectBlankRelayNamespace(
+        typeof body.namespace === "string" ? body.namespace : undefined,
+      );
       const namespace = this.resolveNamespace(
         req,
         typeof body.namespace === "string" ? body.namespace : undefined,
@@ -1762,6 +1771,7 @@ export class EngramAccessHttpServer {
     const relayMissionMatch = /^\/engram\/v1\/relay\/missions\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && relayMissionMatch) {
       const missionId = decodeRelayMissionIdSegment(relayMissionMatch[1] ?? "");
+      rejectBlankRelayNamespace(parsed.searchParams.get("namespace"));
       const namespace = this.resolveNamespace(
         req,
         parsed.searchParams.get("namespace") ?? undefined,
