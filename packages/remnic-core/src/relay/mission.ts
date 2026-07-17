@@ -663,12 +663,11 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const corruptLines = input.corruptLines ?? 0;
   const sinceMs = options.since ? Date.parse(options.since) : undefined;
   const untilMs = options.until ? Date.parse(options.until) : undefined;
-  const filtered = input.events
-    .filter((event) => {
-      const occurredAt = Date.parse(event.occurredAt);
-      return (sinceMs === undefined || occurredAt >= sinceMs) && (untilMs === undefined || occurredAt < untilMs);
-    })
-    .sort(compareRelayEvents);
+  const orderedEvents = [...input.events].sort(compareRelayEvents);
+  const filteredEvents = orderedEvents.filter((event) => {
+    const occurredAt = Date.parse(event.occurredAt);
+    return (sinceMs === undefined || occurredAt >= sinceMs) && (untilMs === undefined || occurredAt < untilMs);
+  });
 
   const agents = new Map<string, RelayAgentSnapshot>();
   const decisions = new Map<string, RelayDecisionSnapshot>();
@@ -706,7 +705,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     return created;
   };
 
-  for (const event of filtered) {
+  for (const event of orderedEvents) {
     const payload = event.payload;
     switch (payload.kind) {
       case "mission_started":
@@ -1010,7 +1009,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     missingEvidence.add("outcome:cold-start-propagation");
   }
 
-  const eventWindow = filtered.slice(Math.max(0, filtered.length - options.limit));
+  const eventWindow = filteredEvents.slice(Math.max(0, filteredEvents.length - options.limit));
   // `found` describes whether the mission has any valid persisted evidence,
   // not whether the caller's optional time window happened to select an
   // event. A known mission with an empty [since, until) window is distinct
@@ -1059,10 +1058,10 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       passingOutcomeVerified,
     },
     bounds: {
-      totalEvents: filtered.length,
+      totalEvents: filteredEvents.length,
       returnedEvents: eventWindow.length,
       corruptLines,
-      truncated: filtered.length > eventWindow.length,
+      truncated: filteredEvents.length > eventWindow.length,
       since: options.since ?? null,
       until: options.until ?? null,
     },

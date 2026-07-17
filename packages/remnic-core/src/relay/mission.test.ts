@@ -238,6 +238,22 @@ test("reducer sorts offset timestamps by instant before applying state transitio
   );
 });
 
+test("time windows filter the event feed without rewriting authoritative receipt state", () => {
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: fixtureEvents(),
+    options: { since: "2026-07-17T19:00:00.000Z", limit: 1 },
+  });
+
+  assert.equal(snapshot.found, true);
+  assert.equal(snapshot.status, "completed");
+  assert.equal(snapshot.receipt.complete, true);
+  assert.equal(snapshot.bounds.totalEvents, 0);
+  assert.equal(snapshot.bounds.returnedEvents, 0);
+  assert.deepEqual(snapshot.events, []);
+});
+
 test("receipt cannot apply or propagate a correction without prior approval", () => {
   const events = fixtureEvents().filter((event) => event.payload.kind !== "correction_approved");
   const snapshot = reduceRelayMission({
