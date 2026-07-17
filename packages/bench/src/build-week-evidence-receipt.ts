@@ -152,10 +152,16 @@ const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 =
   "1c23b0b80d262c80454b522b5d9526b7d823177d6cb599a4f7acb02a59c80660";
 const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID = "42a3ea8f-b416-477e-b224-2c4ced72e675";
 const LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA = "810f36ae";
+const LEGACY_BUILD_WEEK_MEMCORRECT_MANIFEST_SHA256 =
+  "75054abeb654b7708dd617b6e631491661a54b06eb73a8dc0b5a501d9314031e";
+const LEGACY_BUILD_WEEK_MEMCORRECT_RUN_ID = "memcorrect-full-frontier-20260717T074107Z";
 const LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_SHA256 =
   "00150a8f5c52bf84576a669b22d2a5cf92df0b2295a3ce1a41b5a79c710deaf5";
 const LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_ID = "0bfe5221-7ac7-4a5f-93e8-41bd06e92b38";
 const LEGACY_BUILD_WEEK_LONGMEMEVAL_GIT_SHA = "810f36ae";
+const LEGACY_BUILD_WEEK_LONGMEMEVAL_MANIFEST_SHA256 =
+  "c1e125a951326e371a1eae126abe8926b4fc86269a9aef394e681e557ed874e1";
+const LEGACY_BUILD_WEEK_LONGMEMEVAL_RUN_ID = "longmemeval-full-frontier-20260716T220749Z";
 const MEMCORRECT_SCOPED_TASK_IDS = new Set(
   Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT / 4 }, (_, index) =>
     `memcorrect-${MEMCORRECT_FULL_SEED}-${(index * 4 + 2).toString(16)}`),
@@ -176,15 +182,26 @@ const SINGLE_FILE_PAYLOAD_FALLBACKS: Readonly<Record<string, string>> = Object.f
   longmemeval: "longmemeval_oracle.json",
 });
 
-function isPinnedLegacyBuildWeekResult(result: BenchmarkResult, resultSha256: string): boolean {
+/** @internal Exact bridge for immutable results created before execution provenance was persisted. */
+export function matchesPinnedLegacyBuildWeekArtifact(args: {
+  resultSha256: string;
+  resultId: string;
+  gitSha: string;
+  manifestSha256: string;
+  runId: string;
+}): boolean {
   return (
-    resultSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 &&
-    result.meta.id === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID &&
-    result.meta.gitSha === LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA
+    args.resultSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 &&
+    args.resultId === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID &&
+    args.gitSha === LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA &&
+    args.manifestSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_MANIFEST_SHA256 &&
+    args.runId === LEGACY_BUILD_WEEK_MEMCORRECT_RUN_ID
   ) || (
-    resultSha256 === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_SHA256 &&
-    result.meta.id === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_ID &&
-    result.meta.gitSha === LEGACY_BUILD_WEEK_LONGMEMEVAL_GIT_SHA
+    args.resultSha256 === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_SHA256 &&
+    args.resultId === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_ID &&
+    args.gitSha === LEGACY_BUILD_WEEK_LONGMEMEVAL_GIT_SHA &&
+    args.manifestSha256 === LEGACY_BUILD_WEEK_LONGMEMEVAL_MANIFEST_SHA256 &&
+    args.runId === LEGACY_BUILD_WEEK_LONGMEMEVAL_RUN_ID
   );
 }
 
@@ -265,6 +282,7 @@ function requireExactMemCorrectProvenance(
   result: BenchmarkResult,
   manifest: BenchmarkReproManifest,
   resultSha256: string,
+  manifestSha256: string,
   datasetVersion: string,
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
 ): {
@@ -309,7 +327,13 @@ function requireExactMemCorrectProvenance(
       throw new Error(`MemCorrect generator option ${key} does not match the pinned full corpus`);
     }
   }
-  const isPinnedLegacyResult = isPinnedLegacyBuildWeekResult(result, resultSha256);
+  const isPinnedLegacyResult = matchesPinnedLegacyBuildWeekArtifact({
+    resultSha256,
+    resultId: result.meta.id,
+    gitSha: result.meta.gitSha,
+    manifestSha256,
+    runId: manifest.run.id,
+  });
   if (
     benchmarkOptions["nowIso"] !== MEMCORRECT_GENERATOR_OPTIONS.nowIso &&
     !(benchmarkOptions["nowIso"] === undefined && isPinnedLegacyResult)
@@ -752,7 +776,13 @@ export function buildBuildWeekEvidenceReceipt(
   requireCompatibleGitIdentity(resultEntry.gitSha, result.meta.gitSha, "manifest result and benchmark result Git identity");
   requireCompatibleGitIdentity(manifest.git.commit, result.meta.gitSha, "manifest commit and benchmark result Git identity");
   requireCompatibleGitIdentity(manifest.git.shortCommit, result.meta.gitSha, "manifest short commit and benchmark result Git identity");
-  const isPinnedLegacyResult = isPinnedLegacyBuildWeekResult(result, resultSha256);
+  const isPinnedLegacyResult = matchesPinnedLegacyBuildWeekArtifact({
+    resultSha256,
+    resultId: result.meta.id,
+    gitSha: result.meta.gitSha,
+    manifestSha256,
+    runId: manifest.run.id,
+  });
   if (
     result.meta.runId !== manifest.run.id &&
     !(result.meta.runId === undefined && isPinnedLegacyResult)
@@ -767,7 +797,14 @@ export function buildBuildWeekEvidenceReceipt(
   }
 
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
-    ? requireExactMemCorrectProvenance(result, manifest, resultSha256, options.datasetVersion, options.publicationScope)
+    ? requireExactMemCorrectProvenance(
+        result,
+        manifest,
+        resultSha256,
+        manifestSha256,
+        options.datasetVersion,
+        options.publicationScope,
+      )
     : (() => {
         const fileBackedReceipt = requireFileBackedDatasetProvenance(result, manifest);
         requirePinnedFullFileBackedCorpus(

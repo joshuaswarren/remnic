@@ -14,6 +14,7 @@ import {
   BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
   BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
   buildBuildWeekEvidenceReceipt,
+  matchesPinnedLegacyBuildWeekArtifact,
   serializeBuildWeekEvidenceReceipt,
   writeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
@@ -227,6 +228,19 @@ test("pinned Build Week MemCorrect identity matches the deterministic full corpu
       (_, index) => `memcorrect-${0xc077e7}-${index.toString(16)}`,
     ),
   );
+});
+
+test("legacy execution-provenance bridge pins the original manifest and run", () => {
+  const exact = {
+    resultSha256: "1c23b0b80d262c80454b522b5d9526b7d823177d6cb599a4f7acb02a59c80660",
+    resultId: "42a3ea8f-b416-477e-b224-2c4ced72e675",
+    gitSha: "810f36ae",
+    manifestSha256: "75054abeb654b7708dd617b6e631491661a54b06eb73a8dc0b5a501d9314031e",
+    runId: "memcorrect-full-frontier-20260717T074107Z",
+  };
+  assert.equal(matchesPinnedLegacyBuildWeekArtifact(exact), true);
+  assert.equal(matchesPinnedLegacyBuildWeekArtifact({ ...exact, manifestSha256: "f".repeat(64) }), false);
+  assert.equal(matchesPinnedLegacyBuildWeekArtifact({ ...exact, runId: "borrowed-run" }), false);
 });
 
 test("pinned LongMemEval task identity hash matches its public ID fixture", () => {
