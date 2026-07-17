@@ -719,6 +719,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const missingEvidence = new Set<string>();
   const substantiveAgentIds = new Set<string>();
   const substantiveSessionIds = new Set<string>();
+  const groundedCorrectionIds = new Set<string>();
   let title: string | null = null;
   let objective: string | null = null;
   let runMode: "live" | "replay" | "fixture" | null = null;
@@ -895,10 +896,23 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           });
         }
         const conflict = conflicts.get(payload.conflictId);
+        const correctionSourceIds = sourceEvidenceIds(payload.evidence);
+        if (correctionSourceIds.size === 0) {
+          missingEvidence.add(`correction:${payload.correctionId}:source`);
+        }
         if (conflict) {
+          const conflictSourceIds = sourceEvidenceIds(conflict.evidence);
+          if (conflictSourceIds.size === 0) {
+            missingEvidence.add(`conflict:${payload.conflictId}:source`);
+          }
+          const sourceLinked = [...correctionSourceIds].some((sourceId) => conflictSourceIds.has(sourceId));
+          if (!sourceLinked) {
+            missingEvidence.add(`correction:${payload.correctionId}:source-link`);
+          }
           if (!correctionCoversConflict(correction, conflict)) {
             missingEvidence.add(`conflict:${payload.conflictId}:decision-link`);
-          } else {
+          } else if (sourceLinked) {
+            groundedCorrectionIds.add(payload.correctionId);
             conflict.status = "proposed";
             conflict.correctionId = payload.correctionId;
           }
@@ -944,6 +958,11 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         const conflict = conflicts.get(correction.conflictId);
         if (!conflict || !correctionCoversConflict(correction, conflict)) {
           missingEvidence.add(`conflict:${correction.conflictId}:decision-link`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (!groundedCorrectionIds.has(payload.correctionId)) {
+          missingEvidence.add(`correction:${payload.correctionId}:source-link`);
           collectMissingEvidence(missingEvidence, event, payload.evidence);
           break;
         }
@@ -1100,6 +1119,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   }
 
   for (const conflict of conflicts.values()) {
+    if (sourceEvidenceIds(conflict.evidence).size === 0) {
+      missingEvidence.add(`conflict:${conflict.conflictId}:source`);
+    }
     for (const decisionId of conflict.decisionIds) {
       if (!decisions.has(decisionId)) missingEvidence.add(`decision:${decisionId}:conflict-target`);
     }
@@ -1108,6 +1130,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     }
   }
   for (const correction of corrections.values()) {
+    if (sourceEvidenceIds(correction.evidence).size === 0) {
+      missingEvidence.add(`correction:${correction.correctionId}:source`);
+    }
     if (correction.approvedAt === undefined || correction.approvedBy === undefined) {
       missingEvidence.add(`correction:${correction.correctionId}:approval`);
     } else if (correction.approvedBy.kind !== "human") {
@@ -1342,6 +1367,10 @@ function correctionCoversConflict(
     expectedSuperseded.length === declaredSuperseded.length &&
     expectedSuperseded.every((decisionId, index) => decisionId === declaredSuperseded[index])
   );
+}
+
+function sourceEvidenceIds(evidence: readonly RelayEvidenceRef[]): Set<string> {
+  return new Set(evidence.filter((item) => item.kind === "source").map((item) => item.id));
 }
 
 function positiveIntegerOption(value: number | undefined, name: string, fallback: number): number {

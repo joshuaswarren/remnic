@@ -352,6 +352,53 @@ test("a correction must account for every decision in its observed conflict", ()
   assert.ok(snapshot.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:decision-link"));
 });
 
+test("a recovered correction must share source evidence with its observed conflict", () => {
+  const withoutSources = fixtureEvents().map((event) =>
+    RelayMissionEventSchema.parse({
+      ...event,
+      payload: {
+        ...event.payload,
+        evidence: event.payload.evidence.map((item) =>
+          item.kind === "source" ? { ...item, kind: "test" as const } : item
+        ),
+      },
+    })
+  );
+  const ungrounded = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: withoutSources,
+  });
+
+  assert.equal(ungrounded.receipt.complete, false);
+  assert.deepEqual(ungrounded.receipt.supersededDecisionIds, []);
+  assert.equal(ungrounded.conflicts[0]?.status, "open");
+  assert.ok(ungrounded.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:source"));
+  assert.ok(ungrounded.receipt.missingEvidence.includes("correction:correction-token-refresh:source"));
+  assert.ok(ungrounded.receipt.missingEvidence.includes("correction:correction-token-refresh:source-link"));
+
+  const mismatchedSource = fixtureEvents().map((event) =>
+    event.payload.kind === "correction_proposed"
+      ? RelayMissionEventSchema.parse({
+          ...event,
+          payload: {
+            ...event.payload,
+            evidence: event.payload.evidence.map((item) =>
+              item.kind === "source" ? { ...item, id: "source-unrelated-contract" } : item
+            ),
+          },
+        })
+      : event
+  );
+  const unlinked = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: mismatchedSource,
+  });
+  assert.equal(unlinked.receipt.complete, false);
+  assert.ok(unlinked.receipt.missingEvidence.includes("correction:correction-token-refresh:source-link"));
+});
+
 test("events after completion cannot rewrite the terminal mission snapshot", () => {
   const events = fixtureEvents();
   const proposal = events.find((event) => event.payload.kind === "correction_proposed");

@@ -1720,16 +1720,32 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new Error("access-boundary: operation not registered: relay_mission_append");
       }
-      const output = (await op.run(
-        { missionId, namespace, event },
-        {
-          service: this.service,
-          authenticatedPrincipal: this.resolveRequestPrincipal(req),
-          hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
-        },
-      )) as { result: { appended: boolean; replayed: boolean; event: unknown } };
-      if (output.result.appended) this.recordWriteRateLimitHit();
-      this.respondJson(res, output.result.appended ? 201 : 200, output.result);
+      let releaseWriteQuota: (() => void) | undefined;
+      try {
+        const output = (await op.run(
+          { missionId, namespace, event },
+          {
+            service: this.service,
+            authenticatedPrincipal: this.resolveRequestPrincipal(req),
+            hooks: {
+              enforceWriteQuota: () => {
+                releaseWriteQuota ??= this.reserveWriteRateLimitSlot();
+              },
+            },
+          },
+        )) as { result: { appended: boolean; replayed: boolean; event: unknown } };
+        if (output.result.appended) {
+          // The reservation is now the committed quota hit. Do not record a
+          // second timestamp after the append returns.
+          releaseWriteQuota = undefined;
+        }
+        this.respondJson(res, output.result.appended ? 201 : 200, output.result);
+      } finally {
+        // Replays never invoke the hook. If a future store path invokes it but
+        // does not append, or persistence throws after reservation, return the
+        // slot so a failed write cannot exhaust the rolling window.
+        releaseWriteQuota?.();
+      }
       return;
     }
 
@@ -3815,6 +3831,19 @@ export class EngramAccessHttpServer {
 
   private recordWriteRateLimitHit(): void {
     this.writeRequestTimestamps.push(Date.now());
+  }
+
+  private reserveWriteRateLimitSlot(): () => void {
+    this.ensureWriteRateLimitAvailable();
+    const reservedAt = Date.now();
+    this.writeRequestTimestamps.push(reservedAt);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      const index = this.writeRequestTimestamps.indexOf(reservedAt);
+      if (index >= 0) this.writeRequestTimestamps.splice(index, 1);
+    };
   }
 
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {

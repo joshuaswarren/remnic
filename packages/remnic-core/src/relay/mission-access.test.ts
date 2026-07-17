@@ -7,7 +7,7 @@ import test from "node:test";
 import { EngramAccessHttpServer } from "../access-http.js";
 import { EngramAccessInputError, type EngramAccessService } from "../access-service.js";
 import type { StorageManager } from "../storage.js";
-import { createRelayMissionFixture, RELAY_DEMO_MISSION_ID, RELAY_DEMO_NAMESPACE } from "./mission-fixture.js";
+import { RELAY_DEMO_MISSION_ID, RELAY_DEMO_NAMESPACE, createRelayMissionFixture } from "./mission-fixture.js";
 import type { RelayMissionSnapshot } from "./mission.js";
 
 async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
@@ -222,6 +222,53 @@ test("HTTP Relay write quota is charged only for a real append, never an idempot
       });
       assert.equal(secondEvent.status, 429);
       assert.equal(((await secondEvent.json()) as { code: string }).code, "write_rate_limited");
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+test("HTTP Relay reserves global write quota across concurrent mission appends", async () => {
+  await withTempRoot(async (root) => {
+    const server = new EngramAccessHttpServer({
+      service: fakeService(root, []),
+      port: 0,
+      authToken: "relay-token",
+      adminConsoleEnabled: false,
+      writeRateLimitMaxRequests: 1,
+      writeRateLimitWindowMs: 60_000,
+    });
+    const status = await server.start();
+    const missionIds = ["concurrent-mission-a", "concurrent-mission-b"];
+    const startEvent = createRelayMissionFixture()[0];
+    assert.ok(startEvent);
+    const urls = missionIds.map(
+      (missionId) => `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${missionId}/events`
+    );
+    try {
+      const responses = await Promise.all(
+        urls.map((url) =>
+          fetch(url, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(startEvent),
+          })
+        )
+      );
+      assert.deepEqual(
+        responses.map((response) => response.status).sort((a, b) => a - b),
+        [201, 429]
+      );
+
+      const winnerIndex = responses.findIndex((response) => response.status === 201);
+      assert.notEqual(winnerIndex, -1);
+      const replay = await fetch(urls[winnerIndex] ?? "", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(startEvent),
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
     } finally {
       await server.stop();
     }
