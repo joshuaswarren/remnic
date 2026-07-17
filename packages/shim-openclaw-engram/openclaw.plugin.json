@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.11",
+  "version": "9.7.12",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3261,6 +3261,29 @@
             "writePrincipals"
           ]
         }
+      },
+      "namespacesCatalogCompactBytes": {
+        "type": "number",
+        "default": 16777216,
+        "minimum": 0,
+        "description": "Size (bytes) at which a namespace-catalog touch auto-compacts <memoryDir>/state/namespaces.jsonl (issue #1903). The append-only log is folded (last-record-wins; every namespace row preserved) and atomically rewritten once it exceeds this size. Default 16777216 (16 MB); 0 disables auto-compaction."
+      },
+      "namespacesCatalogReadTouchCoalesceMs": {
+        "type": "number",
+        "default": 60000,
+        "minimum": 0,
+        "description": "Coalescing window (ms) for repeated pure-timestamp read touches on an already-known namespace (issue #1903). Buffered per (namespace, kind) and flushed once per window; observable touches (first sight, provenance/field change) always flush immediately. Default 60000; 0 disables read coalescing."
+      },
+      "namespacesCatalogTouchStateWrites": {
+        "type": "boolean",
+        "default": false,
+        "description": "Whether pure state-file writes (state/buffer.json, ledgers, indexes) touch the namespace catalog (issue #1903). State files are not namespace memory data, so by default their writes do not record a catalog touch. Set true to restore the pre-#1903 behavior. Default false."
+      },
+      "namespacesCatalogWriteTouchCoalesceMs": {
+        "type": "number",
+        "default": 1000,
+        "minimum": 0,
+        "description": "Coalescing window (ms) for repeated pure-timestamp write touches on an already-known namespace (issue #1903). Mirrors namespacesCatalogReadTouchCoalesceMs for markWrite/lastWriteAt. Default 1000; 0 disables write coalescing."
       },
       "namespacesEnabled": {
         "type": "boolean",
