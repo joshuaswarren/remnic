@@ -1786,6 +1786,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new Error("access-boundary: operation not registered: relay_mission_read");
       }
+      const authenticatedPrincipal = this.resolveRequestPrincipal(req)?.trim() || undefined;
       const output = (await op.run(
         {
           missionId,
@@ -1796,10 +1797,21 @@ export class EngramAccessHttpServer {
         },
         {
           service: this.service,
-          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          authenticatedPrincipal,
         },
       )) as { result: unknown };
       res.setHeader("cache-control", "no-store");
+      if (authenticatedPrincipal !== undefined) {
+        try {
+          // Percent-encode so every configured principal remains a valid HTTP
+          // header value. Mission Control decodes this before constructing the
+          // server-validated human approval envelope.
+          res.setHeader("x-remnic-authenticated-principal", encodeURIComponent(authenticatedPrincipal));
+        } catch {
+          // An invalid Unicode principal cannot be represented as a Relay actor
+          // identifier. Omit it so Mission Control fails closed at the gate.
+        }
+      }
       this.respondJson(res, 200, output.result);
       return;
     }

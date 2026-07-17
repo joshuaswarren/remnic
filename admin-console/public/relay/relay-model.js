@@ -271,6 +271,10 @@
     return "Unknown capture";
   }
 
+  function isValidActorId(value) {
+    return typeof value === "string" && IDENTIFIER_PATTERN.test(value);
+  }
+
   function createApprovalEvent(input) {
     const correctionId = String(input?.correctionId || "").trim();
     const operatorId = String(input?.operatorId || "").trim();
@@ -307,13 +311,14 @@
     };
   }
 
-  function isReusableApprovalEvent(candidate, correctionId) {
+  function isReusableApprovalEvent(candidate, correctionId, operatorId) {
     if (!isObject(candidate) || !isObject(candidate.payload)) return false;
     const payload = candidate.payload;
     return payload.kind === "correction_approved"
       && payload.correctionId === correctionId
       && payload.approvedBy?.kind === "human"
       && IDENTIFIER_PATTERN.test(payload.approvedBy.id || "")
+      && (operatorId === undefined || payload.approvedBy.id === operatorId)
       && typeof payload.approvedBy.label === "string"
       && IDENTIFIER_PATTERN.test(candidate.idempotencyKey || "")
       && Number.isFinite(Date.parse(candidate.occurredAt))
@@ -330,6 +335,7 @@
     captureLabel,
     collectEvidence,
     createApprovalEvent,
+    isValidActorId,
     isReusableApprovalEvent,
     lineage,
     phase,

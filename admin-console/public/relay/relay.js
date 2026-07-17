@@ -49,6 +49,7 @@
     missionId: "checkout-token-recovery",
     namespace: "relay-build-week",
     token: "",
+    authenticatedPrincipal: "",
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -172,10 +173,14 @@
     const requiresApproval = Boolean(view.correction && !view.correction.approvedAt);
     dom.correctionGate.hidden = !requiresApproval;
     if (requiresApproval) {
-      dom.gateCopy.textContent = state.mode === "live"
-        ? "This authenticated write changes shared mission state. The principal ID must match the Relay server identity."
-        : "Playback pauses here. Cross the explicit human gate to continue the integrity-checked replay.";
+      const livePrincipalReady = Model.isValidActorId(state.authenticatedPrincipal);
+      dom.gateCopy.textContent = state.mode !== "live"
+        ? "Playback pauses here. Cross the explicit human gate to continue the integrity-checked replay."
+        : livePrincipalReady
+          ? `This write changes shared mission state as server-authenticated principal ${state.authenticatedPrincipal}.`
+          : "Live approval is disabled: this Relay server did not resolve a valid authenticated principal.";
       dom.approveButton.textContent = state.mode === "live" ? "Approve correction" : "Review correction";
+      dom.approveButton.disabled = state.mode === "live" && !livePrincipalReady;
     }
   }
 
@@ -367,8 +372,17 @@
     else startPlayback();
   }
 
-  function approvalDraftKey(correctionId) {
-    return `remnic-relay-approval:${state.missionId}:${state.namespace}:${correctionId}`;
+  function approvalDraftKey(correctionId, operatorId) {
+    return `remnic-relay-approval:${state.missionId}:${state.namespace}:${correctionId}:${operatorId}`;
+  }
+
+  function approvalCanSubmit() {
+    const confirmed = dom.approvalConfirmInput.value.trim().toUpperCase() === "APPROVE";
+    return confirmed && (state.mode !== "live" || Model.isValidActorId(state.authenticatedPrincipal));
+  }
+
+  function syncApprovalSubmitState() {
+    dom.confirmApprovalButton.disabled = !approvalCanSubmit();
   }
 
   function openApprovalDialog() {
@@ -378,20 +392,25 @@
       return;
     }
     const live = state.mode === "live";
+    if (live && !Model.isValidActorId(state.authenticatedPrincipal)) {
+      showToast("Live approval requires a valid principal resolved by the Relay server.");
+      return;
+    }
     dom.approvalModeLabel.textContent = live ? "AUTHENTICATED LIVE CORRECTION" : "DETERMINISTIC REPLAY GATE";
     dom.liveIdentityFields.hidden = !live;
+    dom.operatorIdInput.value = live ? state.authenticatedPrincipal : "";
     dom.approvalFootnote.textContent = live
-      ? "The approval reuses one idempotency key across retries and is attributed to the authenticated principal."
+      ? "The principal is read-only and server-resolved. One exact approval event and idempotency key are reused across retries."
       : "Replay mode advances an integrity-checked fixture; it does not claim a live write.";
     dom.approvalConfirmInput.value = "";
-    dom.confirmApprovalButton.disabled = true;
+    syncApprovalSubmitState();
     dom.approvalError.textContent = "";
     dom.approvalDialog.showModal();
     requestAnimationFrame(() => dom.approvalConfirmInput.focus());
   }
 
   async function submitApproval() {
-    if (dom.approvalConfirmInput.value.trim().toUpperCase() !== "APPROVE") return;
+    if (!approvalCanSubmit()) return;
     if (state.mode === "replay") {
       state.replayApprovalGranted = true;
       const shouldResume = state.resumeAfterApproval;
@@ -408,9 +427,13 @@
       dom.approvalError.textContent = "No pending correction is available.";
       return;
     }
-    const operatorId = dom.operatorIdInput.value.trim();
+    const operatorId = state.authenticatedPrincipal;
+    if (!Model.isValidActorId(operatorId)) {
+      dom.approvalError.textContent = "The Relay server did not provide a valid authenticated principal.";
+      return;
+    }
     const operatorLabel = dom.operatorLabelInput.value.trim();
-    const key = approvalDraftKey(correction.correctionId);
+    const key = approvalDraftKey(correction.correctionId, operatorId);
     let event;
     let reusedPrior = false;
     try {
@@ -418,7 +441,7 @@
       if (prior) {
         try {
           const candidate = JSON.parse(prior);
-          if (Model.isReusableApprovalEvent(candidate, correction.correctionId)) {
+          if (Model.isReusableApprovalEvent(candidate, correction.correctionId, operatorId)) {
             event = candidate;
             reusedPrior = true;
           } else {
@@ -465,7 +488,7 @@
       const approved = state.snapshot?.corrections.some((item) => item.correctionId === correction.correctionId && item.approvedAt);
       if (!approved) {
         safeSessionRemove(key);
-        throw new Error("The event was recorded but not accepted as human approval. Confirm the principal ID matches the Relay server identity.");
+        throw new Error("The event was recorded but the refreshed receipt did not accept it as human approval.");
       }
       safeSessionRemove(key);
       dom.approvalDialog.close();
@@ -474,7 +497,7 @@
       dom.approvalError.textContent = error instanceof Error ? error.message : "Approval failed.";
     } finally {
       dom.confirmApprovalButton.textContent = "Approve correction →";
-      dom.confirmApprovalButton.disabled = dom.approvalConfirmInput.value.trim().toUpperCase() !== "APPROVE";
+      syncApprovalSubmitState();
     }
   }
 
@@ -504,18 +527,33 @@
     const response = await fetch(missionApiUrl(), { headers: liveHeaders(), cache: "no-store" });
     const body = await response.text();
     if (!response.ok) throw new Error(apiError(response.status, body));
-    return Model.validateSnapshot(JSON.parse(body));
+    const encodedPrincipal = response.headers.get("x-remnic-authenticated-principal");
+    let authenticatedPrincipal = "";
+    if (encodedPrincipal) {
+      try {
+        authenticatedPrincipal = decodeURIComponent(encodedPrincipal);
+      } catch {
+        throw new Error("Relay API returned invalid authenticated-principal metadata.");
+      }
+    }
+    return {
+      snapshot: Model.validateSnapshot(JSON.parse(body)),
+      authenticatedPrincipal,
+    };
   }
 
   async function refreshLive(reason = "manual") {
     try {
-      const snapshot = await fetchLiveSnapshot();
+      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot();
       state.mode = "live";
       state.snapshot = snapshot;
+      state.authenticatedPrincipal = authenticatedPrincipal;
       render();
       if (reason === "manual") showToast("Fresh live mission snapshot loaded.");
       return true;
     } catch (error) {
+      state.authenticatedPrincipal = "";
+      if (state.mode === "live" && state.snapshot) render();
       setBanner(`OFFLINE · ${error instanceof Error ? error.message : "Live Relay API is unavailable."}`, "error");
       if (reason === "connection") dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
       return false;
@@ -598,11 +636,16 @@
     dom.freshInspectionResult.textContent = "Reading live mission now…";
     try {
       const before = state.snapshot.events.length;
-      state.snapshot = await fetchLiveSnapshot();
+      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot();
+      state.snapshot = snapshot;
+      state.authenticatedPrincipal = authenticatedPrincipal;
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `FRESH INSPECTION · ${new Date().toISOString()} · ${state.snapshot.events.length} events (${state.snapshot.events.length - before >= 0 ? "+" : ""}${state.snapshot.events.length - before}). Not receipt evidence.`;
     } catch (error) {
+      state.authenticatedPrincipal = "";
+      render();
+      renderDrawer();
       dom.freshInspectionResult.textContent = `Fresh inspection failed: ${error instanceof Error ? error.message : "unknown error"}`;
     } finally {
       dom.freshInspectionButton.disabled = false;
@@ -659,9 +702,7 @@
       if (state.playing) { if (state.timer) clearTimeout(state.timer); scheduleNextFrame(); }
     });
     dom.approveButton.addEventListener("click", openApprovalDialog);
-    dom.approvalConfirmInput.addEventListener("input", () => {
-      dom.confirmApprovalButton.disabled = dom.approvalConfirmInput.value.trim().toUpperCase() !== "APPROVE";
-    });
+    dom.approvalConfirmInput.addEventListener("input", syncApprovalSubmitState);
     dom.approvalForm.addEventListener("submit", (event) => { event.preventDefault(); void submitApproval(); });
     dom.approvalDialog.addEventListener("close", () => {
       if (!state.replayApprovalGranted) state.resumeAfterApproval = false;

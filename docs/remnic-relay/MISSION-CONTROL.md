@@ -64,9 +64,13 @@ POST /engram/v1/relay/missions/:missionId/events
 
 The approval is human-attributed, includes `at_action` evidence, and persists
 one draft plus idempotency key in session storage before the request. A retry
-therefore reuses the exact event. The operator ID must match the authenticated
-Relay server principal; Mission Control verifies that the reducer accepted the
-approval before reporting success.
+therefore reuses the exact event. The authenticated read returns the
+percent-encoded server-resolved principal in the
+`x-remnic-authenticated-principal` response header. Mission Control decodes it,
+shows it read-only, scopes retries to that identity, and refuses live approval
+when it is absent or not a valid Relay actor ID. The append boundary also
+rejects mismatched human identities before persistence, so a guessed principal
+cannot poison the append-only receipt.
 
 Fresh X-ray reads are visibly labeled **Fresh inspection**. They refresh the
 screen but never count as evidence captured at action time.

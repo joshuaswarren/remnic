@@ -60,13 +60,33 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
       service: fakeService(root, calls),
       port: 0,
       authToken: "relay-token",
-      principal: "relay-operator",
+      principal: "operator-build-week",
       adminConsoleEnabled: false,
     });
     const status = await server.start();
     const base = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}`;
     try {
       const fixture = createRelayMissionFixture();
+      const approval = fixture.find((event) => event.payload.kind === "correction_approved");
+      assert.ok(approval && approval.payload.kind === "correction_approved");
+      const mismatchedApproval = await fetch(`${base}/events`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          namespace: RELAY_DEMO_NAMESPACE,
+          event: {
+            ...approval,
+            idempotencyKey: "mismatched-human-approval",
+            payload: {
+              ...approval.payload,
+              approvedBy: { ...approval.payload.approvedBy, id: "different-operator" },
+            },
+          },
+        }),
+      });
+      assert.equal(mismatchedApproval.status, 400);
+      assert.equal(((await mismatchedApproval.json()) as { code: string }).code, "input_error");
+
       const blankNamespace = await fetch(`${base}/events`, {
         method: "POST",
         headers: authHeaders(),
@@ -91,7 +111,7 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
         assert.equal(response.status, 201, responseBody);
         assert.equal(
           (JSON.parse(responseBody) as { event: { authenticatedPrincipal?: string } }).event.authenticatedPrincipal,
-          "relay-operator"
+          "operator-build-week"
         );
       }
 
@@ -108,6 +128,7 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
       });
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.get("x-remnic-authenticated-principal"), "operator-build-week");
       const snapshot = (await response.json()) as RelayMissionSnapshot;
       assert.equal(snapshot.receipt.complete, true);
       assert.deepEqual(snapshot.receipt.activeDecisionIds, ["decision-refresh-after-expiry"]);
@@ -115,7 +136,40 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
       assert.equal(snapshot.agents.length, 3);
       assert.equal(snapshot.tests.at(-1)?.status, "passed");
       assert.ok(calls.every((call) => call.namespace === RELAY_DEMO_NAMESPACE));
-      assert.ok(calls.every((call) => call.principal === "relay-operator"));
+      assert.ok(calls.every((call) => call.principal === "operator-build-week"));
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+test("HTTP Relay rejects human approval without a server-resolved principal before persistence", async () => {
+  await withTempRoot(async (root) => {
+    const server = new EngramAccessHttpServer({
+      service: fakeService(root, []),
+      port: 0,
+      authToken: "relay-token",
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    const base = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}`;
+    try {
+      const approval = createRelayMissionFixture().find((event) => event.payload.kind === "correction_approved");
+      assert.ok(approval);
+      const rejected = await fetch(`${base}/events`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, event: approval }),
+      });
+      assert.equal(rejected.status, 400);
+      assert.equal(((await rejected.json()) as { code: string }).code, "input_error");
+
+      const snapshotResponse = await fetch(`${base}?namespace=${RELAY_DEMO_NAMESPACE}`, {
+        headers: authHeaders(),
+      });
+      assert.equal(snapshotResponse.status, 200);
+      assert.equal(snapshotResponse.headers.get("x-remnic-authenticated-principal"), null);
+      assert.equal(((await snapshotResponse.json()) as RelayMissionSnapshot).found, false);
     } finally {
       await server.stop();
     }
@@ -150,6 +204,7 @@ test("HTTP Relay surface distinguishes empty, invalid, unauthorized, and backend
 
       const empty = await fetch(emptyUrl, { headers: authHeaders("read-token") });
       assert.equal(empty.status, 200);
+      assert.equal(empty.headers.get("x-remnic-authenticated-principal"), null);
       assert.deepEqual(await empty.json(), assertEmptyMissionShape());
 
       const badLimit = await fetch(`${emptyUrl}&limit=501`, {

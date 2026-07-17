@@ -19,7 +19,8 @@ interface RelayBrowserModel {
   }>;
   collectEvidence(snapshot: unknown): Array<{ id: string; capture: string; contexts: string[] }>;
   createApprovalEvent(input: Record<string, string>): unknown;
-  isReusableApprovalEvent(candidate: unknown, correctionId: string): boolean;
+  isValidActorId(value: unknown): boolean;
+  isReusableApprovalEvent(candidate: unknown, correctionId: string, operatorId?: string): boolean;
   lineage(snapshot: unknown): {
     stale: { decisionId: string; status: string } | null;
     replacement: { decisionId: string; status: string } | null;
@@ -138,6 +139,8 @@ test("browser approval builder emits a schema-valid, at-action human approval", 
   assert.equal(parsed.payload.approvedBy.id, "relay-operator");
   assert.equal(parsed.payload.evidence[0]?.capture, "at_action");
   assert.equal(model.isReusableApprovalEvent(candidate, "correction-token-refresh"), true);
+  assert.equal(model.isReusableApprovalEvent(candidate, "correction-token-refresh", "relay-operator"), true);
+  assert.equal(model.isReusableApprovalEvent(candidate, "correction-token-refresh", "other-operator"), false);
   assert.equal(model.isReusableApprovalEvent(candidate, "different-correction"), false);
   assert.equal(model.isReusableApprovalEvent({ payload: { kind: "correction_approved" } }, "correction-token-refresh"), false);
   assert.throws(
@@ -182,6 +185,10 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /sessionStorage/);
   assert.doesNotMatch(controller, /localStorage/);
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
+  assert.match(controller, /x-remnic-authenticated-principal/);
+  assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
+  assert.match(html, /id="operatorIdInput"[^>]*readonly/);
+  assert.doesNotMatch(html, /value="relay-operator"/);
   assert.match(controller, /OFFLINE FALLBACK/);
   assert.match(controller, /event\.key === "ArrowRight"/);
 });
