@@ -310,7 +310,7 @@
 
     if (state.mode === "live") {
       if (!snapshot.found) setBanner("EMPTY MISSION · No Relay events exist for this mission and namespace yet.");
-      else if (snapshot.readHealth !== "ok" || snapshot.bounds?.truncated || snapshot.bounds?.corruptLines > 0) {
+      else if (!Model.isCompleteEvidenceSnapshot(snapshot)) {
         setBanner("PARTIAL READ · This view is incomplete; do not treat it as a sealed receipt.", "error");
       } else setBanner("LIVE API · Authenticated snapshot. At-action and historical evidence remain separately labeled.", "success");
     } else {

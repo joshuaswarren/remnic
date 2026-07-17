@@ -236,6 +236,10 @@ test("live approval safety requires the complete evidence window", async () => {
   const underfilled = structuredClone(completed);
   underfilled.bounds.returnedEvents -= 1;
   assert.equal(model.isCompleteEvidenceSnapshot(underfilled), false);
+
+  const boundsMissing = structuredClone(completed);
+  delete (boundsMissing as Partial<typeof completed>).bounds;
+  assert.equal(model.isCompleteEvidenceSnapshot(boundsMissing), false);
 });
 
 test("browser approval builder emits a schema-valid, at-action human approval", async () => {
@@ -311,6 +315,7 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
   assert.match(controller, /Model\.isCompleteEvidenceSnapshot\(state\.snapshot\)/);
+  assert.match(controller, /else if \(!Model\.isCompleteEvidenceSnapshot\(snapshot\)\)/);
   assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
   assert.match(controller, /if \(approvalIndex >= 0 && nextIndex < approvalIndex\) \{\s*state\.replayApprovalGranted = false/s);
   assert.match(controller, /function liveReadStillCurrent\(context, generation, requestId\)/);
