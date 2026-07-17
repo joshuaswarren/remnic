@@ -27,6 +27,14 @@ const approvalEvidence = {
   capture: "fixture" as const,
 };
 
+const correctionEvidence = {
+  kind: "correction" as const,
+  id: "correction-token-refresh",
+  label: "Applied Remnic correction",
+  locator: "fixture://remnic/corrections/correction-token-refresh.json",
+  capture: "fixture" as const,
+};
+
 function at(second: number): string {
   return `2026-07-17T18:00:${String(second).padStart(2, "0")}.000Z`;
 }
@@ -171,6 +179,7 @@ export function createRelayMissionFixture(): RelayMissionEventInput[] {
       payload: {
         kind: "test_result",
         testId: "test-before-correction",
+        decisionId: "decision-new-token-every-request",
         command: "npm test -- token-policy.test.ts",
         status: "failed",
         summary: "Retry minted a second token instead of reusing the session token.",
@@ -216,15 +225,7 @@ export function createRelayMissionFixture(): RelayMissionEventInput[] {
         decisionId: "decision-new-token-every-request",
         replacementDecisionId: "decision-refresh-after-expiry",
         correctionId: "correction-token-refresh",
-        evidence: [
-          {
-            kind: "correction",
-            id: "correction-token-refresh",
-            label: "Applied Remnic correction",
-            locator: "fixture://remnic/corrections/correction-token-refresh.json",
-            capture: "fixture",
-          },
-        ],
+        evidence: [correctionEvidence],
       },
     },
     {
@@ -277,11 +278,13 @@ export function createRelayMissionFixture(): RelayMissionEventInput[] {
       payload: {
         kind: "test_result",
         testId: "test-after-correction",
+        decisionId: "decision-refresh-after-expiry",
+        correctionId: "correction-token-refresh",
         command: "npm test -- token-policy.test.ts",
         status: "passed",
         summary: "The cold agent reused the session token and the integration contract passed.",
         durationMs: 391,
-        evidence: [testEvidence],
+        evidence: [testEvidence, correctionEvidence],
       },
     },
     {

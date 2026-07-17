@@ -116,6 +116,8 @@ const RelayMissionPayloadUnionSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("test_result"),
       testId: identifierSchema,
+      decisionId: identifierSchema,
+      correctionId: identifierSchema.optional(),
       command: z.string().trim().min(1).max(1_000),
       status: z.enum(["passed", "failed", "error"]),
       summary: statementSchema,
@@ -365,6 +367,8 @@ export interface RelayCorrectionSnapshot {
 
 export interface RelayTestSnapshot {
   testId: string;
+  decisionId: string;
+  correctionId?: string;
   command: string;
   status: "passed" | "failed" | "error";
   summary: string;
@@ -855,6 +859,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       case "test_result":
         tests.push({
           testId: payload.testId,
+          decisionId: payload.decisionId,
+          ...(payload.correctionId === undefined ? {} : { correctionId: payload.correctionId }),
           command: payload.command,
           status: payload.status,
           summary: payload.summary,
@@ -1157,12 +1163,30 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const coldStartVerified = propagation.some((item) => item.staleDecisionAbsent);
   const passingOutcomeVerified =
     outcome?.result === "recovered" &&
-    tests.some(
-      (test) =>
-        test.status === "passed" &&
-        compareInstants(test.occurredAt, outcome.occurredAt) < 0 &&
-        propagation.some((item) => item.staleDecisionAbsent && compareInstants(item.occurredAt, test.occurredAt) < 0)
-    );
+    tests.some((test) => {
+      if (
+        test.status !== "passed" ||
+        test.correctionId === undefined ||
+        compareInstants(test.occurredAt, outcome.occurredAt) >= 0
+      ) {
+        return false;
+      }
+      const correction = corrections.get(test.correctionId);
+      if (
+        correction?.status !== "propagated" ||
+        correction.proposedDecisionId !== test.decisionId ||
+        !test.evidence.some((item) => item.kind === "correction" && item.id === correction.correctionId)
+      ) {
+        return false;
+      }
+      return propagation.some(
+        (item) =>
+          item.staleDecisionAbsent &&
+          item.correctionId === correction.correctionId &&
+          item.decisionId === test.decisionId &&
+          compareInstants(item.occurredAt, test.occurredAt) < 0
+      );
+    });
   if (outcome && !passingOutcomeVerified) missingEvidence.add("outcome:passing-test");
   if (outcome?.result === "recovered" && !coldStartVerified) {
     missingEvidence.add("outcome:cold-start-propagation");

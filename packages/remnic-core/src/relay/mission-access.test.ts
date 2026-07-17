@@ -275,6 +275,38 @@ test("HTTP Relay reserves global write quota across concurrent mission appends",
   });
 });
 
+test("Relay write quota releases the exact reservation when timestamps collide", () => {
+  const server = new EngramAccessHttpServer({
+    service: {} as EngramAccessService,
+    port: 0,
+    authToken: "relay-token",
+    adminConsoleEnabled: false,
+  });
+  const internals = server as unknown as {
+    writeRequestSlots: Array<{ readonly recordedAt: number }>;
+    reserveWriteRateLimitSlot: () => () => void;
+  };
+  const originalNow = Date.now;
+  try {
+    Date.now = () => 1_754_000_000_000;
+    const releaseCommitted = internals.reserveWriteRateLimitSlot();
+    const committedSlot = internals.writeRequestSlots[0];
+    const releaseFailed = internals.reserveWriteRateLimitSlot();
+    const failedSlot = internals.writeRequestSlots[1];
+    assert.ok(committedSlot);
+    assert.ok(failedSlot);
+    assert.notEqual(committedSlot, failedSlot);
+
+    releaseFailed();
+    assert.deepEqual(internals.writeRequestSlots, [committedSlot]);
+
+    releaseCommitted();
+    assert.deepEqual(internals.writeRequestSlots, []);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 function assertEmptyMissionShape(): RelayMissionSnapshot {
   return {
     schemaVersion: "1",

@@ -389,7 +389,7 @@ export class EngramAccessHttpServer {
     res: ServerResponse,
     ctx: { authorized: boolean },
   ) => Promise<boolean>;
-  private readonly writeRequestTimestamps: number[] = [];
+  private readonly writeRequestSlots: Array<{ readonly recordedAt: number }> = [];
   private readonly writeRateLimitMaxRequests: number;
   private readonly writeRateLimitWindowMs: number;
   private readonly mcpServer: EngramMcpServer;
@@ -3819,30 +3819,30 @@ export class EngramAccessHttpServer {
   private ensureWriteRateLimitAvailable(): void {
     const now = Date.now();
     while (
-      this.writeRequestTimestamps.length > 0 &&
-      now - (this.writeRequestTimestamps[0] ?? 0) > this.writeRateLimitWindowMs
+      this.writeRequestSlots.length > 0 &&
+      now - (this.writeRequestSlots[0]?.recordedAt ?? 0) > this.writeRateLimitWindowMs
     ) {
-      this.writeRequestTimestamps.shift();
+      this.writeRequestSlots.shift();
     }
-    if (this.writeRequestTimestamps.length >= this.writeRateLimitMaxRequests) {
+    if (this.writeRequestSlots.length >= this.writeRateLimitMaxRequests) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
   }
 
   private recordWriteRateLimitHit(): void {
-    this.writeRequestTimestamps.push(Date.now());
+    this.writeRequestSlots.push({ recordedAt: Date.now() });
   }
 
   private reserveWriteRateLimitSlot(): () => void {
     this.ensureWriteRateLimitAvailable();
-    const reservedAt = Date.now();
-    this.writeRequestTimestamps.push(reservedAt);
+    const slot = { recordedAt: Date.now() };
+    this.writeRequestSlots.push(slot);
     let active = true;
     return () => {
       if (!active) return;
       active = false;
-      const index = this.writeRequestTimestamps.indexOf(reservedAt);
-      if (index >= 0) this.writeRequestTimestamps.splice(index, 1);
+      const index = this.writeRequestSlots.indexOf(slot);
+      if (index >= 0) this.writeRequestSlots.splice(index, 1);
     };
   }
 

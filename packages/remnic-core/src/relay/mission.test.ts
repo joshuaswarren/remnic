@@ -526,6 +526,38 @@ test("receipt requires human approval and a passing test after verified propagat
   assert.equal(earlyPassSnapshot.receipt.complete, false);
   assert.equal(earlyPassSnapshot.receipt.passingOutcomeVerified, false);
   assert.ok(earlyPassSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
+
+  const unrelatedPass = fixtureEvents().map((event) =>
+    event.payload.kind === "test_result" && event.payload.status === "passed"
+      ? { ...event, payload: { ...event.payload, decisionId: "decision-unrelated" } }
+      : event
+  );
+  const unrelatedPassSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: unrelatedPass,
+  });
+  assert.equal(unrelatedPassSnapshot.receipt.passingOutcomeVerified, false);
+  assert.ok(unrelatedPassSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
+
+  const ungroundedPass = fixtureEvents().map((event) =>
+    event.payload.kind === "test_result" && event.payload.status === "passed"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            evidence: event.payload.evidence.filter((item) => item.kind !== "correction"),
+          },
+        }
+      : event
+  );
+  const ungroundedPassSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: ungroundedPass,
+  });
+  assert.equal(ungroundedPassSnapshot.receipt.passingOutcomeVerified, false);
+  assert.ok(ungroundedPassSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
 });
 
 test("missing evidence is explicit rather than conflated with a complete receipt", () => {
