@@ -517,7 +517,7 @@ export class RelayMissionStore {
       hooks.authenticatedPrincipal === undefined
         ? undefined
         : authenticatedPrincipalSchema.parse(hooks.authenticatedPrincipal);
-    const missionDir = await this.openMissionDirectory();
+    const missionDir = await this.openMissionDirectory(true);
     const filePath = path.join(missionDir.accessPath, `${missionId}.jsonl`);
     const logicalFilePath = path.join(missionDir.logicalPath, `${missionId}.jsonl`);
     const lockPath = `${filePath}.lock`;
@@ -599,44 +599,63 @@ export class RelayMissionStore {
   async read(missionIdValue: string, readOptions: RelayMissionReadOptions = {}): Promise<RelayMissionSnapshot> {
     const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const options = RelayMissionReadOptionsSchema.parse(readOptions);
-    const missionDir = await this.openMissionDirectory();
+    const missionDir = await this.openMissionDirectory(false);
+    if (missionDir === null) {
+      return reduceRelayMission({
+        missionId,
+        namespace: this.namespace,
+        events: [],
+        fileExists: false,
+        options,
+      });
+    }
     const filePath = path.join(missionDir.accessPath, `${missionId}.jsonl`);
     const logicalFilePath = path.join(missionDir.logicalPath, `${missionId}.jsonl`);
-    const lockPath = `${filePath}.lock`;
 
     try {
-      return await serializeMutations(`relay-mission:${logicalFilePath}`, () =>
-        withHeldFileLock(
-          lockPath,
-          { staleMs: 30_000, maxWaitMs: this.lockMaxWaitMs, heartbeatMs: 10_000 },
-          async (acquired) => {
-            if (!acquired) {
-              throw new RelayMissionStoreError("lock_unavailable", "could not acquire Relay mission read lock");
-            }
-            const read = await this.readFile(filePath, missionId);
-            return reduceRelayMission({
-              missionId,
-              namespace: this.namespace,
-              events: read.events,
-              corruptLines: read.corruptLines,
-              fileExists: read.exists,
-              options,
-            });
-          }
-        )
-      );
+      // Coordinate with writers in this process without creating a lock file.
+      // Cross-process appends are single bounded O_APPEND records; a torn or
+      // malformed record remains explicit partial evidence rather than being
+      // silently accepted.
+      return await serializeMutations(`relay-mission:${logicalFilePath}`, async () => {
+        const read = await this.readFile(filePath, missionId);
+        return reduceRelayMission({
+          missionId,
+          namespace: this.namespace,
+          events: read.events,
+          corruptLines: read.corruptLines,
+          fileExists: read.exists,
+          options,
+        });
+      });
     } finally {
       await missionDir.handle.close().catch(() => undefined);
     }
   }
 
-  private async openMissionDirectory(): Promise<PinnedMissionDirectory> {
+  private async openMissionDirectory(create: true): Promise<PinnedMissionDirectory>;
+  private async openMissionDirectory(create: false): Promise<PinnedMissionDirectory | null>;
+  private async openMissionDirectory(create: boolean): Promise<PinnedMissionDirectory | null> {
     let currentHandle: import("node:fs/promises").FileHandle | undefined;
     try {
       currentHandle = await openVerifiedDirectory(this.rootDir, "Relay root must be a real directory");
       let logicalPath = this.rootDir;
       for (const segment of ["state", "relay", "missions"]) {
-        const childHandle = await openOrCreatePinnedChildDirectory(currentHandle, segment);
+        let childHandle: import("node:fs/promises").FileHandle;
+        try {
+          childHandle = create
+            ? await openOrCreatePinnedChildDirectory(currentHandle, segment)
+            : await openVerifiedDirectory(
+                path.join(pinnedDirectoryPath(currentHandle), segment),
+                "Relay directory symlinks are rejected"
+              );
+        } catch (error) {
+          if (!create && (error as NodeJS.ErrnoException).code === "ENOENT") {
+            await currentHandle.close();
+            return null;
+          }
+          throw error;
+        }
         await currentHandle.close();
         currentHandle = childHandle;
         logicalPath = path.join(logicalPath, segment);

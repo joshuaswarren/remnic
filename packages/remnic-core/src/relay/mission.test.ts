@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -186,6 +186,7 @@ test("empty, partial, and bounded reads remain distinct and deterministic", asyn
     assert.equal(empty.found, false);
     assert.equal(empty.readHealth, "empty");
     assert.equal(empty.status, "not_started");
+    assert.deepEqual(await readdir(root), []);
 
     for (const input of createRelayMissionFixture()) {
       await store.append(RELAY_DEMO_MISSION_ID, input);
@@ -212,6 +213,29 @@ test("empty, partial, and bounded reads remain distinct and deterministic", asyn
     });
     assert.equal(outsideWindow.found, true, "a known mission remains found outside the selected window");
     assert.equal(outsideWindow.bounds.totalEvents, 0);
+  });
+});
+
+test("read serves an existing receipt without mutating a read-only mission directory", async () => {
+  await withTempRoot(async (root) => {
+    const store = deterministicStore(root);
+    for (const input of createRelayMissionFixture()) {
+      await store.append(RELAY_DEMO_MISSION_ID, input);
+    }
+    const missionDir = path.join(root, "state", "relay", "missions");
+    const missionFile = path.join(missionDir, `${RELAY_DEMO_MISSION_ID}.jsonl`);
+    const entriesBefore = (await readdir(missionDir)).sort();
+
+    await chmod(missionFile, 0o400);
+    await chmod(missionDir, 0o555);
+    try {
+      const snapshot = await store.read(RELAY_DEMO_MISSION_ID);
+      assert.equal(snapshot.receipt.complete, true);
+      assert.deepEqual((await readdir(missionDir)).sort(), entriesBefore);
+    } finally {
+      await chmod(missionDir, 0o700);
+      await chmod(missionFile, 0o600);
+    }
   });
 });
 
