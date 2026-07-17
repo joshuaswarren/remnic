@@ -232,10 +232,19 @@ function withMemoryDirMutex<T>(memoryDir: string, op: () => Promise<T>): Promise
   });
   return run;
 }
-async function primeCacheAfterWrite(filePath: string, index: unknown): Promise<void> {
+async function primeCacheAfterWrite(
+  filePath: string,
+  index: unknown,
+  isCurrentSchema: () => boolean,
+): Promise<void> {
   try {
     const identity = identityFromStat(await fs.promises.stat(filePath));
-    parsedIndexCache.set(filePath, { identity, index, currentSchema: true });
+    // Derive currentSchema from the ACTUAL written index (issue #1911, Codex):
+    // hardcoding true let deindexMemoryAsync (which does not bump version) cache
+    // an old-schema index as current, so indexesExistAsync then skipped a
+    // needed rebuild. The tag index is always current (no version gate); the
+    // temporal index is current only when hasCurrentTemporalIndexSchema holds.
+    parsedIndexCache.set(filePath, { identity, index, currentSchema: isCurrentSchema() });
   } catch {
     parsedIndexCache.delete(filePath);
   }
@@ -456,7 +465,7 @@ async function updateTemporalIndex(memoryDir: string, update: (index: TemporalIn
       const index = structuredClone(loaded.kind === "ok" ? loaded.index : emptyTemporalIndex());
       update(index);
       if (await writeJsonAtomic(indexPath, index)) {
-        await primeCacheAfterWrite(indexPath, index);
+        await primeCacheAfterWrite(indexPath, index, () => hasCurrentTemporalIndexSchema(index));
         return true;
       }
       parsedIndexCache.delete(indexPath);
@@ -482,7 +491,7 @@ async function updateTagIndex(memoryDir: string, update: (index: TagIndex) => vo
       );
       update(index);
       if (await writeJsonAtomic(indexPath, index)) {
-        await primeCacheAfterWrite(indexPath, index);
+        await primeCacheAfterWrite(indexPath, index, () => true);
       } else {
         parsedIndexCache.delete(indexPath);
       }
