@@ -600,8 +600,16 @@ export class GraphIndex {
       let size: number;
       try {
         size = (await stat(graphFilePath(this.memoryDir, type))).size;
-      } catch {
-        return false;
+      } catch (err) {
+        // An absent graph file (ENOENT) is the normal partially-populated state
+        // (e.g. entity edges written before any causal edge): treat it as its
+        // recorded 0-byte baseline so the incremental cache stays warm. Only a
+        // genuine stat failure forces a full reload (#1904, Codex).
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+          size = 0;
+        } else {
+          return false;
+        }
       }
       if (size !== (this.edgeCache.sizes[type] ?? 0) + (expectedDelta[type] ?? 0)) return false;
       observed[type] = size;

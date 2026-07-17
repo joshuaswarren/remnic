@@ -485,6 +485,20 @@ export function clearMemoryCache(baseDir?: string): void {
   }
 }
 
+/**
+ * Clear ONLY the two global QMD result caches (qmd-search + qmd-recall), leaving
+ * every dir-scoped layer (hot/archive/entities/derived) untouched. Called after
+ * a successful QMD maintenance update+embed (#1904, Codex): a newly-persisted
+ * fact becomes searchable at that moment, so any cached pre-index recall/search
+ * bundle is now stale and must not be served. This lets the create path keep the
+ * QMD caches warm during index lag (perf win) while guaranteeing invalidation
+ * the moment the fact is actually indexed — no extended stale window.
+ */
+export function clearQmdResultCaches(): void {
+  qmdSearchCache.clear();
+  clearQmdRecallCache();
+}
+
 export function getMemoryCacheStats(baseDir: string): {
   hotSize: number;
   archiveSize: number;

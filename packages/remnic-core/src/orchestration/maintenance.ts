@@ -48,6 +48,7 @@ import {
 } from "../maintenance/memory-governance-cron.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
+import { clearQmdResultCaches } from "../memory-cache.js";
 
 /** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
@@ -523,6 +524,11 @@ export class MaintenanceScheduler {
           this.lastQmdEmbedAtMs = now;
         }
       }
+      // A successful update+embed means newly-persisted facts are now searchable;
+      // any cached pre-index QMD recall/search bundle is now stale. Clear ONLY the
+      // QMD result caches (dir-scoped layers untouched) so the create path can keep
+      // them warm during index lag without an extended stale window (#1904, Codex).
+      clearQmdResultCaches();
     } finally {
       this.qmdMaintenanceInFlight = false;
       if (this.qmdMaintenancePending) {
