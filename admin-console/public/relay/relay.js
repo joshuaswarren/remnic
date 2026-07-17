@@ -523,6 +523,8 @@
     dom.confirmApprovalButton.disabled = true;
     dom.confirmApprovalButton.textContent = "Writing approval…";
     const requestId = ++state.approvalRequestId;
+    const requestMarker = String(requestId);
+    dom.approvalDialog.dataset.pendingRequestId = requestMarker;
     const approvalWriteStillCurrent = () => requestId === state.approvalRequestId
       && generation === state.connectionGeneration
       && sameLiveContext(context, currentLiveContext());
@@ -557,9 +559,15 @@
       if (state.mode === "live" && state.snapshot) render();
       dom.approvalError.textContent = error instanceof Error ? error.message : "Approval failed.";
     } finally {
-      if (approvalWriteStillCurrent()) {
+      if (dom.approvalDialog.dataset.pendingRequestId === requestMarker) {
+        delete dom.approvalDialog.dataset.pendingRequestId;
         dom.confirmApprovalButton.textContent = "Approve correction →";
-        syncApprovalSubmitState();
+        if (approvalWriteStillCurrent()) {
+          syncApprovalSubmitState();
+        } else {
+          dom.confirmApprovalButton.disabled = true;
+          if (dom.approvalDialog.open) dom.approvalDialog.close();
+        }
       }
     }
   }
@@ -626,6 +634,22 @@
       metadataInvalid: error?.relayPrincipalMetadataInvalid === true,
     });
     if (!retain) bindAuthenticatedPrincipal("", context);
+  }
+
+  function reportSupersededConnection() {
+    dom.connectionError.textContent = "A newer live read superseded this connection attempt. Retry Connect; the current mission and identity were not changed.";
+    setBanner("CONNECTION SUPERSEDED · A newer live read won; the current mission and authenticated identity remain unchanged.", "error");
+    dom.freshInspectionButton.disabled = state.mode !== "live";
+  }
+
+  function invalidateApprovalUiForConnectionChange() {
+    state.approvalRequestId += 1;
+    delete dom.approvalDialog.dataset.pendingRequestId;
+    if (dom.approvalDialog.open) dom.approvalDialog.close();
+    dom.confirmApprovalButton.textContent = "Approve correction →";
+    dom.confirmApprovalButton.disabled = true;
+    dom.approvalConfirmInput.value = "";
+    dom.approvalError.textContent = "";
   }
 
   async function fetchLiveSnapshot(context = currentLiveContext()) {
@@ -797,14 +821,23 @@
     try {
       liveResult = await fetchLiveSnapshot(context);
     } catch (error) {
-      if (requestId !== state.connectionRequestId || liveReadRequestId !== state.liveReadRequestId) return;
+      if (requestId !== state.connectionRequestId) return;
+      if (liveReadRequestId !== state.liveReadRequestId) {
+        reportSupersededConnection();
+        return;
+      }
       dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
       setBanner("CONNECTION FAILED · The current mission and authenticated identity remain unchanged.", "error");
       dom.freshInspectionButton.disabled = state.mode !== "live";
       return;
     }
-    if (requestId !== state.connectionRequestId || liveReadRequestId !== state.liveReadRequestId) return;
+    if (requestId !== state.connectionRequestId) return;
+    if (liveReadRequestId !== state.liveReadRequestId) {
+      reportSupersededConnection();
+      return;
+    }
     stopPlayback();
+    invalidateApprovalUiForConnectionChange();
     state.connectionGeneration += 1;
     state.missionId = context.missionId;
     state.namespace = context.namespace;
