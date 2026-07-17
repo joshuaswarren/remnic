@@ -34,7 +34,7 @@ Last updated: 2026-07-17
 - [x] Exact Remnic/Engram static route allow-list and release artifact checks.
 - [x] Desktop and narrow screenshots plus keyboard/reduced-motion browser audit.
 - [x] Focused reducer/model and HTTP surface tests.
-- [ ] Repository preflight and local AI review.
+- [x] Repository preflight and local adversarial review.
 - [ ] PR loop reports current-head `MERGE_READY`.
 - [ ] PR manually merged and `origin/main` verified.
 

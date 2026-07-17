@@ -19,6 +19,7 @@ interface RelayBrowserModel {
   }>;
   collectEvidence(snapshot: unknown): Array<{ id: string; capture: string; contexts: string[] }>;
   createApprovalEvent(input: Record<string, string>): unknown;
+  isReusableApprovalEvent(candidate: unknown, correctionId: string): boolean;
   lineage(snapshot: unknown): {
     stale: { decisionId: string; status: string } | null;
     replacement: { decisionId: string; status: string } | null;
@@ -136,6 +137,9 @@ test("browser approval builder emits a schema-valid, at-action human approval", 
   assert.equal(parsed.payload.approvedBy.kind, "human");
   assert.equal(parsed.payload.approvedBy.id, "relay-operator");
   assert.equal(parsed.payload.evidence[0]?.capture, "at_action");
+  assert.equal(model.isReusableApprovalEvent(candidate, "correction-token-refresh"), true);
+  assert.equal(model.isReusableApprovalEvent(candidate, "different-correction"), false);
+  assert.equal(model.isReusableApprovalEvent({ payload: { kind: "correction_approved" } }, "correction-token-refresh"), false);
   assert.throws(
     () => model.createApprovalEvent({
       correctionId: "correction-token-refresh",
@@ -158,6 +162,11 @@ test("replay validation rejects non-advancing frames and identity drift", async 
   const drifted = structuredClone(replay);
   drifted.frames[0]!.snapshot.namespace = "production";
   assert.throws(() => model.validateReplay(drifted), /identity/);
+
+  const rewrittenPrefix = structuredClone(replay);
+  const secondFrameEvents = rewrittenPrefix.frames[1]!.snapshot.events;
+  [secondFrameEvents[0], secondFrameEvents[1]] = [secondFrameEvents[1]!, secondFrameEvents[0]!];
+  assert.throws(() => model.validateReplay(rewrittenPrefix), /append-only event prefix/);
 });
 
 test("Mission Control assets expose honest modes, keyboard paths, and session-only auth", async () => {

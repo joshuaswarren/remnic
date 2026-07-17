@@ -412,16 +412,32 @@
     const operatorLabel = dom.operatorLabelInput.value.trim();
     const key = approvalDraftKey(correction.correctionId);
     let event;
+    let reusedPrior = false;
     try {
       const prior = safeSessionGet(key);
-      event = prior ? JSON.parse(prior) : Model.createApprovalEvent({
-        correctionId: correction.correctionId,
-        operatorId,
-        operatorLabel,
-        occurredAt: new Date().toISOString(),
-        idempotencyKey: `relay-approval-${crypto.randomUUID()}`,
-      });
-      if (!prior && !safeSessionSet(key, JSON.stringify(event))) {
+      if (prior) {
+        try {
+          const candidate = JSON.parse(prior);
+          if (Model.isReusableApprovalEvent(candidate, correction.correctionId)) {
+            event = candidate;
+            reusedPrior = true;
+          } else {
+            safeSessionRemove(key);
+          }
+        } catch {
+          safeSessionRemove(key);
+        }
+      }
+      if (!event) {
+        event = Model.createApprovalEvent({
+          correctionId: correction.correctionId,
+          operatorId,
+          operatorLabel,
+          occurredAt: new Date().toISOString(),
+          idempotencyKey: `relay-approval-${crypto.randomUUID()}`,
+        });
+      }
+      if (!reusedPrior && !safeSessionSet(key, JSON.stringify(event))) {
         throw new Error("Session storage is unavailable; refusing a non-idempotent approval write");
       }
     } catch (error) {
@@ -440,12 +456,18 @@
       });
       const body = await response.text();
       if (!response.ok) throw new Error(apiError(response.status, body));
-      safeSessionRemove(key);
-      await refreshLive("approval");
+      const refreshed = await refreshLive("approval");
+      if (!refreshed) {
+        dom.approvalDialog.close();
+        showToast("Approval event recorded; live verification is pending. The next retry will reuse the exact event.");
+        return;
+      }
       const approved = state.snapshot?.corrections.some((item) => item.correctionId === correction.correctionId && item.approvedAt);
       if (!approved) {
+        safeSessionRemove(key);
         throw new Error("The event was recorded but not accepted as human approval. Confirm the principal ID matches the Relay server identity.");
       }
+      safeSessionRemove(key);
       dom.approvalDialog.close();
       showToast("Authenticated human approval recorded in the mission lineage.");
     } catch (error) {
@@ -641,6 +663,9 @@
       dom.confirmApprovalButton.disabled = dom.approvalConfirmInput.value.trim().toUpperCase() !== "APPROVE";
     });
     dom.approvalForm.addEventListener("submit", (event) => { event.preventDefault(); void submitApproval(); });
+    dom.approvalDialog.addEventListener("close", () => {
+      if (!state.replayApprovalGranted) state.resumeAfterApproval = false;
+    });
     dom.connectionForm.addEventListener("submit", (event) => { event.preventDefault(); void connectLive(); });
     document.querySelectorAll("[data-close-dialog]").forEach((button) => {
       button.addEventListener("click", () => document.getElementById(button.dataset.closeDialog)?.close());

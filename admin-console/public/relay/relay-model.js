@@ -13,6 +13,7 @@
     "propagation_verified",
     "mission_completed",
   ]);
+  const IDENTIFIER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/;
 
   const EVENT_META = Object.freeze({
     mission_started: { label: "Source contract", tone: "source", verb: "Mission opened" },
@@ -53,6 +54,7 @@
     if (!Array.isArray(replay.frames) || replay.frames.length === 0) throw new Error("Relay replay has no frames");
     const ids = new Set();
     let previousEventCount = -1;
+    let previousEvents = [];
     for (const frame of replay.frames) {
       if (!isObject(frame) || typeof frame.id !== "string" || ids.has(frame.id)) {
         throw new Error("Relay replay frame ids must be unique strings");
@@ -65,7 +67,17 @@
       if (snapshot.events.length <= previousEventCount) {
         throw new Error("Relay replay frames must advance the append-only event stream");
       }
+      for (let index = 0; index < previousEvents.length; index += 1) {
+        if (JSON.stringify(snapshot.events[index]) !== JSON.stringify(previousEvents[index])) {
+          throw new Error("Relay replay frames must preserve the append-only event prefix");
+        }
+      }
+      const eventIds = snapshot.events.map((event) => event?.eventId);
+      if (eventIds.some((eventId) => typeof eventId !== "string") || new Set(eventIds).size !== eventIds.length) {
+        throw new Error("Relay replay event ids must be unique strings");
+      }
       previousEventCount = snapshot.events.length;
+      previousEvents = snapshot.events;
     }
     if (!ids.has(replay.initialFrameId)) throw new Error("Relay replay initial frame is missing");
     return replay;
@@ -265,15 +277,15 @@
     const operatorLabel = String(input?.operatorLabel || "").trim();
     const occurredAt = String(input?.occurredAt || "").trim();
     const idempotencyKey = String(input?.idempotencyKey || "").trim();
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/.test(correctionId)) {
+    if (!IDENTIFIER_PATTERN.test(correctionId)) {
       throw new Error("A valid correction id is required");
     }
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/.test(operatorId)) {
+    if (!IDENTIFIER_PATTERN.test(operatorId)) {
       throw new Error("Operator id must match the authenticated Relay principal");
     }
     if (operatorLabel.length === 0 || operatorLabel.length > 240) throw new Error("Operator label is required");
     if (!Number.isFinite(Date.parse(occurredAt))) throw new Error("Approval timestamp is invalid");
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/.test(idempotencyKey)) {
+    if (!IDENTIFIER_PATTERN.test(idempotencyKey)) {
       throw new Error("Approval idempotency key is invalid");
     }
     return {
@@ -295,11 +307,30 @@
     };
   }
 
+  function isReusableApprovalEvent(candidate, correctionId) {
+    if (!isObject(candidate) || !isObject(candidate.payload)) return false;
+    const payload = candidate.payload;
+    return payload.kind === "correction_approved"
+      && payload.correctionId === correctionId
+      && payload.approvedBy?.kind === "human"
+      && IDENTIFIER_PATTERN.test(payload.approvedBy.id || "")
+      && typeof payload.approvedBy.label === "string"
+      && IDENTIFIER_PATTERN.test(candidate.idempotencyKey || "")
+      && Number.isFinite(Date.parse(candidate.occurredAt))
+      && Array.isArray(payload.evidence)
+      && payload.evidence.some((item) =>
+        item?.kind === "approval"
+        && item.capture === "at_action"
+        && IDENTIFIER_PATTERN.test(item.id || "")
+      );
+  }
+
   globalScope.RelayModel = Object.freeze({
     agentCards,
     captureLabel,
     collectEvidence,
     createApprovalEvent,
+    isReusableApprovalEvent,
     lineage,
     phase,
     receipt,
