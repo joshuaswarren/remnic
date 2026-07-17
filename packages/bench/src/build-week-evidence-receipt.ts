@@ -152,6 +152,10 @@ const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 =
   "1c23b0b80d262c80454b522b5d9526b7d823177d6cb599a4f7acb02a59c80660";
 const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID = "42a3ea8f-b416-477e-b224-2c4ced72e675";
 const LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA = "810f36ae";
+const LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_SHA256 =
+  "00150a8f5c52bf84576a669b22d2a5cf92df0b2295a3ce1a41b5a79c710deaf5";
+const LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_ID = "0bfe5221-7ac7-4a5f-93e8-41bd06e92b38";
+const LEGACY_BUILD_WEEK_LONGMEMEVAL_GIT_SHA = "810f36ae";
 const MEMCORRECT_SCOPED_TASK_IDS = new Set(
   Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT / 4 }, (_, index) =>
     `memcorrect-${MEMCORRECT_FULL_SEED}-${(index * 4 + 2).toString(16)}`),
@@ -171,6 +175,18 @@ const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
 const SINGLE_FILE_PAYLOAD_FALLBACKS: Readonly<Record<string, string>> = Object.freeze({
   longmemeval: "longmemeval_oracle.json",
 });
+
+function isPinnedLegacyBuildWeekResult(result: BenchmarkResult, resultSha256: string): boolean {
+  return (
+    resultSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 &&
+    result.meta.id === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID &&
+    result.meta.gitSha === LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA
+  ) || (
+    resultSha256 === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_SHA256 &&
+    result.meta.id === LEGACY_BUILD_WEEK_LONGMEMEVAL_RESULT_ID &&
+    result.meta.gitSha === LEGACY_BUILD_WEEK_LONGMEMEVAL_GIT_SHA
+  );
+}
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -293,13 +309,10 @@ function requireExactMemCorrectProvenance(
       throw new Error(`MemCorrect generator option ${key} does not match the pinned full corpus`);
     }
   }
-  const isPinnedLegacyBuildWeekResult =
-    resultSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 &&
-    result.meta.id === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID &&
-    result.meta.gitSha === LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA;
+  const isPinnedLegacyResult = isPinnedLegacyBuildWeekResult(result, resultSha256);
   if (
     benchmarkOptions["nowIso"] !== MEMCORRECT_GENERATOR_OPTIONS.nowIso &&
-    !(benchmarkOptions["nowIso"] === undefined && isPinnedLegacyBuildWeekResult)
+    !(benchmarkOptions["nowIso"] === undefined && isPinnedLegacyResult)
   ) {
     throw new Error("MemCorrect generator option nowIso does not match the pinned full corpus");
   }
@@ -739,6 +752,19 @@ export function buildBuildWeekEvidenceReceipt(
   requireCompatibleGitIdentity(resultEntry.gitSha, result.meta.gitSha, "manifest result and benchmark result Git identity");
   requireCompatibleGitIdentity(manifest.git.commit, result.meta.gitSha, "manifest commit and benchmark result Git identity");
   requireCompatibleGitIdentity(manifest.git.shortCommit, result.meta.gitSha, "manifest short commit and benchmark result Git identity");
+  const isPinnedLegacyResult = isPinnedLegacyBuildWeekResult(result, resultSha256);
+  if (
+    result.meta.runId !== manifest.run.id &&
+    !(result.meta.runId === undefined && isPinnedLegacyResult)
+  ) {
+    throw new Error("benchmark result run ID does not match the manifest run ID");
+  }
+  const resultCapturedCleanGit = result.meta.gitDirty === false && result.meta.gitDirtyEntryCount === 0;
+  const legacyResultOmitsGitState =
+    result.meta.gitDirty === undefined && result.meta.gitDirtyEntryCount === undefined && isPinnedLegacyResult;
+  if (!resultCapturedCleanGit && !legacyResultOmitsGitState) {
+    throw new Error("benchmark result must capture a clean Git worktree at execution start");
+  }
 
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
     ? requireExactMemCorrectProvenance(result, manifest, resultSha256, options.datasetVersion, options.publicationScope)
@@ -773,6 +799,9 @@ export function buildBuildWeekEvidenceReceipt(
   const runUsage = manifest.codexCredit?.run;
   if (!runUsage || runUsage.id !== manifest.run.id) {
     throw new Error("manifest must contain run-scoped Codex CLI usage for this run");
+  }
+  if (result.meta.runId !== runUsage.id && !(result.meta.runId === undefined && isPinnedLegacyResult)) {
+    throw new Error("benchmark result run ID does not match the run-scoped Codex usage");
   }
   if (runUsage.models.some((entry) => SOL_MODEL.test(entry.model))) {
     throw new Error("Codex usage receipt contains a forbidden gpt-5.6-sol model");

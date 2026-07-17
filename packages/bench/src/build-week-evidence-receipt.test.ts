@@ -48,6 +48,9 @@ function syntheticResult(overrides: Partial<BenchmarkResult["meta"]> = {}): Benc
       version: "oracle-v1",
       remnicVersion: "9.7.6",
       gitSha: "abc1234",
+      runId: "synthetic-run-id",
+      gitDirty: false,
+      gitDirtyEntryCount: 0,
       timestamp: "2026-07-16T20:00:00.000Z",
       mode: "full",
       status: "complete",
@@ -973,6 +976,35 @@ test("receipt rejects dirty or inconsistent Git worktree provenance", () => {
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /clean Git worktree manifest/,
+  );
+});
+
+test("receipt binds run-scoped usage and execution-time Git state to the result", () => {
+  const wrongRun = syntheticResult();
+  wrongRun.meta.runId = "borrowed-run";
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: wrongRun, limit: 2 }),
+      datasetVersion: "oracle-v1",
+      limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    }),
+    /result run ID does not match the manifest run ID/,
+  );
+
+  const dirtyAtExecution = syntheticResult();
+  dirtyAtExecution.meta.gitDirty = true;
+  dirtyAtExecution.meta.gitDirtyEntryCount = 1;
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: dirtyAtExecution, limit: 2 }),
+      datasetVersion: "oracle-v1",
+      limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    }),
+    /clean Git worktree at execution start/,
   );
 });
 

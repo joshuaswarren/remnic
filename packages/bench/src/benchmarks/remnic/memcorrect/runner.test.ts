@@ -332,6 +332,9 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
   assert.ok(result.meta.datasetHash?.length === 64, "datasetHash must be sha-256");
   assert.deepEqual(result.meta.seeds, [0xc077e7 & 0xffffffff]);
   assert.equal(result.meta.benchmark, "memcorrect-v1");
+  assert.equal(typeof result.meta.runId, "string");
+  assert.equal(typeof result.meta.gitDirty, "boolean");
+  assert.equal(typeof result.meta.gitDirtyEntryCount, "number");
 });
 
 // ---------------------------------------------------------------------------
