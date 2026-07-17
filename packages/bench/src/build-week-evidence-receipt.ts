@@ -114,6 +114,7 @@ export interface BuildBuildWeekEvidenceReceiptOptions {
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_SHA = /^[0-9a-f]{7,64}$/i;
 const SAFE_DATASET_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+@/-]{0,127}$/;
 const SAFE_PUBLIC_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+@:-]{0,255}$/;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
@@ -144,6 +145,14 @@ const MEMCORRECT_FULL_METRICS = Object.freeze([
   "scope_precision",
 ].sort());
 const MEMCORRECT_FULL_SEED = 0xc077e7;
+const MEMCORRECT_SCOPED_TASK_IDS = new Set(
+  Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT / 4 }, (_, index) =>
+    `memcorrect-${MEMCORRECT_FULL_SEED}-${(index * 4 + 2).toString(16)}`),
+);
+const MEMCORRECT_REASSERTION_TASK_IDS = new Set(
+  Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT / 4 }, (_, index) =>
+    `memcorrect-${MEMCORRECT_FULL_SEED}-${(index * 4 + 3).toString(16)}`),
+);
 const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
   personaCount: 5,
   factsPerPersona: 8,
@@ -214,6 +223,15 @@ function requireNonNegativeInteger(value: unknown, label: string): number {
     throw new Error(`${label} must be an integer`);
   }
   return finite;
+}
+
+function requireCompatibleGitIdentity(left: unknown, right: unknown, label: string): void {
+  if (typeof left !== "string" || typeof right !== "string" || !GIT_SHA.test(left) || !GIT_SHA.test(right)) {
+    throw new Error(`${label} must contain valid Git commit identifiers`);
+  }
+  if (left !== right && !left.startsWith(right) && !right.startsWith(left)) {
+    throw new Error(`${label} does not identify the same Git commit`);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -546,9 +564,13 @@ function requirePinnedFullMetricSchema(
     const allowed = new Set(MEMCORRECT_FULL_METRICS);
     for (const [taskIndex, task] of result.results.tasks.entries()) {
       const names = Object.keys(task.scores);
+      const hasScopePrecision = names.includes("scope_precision");
+      const hasReassertion = names.includes("reassertion");
       if (
         MEMCORRECT_REQUIRED_TASK_METRICS.some((name) => !names.includes(name)) ||
-        names.some((name) => !allowed.has(name))
+        names.some((name) => !allowed.has(name)) ||
+        hasScopePrecision !== MEMCORRECT_SCOPED_TASK_IDS.has(task.taskId) ||
+        hasReassertion !== MEMCORRECT_REASSERTION_TASK_IDS.has(task.taskId)
       ) {
         throw new Error(`MemCorrect task ${taskIndex} metric schema does not match the pinned benchmark metrics`);
       }
@@ -693,6 +715,9 @@ export function buildBuildWeekEvidenceReceipt(
   if (resultEntry.benchmark !== result.meta.benchmark || resultEntry.mode !== result.meta.mode) {
     throw new Error("manifest result identity does not match the benchmark result");
   }
+  requireCompatibleGitIdentity(resultEntry.gitSha, result.meta.gitSha, "manifest result and benchmark result Git identity");
+  requireCompatibleGitIdentity(manifest.git.commit, result.meta.gitSha, "manifest commit and benchmark result Git identity");
+  requireCompatibleGitIdentity(manifest.git.shortCommit, result.meta.gitSha, "manifest short commit and benchmark result Git identity");
 
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
     ? requireExactMemCorrectProvenance(result, manifest, options.datasetVersion, options.publicationScope)

@@ -157,8 +157,8 @@ function syntheticMemCorrectResult(): BenchmarkResult {
       false_apply: 1,
       judge_correction_acceptance: 1,
       judge_stale_harm_avoidance: 1,
-      ...(index === 0 ? { scope_precision: 1 } : {}),
-      ...(index === 1 ? { reassertion: 1 } : {}),
+      ...(index % 4 === 2 ? { scope_precision: 1 } : {}),
+      ...(index % 4 === 3 ? { reassertion: 1 } : {}),
     },
     latencyMs: 1000,
     tokens: { input: 25, output: 5 },
@@ -892,6 +892,62 @@ test("receipt rejects a tampered manifest artifact hash", () => {
       }),
     /artifactHash does not match/,
   );
+});
+
+test("receipt binds result provenance to the manifest Git identity", () => {
+  const sources = syntheticSources({ limit: 2 });
+  const mismatchedEntry = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  mismatchedEntry.results[0]!.gitSha = "def5678";
+  rehashManifest(mismatchedEntry);
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...sources,
+        manifestJson: JSON.stringify(mismatchedEntry),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /manifest result and benchmark result Git identity does not identify the same Git commit/,
+  );
+
+  const mismatchedManifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  mismatchedManifest.git.commit = "def5678";
+  mismatchedManifest.git.shortCommit = "def5678";
+  rehashManifest(mismatchedManifest);
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...sources,
+        manifestJson: JSON.stringify(mismatchedManifest),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /manifest commit and benchmark result Git identity does not identify the same Git commit/,
+  );
+});
+
+test("full MemCorrect receipts bind conditional metrics to canonical scenarios", () => {
+  const build = (result: BenchmarkResult) =>
+    buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result }),
+      datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+      limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+    });
+
+  const relocatedScope = syntheticMemCorrectResult();
+  delete relocatedScope.results.tasks[2]!.scores.scope_precision;
+  relocatedScope.results.tasks[0]!.scores.scope_precision = 1;
+  assert.throws(() => build(relocatedScope), /task 0 metric schema does not match the pinned benchmark metrics/);
+
+  const missingReassertion = syntheticMemCorrectResult();
+  delete missingReassertion.results.tasks[3]!.scores.reassertion;
+  assert.throws(() => build(missingReassertion), /task 3 metric schema does not match the pinned benchmark metrics/);
 });
 
 test("receipt metadata rejects path and secret-bearing public identifiers", () => {
