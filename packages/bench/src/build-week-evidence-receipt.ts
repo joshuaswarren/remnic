@@ -145,6 +145,13 @@ const MEMCORRECT_FULL_METRICS = Object.freeze([
   "scope_precision",
 ].sort());
 const MEMCORRECT_FULL_SEED = 0xc077e7;
+// The immutable Build Week run predates persistence of `nowIso`. Its exact
+// result bytes, identity, and source commit are pinned so only that historical
+// artifact may use the source-verified canonical timestamp implicitly.
+const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 =
+  "1c23b0b80d262c80454b522b5d9526b7d823177d6cb599a4f7acb02a59c80660";
+const LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID = "42a3ea8f-b416-477e-b224-2c4ced72e675";
+const LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA = "810f36ae";
 const MEMCORRECT_SCOPED_TASK_IDS = new Set(
   Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT / 4 }, (_, index) =>
     `memcorrect-${MEMCORRECT_FULL_SEED}-${(index * 4 + 2).toString(16)}`),
@@ -241,6 +248,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function requireExactMemCorrectProvenance(
   result: BenchmarkResult,
   manifest: BenchmarkReproManifest,
+  resultSha256: string,
   datasetVersion: string,
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
 ): {
@@ -280,10 +288,20 @@ function requireExactMemCorrectProvenance(
   if (!isRecord(benchmarkOptions)) {
     throw new Error("MemCorrect result must persist full-corpus generator options");
   }
-  for (const key of ["personaCount", "factsPerPersona", "nowIso", "maintenanceCycles", "uptakeLatencyCap"] as const) {
+  for (const key of ["personaCount", "factsPerPersona", "maintenanceCycles", "uptakeLatencyCap"] as const) {
     if (benchmarkOptions[key] !== MEMCORRECT_GENERATOR_OPTIONS[key]) {
       throw new Error(`MemCorrect generator option ${key} does not match the pinned full corpus`);
     }
+  }
+  const isPinnedLegacyBuildWeekResult =
+    resultSha256 === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_SHA256 &&
+    result.meta.id === LEGACY_BUILD_WEEK_MEMCORRECT_RESULT_ID &&
+    result.meta.gitSha === LEGACY_BUILD_WEEK_MEMCORRECT_GIT_SHA;
+  if (
+    benchmarkOptions["nowIso"] !== MEMCORRECT_GENERATOR_OPTIONS.nowIso &&
+    !(benchmarkOptions["nowIso"] === undefined && isPinnedLegacyBuildWeekResult)
+  ) {
+    throw new Error("MemCorrect generator option nowIso does not match the pinned full corpus");
   }
   if (result.config.adapterMode !== "remnic-native") {
     throw new Error("MemCorrect Build Week receipts require adapterMode remnic-native");
@@ -690,6 +708,9 @@ export function buildBuildWeekEvidenceReceipt(
   if (manifest.run.mode !== "full") {
     throw new Error("manifest mode must be full");
   }
+  if (manifest.git.dirty !== false || manifest.git.dirtyEntryCount !== 0) {
+    throw new Error("Build Week evidence receipts require a clean Git worktree manifest");
+  }
 
   const failureCount = result.results.tasks.filter((task) => {
     const details = task.details;
@@ -720,7 +741,7 @@ export function buildBuildWeekEvidenceReceipt(
   requireCompatibleGitIdentity(manifest.git.shortCommit, result.meta.gitSha, "manifest short commit and benchmark result Git identity");
 
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
-    ? requireExactMemCorrectProvenance(result, manifest, options.datasetVersion, options.publicationScope)
+    ? requireExactMemCorrectProvenance(result, manifest, resultSha256, options.datasetVersion, options.publicationScope)
     : (() => {
         const fileBackedReceipt = requireFileBackedDatasetProvenance(result, manifest);
         requirePinnedFullFileBackedCorpus(

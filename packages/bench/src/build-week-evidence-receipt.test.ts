@@ -939,6 +939,43 @@ test("receipt binds result provenance to the manifest Git identity", () => {
   );
 });
 
+test("receipt rejects dirty or inconsistent Git worktree provenance", () => {
+  const dirtySources = syntheticSources({ limit: 2 });
+  const dirtyManifest = JSON.parse(dirtySources.manifestJson) as BenchmarkReproManifest;
+  dirtyManifest.git.dirty = true;
+  dirtyManifest.git.dirtyEntryCount = 1;
+  rehashManifest(dirtyManifest);
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...dirtySources,
+        manifestJson: JSON.stringify(dirtyManifest),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /clean Git worktree manifest/,
+  );
+
+  const inconsistentSources = syntheticSources({ limit: 2 });
+  const inconsistentManifest = JSON.parse(inconsistentSources.manifestJson) as BenchmarkReproManifest;
+  inconsistentManifest.git.dirtyEntryCount = 1;
+  rehashManifest(inconsistentManifest);
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...inconsistentSources,
+        manifestJson: JSON.stringify(inconsistentManifest),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /clean Git worktree manifest/,
+  );
+});
+
 test("full MemCorrect receipts bind conditional metrics to canonical scenarios", () => {
   const build = (result: BenchmarkResult) =>
     buildBuildWeekEvidenceReceipt({
