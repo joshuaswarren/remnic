@@ -494,7 +494,7 @@
         body: JSON.stringify({ namespace: state.namespace, event }),
       });
       const body = await response.text();
-      if (!response.ok) throw new Error(apiError(response.status, body));
+      if (!response.ok) throw relayResponseError(response.status, body);
       const refreshed = await refreshLive("approval");
       if (!refreshed) {
         dom.approvalDialog.close();
@@ -509,6 +509,9 @@
       dom.approvalDialog.close();
       showToast("Authenticated human approval recorded in the mission lineage.");
     } catch (error) {
+      retainOrClearAuthenticatedPrincipal(error, currentLiveContext());
+      if (!Model.isValidActorId(state.authenticatedPrincipal)) dom.operatorIdInput.value = "";
+      if (state.mode === "live" && state.snapshot) render();
       dom.approvalError.textContent = error instanceof Error ? error.message : "Approval failed.";
     } finally {
       dom.confirmApprovalButton.textContent = "Approve correction →";
@@ -535,6 +538,12 @@
     } catch {
       return `Relay API ${status}: request failed`;
     }
+  }
+
+  function relayResponseError(status, body) {
+    const error = new Error(apiError(status, body));
+    error.relayStatus = status;
+    return error;
   }
 
   function currentLiveContext() {
@@ -577,11 +586,7 @@
       cache: "no-store",
     });
     const body = await response.text();
-    if (!response.ok) {
-      const error = new Error(apiError(response.status, body));
-      error.relayStatus = response.status;
-      throw error;
-    }
+    if (!response.ok) throw relayResponseError(response.status, body);
     const encodedPrincipal = response.headers.get("x-remnic-authenticated-principal");
     let authenticatedPrincipal = "";
     if (encodedPrincipal) {

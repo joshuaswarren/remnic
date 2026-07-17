@@ -218,7 +218,10 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
   assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
-  assert.match(controller, /error\.relayStatus = response\.status/);
+  assert.match(controller, /function relayResponseError\(status, body\)/);
+  assert.match(controller, /error\.relayStatus = status/);
+  assert.equal((controller.match(/throw relayResponseError\(response\.status, body\)/g) || []).length, 2);
+  assert.match(controller, /retainOrClearAuthenticatedPrincipal\(error, currentLiveContext\(\)\)/);
   assert.match(controller, /operatorLabelInput\.readOnly = Boolean\(pendingDraft\)/);
   assert.match(controller, /Retry will reuse this exact approval event/);
   assert.doesNotMatch(controller, /if \(!approved\) \{\s*safeSessionRemove\(key\)/);
