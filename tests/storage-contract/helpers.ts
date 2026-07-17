@@ -55,6 +55,14 @@ export function makeStorageTestConfig(
     extractionMinUserTurns: 1,
     consolidateEveryN: 50,
     initGateTimeoutMs: 1000,
+    // #1903: run storage-contract chokepoint tests with the catalog touch path
+    // in its immediate/wired mode (no coalescing, state-file writes DO touch) so
+    // they keep verifying the post-write hook WIRING for every entry point. The
+    // new coalescing + state-gating behaviors are covered by the dedicated
+    // catalog.test.ts / storage-catalog-touch-gating.test.ts suites.
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
     ...overrides,
   });
 }
