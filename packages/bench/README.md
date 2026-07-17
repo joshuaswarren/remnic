@@ -162,7 +162,7 @@ Commit only a sanitized evidence receipt, never the private result or manifest:
 pnpm exec tsx scripts/bench/generate-build-week-evidence-receipt.ts \
   --result "$BUILD_WEEK_RESULTS_DIR/<result>.json" \
   --manifest "$BUILD_WEEK_RESULTS_DIR/MANIFEST.json" \
-  --output docs/benchmarks/results/<public-receipt>.json \
+  --output docs/benchmarks/evidence/<public-receipt>.json \
   --dataset-version longmemeval-oracle-v1 \
   --bounded-task-count 300 \
   --confirm-fresh-isolated-store \
@@ -193,17 +193,45 @@ file-backed benchmark:
 pnpm exec tsx scripts/bench/generate-build-week-evidence-receipt.ts \
   --result "$BUILD_WEEK_RESULTS_DIR/<memcorrect-result>.json" \
   --manifest "$BUILD_WEEK_RESULTS_DIR/MANIFEST.json" \
-  --output docs/benchmarks/results/<public-memcorrect-receipt>.json \
+  --output docs/benchmarks/evidence/<public-memcorrect-receipt>.json \
   --dataset-version memcorrect-v1-c077e7 \
   --full-task-count 40 \
   --confirm-fresh-isolated-store \
   --limitations singleRun,estimatedAccounting,modelJudged
 ```
 
+### Completed Build Week evidence
+
+The July 17 run at Remnic 9.7.6, source head `810f36ae`, completed the full
+uncapped 500-task LongMemEval-oracle matrix with zero failures. The public
+[frontier artifact](../../docs/benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+and [sanitized receipt](../../docs/benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json)
+report `contains_answer=0.49`, F1 `0.5551`, `judge_accuracy=0.762`, and
+`search_hits=8.538`. The receipt binds dataset payload SHA-256
+`821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`,
+records 2,892 calls and 745.745695 locally estimated budget units, and confirms
+a fresh isolated store and zero Sol calls.
+
+The same source head completed the generated 40-scenario
+`memcorrect-v1-c077e7` corpus with zero task failures. Its
+[sanitized receipt](../../docs/benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json)
+reports deterministic `uptake_at_next=0`, fully censored uptake latency of 8,
+`non_resurrection=0`, `false_apply=1`, `scope_precision=0`, and
+`reassertion=1`. Terra's model-judged correction acceptance was `0.9875` and
+stale-harm avoidance was `1`. Those judgments do not override the
+deterministic failures; this is mixed evidence, not a strong or successful
+MemCorrect result. The receipt records 550 calls and 98.720145 locally
+estimated budget units, fresh isolated stores, and zero Sol calls.
+
+Both receipts label token and budget-unit accounting as local estimates rather
+than account billing and cover one model-judged run each, without run-to-run
+variance. Raw results, manifests, reports, and ledgers remain private because
+they can contain benchmark content or local state.
+
 Codex built and adversarially reviewed the Build Week adapter, Responses
 provider, and report card. The underlying Remnic engine and original benchmark
-harness are prior work. The evidence ledger, credit-backed frontier-run
-placeholder, and release status live in the root [`HACKATHON.md`](../../HACKATHON.md).
+harness are prior work. The evidence ledger, completed frontier evidence, and
+release status live in the root [`HACKATHON.md`](../../HACKATHON.md).
 
 The claimed judge path requires Node.js 22.12+. It is verified from source and
 from packed tarballs installed into a clean global prefix on Linux; macOS is

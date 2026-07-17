@@ -74,13 +74,14 @@ and Codex session evidence at submission time.
 - [x] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
   GPT-5.6 through the OpenAI Responses API as the grading model. It scores
   benchmark answers, correction acceptance, and stale-memory harm.
-- [ ] GPT-5.6 frontier-tier artifact. Credit-backed benchmark runs use
+- [x] GPT-5.6 frontier-tier evidence. Credit-backed benchmark runs use
   `gpt-5.6-luna` for bulk responder and internal work and `gpt-5.6-terra` for
   quality-critical judging. `gpt-5.6-sol` is outside the bounded plan and is
-  disabled unless the operator explicitly opts in. The completed selected
-  LoCoMo comparison below is diagnostic evidence, not this artifact gate. A
-  leaderboard result is claimed only after a full-coverage artifact and clean
-  manifest are committed under `docs/benchmarks/results/`.
+  disabled unless the operator explicitly opts in. The full 500-task
+  LongMemEval artifact and its sanitized receipt are committed below. The full
+  40-scenario MemCorrect run has a sanitized receipt; its mixed deterministic
+  and model-judged metrics are reported without turning it into a success
+  claim. The selected LoCoMo comparison remains diagnostic evidence only.
 - [x] Memory report card. Extends `remnic bench export --format html` into
   a single shareable scored report with per-dimension scores, correction
   behavior, and provenance. Included in the existing publish feed for
@@ -191,15 +192,53 @@ checkout branch switch and recorded a dirty Git envelope; the result files
 retain the launch SHA, but neither they nor that manifest are used for a
 leaderboard or submission score claim.
 
+On July 17, source head `810f36ae` at Remnic 9.7.6 completed the uncapped
+500/500 LongMemEval-oracle run with zero task failures. The `real` profile used
+fresh isolated direct-adapter stores, separate from production Remnic data.
+Luna at medium reasoning handled responder and internal work; Terra at high
+reasoning handled judging. The aggregate scores were `contains_answer=0.49`,
+F1 `0.5551`, `judge_accuracy=0.762`, and `search_hits=8.538`. The staged
+dataset payload SHA-256 is
+`821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
+The committed
+[frontier artifact](./docs/benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+and
+[sanitized receipt](./docs/benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json)
+bind the private result and manifest. The receipt records 2,892 calls,
+50,212,877 estimated input-plus-output tokens, and 745.745695 locally estimated
+budget units, with zero Sol calls. These are instrumentation estimates, not
+account billing. This is one uncalibrated, model-judged run and does not
+establish run-to-run variance.
+
+The same source head completed all 40 generated MemCorrect v1 scenarios with
+zero task failures through the `real` Remnic-native adapter and fresh isolated
+stores. Its pinned corpus version is `memcorrect-v1-c077e7`, payload SHA-256
+`ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb`.
+The deterministic results are negative or mixed: `uptake_at_next=0`, uptake
+latency 8 with every observation censored, `non_resurrection=0`,
+`false_apply=1`, `scope_precision=0`, and `reassertion=1`. The Terra-judged
+scores diverge sharply: correction acceptance was `0.9875` and stale-harm
+avoidance was `1`. That divergence is the finding, not evidence that Remnic
+passed MemCorrect. The
+[sanitized receipt](./docs/benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json)
+records 550 calls, 8,355,708 estimated input-plus-output tokens, and 98.720145
+locally estimated budget units, with zero Sol calls. It carries the same
+single-run, model-judged, and estimated-accounting limitations. A 25,056-byte
+self-contained report was retained privately with SHA-256
+`006509082e20d67bb948bd461cb5825a8c0268bade67247c59c63d17efe53792`;
+it is not a public artifact because task detail can contain benchmark content.
+
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
 paste the real session ID here before submission.
 
-GPT-5.6 frontier artifact and manifest:
-**PENDING LONGMEM/MEMCORRECT EVIDENCE.** The completed selected LoCoMo pair is
-not promotable. Link only a committed artifact produced by the credit-backed
-Codex CLI protocol below, and do not convert bounded coverage into a full-run
-claim.
+GPT-5.6 frontier evidence: the full LongMemEval
+[artifact](./docs/benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+and [receipt](./docs/benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json),
+plus the full MemCorrect
+[receipt](./docs/benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json),
+are committed. The selected LoCoMo pair remains non-promotable diagnostic
+evidence.
 
 ## How Codex and GPT-5.6 were used
 
@@ -215,8 +254,11 @@ structured output. There are two provider paths. The optional Responses API
 judge uses the exact model id `gpt-5.6`. The ChatGPT-backed Codex CLI has other
 names. Luna does the bulk work. Terra does the key judge work. These names and
 paths are not the same. The selected LoCoMo diagnostic is reported only with
-its coverage and limitations; no CLI leaderboard or submission score is
-claimed until a real, locked artifact exists.
+its coverage and limitations. The full CLI measurements are reported through
+the locked LongMemEval artifact and sanitized LongMemEval and MemCorrect
+receipts above. The Terra scores remain explicitly uncalibrated and
+model-judged; the MemCorrect deterministic/model-judged divergence remains
+visible rather than being collapsed into a success claim.
 
 ## Credit-backed Codex CLI run protocol
 
