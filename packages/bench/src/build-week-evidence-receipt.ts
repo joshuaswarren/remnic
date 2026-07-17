@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpath, readFile, writeFile } from "node:fs/promises";
+import { realpath, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -107,6 +107,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_DATASET_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+@/-]{0,127}$/;
 const SAFE_PUBLIC_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+@:/-]{0,255}$/;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
+const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 const MEMCORRECT_BENCHMARK_ID = "memcorrect-v1";
 const MEMCORRECT_BENCHMARK_VERSION = "1.0.0";
 const MEMCORRECT_FULL_SEED = 0xc077e7;
@@ -369,11 +370,15 @@ function providerReceipt(
   if (!provider) return undefined;
   const providerName = requireSafeIdentifier(provider.provider, `${role} provider`);
   const model = requireSafeIdentifier(provider.model, `${role} model`);
+  const reasoningEffort = provider.reasoningEffort;
+  if (reasoningEffort !== undefined && !SUPPORTED_REASONING_EFFORTS.has(reasoningEffort)) {
+    throw new Error(`${role} reasoningEffort must be one of low, medium, high, or xhigh`);
+  }
   return {
     role,
     provider: providerName,
     model,
-    reasoningEffort: provider.reasoningEffort ?? null,
+    reasoningEffort: reasoningEffort ?? null,
     // BenchmarkResult does not persist transport service-tier diagnostics.
     // Keep the public receipt honest instead of inferring a tier from provider type.
     serviceTier: null,
@@ -609,13 +614,28 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   freshIsolatedStoreConfirmed: true;
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"];
 }): Promise<BuildWeekEvidenceReceipt> {
-  const [resultRealpath, manifestRealpath, outputRealpath] = await Promise.all([
+  const [resultRealpath, manifestRealpath, outputRealpath, resultStat, manifestStat] = await Promise.all([
     realpath(args.resultPath),
     realpath(args.manifestPath),
     canonicalOutputPath(args.outputPath),
+    stat(args.resultPath),
+    stat(args.manifestPath),
   ]);
   if (outputRealpath === resultRealpath || outputRealpath === manifestRealpath) {
     throw new Error("receipt output path must not alias the private result or manifest source");
+  }
+  let outputStat;
+  try {
+    outputStat = await stat(args.outputPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (
+    outputStat &&
+    ((outputStat.dev === resultStat.dev && outputStat.ino === resultStat.ino) ||
+      (outputStat.dev === manifestStat.dev && outputStat.ino === manifestStat.ino))
+  ) {
+    throw new Error("receipt output file must not share identity with the private result or manifest source");
   }
   const [resultJson, manifestJson] = await Promise.all([
     readFile(args.resultPath),

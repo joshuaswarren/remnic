@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -666,6 +666,20 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
       }),
     /secret or private-account material/,
   );
+
+  const unsafeReasoningEffort = syntheticResult();
+  unsafeReasoningEffort.config.systemProvider!.reasoningEffort = "/home/private/reasoning" as "medium";
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...syntheticSources({ result: unsafeReasoningEffort }),
+        datasetVersion: "oracle-v1",
+        limitationCodes: [],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "full", expectedTaskCount: 2 },
+      }),
+    /reasoningEffort must be one of/,
+  );
 });
 
 test("receipt generation requires an explicit fresh isolated store confirmation", () => {
@@ -690,6 +704,7 @@ test("receipt writer rejects output paths that alias private source files", asyn
     const resultPath = join(directory, "result.json");
     const manifestPath = join(directory, "MANIFEST.json");
     const symlinkPath = join(directory, "receipt-link.json");
+    const hardLinkPath = join(directory, "receipt-hard-link.json");
     await Promise.all([
       writeFile(resultPath, sources.resultJson),
       writeFile(manifestPath, sources.manifestJson),
@@ -712,6 +727,10 @@ test("receipt writer rejects output paths that alias private source files", asyn
     await symlink(manifestPath, symlinkPath);
     await assert.rejects(write(symlinkPath), /must not alias/);
     assert.equal(await readFile(manifestPath, "utf8"), sources.manifestJson);
+
+    await link(resultPath, hardLinkPath);
+    await assert.rejects(write(hardLinkPath), /must not share identity/);
+    assert.equal(await readFile(resultPath, "utf8"), sources.resultJson);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
