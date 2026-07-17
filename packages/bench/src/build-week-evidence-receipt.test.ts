@@ -497,7 +497,10 @@ test("full MemCorrect receipts bind the pinned generated corpus without copying 
 });
 
 test("MemCorrect receipts reject missing, fabricated, or mismatched generated-corpus provenance", () => {
-  const build = (sources: ReturnType<typeof syntheticSources>, datasetVersion = BUILD_WEEK_MEMCORRECT_DATASET_VERSION) =>
+  const build = (
+    sources: ReturnType<typeof syntheticSources>,
+    datasetVersion: string = BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+  ) =>
     buildBuildWeekEvidenceReceipt({
       ...sources,
       datasetVersion,
@@ -554,7 +557,10 @@ test("MemCorrect receipts reject missing, fabricated, or mismatched generated-co
 });
 
 test("MemCorrect receipts reject non-full coverage, failed tasks, wrong adapter, and incomplete judge telemetry", () => {
-  const build = (result: BenchmarkResult, expectedTaskCount = BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT) =>
+  const build = (
+    result: BenchmarkResult,
+    expectedTaskCount: number = BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
+  ) =>
     buildBuildWeekEvidenceReceipt({
       ...syntheticSources({ result }),
       datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
