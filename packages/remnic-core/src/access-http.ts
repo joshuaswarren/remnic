@@ -1703,6 +1703,17 @@ export class EngramAccessHttpServer {
     if (req.method === "POST" && relayEventMatch) {
       const missionId = decodeRelayMissionIdSegment(relayEventMatch[1] ?? "");
       const body = await this.readJsonBody(req);
+      const unexpectedFields = Object.keys(body).filter(
+        (key) => key !== "namespace" && key !== "event",
+      );
+      if (unexpectedFields.length > 0) {
+        throw new EngramAccessInputError(
+          `Relay append body contains unexpected field(s): ${unexpectedFields.sort().join(", ")}`,
+        );
+      }
+      if (!Object.prototype.hasOwnProperty.call(body, "event")) {
+        throw new EngramAccessInputError("Relay append body must contain an event object");
+      }
       if (
         Object.prototype.hasOwnProperty.call(body, "namespace") &&
         body.namespace !== undefined &&
@@ -1715,7 +1726,6 @@ export class EngramAccessHttpServer {
         req,
         typeof body.namespace === "string" ? body.namespace : undefined,
       );
-      const { namespace: _ignoredNamespace, ...event } = body;
       const op = getOperation("relay_mission_append");
       if (!op) {
         throw new Error("access-boundary: operation not registered: relay_mission_append");
@@ -1723,7 +1733,7 @@ export class EngramAccessHttpServer {
       let releaseWriteQuota: (() => void) | undefined;
       try {
         const output = (await op.run(
-          { missionId, namespace, event },
+          { missionId, namespace, event: body.event },
           {
             service: this.service,
             authenticatedPrincipal: this.resolveRequestPrincipal(req),

@@ -67,11 +67,18 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
     const base = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}`;
     try {
       const fixture = createRelayMissionFixture();
+      const flatBody = await fetch(`${base}/events`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(fixture[0]),
+      });
+      assert.equal(flatBody.status, 400);
+
       for (const input of fixture) {
         const response = await fetch(`${base}/events`, {
           method: "POST",
           headers: authHeaders(),
-          body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, ...input }),
+          body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, event: input }),
         });
         assert.equal(response.status, 201, await response.text());
       }
@@ -79,7 +86,7 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
       const replay = await fetch(`${base}/events`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, ...fixture[0] }),
+        body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, event: fixture[0] }),
       });
       assert.equal(replay.status, 200);
       assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
@@ -156,7 +163,7 @@ test("HTTP Relay surface distinguishes empty, invalid, unauthorized, and backend
         headers: authHeaders("read-token"),
         body: JSON.stringify({
           namespace: RELAY_DEMO_NAMESPACE,
-          ...createRelayMissionFixture()[0],
+          event: createRelayMissionFixture()[0],
         }),
       });
       assert.equal(deniedWrite.status, 403);
@@ -203,14 +210,14 @@ test("HTTP Relay write quota is charged only for a real append, never an idempot
       const first = await fetch(url, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(fixture[0]),
+        body: JSON.stringify({ event: fixture[0] }),
       });
       assert.equal(first.status, 201);
 
       const replay = await fetch(url, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(fixture[0]),
+        body: JSON.stringify({ event: fixture[0] }),
       });
       assert.equal(replay.status, 200);
       assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
@@ -218,7 +225,7 @@ test("HTTP Relay write quota is charged only for a real append, never an idempot
       const secondEvent = await fetch(url, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(fixture[1]),
+        body: JSON.stringify({ event: fixture[1] }),
       });
       assert.equal(secondEvent.status, 429);
       assert.equal(((await secondEvent.json()) as { code: string }).code, "write_rate_limited");
@@ -251,7 +258,7 @@ test("HTTP Relay reserves global write quota across concurrent mission appends",
           fetch(url, {
             method: "POST",
             headers: authHeaders(),
-            body: JSON.stringify(startEvent),
+            body: JSON.stringify({ event: startEvent }),
           })
         )
       );
@@ -265,7 +272,7 @@ test("HTTP Relay reserves global write quota across concurrent mission appends",
       const replay = await fetch(urls[winnerIndex] ?? "", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(startEvent),
+        body: JSON.stringify({ event: startEvent }),
       });
       assert.equal(replay.status, 200);
       assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
