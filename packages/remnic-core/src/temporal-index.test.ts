@@ -263,9 +263,13 @@ test("failed atomic commit never publishes a mutated temporal cache", async () =
     await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-11"),
     new Set([originalPath]),
   );
+  // The tag half is NOT committed when the temporal write fails (issue #1911,
+  // Cursor Medium): committing tags while temporal stays unchanged leaves a
+  // durable mismatch. Both halves stay at their prior state, so "rejected" has
+  // no tag membership until a later successful (both-halves) index.
   assert.deepEqual(
     await queryByTagsAsync(memoryDir, ["rejected"]),
-    new Set([rejectedPath]),
+    new Set<string>(),
   );
 
   await indexMemory(memoryDir, rejectedPath, "2026-03-10T12:00:00.000Z", ["rejected"]);
@@ -430,7 +434,10 @@ test("temporal index writers fail open on symlink lock blockers", async () => {
   const dateMatches = await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10");
   const tagMatches = await queryByTagsAsync(memoryDir, ["concurrency/shared"]);
   assert.equal(dateMatches, null);
-  assert.deepEqual(tagMatches, new Set(["/tmp/remnic-temporal-worker-101-memory-0.md"]));
+  // Both halves fail open together (issue #1911, Cursor Medium): the symlinked
+  // temporal lock blocks the temporal write, so the tag half is also skipped
+  // (no durable mismatch). The tag index is never created → query returns null.
+  assert.equal(tagMatches, null);
 });
 
 test("tag queries distinguish missing index from valid no-match results", async () => {

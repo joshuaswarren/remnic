@@ -22,6 +22,13 @@ import {
 const TEMPORAL_INDEX_FILE = "index_time.json";
 const TAG_INDEX_FILE = "index_tags.json";
 const INDEX_LOCK_STALE_MS = 60_000;
+// Bounded blocking-wait cap for the sync per-file lock (issue #1911, Cursor
+// Medium): the sync waiter blocks the Node event loop with sleepSync, so if a
+// lock is held by an in-flight async write (awaited I/O) it can't be released
+// until the loop runs again. Cap the stall at this bound and fail open rather
+// than deadlock or stall for INDEX_LOCK_STALE_MS. 1.5s tolerates a slow disk
+// write while bounding the worst-case event-loop freeze.
+const SYNC_INDEX_LOCK_BOUND_MS = 1_500;
 const INDEX_LOCK_POLL_MS = 10;
 const INDEX_PROCESS_START_TOLERANCE_MS = 2_000;
 const INDEX_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
@@ -159,10 +166,9 @@ function withIndexFileLock(filePath: string, update: () => void): void {
   const lockDir = `${filePath}.lock.d`;
   // Bound the acquisition (issue #1911, Codex Medium). sleepSync() blocks the
   // Node event loop, so an UNBOUNDED wait here would stall the whole process if
-  // the lock is held elsewhere. Cap the total blocking wait and fail open
+  const maxAttempts = Math.max(1, Math.ceil(SYNC_INDEX_LOCK_BOUND_MS / INDEX_LOCK_POLL_MS));
   // (advisory indexes) rather than risk starving the loop — e.g. a lock held by
   // in-flight async work that needs the very loop this call is blocking.
-  const maxAttempts = Math.max(1, Math.ceil(INDEX_LOCK_STALE_MS / INDEX_LOCK_POLL_MS));
   let acquired = false;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
@@ -229,23 +235,27 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 function applyMutation(memoryDir: string, mutation: TemporalIndexCompatibilityMutation): void {
   try {
     fs.mkdirSync(stateDir(memoryDir), { recursive: true });
-    // Hold ONE lock across BOTH file writes so two sync calls can't interleave
-    // and commit mismatched temporal/tag halves. Use a DEDICATED op-lock path
-    // (.index-op.lock.d), NOT the per-file lockdirs the async mutators hold
-    // across awaited I/O (issue #1911, Codex Medium): sharing a lock between the
-    // event-loop-BLOCKING sync waiter and an async holder would deadlock. The
-    // async surface serializes itself in-memory and readers take a consistent
-    // snapshot, so the two surfaces need no shared on-disk lock. Cross-surface
-    // writes stay torn-free via writeJsonAtomic; advisory indexes fail open.
-    const opLock = path.join(stateDir(memoryDir), ".index-op");
-    withIndexFileLock(opLock, () => {
-      const temporalPath = temporalIndexPath(memoryDir);
-      writeJsonAtomic(
-        temporalPath,
-        applyTemporalIndexCompatibilityMutation(readJson(temporalPath), mutation),
-      );
-      const tagPath = tagIndexPath(memoryDir);
-      writeJsonAtomic(tagPath, applyTagIndexCompatibilityMutation(readJson(tagPath), mutation));
+    // Coordinate with the ASYNC surface by acquiring the SAME per-file lockdirs
+    // (issue #1911, Cursor Medium) — `<temporal>.lock.d` then `<tag>.lock.d`,
+    // nested in a fixed order (no deadlock: the async surface acquires them one
+    // at a time, never both). The acquisition is BOUNDED + fail-open
+    // (withIndexFileLock), so an event-loop-blocking sync waiter can never stall
+    // the loop waiting on a lock held across an async await — if the async write
+    // doesn't release in the bound, sync gives up (advisory indexes fail open).
+    // Holding both locks together makes the paired write atomic vs. both surfaces.
+    const temporalPath = temporalIndexPath(memoryDir);
+    const tagPath = tagIndexPath(memoryDir);
+    withIndexFileLock(temporalPath, () => {
+      withIndexFileLock(tagPath, () => {
+        writeJsonAtomic(
+          temporalPath,
+          applyTemporalIndexCompatibilityMutation(readJson(temporalPath), mutation),
+        );
+        writeJsonAtomic(
+          tagPath,
+          applyTagIndexCompatibilityMutation(readJson(tagPath), mutation),
+        );
+      });
     });
   } catch {
     // Advisory indexes fail open.
