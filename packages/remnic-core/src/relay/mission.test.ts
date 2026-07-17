@@ -447,6 +447,61 @@ test("conflict decisions must contain genuinely distinct normalized statements",
   );
 });
 
+test("decision identity remains bound to one normalized statement across beliefs and corrections", () => {
+  const events = fixtureEvents();
+  const replacementBeliefIndex = events.findIndex(
+    (event) => event.payload.kind === "belief_observed" && event.payload.decisionId === "decision-refresh-after-expiry"
+  );
+  assert.notEqual(replacementBeliefIndex, -1);
+  const replacementBelief = events[replacementBeliefIndex];
+  assert.ok(replacementBelief?.payload.kind === "belief_observed");
+  const reboundBelief = RelayMissionEventSchema.parse({
+    ...replacementBelief,
+    eventId: "fixture-event-rebound-policy",
+    payload: {
+      ...replacementBelief.payload,
+      beliefId: "belief-rebound-policy",
+      statement: "Mint a new checkout token for every request and retry.",
+    },
+  });
+  const reboundSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: [
+      ...events.slice(0, replacementBeliefIndex + 1),
+      reboundBelief,
+      ...events.slice(replacementBeliefIndex + 1),
+    ],
+  });
+  assert.equal(reboundSnapshot.receipt.complete, false);
+  assert.ok(
+    reboundSnapshot.receipt.missingEvidence.includes("decision:decision-refresh-after-expiry:statement-consistency")
+  );
+
+  const contradictoryCorrection = events.map((event) =>
+    event.payload.kind === "correction_proposed"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            statement: "Mint a new checkout token for every request and retry.",
+          },
+        }
+      : event
+  );
+  const correctionSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: contradictoryCorrection,
+  });
+  assert.equal(correctionSnapshot.receipt.complete, false);
+  assert.deepEqual(correctionSnapshot.receipt.supersededDecisionIds, []);
+  assert.equal(correctionSnapshot.conflicts[0]?.status, "open");
+  assert.ok(
+    correctionSnapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:replacement-statement")
+  );
+});
+
 test("a correction must account for every decision in its observed conflict", () => {
   const events = fixtureEvents();
   const belief = events.find((event) => event.payload.kind === "belief_observed");

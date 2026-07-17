@@ -889,6 +889,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         );
         const existing = decisions.get(payload.decisionId);
         if (existing) {
+          if (!decisionStatementsMatch(existing.statement, payload.statement)) {
+            missingEvidence.add(`decision:${payload.decisionId}:statement-consistency`);
+          }
           if (!existing.heldByAgentIds.includes(payload.agentId)) {
             existing.heldByAgentIds.push(payload.agentId);
           }
@@ -1019,7 +1022,14 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         };
         corrections.set(payload.correctionId, correction);
         correctionProposalAppendPositions.set(payload.correctionId, appendPosition);
-        if (!decisions.has(payload.proposedDecisionId)) {
+        const existingProposedDecision = decisions.get(payload.proposedDecisionId);
+        const replacementStatementMatches =
+          existingProposedDecision === undefined ||
+          decisionStatementsMatch(existingProposedDecision.statement, payload.statement);
+        if (!replacementStatementMatches) {
+          missingEvidence.add(`correction:${payload.correctionId}:replacement-statement`);
+        }
+        if (existingProposedDecision === undefined) {
           decisions.set(payload.proposedDecisionId, {
             decisionId: payload.proposedDecisionId,
             statement: payload.statement,
@@ -1052,7 +1062,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           }
           if (!correctionCoversConflict(correction, conflict)) {
             missingEvidence.add(`conflict:${payload.conflictId}:decision-link`);
-          } else if (sourceLinked && conflictPredatesProposal && conflictDisagreementIds.has(payload.conflictId)) {
+          } else if (
+            sourceLinked &&
+            conflictPredatesProposal &&
+            conflictDisagreementIds.has(payload.conflictId) &&
+            replacementStatementMatches
+          ) {
             groundedCorrectionIds.add(payload.correctionId);
             conflict.status = "proposed";
             conflict.correctionId = payload.correctionId;
@@ -1581,6 +1596,10 @@ function normalizeDecisionStatement(statement: string): string {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .replace(/[.!?]+$/, "");
+}
+
+function decisionStatementsMatch(left: string, right: string): boolean {
+  return normalizeDecisionStatement(left) === normalizeDecisionStatement(right);
 }
 
 function recordEarliestAppendPosition(positions: Map<string, number>, key: string, position: number): void {
