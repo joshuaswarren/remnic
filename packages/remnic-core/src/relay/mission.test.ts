@@ -91,6 +91,23 @@ test("idempotent append replays matching input and rejects conflicting input", a
   });
 });
 
+test("a rejected append hook does not poison the mission mutation chain", async () => {
+  await withTempRoot(async (root) => {
+    const store = deterministicStore(root);
+    const first = createRelayMissionFixture()[0]!;
+    await assert.rejects(
+      store.append(RELAY_DEMO_MISSION_ID, first, {
+        beforeAppend: () => {
+          throw new Error("quota rejected");
+        },
+      }),
+      /quota rejected/
+    );
+    const recovered = await store.append(RELAY_DEMO_MISSION_ID, first);
+    assert.equal(recovered.appended, true);
+  });
+});
+
 test("empty, partial, and bounded reads remain distinct and deterministic", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);
@@ -115,6 +132,13 @@ test("empty, partial, and bounded reads remain distinct and deterministic", asyn
     assert.equal(partial.bounds.totalEvents, 1);
     assert.equal(partial.events[0]?.payload.kind, "agent_status");
     assert.equal(partial.events[0]?.occurredAt, "2026-07-17T18:00:02.000Z");
+
+    const outsideWindow = await store.read(RELAY_DEMO_MISSION_ID, {
+      since: "2026-07-17T19:00:00.000Z",
+      limit: 1,
+    });
+    assert.equal(outsideWindow.found, true, "a known mission remains found outside the selected window");
+    assert.equal(outsideWindow.bounds.totalEvents, 0);
   });
 });
 

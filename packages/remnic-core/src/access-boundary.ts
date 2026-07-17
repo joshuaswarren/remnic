@@ -102,6 +102,8 @@ export const OPERATION_NAMES = [
   "shared_context_write_output",
   "shared_feedback_record",
   "shared_priorities_append",
+  "relay_mission_append",
+  "relay_mission_read",
   "shared_context_cross_signals_run",
   "shared_context_curate_daily",
   "compounding_weekly_synthesize",

@@ -16,7 +16,7 @@ const missionIdSchema = z
   .string()
   .min(1)
   .max(64)
-  .regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/, {
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
     message: "must contain only lowercase letters, numbers, and single hyphens",
   });
 
@@ -457,7 +457,11 @@ export class RelayMissionStore {
     this.lockMaxWaitMs = positiveIntegerOption(options.lockMaxWaitMs, "lockMaxWaitMs", 5_000);
   }
 
-  async append(missionIdValue: string, inputValue: RelayMissionEventInput): Promise<RelayMissionAppendResult> {
+  async append(
+    missionIdValue: string,
+    inputValue: RelayMissionEventInput,
+    hooks: { beforeAppend?: () => void | Promise<void> } = {}
+  ): Promise<RelayMissionAppendResult> {
     const missionId = missionIdSchema.parse(missionIdValue);
     const input = RelayMissionEventInputSchema.parse(inputValue);
     const missionDir = await this.ensureMissionDirectory();
@@ -493,6 +497,12 @@ export class RelayMissionStore {
               `mission ${missionId} reached the ${this.maxEvents}-event limit`
             );
           }
+
+          // Transport quotas run only after idempotency replay detection and
+          // while this mission's mutation lock is held. A response-lost retry
+          // remains replayable even when the original append used the final
+          // quota slot.
+          await hooks.beforeAppend?.();
 
           const recordedAt = validNow(this.now);
           const event = RelayMissionEventSchema.parse({
@@ -943,7 +953,11 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   }
 
   const eventWindow = filtered.slice(Math.max(0, filtered.length - options.limit));
-  const found = filtered.length > 0;
+  // `found` describes whether the mission has any valid persisted evidence,
+  // not whether the caller's optional time window happened to select an
+  // event. A known mission with an empty [since, until) window is distinct
+  // from a mission that has never existed.
+  const found = input.events.length > 0;
   return {
     schemaVersion: RELAY_MISSION_SCHEMA_VERSION,
     missionId,

@@ -387,6 +387,59 @@ export {
 } from "./access-http.js";
 export { EngramMcpServer } from "./access-mcp.js";
 
+// Remnic Relay — host-agnostic mission evidence and receipt contract.
+export {
+  RELAY_MISSION_DEFAULT_EVENT_LIMIT,
+  RELAY_MISSION_MAX_EVENT_LIMIT,
+  RELAY_MISSION_MAX_EVENTS,
+  RELAY_MISSION_MAX_FILE_BYTES,
+  RELAY_MISSION_MAX_LINE_BYTES,
+  RELAY_MISSION_SCHEMA_VERSION,
+  RelayEvidenceRefSchema,
+  RelayMissionEventInputSchema,
+  RelayMissionEventSchema,
+  RelayMissionPayloadSchema,
+  RelayMissionReadOptionsSchema,
+  RelayMissionStore,
+  RelayMissionStoreError,
+  compareRelayEvents,
+  reduceRelayMission,
+  relayMissionReceiptDigest,
+  type RelayAgentOutputSnapshot,
+  type RelayAgentSnapshot,
+  type RelayConflictSnapshot,
+  type RelayCorrectionSnapshot,
+  type RelayDecisionSnapshot,
+  type RelayEvidenceRef,
+  type RelayMissionAppendResult,
+  type RelayMissionEvent,
+  type RelayMissionEventInput,
+  type RelayMissionPayload,
+  type RelayMissionReadOptions,
+  type RelayMissionSnapshot,
+  type RelayMissionStatus,
+  type RelayMissionStoreErrorCode,
+  type RelayMissionStoreOptions,
+  type RelayPropagationSnapshot,
+  type RelayRecallSnapshot,
+  type RelayTestSnapshot,
+} from "./relay/mission.js";
+export {
+  RELAY_DEMO_MISSION_ID,
+  RELAY_DEMO_NAMESPACE,
+  createRelayMissionFixture,
+} from "./relay/mission-fixture.js";
+export {
+  appendRelayMissionEvent,
+  readRelayMission,
+  relayMissionAppendOperation,
+  relayMissionReadOperation,
+  type RelayMissionAppendAccessInput,
+  type RelayMissionAppendAccessOutput,
+  type RelayMissionReadAccessInput,
+  type RelayMissionReadAccessOutput,
+} from "./relay/mission-access.js";
+
 // agentAccessHttp.authToken SecretRef resolution (issue #757). Exposed so
 // host-specific bootstrap code (the OpenClaw plugin in `src/index.ts`, the
 // standalone server, the CLI) can resolve a SecretRef to a literal bearer

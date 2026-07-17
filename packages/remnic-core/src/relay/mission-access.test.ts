@@ -1,0 +1,271 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { EngramAccessHttpServer } from "../access-http.js";
+import { EngramAccessInputError, type EngramAccessService } from "../access-service.js";
+import type { StorageManager } from "../storage.js";
+import { createRelayMissionFixture, RELAY_DEMO_MISSION_ID, RELAY_DEMO_NAMESPACE } from "./mission-fixture.js";
+import type { RelayMissionSnapshot } from "./mission.js";
+
+async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-http-"));
+  try {
+    await run(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function fakeService(
+  root: string,
+  calls: Array<{ mode: "read" | "write"; namespace?: string; principal?: string }>
+): EngramAccessService {
+  const storage = { dir: root } as StorageManager;
+  return {
+    configRef: {
+      defaultNamespace: RELAY_DEMO_NAMESPACE,
+      namespacesEnabled: true,
+    },
+    getReadableStorageForNamespace: async (namespace?: string, principal?: string) => {
+      if (namespace === "forbidden") throw new EngramAccessInputError("namespace is not readable");
+      calls.push({ mode: "read", namespace, principal });
+      return { namespace: namespace ?? RELAY_DEMO_NAMESPACE, storage };
+    },
+    getWritableStorageForNamespace: async (namespace?: string, principal?: string) => {
+      if (namespace === "forbidden") throw new EngramAccessInputError("namespace is not writable");
+      calls.push({ mode: "write", namespace, principal });
+      return { namespace: namespace ?? RELAY_DEMO_NAMESPACE, storage };
+    },
+  } as unknown as EngramAccessService;
+}
+
+function authHeaders(token = "relay-token"): Record<string, string> {
+  return {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+}
+
+test("HTTP fixture endpoint returns one complete, namespace-authorized Relay receipt", async () => {
+  await withTempRoot(async (root) => {
+    const calls: Array<{
+      mode: "read" | "write";
+      namespace?: string;
+      principal?: string;
+    }> = [];
+    const server = new EngramAccessHttpServer({
+      service: fakeService(root, calls),
+      port: 0,
+      authToken: "relay-token",
+      principal: "relay-operator",
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    const base = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}`;
+    try {
+      const fixture = createRelayMissionFixture();
+      for (const input of fixture) {
+        const response = await fetch(`${base}/events`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, ...input }),
+        });
+        assert.equal(response.status, 201, await response.text());
+      }
+
+      const replay = await fetch(`${base}/events`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, ...fixture[0] }),
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
+
+      const response = await fetch(`${base}?namespace=${RELAY_DEMO_NAMESPACE}&limit=20`, {
+        headers: authHeaders(),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const snapshot = (await response.json()) as RelayMissionSnapshot;
+      assert.equal(snapshot.receipt.complete, true);
+      assert.deepEqual(snapshot.receipt.activeDecisionIds, ["decision-refresh-after-expiry"]);
+      assert.deepEqual(snapshot.receipt.supersededDecisionIds, ["decision-new-token-every-request"]);
+      assert.equal(snapshot.agents.length, 3);
+      assert.equal(snapshot.tests.at(-1)?.status, "passed");
+      assert.ok(calls.every((call) => call.namespace === RELAY_DEMO_NAMESPACE));
+      assert.ok(calls.every((call) => call.principal === "relay-operator"));
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+test("HTTP Relay surface distinguishes empty, invalid, unauthorized, and backend-failed reads", async () => {
+  await withTempRoot(async (root) => {
+    const service = fakeService(root, []);
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authTokenEntriesGetter: () => [
+        {
+          token: "read-token",
+          connector: "codex",
+          capabilities: {
+            version: 1,
+            ops: ["relay_mission_read"],
+            namespaces: [RELAY_DEMO_NAMESPACE],
+          },
+        },
+      ],
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    const origin = `http://127.0.0.1:${status.port}`;
+    const emptyUrl = `${origin}/engram/v1/relay/missions/empty-mission?namespace=${RELAY_DEMO_NAMESPACE}`;
+    try {
+      const unauthenticated = await fetch(emptyUrl);
+      assert.equal(unauthenticated.status, 401);
+
+      const empty = await fetch(emptyUrl, { headers: authHeaders("read-token") });
+      assert.equal(empty.status, 200);
+      assert.deepEqual(await empty.json(), assertEmptyMissionShape());
+
+      const badLimit = await fetch(`${emptyUrl}&limit=501`, {
+        headers: authHeaders("read-token"),
+      });
+      assert.equal(badLimit.status, 400);
+
+      const traversal = await fetch(
+        `${origin}/engram/v1/relay/missions/%2E%2Eproduction?namespace=${RELAY_DEMO_NAMESPACE}`,
+        {
+          headers: authHeaders("read-token"),
+        }
+      );
+      assert.equal(traversal.status, 400);
+
+      const wrongNamespace = await fetch(`${origin}/engram/v1/relay/missions/empty-mission?namespace=forbidden`, {
+        headers: authHeaders("read-token"),
+      });
+      assert.equal(wrongNamespace.status, 403);
+
+      const deniedWrite = await fetch(`${origin}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}/events`, {
+        method: "POST",
+        headers: authHeaders("read-token"),
+        body: JSON.stringify({
+          namespace: RELAY_DEMO_NAMESPACE,
+          ...createRelayMissionFixture()[0],
+        }),
+      });
+      assert.equal(deniedWrite.status, 403);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  await withTempRoot(async (root) => {
+    const missingRoot = path.join(root, "missing-storage-root");
+    const server = new EngramAccessHttpServer({
+      service: fakeService(missingRoot, []),
+      port: 0,
+      authToken: "relay-token",
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    try {
+      const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/relay/missions/backend-failure`, {
+        headers: authHeaders(),
+      });
+      assert.equal(response.status, 500);
+      assert.equal(((await response.json()) as { code: string }).code, "relay_unsafe_path");
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+test("HTTP Relay write quota is charged only for a real append, never an idempotent replay", async () => {
+  await withTempRoot(async (root) => {
+    const server = new EngramAccessHttpServer({
+      service: fakeService(root, []),
+      port: 0,
+      authToken: "relay-token",
+      adminConsoleEnabled: false,
+      writeRateLimitMaxRequests: 1,
+      writeRateLimitWindowMs: 60_000,
+    });
+    const status = await server.start();
+    const url = `http://127.0.0.1:${status.port}/engram/v1/relay/missions/${RELAY_DEMO_MISSION_ID}/events`;
+    const fixture = createRelayMissionFixture();
+    try {
+      const first = await fetch(url, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(fixture[0]),
+      });
+      assert.equal(first.status, 201);
+
+      const replay = await fetch(url, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(fixture[0]),
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(((await replay.json()) as { replayed: boolean }).replayed, true);
+
+      const secondEvent = await fetch(url, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(fixture[1]),
+      });
+      assert.equal(secondEvent.status, 429);
+      assert.equal(((await secondEvent.json()) as { code: string }).code, "write_rate_limited");
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+function assertEmptyMissionShape(): RelayMissionSnapshot {
+  return {
+    schemaVersion: "1",
+    missionId: "empty-mission",
+    namespace: RELAY_DEMO_NAMESPACE,
+    found: false,
+    readHealth: "empty",
+    status: "not_started",
+    mission: {
+      title: null,
+      objective: null,
+      runMode: null,
+      startedAt: null,
+      completedAt: null,
+    },
+    agents: [],
+    decisions: [],
+    conflicts: [],
+    corrections: [],
+    tests: [],
+    propagation: [],
+    outcome: null,
+    receipt: {
+      complete: false,
+      missingEvidence: [],
+      activeDecisionIds: [],
+      supersededDecisionIds: [],
+      coldStartVerified: false,
+      passingOutcomeVerified: false,
+    },
+    bounds: {
+      totalEvents: 0,
+      returnedEvents: 0,
+      corruptLines: 0,
+      truncated: false,
+      since: null,
+      until: null,
+    },
+    events: [],
+  };
+}
