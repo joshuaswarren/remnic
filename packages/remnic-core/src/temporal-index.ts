@@ -116,6 +116,13 @@ type IndexLoadResult<T> =
 
 const parsedIndexCache = new Map<string, CachedIndex<unknown>>();
 const writeChains = new Map<string, Promise<void>>();
+// Operation-level serialization keyed by memoryDir (issue #1911, Codex Medium):
+// a single logical index mutation touches TWO files (temporal + tag), each with
+// its own per-file writeChain. Without an outer lock, two overlapping
+// indexMemoryAsync calls could interleave so the temporal half of one commits
+// with the tag half of the other. This chain makes each public mutator's paired
+// writes atomic relative to other mutators on the same memoryDir.
+const opChains = new Map<string, Promise<void>>();
 let indexReadObserverForTest: (() => void) | undefined;
 
 /** Test-only observer for asserting cache read/parse behavior. */
@@ -204,6 +211,24 @@ function withPathMutex<T>(filePath: string, update: () => Promise<T>): Promise<T
   writeChains.set(filePath, tail);
   void tail.then(() => {
     if (writeChains.get(filePath) === tail) writeChains.delete(filePath);
+  });
+  return run;
+}
+
+/**
+ * Operation-level mutex keyed by memoryDir (issue #1911, Codex Medium). Wraps a
+ * whole logical index mutation (which writes BOTH the temporal and tag index
+ * files) so overlapping mutators on the same memoryDir cannot interleave their
+ * per-file writes and commit mismatched halves. The inner per-file writeChains
+ * still protect each file; this outer chain just orders complete operations.
+ */
+function withMemoryDirMutex<T>(memoryDir: string, op: () => Promise<T>): Promise<T> {
+  const previous = opChains.get(memoryDir) ?? Promise.resolve();
+  const run = previous.then(op, op);
+  const tail = run.then(() => undefined, () => undefined);
+  opChains.set(memoryDir, tail);
+  void tail.then(() => {
+    if (opChains.get(memoryDir) === tail) opChains.delete(memoryDir);
   });
   return run;
 }
@@ -875,25 +900,27 @@ export async function indexMemoryAsync(
     await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    await updateTemporalIndex(memoryDir, (index) => {
-      index.version = INDEX_VERSION;
-      removePathFromAllSets(index.dates, memoryPath);
-      addPathToSet(index.dates, dateKey, memoryPath);
-      index.events[memoryPath] = temporalEventFromEntry({
-        path: memoryPath,
-        createdAt,
-        tags,
-        ...temporal,
+    await withMemoryDirMutex(memoryDir, async () => {
+      await updateTemporalIndex(memoryDir, (index) => {
+        index.version = INDEX_VERSION;
+        removePathFromAllSets(index.dates, memoryPath);
+        addPathToSet(index.dates, dateKey, memoryPath);
+        index.events[memoryPath] = temporalEventFromEntry({
+          path: memoryPath,
+          createdAt,
+          tags,
+          ...temporal,
+        });
       });
-    });
 
-    await updateTagIndex(memoryDir, (index) => {
-      removePathFromAllTagEntries(index, memoryPath);
-      for (const tag of tags) {
-        if (tag && typeof tag === "string") {
-          addTagGraphEntry(index, tag, memoryPath);
+      await updateTagIndex(memoryDir, (index) => {
+        removePathFromAllTagEntries(index, memoryPath);
+        for (const tag of tags) {
+          if (tag && typeof tag === "string") {
+            addTagGraphEntry(index, tag, memoryPath);
+          }
         }
-      }
+      });
     });
   } catch {
     // Fail silently
@@ -913,17 +940,19 @@ export async function deindexMemoryAsync(
     await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    await updateTemporalIndex(memoryDir, (index) => {
-      removePathFromSet(index.dates, dateKey, memoryPath);
-      delete index.events[memoryPath];
-    });
+    await withMemoryDirMutex(memoryDir, async () => {
+      await updateTemporalIndex(memoryDir, (index) => {
+        removePathFromSet(index.dates, dateKey, memoryPath);
+        delete index.events[memoryPath];
+      });
 
-    await updateTagIndex(memoryDir, (index) => {
-      for (const tag of tags) {
-        if (tag && typeof tag === "string") {
-          removeTagGraphEntry(index, tag, memoryPath);
+      await updateTagIndex(memoryDir, (index) => {
+        for (const tag of tags) {
+          if (tag && typeof tag === "string") {
+            removeTagGraphEntry(index, tag, memoryPath);
+          }
         }
-      }
+      });
     });
   } catch {
     // Fail silently
@@ -938,17 +967,19 @@ export async function deindexMemoryAsync(
 export async function clearIndexesAsync(memoryDir: string): Promise<void> {
   try {
     await ensureStateDir(memoryDir);
-    await updateTemporalIndex(memoryDir, (index) => {
-      index.version = INDEX_VERSION;
-      index.lastRebuildAt = undefined;
-      index.dates = {};
-      index.events = {};
-    });
-    await updateTagIndex(memoryDir, (index) => {
-      index.version = TAG_INDEX_VERSION;
-      index.lastRebuildAt = undefined;
-      index.tags = {};
-      index.aliases = {};
+    await withMemoryDirMutex(memoryDir, async () => {
+      await updateTemporalIndex(memoryDir, (index) => {
+        index.version = INDEX_VERSION;
+        index.lastRebuildAt = undefined;
+        index.dates = {};
+        index.events = {};
+      });
+      await updateTagIndex(memoryDir, (index) => {
+        index.version = TAG_INDEX_VERSION;
+        index.lastRebuildAt = undefined;
+        index.tags = {};
+        index.aliases = {};
+      });
     });
   } catch {
     // Fail silently — indexes are advisory only
@@ -985,25 +1016,27 @@ export async function indexMemoriesBatchAsync(
   try {
     await ensureStateDir(memoryDir);
 
-    await updateTemporalIndex(memoryDir, (index) => {
-      index.version = INDEX_VERSION;
-      for (const entry of entries) {
-        const dateKey = isoDateFromTimestamp(entry.createdAt);
-        removePathFromAllSets(index.dates, entry.path);
-        addPathToSet(index.dates, dateKey, entry.path);
-        index.events[entry.path] = temporalEventFromEntry(entry);
-      }
-    });
+    await withMemoryDirMutex(memoryDir, async () => {
+      await updateTemporalIndex(memoryDir, (index) => {
+        index.version = INDEX_VERSION;
+        for (const entry of entries) {
+          const dateKey = isoDateFromTimestamp(entry.createdAt);
+          removePathFromAllSets(index.dates, entry.path);
+          addPathToSet(index.dates, dateKey, entry.path);
+          index.events[entry.path] = temporalEventFromEntry(entry);
+        }
+      });
 
-    await updateTagIndex(memoryDir, (index) => {
-      for (const entry of entries) {
-        removePathFromAllTagEntries(index, entry.path);
-        for (const tag of entry.tags) {
-          if (tag && typeof tag === "string") {
-            addTagGraphEntry(index, tag, entry.path);
+      await updateTagIndex(memoryDir, (index) => {
+        for (const entry of entries) {
+          removePathFromAllTagEntries(index, entry.path);
+          for (const tag of entry.tags) {
+            if (tag && typeof tag === "string") {
+              addTagGraphEntry(index, tag, entry.path);
+            }
           }
         }
-      }
+      });
     });
   } catch {
     // Fail silently
