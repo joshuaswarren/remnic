@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open, realpath, readFile, stat } from "node:fs/promises";
+import { open, realpath, readFile, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -728,11 +728,44 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   // Callers that intentionally regenerate a public receipt must choose a new
   // path or remove the prior public artifact outside this safety boundary.
   const output = await open(args.outputPath, "wx", 0o644);
+  const createdStat = await output.stat();
+  let publicationError: unknown;
+  let closeError: unknown;
   try {
     await output.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });
     await output.sync();
+  } catch (error) {
+    publicationError = error;
   } finally {
-    await output.close();
+    try {
+      await output.close();
+    } catch (error) {
+      closeError = error;
+    }
   }
+  if (publicationError !== undefined) {
+    try {
+      const currentStat = await stat(args.outputPath);
+      if (currentStat.dev !== createdStat.dev || currentStat.ino !== createdStat.ino) {
+        throw new Error("refusing to remove a failed receipt output whose file identity changed");
+      }
+      await unlink(args.outputPath);
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new AggregateError(
+          [publicationError, cleanupError],
+          "receipt publication failed and its partial output could not be removed safely",
+        );
+      }
+    }
+    if (closeError !== undefined) {
+      throw new AggregateError(
+        [publicationError, closeError],
+        "receipt publication failed and closing its partial output also failed",
+      );
+    }
+    throw publicationError;
+  }
+  if (closeError !== undefined) throw closeError;
   return receipt;
 }

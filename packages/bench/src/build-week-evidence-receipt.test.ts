@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -886,6 +886,53 @@ test("receipt writer is create-only and rejects paths that could replace existin
 
     const receipt = await write(newOutputPath);
     assert.deepEqual(JSON.parse(await readFile(newOutputPath, "utf8")), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt writer removes a partial create-only output after sync failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-failure-"));
+  const probePath = join(directory, "probe.json");
+  const outputPath = join(directory, "receipt.json");
+  try {
+    const sources = syntheticSources({ limit: 2 });
+    const resultPath = join(directory, "result.json");
+    const manifestPath = join(directory, "MANIFEST.json");
+    await Promise.all([
+      writeFile(resultPath, sources.resultJson),
+      writeFile(manifestPath, sources.manifestJson),
+    ]);
+    const write = () =>
+      writeBuildWeekEvidenceReceipt({
+        resultPath,
+        manifestPath,
+        outputPath,
+        datasetVersion: "longmemeval-oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      });
+
+    const probe = await open(probePath, "wx");
+    const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+      sync: typeof probe.sync;
+    };
+    const originalSync = fileHandlePrototype.sync;
+    await probe.close();
+    await rm(probePath);
+    fileHandlePrototype.sync = async () => {
+      throw new Error("forced receipt sync failure");
+    };
+    try {
+      await assert.rejects(write(), /forced receipt sync failure/);
+    } finally {
+      fileHandlePrototype.sync = originalSync;
+    }
+
+    await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+    const receipt = await write();
+    assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), receipt);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
