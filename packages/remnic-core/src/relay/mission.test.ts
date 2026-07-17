@@ -50,6 +50,12 @@ function fixtureEvents(): RelayMissionEvent[] {
   );
 }
 
+function firstFixtureInput() {
+  const [first] = createRelayMissionFixture();
+  if (!first) throw new Error("Relay mission fixture must contain a start event");
+  return first;
+}
+
 test("fixture reduces to a complete correction and cold-start receipt", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);
@@ -112,7 +118,7 @@ test("idempotent append replays matching input and rejects conflicting input", a
 test("a rejected append hook does not poison the mission mutation chain", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);
-    const first = createRelayMissionFixture()[0]!;
+    const first = firstFixtureInput();
     await assert.rejects(
       store.append(RELAY_DEMO_MISSION_ID, first, {
         beforeAppend: () => {
@@ -213,7 +219,7 @@ test("reducer sorts equal-time events with a stable event-id tie break", () => {
     namespace: RELAY_DEMO_NAMESPACE,
     recordedAt: "2026-07-17T18:00:00.000Z",
     occurredAt: "2026-07-17T18:00:00.000Z",
-    payload: createRelayMissionFixture()[0]!.payload,
+    payload: firstFixtureInput().payload,
   };
   const events: RelayMissionEvent[] = [
     { ...base, eventId: "event-b" },
@@ -236,7 +242,7 @@ test("reducer sorts offset timestamps by instant before applying state transitio
     missionId: RELAY_DEMO_MISSION_ID,
     namespace: RELAY_DEMO_NAMESPACE,
     recordedAt: "2026-07-17T16:00:00.000Z",
-    payload: createRelayMissionFixture()[0]!.payload,
+    payload: firstFixtureInput().payload,
   };
   const events: RelayMissionEvent[] = [
     { ...base, eventId: "event-later", occurredAt: "2026-07-17T10:00:00.000-05:00" },
@@ -286,9 +292,105 @@ test("receipt requires an observed, decision-linked conflict and coherent missio
       event.payload.kind === "mission_started" ? { ...event, occurredAt: "2026-07-17T18:00:40.000Z" } : event
     ),
   });
-  assert.equal(lateStart.status, "completed");
+  assert.equal(lateStart.status, "active");
   assert.equal(lateStart.receipt.complete, false);
   assert.ok(lateStart.receipt.missingEvidence.includes("mission:lifecycle-order"));
+  assert.ok(lateStart.receipt.missingEvidence.some((item) => item.startsWith("mission:event-before-start:")));
+  assert.deepEqual(lateStart.decisions, []);
+  assert.equal(lateStart.outcome, null);
+
+  const [start, firstEvidence, ...remainingEvents] = fixtureEvents();
+  assert.ok(start && firstEvidence);
+  const appendedBeforeStart = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: [firstEvidence, start, ...remainingEvents],
+  });
+  assert.equal(appendedBeforeStart.receipt.complete, false);
+  assert.ok(
+    appendedBeforeStart.receipt.missingEvidence.includes(`mission:event-before-start:${firstEvidence.eventId}`)
+  );
+});
+
+test("a correction must account for every decision in its observed conflict", () => {
+  const events = fixtureEvents();
+  const belief = events.find((event) => event.payload.kind === "belief_observed");
+  assert.ok(belief && belief.payload.kind === "belief_observed");
+  const thirdDecision: RelayMissionEvent = RelayMissionEventSchema.parse({
+    ...belief,
+    eventId: "fixture-event-third-conflict",
+    recordedAt: "2026-07-17T18:00:11.000Z",
+    occurredAt: "2026-07-17T18:00:11.000Z",
+    payload: {
+      ...belief.payload,
+      beliefId: "belief-static-token",
+      decisionId: "decision-use-static-token",
+      statement: "Reuse one static token indefinitely.",
+    },
+  });
+  const incompleteConflict = events.map((event) =>
+    event.payload.kind === "conflict_detected"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            decisionIds: [...event.payload.decisionIds, "decision-use-static-token"],
+          },
+        }
+      : event
+  );
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: [...incompleteConflict, thirdDecision],
+  });
+
+  assert.equal(snapshot.receipt.complete, false);
+  assert.deepEqual(snapshot.receipt.supersededDecisionIds, []);
+  assert.equal(snapshot.conflicts[0]?.status, "open");
+  assert.equal(snapshot.corrections[0]?.status, "approved");
+  assert.ok(snapshot.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:decision-link"));
+});
+
+test("events after completion cannot rewrite the terminal mission snapshot", () => {
+  const events = fixtureEvents();
+  const proposal = events.find((event) => event.payload.kind === "correction_proposed");
+  assert.ok(proposal && proposal.payload.kind === "correction_proposed");
+  const postCompletionProposal: RelayMissionEvent = RelayMissionEventSchema.parse({
+    ...proposal,
+    eventId: "fixture-event-after-completion",
+    recordedAt: "2026-07-17T18:00:40.000Z",
+    occurredAt: "2026-07-17T18:00:40.000Z",
+    payload: {
+      ...proposal.payload,
+      correctionId: "correction-after-completion",
+    },
+  });
+  const backdatedPostCompletionProposal: RelayMissionEvent = RelayMissionEventSchema.parse({
+    ...proposal,
+    eventId: "fixture-event-backdated-after-completion",
+    recordedAt: "2026-07-17T18:00:41.000Z",
+    occurredAt: "2026-07-17T18:00:20.000Z",
+    payload: {
+      ...proposal.payload,
+      correctionId: "correction-backdated-after-completion",
+    },
+  });
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: [...events, postCompletionProposal, backdatedPostCompletionProposal],
+  });
+
+  assert.equal(snapshot.status, "completed");
+  assert.equal(snapshot.outcome?.result, "recovered");
+  assert.equal(snapshot.corrections.length, 1);
+  assert.equal(snapshot.corrections[0]?.status, "propagated");
+  assert.equal(snapshot.receipt.complete, false);
+  assert.ok(snapshot.receipt.missingEvidence.includes("mission:event-after-completion:fixture-event-after-completion"));
+  assert.ok(
+    snapshot.receipt.missingEvidence.includes("mission:event-after-completion:fixture-event-backdated-after-completion")
+  );
 });
 
 test("propagation requires a matching post-application recall from a cold agent session", () => {
@@ -380,14 +482,15 @@ test("receipt requires human approval and a passing test after verified propagat
 });
 
 test("missing evidence is explicit rather than conflated with a complete receipt", () => {
-  const input = createRelayMissionFixture()[0]!;
+  const input = firstFixtureInput();
+  assert.ok(input.occurredAt);
   const event: RelayMissionEvent = {
     schemaVersion: "1",
     eventId: "event-no-evidence",
     missionId: RELAY_DEMO_MISSION_ID,
     namespace: RELAY_DEMO_NAMESPACE,
-    recordedAt: input.occurredAt!,
-    occurredAt: input.occurredAt!,
+    recordedAt: input.occurredAt,
+    occurredAt: input.occurredAt,
     payload: { ...input.payload, evidence: [] },
   };
   const snapshot = reduceRelayMission({
@@ -416,10 +519,11 @@ test("store rejects a symlinked Relay directory and event-count overflow", async
 
   await withTempRoot(async (root) => {
     const bounded = deterministicStore(root, { maxEvents: 1 });
-    const fixture = createRelayMissionFixture();
-    await bounded.append(RELAY_DEMO_MISSION_ID, fixture[0]!);
+    const [first, second] = createRelayMissionFixture();
+    assert.ok(first && second);
+    await bounded.append(RELAY_DEMO_MISSION_ID, first);
     await assert.rejects(
-      bounded.append(RELAY_DEMO_MISSION_ID, fixture[1]!),
+      bounded.append(RELAY_DEMO_MISSION_ID, second),
       (error: unknown) => error instanceof RelayMissionStoreError && error.code === "limit_exceeded"
     );
   });
@@ -429,6 +533,6 @@ test("mission identifiers cannot traverse the storage root", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);
     await assert.rejects(store.read("../production"));
-    await assert.rejects(store.append("bad/id", createRelayMissionFixture()[0]!));
+    await assert.rejects(store.append("bad/id", firstFixtureInput()));
   });
 });

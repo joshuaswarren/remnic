@@ -31,6 +31,12 @@ const identifierSchema = z
 const namespaceSchema = z.string().trim().min(1).max(128);
 const shortTextSchema = z.string().trim().min(1).max(240);
 const statementSchema = z.string().trim().min(1).max(4_000);
+const uniqueIdentifierListSchema = (minimum: number, maximum: number) =>
+  z
+    .array(identifierSchema)
+    .min(minimum)
+    .max(maximum)
+    .refine((values) => new Set(values).size === values.length, "must not contain duplicate identifiers");
 
 const isoDateTimeSchema = z
   .string()
@@ -100,8 +106,8 @@ const RelayMissionPayloadUnionSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("conflict_detected"),
       conflictId: identifierSchema,
-      decisionIds: z.array(identifierSchema).min(2).max(8),
-      agentIds: z.array(identifierSchema).min(2).max(16),
+      decisionIds: uniqueIdentifierListSchema(2, 8),
+      agentIds: uniqueIdentifierListSchema(2, 16),
       summary: statementSchema,
       evidence: evidenceListSchema.default([]),
     })
@@ -123,7 +129,7 @@ const RelayMissionPayloadUnionSchema = z.discriminatedUnion("kind", [
       correctionId: identifierSchema,
       conflictId: identifierSchema,
       proposedDecisionId: identifierSchema,
-      supersedesDecisionIds: z.array(identifierSchema).min(1).max(8),
+      supersedesDecisionIds: uniqueIdentifierListSchema(1, 8),
       statement: statementSchema,
       rationale: statementSchema,
       proposedBy: identifierSchema,
@@ -692,7 +698,13 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const corruptLines = input.corruptLines ?? 0;
   const sinceMs = options.since ? Date.parse(options.since) : undefined;
   const untilMs = options.until ? Date.parse(options.until) : undefined;
+  const appendPositions = new Map(input.events.map((event, index) => [event, index] as const));
   const orderedEvents = [...input.events].sort(compareRelayEvents);
+  const firstStartEvent = input.events.find((event) => event.payload.kind === "mission_started");
+  const firstCompletionEvent = input.events.find((event) => event.payload.kind === "mission_completed");
+  const firstStartPosition = firstStartEvent === undefined ? -1 : (appendPositions.get(firstStartEvent) ?? -1);
+  const firstCompletionPosition =
+    firstCompletionEvent === undefined ? -1 : (appendPositions.get(firstCompletionEvent) ?? -1);
   const filteredEvents = orderedEvents.filter((event) => {
     const occurredAt = Date.parse(event.occurredAt);
     return (sinceMs === undefined || occurredAt >= sinceMs) && (untilMs === undefined || occurredAt < untilMs);
@@ -743,8 +755,24 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
 
   for (const event of orderedEvents) {
     const payload = event.payload;
-    if (outcome !== null && payload.kind !== "mission_completed") {
+    const appendPosition = appendPositions.get(event) ?? -1;
+    if (
+      payload.kind !== "mission_started" &&
+      firstStartEvent !== undefined &&
+      (appendPosition < firstStartPosition || compareRelayEvents(event, firstStartEvent) < 0)
+    ) {
+      missingEvidence.add(`mission:event-before-start:${event.eventId}`);
+      collectMissingEvidence(missingEvidence, event, payload.evidence);
+      continue;
+    }
+    if (
+      payload.kind !== "mission_completed" &&
+      (outcome !== null || (firstCompletionPosition >= 0 && appendPosition > firstCompletionPosition))
+    ) {
       missingEvidence.add(`mission:event-after-completion:${event.eventId}`);
+      if (payload.kind === "mission_started") missingEvidence.add("mission:lifecycle-order");
+      collectMissingEvidence(missingEvidence, event, payload.evidence);
+      continue;
     }
     switch (payload.kind) {
       case "mission_started":
@@ -842,7 +870,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           break;
         }
         substantiveAgentIds.add(payload.proposedBy);
-        corrections.set(payload.correctionId, {
+        const correction: RelayCorrectionSnapshot = {
           correctionId: payload.correctionId,
           conflictId: payload.conflictId,
           proposedDecisionId: payload.proposedDecisionId,
@@ -853,7 +881,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           status: "proposed",
           proposedAt: event.occurredAt,
           evidence: [...payload.evidence],
-        });
+        };
+        corrections.set(payload.correctionId, correction);
         if (!decisions.has(payload.proposedDecisionId)) {
           decisions.set(payload.proposedDecisionId, {
             decisionId: payload.proposedDecisionId,
@@ -867,12 +896,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         }
         const conflict = conflicts.get(payload.conflictId);
         if (conflict) {
-          const requiredDecisionIds = [payload.proposedDecisionId, ...payload.supersedesDecisionIds];
-          if (!requiredDecisionIds.every((decisionId) => conflict.decisionIds.includes(decisionId))) {
+          if (!correctionCoversConflict(correction, conflict)) {
             missingEvidence.add(`conflict:${payload.conflictId}:decision-link`);
+          } else {
+            conflict.status = "proposed";
+            conflict.correctionId = payload.correctionId;
           }
-          conflict.status = "proposed";
-          conflict.correctionId = payload.correctionId;
         } else {
           missingEvidence.add(`conflict:${payload.conflictId}:observation`);
         }
@@ -912,6 +941,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           collectMissingEvidence(missingEvidence, event, payload.evidence);
           break;
         }
+        const conflict = conflicts.get(correction.conflictId);
+        if (!conflict || !correctionCoversConflict(correction, conflict)) {
+          missingEvidence.add(`conflict:${correction.conflictId}:decision-link`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
         if (
           !correction.supersedesDecisionIds.includes(payload.decisionId) ||
           correction.proposedDecisionId !== payload.replacementDecisionId
@@ -941,8 +976,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         if (correctionSupersessionComplete(correction, decisions)) {
           correction.appliedAt ??= event.occurredAt;
           if (correction.status !== "propagated") correction.status = "applied";
-          const conflict = conflicts.get(correction.conflictId);
-          if (conflict) conflict.status = "resolved";
+          conflict.status = "resolved";
         }
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
@@ -1110,6 +1144,13 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   }
   if (input.events.length > 0 && startedAt === null) missingEvidence.add("mission:start");
   if (startedAt !== null && completedAt !== null && compareInstants(startedAt, completedAt) >= 0) {
+    missingEvidence.add("mission:lifecycle-order");
+  }
+  if (
+    firstStartEvent !== undefined &&
+    firstCompletionEvent !== undefined &&
+    (firstStartPosition >= firstCompletionPosition || compareRelayEvents(firstStartEvent, firstCompletionEvent) >= 0)
+  ) {
     missingEvidence.add("mission:lifecycle-order");
   }
 
@@ -1287,6 +1328,20 @@ function correctionSupersessionComplete(
       decision.correctionId === correction.correctionId
     );
   });
+}
+
+function correctionCoversConflict(
+  correction: Pick<RelayCorrectionSnapshot, "proposedDecisionId" | "supersedesDecisionIds">,
+  conflict: Pick<RelayConflictSnapshot, "decisionIds">
+): boolean {
+  const expectedSuperseded = uniqueSorted(
+    conflict.decisionIds.filter((decisionId) => decisionId !== correction.proposedDecisionId)
+  );
+  const declaredSuperseded = uniqueSorted(correction.supersedesDecisionIds);
+  return (
+    expectedSuperseded.length === declaredSuperseded.length &&
+    expectedSuperseded.every((decisionId, index) => decisionId === declaredSuperseded[index])
+  );
 }
 
 function positiveIntegerOption(value: number | undefined, name: string, fallback: number): number {
