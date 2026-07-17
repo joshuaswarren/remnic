@@ -22,7 +22,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { hashCanonicalJson, hashString } from "../../integrity/hash-verification.js";
+import { hashBytes, hashCanonicalJson } from "../../integrity/hash-verification.js";
 import type { BenchmarkMode } from "../../types.js";
 import {
   LOCOMO_SMOKE_FIXTURE,
@@ -115,9 +115,9 @@ async function loadDataset<T>(
   if (options.datasetDir) {
     for (const filename of options.filenames) {
       const abs = path.join(options.datasetDir, filename);
-      let raw: string;
+      let rawBytes: Buffer;
       try {
-        raw = await readFile(abs, "utf8");
+        rawBytes = await readFile(abs);
       } catch (error) {
         errors.push(
           `${filename}: ${error instanceof Error ? error.message : String(error)}`,
@@ -125,11 +125,12 @@ async function loadDataset<T>(
         continue;
       }
       try {
+        const raw = rawBytes.toString("utf8");
         const parsed = options.parseFile(raw, filename);
         return {
           source: "dataset",
           filename,
-          sha256: hashString(raw),
+          sha256: hashBytes(rawBytes),
           items: applyLimit(parsed, limit),
           errors,
         };
