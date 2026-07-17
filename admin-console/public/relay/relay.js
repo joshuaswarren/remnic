@@ -53,6 +53,7 @@
     authenticatedContext: null,
     connectionGeneration: 0,
     connectionRequestId: 0,
+    liveReadRequestId: 0,
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -580,8 +581,10 @@
       && left.token === right.token);
   }
 
-  function liveReadStillCurrent(context, generation) {
-    return generation === state.connectionGeneration && sameLiveContext(context, currentLiveContext());
+  function liveReadStillCurrent(context, generation, requestId) {
+    return requestId === state.liveReadRequestId
+      && generation === state.connectionGeneration
+      && sameLiveContext(context, currentLiveContext());
   }
 
   function bindAuthenticatedPrincipal(principal, context) {
@@ -634,9 +637,10 @@
   async function refreshLive(reason = "manual") {
     const context = currentLiveContext();
     const generation = state.connectionGeneration;
+    const requestId = ++state.liveReadRequestId;
     try {
       const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
-      if (!liveReadStillCurrent(context, generation)) return false;
+      if (!liveReadStillCurrent(context, generation, requestId)) return false;
       state.mode = "live";
       state.snapshot = snapshot;
       bindAuthenticatedPrincipal(authenticatedPrincipal, context);
@@ -644,12 +648,16 @@
       if (reason === "manual") showToast("Fresh live mission snapshot loaded.");
       return true;
     } catch (error) {
-      if (!liveReadStillCurrent(context, generation)) return false;
+      if (!liveReadStillCurrent(context, generation, requestId)) return false;
       retainOrClearAuthenticatedPrincipal(error, context);
       if (state.mode === "live" && state.snapshot) render();
       setBanner(`OFFLINE · ${error instanceof Error ? error.message : "Live Relay API is unavailable."}`, "error");
       if (reason === "connection") dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
       return false;
+    } finally {
+      if (liveReadStillCurrent(context, generation, requestId)) {
+        dom.freshInspectionButton.disabled = state.mode !== "live";
+      }
     }
   }
 
@@ -729,29 +737,26 @@
     dom.freshInspectionResult.textContent = "Reading live mission now…";
     const context = currentLiveContext();
     const generation = state.connectionGeneration;
+    const requestId = ++state.liveReadRequestId;
     try {
       const before = state.snapshot.events.length;
       const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
-      if (!liveReadStillCurrent(context, generation)) {
-        dom.freshInspectionResult.textContent = "Fresh inspection discarded because the live connection changed.";
-        return;
-      }
+      if (!liveReadStillCurrent(context, generation, requestId)) return;
       state.snapshot = snapshot;
       bindAuthenticatedPrincipal(authenticatedPrincipal, context);
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `FRESH INSPECTION · ${new Date().toISOString()} · ${state.snapshot.events.length} events (${state.snapshot.events.length - before >= 0 ? "+" : ""}${state.snapshot.events.length - before}). Not receipt evidence.`;
     } catch (error) {
-      if (!liveReadStillCurrent(context, generation)) {
-        dom.freshInspectionResult.textContent = "Fresh inspection discarded because the live connection changed.";
-        return;
-      }
+      if (!liveReadStillCurrent(context, generation, requestId)) return;
       retainOrClearAuthenticatedPrincipal(error, context);
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `Fresh inspection failed: ${error instanceof Error ? error.message : "unknown error"}`;
     } finally {
-      dom.freshInspectionButton.disabled = false;
+      if (liveReadStillCurrent(context, generation, requestId)) {
+        dom.freshInspectionButton.disabled = false;
+      }
     }
   }
 
@@ -766,16 +771,18 @@
       return;
     }
     const context = { missionId, namespace, token };
+    const liveReadRequestId = ++state.liveReadRequestId;
     let liveResult;
     try {
       liveResult = await fetchLiveSnapshot(context);
     } catch (error) {
-      if (requestId !== state.connectionRequestId) return;
+      if (requestId !== state.connectionRequestId || liveReadRequestId !== state.liveReadRequestId) return;
       dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
       setBanner("CONNECTION FAILED · The current mission and authenticated identity remain unchanged.", "error");
+      dom.freshInspectionButton.disabled = state.mode !== "live";
       return;
     }
-    if (requestId !== state.connectionRequestId) return;
+    if (requestId !== state.connectionRequestId || liveReadRequestId !== state.liveReadRequestId) return;
     stopPlayback();
     state.connectionGeneration += 1;
     state.missionId = context.missionId;
@@ -784,6 +791,7 @@
     state.mode = "live";
     state.snapshot = liveResult.snapshot;
     bindAuthenticatedPrincipal(liveResult.authenticatedPrincipal, context);
+    dom.freshInspectionButton.disabled = false;
     const tokenRetained = safeSessionSet(TOKEN_KEY, token);
     render();
     const url = new URL(window.location.href);

@@ -312,8 +312,13 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
   assert.match(controller, /Model\.isCompleteEvidenceSnapshot\(state\.snapshot\)/);
   assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
-  assert.match(controller, /function liveReadStillCurrent\(context, generation\)/);
-  assert.equal((controller.match(/!liveReadStillCurrent\(context, generation\)/g) || []).length, 4);
+  assert.match(controller, /function liveReadStillCurrent\(context, generation, requestId\)/);
+  assert.match(controller, /requestId === state\.liveReadRequestId/);
+  assert.equal((controller.match(/\+\+state\.liveReadRequestId/g) || []).length, 3);
+  assert.equal((controller.match(/!liveReadStillCurrent\(context, generation, requestId\)/g) || []).length, 4);
+  assert.match(controller, /if \(liveReadStillCurrent\(context, generation, requestId\)\) \{\s*dom\.freshInspectionButton\.disabled = false/s);
+  assert.equal((controller.match(/liveReadRequestId !== state\.liveReadRequestId/g) || []).length, 2);
+  assert.doesNotMatch(controller, /Fresh inspection discarded/);
   assert.match(controller, /stopPlayback\(\);\s*state\.connectionGeneration \+= 1;\s*state\.missionId/s);
   assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
   assert.match(controller, /function relayResponseError\(status, body\)/);
