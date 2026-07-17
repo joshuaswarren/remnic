@@ -6,6 +6,16 @@ import type { BenchmarkResult, ProviderConfig } from "./types.js";
 
 export const BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1 as const;
 
+/**
+ * Pinned identity of the deterministic, generated MemCorrect v1 full corpus.
+ * Keep the payload hash literal: a generator drift must require a deliberate
+ * review here rather than silently redefining already-published evidence.
+ */
+export const BUILD_WEEK_MEMCORRECT_DATASET_VERSION = "memcorrect-v1-c077e7" as const;
+export const BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256 =
+  "ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb" as const;
+export const BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT = 40 as const;
+
 export const BUILD_WEEK_LIMITATIONS = {
   boundedSubset: "This result covers a bounded subset, not the benchmark's complete dataset.",
   singleRun: "This receipt reports one run and does not establish run-to-run variance.",
@@ -44,6 +54,7 @@ export interface BuildWeekEvidenceReceipt {
     providers: BuildWeekEvidenceReceiptProvider[];
   };
   dataset: {
+    source: "file-manifest" | "generated-corpus";
     version: string;
     payloadSha256: string;
     manifestSha256: string;
@@ -91,6 +102,17 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_DATASET_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+@/-]{0,127}$/;
 const SAFE_PUBLIC_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+@:/-]{0,255}$/;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
+const MEMCORRECT_BENCHMARK_ID = "memcorrect-v1";
+const MEMCORRECT_BENCHMARK_VERSION = "1.0.0";
+const MEMCORRECT_FULL_SEED = 0xc077e7;
+const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
+  personaCount: 5,
+  factsPerPersona: 8,
+  seed: MEMCORRECT_FULL_SEED,
+  nowIso: "2026-07-05T00:00:00.000Z",
+  maintenanceCycles: 5,
+  uptakeLatencyCap: 8,
+});
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -142,6 +164,107 @@ function requireFiniteNonNegative(value: unknown, label: string): number {
     throw new Error(`${label} must be a finite non-negative number`);
   }
   return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireExactMemCorrectProvenance(
+  result: BenchmarkResult,
+  manifest: BenchmarkReproManifest,
+  datasetVersion: string,
+  publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
+): { source: "generated-corpus"; manifestSha256: string; fileCount: 0; totalBytes: 0 } {
+  if (publicationScope.kind !== "full" || publicationScope.expectedTaskCount !== BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT) {
+    throw new Error(`MemCorrect v1 receipts require full coverage of exactly ${BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT} tasks`);
+  }
+  if (datasetVersion !== BUILD_WEEK_MEMCORRECT_DATASET_VERSION) {
+    throw new Error(`MemCorrect v1 datasetVersion must be ${BUILD_WEEK_MEMCORRECT_DATASET_VERSION}`);
+  }
+  if (result.meta.version !== MEMCORRECT_BENCHMARK_VERSION) {
+    throw new Error(`MemCorrect benchmark version must be ${MEMCORRECT_BENCHMARK_VERSION}`);
+  }
+  if (result.meta.datasetHash !== BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256) {
+    throw new Error("MemCorrect result datasetHash does not match the pinned full-corpus payload hash");
+  }
+  const taskIdsMatchPinnedCorpus = result.results.tasks.every(
+    (task, index) => task.taskId === `memcorrect-${MEMCORRECT_FULL_SEED}-${index.toString(16)}`,
+  );
+  if (!taskIdsMatchPinnedCorpus) {
+    throw new Error("MemCorrect result task identities do not match the pinned full corpus");
+  }
+  if (
+    result.meta.seeds.length !== 1 ||
+    result.meta.seeds[0] !== MEMCORRECT_FULL_SEED ||
+    (manifest.run.seed !== undefined && manifest.run.seed !== MEMCORRECT_FULL_SEED)
+  ) {
+    throw new Error(`MemCorrect provenance must use the pinned seed ${MEMCORRECT_FULL_SEED}`);
+  }
+
+  const benchmarkOptions = result.config.benchmarkOptions;
+  if (!isRecord(benchmarkOptions)) {
+    throw new Error("MemCorrect result must persist full-corpus generator options");
+  }
+  for (const key of ["personaCount", "factsPerPersona", "maintenanceCycles", "uptakeLatencyCap"] as const) {
+    if (benchmarkOptions[key] !== MEMCORRECT_GENERATOR_OPTIONS[key]) {
+      throw new Error(`MemCorrect generator option ${key} does not match the pinned full corpus`);
+    }
+  }
+  if (result.config.adapterMode !== "remnic-native") {
+    throw new Error("MemCorrect Build Week receipts require adapterMode remnic-native");
+  }
+  if (result.cost.judgeModelCalls !== BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT * 2) {
+    throw new Error("MemCorrect full evidence requires exactly two specialized judge calls per task");
+  }
+  const judgeTelemetry = benchmarkOptions["judgeTelemetry"];
+  if (!isRecord(judgeTelemetry) || judgeTelemetry["calls"] !== BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT * 2) {
+    throw new Error("MemCorrect result must persist exact specialized-judge telemetry");
+  }
+  if (!manifest.run.selectedBenchmarks.includes(MEMCORRECT_BENCHMARK_ID)) {
+    throw new Error("manifest run does not select memcorrect-v1");
+  }
+  const resultEntry = manifest.results.find((entry) => entry.resultId === result.meta.id);
+  if (
+    !resultEntry ||
+    resultEntry.seeds.length !== 1 ||
+    resultEntry.seeds[0] !== MEMCORRECT_FULL_SEED
+  ) {
+    throw new Error("manifest result entry does not bind the pinned MemCorrect seed");
+  }
+
+  const datasets = manifest.datasets.filter((entry) => entry.benchmark === MEMCORRECT_BENCHMARK_ID);
+  if (datasets.length !== 1) {
+    throw new Error("manifest must contain exactly one MemCorrect generated-corpus dataset entry");
+  }
+  const dataset = datasets[0]!;
+  if (
+    dataset.status !== "not-provided" ||
+    dataset.path !== undefined ||
+    dataset.realpath !== undefined ||
+    dataset.sha256 !== undefined ||
+    dataset.fileCount !== 0 ||
+    dataset.totalBytes !== 0 ||
+    dataset.files.length !== 0
+  ) {
+    throw new Error("MemCorrect manifest dataset entry must identify the generated corpus without file-backed provenance");
+  }
+
+  const generatedProvenance = {
+    kind: "generated-corpus",
+    benchmark: MEMCORRECT_BENCHMARK_ID,
+    benchmarkVersion: MEMCORRECT_BENCHMARK_VERSION,
+    datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+    payloadSha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
+    taskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
+    generator: MEMCORRECT_GENERATOR_OPTIONS,
+  };
+  return {
+    source: "generated-corpus",
+    manifestSha256: sha256(JSON.stringify(generatedProvenance)),
+    fileCount: 0,
+    totalBytes: 0,
+  };
 }
 
 function providerReceipt(
@@ -224,7 +347,13 @@ export function buildBuildWeekEvidenceReceipt(
 
   const failureCount = result.results.tasks.filter((task) => {
     const details = task.details;
-    return Boolean(details && (details.error !== undefined || details.failure !== undefined));
+    if (!details) return false;
+    const structured = details.benchmarkFailure;
+    return Boolean(
+      details.error !== undefined ||
+      details.failure !== undefined ||
+      (isRecord(structured) && structured.kind === "trial_execution_failure"),
+    );
   }).length;
   if (failureCount > 0) {
     throw new Error(`complete evidence receipt refused because ${failureCount} task(s) contain failure markers`);
@@ -238,13 +367,23 @@ export function buildBuildWeekEvidenceReceipt(
     throw new Error("manifest result identity does not match the benchmark result");
   }
 
-  const dataset = manifest.datasets.find((entry) => entry.benchmark === result.meta.benchmark);
-  if (!dataset || dataset.status !== "hashed" || !dataset.sha256 || !SHA256.test(dataset.sha256)) {
-    throw new Error("manifest must contain a hashed dataset entry for the benchmark");
-  }
   if (!result.meta.datasetHash || !SHA256.test(result.meta.datasetHash)) {
     throw new Error("benchmark result must contain a SHA-256 dataset payload hash");
   }
+  const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
+    ? requireExactMemCorrectProvenance(result, manifest, options.datasetVersion, options.publicationScope)
+    : (() => {
+        const dataset = manifest.datasets.find((entry) => entry.benchmark === result.meta.benchmark);
+        if (!dataset || dataset.status !== "hashed" || !dataset.sha256 || !SHA256.test(dataset.sha256)) {
+          throw new Error("manifest must contain a hashed dataset entry for the benchmark");
+        }
+        return {
+          source: "file-manifest" as const,
+          manifestSha256: dataset.sha256,
+          fileCount: requireFiniteNonNegative(dataset.fileCount, "dataset fileCount"),
+          totalBytes: requireFiniteNonNegative(dataset.totalBytes, "dataset totalBytes"),
+        };
+      })();
   if (!SHA256.test(manifest.artifactHash)) throw new Error("manifest artifactHash must be a SHA-256 digest");
 
   const providers = [
@@ -320,13 +459,14 @@ export function buildBuildWeekEvidenceReceipt(
       providers,
     },
     dataset: {
+      source: datasetReceipt.source,
       version: options.datasetVersion,
       payloadSha256: result.meta.datasetHash,
-      // The repro manifest hashes the sorted file inventory; this is deliberately
-      // distinct from the runner's payload hash above.
-      manifestSha256: dataset.sha256,
-      fileCount: requireFiniteNonNegative(dataset.fileCount, "dataset fileCount"),
-      totalBytes: requireFiniteNonNegative(dataset.totalBytes, "dataset totalBytes"),
+      // File-backed benchmarks hash the sorted file inventory. Generated
+      // MemCorrect hashes its pinned generator identity instead.
+      manifestSha256: datasetReceipt.manifestSha256,
+      fileCount: datasetReceipt.fileCount,
+      totalBytes: datasetReceipt.totalBytes,
     },
     integrity: {
       resultSha256,

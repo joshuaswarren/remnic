@@ -3,11 +3,15 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+  BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
+  BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
   buildBuildWeekEvidenceReceipt,
   serializeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
 import type { BenchmarkReproManifest } from "./repro-manifest.js";
 import type { BenchmarkResult } from "./types.js";
+import { corpusHash, generateMemCorrectCorpus } from "./benchmarks/remnic/memcorrect/generator.js";
 
 const DATASET_HASH = "a".repeat(64);
 const ARTIFACT_HASH = "b".repeat(64);
@@ -99,6 +103,64 @@ function syntheticResult(overrides: Partial<BenchmarkResult["meta"]> = {}): Benc
   };
 }
 
+function syntheticMemCorrectResult(): BenchmarkResult {
+  const result = syntheticResult({
+    benchmark: "memcorrect-v1",
+    benchmarkTier: "remnic",
+    version: "1.0.0",
+    seeds: [0xc077e7],
+    datasetHash: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
+  });
+  result.config.adapterMode = "remnic-native";
+  result.config.benchmarkOptions = {
+    personaCount: 5,
+    factsPerPersona: 8,
+    maintenanceCycles: 5,
+    uptakeLatencyCap: 8,
+    judgeTelemetry: {
+      calls: 80,
+      inputTokens: 1000,
+      outputTokens: 100,
+      latencyMs: 2000,
+    },
+  };
+  result.cost.judgeModelCalls = 80;
+  result.results.tasks = Array.from({ length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT }, (_, index) => ({
+    taskId: `memcorrect-${0xc077e7}-${index.toString(16)}`,
+    question: `private correction question ${index}`,
+    expected: `private corrected value ${index}`,
+    actual: `private recalled value ${index}`,
+    scores: { uptake_at_next: 1, non_resurrection: 1 },
+    latencyMs: 1000,
+    tokens: { input: 25, output: 5 },
+  }));
+  result.results.aggregates = {
+    uptake_at_next: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    non_resurrection: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+  };
+  return result;
+}
+
+test("pinned Build Week MemCorrect identity matches the deterministic full corpus", () => {
+  const corpus = generateMemCorrectCorpus({
+    personaCount: 5,
+    factsPerPersona: 8,
+    seed: 0xc077e7,
+    nowIso: "2026-07-05T00:00:00.000Z",
+    maintenanceCycles: 5,
+    uptakeLatencyCap: 8,
+  });
+  assert.equal(corpus.scenarios.length, BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT);
+  assert.equal(corpusHash(corpus), BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256);
+  assert.deepEqual(
+    corpus.scenarios.map((scenario) => scenario.id),
+    Array.from(
+      { length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+      (_, index) => `memcorrect-${0xc077e7}-${index.toString(16)}`,
+    ),
+  );
+});
+
 function syntheticSources(args: {
   result?: BenchmarkResult;
   limit?: number;
@@ -112,9 +174,9 @@ function syntheticSources(args: {
     run: {
       id: "synthetic-run-id",
       mode: "full",
-      selectedBenchmarks: ["longmemeval"],
+      selectedBenchmarks: [result.meta.benchmark],
       runtimeProfiles: ["real"],
-      selectedWorkItems: [{ benchmark: "longmemeval", runtimeProfile: "real" }],
+      selectedWorkItems: [{ benchmark: result.meta.benchmark, runtimeProfile: "real" }],
       ...(args.limit === undefined ? {} : { limit: args.limit }),
     },
     git: { commit: "abc1234", shortCommit: "abc1234", dirty: false, dirtyEntryCount: 0 },
@@ -130,25 +192,27 @@ function syntheticSources(args: {
       hostname: "private-hostname",
     },
     configFiles: [{ label: "private", path: "/home/private/config.json", redacted: true }],
-    datasets: [
-      {
-        benchmark: "longmemeval",
-        status: "hashed",
-        path: "/home/private/bench-datasets/longmemeval",
-        realpath: "/home/private/bench-datasets/longmemeval",
-        fileCount: 1,
-        totalBytes: 1234,
-        sha256: DATASET_HASH,
-        files: [
+    datasets: result.meta.benchmark === "memcorrect-v1"
+      ? [{ benchmark: "memcorrect-v1", status: "not-provided", fileCount: 0, totalBytes: 0, files: [] }]
+      : [
           {
-            path: "private-dataset.json",
-            kind: "file",
-            sizeBytes: 1234,
+            benchmark: result.meta.benchmark,
+            status: "hashed",
+            path: "/home/private/bench-datasets/longmemeval",
+            realpath: "/home/private/bench-datasets/longmemeval",
+            fileCount: 1,
+            totalBytes: 1234,
             sha256: DATASET_HASH,
+            files: [
+              {
+                path: "private-dataset.json",
+                kind: "file",
+                sizeBytes: 1234,
+                sha256: DATASET_HASH,
+              },
+            ],
           },
         ],
-      },
-    ],
     results: [
       {
         path: "/home/private/results/private-result.json",
@@ -237,6 +301,7 @@ test("buildBuildWeekEvidenceReceipt emits deterministic aggregate-only evidence"
   assert.equal(serializeBuildWeekEvidenceReceipt(first), serializeBuildWeekEvidenceReceipt(second));
   assert.equal(first.benchmark.taskCount, 2);
   assert.equal(first.benchmark.failureCount, 0);
+  assert.equal(first.dataset.source, "file-manifest");
   assert.equal(first.estimatedUsage.calls, 6);
   assert.equal(first.estimatedUsage.totalTokens, 1100);
   assert.equal(first.estimatedUsage.localBudgetUnits, 42.5);
@@ -327,6 +392,144 @@ test("bounded receipts require matching limit and limitation; Sol is always reje
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /forbidden gpt-5\.6-sol/,
+  );
+});
+
+test("full MemCorrect receipts bind the pinned generated corpus without copying task content", () => {
+  const sources = syntheticSources({ result: syntheticMemCorrectResult() });
+  const receipt = buildBuildWeekEvidenceReceipt({
+    ...sources,
+    datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+    limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
+    freshIsolatedStoreConfirmed: true,
+    publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+  });
+
+  assert.equal(receipt.benchmark.id, "memcorrect-v1");
+  assert.equal(receipt.benchmark.taskCount, BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT);
+  assert.equal(receipt.dataset.source, "generated-corpus");
+  assert.equal(receipt.dataset.version, BUILD_WEEK_MEMCORRECT_DATASET_VERSION);
+  assert.equal(receipt.dataset.payloadSha256, BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256);
+  assert.match(receipt.dataset.manifestSha256, /^[0-9a-f]{64}$/);
+  assert.equal(receipt.dataset.fileCount, 0);
+  assert.equal(receipt.dataset.totalBytes, 0);
+  const serialized = serializeBuildWeekEvidenceReceipt(receipt);
+  assert.equal(serialized.includes("private correction question"), false);
+  assert.equal(serialized.includes("private corrected value"), false);
+  assert.equal(serialized.includes("memcorrect-12613607-0"), false);
+});
+
+test("MemCorrect receipts reject missing, fabricated, or mismatched generated-corpus provenance", () => {
+  const build = (sources: ReturnType<typeof syntheticSources>, datasetVersion = BUILD_WEEK_MEMCORRECT_DATASET_VERSION) =>
+    buildBuildWeekEvidenceReceipt({
+      ...sources,
+      datasetVersion,
+      limitationCodes: ["singleRun", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+    });
+
+  const wrongHash = syntheticMemCorrectResult();
+  wrongHash.meta.datasetHash = "f".repeat(64);
+  assert.throws(() => build(syntheticSources({ result: wrongHash })), /pinned full-corpus payload hash/);
+
+  const wrongSeed = syntheticMemCorrectResult();
+  wrongSeed.meta.seeds = [123];
+  assert.throws(() => build(syntheticSources({ result: wrongSeed })), /pinned seed/);
+
+  const wrongOptions = syntheticMemCorrectResult();
+  (wrongOptions.config.benchmarkOptions as Record<string, unknown>).factsPerPersona = 7;
+  assert.throws(() => build(syntheticSources({ result: wrongOptions })), /factsPerPersona/);
+
+  const wrongTaskIdentity = syntheticMemCorrectResult();
+  wrongTaskIdentity.results.tasks[0]!.taskId = "memcorrect-12613607-fabricated";
+  assert.throws(() => build(syntheticSources({ result: wrongTaskIdentity })), /task identities/);
+
+  const missingDataset = syntheticSources({ result: syntheticMemCorrectResult() });
+  const missingManifest = JSON.parse(missingDataset.manifestJson) as BenchmarkReproManifest;
+  missingManifest.datasets = [];
+  assert.throws(
+    () => build({ ...missingDataset, manifestJson: JSON.stringify(missingManifest) }),
+    /exactly one MemCorrect generated-corpus dataset entry/,
+  );
+
+  const fabricatedFileDataset = syntheticSources({ result: syntheticMemCorrectResult() });
+  const fabricatedManifest = JSON.parse(fabricatedFileDataset.manifestJson) as BenchmarkReproManifest;
+  fabricatedManifest.datasets[0] = {
+    benchmark: "memcorrect-v1",
+    status: "hashed",
+    fileCount: 1,
+    totalBytes: 1,
+    sha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
+    files: [{ path: "fabricated.json", kind: "file", sizeBytes: 1, sha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256 }],
+  };
+  assert.throws(
+    () => build({ ...fabricatedFileDataset, manifestJson: JSON.stringify(fabricatedManifest) }),
+    /generated corpus without file-backed provenance/,
+  );
+
+  assert.throws(
+    () => build(syntheticSources({ result: syntheticMemCorrectResult() }), "memcorrect-v1-unpinned"),
+    /datasetVersion must be/,
+  );
+});
+
+test("MemCorrect receipts reject non-full coverage, failed tasks, wrong adapter, and incomplete judge telemetry", () => {
+  const build = (result: BenchmarkResult, expectedTaskCount = BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT) =>
+    buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result }),
+      datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+      limitationCodes: ["singleRun", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount },
+    });
+
+  assert.throws(() => build(syntheticMemCorrectResult(), 39), /task count 40 does not match expected 39/);
+
+  const failed = syntheticMemCorrectResult();
+  failed.results.tasks[0]!.details = {
+    benchmarkFailure: { kind: "trial_execution_failure", message: "private failure" },
+  };
+  assert.throws(() => build(failed), /task\(s\) contain failure markers/);
+
+  const quick = syntheticMemCorrectResult();
+  quick.meta.mode = "quick";
+  assert.throws(() => build(quick), /full-mode/);
+
+  const partial = syntheticMemCorrectResult();
+  partial.meta.status = "partial";
+  assert.throws(() => build(partial), /explicitly complete/);
+
+  const wrongAdapter = syntheticMemCorrectResult();
+  wrongAdapter.config.adapterMode = "prompt-only-baseline";
+  assert.throws(() => build(wrongAdapter), /adapterMode remnic-native/);
+
+  const missingJudgeCall = syntheticMemCorrectResult();
+  missingJudgeCall.cost.judgeModelCalls = 79;
+  assert.throws(() => build(missingJudgeCall), /two specialized judge calls per task/);
+});
+
+test("file-backed benchmark receipts still reject non-hashed dataset manifests", () => {
+  const sources = syntheticSources();
+  const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  manifest.datasets[0] = {
+    benchmark: "longmemeval",
+    status: "not-provided",
+    fileCount: 0,
+    totalBytes: 0,
+    files: [],
+  };
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...sources,
+        manifestJson: JSON.stringify(manifest),
+        datasetVersion: "longmemeval-oracle-v1",
+        limitationCodes: ["singleRun"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "full", expectedTaskCount: 2 },
+      }),
+    /hashed dataset entry/,
   );
 });
 

@@ -180,6 +180,26 @@ or falsely full evidence. Its fixed output schema cannot copy questions,
 answers, recall text, private paths, environment values, ledger details, or
 account balances into the repository.
 
+MemCorrect v1 is generated rather than file-backed. Its receipt path is
+deliberately narrower: only the pinned full 40-scenario corpus (seed
+`0xc077e7`, dataset version `memcorrect-v1-c077e7`) is accepted. The receipt
+binds the known corpus payload hash, generator parameters, benchmark version,
+seed, Remnic-native adapter, and exact two-judge-calls-per-scenario telemetry;
+its manifest must retain the normal empty `not-provided` dataset entry. It does
+not weaken the hashed-file requirement for LongMemEval, LoCoMo, or any other
+file-backed benchmark:
+
+```bash
+pnpm exec tsx scripts/bench/generate-build-week-evidence-receipt.ts \
+  --result "$BUILD_WEEK_RESULTS_DIR/<memcorrect-result>.json" \
+  --manifest "$BUILD_WEEK_RESULTS_DIR/MANIFEST.json" \
+  --output docs/benchmarks/results/<public-memcorrect-receipt>.json \
+  --dataset-version memcorrect-v1-c077e7 \
+  --full-task-count 40 \
+  --confirm-fresh-isolated-store \
+  --limitations singleRun,estimatedAccounting,modelJudged
+```
+
 Codex built and adversarially reviewed the Build Week adapter, Responses
 provider, and report card. The underlying Remnic engine and original benchmark
 harness are prior work. The evidence ledger, credit-backed frontier-run
