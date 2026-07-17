@@ -34,7 +34,7 @@ import {
   resolveCreationMemoryCapabilities,
 } from "../capabilities.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { deindexMemory } from "../temporal-index.js";
+import { deindexMemoryAsync } from "../temporal-index.js";
 import { extractTopics } from "../topics.js";
 import { log } from "../logger.js";
 import path from "node:path";
@@ -345,7 +345,7 @@ export class LifecyclePolicyCoordinator {
           memory.path &&
           memory.frontmatter?.created
         ) {
-          deindexMemory(
+          await deindexMemoryAsync(
             this.config.memoryDir,
             memory.path,
             memory.frontmatter.created,

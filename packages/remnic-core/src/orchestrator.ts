@@ -326,10 +326,6 @@ import {
 } from "./lifecycle.js";
 import { isActiveMemoryStatus } from "./memory-lifecycle-ledger-utils.js";
 import {
-  indexMemoriesBatch,
-  clearIndexes,
-  indexesExist,
-  deindexMemory,
   queryByDateRangeAsync,
   queryByTagsAsync,
   isTemporalQuery,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,23 +8,91 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
-  deindexMemory,
-  indexMemory,
-  indexesExist,
+  clearIndexes,
+  deindexMemory as deindexMemorySync,
+  deindexMemoryAsync as deindexMemory,
+  indexMemoriesBatch,
+  indexMemory as indexMemorySync,
+  indexMemoryAsync as indexMemory,
+  indexesExist as indexesExistSync,
+  indexesExistAsync as indexesExist,
   queryByDateRangeAsync,
   queryByTagsAsync,
   queryTemporalTimelineAsync,
   resolvePromptTagPrefilterAsync,
+  setIndexReadObserverForTest,
 } from "./temporal-index.js";
+
+test("legacy temporal-index exports preserve synchronous return timing and booleans", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-sync-compat-"));
+  const firstPath = "/tmp/remnic-temporal-sync-first.md";
+  const secondPath = "/tmp/remnic-temporal-sync-second.md";
+
+  const initiallyExists = indexesExistSync(memoryDir);
+  assert.equal(typeof initiallyExists, "boolean");
+  assert.equal(initiallyExists, false);
+
+  assert.equal(
+    indexMemorySync(memoryDir, firstPath, "2026-03-09T12:00:00.000Z", ["sync"]),
+    undefined,
+  );
+  const afterIndex = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterIndex.dates["2026-03-09"], [firstPath]);
+  assert.equal(indexesExistSync(memoryDir), true);
+
+  indexMemoriesBatch(memoryDir, [
+    {
+      path: secondPath,
+      createdAt: "2026-03-10T12:00:00.000Z",
+      tags: ["sync"],
+    },
+  ]);
+  const afterBatch = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterBatch.dates["2026-03-10"], [secondPath]);
+
+  deindexMemorySync(memoryDir, firstPath, "2026-03-09T12:00:00.000Z", ["sync"]);
+  const afterDeindex = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.equal(afterDeindex.dates["2026-03-09"], undefined);
+
+  clearIndexes(memoryDir);
+  const afterClear = JSON.parse(
+    fs.readFileSync(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  assert.deepEqual(afterClear, { version: 2, dates: {}, events: {} });
+});
+
+test("explicit async mutation exports return promises and complete when awaited", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-async-surface-"));
+  const memoryPath = "/tmp/remnic-temporal-async.md";
+  const pending = indexMemory(
+    memoryDir,
+    memoryPath,
+    "2026-03-09T12:00:00.000Z",
+    ["async"],
+  );
+  assert.ok(pending instanceof Promise);
+  await pending;
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["async"]),
+    new Set([memoryPath]),
+  );
+  assert.equal(await indexesExist(memoryDir), true);
+});
 
 async function runIndexWorker(moduleUrl: string, memoryDir: string, workerId: number, count: number): Promise<void> {
   const workerSource = `
-const { indexMemory } = await import(process.argv[1]);
+const { indexMemoryAsync: indexMemory } = await import(process.argv[1]);
 const memoryDir = process.argv[2];
 const workerId = Number(process.argv[3]);
 const count = Number(process.argv[4]);
 for (let i = 0; i < count; i += 1) {
-  indexMemory(
+  await indexMemory(
     memoryDir,
     \`/tmp/remnic-temporal-worker-\${workerId}-memory-\${i}.md\`,
     "2026-03-09T12:00:00.000Z",
@@ -87,6 +156,176 @@ test("temporal index concurrent writers retain every date and tag path", async (
   assert.equal(tagIndex.tags["concurrency/shared"].paths.length, expectedPaths.size);
 });
 
+test("temporal index in-process promise concurrency retains every path", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-in-process-"));
+  const expectedPaths = Array.from(
+    { length: 40 },
+    (_, index) => `/tmp/remnic-temporal-in-process-${index}.md`,
+  );
+
+  await Promise.all(
+    expectedPaths.map((memoryPath) =>
+      indexMemory(
+        memoryDir,
+        memoryPath,
+        "2026-03-12T12:00:00.000Z",
+        ["concurrency/in-process"],
+      ),
+    ),
+  );
+
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-03-12", "2026-03-13"),
+    new Set(expectedPaths),
+  );
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["concurrency/in-process"]),
+    new Set(expectedPaths),
+  );
+});
+
+test("parsed cache detects a cross-process atomic replacement", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-cache-replace-"));
+  const moduleUrl = new URL("./temporal-index.ts", import.meta.url).href;
+  const initialPath = "/tmp/remnic-temporal-cache-initial.md";
+  await indexMemory(
+    memoryDir,
+    initialPath,
+    "2026-03-09T12:00:00.000Z",
+    ["concurrency/shared"],
+  );
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["concurrency/shared"]),
+    new Set([initialPath]),
+  );
+
+  await runIndexWorker(moduleUrl, memoryDir, 777, 1);
+
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["concurrency/shared"]),
+    new Set([initialPath, "/tmp/remnic-temporal-worker-777-memory-0.md"]),
+  );
+});
+
+test("unchanged index identity skips file reads while retaining the stat freshness check", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-cache-hit-"));
+  const statePath = join(memoryDir, "state");
+  const tagPath = join(statePath, "index_tags.json");
+  await mkdir(statePath, { recursive: true });
+  await writeFile(
+    tagPath,
+    JSON.stringify({ version: 2, tags: { alpha: ["/tmp/alpha.md"] }, aliases: {} }),
+    "utf8",
+  );
+  let reads = 0;
+  setIndexReadObserverForTest(() => {
+    reads += 1;
+  });
+  try {
+    assert.deepEqual(await queryByTagsAsync(memoryDir, ["alpha"]), new Set(["/tmp/alpha.md"]));
+    assert.deepEqual(await queryByTagsAsync(memoryDir, ["alpha"]), new Set(["/tmp/alpha.md"]));
+    assert.equal(reads, 1);
+
+    await writeFile(
+      tagPath,
+      JSON.stringify({ version: 2, tags: { beta: ["/tmp/beta.md"] }, aliases: {} }),
+      "utf8",
+    );
+    assert.deepEqual(await queryByTagsAsync(memoryDir, ["beta"]), new Set(["/tmp/beta.md"]));
+    assert.equal(reads, 2);
+  } finally {
+    setIndexReadObserverForTest();
+  }
+});
+
+test("failed atomic commit never publishes a mutated temporal cache", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-failed-commit-"));
+  const originalPath = "/tmp/remnic-temporal-committed.md";
+  const rejectedPath = "/tmp/remnic-temporal-rejected.md";
+  await indexMemory(memoryDir, originalPath, "2026-03-09T12:00:00.000Z", ["committed"]);
+
+  const originalRename = fs.promises.rename;
+  fs.promises.rename = (async (oldPath, newPath) => {
+    if (String(newPath).endsWith("index_time.json")) {
+      const error = new Error("injected temporal rename failure") as NodeJS.ErrnoException;
+      error.code = "EIO";
+      throw error;
+    }
+    return originalRename(oldPath, newPath);
+  }) as typeof originalRename;
+  try {
+    await indexMemory(memoryDir, rejectedPath, "2026-03-10T12:00:00.000Z", ["rejected"]);
+  } finally {
+    fs.promises.rename = originalRename;
+  }
+
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-11"),
+    new Set([originalPath]),
+  );
+  // The tag half is NOT committed when the temporal write fails (issue #1911,
+  // Cursor Medium): committing tags while temporal stays unchanged leaves a
+  // durable mismatch. Both halves stay at their prior state, so "rejected" has
+  // no tag membership until a later successful (both-halves) index.
+  assert.deepEqual(
+    await queryByTagsAsync(memoryDir, ["rejected"]),
+    new Set<string>(),
+  );
+
+  await indexMemory(memoryDir, rejectedPath, "2026-03-10T12:00:00.000Z", ["rejected"]);
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-11"),
+    new Set([originalPath, rejectedPath]),
+  );
+});
+
+test("date queries preserve missing, invalid, and valid-empty distinctions", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-load-states-"));
+  const statePath = join(memoryDir, "state");
+  const temporalPath = join(statePath, "index_time.json");
+  await mkdir(statePath, { recursive: true });
+
+  assert.equal(await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10"), null);
+
+  await writeFile(temporalPath, "{ invalid json", "utf8");
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10"),
+    new Set(),
+  );
+  assert.equal(await queryTemporalTimelineAsync(memoryDir), null);
+
+  await writeFile(
+    temporalPath,
+    JSON.stringify({ version: 2, dates: {}, events: {} }),
+    "utf8",
+  );
+  await writeFile(
+    join(statePath, "index_tags.json"),
+    JSON.stringify({ version: 2, tags: {}, aliases: {} }),
+    "utf8",
+  );
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10"),
+    new Set(),
+  );
+  assert.equal(await indexesExist(memoryDir), true);
+});
+
+test("index writers persist compact machine-only JSON", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-compact-"));
+  await indexMemory(
+    memoryDir,
+    "/tmp/remnic-temporal-compact.md",
+    "2026-03-09T12:00:00.000Z",
+    ["compact"],
+  );
+
+  for (const filename of ["index_time.json", "index_tags.json"]) {
+    const raw = await readFile(join(memoryDir, "state", filename), "utf8");
+    assert.equal(raw, JSON.stringify(JSON.parse(raw)));
+  }
+});
+
 test("temporal index writers wait for old locks owned by live processes", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-live-lock-"));
   const stateDir = join(memoryDir, "state");
@@ -98,8 +337,8 @@ test("temporal index writers wait for old locks owned by live processes", async 
   await utimes(lockDir, oldLockTime, oldLockTime);
 
   const workerSource = `
-const { indexMemory } = await import(process.argv[1]);
-indexMemory(
+const { indexMemoryAsync: indexMemory } = await import(process.argv[1]);
+await indexMemory(
   process.argv[2],
   "/tmp/remnic-temporal-live-lock-memory.md",
   "2026-03-10T12:00:00.000Z",
@@ -195,16 +434,20 @@ test("temporal index writers fail open on symlink lock blockers", async () => {
   const dateMatches = await queryByDateRangeAsync(memoryDir, "2026-03-09", "2026-03-10");
   const tagMatches = await queryByTagsAsync(memoryDir, ["concurrency/shared"]);
   assert.equal(dateMatches, null);
-  assert.deepEqual(tagMatches, new Set(["/tmp/remnic-temporal-worker-101-memory-0.md"]));
+  // Both halves fail open together (issue #1911, Cursor Medium): the symlinked
+  // temporal lock blocks the temporal write, so the tag half is also skipped
+  // (no durable mismatch). The tag index is never created → query returns null.
+  assert.equal(tagMatches, null);
 });
 
 test("tag queries distinguish missing index from valid no-match results", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-tag-miss-"));
 
+  assert.equal(await queryByTagsAsync(memoryDir, []), null);
   const unavailableMatches = await queryByTagsAsync(memoryDir, ["beta"]);
   assert.equal(unavailableMatches, null);
 
-  indexMemory(memoryDir, "/tmp/remnic-temporal-alpha-memory.md", "2026-03-11T12:00:00.000Z", ["alpha"]);
+  await indexMemory(memoryDir, "/tmp/remnic-temporal-alpha-memory.md", "2026-03-11T12:00:00.000Z", ["alpha"]);
 
   const matchingPaths = await queryByTagsAsync(memoryDir, ["alpha"]);
   assert.deepEqual(matchingPaths, new Set(["/tmp/remnic-temporal-alpha-memory.md"]));
@@ -226,8 +469,8 @@ test("indexMemory replaces stale date and tag memberships for an existing path",
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-update-"));
   const memoryPath = "/tmp/remnic-temporal-updated-memory.md";
 
-  indexMemory(memoryDir, memoryPath, "2026-01-01T00:00:00.000Z", ["alpha"]);
-  indexMemory(memoryDir, memoryPath, "2026-02-01T00:00:00.000Z", ["beta"]);
+  await indexMemory(memoryDir, memoryPath, "2026-01-01T00:00:00.000Z", ["alpha"]);
+  await indexMemory(memoryDir, memoryPath, "2026-02-01T00:00:00.000Z", ["beta"]);
 
   const januaryMatches = await queryByDateRangeAsync(memoryDir, "2026-01-01", "2026-01-02");
   const februaryMatches = await queryByDateRangeAsync(memoryDir, "2026-02-01", "2026-02-02");
@@ -242,12 +485,12 @@ test("indexMemory replaces stale date and tag memberships for an existing path",
 
 test("temporal timeline orders event time across sessions, not ingest order", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-order-"));
-  indexMemory(memoryDir, "/tmp/rome.md", "2026-07-02T00:00:00.000Z", [], {
+  await indexMemory(memoryDir, "/tmp/rome.md", "2026-07-02T00:00:00.000Z", [], {
     validAt: "2026-05-10T00:00:00.000Z",
     observedAt: "2026-07-02T00:00:00.000Z",
     sessionKey: "session-b",
   });
-  indexMemory(memoryDir, "/tmp/paris.md", "2026-07-03T00:00:00.000Z", [], {
+  await indexMemory(memoryDir, "/tmp/paris.md", "2026-07-03T00:00:00.000Z", [], {
     validAt: "2026-03-04T00:00:00.000Z",
     observedAt: "2026-07-03T00:00:00.000Z",
     sessionKey: "session-a",
@@ -266,9 +509,9 @@ test("temporal timeline orders event time across sessions, not ingest order", as
 test("temporal timeline uses stable observation/path ordering for event-time ties", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-tie-"));
   const eventAt = "2026-03-04T00:00:00.000Z";
-  indexMemory(memoryDir, "/tmp/z.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-03T00:00:00.000Z" });
-  indexMemory(memoryDir, "/tmp/a.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
-  indexMemory(memoryDir, "/tmp/b.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
+  await indexMemory(memoryDir, "/tmp/z.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-03T00:00:00.000Z" });
+  await indexMemory(memoryDir, "/tmp/a.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
+  await indexMemory(memoryDir, "/tmp/b.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
 
   const first = await queryTemporalTimelineAsync(memoryDir);
   const second = await queryTemporalTimelineAsync(memoryDir);
@@ -290,7 +533,11 @@ test("old or malformed temporal index shape is unavailable and requests rebuild"
     "utf8",
   );
 
-  assert.equal(indexesExist(memoryDir), false);
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-01-01", "2026-01-02"),
+    new Set(),
+  );
+  assert.equal(await indexesExist(memoryDir), false);
   assert.equal(await queryTemporalTimelineAsync(memoryDir), null);
 
   await writeFile(
@@ -298,7 +545,11 @@ test("old or malformed temporal index shape is unavailable and requests rebuild"
     JSON.stringify({ version: 1, dates: {} }),
     "utf8",
   );
-  assert.equal(indexesExist(memoryDir), false);
+  assert.deepEqual(
+    await queryByDateRangeAsync(memoryDir, "2026-01-01", "2026-01-02"),
+    new Set(),
+  );
+  assert.equal(await indexesExist(memoryDir), false);
   assert.equal(await queryTemporalTimelineAsync(memoryDir), null);
 });
 
@@ -306,8 +557,8 @@ test("deindex removes timeline rows so stale events cannot be recalled", async (
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-delete-"));
   const memoryPath = "/tmp/deleted.md";
   const createdAt = "2026-03-04T00:00:00.000Z";
-  indexMemory(memoryDir, memoryPath, createdAt, ["trip"], { sessionKey: "session-a" });
-  deindexMemory(memoryDir, memoryPath, createdAt, ["trip"]);
+  await indexMemory(memoryDir, memoryPath, createdAt, ["trip"], { sessionKey: "session-a" });
+  await deindexMemory(memoryDir, memoryPath, createdAt, ["trip"]);
   assert.deepEqual(await queryTemporalTimelineAsync(memoryDir), []);
 });
 
@@ -315,7 +566,7 @@ test("large temporal indexes return a bounded relevant oversample before memory 
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-bounded-"));
   for (let i = 0; i < 600; i += 1) {
     const day = String((i % 28) + 1).padStart(2, "0");
-    indexMemory(
+    await indexMemory(
       memoryDir,
       `/tmp/event-${String(i).padStart(4, "0")}.md`,
       `2026-03-${day}T00:00:00.000Z`,
@@ -348,7 +599,7 @@ test("temporal timeline generic edge selection honors small and zero limits", as
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-small-limit-"));
   for (let day = 1; day <= 4; day += 1) {
     const timestamp = `2026-04-0${day}T00:00:00.000Z`;
-    indexMemory(memoryDir, `/tmp/edge-${day}.md`, timestamp, [], {
+    await indexMemory(memoryDir, `/tmp/edge-${day}.md`, timestamp, [], {
       validAt: timestamp,
       searchText: `unrelated event ${day}`,
     });

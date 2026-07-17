@@ -27,7 +27,7 @@ import type { StorageManager } from "../index.js";
 import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import { resolveIndexingCapabilities } from "../capabilities.js";
-import { deindexMemory } from "../temporal-index.js";
+import { deindexMemoryAsync } from "../temporal-index.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
 export interface ContradictionResult {
@@ -253,7 +253,7 @@ export class ContradictionLinkingCoordinator {
         resolveIndexingCapabilities(config).queryAwareIndexing &&
         contradiction.supersededPath
       ) {
-        deindexMemory(
+        await deindexMemoryAsync(
           config.memoryDir,
           contradiction.supersededPath,
           contradiction.supersededCreated,

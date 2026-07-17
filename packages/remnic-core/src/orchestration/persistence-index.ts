@@ -23,7 +23,7 @@ import { ContentHashIndex, StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { stripCitationForTemplate } from "../source-attribution.js";
-import { clearIndexes, indexMemoriesBatch, indexesExist } from "../temporal-index.js";
+import { clearIndexesAsync, indexMemoriesBatchAsync, indexesExistAsync } from "../temporal-index.js";
 import { normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { MemoryFile, MemoryFrontmatter, PluginConfig } from "../types.js";
 import {
@@ -392,7 +392,7 @@ export class PersistenceIndexCoordinator {
       return;
     // Check for missing indexes BEFORE the early-return so first-time enablement
     // can bootstrap the full corpus even when this extraction turn persisted nothing.
-    const needsFullRebuild = !indexesExist(this.deps.config.memoryDir);
+    const needsFullRebuild = !(await indexesExistAsync(this.deps.config.memoryDir));
     if (!needsFullRebuild && persistedIds.length === 0) return;
     try {
       // Read the corpus once to avoid N separate full-corpus scans.
@@ -449,17 +449,17 @@ export class PersistenceIndexCoordinator {
       if (needsFullRebuild) {
         // Always write empty indexes on full rebuild — even when the active pool
         // is empty (e.g. store contains only archived/superseded entries).
-        // This marks bootstrap completion so indexesExist() returns true and
+        // This marks bootstrap completion so indexesExistAsync() returns true and
         // subsequent extractions skip the full-corpus scan.
-        clearIndexes(this.deps.config.memoryDir);
+        await clearIndexesAsync(this.deps.config.memoryDir);
         if (entries.length > 0) {
-          indexMemoriesBatch(this.deps.config.memoryDir, entries);
+          await indexMemoriesBatchAsync(this.deps.config.memoryDir, entries);
         }
         log.info(
           `temporal-index: bootstrapped from ${entries.length} active memories`,
         );
       } else if (entries.length > 0) {
-        indexMemoriesBatch(this.deps.config.memoryDir, entries);
+        await indexMemoriesBatchAsync(this.deps.config.memoryDir, entries);
       }
     } catch (err) {
       log.debug(`temporal-index update failed (non-fatal): ${err}`);
