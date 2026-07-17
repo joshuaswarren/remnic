@@ -721,6 +721,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const tests: RelayTestSnapshot[] = [];
   const propagation: RelayPropagationSnapshot[] = [];
   const missingEvidence = new Set<string>();
+  if (corruptLines > 0) missingEvidence.add("mission:corrupt-events");
   const substantiveAgentIds = new Set<string>();
   const substantiveSessionIds = new Set<string>();
   const groundedCorrectionIds = new Set<string>();

@@ -140,7 +140,7 @@ test("empty, partial, and bounded reads remain distinct and deterministic", asyn
     assert.equal(empty.readHealth, "empty");
     assert.equal(empty.status, "not_started");
 
-    for (const input of createRelayMissionFixture().slice(0, 3)) {
+    for (const input of createRelayMissionFixture()) {
       await store.append(RELAY_DEMO_MISSION_ID, input);
     }
     const file = path.join(root, "state", "relay", "missions", `${RELAY_DEMO_MISSION_ID}.jsonl`);
@@ -156,6 +156,8 @@ test("empty, partial, and bounded reads remain distinct and deterministic", asyn
     assert.equal(partial.bounds.totalEvents, 1);
     assert.equal(partial.events[0]?.payload.kind, "agent_status");
     assert.equal(partial.events[0]?.occurredAt, "2026-07-17T18:00:02.000Z");
+    assert.equal(partial.receipt.complete, false);
+    assert.ok(partial.receipt.missingEvidence.includes("mission:corrupt-events"));
 
     const outsideWindow = await store.read(RELAY_DEMO_MISSION_ID, {
       since: "2026-07-17T19:00:00.000Z",
