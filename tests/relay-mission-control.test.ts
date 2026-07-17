@@ -25,15 +25,17 @@ interface RelayBrowserModel {
     metadataInvalid: boolean;
   }): boolean;
   createApprovalEvent(input: Record<string, string>): unknown;
+  currentCorrection(snapshot: unknown): { correctionId: string; status: string; proposedAt: string } | null;
   isValidActorId(value: unknown): boolean;
   isReusableApprovalEvent(candidate: unknown, correctionId: string, operatorId?: string): boolean;
   lineage(snapshot: unknown): {
+    correction: { correctionId: string } | null;
     stale: { decisionId: string; status: string } | null;
     replacement: { decisionId: string; status: string } | null;
     state: string;
   };
   phase(snapshot: unknown): { id: string; label: string };
-  receipt(snapshot: unknown): { complete: boolean; propagated: boolean; contractPassed: boolean };
+  receipt(snapshot: unknown): { complete: boolean; humanApproved: boolean; propagated: boolean; contractPassed: boolean };
   timeline(snapshot: unknown): Array<{ kind: string; id: string }>;
   validateReplay(replay: unknown): unknown;
 }
@@ -112,6 +114,39 @@ test("browser model selects an agent decision with stable total ordering", async
 
   ordered.decisions = ordered.decisions.filter((decision) => decision.status === "superseded").reverse();
   assert.equal(model.agentCards(ordered).find((card) => card.slot === "builder")?.decision?.decisionId, "decision-a-retired");
+});
+
+test("browser model selects a pending correction before lexically later history", async () => {
+  const model = await loadModel();
+  const replay = await committedReplay();
+  const completed = replay.frames.at(-1)?.snapshot;
+  assert.ok(completed);
+  const historical = structuredClone(completed.corrections[0]);
+  assert.ok(historical);
+  historical.correctionId = "z-historical";
+
+  const pending = structuredClone(historical);
+  pending.correctionId = "a-pending";
+  pending.status = "proposed";
+  pending.proposedAt = "2026-07-17T20:30:00.000Z";
+  delete pending.approvedAt;
+  delete pending.approvedBy;
+  delete pending.appliedAt;
+  delete pending.propagatedAt;
+
+  const multi = structuredClone(completed);
+  multi.corrections = [pending, historical];
+  assert.equal(model.currentCorrection(multi)?.correctionId, "a-pending");
+  assert.equal(model.lineage(multi).correction?.correctionId, "a-pending");
+  assert.equal(model.receipt(multi).humanApproved, false);
+
+  const newerPending = { ...structuredClone(pending), correctionId: "b-newer", proposedAt: "2026-07-17T20:31:00.000Z" };
+  multi.corrections = [pending, newerPending, historical];
+  assert.equal(model.currentCorrection(multi)?.correctionId, "b-newer");
+
+  newerPending.status = "applied";
+  multi.corrections = [newerPending, historical];
+  assert.equal(model.currentCorrection(multi)?.correctionId, "b-newer");
 });
 
 test("browser model preserves the causal event order through recovered receipt", async () => {
@@ -241,6 +276,7 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
+  assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
   assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
   assert.match(controller, /function relayResponseError\(status, body\)/);
   assert.match(controller, /error\.relayStatus = status/);

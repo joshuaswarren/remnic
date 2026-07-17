@@ -403,9 +403,9 @@
   }
 
   function openApprovalDialog() {
-    const correction = state.snapshot?.corrections.find((item) => !item.approvedAt) || state.snapshot?.corrections.at(-1);
-    if (!correction) {
-      showToast("The correction proposal has not arrived yet.");
+    const correction = state.snapshot ? Model.currentCorrection(state.snapshot) : null;
+    if (!correction || correction.approvedAt) {
+      showToast("No correction is currently awaiting human approval.");
       return;
     }
     const live = state.mode === "live";
@@ -448,8 +448,8 @@
       return;
     }
 
-    const correction = state.snapshot?.corrections.find((item) => !item.approvedAt);
-    if (!correction) {
+    const correction = state.snapshot ? Model.currentCorrection(state.snapshot) : null;
+    if (!correction || correction.approvedAt) {
       dom.approvalError.textContent = "No pending correction is available.";
       return;
     }

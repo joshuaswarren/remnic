@@ -197,9 +197,30 @@
     return ["scout", "builder", "reviewer"].map((slot) => cardForAgent(slot, bySlot.get(slot), snapshot));
   }
 
+  function currentCorrection(snapshot) {
+    validateSnapshot(snapshot);
+    return [...snapshot.corrections].sort((a, b) => {
+      const aPending = a.status === "proposed" && !a.approvedAt;
+      const bPending = b.status === "proposed" && !b.approvedAt;
+      if (aPending !== bPending) return aPending ? -1 : 1;
+      const aUnfinished = a.status !== "propagated";
+      const bUnfinished = b.status !== "propagated";
+      if (aUnfinished !== bUnfinished) return aUnfinished ? -1 : 1;
+      const aProposedAt = Date.parse(a.proposedAt);
+      const bProposedAt = Date.parse(b.proposedAt);
+      if (Number.isFinite(aProposedAt) && Number.isFinite(bProposedAt) && aProposedAt !== bProposedAt) {
+        return bProposedAt - aProposedAt;
+      }
+      if (Number.isFinite(aProposedAt) !== Number.isFinite(bProposedAt)) {
+        return Number.isFinite(aProposedAt) ? -1 : 1;
+      }
+      return a.correctionId.localeCompare(b.correctionId);
+    })[0] || null;
+  }
+
   function lineage(snapshot) {
     validateSnapshot(snapshot);
-    const correction = snapshot.corrections.at(-1) || null;
+    const correction = currentCorrection(snapshot);
     const stale = correction?.supersedesDecisionIds
       ?.map((decisionId) => snapshot.decisions.find((decision) => decision.decisionId === decisionId))
       .find(Boolean)
@@ -232,7 +253,7 @@
   function receipt(snapshot) {
     validateSnapshot(snapshot);
     const latestTest = snapshot.tests.at(-1) || null;
-    const correction = snapshot.corrections.at(-1) || null;
+    const correction = currentCorrection(snapshot);
     return {
       complete: snapshot.receipt.complete === true,
       outcome: snapshot.outcome?.result || (latestTest?.status === "failed" ? "failed" : "pending"),
@@ -349,6 +370,7 @@
     captureLabel,
     collectEvidence,
     createApprovalEvent,
+    currentCorrection,
     isValidActorId,
     isReusableApprovalEvent,
     lineage,
