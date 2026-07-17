@@ -6,9 +6,11 @@ import { buildCodexCreditReceipt, type CodexCreditBudgetConfig } from "@remnic/b
 
 import { runRelayCodexOneShot } from "./codex-one-shot.js";
 import {
+  RELAY_ACCOUNT_CREDIT_CAP_UNITS,
   RELAY_CREDIT_BUDGET_UNITS,
   RELAY_CREDIT_RESERVE_UNITS,
   RELAY_OPERATOR_PRINCIPAL,
+  RELAY_QUARANTINED_ATTEMPT_UNITS,
   type RelayRole,
 } from "./contracts.js";
 import {
@@ -30,6 +32,7 @@ interface CliOptions {
   keepArtifacts: boolean;
   approvalPhrase: string;
   operatorPrincipal: string;
+  quarantinedLedgerPath?: string;
 }
 
 function requiredValue(argv: string[], index: number, flag: string): string {
@@ -44,6 +47,7 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
   let keepArtifacts = false;
   let approvalPhrase = "";
   let operatorPrincipal = "";
+  let quarantinedLedgerPath: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") {
@@ -59,6 +63,9 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
       index += 1;
     } else if (arg === "--operator") {
       operatorPrincipal = requiredValue(argv, index, arg);
+      index += 1;
+    } else if (arg === "--quarantine-uncertain-alias-ledger") {
+      quarantinedLedgerPath = requiredValue(argv, index, arg);
       index += 1;
     } else if (arg === "--keep-artifacts") {
       keepArtifacts = true;
@@ -78,6 +85,7 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
     keepArtifacts,
     approvalPhrase,
     operatorPrincipal,
+    ...(quarantinedLedgerPath ? { quarantinedLedgerPath: path.resolve(quarantinedLedgerPath) } : {}),
   };
 }
 
@@ -124,7 +132,15 @@ async function main(): Promise<void> {
   if (await pathExists(options.recordingDir)) {
     throw new Error("Relay live recording already exists; refusing to spend credits on an overwrite");
   }
-  const ledgerPath = path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger.json");
+  const defaultLedgerPath = path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger.json");
+  if (options.quarantinedLedgerPath && options.quarantinedLedgerPath !== defaultLedgerPath) {
+    throw new Error("Relay only permits quarantining its dedicated rejected-alias ledger");
+  }
+  const quarantinedUncertainUnits = options.quarantinedLedgerPath ? RELAY_QUARANTINED_ATTEMPT_UNITS : 0;
+  const creditBudgetUnits = RELAY_ACCOUNT_CREDIT_CAP_UNITS - quarantinedUncertainUnits;
+  const ledgerPath = options.quarantinedLedgerPath
+    ? path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger-terra.json")
+    : defaultLedgerPath;
   const runId = `relay-build-week-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const directories = await prepareRelayRunDirectories(repoRoot, options.runRoot);
   const controller = new AbortController();
@@ -133,11 +149,17 @@ async function main(): Promise<void> {
   process.once("SIGTERM", cancel);
   let harness: RelayRemnicHarness | undefined;
   try {
-    const preflight = await runRelayPreflight({ repoRoot, directories, ledgerPath });
+    const preflight = await runRelayPreflight({
+      repoRoot,
+      directories,
+      ledgerPath,
+      creditBudgetUnits,
+      ...(options.quarantinedLedgerPath ? { quarantinedLedgerPath: options.quarantinedLedgerPath } : {}),
+    });
     if (controller.signal.aborted) throw new Error("Relay live run was cancelled after preflight");
     harness = await startRelayRemnicHarness(directories.memoryDir);
     const budget: CodexCreditBudgetConfig = {
-      budgetCredits: RELAY_CREDIT_BUDGET_UNITS,
+      budgetCredits: creditBudgetUnits,
       reserveCredits: RELAY_CREDIT_RESERVE_UNITS,
       ledgerPath,
       allowSol: false,
@@ -187,6 +209,8 @@ async function main(): Promise<void> {
           model: verified.metadata.model,
           calls: verified.creditReceipt.run.calls,
           creditUnitsSpent: verified.creditReceipt.run.budgetUnits,
+          accountCreditCapUnits: RELAY_ACCOUNT_CREDIT_CAP_UNITS,
+          quarantinedUncertainUnits,
           productionDataRead: false,
         },
         null,

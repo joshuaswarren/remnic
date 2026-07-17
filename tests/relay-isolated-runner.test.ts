@@ -142,22 +142,22 @@ class MockRelayExecutor implements RelayCodexExecutor {
 }
 
 test("Relay fixes model, call count, and conservative 2,473-unit budget without Sol", () => {
-  assert.equal(RELAY_MODEL, "gpt-5.6");
+  assert.equal(RELAY_MODEL, "gpt-5.6-terra");
   assert.equal(RELAY_MODEL.includes("sol"), false);
   assert.equal(RELAY_MAX_LIVE_CALLS, 4);
   assert.equal(RELAY_CREDIT_BUDGET_UNITS - RELAY_CREDIT_RESERVE_UNITS, 2_000);
   assert.ok(RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL <= 2_000);
   assert.equal(
-    calculateCodexBudgetUnits("gpt-5.6", {
+    calculateCodexBudgetUnits("gpt-5.6-terra", {
       inputTokens: 1_000,
       cachedInputTokens: 0,
       outputTokens: 100,
       reasoningOutputTokens: 50,
     }),
-    0.2,
+    0.1,
   );
   assert.throws(
-    () => calculateCodexBudgetUnits("gpt-5.6-unknown", { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 }),
+    () => calculateCodexBudgetUnits("gpt-5.6", { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 }),
     /No Codex credit rate/,
   );
 });
@@ -165,7 +165,7 @@ test("Relay fixes model, call count, and conservative 2,473-unit budget without 
 test("Codex one-shot arguments ignore user state and expose only loopback Remnic recall", () => {
   const args = buildRelayCodexArgs("cold-builder", "http://127.0.0.1:43210/mcp");
   assert.deepEqual(args.slice(0, 4), ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules"]);
-  assert.ok(args.includes("gpt-5.6"));
+  assert.ok(args.includes("gpt-5.6-terra"));
   assert.ok(args.includes("workspace-write"));
   assert.ok(args.includes("--ephemeral"));
   assert.ok(args.includes("--output-schema"));

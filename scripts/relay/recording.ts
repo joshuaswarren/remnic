@@ -12,6 +12,7 @@ import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench"
 import { z } from "zod";
 
 import {
+  RELAY_ACCOUNT_CREDIT_CAP_UNITS,
   RELAY_CREDIT_BUDGET_UNITS,
   RELAY_CREDIT_RESERVE_UNITS,
   RELAY_MAX_LIVE_CALLS,
@@ -60,15 +61,19 @@ export const RelaySanitizedCreditReceiptSchema = z
   .object({
     schemaVersion: z.literal(2),
     ledgerSha256: sha256Schema,
-    budgetUnits: z.literal(RELAY_CREDIT_BUDGET_UNITS),
+    budgetUnits: z.number().int().positive().max(RELAY_CREDIT_BUDGET_UNITS),
     reserveUnits: z.literal(RELAY_CREDIT_RESERVE_UNITS),
-    plannedSpendCeilingUnits: z.literal(RELAY_PLANNED_SPEND_CEILING_UNITS),
+    plannedSpendCeilingUnits: z.number().int().positive().max(RELAY_PLANNED_SPEND_CEILING_UNITS),
     totalSpentUnits: finiteNonnegative,
     remainingBudgetUnits: finiteNonnegative,
     blocked: z.literal(false),
     run: scopeSchema.extend({ id: z.string().min(1).max(128) }).strict(),
   })
-  .strict();
+  .strict()
+  .refine((value) => value.budgetUnits - value.reserveUnits === value.plannedSpendCeilingUnits, {
+    message: "credit receipt must preserve the fixed reserve",
+    path: ["plannedSpendCeilingUnits"],
+  });
 export type RelaySanitizedCreditReceipt = z.infer<typeof RelaySanitizedCreditReceiptSchema>;
 
 const RelayRecordingMetadataSchema = z
@@ -80,6 +85,10 @@ const RelayRecordingMetadataSchema = z
     runMode: z.literal("live"),
     model: z.literal(RELAY_MODEL),
     reasoningEffort: z.literal(RELAY_REASONING_EFFORT),
+    accountCreditCapUnits: z.literal(RELAY_ACCOUNT_CREDIT_CAP_UNITS),
+    quarantinedUncertainUnits: z.number().int().nonnegative(),
+    quarantinedLedgerSha256: sha256Schema.nullable(),
+    effectiveBudgetUnits: z.number().int().positive().max(RELAY_CREDIT_BUDGET_UNITS),
     fixtureManifestSha256: sha256Schema,
     missionReceiptSha256: sha256Schema,
     callOrder: z.tuple([
@@ -159,6 +168,33 @@ const RelayMemoryArtifactSchema = z
     synthetic: z.literal(true),
   })
   .strict();
+
+const RelayBudgetAdjustmentArtifactSchema = z
+  .object({
+    accountCreditCapUnits: z.literal(RELAY_ACCOUNT_CREDIT_CAP_UNITS),
+    quarantinedUncertainUnits: z.number().int().nonnegative(),
+    quarantinedLedgerSha256: sha256Schema.nullable(),
+    effectiveBudgetUnits: z.number().int().positive().max(RELAY_CREDIT_BUDGET_UNITS),
+    reserveUnits: z.literal(RELAY_CREDIT_RESERVE_UNITS),
+    plannedSpendCeilingUnits: z.number().int().positive().max(RELAY_PLANNED_SPEND_CEILING_UNITS),
+    basis: z.literal("worst-case carry-forward for prior uncertain dispatch"),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.accountCreditCapUnits - value.quarantinedUncertainUnits !== value.effectiveBudgetUnits) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "effective budget mismatch", path: ["effectiveBudgetUnits"] });
+    }
+    if (value.effectiveBudgetUnits - value.reserveUnits !== value.plannedSpendCeilingUnits) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "planned spend ceiling mismatch",
+        path: ["plannedSpendCeilingUnits"],
+      });
+    }
+    if ((value.quarantinedUncertainUnits === 0) !== (value.quarantinedLedgerSha256 === null)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "quarantine evidence mismatch", path: ["quarantinedLedgerSha256"] });
+    }
+  });
 
 export interface WriteRelayRecordingOptions {
   recordingDir: string;
@@ -253,6 +289,7 @@ function parseCallArtifact(role: RelayRole, raw: unknown): SanitizedRelayCall {
 function expectedFiles(): string[] {
   return [
     "approval.json",
+    "budget-adjustment.json",
     "calls/cold-builder.json",
     "calls/resolver.json",
     "calls/scout.json",
@@ -290,6 +327,10 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
       runMode: "live",
       model: RELAY_MODEL,
       reasoningEffort: RELAY_REASONING_EFFORT,
+      accountCreditCapUnits: options.preflight.accountCreditCapUnits,
+      quarantinedUncertainUnits: options.preflight.quarantinedUncertainUnits,
+      quarantinedLedgerSha256: options.preflight.quarantinedLedgerSha256,
+      effectiveBudgetUnits: options.preflight.budgetUnits,
       fixtureManifestSha256: options.missionRun.fixtureManifestSha256,
       missionReceiptSha256: options.missionRun.missionReceiptSha256,
       callOrder: options.missionRun.calls.map((call) => call.summary.role),
@@ -340,10 +381,20 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
         "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
       synthetic: true,
     });
+    const budgetAdjustment = RelayBudgetAdjustmentArtifactSchema.parse({
+      accountCreditCapUnits: options.preflight.accountCreditCapUnits,
+      quarantinedUncertainUnits: options.preflight.quarantinedUncertainUnits,
+      quarantinedLedgerSha256: options.preflight.quarantinedLedgerSha256,
+      effectiveBudgetUnits: options.preflight.budgetUnits,
+      reserveUnits: options.preflight.reserveUnits,
+      plannedSpendCeilingUnits: options.preflight.plannedSpendCeilingUnits,
+      basis: "worst-case carry-forward for prior uncertain dispatch",
+    });
     const artifacts: Array<[string, unknown]> = [
       ["recording.json", metadata],
       ["preflight.json", RelayPreflightReceiptSchema.parse(options.preflight)],
       ["credit-receipt.json", creditReceipt],
+      ["budget-adjustment.json", budgetAdjustment],
       ["approval.json", approval],
       ["correction.json", correction],
       ["mission-receipt.json", missionReceipt],
@@ -400,6 +451,7 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   const metadata = RelayRecordingMetadataSchema.parse(await readJson(root, "recording.json"));
   const preflight = RelayPreflightReceiptSchema.parse(await readJson(root, "preflight.json"));
   const creditReceipt = RelaySanitizedCreditReceiptSchema.parse(await readJson(root, "credit-receipt.json"));
+  const budgetAdjustment = RelayBudgetAdjustmentArtifactSchema.parse(await readJson(root, "budget-adjustment.json"));
   const events = z.array(RelayMissionEventSchema).length(16).parse(await readJson(root, "events.json"));
   const tests = z.tuple([RelayTestResultSchema, RelayTestResultSchema]).parse(await readJson(root, "tests.json"));
   const calls: SanitizedRelayCall[] = [];
@@ -437,11 +489,19 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   if (creditReceipt.run.calls !== RELAY_MAX_LIVE_CALLS || creditReceipt.run.budgetUnits !== metadata.creditUnitsSpentByRun) {
     throw new Error("Relay recording credit evidence does not match its metadata");
   }
+  if (
+    creditReceipt.budgetUnits !== metadata.effectiveBudgetUnits ||
+    creditReceipt.budgetUnits !== budgetAdjustment.effectiveBudgetUnits ||
+    metadata.accountCreditCapUnits - metadata.quarantinedUncertainUnits !== metadata.effectiveBudgetUnits ||
+    metadata.quarantinedLedgerSha256 !== budgetAdjustment.quarantinedLedgerSha256
+  ) {
+    throw new Error("Relay recording budget adjustment does not match the effective credit ledger");
+  }
   if (preflight.fixtureManifestSha256 !== metadata.fixtureManifestSha256) {
     throw new Error("Relay recording preflight and mission used different synthetic fixtures");
   }
   scanSensitive(
-    { metadata, preflight, creditReceipt, events, tests, calls, missionReceipt },
+    { metadata, preflight, creditReceipt, budgetAdjustment, events, tests, calls, missionReceipt },
     path.resolve(repoRoot),
   );
   return { rootSha256: manifest.rootSha256, metadata, events, preflight, creditReceipt, calls };

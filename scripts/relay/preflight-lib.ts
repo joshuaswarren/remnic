@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, readdir, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { buildCodexCreditReceipt } from "@remnic/bench";
 
 import {
+  RELAY_ACCOUNT_CREDIT_CAP_UNITS,
   RELAY_CREDIT_BUDGET_UNITS,
   RELAY_CREDIT_RESERVE_UNITS,
   RELAY_MAX_LIVE_CALLS,
@@ -13,6 +15,7 @@ import {
   RELAY_MODEL,
   RELAY_NAMESPACE,
   RELAY_PLANNED_SPEND_CEILING_UNITS,
+  RELAY_QUARANTINED_ATTEMPT_UNITS,
   RELAY_REASONING_EFFORT,
   RelayPreflightReceiptSchema,
   type RelayPreflightReceipt,
@@ -146,6 +149,43 @@ export interface RelayPreflightOptions {
   ledgerPath: string;
   codexBinaryPath?: string;
   authSourcePath?: string;
+  creditBudgetUnits?: number;
+  quarantinedLedgerPath?: string;
+}
+
+async function verifyQuarantinedAliasLedger(ledgerPath: string): Promise<string> {
+  const info = await lstat(ledgerPath);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error("Relay quarantined ledger must be a regular non-symlink file");
+  }
+  const contents = await readFile(ledgerPath);
+  let ledger: unknown;
+  try {
+    ledger = JSON.parse(contents.toString("utf8"));
+  } catch {
+    throw new Error("Relay quarantined ledger must contain valid JSON");
+  }
+  const candidate = ledger as {
+    schemaVersion?: unknown;
+    budgetUnits?: unknown;
+    reserveUnits?: unknown;
+    spentUnits?: unknown;
+    entries?: unknown;
+    blockedEvent?: { model?: unknown; reason?: unknown };
+  };
+  if (
+    candidate.schemaVersion !== 2 ||
+    candidate.budgetUnits !== RELAY_ACCOUNT_CREDIT_CAP_UNITS ||
+    candidate.reserveUnits !== RELAY_CREDIT_RESERVE_UNITS ||
+    candidate.spentUnits !== 0 ||
+    !Array.isArray(candidate.entries) ||
+    candidate.entries.length !== 0 ||
+    candidate.blockedEvent?.model !== "gpt-5.6" ||
+    candidate.blockedEvent.reason !== "Codex completion did not emit a complete turn.completed usage record"
+  ) {
+    throw new Error("Relay quarantined ledger does not match the bounded rejected-alias attempt");
+  }
+  return createHash("sha256").update(contents).digest("hex");
 }
 
 export interface RelayPreflightResult {
@@ -155,12 +195,27 @@ export interface RelayPreflightResult {
 }
 
 export async function runRelayPreflight(options: RelayPreflightOptions): Promise<RelayPreflightResult> {
-  if (RELAY_MODEL !== "gpt-5.6" || RELAY_MODEL.toLowerCase().includes("sol")) {
-    throw new Error("Relay live model policy requires exact gpt-5.6 and forbids Sol");
+  if (!RELAY_MODEL.startsWith("gpt-5.6-") || RELAY_MODEL.toLowerCase().includes("sol")) {
+    throw new Error("Relay live model policy requires a catalogued non-Sol GPT-5.6 variant");
   }
-  if (RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL > RELAY_PLANNED_SPEND_CEILING_UNITS) {
+  const quarantinedUncertainUnits = options.quarantinedLedgerPath ? RELAY_QUARANTINED_ATTEMPT_UNITS : 0;
+  const budgetUnits = options.creditBudgetUnits ?? RELAY_CREDIT_BUDGET_UNITS;
+  if (budgetUnits !== RELAY_ACCOUNT_CREDIT_CAP_UNITS - quarantinedUncertainUnits) {
+    throw new Error("Relay effective credit budget does not account for quarantined uncertainty");
+  }
+  const plannedSpendCeilingUnits = budgetUnits - RELAY_CREDIT_RESERVE_UNITS;
+  if (
+    plannedSpendCeilingUnits <= 0 ||
+    RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL > plannedSpendCeilingUnits
+  ) {
     throw new Error("Relay worst-case live calls exceed the planned spend ceiling");
   }
+  if (options.quarantinedLedgerPath && path.resolve(options.quarantinedLedgerPath) === path.resolve(options.ledgerPath)) {
+    throw new Error("Relay active and quarantined credit ledgers must be distinct files");
+  }
+  const quarantinedLedgerSha256 = options.quarantinedLedgerPath
+    ? await verifyQuarantinedAliasLedger(path.resolve(options.quarantinedLedgerPath))
+    : null;
   const fixtureRoot = path.join(options.repoRoot, "fixtures", "remnic-relay");
   const fixtureManifest = await verifyRelayFixtureManifest(fixtureRoot);
   const codexBinary = await resolveCodexBinary(
@@ -183,6 +238,32 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   const version = await runProcess(codexBinary, ["--version"], { cwd: options.repoRoot, env: safeHostEnv });
   if (version.exitCode !== 0) throw new Error("Relay could not execute Codex CLI");
   const codexVersion = parseCodexVersion(version.stdout);
+  const catalogResult = await runProcess(codexBinary, ["debug", "models"], {
+    cwd: options.repoRoot,
+    env: safeHostEnv,
+    timeoutMs: 30_000,
+  });
+  if (catalogResult.exitCode !== 0) throw new Error("Relay could not read the authenticated Codex model catalog");
+  let catalog: unknown;
+  try {
+    catalog = JSON.parse(catalogResult.stdout);
+  } catch {
+    throw new Error("Relay Codex model catalog was not valid JSON");
+  }
+  const models = Array.isArray(catalog)
+    ? catalog
+    : Array.isArray((catalog as { models?: unknown })?.models)
+      ? (catalog as { models: unknown[] }).models
+      : [];
+  const configuredModel = models.find(
+    (model) => (model as { slug?: unknown })?.slug === RELAY_MODEL,
+  ) as { default_reasoning_level?: unknown; supported_reasoning_levels?: Array<{ effort?: unknown }> } | undefined;
+  if (
+    !configuredModel ||
+    !configuredModel.supported_reasoning_levels?.some((level) => level.effort === RELAY_REASONING_EFFORT)
+  ) {
+    throw new Error(`Relay model ${RELAY_MODEL} with ${RELAY_REASONING_EFFORT} reasoning is absent from the catalog`);
+  }
   const login = await runProcess(codexBinary, ["login", "status"], { cwd: options.repoRoot, env: safeHostEnv });
   // Codex currently reports login status on stderr, but accept either stream so
   // the preflight remains robust across CLI output-routing changes.
@@ -194,16 +275,16 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   if (isolatedVersion !== codexVersion) throw new Error("Relay chroot executed a different Codex binary version");
 
   let ledgerSpentUnits = 0;
-  let ledgerRemainingPlannedUnits = RELAY_PLANNED_SPEND_CEILING_UNITS;
+  let ledgerRemainingPlannedUnits = plannedSpendCeilingUnits;
   if (await pathExists(options.ledgerPath)) {
     const ledger = await buildCodexCreditReceipt(options.ledgerPath);
     if (ledger.blocked) throw new Error("Relay Codex credit ledger requires manual reconciliation");
     if (
-      ledger.budgetUnits !== RELAY_CREDIT_BUDGET_UNITS ||
+      ledger.budgetUnits !== budgetUnits ||
       ledger.reserveUnits !== RELAY_CREDIT_RESERVE_UNITS ||
-      ledger.plannedSpendCeilingUnits !== RELAY_PLANNED_SPEND_CEILING_UNITS
+      ledger.plannedSpendCeilingUnits !== plannedSpendCeilingUnits
     ) {
-      throw new Error("Relay Codex credit ledger does not match the fixed 2,473/473 budget policy");
+      throw new Error("Relay Codex credit ledger does not match the effective cap and fixed reserve policy");
     }
     ledgerSpentUnits = ledger.totalSpentUnits;
     ledgerRemainingPlannedUnits = ledger.plannedSpendCeilingUnits - ledger.totalSpentUnits;
@@ -232,10 +313,14 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
     status: "passed",
     model: RELAY_MODEL,
     reasoningEffort: RELAY_REASONING_EFFORT,
+    modelCatalogVerified: true,
     maxLiveCalls: RELAY_MAX_LIVE_CALLS,
-    budgetUnits: RELAY_CREDIT_BUDGET_UNITS,
+    accountCreditCapUnits: RELAY_ACCOUNT_CREDIT_CAP_UNITS,
+    quarantinedUncertainUnits,
+    quarantinedLedgerSha256,
+    budgetUnits,
     reserveUnits: RELAY_CREDIT_RESERVE_UNITS,
-    plannedSpendCeilingUnits: RELAY_PLANNED_SPEND_CEILING_UNITS,
+    plannedSpendCeilingUnits,
     worstCasePlannedSpendUnits: RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL,
     ledgerSpentUnits,
     ledgerRemainingPlannedUnits,

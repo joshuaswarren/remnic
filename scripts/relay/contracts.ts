@@ -1,12 +1,14 @@
 import { z } from "zod";
 
-export const RELAY_MODEL = "gpt-5.6" as const;
+export const RELAY_MODEL = "gpt-5.6-terra" as const;
 export const RELAY_REASONING_EFFORT = "medium" as const;
 export const RELAY_MAX_LIVE_CALLS = 4 as const;
+export const RELAY_ACCOUNT_CREDIT_CAP_UNITS = 2_473 as const;
 export const RELAY_CREDIT_BUDGET_UNITS = 2_473 as const;
 export const RELAY_CREDIT_RESERVE_UNITS = 473 as const;
 export const RELAY_PLANNED_SPEND_CEILING_UNITS = 2_000 as const;
 export const RELAY_MAX_UNITS_PER_CALL = 300 as const;
+export const RELAY_QUARANTINED_ATTEMPT_UNITS = 300 as const;
 export const RELAY_MISSION_ID = "checkout-token-recovery" as const;
 export const RELAY_NAMESPACE = "relay-build-week" as const;
 export const RELAY_OPERATOR_PRINCIPAL = "relay-build-week-operator" as const;
@@ -113,10 +115,14 @@ export const RelayPreflightReceiptSchema = z
     status: z.literal("passed"),
     model: z.literal(RELAY_MODEL),
     reasoningEffort: z.literal(RELAY_REASONING_EFFORT),
+    modelCatalogVerified: z.literal(true),
     maxLiveCalls: z.literal(RELAY_MAX_LIVE_CALLS),
-    budgetUnits: z.literal(RELAY_CREDIT_BUDGET_UNITS),
+    accountCreditCapUnits: z.literal(RELAY_ACCOUNT_CREDIT_CAP_UNITS),
+    quarantinedUncertainUnits: z.number().int().min(0).max(RELAY_QUARANTINED_ATTEMPT_UNITS),
+    quarantinedLedgerSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    budgetUnits: z.number().int().positive().max(RELAY_CREDIT_BUDGET_UNITS),
     reserveUnits: z.literal(RELAY_CREDIT_RESERVE_UNITS),
-    plannedSpendCeilingUnits: z.literal(RELAY_PLANNED_SPEND_CEILING_UNITS),
+    plannedSpendCeilingUnits: z.number().int().positive().max(RELAY_PLANNED_SPEND_CEILING_UNITS),
     worstCasePlannedSpendUnits: z.literal(RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL),
     ledgerSpentUnits: z.number().finite().nonnegative(),
     ledgerRemainingPlannedUnits: z.number().finite().nonnegative(),
@@ -135,7 +141,30 @@ export const RelayPreflightReceiptSchema = z
     productionDataRead: z.literal(false),
     solAllowed: z.literal(false),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.accountCreditCapUnits - value.quarantinedUncertainUnits !== value.budgetUnits) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "effective budget must subtract quarantined uncertainty from the account cap",
+        path: ["budgetUnits"],
+      });
+    }
+    if (value.budgetUnits - value.reserveUnits !== value.plannedSpendCeilingUnits) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "planned spend ceiling must preserve the fixed reserve",
+        path: ["plannedSpendCeilingUnits"],
+      });
+    }
+    if ((value.quarantinedUncertainUnits === 0) !== (value.quarantinedLedgerSha256 === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "quarantined uncertainty and ledger evidence must be present together",
+        path: ["quarantinedLedgerSha256"],
+      });
+    }
+  });
 export type RelayPreflightReceipt = z.infer<typeof RelayPreflightReceiptSchema>;
 
 export function schemaForRole(role: RelayRole) {
