@@ -581,6 +581,40 @@ test("receipt limitations are required by the recorded run", () => {
   );
 });
 
+test("every configured provider is backed by positive Codex CLI run usage", () => {
+  const limitationCodes = ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"] as const;
+  const nonCodex = syntheticResult();
+  nonCodex.config.systemProvider!.provider = "openai";
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: nonCodex, limit: 2 }),
+      datasetVersion: "oracle-v1",
+      limitationCodes,
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    }),
+    /require Codex CLI providers/,
+  );
+
+  const sources = syntheticSources({ limit: 2 });
+  const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  const runUsage = manifest.codexCredit!.run!;
+  runUsage.models[0]!.calls = 0;
+  runUsage.calls = 2;
+  rehashManifest(manifest);
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      resultJson: sources.resultJson,
+      manifestJson: JSON.stringify(manifest),
+      datasetVersion: "oracle-v1",
+      limitationCodes,
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    }),
+    /does not bind configured model gpt-5\.6-luna/,
+  );
+});
+
 test("full MemCorrect receipts bind the pinned generated corpus without copying task content", () => {
   const sources = syntheticSources({ result: syntheticMemCorrectResult() });
   const receipt = buildBuildWeekEvidenceReceipt({

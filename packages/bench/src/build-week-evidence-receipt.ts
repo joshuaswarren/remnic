@@ -566,9 +566,13 @@ export function buildBuildWeekEvidenceReceipt(
   if (Math.abs(modelTotals.budgetUnits - runUsage.budgetUnits) > 1e-9) {
     throw new Error("run-scoped Codex usage budgetUnits does not equal its per-model total");
   }
-  const usageModels = new Set(runUsage.models.map((entry) => entry.model));
+  const usageModels = new Map(runUsage.models.map((entry) => [entry.model, entry]));
   for (const provider of providers) {
-    if (provider.provider === "codex-cli" && !usageModels.has(provider.model)) {
+    if (provider.provider !== "codex-cli") {
+      throw new Error(`Build Week evidence receipts require Codex CLI providers; got ${provider.provider}`);
+    }
+    const usage = usageModels.get(provider.model);
+    if (!usage || !Number.isInteger(usage.calls) || usage.calls <= 0) {
       throw new Error(`run-scoped Codex usage does not bind configured model ${provider.model}`);
     }
   }
