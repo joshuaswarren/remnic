@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
@@ -268,6 +268,7 @@ export interface RelayAgentOutputSnapshot {
 
 export interface RelayRecallSnapshot {
   recallReceiptId: string;
+  sessionId: string;
   decisionId: string;
   query: string;
   capturedAtAction: boolean;
@@ -818,10 +819,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       case "correction_approved": {
         const correction = corrections.get(payload.correctionId);
         if (correction) {
-          correction.status = "approved";
-          correction.approvedAt = event.occurredAt;
-          correction.approvedBy = payload.approvedBy;
-          correction.approvalNote = payload.note;
+          if (correction.approvedAt === undefined) {
+            correction.approvedAt = event.occurredAt;
+            correction.approvedBy = payload.approvedBy;
+            correction.approvalNote = payload.note;
+            if (correction.status === "proposed") correction.status = "approved";
+          }
           correction.evidence.push(...payload.evidence);
         } else {
           missingEvidence.add(`correction:${payload.correctionId}:proposal`);
@@ -831,31 +834,47 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         break;
       }
       case "decision_superseded": {
+        const correction = corrections.get(payload.correctionId);
+        if (!correction) {
+          missingEvidence.add(`correction:${payload.correctionId}:proposal`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (correction.approvedAt === undefined || correction.approvedBy === undefined) {
+          missingEvidence.add(`correction:${payload.correctionId}:approval`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (
+          !correction.supersedesDecisionIds.includes(payload.decisionId) ||
+          correction.proposedDecisionId !== payload.replacementDecisionId
+        ) {
+          missingEvidence.add(`correction:${payload.correctionId}:supersession-link`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+
         const stale = decisions.get(payload.decisionId);
         const replacement = decisions.get(payload.replacementDecisionId);
-        if (stale) {
-          stale.status = "superseded";
-          stale.supersededAt = event.occurredAt;
-          stale.supersededBy = payload.replacementDecisionId;
-          stale.correctionId = payload.correctionId;
-          stale.evidence.push(...payload.evidence);
-        } else {
-          missingEvidence.add(`decision:${payload.decisionId}:observation`);
+        if (!stale) missingEvidence.add(`decision:${payload.decisionId}:observation`);
+        if (!replacement) missingEvidence.add(`decision:${payload.replacementDecisionId}:replacement`);
+        if (!stale || !replacement) {
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
         }
-        if (replacement) {
-          replacement.status = "active";
-          replacement.evidence.push(...payload.evidence);
-        } else {
-          missingEvidence.add(`decision:${payload.replacementDecisionId}:replacement`);
-        }
-        const correction = corrections.get(payload.correctionId);
-        if (correction) {
-          correction.status = "applied";
-          correction.evidence.push(...payload.evidence);
+
+        stale.status = "superseded";
+        stale.supersededAt = event.occurredAt;
+        stale.supersededBy = payload.replacementDecisionId;
+        stale.correctionId = payload.correctionId;
+        stale.evidence.push(...payload.evidence);
+        replacement.status = "active";
+        replacement.evidence.push(...payload.evidence);
+        correction.evidence.push(...payload.evidence);
+        if (correctionSupersessionComplete(correction, decisions)) {
+          if (correction.status !== "propagated") correction.status = "applied";
           const conflict = conflicts.get(correction.conflictId);
           if (conflict) conflict.status = "resolved";
-        } else {
-          missingEvidence.add(`correction:${payload.correctionId}:proposal`);
         }
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
@@ -864,6 +883,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         const agent = ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
         agent.recalls.push({
           recallReceiptId: payload.recallReceiptId,
+          sessionId: payload.sessionId,
           decisionId: payload.decisionId,
           query: payload.query,
           capturedAtAction: payload.capturedAtAction,
@@ -879,7 +899,43 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         break;
       }
       case "propagation_verified": {
-        ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        const agent = ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        const correction = corrections.get(payload.correctionId);
+        if (!correction) {
+          missingEvidence.add(`correction:${payload.correctionId}:proposal`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (correction.approvedAt === undefined || correction.approvedBy === undefined) {
+          missingEvidence.add(`correction:${payload.correctionId}:approval`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (
+          (correction.status !== "applied" && correction.status !== "propagated") ||
+          correction.proposedDecisionId !== payload.decisionId
+        ) {
+          missingEvidence.add(`correction:${payload.correctionId}:supersession`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        const recalled = agent.recalls.find(
+          (recall) =>
+            recall.recallReceiptId === payload.recallReceiptId &&
+            recall.sessionId === payload.sessionId &&
+            recall.decisionId === payload.decisionId
+        );
+        if (!recalled) {
+          missingEvidence.add(`recall:${payload.recallReceiptId}:observation`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (!recalled.capturedAtAction) {
+          missingEvidence.add(`recall:${payload.recallReceiptId}:at-action`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+
         propagation.push({
           correctionId: payload.correctionId,
           agentId: payload.agentId,
@@ -890,18 +946,11 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
           occurredAt: event.occurredAt,
           evidence: payload.evidence,
         });
-        const correction = corrections.get(payload.correctionId);
-        if (correction) {
+        correction.evidence.push(...payload.evidence);
+        if (payload.staleDecisionAbsent) {
           correction.status = "propagated";
           correction.propagatedAt = event.occurredAt;
-          correction.evidence.push(...payload.evidence);
-        } else {
-          missingEvidence.add(`correction:${payload.correctionId}:proposal`);
         }
-        const recalled = agents
-          .get(payload.agentId)
-          ?.recalls.some((recall) => recall.recallReceiptId === payload.recallReceiptId);
-        if (!recalled) missingEvidence.add(`recall:${payload.recallReceiptId}:observation`);
         status = payload.staleDecisionAbsent ? "verified" : "correcting";
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
@@ -926,10 +975,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     }
   }
   for (const correction of corrections.values()) {
-    if (correction.status === "proposed") {
+    if (correction.approvedAt === undefined || correction.approvedBy === undefined) {
       missingEvidence.add(`correction:${correction.correctionId}:approval`);
+    } else if (correction.approvedBy.kind !== "human") {
+      missingEvidence.add(`correction:${correction.correctionId}:human-approval`);
     }
-    if (correction.status === "approved") {
+    if (correction.status === "approved" || correction.status === "proposed") {
       missingEvidence.add(`correction:${correction.correctionId}:supersession`);
     }
     if (correction.status === "applied") {
@@ -945,8 +996,15 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       evidence: uniqueEvidence(decision.evidence),
     }))
     .sort((a, b) => compareText(a.decisionId, b.decisionId));
-  const passingOutcomeVerified = outcome?.result === "recovered" && tests.some((test) => test.status === "passed");
   const coldStartVerified = propagation.some((item) => item.staleDecisionAbsent);
+  const passingOutcomeVerified =
+    outcome?.result === "recovered" &&
+    tests.some(
+      (test) =>
+        test.status === "passed" &&
+        compareInstants(test.occurredAt, outcome.occurredAt) < 0 &&
+        propagation.some((item) => item.staleDecisionAbsent && compareInstants(item.occurredAt, test.occurredAt) < 0)
+    );
   if (outcome && !passingOutcomeVerified) missingEvidence.add("outcome:passing-test");
   if (outcome?.result === "recovered" && !coldStartVerified) {
     missingEvidence.add("outcome:cold-start-propagation");
@@ -981,7 +1039,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       .sort((a, b) => compareText(a.correctionId, b.correctionId)),
     tests: tests.sort((a, b) => compareTimedIds(a, b, "testId")),
     propagation: propagation.sort((a, b) => {
-      const byTime = compareText(a.occurredAt, b.occurredAt);
+      const byTime = compareInstants(a.occurredAt, b.occurredAt);
       if (byTime !== 0) return byTime;
       const byAgent = compareText(a.agentId, b.agentId);
       return byAgent !== 0 ? byAgent : compareText(a.recallReceiptId, b.recallReceiptId);
@@ -1013,9 +1071,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
 }
 
 export function compareRelayEvents(a: RelayMissionEvent, b: RelayMissionEvent): number {
-  const byOccurrence = compareText(a.occurredAt, b.occurredAt);
+  const byOccurrence = compareInstants(a.occurredAt, b.occurredAt);
   if (byOccurrence !== 0) return byOccurrence;
-  const byRecord = compareText(a.recordedAt, b.recordedAt);
+  const byRecord = compareInstants(a.recordedAt, b.recordedAt);
   if (byRecord !== 0) return byRecord;
   return compareText(a.eventId, b.eventId);
 }
@@ -1096,10 +1154,32 @@ function compareText(a: string, b: string): number {
   return 0;
 }
 
+function compareInstants(a: string, b: string): number {
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (aMs < bMs) return -1;
+  if (aMs > bMs) return 1;
+  return 0;
+}
+
 function compareTimedIds<T extends { occurredAt: string }, K extends keyof T>(a: T, b: T, idKey: K): number {
-  const byTime = compareText(a.occurredAt, b.occurredAt);
+  const byTime = compareInstants(a.occurredAt, b.occurredAt);
   if (byTime !== 0) return byTime;
   return compareText(String(a[idKey]), String(b[idKey]));
+}
+
+function correctionSupersessionComplete(
+  correction: RelayCorrectionSnapshot,
+  decisions: ReadonlyMap<string, RelayDecisionSnapshot>
+): boolean {
+  return correction.supersedesDecisionIds.every((decisionId) => {
+    const decision = decisions.get(decisionId);
+    return (
+      decision?.status === "superseded" &&
+      decision.supersededBy === correction.proposedDecisionId &&
+      decision.correctionId === correction.correctionId
+    );
+  });
 }
 
 function positiveIntegerOption(value: number | undefined, name: string, fallback: number): number {

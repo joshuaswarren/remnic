@@ -4,15 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { RELAY_DEMO_MISSION_ID, RELAY_DEMO_NAMESPACE, createRelayMissionFixture } from "./mission-fixture.js";
 import {
+  type RelayMissionEvent,
   RelayMissionEventInputSchema,
+  RelayMissionEventSchema,
   RelayMissionStore,
   RelayMissionStoreError,
   reduceRelayMission,
   relayMissionReceiptDigest,
-  type RelayMissionEvent,
 } from "./mission.js";
-import { createRelayMissionFixture, RELAY_DEMO_MISSION_ID, RELAY_DEMO_NAMESPACE } from "./mission-fixture.js";
 
 async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-"));
@@ -32,6 +33,21 @@ function deterministicStore(root: string, options: { maxEvents?: number } = {}):
     createEventId: () => `event-${String(++nextId).padStart(3, "0")}`,
     ...options,
   });
+}
+
+function fixtureEvents(): RelayMissionEvent[] {
+  return createRelayMissionFixture().map((input, index) =>
+    RelayMissionEventSchema.parse({
+      schemaVersion: "1",
+      eventId: `fixture-event-${String(index + 1).padStart(3, "0")}`,
+      missionId: RELAY_DEMO_MISSION_ID,
+      namespace: RELAY_DEMO_NAMESPACE,
+      recordedAt: input.occurredAt,
+      occurredAt: input.occurredAt,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      payload: input.payload,
+    })
+  );
 }
 
 test("fixture reduces to a complete correction and cold-start receipt", async () => {
@@ -197,6 +213,85 @@ test("reducer sorts equal-time events with a stable event-id tie break", () => {
     snapshot.events.map((event) => event.eventId),
     ["event-a", "event-b"]
   );
+});
+
+test("reducer sorts offset timestamps by instant before applying state transitions", () => {
+  const base = {
+    schemaVersion: "1" as const,
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    recordedAt: "2026-07-17T16:00:00.000Z",
+    payload: createRelayMissionFixture()[0]!.payload,
+  };
+  const events: RelayMissionEvent[] = [
+    { ...base, eventId: "event-later", occurredAt: "2026-07-17T10:00:00.000-05:00" },
+    { ...base, eventId: "event-earlier", occurredAt: "2026-07-17T14:00:00.000Z" },
+  ];
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events,
+  });
+  assert.deepEqual(
+    snapshot.events.map((event) => event.eventId),
+    ["event-earlier", "event-later"]
+  );
+});
+
+test("receipt cannot apply or propagate a correction without prior approval", () => {
+  const events = fixtureEvents().filter((event) => event.payload.kind !== "correction_approved");
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events,
+  });
+
+  assert.equal(snapshot.receipt.complete, false);
+  assert.equal(snapshot.receipt.coldStartVerified, false);
+  assert.deepEqual(snapshot.receipt.supersededDecisionIds, []);
+  assert.equal(
+    snapshot.decisions.find((decision) => decision.decisionId === "decision-new-token-every-request")?.status,
+    "active"
+  );
+  assert.equal(snapshot.corrections[0]?.status, "proposed");
+  assert.ok(snapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:approval"));
+});
+
+test("receipt requires human approval and a passing test after verified propagation", () => {
+  const agentApproved = fixtureEvents().map((event) =>
+    event.payload.kind === "correction_approved"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            approvedBy: { kind: "agent" as const, id: "policy-agent", label: "Policy agent" },
+          },
+        }
+      : event
+  );
+  const agentApprovedSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: agentApproved,
+  });
+  assert.equal(agentApprovedSnapshot.receipt.complete, false);
+  assert.ok(
+    agentApprovedSnapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:human-approval")
+  );
+
+  const passBeforePropagation = fixtureEvents().map((event) =>
+    event.payload.kind === "test_result" && event.payload.status === "passed"
+      ? { ...event, occurredAt: "2026-07-17T18:00:11.500Z" }
+      : event
+  );
+  const earlyPassSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: passBeforePropagation,
+  });
+  assert.equal(earlyPassSnapshot.receipt.complete, false);
+  assert.equal(earlyPassSnapshot.receipt.passingOutcomeVerified, false);
+  assert.ok(earlyPassSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
 });
 
 test("missing evidence is explicit rather than conflated with a complete receipt", () => {
