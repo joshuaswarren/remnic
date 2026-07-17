@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { realpath, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { open, realpath, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -20,6 +20,10 @@ export const BUILD_WEEK_MEMCORRECT_DATASET_VERSION = "memcorrect-v1-c077e7" as c
 export const BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256 =
   "ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb" as const;
 export const BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT = 40 as const;
+export const BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION = "longmemeval-oracle" as const;
+export const BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256 =
+  "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c" as const;
+export const BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT = 500 as const;
 
 export const BUILD_WEEK_LIMITATIONS = {
   boundedSubset: "This result covers a bounded subset, not the benchmark's complete dataset.",
@@ -110,6 +114,8 @@ const SOL_MODEL = /^gpt-5\.6-sol$/i;
 const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 const MEMCORRECT_BENCHMARK_ID = "memcorrect-v1";
 const MEMCORRECT_BENCHMARK_VERSION = "1.0.0";
+const LONGMEMEVAL_BENCHMARK_ID = "longmemeval";
+const LONGMEMEVAL_BENCHMARK_VERSION = "2.0.0";
 const MEMCORRECT_FULL_SEED = 0xc077e7;
 const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
   personaCount: 5,
@@ -363,6 +369,44 @@ function requireFileBackedDatasetProvenance(
   };
 }
 
+function requirePinnedFullFileBackedCorpus(
+  result: BenchmarkResult,
+  manifest: BenchmarkReproManifest,
+  datasetVersion: string,
+  publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
+  datasetReceipt: ReturnType<typeof requireFileBackedDatasetProvenance>,
+): void {
+  if (publicationScope.kind !== "full") return;
+  if (result.meta.benchmark !== LONGMEMEVAL_BENCHMARK_ID) {
+    throw new Error(`full publication is not pinned for file-backed benchmark ${result.meta.benchmark}`);
+  }
+  if (result.meta.version !== LONGMEMEVAL_BENCHMARK_VERSION) {
+    throw new Error(`LongMemEval benchmark version must be ${LONGMEMEVAL_BENCHMARK_VERSION}`);
+  }
+  if (datasetVersion !== BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION) {
+    throw new Error(`LongMemEval datasetVersion must be ${BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION}`);
+  }
+  if (publicationScope.expectedTaskCount !== BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT) {
+    throw new Error(`LongMemEval full receipts require exactly ${BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT} tasks`);
+  }
+  if (datasetReceipt.payloadSha256 !== BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256) {
+    throw new Error("LongMemEval payload hash does not match the pinned full corpus");
+  }
+  const dataset = manifest.datasets.find((entry) => entry.benchmark === LONGMEMEVAL_BENCHMARK_ID);
+  const file = dataset?.files[0];
+  if (
+    dataset?.fileCount !== 1 ||
+    dataset.files.length !== 1 ||
+    file?.kind !== "file" ||
+    file.path !== SINGLE_FILE_PAYLOAD_FALLBACKS[LONGMEMEVAL_BENCHMARK_ID] ||
+    file.target !== undefined ||
+    file.sha256 !== BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256 ||
+    file.sizeBytes !== dataset.totalBytes
+  ) {
+    throw new Error("LongMemEval full receipts require the pinned canonical dataset file inventory");
+  }
+}
+
 function providerReceipt(
   role: BuildWeekEvidenceReceiptProvider["role"],
   provider: ProviderConfig | null | undefined,
@@ -469,7 +513,17 @@ export function buildBuildWeekEvidenceReceipt(
 
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
     ? requireExactMemCorrectProvenance(result, manifest, options.datasetVersion, options.publicationScope)
-    : requireFileBackedDatasetProvenance(result, manifest);
+    : (() => {
+        const fileBackedReceipt = requireFileBackedDatasetProvenance(result, manifest);
+        requirePinnedFullFileBackedCorpus(
+          result,
+          manifest,
+          options.datasetVersion,
+          options.publicationScope,
+          fileBackedReceipt,
+        );
+        return fileBackedReceipt;
+      })();
   if (!SHA256.test(manifest.artifactHash)) throw new Error("manifest artifactHash must be a SHA-256 digest");
   const { artifactHash: _artifactHash, ...manifestWithoutArtifactHash } = manifest;
   if (computeBenchmarkReproManifestArtifactHash(manifestWithoutArtifactHash) !== manifest.artifactHash) {
@@ -649,6 +703,22 @@ export async function writeBuildWeekEvidenceReceipt(args: {
     freshIsolatedStoreConfirmed: args.freshIsolatedStoreConfirmed,
     publicationScope: args.publicationScope,
   });
-  await writeFile(args.outputPath, serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8", mode: 0o644 });
+  const temporaryOutputPath = join(
+    dirname(args.outputPath),
+    `.${basename(args.outputPath)}.${randomUUID()}.tmp`,
+  );
+  let temporaryOutput: Awaited<ReturnType<typeof open>> | undefined = await open(temporaryOutputPath, "wx", 0o644);
+  try {
+    await temporaryOutput.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });
+    await temporaryOutput.sync();
+    await temporaryOutput.close();
+    temporaryOutput = undefined;
+    // Atomic rename replaces the directory entry without following a symlink
+    // or hard link introduced after the alias checks above.
+    await rename(temporaryOutputPath, args.outputPath);
+  } finally {
+    await temporaryOutput?.close().catch(() => undefined);
+    await rm(temporaryOutputPath, { force: true }).catch(() => undefined);
+  }
   return receipt;
 }

@@ -6,6 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
+  BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT,
+  BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256,
   BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
   BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
   BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
@@ -22,7 +25,7 @@ import {
 import type { BenchmarkResult } from "./types.js";
 import { corpusHash, generateMemCorrectCorpus } from "./benchmarks/remnic/memcorrect/generator.js";
 
-const DATASET_HASH = "a".repeat(64);
+const DATASET_HASH = BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -154,6 +157,21 @@ function syntheticMemCorrectResult(): BenchmarkResult {
   return result;
 }
 
+function syntheticCanonicalLongMemEvalResult(): BenchmarkResult {
+  const result = syntheticResult({ version: "2.0.0", datasetHash: BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256 });
+  result.results.tasks = Array.from({ length: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT }, (_, index) => ({
+    taskId: `private-task-${index}`,
+    question: `private question ${index}`,
+    expected: `private expected answer ${index}`,
+    actual: `private generated answer ${index}`,
+    scores: { exact_match: index % 2 },
+    latencyMs: 1000,
+    tokens: { input: 50, output: 25 },
+    ...(index === 0 ? { details: { recall: "private recalled production text" } } : {}),
+  }));
+  return result;
+}
+
 test("pinned Build Week MemCorrect identity matches the deterministic full corpus", () => {
   const corpus = generateMemCorrectCorpus({
     personaCount: 5,
@@ -183,7 +201,9 @@ function syntheticSources(args: {
   const resultJson = `${JSON.stringify(result, null, 2)}\n`;
   const fileDatasetFiles: BenchmarkReproManifestDataset["files"] = [
     {
-      path: "private-dataset.json",
+      path: result.meta.benchmark === "longmemeval" && result.meta.version === "2.0.0"
+        ? "longmemeval_oracle.json"
+        : "private-dataset.json",
       kind: "file",
       sizeBytes: 1234,
       sha256: DATASET_HASH,
@@ -302,19 +322,19 @@ function syntheticSources(args: {
 }
 
 test("buildBuildWeekEvidenceReceipt emits deterministic aggregate-only evidence", () => {
-  const sources = syntheticSources();
+  const sources = syntheticSources({ result: syntheticCanonicalLongMemEvalResult() });
   const options = {
     ...sources,
-    datasetVersion: "longmemeval-oracle-v1",
+    datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
     limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"] as const,
     freshIsolatedStoreConfirmed: true as const,
-    publicationScope: { kind: "full", expectedTaskCount: 2 } as const,
+    publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT } as const,
   };
   const first = buildBuildWeekEvidenceReceipt(options);
   const second = buildBuildWeekEvidenceReceipt(options);
   assert.deepEqual(first, second);
   assert.equal(serializeBuildWeekEvidenceReceipt(first), serializeBuildWeekEvidenceReceipt(second));
-  assert.equal(first.benchmark.taskCount, 2);
+  assert.equal(first.benchmark.taskCount, BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT);
   assert.equal(first.benchmark.failureCount, 0);
   assert.equal(first.dataset.source, "file-manifest");
   assert.equal(first.estimatedUsage.calls, 6);
@@ -381,7 +401,7 @@ test("full receipts reject partial, quick, limited, incomplete, failed, and hash
 });
 
 test("canonical successful results may omit status and derive LongMem payload hash from one manifest file", () => {
-  const result = syntheticResult();
+  const result = syntheticCanonicalLongMemEvalResult();
   delete result.meta.status;
   delete result.meta.datasetHash;
   const sources = syntheticSources({ result });
@@ -394,14 +414,68 @@ test("canonical successful results may omit status and derive LongMem payload ha
   const receipt = buildBuildWeekEvidenceReceipt({
     resultJson: sources.resultJson,
     manifestJson: JSON.stringify(manifest),
-    datasetVersion: "longmemeval-oracle",
+    datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
     limitationCodes: ["singleRun"],
     freshIsolatedStoreConfirmed: true,
-    publicationScope: { kind: "full", expectedTaskCount: 2 },
+    publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
   });
   assert.equal(receipt.benchmark.status, "complete");
   assert.equal(receipt.dataset.payloadSha256, DATASET_HASH);
   assert.equal(receipt.dataset.manifestSha256, dataset.sha256);
+});
+
+test("full LongMemEval receipts bind the canonical corpus identity", () => {
+  const build = (result: BenchmarkResult, datasetVersion: string = BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION) =>
+    buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result }),
+      datasetVersion,
+      limitationCodes: ["singleRun"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: result.results.tasks.length },
+    });
+
+  assert.doesNotThrow(() => build(syntheticCanonicalLongMemEvalResult()));
+
+  const wrongVersion = syntheticCanonicalLongMemEvalResult();
+  wrongVersion.meta.version = "oracle-v1";
+  assert.throws(() => build(wrongVersion), /benchmark version must be 2\.0\.0/);
+
+  assert.throws(
+    () => build(syntheticCanonicalLongMemEvalResult(), "longmemeval-oracle-unpinned"),
+    /datasetVersion must be longmemeval-oracle/,
+  );
+
+  const wrongPayload = syntheticCanonicalLongMemEvalResult();
+  wrongPayload.meta.datasetHash = "f".repeat(64);
+  assert.throws(() => build(wrongPayload), /canonical dataset payload file|pinned full corpus/);
+
+  const tooShort = syntheticCanonicalLongMemEvalResult();
+  tooShort.results.tasks.pop();
+  assert.throws(() => build(tooShort), /exactly 500 tasks/);
+
+  const arbitraryInventoryResult = syntheticCanonicalLongMemEvalResult();
+  const arbitraryInventorySources = syntheticSources({ result: arbitraryInventoryResult });
+  const arbitraryInventoryManifest = JSON.parse(arbitraryInventorySources.manifestJson) as BenchmarkReproManifest;
+  const arbitraryDataset = arbitraryInventoryManifest.datasets[0]!;
+  arbitraryDataset.files = [
+    { path: "part-1.json", kind: "file", sizeBytes: 600, sha256: "a".repeat(64) },
+    { path: "part-2.json", kind: "file", sizeBytes: 634, sha256: "b".repeat(64) },
+  ];
+  arbitraryDataset.fileCount = 2;
+  arbitraryDataset.totalBytes = 1234;
+  arbitraryDataset.sha256 = computeBenchmarkReproDatasetInventoryHash(arbitraryDataset.files);
+  rehashManifest(arbitraryInventoryManifest);
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      resultJson: arbitraryInventorySources.resultJson,
+      manifestJson: JSON.stringify(arbitraryInventoryManifest),
+      datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
+      limitationCodes: ["singleRun"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
+    }),
+    /pinned canonical dataset file inventory/,
+  );
 });
 
 test("LongMem payload fallback rejects ambiguous, linked, or inconsistent dataset inventories", () => {
@@ -624,7 +698,7 @@ test("file-backed benchmark receipts still reject non-hashed dataset manifests",
 });
 
 test("receipt rejects a tampered manifest artifact hash", () => {
-  const sources = syntheticSources();
+  const sources = syntheticSources({ limit: 2 });
   const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
   manifest.run.runtimeProfiles = ["tampered"];
   assert.throws(
@@ -633,24 +707,24 @@ test("receipt rejects a tampered manifest artifact hash", () => {
         ...sources,
         manifestJson: JSON.stringify(manifest),
         datasetVersion: "longmemeval-oracle-v1",
-        limitationCodes: ["singleRun"],
+        limitationCodes: ["boundedSubset", "singleRun"],
         freshIsolatedStoreConfirmed: true,
-        publicationScope: { kind: "full", expectedTaskCount: 2 },
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /artifactHash does not match/,
   );
 });
 
 test("receipt metadata rejects path and secret-bearing public identifiers", () => {
-  const sources = syntheticSources();
+  const sources = syntheticSources({ limit: 2 });
   assert.throws(
     () =>
       buildBuildWeekEvidenceReceipt({
         ...sources,
         datasetVersion: "/home/private/dataset-v1",
-        limitationCodes: [],
+        limitationCodes: ["boundedSubset"],
         freshIsolatedStoreConfirmed: true,
-        publicationScope: { kind: "full", expectedTaskCount: 2 },
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /safe public identifier/,
   );
@@ -658,11 +732,11 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
   assert.throws(
     () =>
       buildBuildWeekEvidenceReceipt({
-        ...syntheticSources({ result: unsafe }),
+        ...syntheticSources({ result: unsafe, limit: 2 }),
         datasetVersion: "oracle-v1",
-        limitationCodes: [],
+        limitationCodes: ["boundedSubset"],
         freshIsolatedStoreConfirmed: true,
-        publicationScope: { kind: "full", expectedTaskCount: 2 },
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /secret or private-account material/,
   );
@@ -672,11 +746,11 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
   assert.throws(
     () =>
       buildBuildWeekEvidenceReceipt({
-        ...syntheticSources({ result: unsafeReasoningEffort }),
+        ...syntheticSources({ result: unsafeReasoningEffort, limit: 2 }),
         datasetVersion: "oracle-v1",
-        limitationCodes: [],
+        limitationCodes: ["boundedSubset"],
         freshIsolatedStoreConfirmed: true,
-        publicationScope: { kind: "full", expectedTaskCount: 2 },
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /reasoningEffort must be one of/,
   );
@@ -700,14 +774,17 @@ test("receipt generation requires an explicit fresh isolated store confirmation"
 test("receipt writer rejects output paths that alias private source files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-"));
   try {
-    const sources = syntheticSources();
+    const sources = syntheticSources({ limit: 2 });
     const resultPath = join(directory, "result.json");
     const manifestPath = join(directory, "MANIFEST.json");
     const symlinkPath = join(directory, "receipt-link.json");
     const hardLinkPath = join(directory, "receipt-hard-link.json");
+    const harmlessTargetPath = join(directory, "harmless-target.txt");
+    const replaceableSymlinkPath = join(directory, "replaceable-receipt-link.json");
     await Promise.all([
       writeFile(resultPath, sources.resultJson),
       writeFile(manifestPath, sources.manifestJson),
+      writeFile(harmlessTargetPath, "leave this file unchanged"),
     ]);
 
     const write = (outputPath: string) =>
@@ -716,9 +793,9 @@ test("receipt writer rejects output paths that alias private source files", asyn
         manifestPath,
         outputPath,
         datasetVersion: "longmemeval-oracle-v1",
-        limitationCodes: ["singleRun"],
+        limitationCodes: ["boundedSubset", "singleRun"],
         freshIsolatedStoreConfirmed: true,
-        publicationScope: { kind: "full", expectedTaskCount: 2 },
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       });
 
     await assert.rejects(write(resultPath), /must not alias/);
@@ -731,6 +808,11 @@ test("receipt writer rejects output paths that alias private source files", asyn
     await link(resultPath, hardLinkPath);
     await assert.rejects(write(hardLinkPath), /must not share identity/);
     assert.equal(await readFile(resultPath, "utf8"), sources.resultJson);
+
+    await symlink(harmlessTargetPath, replaceableSymlinkPath);
+    const receipt = await write(replaceableSymlinkPath);
+    assert.equal(await readFile(harmlessTargetPath, "utf8"), "leave this file unchanged");
+    assert.deepEqual(JSON.parse(await readFile(replaceableSymlinkPath, "utf8")), receipt);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
