@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -102,6 +103,13 @@ test("LongMemEval runner wires the shared harness with per-item postAnswerHook",
     });
 
     assert.equal(result.results.tasks.length, 1);
+    assert.equal(
+      result.meta.datasetHash,
+      createHash("sha256")
+        .update(await readFile(path.join(tempDir, "longmemeval_oracle.json")))
+        .digest("hex"),
+      "result provenance should retain the exact loaded dataset payload hash",
+    );
     const task = result.results.tasks[0]!;
     assert.equal(task.taskId, "qq-1");
     assert.equal(task.expected, "Paris");

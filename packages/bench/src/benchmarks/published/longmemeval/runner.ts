@@ -15,6 +15,7 @@ import {
   LONG_MEM_EVAL_DATASET_FILENAMES,
   formatMissingDatasetError,
   loadLongMemEvalS,
+  type LoadedDataset,
 } from "../dataset-loader.js";
 import {
   runPublishedHarness,
@@ -53,9 +54,9 @@ export async function runLongMemEvalBenchmark(
     options.limit,
   );
 
-  const plans: HarnessPlan[] = dataset.map((item) => buildPlan(item, options));
+  const plans: HarnessPlan[] = dataset.items.map((item) => buildPlan(item, options));
 
-  return runPublishedHarness({
+  const result = await runPublishedHarness({
     options,
     metricsSpec: {
       metrics: ["f1", "contains_answer", "llm_judge", "judge_accuracy"],
@@ -63,6 +64,10 @@ export async function runLongMemEvalBenchmark(
     plans,
     totalCount: plans.reduce((sum, plan) => sum + plan.trials.length, 0),
   });
+  if (dataset.sha256) {
+    result.meta.datasetHash = dataset.sha256;
+  }
+  return result;
 }
 
 function buildPlan(
@@ -420,7 +425,7 @@ async function loadDataset(
   mode: "full" | "quick",
   datasetDir: string | undefined,
   limit?: number,
-): Promise<LongMemEvalItem[]> {
+): Promise<LoadedDataset<LongMemEvalItem>> {
   const loaded = await loadLongMemEvalS({ mode, datasetDir, limit });
 
   if (loaded.source === "missing") {
@@ -453,5 +458,5 @@ async function loadDataset(
     );
   }
 
-  return loaded.items;
+  return loaded;
 }
