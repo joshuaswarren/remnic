@@ -18,9 +18,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { makeStorage, makeNamespaceRouter } from "./harness.js";
+import { makeStorage, makeNamespaceRouter, resetStaticCaches } from "./harness.js";
 import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 import { namespaceIdentityToken } from "../namespaces/identity.js";
+import { getCachedMemories } from "../memory-cache.js";
 
 test("namespace-routing: default namespace resolves to the legacy memoryDir root", async () => {
   const { router, memoryDir, config, cleanup } = await makeNamespaceRouter();
@@ -129,6 +130,30 @@ test("namespace-routing: router caches StorageManager per namespace (same instan
     const sm1 = await router.storageFor("team-alpha");
     const sm2 = await router.storageFor("team-alpha");
     assert.equal(sm1, sm2, "storageFor must return the cached instance for the same namespace");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("namespace-routing: hotMemoriesCacheEnabled=false propagates to namespace child storages (#1902 Codex P2)", async () => {
+  const { router, config, cleanup } = await makeNamespaceRouter({ hotMemoriesCacheEnabled: false });
+  try {
+    resetStaticCaches();
+    const sm = await router.storageFor("team-alpha");
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "A");
+    await sm.readAllMemories();
+    await sm.readAllMemories();
+    const root = await resolveNamespaceStorageRoot(config, "team-alpha");
+    // Gate propagated to the child: with caching disabled the child storage
+    // never populates the module-level hot cache, so getCachedMemories stays
+    // null even after reads. Before the fix the child fell back to the
+    // process-wide default (true) and would have cached the corpus.
+    assert.equal(
+      getCachedMemories(root, sm.getMemoryCorpusVersion()),
+      null,
+      "namespace child honors the disabled gate and never caches the corpus",
+    );
   } finally {
     await cleanup();
   }

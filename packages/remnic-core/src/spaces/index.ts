@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -935,6 +936,15 @@ function copyMemories(
     }
     fs.writeFileSync(targetPath, content);
     merged++;
+    // Bump the target's corpus sentinel per write (out-of-band — not through a
+    // StorageManager mutation), on the CANONICAL root (targetRoot), matching
+    // where files were written and where a StorageManager resolves its
+    // version/cache keys. Per-write (not once after the loop) so a warm
+    // hot-memories cache for the target rescans MID-batch and never serves the
+    // pre-copy corpus while copies are still landing (#1902; a symlinked target
+    // would otherwise diverge, and a once-after bump leaves in-batch reads
+    // stale).
+    bumpMemoryCorpusVersionForDir(targetRoot);
   }
 
   return { merged, conflicts, skipped };

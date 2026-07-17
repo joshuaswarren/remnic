@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 
 import { StorageManager } from "./storage.js";
+import { clearMemoryCache } from "./memory-cache.js";
 import type { ProvenanceSource } from "./types.js";
 
 /**
@@ -64,6 +65,11 @@ async function writeFactFile(
   const factsDir = path.join((storage as unknown as { baseDir: string }).baseDir, "facts", today);
   await mkdir(factsDir, { recursive: true });
   await writeFile(path.join(factsDir, `${id}.md`), `${lines.join("\n")}\n\n${body}\n`, "utf-8");
+  // This is an out-of-band write (bypasses StorageManager.writeMemory), so it
+  // must invalidate the version-keyed hot-memories cache (issue #1902) — drop
+  // every cache layer for this dir via the exported chokepoint so the next
+  // readAllMemories() rescans disk and sees this file (matches the harness seam).
+  clearMemoryCache(storage.dir);
   return id;
 }
 

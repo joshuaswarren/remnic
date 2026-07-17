@@ -37,6 +37,19 @@ export type {
   RunBenchmarkOptions,
   ResolvedRunBenchmarkOptions,
 } from "./types.js";
+export {
+  BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION,
+  BUILD_WEEK_LIMITATIONS,
+  buildBuildWeekEvidenceReceipt,
+  serializeBuildWeekEvidenceReceipt,
+  writeBuildWeekEvidenceReceipt,
+} from "./build-week-evidence-receipt.js";
+export type {
+  BuildBuildWeekEvidenceReceiptOptions,
+  BuildWeekEvidenceReceipt,
+  BuildWeekEvidenceReceiptProvider,
+  BuildWeekLimitationCode,
+} from "./build-week-evidence-receipt.js";
 export type {
   CustomBenchmarkScoring,
   CustomBenchmarkSpec,

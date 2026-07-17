@@ -4,9 +4,10 @@ Target duration: 2 minutes 40 seconds. Hard limit: 3 minutes.
 
 Operator gate before recording: replace every bracketed placeholder used in the
 video with real evidence. The version 9.6.34 registry-install path is verified
-on Linux x86_64. The Codex `/feedback` session ID is still required. If the GPT-5.6
-frontier artifact does not land, omit that result and its URL. Do not substitute
-another model or turn a bounded trial into a full-run claim.
+on Linux x86_64. The Codex `/feedback` session ID and public YouTube URL are
+still required. The full GPT-5.6 LongMemEval artifact and sanitized LongMemEval
+and MemCorrect receipts are committed. Do not show private results, reports, or
+the ledger, and do not turn MemCorrect's mixed evidence into a success claim.
 
 ## 0:00-0:20: the stale-memory problem
 
@@ -77,35 +78,32 @@ keeps a backend failure separate from an empty recall."
 ## 2:10-2:35: Codex and GPT-5.6 roles
 
 Picture: Show the dated implementation commit, selected test names, and the
-model provenance from a real artifact. If available, briefly show
-`[CODEX_FEEDBACK_SESSION_ID]`, `[GPT_5_6_ARTIFACT_URL]`, and the sanitized
-credit summary. Do not show the private JSON ledger.
+model provenance from the
+[LongMemEval artifact](../benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json),
+[LongMemEval receipt](../benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json),
+and [MemCorrect receipt](../benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json).
+Briefly show `[CODEX_FEEDBACK_SESSION_ID]`. Do not show the private JSON ledger,
+private report, or launch a paid call while recording.
 
-```bash
-export OPENAI_API_KEY=...
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
-```
+Voiceover: "Codex built and adversarially reviewed the new adapter, providers,
+and report card. Competition runs used isolated, one-shot Codex CLI calls:
+Luna for responder and internal work, Terra for judging. Full LongMemEval
+completed 500 tasks with 0.762 judge accuracy. Full MemCorrect completed 40,
+but its evidence was mixed: 0.9875 model-judged acceptance while deterministic
+next-turn uptake and non-resurrection were both zero. The public receipts keep
+that divergence and the prior-work boundary visible."
 
-Voiceover: "Codex built and adversarially reviewed the new MCP adapter,
-Responses provider, and report card during Build Week. GPT-5.6 is the optional
-structured-output judge inside the harness. Our bounded CLI protocol assigns
-Luna to bulk work and Terra to quality-critical judging. It charges each
-completed turn to the harness ledger and requires exclusive account use during
-the run. Missing usage blocks further dispatch. Remnic itself and the original
-benchmark package are prior work; our public evidence ledger draws that line
-commit by commit."
-
-The API model id above is `gpt-5.6`. The Codex CLI uses the separate slugs
-`gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI artifact is shown, its run must
+The optional API provider uses model id `gpt-5.6`. Competition measurements
+use the Codex CLI slug `gpt-5.6-terra` for judging and `gpt-5.6-luna` for bulk
+responder and internal work. If a CLI result is shown, its run must
 use isolated one-shot `codex exec` calls and normal service, not fast mode. It
 must show the 2,473-credit budget, 473-credit reserve, and real model labels.
 `gpt-5.6-sol` is opt-in only and is outside the bounded plan. Right before
 recording, check the login with `codex login status` and the model list with
 `codex debug models`.
 
-Do not say GPT-5.6 was benchmarked as the system under test unless the real,
-hash-locked artifact is on screen.
+Show the real hash-locked artifact when narrating the LongMemEval score. Show
+the sanitized MemCorrect receipt when narrating its mixed metrics.
 
 ## 2:35-2:40: close
 
@@ -128,4 +126,5 @@ database."
 - [ ] Any credit claim reconciles 2,473 total, 473 reserved, and 2,000 usable.
 - [ ] No fast-mode or Sol run is presented as part of the bounded plan.
 - [ ] Codex `/feedback` session ID: `[CODEX_FEEDBACK_SESSION_ID]`
-- [ ] GPT-5.6 artifact, if claimed: `[GPT_5_6_ARTIFACT_URL]`
+- [ ] GPT-5.6 LongMemEval artifact and both sanitized receipts are visible from
+  the committed paths linked above.

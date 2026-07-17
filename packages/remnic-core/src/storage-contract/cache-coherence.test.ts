@@ -10,6 +10,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { appendFile, mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { StorageManager } from "../storage.js";
 import { resetStaticCaches } from "./harness.js";
@@ -93,6 +96,245 @@ test("cache-coherence: readAllMemories reflects writes across instances after in
     const allAfter = await smC.readAllMemories();
     assert.ok(allAfter.length >= 3, "fresh instance must see the additional write");
     assert.ok(allAfter.some((m) => m.content === "third"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+type ScanSpy = { _readAllMemoriesFromDisk: () => Promise<unknown> };
+
+function installScanSpy(sm: StorageManager): { scans: () => number } {
+  const spy = sm as unknown as ScanSpy;
+  const orig = spy._readAllMemoriesFromDisk.bind(sm);
+  let count = 0;
+  spy._readAllMemoriesFromDisk = async () => {
+    count += 1;
+    return orig();
+  };
+  return { scans: () => count };
+}
+
+test("hot cache (#1902): a warm readAllMemories() serves without re-scanning disk", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-warm-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "A");
+    await sm.readAllMemories(); // warming scan populates the hot cache
+    const spy = installScanSpy(sm);
+    const warm = await sm.readAllMemories();
+    assert.equal(spy.scans(), 0, "a warm read must not touch disk");
+    assert.ok(warm.some((m) => m.content === "A"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): a single-file write patches the cache in place — next read stays warm", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-patch-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "A");
+    await sm.readAllMemories(); // warm
+    const spy = installScanSpy(sm);
+    await sm.writeMemory("fact", "B"); // patch-on-write keeps the entry warm
+    const after = await sm.readAllMemories();
+    assert.equal(spy.scans(), 0, "patch-on-write must keep the cache warm (no rescan)");
+    assert.ok(after.some((m) => m.content === "B"), "the newly written fact is present");
+    assert.ok(after.some((m) => m.content === "A"), "the prior fact survives the patch");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): a peer corpus-version bump forces exactly one rescan (cross-process coherence)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-peer-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "A");
+    await sm.readAllMemories(); // warm
+    const spy = installScanSpy(sm);
+    // Simulate a peer process advancing the on-disk corpus sentinel (its byte
+    // size IS the version). This instance's warm entry is now stale-versioned.
+    await appendFile(path.join(dir, "state", ".memory-corpus-version.log"), "x");
+    const afterPeer = await sm.readAllMemories();
+    assert.equal(spy.scans(), 1, "a peer sentinel bump must force exactly one rescan");
+    assert.ok(afterPeer.some((m) => m.content === "A"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): a delete rescans and drops the removed memory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-del-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    const { id } = await sm.writeMemory("fact", "A");
+    await sm.writeMemory("fact", "B");
+    await sm.readAllMemories(); // warm
+    await sm.invalidateMemory(id); // delete drops the hot layer wholesale
+    const after = await sm.readAllMemories();
+    assert.ok(after.some((m) => m.content === "B"), "surviving memory remains");
+    assert.ok(!after.some((m) => m.content === "A"), "the deleted memory is gone");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902/#1904 compat): a plain fact create does NOT bump memory-status (entity cache stays warm)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-status-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "seed"); // establish the state dir + baseline
+    const before = sm.getMemoryStatusVersion();
+    await sm.writeMemory("fact", "another create");
+    assert.equal(
+      sm.getMemoryStatusVersion(),
+      before,
+      "a plain fact create must not bump memory-status (the entity cache keys on it)",
+    );
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): hotMemoriesCacheEnabled=false forces every read to rescan", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-off-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir, undefined, false); // gate off
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "A");
+    const spy = installScanSpy(sm);
+    await sm.readAllMemories();
+    await sm.readAllMemories();
+    assert.equal(spy.scans(), 2, "with the cache disabled, each sequential read scans disk");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): the gate default is isolated per memory dir (Codex P2)", async () => {
+  const dirOff = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-perdir-off-"));
+  const dirOn = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-perdir-on-"));
+  try {
+    resetStaticCaches();
+    // Register divergent per-dir settings; a later registration must NOT flip
+    // an earlier dir's behavior (the "last orchestrator wins" bug).
+    StorageManager.setHotMemoriesCacheDefault(dirOff, false);
+    StorageManager.setHotMemoriesCacheDefault(dirOn, true);
+    // Constructed WITHOUT a per-instance override, so each resolves its own
+    // dir's registered default.
+    const smOff = new StorageManager(dirOff);
+    const smOn = new StorageManager(dirOn);
+    await smOff.ensureDirectories();
+    await smOff.writeMemory("fact", "A");
+    await smOn.ensureDirectories();
+    await smOn.writeMemory("fact", "B");
+    const spyOff = installScanSpy(smOff);
+    const spyOn = installScanSpy(smOn);
+    await smOff.readAllMemories();
+    await smOff.readAllMemories();
+    await smOn.readAllMemories();
+    await smOn.readAllMemories();
+    assert.equal(spyOff.scans(), 2, "dir registered false rescans on every read");
+    assert.equal(spyOn.scans(), 1, "dir registered true serves the second read from cache");
+  } finally {
+    resetStaticCaches();
+    await rm(dirOff, { recursive: true, force: true });
+    await rm(dirOn, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): flushAccessTracking patches locally + bumps for cross-process coherence", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-access-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    const { id } = await sm.writeMemory("fact", "trackable");
+    // Warm the cache.
+    const warm = await sm.readAllMemories();
+    assert.equal(warm.length, 1);
+    const versionBefore = sm.getMemoryCorpusVersion();
+    const spy = installScanSpy(sm);
+    await sm.flushAccessTracking([
+      { memoryId: id, newCount: 7, lastAccessed: "2026-07-16T00:00:00.000Z" },
+    ]);
+    const after = await sm.readAllMemories();
+    // Local process: patched in place + re-keyed, so no rescan and fresh counts.
+    assert.equal(spy.scans(), 0, "access-tracking flush must not rescan the corpus locally");
+    const m = after.find((x) => x.frontmatter.id === id);
+    assert.equal(m?.frontmatter.accessCount, 7, "hot cache reflects the flushed access count");
+    assert.equal(m?.frontmatter.lastAccessed, "2026-07-16T00:00:00.000Z");
+    // Cross-process: the shared sentinel advanced so peer processes rescan and
+    // never overwrite this process's increment (Codex P2).
+    assert.ok(
+      sm.getMemoryCorpusVersion() > versionBefore,
+      "access-tracking flush advances the corpus sentinel for peer coherence",
+    );
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): ensureDirectories activates a version-0 corpus so reads cache (Cursor Medium)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-zero-"));
+  try {
+    resetStaticCaches();
+    // Simulate an existing corpus with NO sentinel yet: write a fact file
+    // directly to disk (bypassing StorageManager, so nothing bumps the sentinel).
+    await mkdir(path.join(dir, "facts"), { recursive: true });
+    await writeFile(path.join(dir, "facts", "a.md"), "---\nid: fact-a\n---\nA");
+    const sm = new StorageManager(dir);
+    assert.equal(sm.getMemoryCorpusVersion(), 0, "precondition: sentinel starts at 0");
+    // The daemon calls ensureDirectories() at startup (before serving reads); it
+    // seeds a nonzero sentinel so the hot path engages on a read-heavy workload.
+    await sm.ensureDirectories();
+    assert.ok(sm.getMemoryCorpusVersion() > 0, "ensureDirectories activates the sentinel");
+    const spy = installScanSpy(sm);
+    const first = await sm.readAllMemories();
+    assert.equal(first.length, 1);
+    await sm.readAllMemories();
+    assert.equal(spy.scans(), 1, "second read is served from cache — activation worked");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("hot cache (#1902): an empty corpus is served from cache, not rescanned (kilo null-check)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-empty-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    // ensureDirectories activates the sentinel (version > 0); the corpus is empty.
+    await sm.ensureDirectories();
+    const first = await sm.readAllMemories();
+    assert.equal(first.length, 0, "corpus is empty");
+    const spy = installScanSpy(sm);
+    await sm.readAllMemories();
+    await sm.readAllMemories();
+    // getCachedMemories returns [] (falsy) for an empty corpus; the read guard
+    // must null-check, not truthiness-check, or every read rescans.
+    assert.equal(spy.scans(), 0, "empty corpus is served from cache on repeat reads");
   } finally {
     resetStaticCaches();
     await rm(dir, { recursive: true, force: true });

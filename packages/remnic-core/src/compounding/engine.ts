@@ -321,7 +321,15 @@ function normalizePromotionWhitespace(value: string): string {
 }
 
 function stripTrailingPromotionPunctuation(value: string): string {
-  return value.replace(/[,:;]+$/g, "").trim();
+  // Linear trailing-punctuation strip (no `/[,:;]+$/` — CodeQL flags that as a
+  // polynomial-backtracking ReDoS on long runs of ',;:'). Walk back once, O(n).
+  let end = value.length;
+  while (end > 0) {
+    const ch = value[end - 1];
+    if (ch === "," || ch === ":" || ch === ";") end--;
+    else break;
+  }
+  return value.slice(0, end).trim();
 }
 
 function extractExplicitIfThenRule(value: string): string | null {

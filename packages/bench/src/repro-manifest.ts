@@ -933,6 +933,20 @@ function buildArtifactHashIdentity(manifest: Omit<BenchmarkReproManifest, "artif
   };
 }
 
+/** Recompute the public integrity hash for a manifest before its hash field is attached. */
+export function computeBenchmarkReproManifestArtifactHash(
+  manifest: Omit<BenchmarkReproManifest, "artifactHash">
+): string {
+  return sha256String(stableStringify(buildArtifactHashIdentity(manifest)));
+}
+
+/** Recompute the canonical sorted-file inventory hash stored on a dataset entry. */
+export function computeBenchmarkReproDatasetInventoryHash(
+  files: BenchmarkReproManifestFile[]
+): string {
+  return sha256String(stableStringify(files));
+}
+
 async function scanDatasetFiles(root: string): Promise<BenchmarkReproManifestFile[]> {
   const files: BenchmarkReproManifestFile[] = [];
 
@@ -1054,7 +1068,7 @@ async function buildDatasetManifest(
   const realDatasetDir = await realpath(datasetRoot);
   const files = await scanDatasetFiles(realDatasetDir);
   const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
-  const digest = sha256String(stableStringify(files));
+  const digest = computeBenchmarkReproDatasetInventoryHash(files);
   return {
     benchmark,
     status: "hashed",
@@ -1341,7 +1355,7 @@ export async function buildBenchmarkReproManifest(
 
   return {
     ...manifestWithoutHash,
-    artifactHash: sha256String(stableStringify(buildArtifactHashIdentity(manifestWithoutHash))),
+    artifactHash: computeBenchmarkReproManifestArtifactHash(manifestWithoutHash),
   };
 }
 

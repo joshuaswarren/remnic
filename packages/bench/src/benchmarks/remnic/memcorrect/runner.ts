@@ -35,7 +35,7 @@ import type {
   MemCorrectJudgeResult,
 } from "../../../adapters/types.js";
 import { aggregateTaskScores } from "../../../scorer.js";
-import { getGitSha, getRemnicVersion } from "../../../reporter.js";
+import { captureBenchmarkExecutionProvenance, getRemnicVersion } from "../../../reporter.js";
 import { generateMemCorrectCorpus, corpusHash } from "./generator.js";
 import { validateCorpus } from "./schema.js";
 import { computeMetricBundle, containsAll } from "./metrics.js";
@@ -389,6 +389,7 @@ function safeMemCorrectJudgeDetails(result: MemCorrectJudgeResult): Record<strin
 export async function runMemCorrectBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
+  const executionProvenance = captureBenchmarkExecutionProvenance();
   const baseOptions = options.mode === "quick" ? QUICK_OPTIONS : FULL_OPTIONS;
   const seed = typeof options.seed === "number" ? options.seed : baseOptions.seed;
   const generatorOptions = { ...baseOptions, seed };
@@ -562,7 +563,7 @@ export async function runMemCorrectBenchmark(
       benchmarkTier: options.benchmark.tier,
       version: options.benchmark.meta.version,
       remnicVersion,
-      gitSha: getGitSha(),
+      ...executionProvenance,
       timestamp: new Date().toISOString(),
       mode: options.mode,
       runCount: 1,
@@ -579,6 +580,7 @@ export async function runMemCorrectBenchmark(
         ...persistableBenchmarkOptions,
         personaCount: generatorOptions.personaCount,
         factsPerPersona: generatorOptions.factsPerPersona,
+        nowIso: generatorOptions.nowIso,
         maintenanceCycles: generatorOptions.maintenanceCycles,
         uptakeLatencyCap: generatorOptions.uptakeLatencyCap,
         ...(judgeModelCalls > 0

@@ -81,7 +81,7 @@ pip install --upgrade remnic-hermes
 remnic connectors install hermes
 ```
 
-`remnic connectors install hermes` generates an auth token, writes `~/.remnic/tokens.json`, adds the `remnic:` block to your Hermes `config.yaml`, and runs a daemon health check. It does **not** start the daemon — if unreachable, it prints `remnic daemon start` as the next step. Restart Hermes after running it.
+`remnic connectors install hermes` generates an auth token, writes `~/.remnic/tokens.json`, adds the `remnic:` block to your Hermes `config.yaml`, materializes the plugin discovery shim at `$HERMES_HOME/plugins/remnic/__init__.py` (so Hermes finds the provider — see [How Hermes discovers the provider](#how-hermes-discovers-the-provider)), and runs a daemon health check. It does **not** start the daemon — if unreachable, it prints `remnic daemon start` as the next step. You still need to set `memory.provider: remnic` (and `memory_enabled: true`) in your Hermes `config.yaml` to activate the provider. Restart Hermes after running it.
 
 ### Option B: pip only (manual config)
 
@@ -103,9 +103,9 @@ pip install -e ".[dev]"
 Hermes memory providers are discovered by directory scan, not by pip metadata. Upstream (`plugins/memory/__init__.py`, verified against `NousResearch/hermes-agent` commit `53adb3f`, 2026-07-16) scans:
 
 1. Bundled providers: `<hermes-repo>/plugins/memory/<name>/`
-2. User-installed providers: `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
+2. User-installed providers: `$HERMES_HOME/plugins/<name>/` — when `HERMES_HOME` is unset, Hermes falls back to its platform-native default home: `~/.hermes/plugins/<name>/` on Linux/macOS, `%LOCALAPPDATA%\hermes\plugins\<name>\` on Windows (`hermes_constants.py:_get_platform_default_hermes_home`). `remnic connectors install hermes` resolves the same home for the shim and the `remnic:` config block.
 
-A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. You need a small shim directory whose `__init__.py` bridges to the pip package:
+A pip install of `remnic-hermes` into site-packages is **not** scanned, so the package alone does not register with Hermes. `remnic connectors install hermes` materializes the required shim for you; for pip-only installs, create a small shim directory whose `__init__.py` bridges to the pip package:
 
 ```python
 # $HERMES_HOME/plugins/remnic/__init__.py
@@ -114,7 +114,7 @@ A pip install of `remnic-hermes` into site-packages is **not** scanned, so the p
 from remnic_hermes import register  # register() handles config loading itself
 ```
 
-Hermes' discovery heuristic requires the literal text `register_memory_provider` or `MemoryProvider` to appear in the shim's `__init__.py` source (cheap text scan before import), which the docstring above satisfies. Hermes calls the module's `register(collector)`; the collector exposes `register_memory_provider()` but carries **no** `.config` attribute, so `remnic_hermes.register()` falls back to reading the Hermes host config via `hermes_cli.config.load_config_readonly()` (added in `remnic-hermes` 1.0.5, issue #1929).
+Hermes' discovery heuristic requires the literal text `register_memory_provider` or `MemoryProvider` to appear in the shim's `__init__.py` source (cheap text scan before import), which the docstring above satisfies. Hermes calls the module's `register(collector)`; the collector exposes `register_memory_provider()` but carries **no** `.config` attribute, so `remnic_hermes.register()` falls back to reading the Hermes host config via `hermes_cli.config.load_config_readonly()` (with a `load_config()` fallback on older Hermes releases; added in `remnic-hermes` 1.0.5, issue #1929).
 
 Then select the provider in `config.yaml`:
 
@@ -191,7 +191,10 @@ The auth token is **not** read from an environment variable. It comes from the i
 3. Adds the `remnic:` block to Hermes `config.yaml` (with rollback on failure).
 4. Commits the token to `~/.remnic/tokens.json`.
 5. Writes the connector config to `~/.config/engram/.engram-connectors/connectors/hermes.json`.
-6. Runs a daemon health check — reports whether the daemon is reachable but does **not** start it. If unreachable, install still succeeds and prints `remnic daemon start` as the next step.
+6. Materializes the plugin discovery shim at `$HERMES_HOME/plugins/remnic/__init__.py` (honors `HERMES_HOME`, else `~/.hermes`) so Hermes can discover the provider. Best-effort: if the shim cannot be written, install still succeeds and prints a manual-creation hint. A user-authored shim already at that path is left untouched.
+7. Runs a daemon health check — reports whether the daemon is reachable but does **not** start it. If unreachable, install still succeeds and prints `remnic daemon start` as the next step.
+
+Activation is a separate, non-destructive step the installer never performs for you: set `memory.provider: remnic` (and `memory_enabled: true`) in your Hermes `config.yaml`.
 
 To install into a non-default Hermes profile:
 

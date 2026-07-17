@@ -10,6 +10,7 @@ import { resolveNamespaceCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveSecurityCapabilities, resolveEvalCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
+import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
@@ -7495,6 +7496,11 @@ export function registerCli(
             try {
               await unlink(filePath);
               deleted += 1;
+              // Per-delete corpus bump (Cursor Medium, #1902): dedupe removes
+              // active memory files directly (bypassing StorageManager), so bump
+              // each delete to keep a same-process or peer readAllMemories from
+              // recalling a duplicate that was already removed mid-batch.
+              bumpMemoryCorpusVersionForDir(memoryDir);
             } catch (err) {
               console.log(`  failed to delete ${filePath}: ${String(err)}`);
             }
@@ -7556,6 +7562,8 @@ export function registerCli(
             try {
               await unlink(filePath);
               deleted += 1;
+              // Per-delete corpus bump (Cursor Medium, #1902) — see dedupe-exact.
+              bumpMemoryCorpusVersionForDir(memoryDir);
             } catch (err) {
               console.log(`  failed to delete ${filePath}: ${String(err)}`);
             }

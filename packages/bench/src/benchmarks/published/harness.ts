@@ -41,7 +41,11 @@ import {
   isBenchmarkRunBlockedError,
 } from "../../benchmark-run-blocked-error.js";
 import { benchmarkRecallBudgetForSessionCount } from "../../recall-budget.js";
-import { getGitSha, getRemnicVersion } from "../../reporter.js";
+import {
+  captureBenchmarkExecutionProvenance,
+  type BenchmarkExecutionProvenance,
+  getRemnicVersion,
+} from "../../reporter.js";
 import {
   aggregateTaskScores,
   containsAnswer,
@@ -229,6 +233,7 @@ export async function runPublishedHarness(
   ctx: HarnessContext,
 ): Promise<BenchmarkResult> {
   validateContext(ctx);
+  const executionProvenance = captureBenchmarkExecutionProvenance();
   const answerSupportGate = resolveAnswerSupportGate(ctx.options);
   const trialConcurrency = resolveTrialConcurrency(
     ctx.options.benchmarkOptions?.trialConcurrency,
@@ -261,7 +266,7 @@ export async function runPublishedHarness(
     });
   }
 
-  return buildBenchmarkResult(ctx, tasks);
+  return buildBenchmarkResult(ctx, tasks, executionProvenance);
 }
 
 async function executePlanTrials(
@@ -827,6 +832,7 @@ function refineTrialAnswer(
 async function buildBenchmarkResult(
   ctx: HarnessContext,
   tasks: TaskResult[],
+  executionProvenance: BenchmarkExecutionProvenance,
 ): Promise<BenchmarkResult> {
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = tasks.reduce((sum, task) => sum + task.latencyMs, 0);
@@ -868,7 +874,7 @@ async function buildBenchmarkResult(
       benchmarkTier: ctx.options.benchmark.tier,
       version: ctx.options.benchmark.meta.version,
       remnicVersion,
-      gitSha: getGitSha(),
+      ...executionProvenance,
       timestamp: new Date().toISOString(),
       mode,
       runCount: 1,

@@ -90,15 +90,17 @@ contradiction-scan, graph-recall) are in
 At 7B-Q4 single-seed no cell moves any metric outside the run-to-run noise
 band, so no shipped default is changed by that ablation.
 
-The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison is
-diagnosed in
+The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison and its
+July 16 current-main follow-up are diagnosed in
 [`docs/benchmarks/locomo-profile-diagnosis.md`](./benchmarks/locomo-profile-diagnosis.md).
-The regression is concentrated in multi-hop questions and is present on
-judge-independent F1, but paired recall X-ray receipts are not available, so
-the recall-side mechanism is not yet established. Pending that evidence,
-benchmark operators should use the `baseline` profile only for LoCoMo's
-skip-extraction replay path when optimizing this measured configuration; this
-is not production guidance and does not change shipped defaults.
+The historical regression was concentrated in multi-hop questions and present
+on judge-independent F1. Current main's provider-free paired capture found no
+retrieval-structure delta across those 321 tasks, and the scored GPT-5.6 pair
+reduced the historical gap to -0.0067 `llm_judge` and -0.0044 F1 while moving
+`contains_answer` +0.0031. That result does not establish parity or a causal
+retrieval mechanism. The old `baseline` recommendation is therefore only
+historical reproduction guidance for the July 14 configuration, not current-
+main or production guidance, and no shipped default changes on this evidence.
 
 An answer-time support gate is available as a read-time faithfulness control.
 It defaults to `true` for the full-feature `real` profile and remains disabled
@@ -137,6 +139,73 @@ This foundation does **not** establish issue #1878's acceptance metrics. A new
 calibrated, uncapped 1,986-task real-profile LoCoMo run, with the required
 responder/judge credentials and published artifact, is still required before
 claiming adversarial lift or answerable-category preservation.
+
+### Build Week paired LoCoMo multi-hop diagnostic (2026-07-16)
+
+Merged launch head `3a8f9290` ran the same ordered 321-task multi-hop selector
+under `baseline` and `real`. Both profiles used `gpt-5.6-luna` for responder
+and internal work, `gpt-5.6-terra` for judging, seed 0, normal service, and
+serialized trials. Both completed 321/321 tasks without a task-level failure.
+The dataset SHA-256 is
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`;
+the canonical selected-task-list SHA-256 is
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`.
+
+| Metric | Baseline | Real | Delta (`real - baseline`) |
+|---|---:|---:|---:|
+| `llm_judge` | 0.3050 | 0.2983 | -0.0067 |
+| F1 | 0.3100 | 0.3057 | -0.0044 |
+| `contains_answer` | 0.0903 | 0.0935 | +0.0031 |
+| hidden-evidence-id safety | 1.0000 | 1.0000 | 0.0000 |
+
+The run-scoped ledger receipt records 242.2365325 credits, 1,329 Luna calls,
+410 Terra calls, and zero Sol calls. Baseline and real result SHA-256 values
+are, respectively,
+`21cd3c1f6f6c1a89a8d7d432d7004e08d575655e2cdca4addde0952852890397`
+and
+`549c31e578a2269d2c4c49ea688a9de2ddeb097fcd9f627a312d1a95f6677708`.
+The raw results and report cards remain private because they contain questions,
+answers, and recalled context.
+
+This is bounded paired evidence, not a LoCoMo leaderboard result. The exact
+selector is stored in each result, and both artifact promotion and the full
+public-matrix verifier reject `taskSelection` by design. The pinned calibration
+source result was absent from this host, so Terra's absolute score is not
+described as calibrated or compared to external leaderboards; F1 and
+`contains_answer` are reported alongside it. A late manifest regeneration also
+observed an unrelated shared-checkout branch switch and marked its Git envelope
+dirty. The result files retain launch SHA `3a8f9290`, but the dirty manifest is
+not publication evidence. This diagnostic does not cover LoCoMo's adversarial,
+single-hop, temporal, or open-domain categories and cannot satisfy #1878.
+
+### Build Week GPT-5.6 full LongMemEval (2026-07-17)
+
+Source head `810f36ae`, Remnic 9.7.6, completed the uncapped
+LongMemEval-oracle matrix: 500/500 tasks with zero task failures. The `real`
+profile used fresh isolated direct-adapter stores, never a production Remnic
+store. `gpt-5.6-luna` at medium reasoning handled responder and internal work;
+`gpt-5.6-terra` at high reasoning handled judging.
+
+| Metric | Full-run value |
+|---|---:|
+| `contains_answer` | 0.4900 |
+| F1 | 0.5551 |
+| `judge_accuracy` / `llm_judge` | 0.7620 |
+| `search_hits` | 8.5380 |
+
+The staged dataset version is `longmemeval-oracle`, payload SHA-256
+`821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
+The public
+[frontier artifact](./benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+contains only task ids and scores, while the
+[sanitized Build Week receipt](./benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json)
+binds the private result and manifest without publishing questions, answers,
+recall text, paths, or ledger state. The receipt records 2,892 calls,
+50,212,877 estimated input-plus-output tokens, 745.745695 locally estimated
+budget units, and zero Sol calls. Usage and budget-unit totals are local
+instrumentation estimates, not account billing. This is one uncalibrated,
+model-judged run and does not establish run-to-run variance or cross-system
+superiority.
 
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
@@ -196,7 +265,7 @@ the provider's retry logic absorbed transient errors but not these.
 `internalProvider: null` — the baseline runtime profile uses the Remnic
 LCM chunking/extraction stack without a separate internal LLM gateway.
 
-### Full-run cost estimate (not yet executed)
+### Historical Opus full-run estimate (not executed)
 
 Based on the measured per-task wall times (965 s / 100 = ~9.7 s locomo,
 580 s / 50 = ~11.6 s longmemeval — wall time includes ingestion, recall,
@@ -208,11 +277,11 @@ responder, and judge; mean responder query latency alone was 7.5 s / 9.6 s):
 | LongMemEval full | 500 | ~1.6 h |
 | **Total** | **2486** | **~6.9 h** |
 
-This fits an 8-hour budget but would consume a significant fraction
-of the operator's weekly Claude Max Opus quota. The full run is an
-**explicitly user-approved follow-up**: the bounded slices above prove
-the pipeline is correct; the full Tier F pass (or the raw-API headline
-number) awaits quota authorization.
+This Opus-via-Claude-Code estimate fits an 8-hour budget but would consume a
+significant fraction of the operator's weekly Claude Max Opus quota. It is
+separate from the completed GPT-5.6 Codex CLI LongMemEval run above. A full
+Opus pass or raw-API result remains an explicitly authorized follow-up, not a
+missing prerequisite for the Build Week evidence.
 
 ### Build Week Codex CLI credit protocol
 
@@ -538,6 +607,37 @@ verbatim LCM turn evidence quoting the outdated statement. MemCorrect is
 deliberately strict: serving a stale value anywhere in recall context fails
 the probe. These artifacts are the reproducibility anchor for that finding,
 not a leaderboard bragging number.
+
+### Build Week GPT-5.6 full MemCorrect (2026-07-17)
+
+Source head `810f36ae`, Remnic 9.7.6, completed 40/40 scenarios with zero task
+failures using the `real` Remnic-native adapter and fresh isolated stores.
+The generated corpus is pinned as `memcorrect-v1-c077e7`, payload SHA-256
+`ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb`.
+Luna at medium reasoning handled system and internal work; Terra at high
+reasoning judged correction acceptance and stale harm.
+
+| Metric | Full-run value | Reading |
+|---|---:|---|
+| `uptake_at_next` | 0 | No deterministic next-turn uptake |
+| `uptake_latency` | 8 | All 40 observations censored |
+| `non_resurrection` | 0 | Stale content resurfaced |
+| `false_apply` | 1 | Deterministic containment floor |
+| `scope_precision` | 0 | Deterministic containment floor |
+| `reassertion` | 1 | Reassertion probe passed |
+| `judge_correction_acceptance` | 0.9875 | Terra model judgment |
+| `judge_stale_harm_avoidance` | 1 | Terra model judgment |
+
+The high judge scores do not override the deterministic failures. Their sharp
+divergence is a benchmark finding and must not be described as a strong or
+successful MemCorrect result. The
+[sanitized receipt](./benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json)
+records 550 calls, 8,355,708 estimated input-plus-output tokens, 98.720145
+locally estimated budget units, and zero Sol calls. It reports a single run;
+its model-judged and accounting values carry evaluator-variance and
+local-estimate limitations. The 25,056-byte self-contained report remains
+private because it contains task detail; its SHA-256 is
+`006509082e20d67bb948bd461cb5825a8c0268bade67247c59c63d17efe53792`.
 
 ## Ethics
 

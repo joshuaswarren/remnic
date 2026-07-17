@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.6",
+  "version": "9.7.8",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4297,6 +4297,17 @@
         "type": "boolean",
         "default": true,
         "description": "When true, recall multiplies candidate scores by the Memory Worth factor (mw_success / mw_fail counters, see issue #560). Memories with a history of failed sessions sink; neutral/uninstrumented memories are untouched. PR 5 bench: +0.60 precision@5 vs baseline on all 50 seeded cases. Operators can opt out with false."
+      },
+      "hotMemoriesCacheEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Serve StorageManager.readAllMemories() from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by the on-disk corpus version sentinel; writes patch the cache in place. Set false to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path)."
+      },
+      "hotMemoriesCacheTtlMs": {
+        "type": "number",
+        "minimum": 0,
+        "default": 60000,
+        "description": "Max age (ms) a version-keyed hot-memories cache entry is served before a fresh disk scan (issue #1902). The corpus version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit can be stale. Default 60000 (60s). Set 0 to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits)."
       },
       "recallMemoryWorthHalfLifeMs": {
         "type": "number",

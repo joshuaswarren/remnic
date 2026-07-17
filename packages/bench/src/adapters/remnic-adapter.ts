@@ -33,6 +33,7 @@ import {
   parseConfig,
   parseEntityFile,
   serializeEntityFile,
+  StorageManager,
 } from "@remnic/core";
 import type {
   EntityStructuredSection,
@@ -1864,6 +1865,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         !state.ownsTempDir && rebuildOptions.clearCallerOwnedBenchState === true;
       const callerOwnedMemoryDir = state.tempDir;
       await cleanup();
+      // A full reset wipes memory files out-of-band (below / in cleanup), so
+      // clear the module-level StorageManager caches — including the version-keyed
+      // hot-memories result cache (issue #1902) — so a fresh read after the reset
+      // never serves pre-reset memories from a warm cache.
+      StorageManager.clearAllStaticCaches();
       if (shouldClearCallerOwnedBenchState) {
         await clearCallerOwnedBenchState(callerOwnedMemoryDir);
       }

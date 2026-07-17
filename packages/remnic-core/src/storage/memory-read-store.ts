@@ -60,6 +60,8 @@ export interface MemoryReadStoreDeps {
   readonly proceduresDir: string;
   readonly questionsDir: string;
   readColdWriteVersion(): number;
+  /** Secure-store key identity for keying decrypted-corpus caches (#1902). */
+  hotCacheKeyId(): string;
   readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
   readParsedMemoriesFromPaths(
     filePaths: string[],
@@ -365,10 +367,15 @@ export class MemoryReadStore {
     // stale data for up to 30s when another process wrote a new cold memory.
     const currentColdVersion = this.deps.readColdWriteVersion();
 
-    // Return cached result if still valid by both TTL and sentinel version.
+    // Return cached result if still valid by TTL, sentinel version, AND the
+    // secure-store key identity (issue #1902). readParsedMemoriesFromPaths
+    // decrypts per this manager's key, so a differently-keyed manager must not
+    // read a cold corpus another instance decrypted for the same coldRoot.
+    const keyId = this.deps.hotCacheKeyId();
     const cached = this.deps.storageManagerClass.coldMemoriesCache.get(coldRoot);
     if (
       cached &&
+      cached.keyId === keyId &&
       Date.now() - cached.loadedAt < this.deps.storageManagerClass.COLD_SCAN_CACHE_TTL_MS &&
       cached.coldVersion === currentColdVersion
     ) {
@@ -407,7 +414,7 @@ export class MemoryReadStore {
 
     // Store in cache with the sentinel version captured above so that any
     // subsequent cold-version bump (by this or another process) invalidates it.
-    this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion });
+    this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion, keyId });
     return memories;
   }
 

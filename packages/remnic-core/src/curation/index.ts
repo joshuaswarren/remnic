@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -201,6 +202,10 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
       }
     }
   }
+
+  // Per-statement corpus bumps happen in writeStatement (below) so a
+  // same-process readAllMemories mid-batch never serves a stale/partial corpus
+  // (Cursor Medium, #1902); no after-loop bump needed here.
 
   return {
     statements,
@@ -471,6 +476,10 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const body = `${frontmatter}\n\n${stmt.content}\n`;
 
   fs.writeFileSync(filePath, body);
+  // Bump the corpus sentinel per write (out-of-band create) so a concurrent
+  // same-process readAllMemories rescans and sees this statement immediately,
+  // never a stale/partial corpus mid-batch (Cursor Medium, #1902).
+  bumpMemoryCorpusVersionForDir(memoryDir);
   return filePath;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.7.6",
+  "version": "9.7.8",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -1089,6 +1089,16 @@
       "types": "./dist/importance.d.ts",
       "remnic-source": "./src/importance.ts",
       "import": "./dist/importance.js"
+    },
+    "./in-flight-reads": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
+    },
+    "./in-flight-reads.js": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
     },
     "./index": {
       "types": "./dist/index.d.ts",
@@ -3007,7 +3017,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.7.6"
+    "@remnic/coding-graph": "^9.7.8"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

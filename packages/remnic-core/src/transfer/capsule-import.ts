@@ -2,6 +2,7 @@ import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -437,6 +438,10 @@ export async function importCapsule(
 
     await mkdir(path.dirname(targetAbs), { recursive: true });
     await writeFile(targetAbs, contentToWrite, "utf-8");
+    // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
+    // readAllMemories during the import must rescan and see records already on
+    // disk, never the pre-import corpus, mid-batch.
+    bumpMemoryCorpusVersionForDir(rootReal);
     imported.push({
       sourcePath: rec.path,
       targetPath: targetRel,
@@ -447,6 +452,9 @@ export async function importCapsule(
 
   // Sort skipped for stable output (see comment above).
   skipped.sort((a, b) => a.path.localeCompare(b.path));
+
+  // Per-record corpus bumps happen inside the loop above (Cursor Medium,
+  // #1902); no after-batch bump needed here.
 
   return { imported, skipped, manifest };
 }

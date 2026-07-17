@@ -27,7 +27,24 @@ import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
-import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
+import {
+  clearMemoryCache,
+  getCachedEntities,
+  getCachedMemories,
+  invalidateAllForDir,
+  invalidateDerivedAndGlobalForDir,
+  setCachedEntities,
+  setCachedMemories,
+  updateCacheOnDelete,
+  updateCacheOnWrite,
+} from "./memory-cache.js";
+import {
+  getInFlightRead,
+  setInFlightRead,
+  deleteInFlightRead,
+  deleteInFlightReadsForDir,
+  clearInFlightReads,
+} from "./in-flight-reads.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import {
@@ -2305,23 +2322,72 @@ export class StorageManager {
   static readonly ARTIFACT_INDEX_CACHE_TTL_MS = 60_000; // 1 minute
   private static readonly artifactWriteVersionByDir = new Map<string, number>();
   private static readonly memoryStatusVersionByDir = new Map<string, number>();
+  // Corpus version sentinel (issue #1902): bumped on every memory-FILE mutation
+  // so the version-keyed hot-memories cache stays coherent across processes,
+  // without touching memory-status (which would invalidate the entity cache on
+  // every plain create). In-process fallback when the on-disk sentinel is
+  // unavailable; canonical source is state/.memory-corpus-version.log.
+  private static readonly memoryCorpusVersionByDir = new Map<string, number>();
   private static readonly secureStoreEntityCacheKeyIds = new WeakMap<Buffer, number>();
   private static nextSecureStoreEntityCacheKeyId = 1;
   // In-process fallback for the cold-write sentinel (used when the disk file
   // is not accessible).  The canonical source of truth is state/cold-write.log.
   private static readonly coldWriteVersionByDir = new Map<string, number>();
 
-  // Module-level cache for readAllMemories() keyed by base directory.
-  // Shared across all StorageManager instances to avoid duplicate I/O when
-  // multiple concurrent callers (e.g. verifiedRecall + verifiedRules) read the
-  // same directory simultaneously.  In-flight deduplication prevents multiple
-  // concurrent reads of the same directory.
-  //
-  // Stale-while-revalidate: once the cache has a value, subsequent reads after
-  // TTL expiry return the stale cached data immediately and kick off a background
-  // refresh.  This eliminates the 13-60 s cold-scan penalty that would otherwise
-  // block recall requests every 5 minutes on large memory collections (80k+ files).
-  private static readonly allMemoriesInFlight = new Map<string, Promise<MemoryFile[]>>();
+  /**
+   * Process-wide default for the hot-memories result cache gate (issue #1902).
+   * Set once from config by the orchestrator/access layer via
+   * setHotMemoriesCacheDefault() so that EVERY StorageManager — including the
+   * ephemeral instances recall sub-stages (verified-recall, semantic-rule
+   * verification, ...) construct over the same dir — honors the operator's
+   * hotMemoriesCacheEnabled setting. The constructor option overrides this
+   * per-instance (tests). Defaults true (cache on).
+   */
+  private static hotMemoriesCacheDefault = true;
+
+  /**
+   * Per-memory-directory override of the hot-cache gate (issue #1902, Codex
+   * P2). setHotMemoriesCacheDefault(memoryDir, enabled) registers the
+   * operator's setting keyed by dir, so a StorageManager constructed over that
+   * dir honors ITS owning orchestrator's config — not merely the last
+   * orchestrator constructed in the process. Unregistered dirs fall back to
+   * the process-wide default above.
+   */
+  private static readonly hotMemoriesCacheDefaultByDir = new Map<string, boolean>();
+
+  /**
+   * Process-wide TTL (ms) safety net for the hot cache (issue #1902). Bounds
+   * how long a version-keyed entry is served before a fresh disk scan, so
+   * external filesystem edits (manual/git/editor) that don't bump the sentinel
+   * self-heal. Set from config by the orchestrator via setHotMemoriesCacheDefault.
+   * 0 disables the TTL (version invalidation only). Default 60s.
+   */
+  private static hotMemoriesCacheTtlMs = 60_000;
+
+  /**
+   * Per-memory-directory override of the hot-cache TTL (issue #1902, Codex P2),
+   * mirroring hotMemoriesCacheDefaultByDir. Registered by
+   * setHotMemoriesCacheDefault so two orchestrators in one process with
+   * different TTLs don't clobber each other's setting. Unregistered dirs fall
+   * back to the process-wide default above.
+   */
+  private static readonly hotMemoriesCacheTtlByDir = new Map<string, number>();
+
+  /**
+   * Whether the process-wide hot-cache fallbacks (hotMemoriesCacheDefault /
+   * hotMemoriesCacheTtlMs) have been seeded by the first
+   * setHotMemoriesCacheDefault call (issue #1902, Cursor Low). Only the first
+   * registration seeds them; later registrations touch ONLY their per-dir map
+   * entry. This makes the process-wide fallback deterministic (first-writer,
+   * by init order) instead of last-writer-wins, so a second orchestrator with
+   * a divergent config cannot silently flip the fallback that unregistered
+   * dirs resolve to. All REGISTERED dirs are isolated by the per-dir maps.
+   */
+  private static hotMemoriesCacheProcessDefaultSeeded = false;
+
+  // Module-level maps for readAllMemories() keyed by base directory, shared
+  // across all StorageManager instances (static) so concurrent callers over
+  // the same dir cooperate.
 
   // Cache for readAllColdMemories() — keyed by cold root directory path.
   // Prevents an uncached full-tree directory scan on every structured-attribute
@@ -2336,7 +2402,7 @@ export class StorageManager {
   /** Read by storage/memory-read-store.ts (decomposition). */
   static readonly coldMemoriesCache = new Map<
     string,
-    { memories: MemoryFile[]; loadedAt: number; coldVersion: number }
+    { memories: MemoryFile[]; loadedAt: number; coldVersion: number; keyId: string }
   >();
 
   // Cache for readQuestions() — avoids serially re-reading tens of thousands of
@@ -2458,6 +2524,54 @@ export class StorageManager {
   }
 
   /**
+   * Secure-store key identity for the version-keyed hot/archive memory caches
+   * (issue #1902, Codex P1). Scopes cached DECRYPTED corpora by the key that
+   * decrypted them, so a locked/unkeyed StorageManager for the same baseDir
+   * never reads content another instance decrypted under a key (which would
+   * bypass the locked-store error). Plaintext and locked stores share the ""
+   * namespace; an unlocked encrypted store uses its per-key id.
+   */
+  hotCacheKeyId(): string {
+    return this._secureStoreKey === null ? "" : this.getEntityCacheSecureStoreKey();
+  }
+
+  /**
+   * Resolved hot-cache gate for THIS store (issue #1902, Cursor Medium): the
+   * per-instance override if one was passed, else the per-dir/process default.
+   * Recall sub-stages (verified-recall, semantic-rule) read this to honor the
+   * operator's opt-out for their derived caches even when the caller omits the
+   * flag in options.
+   */
+  isHotCacheEnabled(): boolean {
+    return this.hotMemoriesCacheEnabled;
+  }
+
+  /**
+   * Effective hot-cache TTL (ms) for this store's dir (issue #1902): the per-dir
+   * registration if present, else the process-wide default. 0 disables the TTL.
+   */
+  hotCacheTtlMs(): number {
+    return StorageManager.hotMemoriesCacheTtlByDir.get(this.baseDir) ?? StorageManager.hotMemoriesCacheTtlMs;
+  }
+
+  /**
+   * True if `p` lives in this store's cold/ or archive/ tier (issue #1902,
+   * Codex P2). Determined RELATIVE to baseDir — a substring scan of the
+   * absolute path would misclassify every active path when memoryDir itself is
+   * nested under a dir literally named "cold" or "archive" (e.g.
+   * /srv/cold/remnic), skipping the patch and stranding a stale hot entry.
+   */
+  private isColdOrArchiveTierPath(p: string): boolean {
+    const rel = path.relative(this.baseDir, p);
+    return (
+      rel === "cold" ||
+      rel === "archive" ||
+      rel.startsWith(`cold${path.sep}`) ||
+      rel.startsWith(`archive${path.sep}`)
+    );
+  }
+
+  /**
    * Mark the secure-store as required for this storage instance.
    * When required and locked, writes throw SecureStoreLockedError
    * rather than silently writing plaintext.
@@ -2553,16 +2667,63 @@ export class StorageManager {
     }
   }
 
+  private readonly hotMemoriesCacheEnabled: boolean;
+
   constructor(
     private readonly baseDir: string,
-    private readonly entitySchemas?: PluginConfig["entitySchemas"]
+    private readonly entitySchemas?: PluginConfig["entitySchemas"],
+    /**
+     * Hot-memories result cache gate (issue #1902). When omitted, resolves to
+     * the per-directory default registered by setHotMemoriesCacheDefault()
+     * (falling back to the process-wide default); pass an explicit boolean to
+     * override per-instance (tests, memory-constrained readers).
+     */
+    hotMemoriesCacheEnabledOverride?: boolean,
   ) {
+    this.hotMemoriesCacheEnabled =
+      hotMemoriesCacheEnabledOverride ??
+      StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
+      StorageManager.hotMemoriesCacheDefault;
     // Load this store's alias table at construction (#1534): StorageManager
     // is created in a dozen places (namespace router, operator toolkit,
     // compounding engine, cold storage, ...) and most never call
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
+  }
+
+  /** Set the process-wide hot-memories cache default (issue #1902). The
+   *  orchestrator/access layer calls this with the operator's
+   *  hotMemoriesCacheEnabled config so the escape hatch reaches every
+   *  StorageManager, including ephemeral recall-sub-stage instances. Only an
+   *  explicit `false` disables; `undefined` (e.g. a cast test config missing
+   *  the field) leaves the cache on. */
+  static setHotMemoriesCacheDefault(
+    memoryDir: string,
+    enabled: boolean | undefined,
+    ttlMs?: number,
+  ): void {
+    // Register per-dir so each orchestrator's config reaches every
+    // StorageManager built over its own memory dir (Codex P2). The per-dir map
+    // is authoritative for every registered dir.
+    StorageManager.hotMemoriesCacheDefaultByDir.set(memoryDir, enabled !== false);
+    // TTL safety net: a finite, non-negative override wins (0 honored = disable).
+    // Registered per-dir (Codex P2) so concurrent orchestrators with different
+    // TTLs don't clobber each other.
+    const ttlValid = typeof ttlMs === "number" && Number.isFinite(ttlMs) && ttlMs >= 0;
+    if (ttlValid) {
+      StorageManager.hotMemoriesCacheTtlByDir.set(memoryDir, ttlMs as number);
+    }
+    // Seed the process-wide fallbacks (for UNregistered dirs) ONCE, from the
+    // first registration only (issue #1902, Cursor Low). A later orchestrator
+    // with a divergent config must not flip the fallback out from under the
+    // first — that was a last-writer-wins race. First-writer is deterministic
+    // by init order, and every registered dir is isolated per-dir above.
+    if (!StorageManager.hotMemoriesCacheProcessDefaultSeeded) {
+      StorageManager.hotMemoriesCacheDefault = enabled !== false;
+      if (ttlValid) StorageManager.hotMemoriesCacheTtlMs = ttlMs as number;
+      StorageManager.hotMemoriesCacheProcessDefaultSeeded = true;
+    }
   }
 
   /**
@@ -2622,18 +2783,20 @@ export class StorageManager {
     return path.join(workspaceDir, `IDENTITY.${safeNamespace}.md`);
   }
 
-  private versionFilePath(kind: "memory-status" | "artifact-write" | "cold-write"): string {
+  private versionFilePath(kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus"): string {
     const fileName =
       kind === "memory-status"
         ? ".memory-status-version.log"
         : kind === "artifact-write"
           ? ".artifact-write-version.log"
-          : ".cold-write-version.log";
+          : kind === "cold-write"
+            ? ".cold-write-version.log"
+            : ".memory-corpus-version.log";
     return path.join(this.stateDir, fileName);
   }
 
   private bumpSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write",
+    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2651,7 +2814,7 @@ export class StorageManager {
   }
 
   private readSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write",
+    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2664,6 +2827,10 @@ export class StorageManager {
 
   private bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
+    // Also bump the corpus sentinel so peer processes rescan the hot-memories
+    // cache after status/lifecycle/bulk mutations (issue #1902). invalidateAllForDir
+    // below drops the hot layer locally; the corpus bump handles cross-process.
+    this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
     // Invalidation chokepoint (issue #1535): status/entity mutations funnel
     // through this bump — several of them (supersedeMemory, archiveMemories,
     // writeEntity, cleanExpiredCommitments) do NOT call
@@ -2675,6 +2842,62 @@ export class StorageManager {
 
   getMemoryStatusVersion(): number {
     return this.readSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
+  }
+
+  /**
+   * Corpus version sentinel for the hot-memories result cache (issue #1902).
+   * Distinct from memory-status: it bumps on EVERY memory-file mutation
+   * (create/update/delete/bulk) so the version-keyed hot cache stays coherent
+   * across processes, WITHOUT bumping memory-status — which would needlessly
+   * invalidate the version-keyed entity cache on every plain fact create (the
+   * ki-spike regression the sibling perf work removes). memory-status keeps its
+   * lifecycle/status/entity semantics unchanged.
+   */
+  getMemoryCorpusVersion(): number {
+    return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
+  }
+
+  private bumpMemoryCorpusVersion(): void {
+    // Bump only — unlike bumpMemoryStatusVersion this must NOT invalidateAllForDir
+    // (that would drop the very hot entry the write path just patched).
+    this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
+    // Also drop the in-flight readAllMemories slot (Cursor Medium, #1902): after
+    // the sentinel advances, a concurrent read must not attach to a scan that
+    // began BEFORE this mutation and receive a pre-mutation corpus. Clearing the
+    // slot forces such a read to start a fresh scan of current disk state. (The
+    // patch path uses bumpMemoryCorpusVersionExclusive and clears the slot
+    // itself; this covers the per-item supersede/archive/TTL-cleanup bumps.)
+    deleteInFlightReadsForDir(this.baseDir);
+  }
+
+  /**
+   * Corpus bump that reports whether THIS process's append was the only one
+   * since the pre-bump size (issue #1902, Codex P1). appendFileSync is atomic
+   * per write, but a peer process can append concurrently; the `exclusive`
+   * flag lets patchHotMemoriesCache refuse to re-key its locally patched
+   * (peer-incomplete) corpus at a version that already reflects a peer's
+   * still-unread write.
+   */
+  private bumpMemoryCorpusVersionExclusive(): { produced: number; exclusive: boolean } {
+    const filePath = this.versionFilePath("memory-corpus");
+    try {
+      mkdirSync(this.stateDir, { recursive: true });
+      let before = 0;
+      try {
+        before = statSync(filePath).size;
+      } catch {
+        before = 0;
+      }
+      appendFileSync(filePath, "x");
+      const produced = statSync(filePath).size;
+      StorageManager.memoryCorpusVersionByDir.set(this.baseDir, produced);
+      // Exclusive iff exactly our single byte landed between the two stats.
+      return { produced, exclusive: produced === before + 1 };
+    } catch {
+      const next = (StorageManager.memoryCorpusVersionByDir.get(this.baseDir) ?? 0) + 1;
+      StorageManager.memoryCorpusVersionByDir.set(this.baseDir, next);
+      return { produced: next, exclusive: true };
+    }
   }
 
   private bumpArtifactWriteVersion(): number {
@@ -3581,6 +3804,19 @@ export class StorageManager {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
+    // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
+    // existing corpus predating this feature has a size-0/absent sentinel, which
+    // getCachedMemories treats as a miss — so a read-heavy workload would never
+    // engage the hot cache until the first mutation bumped it. The daemon calls
+    // ensureDirectories() at startup (orchestration/orchestrator-init.ts) before
+    // serving recall reads, so seeding a nonzero version here makes the cache
+    // engage from the first read. Fires once, only while the version is still 0.
+    // Deliberately NOT done on the readAllMemories() path: a write-side-effect
+    // during a read perturbs concurrent hot/cold reads in the tier-migration
+    // cycle. Fail-open: a failed bump falls back to the in-process counter.
+    if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
+      this.bumpMemoryCorpusVersion();
+    }
   }
 
   /**
@@ -3848,7 +4084,7 @@ export class StorageManager {
 
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
-    this.invalidateAllMemoriesCache();
+    await this.patchHotMemoriesCache({ addedPath: filePath });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
       memoryId: id,
       eventType: "created",
@@ -4190,21 +4426,65 @@ export class StorageManager {
   }
 
   async readAllMemories(): Promise<MemoryFile[]> {
+    // Version-keyed hot-memories cache (issue #1902): once populated, serve the
+    // full parsed corpus from memory within a version epoch. getCachedMemories
+    // returns null when the sentinel is 0 (fresh/test dirs) or the stored
+    // version differs from the current on-disk sentinel (a peer or local write
+    // bumped it), so a stale entry is never served — the miss falls through to
+    // a fresh disk scan below.
+    if (this.hotMemoriesCacheEnabled) {
+      const cached = getCachedMemories(
+        this.baseDir,
+        this.getMemoryCorpusVersion(),
+        this.hotCacheKeyId(),
+        this.hotCacheTtlMs(),
+      );
+      // Null-check, not truthiness (kilo WARNING): getCachedMemories returns []
+      // for a cached EMPTY corpus, which is falsy — a truthiness guard would
+      // force a full disk scan on every read of an empty/near-empty store.
+      if (cached !== null) return cached;
+    }
     // Deduplicate concurrent reads for the same directory so multiple
     // callers in the same recall share one disk scan.
-    const inFlight = StorageManager.allMemoriesInFlight.get(this.baseDir);
+    // Snapshot the secure-store key identity ONCE (issue #1902, Codex Medium):
+    // hotCacheKeyId() can change mid-scan if setSecureStoreKey(null/other) runs
+    // during the await. Recomputing it at publish time would store K-decrypted
+    // results under the new ""/other identity, letting a locked/differently-keyed
+    // read match the entry and receive plaintext instead of SecureStoreLockedError.
+    // The in-flight slot get/set/delete also key on this snapshot so a mid-scan
+    // key change can't orphan the slot registered under the old identity.
+    const keyId = this.hotCacheKeyId();
+    const inFlight = getInFlightRead(this.baseDir, keyId);
     if (inFlight) return inFlight;
 
-    const readPromise = this._readAllMemoriesFromDisk();
-    StorageManager.allMemoriesInFlight.set(this.baseDir, readPromise);
+    const readPromise = (async (): Promise<MemoryFile[]> => {
+      // Capture the version BEFORE the scan and store under it. If a concurrent
+      // bump (peer or local write) lands during the scan, the stored entry's
+      // version is older than the sentinel, so the next getCachedMemories()
+      // rejects it (version mismatch → rescan) — correct, never stale.
+      const version = this.getMemoryCorpusVersion();
+      const memories = await this._readAllMemoriesFromDisk();
+      // Publish only if neither the corpus version NOR the key identity changed
+      // during the scan. The version guard prevents clobbering a newer patched +
+      // re-keyed entry; the keyId guard prevents publishing this key's decrypted
+      // corpus under a since-changed identity (Codex Medium, #1902).
+      if (
+        this.hotMemoriesCacheEnabled &&
+        this.getMemoryCorpusVersion() === version &&
+        this.hotCacheKeyId() === keyId
+      ) {
+        setCachedMemories(this.baseDir, memories, version, keyId, this.hotCacheTtlMs());
+      }
+      return memories;
+    })();
+    setInFlightRead(this.baseDir, keyId, readPromise);
     try {
       return await readPromise;
     } finally {
-      // Only delete if we still own the slot — invalidateAllMemoriesCache()
-      // may have already cleared it and a new read may have claimed it.
-      if (StorageManager.allMemoriesInFlight.get(this.baseDir) === readPromise) {
-        StorageManager.allMemoriesInFlight.delete(this.baseDir);
-      }
+      // Only delete if we still own the slot for our snapshot key identity —
+      // invalidateAllMemoriesCache() may have already cleared it and a new read
+      // may have claimed it (the expected-promise guard enforces owner-only).
+      deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }
 
@@ -4237,9 +4517,22 @@ export class StorageManager {
   /** Clear ALL static caches. Use in tests that write files directly
    *  (bypassing StorageManager.writeMemory) to avoid stale reads. */
   static clearAllStaticCaches(): void {
-    StorageManager.allMemoriesInFlight.clear();
+    clearInFlightReads();
     StorageManager.questionsCache.clear();
     StorageManager.coldMemoriesCache.clear(); // also wipe the cold-scan TTL cache
+    // Also clear the module-level memory-cache layers (hot-memories result cache
+    // + entity/derived/QMD layers) so the reset seam is authoritative for tests
+    // that write files directly (issue #1902).
+    clearMemoryCache();
+    // Reset the hot-cache config statics to construction defaults so each test
+    // starts from a clean slate (issue #1902). resetStaticCaches() runs before
+    // every contract test; without this the per-dir maps and the first-writer
+    // process-wide seed would leak across tests.
+    StorageManager.hotMemoriesCacheDefaultByDir.clear();
+    StorageManager.hotMemoriesCacheTtlByDir.clear();
+    StorageManager.hotMemoriesCacheDefault = true;
+    StorageManager.hotMemoriesCacheTtlMs = 60_000;
+    StorageManager.hotMemoriesCacheProcessDefaultSeeded = false;
   }
 
   /** Cancel any in-flight concurrent read so the next readAllMemories()
@@ -4255,7 +4548,11 @@ export class StorageManager {
    *  cold content actually changes (hot→cold demotions, writeMemoryFileAtomic
    *  inside cold/, archiveMemory, etc.). */
   private invalidateAllMemoriesCache(): void {
-    StorageManager.allMemoriesInFlight.delete(this.baseDir);
+    deleteInFlightReadsForDir(this.baseDir);
+    // Bulk/ambiguous mutations drop the hot layer wholesale (below); bump the
+    // corpus sentinel too so PEER processes rescan instead of serving a warm
+    // pre-mutation corpus entry (issue #1902 cross-process coherence).
+    this.bumpMemoryCorpusVersion();
     // Invalidation chokepoint (issue #1535): eagerly evict EVERY process-level
     // cache layer that can serve memory-derived content for this dir — hot,
     // archive, entity, derived episode/rule views, and both QMD result caches
@@ -4267,6 +4564,103 @@ export class StorageManager {
     // cache layers). A tombstone append from another path (supersession /
     // correction) must be visible to the next writeMemory lookup on this
     // instance without waiting for a process restart.
+    if (this.tombstoneStore) {
+      this.tombstoneStore.invalidate();
+      this.tombstoneStore = null;
+      this.tombstoneStoreLoadPromise = null;
+    }
+  }
+
+  /**
+   * Single-file write/delete fast path for the hot-memories cache (issue
+   * #1902). Keeps THIS process's version-keyed corpus entry warm by patching
+   * the changed memory in place, bumps the dedicated `.memory-corpus-version.log`
+   * sentinel so PEER processes rescan (memory-status is deliberately NOT bumped
+   * here so plain creates/content edits don't invalidate the entity cache), and
+   * evicts only the derived/global layers (which
+   * are cheap to rebuild and are never patched). Mirrors the in-flight-dedup
+   * and tombstone-store invalidation that invalidateAllMemoriesCache() does.
+   *
+   * `added` is the written MemoryFile (writes/overwrites); `removedPath` is a
+   * deleted path. A path outside the active scan roots (under cold/ or
+   * archive/) is NOT applied to the hot map — that cache holds active memories
+   * only — but the version bump and derived/global eviction still run so
+   * coherence is preserved. Bulk/ambiguous mutations keep the wholesale
+   * invalidateAllMemoriesCache() drop instead (issue #1902 Step 5).
+   */
+  private async patchHotMemoriesCache(opts: { addedPath?: string; removedPath?: string }): Promise<void> {
+    const prevVersion = this.getMemoryCorpusVersion();
+    // Snapshot the key identity once (issue #1902, Codex Medium): a mid-await
+    // setSecureStoreKey change would otherwise let the post-await patch/re-key
+    // store this key's decrypted memory under a since-changed identity.
+    const keyId = this.hotCacheKeyId();
+    const warm = this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
+    if (
+      warm &&
+      opts.removedPath !== undefined &&
+      !this.isColdOrArchiveTierPath(opts.removedPath)
+    ) {
+      updateCacheOnDelete(this.baseDir, opts.removedPath, keyId);
+    }
+    // Bump the corpus sentinel AND drop the in-flight slot BEFORE the awaited
+    // one-file re-parse below (Cursor Medium, #1902). The on-disk write already
+    // landed in the caller, so advancing the version now makes any concurrent
+    // readAllMemories() during the re-parse window miss the still-old hot entry
+    // and start a FRESH scan of disk truth (which includes the write) instead of
+    // serving the pre-write corpus or joining a pre-write in-flight scan.
+    // memory-status is deliberately NOT bumped here so plain creates/content
+    // edits don't invalidate the entity cache (issue #1902).
+    const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive();
+    deleteInFlightReadsForDir(this.baseDir);
+    let patchedOk = warm;
+    if (
+      warm &&
+      opts.addedPath !== undefined &&
+      !this.isColdOrArchiveTierPath(opts.addedPath)
+    ) {
+      // Re-read + parse the ONE just-written file so the cached object is
+      // exactly what a fresh disk scan would yield — serialize→parse normalizes
+      // fields (e.g. an empty array becomes undefined), and the in-memory write
+      // object would otherwise diverge from disk truth. This is a single O(1)
+      // read (the file is page-cache-hot), NOT the O(corpus) scan the cache
+      // exists to avoid.
+      // Best-effort re-parse: this cache patch runs AFTER the on-disk write and
+      // corpus-version bump have already persisted, so it must never fail the
+      // completed mutation. If the re-read throws (e.g. setSecureStoreKey(null)
+      // locked the store mid-await → SecureStoreLockedError), treat the entry as
+      // unpatchable — leave it version-invalidated so the next read rescans —
+      // rather than propagating and making writeMemory/updateMemory reject an
+      // already-durable write (which a caller would retry, duplicating memories).
+      // Issue #1902, Codex Medium.
+      let parsed: MemoryFile | undefined;
+      try {
+        [parsed] = await this.readParsedMemoriesFromPaths([opts.addedPath], 1);
+      } catch {
+        parsed = undefined;
+      }
+      if (parsed) {
+        updateCacheOnWrite(this.baseDir, parsed, keyId);
+      } else {
+        // Could not re-parse the write — don't trust the patched entry; leaving
+        // it tagged at prevVersion means the version-bumped read rejects it
+        // (version mismatch) and rescans.
+        patchedOk = false;
+      }
+    }
+    if (patchedOk && exclusive && produced === prevVersion + 1 && this.getMemoryCorpusVersion() === produced && this.hotCacheKeyId() === keyId) {
+      // Re-key the patched entry (still tagged prevVersion) to the version THIS
+      // mutation produced — ONLY if no peer appended between prevVersion capture
+      // and our bump (produced === prevVersion + 1), our bump was exclusive, and
+      // no further peer append landed during the re-parse (still === produced).
+      // Otherwise a concurrent read has already republished disk truth at the
+      // newer version, or our patched corpus lacks a peer's write — either way
+      // leave it version-rejected so the next read rescans.
+      const patched = getCachedMemories(this.baseDir, prevVersion, keyId);
+      if (patched) setCachedMemories(this.baseDir, patched, produced, keyId, this.hotCacheTtlMs());
+    }
+    // Evict every OTHER layer; the hot layer is patched (or intentionally left
+    // to be version-rejected) above, not dropped here.
+    invalidateDerivedAndGlobalForDir(this.baseDir);
     if (this.tombstoneStore) {
       this.tombstoneStore.invalidate();
       this.tombstoneStore = null;
@@ -4792,7 +5186,7 @@ export class StorageManager {
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
-    this.invalidateAllMemoriesCache();
+    await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
       eventType: "updated",
@@ -4827,7 +5221,7 @@ export class StorageManager {
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
-    this.invalidateAllMemoriesCache();
+    await this.patchHotMemoriesCache({ addedPath: memory.path });
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
     // call (Finding UvUy fix).
@@ -4862,6 +5256,9 @@ export class StorageManager {
       lifecycle?.ruleVersion
     );
     if (beforeStatus !== afterStatus) {
+      // Status/lifecycle change must bump memory-status so the version-keyed
+      // entity/derived caches and peer processes observe it (issue #1902:
+      // restored — corpus bump alone doesn't cover status-derived views).
       this.bumpMemoryStatusVersion();
     }
     return true;
@@ -4891,6 +5288,10 @@ export class StorageManager {
         try {
           await unlink(m.path);
           markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
+          // and never re-caches a partially-cleaned corpus (Cursor Medium,
+          // #1902); invalidateAllMemoriesCache below still runs at loop end.
+          this.bumpMemoryCorpusVersion();
           deleted.push(m);
           log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
         } catch {
@@ -5906,6 +6307,10 @@ export class StorageManager {
         try {
           await unlink(m.path);
           markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
+          // and never re-caches a partially-cleaned corpus (Cursor Medium,
+          // #1902); bumpMemoryStatusVersion below still runs at loop end.
+          this.bumpMemoryCorpusVersion();
           deleted.push(m);
           log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
         } catch {
@@ -5935,6 +6340,22 @@ export class StorageManager {
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     let updated = 0;
+    // Capture the corpus version + warmth BEFORE writing so we can patch the hot
+    // entries in place and then re-key them to the version this flush produces
+    // (issue #1902). Access-tracking flush is batched (consolidation / buffer
+    // full), not per-recall, so the single corpus bump below is cheap.
+    const prevVersion = this.getMemoryCorpusVersion();
+    // Snapshot the secure-store key identity once (Cursor Medium #1902), mirroring
+    // readAllMemories/patchHotMemoriesCache: a mid-flush setSecureStoreKey change
+    // would otherwise let loop patches or the re-keyed entry be stored under a
+    // different identity than the one that decrypted this corpus.
+    const keyId = this.hotCacheKeyId();
+    const warm =
+      this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
+    // Record each applied patch so the end-of-flush re-key can re-apply them on
+    // top of whatever is cached at prevVersion — robust to a concurrent scan
+    // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
+    const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
 
     for (const entry of entries) {
       const memory = memoryMap.get(entry.memoryId);
@@ -5949,6 +6370,14 @@ export class StorageManager {
       try {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        // Patch the hot corpus cache entry in place with the new accessCount/
+        // lastAccessed (issue #1902). The shared sentinel is bumped once after
+        // the loop for cross-process coherence; the re-key below keeps this
+        // process's patched entries warm.
+        if (warm) {
+          updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
+        }
+        appliedPatches.set(entry.memoryId, { accessCount: entry.newCount, lastAccessed: entry.lastAccessed });
         updated++;
       } catch (err) {
         log.debug(`failed to update access tracking for ${entry.memoryId}: ${err}`);
@@ -5956,6 +6385,45 @@ export class StorageManager {
     }
 
     if (updated > 0) {
+      // Advance the corpus sentinel so PEER processes rescan and don't overwrite
+      // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
+      // existingCount + update.count from the cached value, so a peer serving a
+      // stale count would undercount. Re-key the locally patched entries to the
+      // produced version so this process stays warm — only when our bump was
+      // exclusive and still the current sentinel; otherwise a peer also wrote
+      // and we must let the next read rescan.
+      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive();
+      // Drop the in-flight read slot after the bump (parity with
+      // patchHotMemoriesCache, Cursor Medium #1902): a readAllMemories scan that
+      // started before the flush would otherwise keep awaiting a pre-flush scan
+      // and could republish it at the old version, clobbering our patches. New
+      // readers now start a fresh scan at the bumped version.
+      deleteInFlightReadsForDir(this.baseDir);
+      if (warm && exclusive && produced === prevVersion + 1 && this.getMemoryCorpusVersion() === produced && this.hotCacheKeyId() === keyId) {
+        const cur = getCachedMemories(this.baseDir, prevVersion, keyId);
+        if (cur) {
+          // Re-apply our patches on top of whatever is cached at prevVersion
+          // before re-keying (Cursor Medium #1902): a concurrent readAllMemories
+          // that finished in the prevVersion epoch may have republished a full
+          // UNpatched corpus via its publish guard, clobbering our in-loop
+          // updateCacheOnWrite patches. Re-applying is idempotent and makes the
+          // re-key robust to that race; the publish guard blocks any scan
+          // finishing AFTER our bump, so this is the only window.
+          const reapplied = cur.map((m) => {
+            const patch = appliedPatches.get(m.frontmatter.id);
+            return patch
+              ? { ...m, frontmatter: { ...m.frontmatter, accessCount: patch.accessCount, lastAccessed: patch.lastAccessed } }
+              : m;
+          });
+          setCachedMemories(this.baseDir, reapplied, produced, keyId, this.hotCacheTtlMs());
+        }
+      }
+      // Evict the derived (episode/rule) + global (QMD recall/search) layers,
+      // mirroring patchHotMemoriesCache (Cursor Medium, #1902). The hot layer is
+      // patched + re-keyed above; without this the derived caches linger at
+      // prevVersion and the QMD recall bundle keeps pre-flush accessCount-based
+      // boost ordering until an unrelated mutation invalidates them.
+      invalidateDerivedAndGlobalForDir(this.baseDir);
       log.debug(`flushed access tracking for ${updated} memories`);
     }
     return updated;
@@ -6152,6 +6620,9 @@ export class StorageManager {
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.writeStorageSecureFile(filePath, fileContent);
+    // Keep the version-keyed hot-memories cache coherent with the new chunk
+    // file (issue #1902) — same single-file patch path writeMemory uses.
+    await this.patchHotMemoriesCache({ addedPath: filePath });
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
     return id;
   }
@@ -6193,6 +6664,12 @@ export class StorageManager {
 
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
+      // Advance the corpus sentinel immediately after the on-disk write, BEFORE
+      // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
+      // hot-memories cache keeps serving the pre-supersede snapshot during the
+      // await window; bumpMemoryStatusVersion() below additionally invalidates
+      // the entity cache for the status change.
+      this.bumpMemoryCorpusVersion();
       await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
         memoryId: oldMemoryId,
         eventType: "superseded",
@@ -6312,6 +6789,11 @@ export class StorageManager {
       try {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        // Corpus sentinel bump per file write, BEFORE the awaited lifecycle
+        // append (Cursor Medium, #1902): the end-of-loop bumpMemoryStatusVersion
+        // fires only after the whole batch, so without this a warm cache serves
+        // pre-archive state for every file during the loop's await windows.
+        this.bumpMemoryCorpusVersion();
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
           eventType: "archived",

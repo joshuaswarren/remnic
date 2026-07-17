@@ -25,7 +25,8 @@ import {
   writeFile,
   unlink,
 } from "node:fs/promises";
-import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
+import { ALL_CATEGORY_DIRS, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -332,6 +333,18 @@ export async function revertToVersion(
 
   // Write the reverted content to the actual page
   await writeFile(pagePath, targetContent, "utf-8");
+  // A revert overwrites a memory file out-of-band (not via a StorageManager
+  // mutation), so bump the corpus sentinel when the reverted page lives under a
+  // recall category dir — forcing a warm hot-memories cache to rescan on its
+  // next read (issue #1902, Codex P1). Non-recall pages (entities/artifacts/
+  // profiles) are not in the corpus scan, so they need no bump.
+  // The hot-memories corpus covers the RECALL corpus, which excludes the
+  // non-memory queue dirs (questions/). Use RECALL_FALLBACK_DIRS — a revert of a
+  // questions/ page must NOT bump the recall corpus sentinel and force a rescan.
+  const revertedTop = relPath(pagePath, resolvedMemoryDir).split(path.sep)[0];
+  if ((RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop)) {
+    bumpMemoryCorpusVersionForDir(resolvedMemoryDir);
+  }
   log.debug(`page-versioning: reverted ${pagePath} to version ${versionId}`);
 
   return version;
