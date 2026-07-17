@@ -4,6 +4,7 @@ import { type OperationContext, defineOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
 import {
   RELAY_MISSION_MAX_EVENT_LIMIT,
+  RelayIsoDateTimeSchema,
   type RelayMissionAppendResult,
   type RelayMissionEventInput,
   RelayMissionEventInputSchema,
@@ -34,8 +35,8 @@ const RelayMissionReadAccessSchema = z
   .object({
     missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
-    since: z.string().datetime({ offset: true }).optional(),
-    until: z.string().datetime({ offset: true }).optional(),
+    since: RelayIsoDateTimeSchema.optional(),
+    until: RelayIsoDateTimeSchema.optional(),
     limit: optionalLimitSchema,
   })
   .strict()

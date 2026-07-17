@@ -150,6 +150,11 @@ test("HTTP Relay surface distinguishes empty, invalid, unauthorized, and backend
       });
       assert.equal(badLimit.status, 400);
 
+      const badSince = await fetch(`${emptyUrl}&since=${encodeURIComponent("2026-01-01T00:00:00+99:99")}`, {
+        headers: authHeaders("read-token"),
+      });
+      assert.equal(badSince.status, 400);
+
       const traversal = await fetch(
         `${origin}/engram/v1/relay/missions/%2E%2Eproduction?namespace=${RELAY_DEMO_NAMESPACE}`,
         {

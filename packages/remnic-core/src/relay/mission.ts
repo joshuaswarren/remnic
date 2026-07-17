@@ -39,7 +39,7 @@ const uniqueIdentifierListSchema = (minimum: number, maximum: number) =>
     .max(maximum)
     .refine((values) => new Set(values).size === values.length, "must not contain duplicate identifiers");
 
-const isoDateTimeSchema = z
+export const RelayIsoDateTimeSchema = z
   .string()
   .datetime({ offset: true })
   .refine((value) => Number.isFinite(Date.parse(value)), "must be a representable timestamp");
@@ -248,7 +248,7 @@ export type RelayMissionPayload = z.infer<typeof RelayMissionPayloadSchema>;
 
 export const RelayMissionEventInputSchema = z
   .object({
-    occurredAt: isoDateTimeSchema.optional(),
+    occurredAt: RelayIsoDateTimeSchema.optional(),
     idempotencyKey: identifierSchema.optional(),
     payload: RelayMissionPayloadSchema,
   })
@@ -263,8 +263,8 @@ export const RelayMissionEventSchema = z
     missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
     authenticatedPrincipal: authenticatedPrincipalSchema.optional(),
-    recordedAt: isoDateTimeSchema,
-    occurredAt: isoDateTimeSchema,
+    recordedAt: RelayIsoDateTimeSchema,
+    occurredAt: RelayIsoDateTimeSchema,
     idempotencyKey: identifierSchema.optional(),
     payload: RelayMissionPayloadSchema,
   })
@@ -274,8 +274,8 @@ export type RelayMissionEvent = z.infer<typeof RelayMissionEventSchema>;
 
 export const RelayMissionReadOptionsSchema = z
   .object({
-    since: isoDateTimeSchema.optional(),
-    until: isoDateTimeSchema.optional(),
+    since: RelayIsoDateTimeSchema.optional(),
+    until: RelayIsoDateTimeSchema.optional(),
     limit: z.number().int().min(1).max(RELAY_MISSION_MAX_EVENT_LIMIT).default(RELAY_MISSION_DEFAULT_EVENT_LIMIT),
   })
   .strict()
