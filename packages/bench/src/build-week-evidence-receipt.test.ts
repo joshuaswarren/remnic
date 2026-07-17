@@ -134,6 +134,7 @@ function syntheticMemCorrectResult(): BenchmarkResult {
   result.config.benchmarkOptions = {
     personaCount: 5,
     factsPerPersona: 8,
+    nowIso: "2026-07-05T00:00:00.000Z",
     maintenanceCycles: 5,
     uptakeLatencyCap: 8,
     judgeTelemetry: {
@@ -777,6 +778,14 @@ test("MemCorrect receipts reject missing, fabricated, or mismatched generated-co
   const wrongOptions = syntheticMemCorrectResult();
   (wrongOptions.config.benchmarkOptions as Record<string, unknown>).factsPerPersona = 7;
   assert.throws(() => build(syntheticSources({ result: wrongOptions })), /factsPerPersona/);
+
+  const wrongTimestamp = syntheticMemCorrectResult();
+  (wrongTimestamp.config.benchmarkOptions as Record<string, unknown>).nowIso = "2026-07-06T00:00:00.000Z";
+  assert.throws(() => build(syntheticSources({ result: wrongTimestamp })), /nowIso/);
+
+  const missingTimestamp = syntheticMemCorrectResult();
+  delete (missingTimestamp.config.benchmarkOptions as Record<string, unknown>).nowIso;
+  assert.throws(() => build(syntheticSources({ result: missingTimestamp })), /nowIso/);
 
   const wrongTaskIdentity = syntheticMemCorrectResult();
   wrongTaskIdentity.results.tasks[0]!.taskId = "memcorrect-12613607-fabricated";

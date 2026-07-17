@@ -280,7 +280,7 @@ function requireExactMemCorrectProvenance(
   if (!isRecord(benchmarkOptions)) {
     throw new Error("MemCorrect result must persist full-corpus generator options");
   }
-  for (const key of ["personaCount", "factsPerPersona", "maintenanceCycles", "uptakeLatencyCap"] as const) {
+  for (const key of ["personaCount", "factsPerPersona", "nowIso", "maintenanceCycles", "uptakeLatencyCap"] as const) {
     if (benchmarkOptions[key] !== MEMCORRECT_GENERATOR_OPTIONS[key]) {
       throw new Error(`MemCorrect generator option ${key} does not match the pinned full corpus`);
     }

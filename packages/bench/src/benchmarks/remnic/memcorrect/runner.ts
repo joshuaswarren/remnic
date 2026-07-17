@@ -579,6 +579,7 @@ export async function runMemCorrectBenchmark(
         ...persistableBenchmarkOptions,
         personaCount: generatorOptions.personaCount,
         factsPerPersona: generatorOptions.factsPerPersona,
+        nowIso: generatorOptions.nowIso,
         maintenanceCycles: generatorOptions.maintenanceCycles,
         uptakeLatencyCap: generatorOptions.uptakeLatencyCap,
         ...(judgeModelCalls > 0
