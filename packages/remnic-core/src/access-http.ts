@@ -213,6 +213,12 @@ function resolveDefaultAdminConsolePublicDir(): string {
 
 const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
 const correlationIdStore = new AsyncLocalStorage<string>();
+const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
+  ["relay.css", "text/css; charset=utf-8"],
+  ["relay-model.js", "application/javascript; charset=utf-8"],
+  ["relay.js", "application/javascript; charset=utf-8"],
+  ["replay.json", "application/json; charset=utf-8"],
+]);
 
 // Defaults for the write rate limit; overridable per instance via
 // `writeRateLimitWindowMs` / `writeRateLimitMaxRequests` (issue #1937).
@@ -3420,13 +3426,32 @@ export class EngramAccessHttpServer {
       res.end();
       return true;
     }
+    if (pathname === "/remnic/ui/relay" || pathname === "/engram/ui/relay") {
+      res.statusCode = 301;
+      res.setHeader("location", pathname + "/");
+      res.end();
+      return true;
+    }
     if (pathname === "/remnic/ui/" || pathname === "/engram/ui/") {
       await this.respondAdminConsoleShell(req, res, pathname);
+      return true;
+    }
+    if (pathname === "/remnic/ui/relay/" || pathname === "/engram/ui/relay/") {
+      await this.respondAdminConsoleShell(req, res, pathname, "relay/index.html");
       return true;
     }
     if (pathname === "/remnic/ui/app.js" || pathname === "/engram/ui/app.js") {
       await this.respondStatic(res, path.join(this.adminConsolePublicDir, "app.js"), "application/javascript; charset=utf-8");
       return true;
+    }
+    const relayAsset = RELAY_ADMIN_CONSOLE_ASSETS.get(pathname.split("/").at(-1) ?? "");
+    const isRelayAsset = pathname.startsWith("/remnic/ui/relay/") || pathname.startsWith("/engram/ui/relay/");
+    if (isRelayAsset && relayAsset && pathname.split("/").length === 5) {
+      const fileName = pathname.split("/").at(-1);
+      if (fileName) {
+        await this.respondStatic(res, path.join(this.adminConsolePublicDir, "relay", fileName), relayAsset);
+        return true;
+      }
     }
     return false;
   }
@@ -3435,9 +3460,10 @@ export class EngramAccessHttpServer {
     req: IncomingMessage,
     res: ServerResponse,
     pathname: string,
+    relativePath = "index.html",
   ): Promise<void> {
     try {
-      let body = await readFile(path.join(this.adminConsolePublicDir, "index.html"), "utf-8");
+      let body = await readFile(path.join(this.adminConsolePublicDir, relativePath), "utf-8");
       const canPrefillToken = this.adminConsolePrefillToken && this.isAuthorized(req, pathname);
       if (canPrefillToken) {
         const script = `<script>window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__=${JSON.stringify(this.adminConsolePrefillToken)};</script>`;
