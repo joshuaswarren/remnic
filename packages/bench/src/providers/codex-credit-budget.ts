@@ -164,6 +164,10 @@ const MAX_BOUNDED_CALL_CREDITS = 300;
 const LEGACY_LEDGER_FLOAT_DRIFT_TOLERANCE = 1e-9;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
 const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
+  // The unsuffixed GPT-5.6 route is a distinct supported Codex model. Charge
+  // it at the highest named-tier rate so bounded runs remain conservative
+  // without selecting or permitting the explicitly-disallowed Sol model.
+  [/^gpt-5\.6$/i, { input: 125, cachedInput: 12.5, output: 750 }],
   [/^gpt-5\.6-sol$/i, { input: 125, cachedInput: 12.5, output: 750 }],
   [/^gpt-5\.6-terra$/i, { input: 62.5, cachedInput: 6.25, output: 375 }],
   [/^gpt-5\.6-luna$/i, { input: 25, cachedInput: 2.5, output: 150 }],

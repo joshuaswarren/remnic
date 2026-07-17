@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["replacement_decision", "rationale", "source_locators", "confidence"],
+  "properties": {
+    "replacement_decision": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "rationale": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "source_locators": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}

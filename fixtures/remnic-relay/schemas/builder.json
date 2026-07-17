@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "recall_memory_id",
+    "recall_provenance",
+    "decision_applied",
+    "files_changed",
+    "tests_run"
+  ],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "recall_memory_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "recall_provenance": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "decision_applied": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "files_changed": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    },
+    "tests_run": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    }
+  }
+}
