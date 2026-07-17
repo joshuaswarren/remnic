@@ -151,6 +151,11 @@ export interface BenchmarkResult {
     version: string;
     remnicVersion: string;
     gitSha: string;
+    /** Run-scoped identity shared with provider usage ledgers and manifests. */
+    runId?: string;
+    /** Git worktree state captured when benchmark execution begins. */
+    gitDirty?: boolean;
+    gitDirtyEntryCount?: number;
     timestamp: string;
     mode: BenchmarkMode;
     runCount: number;

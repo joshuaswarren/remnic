@@ -74,13 +74,14 @@ and Codex session evidence at submission time.
 - [x] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
   GPT-5.6 through the OpenAI Responses API as the grading model. It scores
   benchmark answers, correction acceptance, and stale-memory harm.
-- [ ] GPT-5.6 frontier-tier run. A bounded, credit-backed Tier-F run uses
+- [x] GPT-5.6 frontier-tier evidence. Credit-backed benchmark runs use
   `gpt-5.6-luna` for bulk responder and internal work and `gpt-5.6-terra` for
   quality-critical judging. `gpt-5.6-sol` is outside the bounded plan and is
-  disabled unless the operator explicitly opts in. A result is claimed only
-  after its artifact and manifest are committed under
-  `docs/benchmarks/results/`; bounded coverage is labeled as a trial, never a
-  full leaderboard number.
+  disabled unless the operator explicitly opts in. The full 500-task
+  LongMemEval artifact and its sanitized receipt are committed below. The full
+  40-scenario MemCorrect run has a sanitized receipt; its mixed deterministic
+  and model-judged metrics are reported without turning it into a success
+  claim. The selected LoCoMo comparison remains diagnostic evidence only.
 - [x] Memory report card. Extends `remnic bench export --format html` into
   a single shareable scored report with per-dimension scores, correction
   behavior, and provenance. Included in the existing publish feed for
@@ -137,6 +138,12 @@ Additional in-window receipts:
   analyzer. The July 16 current-main capture covered all 321 historical
   multi-hop tasks and found no baseline/real retrieval-structure delta. This
   is negative diagnostic evidence, not a scored benchmark lift.
+- [`1e78814b`](https://github.com/joshuaswarren/remnic/commit/1e78814bf5ea2d9acdf684d290043326310143e5)
+  and
+  [`fd5d7cae`](https://github.com/joshuaswarren/remnic/commit/fd5d7cae6b8e4fda4adc85d4b3a48f2ecd13fa20)
+  add hash-pinned LoCoMo task selection, paired-result validation, private-path
+  redaction, and dry-run enforcement. PR #1935 merged those safeguards as
+  `3a8f9290` before the paid comparison began.
 
 On July 15, merged head `ab849733` passed the cold package test:
 `node scripts/verify-build-week-sandbox.mjs --keep`. The test put version 9.6.24
@@ -162,14 +169,76 @@ prefix completed the keyless MCP MemCorrect smoke, run listing, and HTML
 export. The registry-installed report was 15,128 bytes. No judge or provider
 ran. This is the current judge install path below.
 
+On July 16, launch head `3a8f9290` completed a paired scored LoCoMo comparison
+on the exact 321 multi-hop tasks implicated by the historical regression. Both
+the `baseline` and `real` profiles completed all 321 tasks with no task-level
+failure. They used LoCoMo-10 SHA-256
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
+and ordered-selector SHA-256
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`.
+Luna handled responder and internal work; Terra handled judging. The real
+profile moved `llm_judge` from 0.3050 to 0.2983 (-0.0067), F1 from 0.3100 to
+0.3057 (-0.0044), and `contains_answer` from 0.0903 to 0.0935 (+0.0031).
+The run used 242.2365325 locally accounted credits across 1,329 Luna and 410
+Terra calls, with zero Sol calls. The pinned calibration source result was not
+present on this host, so the absolute Terra score is not called calibrated.
+The private result hashes and full evidence boundary are documented in
+`docs/benchmarks/locomo-profile-diagnosis.md`.
+
+This is a same-selector paired diagnostic, not a full 1,986-question LoCoMo
+result. The selector is intentionally rejected by artifact promotion and the
+public-matrix gate. The late manifest also observed an unrelated shared-
+checkout branch switch and recorded a dirty Git envelope; the result files
+retain the launch SHA, but neither they nor that manifest are used for a
+leaderboard or submission score claim.
+
+On July 17, source head `810f36ae` at Remnic 9.7.6 completed the uncapped
+500/500 LongMemEval-oracle run with zero task failures. The `real` profile used
+fresh isolated direct-adapter stores, separate from production Remnic data.
+Luna at medium reasoning handled responder and internal work; Terra at high
+reasoning handled judging. The aggregate scores were `contains_answer=0.49`,
+F1 `0.5551`, `judge_accuracy=0.762`, and `search_hits=8.538`. The staged
+dataset payload SHA-256 is
+`821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
+The committed
+[frontier artifact](./docs/benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+and
+[sanitized receipt](./docs/benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json)
+bind the private result and manifest. The receipt records 2,892 calls,
+50,212,877 estimated input-plus-output tokens, and 745.745695 locally estimated
+budget units, with zero Sol calls. These are instrumentation estimates, not
+account billing. This is one uncalibrated, model-judged run and does not
+establish run-to-run variance.
+
+The same source head completed all 40 generated MemCorrect v1 scenarios with
+zero task failures through the `real` Remnic-native adapter and fresh isolated
+stores. Its pinned corpus version is `memcorrect-v1-c077e7`, payload SHA-256
+`ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb`.
+The deterministic results are negative or mixed: `uptake_at_next=0`, uptake
+latency 8 with every observation censored, `non_resurrection=0`,
+`false_apply=1`, `scope_precision=0`, and `reassertion=1`. The Terra-judged
+scores diverge sharply: correction acceptance was `0.9875` and stale-harm
+avoidance was `1`. That divergence is the finding, not evidence that Remnic
+passed MemCorrect. The
+[sanitized receipt](./docs/benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json)
+records 550 calls, 8,355,708 estimated input-plus-output tokens, and 98.720145
+locally estimated budget units, with zero Sol calls. It carries the same
+single-run, model-judged, and estimated-accounting limitations. A 25,056-byte
+self-contained report was retained privately with SHA-256
+`006509082e20d67bb948bd461cb5825a8c0268bade67247c59c63d17efe53792`;
+it is not a public artifact because task detail can contain benchmark content.
+
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
 paste the real session ID here before submission.
 
-GPT-5.6 frontier artifact and manifest:
-**PENDING OPERATOR RUN.** Link only a committed artifact produced by the
-credit-backed Codex CLI protocol below. Do not convert a bounded trial into a
-full-run claim.
+GPT-5.6 frontier evidence: the full LongMemEval
+[artifact](./docs/benchmarks/results/2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json)
+and [receipt](./docs/benchmarks/evidence/2026-07-17-longmemeval-gpt-5.6-luna-build-week-receipt.json),
+plus the full MemCorrect
+[receipt](./docs/benchmarks/evidence/2026-07-17-memcorrect-v1-gpt-5.6-luna-build-week-receipt.json),
+are committed. The selected LoCoMo pair remains non-promotable diagnostic
+evidence.
 
 ## How Codex and GPT-5.6 were used
 
@@ -184,8 +253,12 @@ GPT-5.6 is part of the product. It can act as an opt-in judge with strict
 structured output. There are two provider paths. The optional Responses API
 judge uses the exact model id `gpt-5.6`. The ChatGPT-backed Codex CLI has other
 names. Luna does the bulk work. Terra does the key judge work. These names and
-paths are not the same. We will not claim a CLI result until a real, locked
-artifact exists.
+paths are not the same. The selected LoCoMo diagnostic is reported only with
+its coverage and limitations. The full CLI measurements are reported through
+the locked LongMemEval artifact and sanitized LongMemEval and MemCorrect
+receipts above. The Terra scores remain explicitly uncalibrated and
+model-judged; the MemCorrect deterministic/model-judged divergence remains
+visible rather than being collapsed into a success claim.
 
 ## Credit-backed Codex CLI run protocol
 
@@ -241,6 +314,9 @@ umask 077
 mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
 chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
 
+# Set once per benchmark run and preserve unchanged across retries or resumption.
+export REMNIC_BENCH_RUN_ID="build-week-longmemeval-$(date -u +%Y%m%dT%H%M%SZ)"
+unset REMNIC_BENCH_CODEX_ALLOW_SOL
 export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
 export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
 export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
@@ -299,19 +375,12 @@ pnpm exec tsx packages/remnic-cli/src/index.ts bench run \
   --quick memcorrect-v1 --adapter mcp --mcp-demo
 ```
 
-To invoke GPT-5.6 as the structured-output judge:
-
-```bash
-export OPENAI_API_KEY=...
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
-```
-
-Without the judge flags, MemCorrect reports its deterministic contract metrics
-without making an OpenAI call. The OpenAI provider is selected only when the
-flags are present and reads `OPENAI_API_KEY`; the manifest records the provider,
-model, and rubric version but redacts the secret. Full reproduction paths live
-in `docs/paper/repro-appendix.md`.
+The separately billed Responses API integration remains available for API
+users, but it is not a competition reproduction path. The Build Week grant
+provides Codex CLI credits, not API credits, and no Responses API result is used
+as competition measurement evidence. Competition measurements must follow the
+guarded Codex CLI protocol above. API-provider setup remains documented in
+`docs/paper/repro-appendix.md`.
 
 ## Supported judge environment
 

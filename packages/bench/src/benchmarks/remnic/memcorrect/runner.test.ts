@@ -277,6 +277,10 @@ test("runner: datasetHash matches the standalone corpus hash for the same seed",
     uptakeLatencyCap: 5,
   });
   assert.equal(result.meta.datasetHash, corpusHash(corpus));
+  assert.equal(
+    (result.config.benchmarkOptions as Record<string, unknown>).nowIso,
+    "2026-07-05T00:00:00.000Z",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -328,6 +332,9 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
   assert.ok(result.meta.datasetHash?.length === 64, "datasetHash must be sha-256");
   assert.deepEqual(result.meta.seeds, [0xc077e7 & 0xffffffff]);
   assert.equal(result.meta.benchmark, "memcorrect-v1");
+  assert.equal(typeof result.meta.runId, "string");
+  assert.equal(typeof result.meta.gitDirty, "boolean");
+  assert.equal(typeof result.meta.gitDirtyEntryCount, "number");
 });
 
 // ---------------------------------------------------------------------------

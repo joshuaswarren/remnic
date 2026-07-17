@@ -11,6 +11,7 @@ import { writeLeaderboardArtifactsForResult } from "./leaderboard-export.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
 import type { BenchmarkResult } from "./types.js";
+import { resolveBenchmarkRunId } from "./run-identity.js";
 
 const REDACTED_SECRET = "[REDACTED]";
 const PROCESS_GIT_SHA = readGitSha();
@@ -320,6 +321,37 @@ export async function getRemnicVersion(): Promise<string> {
 
 export function getGitSha(): string {
   return PROCESS_GIT_SHA;
+}
+
+export interface BenchmarkExecutionProvenance {
+  gitSha: string;
+  runId: string;
+  gitDirty: boolean;
+  gitDirtyEntryCount: number;
+}
+
+/** Capture source and ledger identity at the start of benchmark execution. */
+export function captureBenchmarkExecutionProvenance(): BenchmarkExecutionProvenance {
+  try {
+    const dirtyEntries = execSync("git status --porcelain --untracked-files=all", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).split(/\r?\n/u).filter((line) => line.length > 0);
+    return {
+      gitSha: getGitSha(),
+      runId: resolveBenchmarkRunId(),
+      gitDirty: dirtyEntries.length > 0,
+      gitDirtyEntryCount: dirtyEntries.length,
+    };
+  } catch {
+    // Unknown state must fail closed for evidence publication.
+    return {
+      gitSha: getGitSha(),
+      runId: resolveBenchmarkRunId(),
+      gitDirty: true,
+      gitDirtyEntryCount: 1,
+    };
+  }
 }
 
 function readGitSha(): string {

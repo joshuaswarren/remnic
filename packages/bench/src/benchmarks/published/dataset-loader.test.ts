@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -51,6 +52,43 @@ test("loadLongMemEvalS loads the first probed filename that parses", async () =>
     assert.equal(result.items.length, 1);
     assert.equal(result.items[0]?.question, "Where does the user live?");
     assert.deepEqual(result.errors, []);
+  });
+});
+
+test("loadLongMemEvalS hashes the exact dataset bytes", async () => {
+  await withTempDir(async (dir) => {
+    const payload = Buffer.from(
+      JSON.stringify([
+        {
+          question_id: 1,
+          question_type: "single-session-user",
+          question: "marker",
+          answer: "Paris",
+          question_date: "2025-01-01",
+          haystack_dates: [],
+          haystack_session_ids: [],
+          haystack_sessions: [],
+          answer_session_ids: [],
+        },
+      ]),
+      "utf8",
+    );
+    const markerOffset = payload.indexOf("marker");
+    assert.notEqual(markerOffset, -1);
+    payload[markerOffset] = 0xff;
+    await writeFile(path.join(dir, "longmemeval_oracle.json"), payload);
+
+    const result = await loadLongMemEvalS({
+      mode: "full",
+      datasetDir: dir,
+    });
+
+    assert.equal(result.source, "dataset");
+    assert.equal(
+      result.sha256,
+      createHash("sha256").update(payload).digest("hex"),
+    );
+    assert.match(result.items[0]?.question ?? "", /^\uFFFDarker$/u);
   });
 });
 
