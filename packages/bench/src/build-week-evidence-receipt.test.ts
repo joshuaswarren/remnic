@@ -9,15 +9,24 @@ import {
   buildBuildWeekEvidenceReceipt,
   serializeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
-import type { BenchmarkReproManifest } from "./repro-manifest.js";
+import {
+  computeBenchmarkReproDatasetInventoryHash,
+  computeBenchmarkReproManifestArtifactHash,
+  type BenchmarkReproManifest,
+  type BenchmarkReproManifestDataset,
+} from "./repro-manifest.js";
 import type { BenchmarkResult } from "./types.js";
 import { corpusHash, generateMemCorrectCorpus } from "./benchmarks/remnic/memcorrect/generator.js";
 
 const DATASET_HASH = "a".repeat(64);
-const ARTIFACT_HASH = "b".repeat(64);
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function rehashManifest(manifest: BenchmarkReproManifest): void {
+  const { artifactHash: _artifactHash, ...withoutArtifactHash } = manifest;
+  manifest.artifactHash = computeBenchmarkReproManifestArtifactHash(withoutArtifactHash);
 }
 
 function syntheticResult(overrides: Partial<BenchmarkResult["meta"]> = {}): BenchmarkResult {
@@ -168,6 +177,14 @@ function syntheticSources(args: {
 } = {}): { resultJson: string; manifestJson: string } {
   const result = args.result ?? syntheticResult();
   const resultJson = `${JSON.stringify(result, null, 2)}\n`;
+  const fileDatasetFiles: BenchmarkReproManifestDataset["files"] = [
+    {
+      path: "private-dataset.json",
+      kind: "file",
+      sizeBytes: 1234,
+      sha256: DATASET_HASH,
+    },
+  ];
   const manifest: BenchmarkReproManifest = {
     schemaVersion: 1,
     generatedAt: "2026-07-16T21:00:00.000Z",
@@ -202,15 +219,8 @@ function syntheticSources(args: {
             realpath: "/home/private/bench-datasets/longmemeval",
             fileCount: 1,
             totalBytes: 1234,
-            sha256: DATASET_HASH,
-            files: [
-              {
-                path: "private-dataset.json",
-                kind: "file",
-                sizeBytes: 1234,
-                sha256: DATASET_HASH,
-              },
-            ],
+            sha256: computeBenchmarkReproDatasetInventoryHash(fileDatasetFiles),
+            files: fileDatasetFiles,
           },
         ],
     results: [
@@ -281,8 +291,9 @@ function syntheticSources(args: {
         ],
       },
     },
-    artifactHash: ARTIFACT_HASH,
+    artifactHash: "",
   };
+  rehashManifest(manifest);
   return { resultJson, manifestJson: `${JSON.stringify(manifest, null, 2)}\n` };
 }
 
@@ -342,7 +353,11 @@ test("full receipts reject partial, quick, limited, incomplete, failed, and hash
       publicationScope: { kind: "full", expectedTaskCount },
     });
 
-  assert.throws(() => buildFull(syntheticSources({ result: syntheticResult({ status: "partial" }) })), /explicitly complete/);
+  assert.throws(() => buildFull(syntheticSources({ result: syntheticResult({ status: "partial" }) })), /canonical complete status/);
+  assert.throws(
+    () => buildFull(syntheticSources({ result: syntheticResult({ status: "invalid" as "complete" }) })),
+    /canonical complete status/,
+  );
   assert.throws(() => buildFull(syntheticSources({ result: syntheticResult({ mode: "quick" }) })), /full-mode/);
   assert.throws(() => buildFull(syntheticSources({ limit: 2 })), /limited manifest/);
   assert.throws(() => buildFull(syntheticSources(), 3), /task count 2 does not match expected 3/);
@@ -354,10 +369,72 @@ test("full receipts reject partial, quick, limited, incomplete, failed, and hash
   const sources = syntheticSources();
   const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
   manifest.results[0]!.sha256 = "e".repeat(64);
+  rehashManifest(manifest);
   assert.throws(
     () => buildFull({ ...sources, manifestJson: JSON.stringify(manifest) }),
     /result hash does not match/,
   );
+});
+
+test("canonical successful results may omit status and derive LongMem payload hash from one manifest file", () => {
+  const result = syntheticResult();
+  delete result.meta.status;
+  delete result.meta.datasetHash;
+  const sources = syntheticSources({ result });
+  const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  const dataset = manifest.datasets[0]!;
+  dataset.files[0]!.path = "longmemeval_oracle.json";
+  dataset.sha256 = computeBenchmarkReproDatasetInventoryHash(dataset.files);
+  rehashManifest(manifest);
+
+  const receipt = buildBuildWeekEvidenceReceipt({
+    resultJson: sources.resultJson,
+    manifestJson: JSON.stringify(manifest),
+    datasetVersion: "longmemeval-oracle",
+    limitationCodes: ["singleRun"],
+    freshIsolatedStoreConfirmed: true,
+    publicationScope: { kind: "full", expectedTaskCount: 2 },
+  });
+  assert.equal(receipt.benchmark.status, "complete");
+  assert.equal(receipt.dataset.payloadSha256, DATASET_HASH);
+  assert.equal(receipt.dataset.manifestSha256, dataset.sha256);
+});
+
+test("LongMem payload fallback rejects ambiguous, linked, or inconsistent dataset inventories", () => {
+  const build = (mutate: (manifest: BenchmarkReproManifest) => void) => {
+    const result = syntheticResult();
+    delete result.meta.status;
+    delete result.meta.datasetHash;
+    const sources = syntheticSources({ result });
+    const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+    manifest.datasets[0]!.files[0]!.path = "longmemeval_oracle.json";
+    mutate(manifest);
+    manifest.datasets[0]!.sha256 = computeBenchmarkReproDatasetInventoryHash(manifest.datasets[0]!.files);
+    rehashManifest(manifest);
+    return () => buildBuildWeekEvidenceReceipt({
+      resultJson: sources.resultJson,
+      manifestJson: JSON.stringify(manifest),
+      datasetVersion: "longmemeval-oracle",
+      limitationCodes: ["singleRun"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: 2 },
+    });
+  };
+
+  assert.throws(build((manifest) => {
+    const dataset = manifest.datasets[0]!;
+    dataset.files.push({ path: "extra.json", kind: "file", sizeBytes: 1, sha256: "f".repeat(64) });
+    dataset.fileCount = 2;
+    dataset.totalBytes = 1235;
+  }), /one canonical regular dataset payload file/);
+  assert.throws(build((manifest) => {
+    const file = manifest.datasets[0]!.files[0]!;
+    file.kind = "symlink";
+    file.target = "longmemeval_oracle.json";
+  }), /one canonical regular dataset payload file/);
+  assert.throws(build((manifest) => {
+    manifest.datasets[0]!.totalBytes = 1235;
+  }), /inventory total/);
 });
 
 test("bounded receipts require matching limit and limitation; Sol is always rejected", () => {
@@ -448,6 +525,7 @@ test("MemCorrect receipts reject missing, fabricated, or mismatched generated-co
   const missingDataset = syntheticSources({ result: syntheticMemCorrectResult() });
   const missingManifest = JSON.parse(missingDataset.manifestJson) as BenchmarkReproManifest;
   missingManifest.datasets = [];
+  rehashManifest(missingManifest);
   assert.throws(
     () => build({ ...missingDataset, manifestJson: JSON.stringify(missingManifest) }),
     /exactly one MemCorrect generated-corpus dataset entry/,
@@ -463,6 +541,7 @@ test("MemCorrect receipts reject missing, fabricated, or mismatched generated-co
     sha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
     files: [{ path: "fabricated.json", kind: "file", sizeBytes: 1, sha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256 }],
   };
+  rehashManifest(fabricatedManifest);
   assert.throws(
     () => build({ ...fabricatedFileDataset, manifestJson: JSON.stringify(fabricatedManifest) }),
     /generated corpus without file-backed provenance/,
@@ -498,7 +577,7 @@ test("MemCorrect receipts reject non-full coverage, failed tasks, wrong adapter,
 
   const partial = syntheticMemCorrectResult();
   partial.meta.status = "partial";
-  assert.throws(() => build(partial), /explicitly complete/);
+  assert.throws(() => build(partial), /canonical complete status/);
 
   const wrongAdapter = syntheticMemCorrectResult();
   wrongAdapter.config.adapterMode = "prompt-only-baseline";
@@ -519,6 +598,7 @@ test("file-backed benchmark receipts still reject non-hashed dataset manifests",
     totalBytes: 0,
     files: [],
   };
+  rehashManifest(manifest);
   assert.throws(
     () =>
       buildBuildWeekEvidenceReceipt({
@@ -530,6 +610,24 @@ test("file-backed benchmark receipts still reject non-hashed dataset manifests",
         publicationScope: { kind: "full", expectedTaskCount: 2 },
       }),
     /hashed dataset entry/,
+  );
+});
+
+test("receipt rejects a tampered manifest artifact hash", () => {
+  const sources = syntheticSources();
+  const manifest = JSON.parse(sources.manifestJson) as BenchmarkReproManifest;
+  manifest.run.runtimeProfiles = ["tampered"];
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...sources,
+        manifestJson: JSON.stringify(manifest),
+        datasetVersion: "longmemeval-oracle-v1",
+        limitationCodes: ["singleRun"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "full", expectedTaskCount: 2 },
+      }),
+    /artifactHash does not match/,
   );
 });
 

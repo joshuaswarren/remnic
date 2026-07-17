@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "benchmark": {
+    "id": "longmemeval",
+    "version": "2.0.0",
+    "mode": "full",
+    "status": "complete",
+    "taskCount": 500,
+    "failureCount": 0,
+    "aggregates": {
+      "contains_answer": {
+        "mean": 0.49,
+        "median": 0,
+        "stdDev": 0.4998999899979962,
+        "min": 0,
+        "max": 1
+      },
+      "f1": {
+        "mean": 0.555122908478902,
+        "median": 0.6666666666666666,
+        "stdDev": 0.4091829032117703,
+        "min": 0,
+        "max": 1
+      },
+      "judge_accuracy": {
+        "mean": 0.762,
+        "median": 1,
+        "stdDev": 0.42585913163862577,
+        "min": 0,
+        "max": 1
+      },
+      "llm_judge": {
+        "mean": 0.762,
+        "median": 1,
+        "stdDev": 0.42585913163862577,
+        "min": 0,
+        "max": 1
+      },
+      "search_hits": {
+        "mean": 8.538,
+        "median": 10,
+        "stdDev": 2.4282825206305763,
+        "min": 1,
+        "max": 10
+      }
+    }
+  },
+  "provenance": {
+    "resultId": "0bfe5221-7ac7-4a5f-93e8-41bd06e92b38",
+    "remnicVersion": "9.7.6",
+    "gitSha": "810f36ae",
+    "runtimeProfile": "real",
+    "adapterMode": "direct",
+    "providers": [
+      {
+        "role": "system",
+        "provider": "codex-cli",
+        "model": "gpt-5.6-luna",
+        "reasoningEffort": "medium",
+        "serviceTier": null
+      },
+      {
+        "role": "internal",
+        "provider": "codex-cli",
+        "model": "gpt-5.6-luna",
+        "reasoningEffort": "medium",
+        "serviceTier": null
+      },
+      {
+        "role": "judge",
+        "provider": "codex-cli",
+        "model": "gpt-5.6-terra",
+        "reasoningEffort": "high",
+        "serviceTier": null
+      }
+    ]
+  },
+  "dataset": {
+    "source": "file-manifest",
+    "version": "longmemeval-oracle",
+    "payloadSha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+    "manifestSha256": "f896a96f5eafc833df0586a5fa367dacf7d1cbaf62dde5ccce11f95524490e3f",
+    "fileCount": 1,
+    "totalBytes": 15388478
+  },
+  "integrity": {
+    "resultSha256": "00150a8f5c52bf84576a669b22d2a5cf92df0b2295a3ce1a41b5a79c710deaf5",
+    "manifestSha256": "c1e125a951326e371a1eae126abe8926b4fc86269a9aef394e681e557ed874e1",
+    "manifestArtifactHash": "d99dc27e296005e8e8ebe5415f690087ad177bed64dc8996a82dda9b7fb9de78"
+  },
+  "estimatedUsage": {
+    "label": "local estimates; not account billing",
+    "calls": 2892,
+    "inputTokens": 48872608,
+    "cachedInputTokens": 33588480,
+    "outputTokens": 1340269,
+    "reasoningOutputTokens": 410365,
+    "totalTokens": 50212877,
+    "localBudgetUnits": 745.745695,
+    "estimatedCostUsd": 0
+  },
+  "assertions": {
+    "noSolModels": true,
+    "freshIsolatedStore": true,
+    "freshIsolatedStoreStatement": "The benchmark used a fresh isolated Remnic store, separate from production data.",
+    "containsNoPerTaskContent": true,
+    "containsNoPrivateLedgerOrAccountBalance": true
+  },
+  "limitations": [
+    "Token, call, USD, and local budget-unit totals are estimates from local benchmark instrumentation, not account billing records.",
+    "Model-judged metrics can vary with evaluator model and rubric changes.",
+    "This receipt reports one run and does not establish run-to-run variance."
+  ]
+}

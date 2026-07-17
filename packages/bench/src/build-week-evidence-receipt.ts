@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 
-import type { BenchmarkReproManifest } from "./repro-manifest.js";
+import {
+  computeBenchmarkReproDatasetInventoryHash,
+  computeBenchmarkReproManifestArtifactHash,
+  type BenchmarkReproManifest,
+} from "./repro-manifest.js";
 import type { BenchmarkResult, ProviderConfig } from "./types.js";
 
 export const BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1 as const;
@@ -113,6 +117,9 @@ const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
   maintenanceCycles: 5,
   uptakeLatencyCap: 8,
 });
+const SINGLE_FILE_PAYLOAD_FALLBACKS: Readonly<Record<string, string>> = Object.freeze({
+  longmemeval: "longmemeval_oracle.json",
+});
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -175,7 +182,13 @@ function requireExactMemCorrectProvenance(
   manifest: BenchmarkReproManifest,
   datasetVersion: string,
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
-): { source: "generated-corpus"; manifestSha256: string; fileCount: 0; totalBytes: 0 } {
+): {
+  source: "generated-corpus";
+  payloadSha256: string;
+  manifestSha256: string;
+  fileCount: 0;
+  totalBytes: 0;
+} {
   if (publicationScope.kind !== "full" || publicationScope.expectedTaskCount !== BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT) {
     throw new Error(`MemCorrect v1 receipts require full coverage of exactly ${BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT} tasks`);
   }
@@ -261,9 +274,90 @@ function requireExactMemCorrectProvenance(
   };
   return {
     source: "generated-corpus",
+    payloadSha256: BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
     manifestSha256: sha256(JSON.stringify(generatedProvenance)),
     fileCount: 0,
     totalBytes: 0,
+  };
+}
+
+function requireFileBackedDatasetProvenance(
+  result: BenchmarkResult,
+  manifest: BenchmarkReproManifest,
+): {
+  source: "file-manifest";
+  payloadSha256: string;
+  manifestSha256: string;
+  fileCount: number;
+  totalBytes: number;
+} {
+  const matchingDatasets = manifest.datasets.filter((entry) => entry.benchmark === result.meta.benchmark);
+  if (matchingDatasets.length !== 1) {
+    throw new Error("manifest must contain exactly one dataset entry for the benchmark");
+  }
+  const dataset = matchingDatasets[0]!;
+  if (dataset.status !== "hashed" || !dataset.sha256 || !SHA256.test(dataset.sha256)) {
+    throw new Error("manifest must contain a hashed dataset entry for the benchmark");
+  }
+  const fileCount = requireFiniteNonNegative(dataset.fileCount, "dataset fileCount");
+  const totalBytes = requireFiniteNonNegative(dataset.totalBytes, "dataset totalBytes");
+  if (!Number.isInteger(fileCount) || fileCount !== dataset.files.length) {
+    throw new Error("dataset fileCount must equal the manifest file inventory length");
+  }
+  const inventoryBytes = dataset.files.reduce((sum, file) => {
+    requireSafeString(file.path, "dataset file path");
+    requireFiniteNonNegative(file.sizeBytes, "dataset file sizeBytes");
+    if (!SHA256.test(file.sha256)) throw new Error("dataset file sha256 must be a SHA-256 digest");
+    return sum + file.sizeBytes;
+  }, 0);
+  if (inventoryBytes !== totalBytes) {
+    throw new Error("dataset totalBytes must equal the manifest file inventory total");
+  }
+  if (computeBenchmarkReproDatasetInventoryHash(dataset.files) !== dataset.sha256) {
+    throw new Error("dataset inventory hash does not match the manifest files");
+  }
+
+  let payloadSha256 = result.meta.datasetHash;
+  if (payloadSha256 !== undefined) {
+    if (!SHA256.test(payloadSha256)) {
+      throw new Error("benchmark result datasetHash must be a SHA-256 digest when present");
+    }
+  } else {
+    const canonicalFile = SINGLE_FILE_PAYLOAD_FALLBACKS[result.meta.benchmark];
+    const file = dataset.files[0];
+    if (
+      canonicalFile === undefined ||
+      dataset.fileCount !== 1 ||
+      file === undefined ||
+      file.kind !== "file" ||
+      file.path !== canonicalFile ||
+      file.target !== undefined ||
+      file.sizeBytes !== totalBytes
+    ) {
+      throw new Error(
+        "benchmark result without datasetHash requires one canonical regular dataset payload file",
+      );
+    }
+    payloadSha256 = file.sha256;
+  }
+
+  const canonicalFile = SINGLE_FILE_PAYLOAD_FALLBACKS[result.meta.benchmark];
+  if (
+    canonicalFile !== undefined &&
+    dataset.files.length === 1 &&
+    dataset.files[0]?.kind === "file" &&
+    dataset.files[0]?.path === canonicalFile &&
+    payloadSha256 !== dataset.files[0].sha256
+  ) {
+    throw new Error("benchmark result datasetHash does not match the canonical dataset payload file");
+  }
+
+  return {
+    source: "file-manifest",
+    payloadSha256,
+    manifestSha256: dataset.sha256,
+    fileCount,
+    totalBytes,
   };
 }
 
@@ -321,8 +415,8 @@ export function buildBuildWeekEvidenceReceipt(
   if (!SAFE_DATASET_VERSION.test(options.datasetVersion)) {
     throw new Error("datasetVersion must be a safe public identifier without whitespace or private paths");
   }
-  if (result.meta?.status !== "complete") {
-    throw new Error("only explicitly complete benchmark results can produce Build Week evidence receipts");
+  if (result.meta?.status !== undefined && result.meta.status !== "complete") {
+    throw new Error("benchmark result must use the canonical complete status (omitted or complete)");
   }
   if (result.meta.mode !== "full") {
     throw new Error("Build Week evidence receipts require a full-mode benchmark run");
@@ -367,24 +461,14 @@ export function buildBuildWeekEvidenceReceipt(
     throw new Error("manifest result identity does not match the benchmark result");
   }
 
-  if (!result.meta.datasetHash || !SHA256.test(result.meta.datasetHash)) {
-    throw new Error("benchmark result must contain a SHA-256 dataset payload hash");
-  }
   const datasetReceipt = result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
     ? requireExactMemCorrectProvenance(result, manifest, options.datasetVersion, options.publicationScope)
-    : (() => {
-        const dataset = manifest.datasets.find((entry) => entry.benchmark === result.meta.benchmark);
-        if (!dataset || dataset.status !== "hashed" || !dataset.sha256 || !SHA256.test(dataset.sha256)) {
-          throw new Error("manifest must contain a hashed dataset entry for the benchmark");
-        }
-        return {
-          source: "file-manifest" as const,
-          manifestSha256: dataset.sha256,
-          fileCount: requireFiniteNonNegative(dataset.fileCount, "dataset fileCount"),
-          totalBytes: requireFiniteNonNegative(dataset.totalBytes, "dataset totalBytes"),
-        };
-      })();
+    : requireFileBackedDatasetProvenance(result, manifest);
   if (!SHA256.test(manifest.artifactHash)) throw new Error("manifest artifactHash must be a SHA-256 digest");
+  const { artifactHash: _artifactHash, ...manifestWithoutArtifactHash } = manifest;
+  if (computeBenchmarkReproManifestArtifactHash(manifestWithoutArtifactHash) !== manifest.artifactHash) {
+    throw new Error("manifest artifactHash does not match its canonical integrity payload");
+  }
 
   const providers = [
     providerReceipt("system", result.config.systemProvider),
@@ -461,7 +545,7 @@ export function buildBuildWeekEvidenceReceipt(
     dataset: {
       source: datasetReceipt.source,
       version: options.datasetVersion,
-      payloadSha256: result.meta.datasetHash,
+      payloadSha256: datasetReceipt.payloadSha256,
       // File-backed benchmarks hash the sorted file inventory. Generated
       // MemCorrect hashes its pinned generator identity instead.
       manifestSha256: datasetReceipt.manifestSha256,
