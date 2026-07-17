@@ -195,14 +195,14 @@
       <div class="dialog-number" aria-hidden="true">HUMAN / 01</div>
       <button class="dialog-close" type="button" data-close-dialog="approvalDialog" aria-label="Cancel correction approval">×</button>
       <p class="section-index" id="approvalModeLabel">DETERMINISTIC REPLAY GATE</p>
-      <h2 id="approvalTitle">Retire the stale belief?</h2>
-      <p class="dialog-lede">This correction replaces <strong>“mint on every retry”</strong> with the source-grounded checkout contract.</p>
+      <h2 id="approvalTitle">Review selected correction</h2>
+      <p class="dialog-lede" id="approvalLede">Mission Control will bind this approval to the exact selected correction.</p>
       <div class="approval-diff">
-        <div><span>RETIRE</span><del>Mint a new token for every request and retry.</del></div>
-        <div><span>ACTIVATE</span><ins>Reuse the session token; refresh only after expiry.</ins></div>
+        <div><span>RETIRE</span><del id="approvalRetireStatements">Selected stale decision</del></div>
+        <div><span>ACTIVATE</span><ins id="approvalReplacementStatement">Selected replacement decision</ins></div>
       </div>
-      <div class="approval-evidence">
-        <span>✓ Source contract</span><span>✓ Failing integration test</span><span>✓ Human identity</span>
+      <div class="approval-evidence" id="approvalEvidence">
+        <span>Evidence loads from the selected correction</span>
       </div>
       <div class="live-identity" id="liveIdentityFields" hidden>
         <label>Server-authenticated principal<input id="operatorIdInput" name="operatorId" value="" placeholder="Unavailable" autocomplete="off" maxlength="128" readonly></label>

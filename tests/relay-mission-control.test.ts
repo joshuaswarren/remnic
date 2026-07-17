@@ -17,6 +17,17 @@ interface RelayBrowserModel {
     decision: { decisionId: string; status: string } | null;
     recall: { coldStart: boolean } | null;
   }>;
+  approvalView(snapshot: unknown): {
+    correctionId: string;
+    status: string;
+    title: string;
+    retirementStatements: string[];
+    replacementStatement: string;
+    rationale: string;
+    evidence: Array<{ kind: string; id: string; label: string; capture: string }>;
+    complete: boolean;
+    consentKey: string;
+  } | null;
   collectEvidence(snapshot: unknown): Array<{ id: string; capture: string; contexts: string[] }>;
   canRetainAuthenticatedPrincipal(input: {
     sameConnection: boolean;
@@ -149,6 +160,72 @@ test("browser model selects a pending correction before lexically later history"
   newerPending.status = "applied";
   multi.corrections = [newerPending, historical];
   assert.equal(model.currentCorrection(multi)?.correctionId, "b-newer");
+});
+
+test("approval consent is derived from the exact selected correction", async () => {
+  const model = await loadModel();
+  const replay = await committedReplay();
+  const proposal = replay.frames.find((frame) => frame.id === "proposal")?.snapshot;
+  assert.ok(proposal);
+
+  const view = model.approvalView(proposal);
+  assert.ok(view);
+  assert.equal(view.correctionId, "correction-token-refresh");
+  assert.equal(view.title, "Approve correction-token-refresh?");
+  assert.deepEqual(Array.from(view.retirementStatements), [
+    "decision-new-token-every-request — Mint a new checkout token for every request and retry.",
+  ]);
+  assert.equal(
+    view.replacementStatement,
+    "decision-refresh-after-expiry — Reuse the checkout-session token and refresh it only after expiry."
+  );
+  assert.equal(view.complete, true);
+
+  const alternate = structuredClone(proposal);
+  const stale = alternate.decisions.find((decision) => decision.decisionId === "decision-new-token-every-request");
+  const replacement = alternate.decisions.find((decision) => decision.decisionId === "decision-refresh-after-expiry");
+  const correction = alternate.corrections[0];
+  assert.ok(stale && replacement && correction);
+  stale.decisionId = "decision-cache-forever";
+  stale.statement = "Cache every response forever.";
+  replacement.decisionId = "decision-cache-by-etag";
+  replacement.statement = "Revalidate cached responses with the current ETag.";
+  correction.correctionId = "correction-cache-etag";
+  correction.supersedesDecisionIds = [stale.decisionId];
+  correction.proposedDecisionId = replacement.decisionId;
+  correction.statement = replacement.statement;
+  correction.rationale = "The cache contract and failing conditional-request test agree.";
+  correction.evidence = [{
+    kind: "test",
+    id: "test-cache-contract",
+    label: "Conditional request contract",
+    locator: "fixture://cache/contract.test.ts",
+    capture: "fixture",
+  }];
+  const alternateView = model.approvalView(alternate);
+  assert.ok(alternateView);
+  assert.equal(alternateView.title, "Approve correction-cache-etag?");
+  assert.deepEqual(Array.from(alternateView.retirementStatements), [
+    "decision-cache-forever — Cache every response forever.",
+  ]);
+  assert.equal(
+    alternateView.replacementStatement,
+    "decision-cache-by-etag — Revalidate cached responses with the current ETag."
+  );
+  assert.equal(alternateView.rationale, "The cache contract and failing conditional-request test agree.");
+  assert.equal(alternateView.evidence[0]?.label, "Conditional request contract");
+  assert.notEqual(alternateView.consentKey, view.consentKey);
+
+  alternate.corrections[0]!.evidence = [];
+  assert.equal(model.approvalView(alternate)?.complete, false);
+
+  const alreadyApproved = replay.frames.find((frame) => frame.id === "approval")?.snapshot;
+  assert.ok(alreadyApproved);
+  assert.equal(model.approvalView(alreadyApproved)?.complete, false);
+
+  const mismatchedStatement = structuredClone(proposal);
+  mismatchedStatement.corrections[0]!.statement = "A different replacement statement.";
+  assert.equal(model.approvalView(mismatchedStatement)?.complete, false);
 });
 
 test("browser model preserves the causal event order through recovered receipt", async () => {
@@ -316,7 +393,13 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
   assert.match(controller, /Model\.isCompleteEvidenceSnapshot\(state\.snapshot\)/);
   assert.match(controller, /else if \(!Model\.isCompleteEvidenceSnapshot\(snapshot\)\)/);
-  assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
+  assert.doesNotMatch(controller, /Model\.currentCorrection\(state\.snapshot\)/);
+  assert.match(controller, /Model\.approvalView\(state\.snapshot\)/);
+  assert.match(controller, /review\.consentKey === state\.approvalReviewKey/);
+  assert.match(controller, /renderApprovalReview\(review, live\)/);
+  assert.match(controller, /approvalRetireStatements\.textContent = review\.retirementStatements\.join/);
+  assert.match(controller, /approvalReplacementStatement\.textContent = review\.replacementStatement/);
+  assert.match(controller, /approvalEvidence\.replaceChildren/);
   assert.match(controller, /if \(approvalIndex >= 0 && nextIndex < approvalIndex\) \{\s*state\.replayApprovalGranted = false/s);
   assert.match(controller, /function liveReadStillCurrent\(context, generation, requestId\)/);
   assert.match(controller, /requestId === state\.liveReadRequestId/);

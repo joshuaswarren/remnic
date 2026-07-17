@@ -27,6 +27,8 @@
     freshInspectionButton: element("freshInspectionButton"), freshInspectionResult: element("freshInspectionResult"),
     closeDrawerButton: element("closeDrawerButton"), evidenceIndexButton: element("evidenceIndexButton"), connectButton: element("connectButton"),
     approvalDialog: element("approvalDialog"), approvalForm: element("approvalForm"), approvalModeLabel: element("approvalModeLabel"),
+    approvalTitle: element("approvalTitle"), approvalLede: element("approvalLede"), approvalRetireStatements: element("approvalRetireStatements"),
+    approvalReplacementStatement: element("approvalReplacementStatement"), approvalEvidence: element("approvalEvidence"),
     liveIdentityFields: element("liveIdentityFields"), operatorIdInput: element("operatorIdInput"), operatorLabelInput: element("operatorLabelInput"),
     approvalConfirmInput: element("approvalConfirmInput"), confirmApprovalButton: element("confirmApprovalButton"),
     approvalError: element("approvalError"), approvalFootnote: element("approvalFootnote"),
@@ -55,6 +57,7 @@
     connectionRequestId: 0,
     liveReadRequestId: 0,
     approvalRequestId: 0,
+    approvalReviewKey: "",
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -406,7 +409,9 @@
 
   function approvalCanSubmit() {
     const confirmed = dom.approvalConfirmInput.value.trim().toUpperCase() === "APPROVE";
-    return confirmed && (state.mode !== "live" || isLiveApprovalReady());
+    return confirmed
+      && approvalReviewMatchesCurrent()
+      && (state.mode !== "live" || isLiveApprovalReady());
   }
 
   function isLiveApprovalReady() {
@@ -420,12 +425,43 @@
 
   function syncApprovalSubmitState() {
     dom.confirmApprovalButton.disabled = !approvalCanSubmit();
+    if (state.approvalReviewKey && !approvalReviewMatchesCurrent()) {
+      dom.approvalError.textContent = "The selected correction changed after review. Close this dialog and review it again.";
+    }
+  }
+
+  function approvalReviewMatchesCurrent() {
+    if (!state.snapshot || !state.approvalReviewKey) return false;
+    const review = Model.approvalView(state.snapshot);
+    return Boolean(review?.complete && review.consentKey === state.approvalReviewKey);
+  }
+
+  function renderApprovalReview(review, live) {
+    dom.approvalTitle.textContent = review.title;
+    dom.approvalLede.textContent = `${review.correctionId} · ${review.rationale}`;
+    dom.approvalRetireStatements.textContent = review.retirementStatements.join(" • ");
+    dom.approvalReplacementStatement.textContent = review.replacementStatement;
+    const badges = review.evidence.map((item) => {
+      const badge = document.createElement("span");
+      badge.textContent = `✓ ${item.kind}: ${item.label} · ${Model.captureLabel(item.capture)}`;
+      return badge;
+    });
+    if (live) {
+      const identityBadge = document.createElement("span");
+      identityBadge.textContent = "✓ Server-authenticated human identity";
+      badges.push(identityBadge);
+    }
+    dom.approvalEvidence.replaceChildren(...badges);
   }
 
   function openApprovalDialog() {
-    const correction = state.snapshot ? Model.currentCorrection(state.snapshot) : null;
-    if (!correction || correction.approvedAt) {
+    const review = state.snapshot ? Model.approvalView(state.snapshot) : null;
+    if (!review || review.approvedAt) {
       showToast("No correction is currently awaiting human approval.");
+      return;
+    }
+    if (!review.complete) {
+      showToast("Approval is disabled because the selected correction cannot be rendered with complete lineage and evidence.");
       return;
     }
     const live = state.mode === "live";
@@ -437,11 +473,13 @@
       showToast("Live approval requires a valid principal resolved by the Relay server.");
       return;
     }
+    state.approvalReviewKey = review.consentKey;
+    renderApprovalReview(review, live);
     dom.approvalModeLabel.textContent = live ? "AUTHENTICATED LIVE CORRECTION" : "DETERMINISTIC REPLAY GATE";
     dom.liveIdentityFields.hidden = !live;
     dom.operatorIdInput.value = live ? state.authenticatedPrincipal : "";
     const pendingDraft = live
-      ? loadApprovalDraft(correction.correctionId, state.authenticatedPrincipal).event
+      ? loadApprovalDraft(review.correctionId, state.authenticatedPrincipal).event
       : null;
     dom.operatorLabelInput.readOnly = Boolean(pendingDraft);
     if (pendingDraft) {
@@ -453,8 +491,8 @@
         ? "Retry locked to the exact saved approval event and idempotency key until the live receipt verifies it."
         : "The principal is read-only and server-resolved. One exact approval event and idempotency key are reused across retries.";
     dom.approvalConfirmInput.value = "";
-    syncApprovalSubmitState();
     dom.approvalError.textContent = "";
+    syncApprovalSubmitState();
     dom.approvalDialog.showModal();
     requestAnimationFrame(() => dom.approvalConfirmInput.focus());
   }
@@ -466,6 +504,12 @@
       return;
     }
     if (!approvalCanSubmit()) return;
+    const review = state.snapshot ? Model.approvalView(state.snapshot) : null;
+    if (!review?.complete || review.consentKey !== state.approvalReviewKey) {
+      dom.approvalError.textContent = "The selected correction changed after review. Close this dialog and review it again.";
+      syncApprovalSubmitState();
+      return;
+    }
     if (state.mode === "replay") {
       state.replayApprovalGranted = true;
       const shouldResume = state.resumeAfterApproval;
@@ -477,8 +521,7 @@
       return;
     }
 
-    const correction = state.snapshot ? Model.currentCorrection(state.snapshot) : null;
-    if (!correction || correction.approvedAt) {
+    if (review.approvedAt) {
       dom.approvalError.textContent = "No pending correction is available.";
       return;
     }
@@ -495,14 +538,14 @@
       return;
     }
     const operatorLabel = dom.operatorLabelInput.value.trim();
-    const draft = loadApprovalDraft(correction.correctionId, operatorId);
+    const draft = loadApprovalDraft(review.correctionId, operatorId);
     const key = draft.key;
     let event = draft.event;
     const reusedPrior = Boolean(event);
     try {
       if (!event) {
         event = Model.createApprovalEvent({
-          correctionId: correction.correctionId,
+          correctionId: review.correctionId,
           operatorId,
           operatorLabel,
           occurredAt: new Date().toISOString(),
@@ -545,7 +588,7 @@
         showToast("Approval event recorded; live verification is pending. The next retry will reuse the exact event.");
         return;
       }
-      const approved = state.snapshot?.corrections.some((item) => item.correctionId === correction.correctionId && item.approvedAt);
+      const approved = state.snapshot?.corrections.some((item) => item.correctionId === review.correctionId && item.approvedAt);
       if (!approved) {
         throw new Error("The event was recorded but acceptance is not visible yet. Retry will reuse this exact approval event.");
       }
@@ -644,6 +687,7 @@
 
   function invalidateApprovalUiForConnectionChange() {
     state.approvalRequestId += 1;
+    state.approvalReviewKey = "";
     delete dom.approvalDialog.dataset.pendingRequestId;
     if (dom.approvalDialog.open) dom.approvalDialog.close();
     dom.confirmApprovalButton.textContent = "Approve correction →";
@@ -886,6 +930,7 @@
     dom.approvalConfirmInput.addEventListener("input", syncApprovalSubmitState);
     dom.approvalForm.addEventListener("submit", (event) => { event.preventDefault(); void submitApproval(); });
     dom.approvalDialog.addEventListener("close", () => {
+      state.approvalReviewKey = "";
       if (!state.replayApprovalGranted) state.resumeAfterApproval = false;
     });
     dom.connectionForm.addEventListener("submit", (event) => { event.preventDefault(); void connectLive(); });

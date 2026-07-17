@@ -238,6 +238,68 @@
     };
   }
 
+  function approvalView(snapshot) {
+    validateSnapshot(snapshot);
+    const correction = currentCorrection(snapshot);
+    if (!correction) return null;
+    const supersedesDecisionIds = Array.isArray(correction.supersedesDecisionIds)
+      ? correction.supersedesDecisionIds
+      : [];
+    const staleDecisions = supersedesDecisionIds
+      .map((decisionId) => snapshot.decisions.find((decision) => decision.decisionId === decisionId))
+      .filter(Boolean);
+    const replacement = snapshot.decisions.find(
+      (decision) => decision.decisionId === correction.proposedDecisionId
+    ) || null;
+    const correctionEvidence = Array.isArray(correction.evidence) ? correction.evidence : [];
+    const evidence = correctionEvidence.map((item) => ({
+      kind: item.kind,
+      id: item.id,
+      label: item.label,
+      capture: item.capture,
+    }));
+    const retirementStatements = staleDecisions.map(
+      (decision) => `${decision.decisionId} — ${decision.statement}`
+    );
+    const replacementStatement = replacement
+      ? `${replacement.decisionId} — ${replacement.statement}`
+      : "";
+    const rationale = typeof correction.rationale === "string" ? correction.rationale : "";
+    const complete = correction.status === "proposed"
+      && !correction.approvedAt
+      && IDENTIFIER_PATTERN.test(correction.correctionId || "")
+      && new Set(supersedesDecisionIds).size === supersedesDecisionIds.length
+      && staleDecisions.length === supersedesDecisionIds.length
+      && staleDecisions.length > 0
+      && retirementStatements.every((statement) => statement.trim().length > 0)
+      && replacement?.statement === correction.statement
+      && replacementStatement.trim().length > 0
+      && rationale.trim().length > 0
+      && evidence.length > 0
+      && evidence.every((item) => [item.kind, item.id, item.label, item.capture]
+        .every((value) => typeof value === "string" && value.trim().length > 0));
+    const consentKey = JSON.stringify({
+      correctionId: correction.correctionId,
+      status: correction.status,
+      retirementStatements,
+      replacementStatement,
+      rationale,
+      evidence,
+    });
+    return {
+      correctionId: correction.correctionId,
+      status: correction.status,
+      approvedAt: correction.approvedAt || null,
+      title: `Approve ${correction.correctionId}?`,
+      retirementStatements,
+      replacementStatement,
+      rationale,
+      evidence,
+      complete,
+      consentKey,
+    };
+  }
+
   function phase(snapshot) {
     validateSnapshot(snapshot);
     if (snapshot.receipt.complete) return { id: "recovered", label: "Outcome recovered", tone: "success" };
@@ -390,6 +452,7 @@
 
   globalScope.RelayModel = Object.freeze({
     agentCards,
+    approvalView,
     canRetainAuthenticatedPrincipal,
     captureLabel,
     collectEvidence,
