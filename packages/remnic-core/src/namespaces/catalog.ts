@@ -746,9 +746,13 @@ export class NamespaceCatalog {
     const at = metadata?.at ?? new Date();
     const existing = this.pendingTouches.get(key);
     if (existing) clearTimeout(existing.timer);
+    // Cap at Node's maximum setTimeout delay (2^31-1 ms ≈ 24.8 days). Values
+    // above that are clamped by Node to 1ms, which would append almost every
+    // touch and recreate the churn this coalescing exists to prevent (#1903, Codex).
+    const safeWindow = Math.min(window, 2_147_483_647);
     const timer = setTimeout(() => {
       void this.flushPendingTouch(key);
-    }, window);
+    }, safeWindow);
     timer.unref();
     this.pendingTouches.set(key, { namespace: ns, kind, metadata, at, timer });
   }
@@ -778,6 +782,9 @@ export class NamespaceCatalog {
     if (metadata.parentNamespace !== undefined && metadata.parentNamespace !== cached.parentNamespace) {
       return true;
     }
+    // A changed storageDir repoints routing/containment for this namespace —
+    // must be observable at once, not held stale by the coalesce window (#1903, Cursor).
+    if (metadata.storageDir !== undefined && metadata.storageDir !== cached.storageDir) return true;
     return false;
   }
 

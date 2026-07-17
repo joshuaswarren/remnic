@@ -509,6 +509,11 @@ export class NamespaceStorageRouter {
    * moved should await this instead of racing a timer.
    */
   async whenWriteTouchesSettled(): Promise<void> {
+    // Flush any coalesced (buffered) touches first so their appends join the
+    // pending set below — otherwise this could resolve while a buffered touch's
+    // lastWriteAt is still unwritten on disk (#1903, Cursor). No-op when
+    // coalescing is disabled (window 0) or the catalog is inert.
+    await this.catalog?.flushPendingTouches().catch(() => undefined);
     while (this.pendingWriteTouches.size > 0) {
       await Promise.allSettled([...this.pendingWriteTouches]);
     }
