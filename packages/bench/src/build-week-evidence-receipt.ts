@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { realpath, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import {
   computeBenchmarkReproDatasetInventoryHash,
@@ -590,6 +591,15 @@ export function serializeBuildWeekEvidenceReceipt(receipt: BuildWeekEvidenceRece
   return `${JSON.stringify(receipt, null, 2)}\n`;
 }
 
+async function canonicalOutputPath(outputPath: string): Promise<string> {
+  try {
+    return await realpath(outputPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return join(await realpath(dirname(outputPath)), basename(outputPath));
+  }
+}
+
 export async function writeBuildWeekEvidenceReceipt(args: {
   resultPath: string;
   manifestPath: string;
@@ -599,6 +609,14 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   freshIsolatedStoreConfirmed: true;
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"];
 }): Promise<BuildWeekEvidenceReceipt> {
+  const [resultRealpath, manifestRealpath, outputRealpath] = await Promise.all([
+    realpath(args.resultPath),
+    realpath(args.manifestPath),
+    canonicalOutputPath(args.outputPath),
+  ]);
+  if (outputRealpath === resultRealpath || outputRealpath === manifestRealpath) {
+    throw new Error("receipt output path must not alias the private result or manifest source");
+  }
   const [resultJson, manifestJson] = await Promise.all([
     readFile(args.resultPath),
     readFile(args.manifestPath),

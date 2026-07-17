@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -8,6 +11,7 @@ import {
   BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
   buildBuildWeekEvidenceReceipt,
   serializeBuildWeekEvidenceReceipt,
+  writeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
 import {
   computeBenchmarkReproDatasetInventoryHash,
@@ -677,4 +681,38 @@ test("receipt generation requires an explicit fresh isolated store confirmation"
       } as unknown as Parameters<typeof buildBuildWeekEvidenceReceipt>[0]),
     /fresh isolated benchmark store confirmation is required/,
   );
+});
+
+test("receipt writer rejects output paths that alias private source files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-"));
+  try {
+    const sources = syntheticSources();
+    const resultPath = join(directory, "result.json");
+    const manifestPath = join(directory, "MANIFEST.json");
+    const symlinkPath = join(directory, "receipt-link.json");
+    await Promise.all([
+      writeFile(resultPath, sources.resultJson),
+      writeFile(manifestPath, sources.manifestJson),
+    ]);
+
+    const write = (outputPath: string) =>
+      writeBuildWeekEvidenceReceipt({
+        resultPath,
+        manifestPath,
+        outputPath,
+        datasetVersion: "longmemeval-oracle-v1",
+        limitationCodes: ["singleRun"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "full", expectedTaskCount: 2 },
+      });
+
+    await assert.rejects(write(resultPath), /must not alias/);
+    assert.equal(await readFile(resultPath, "utf8"), sources.resultJson);
+
+    await symlink(manifestPath, symlinkPath);
+    await assert.rejects(write(symlinkPath), /must not alias/);
+    assert.equal(await readFile(manifestPath, "utf8"), sources.manifestJson);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
