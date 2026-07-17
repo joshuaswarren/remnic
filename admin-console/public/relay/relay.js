@@ -333,6 +333,9 @@
     if (!state.replay || nextIndex < 0 || nextIndex >= state.replay.frames.length) return false;
     const nextFrame = state.replay.frames[nextIndex];
     const approvalIndex = frameIndexById("approval");
+    if (approvalIndex >= 0 && nextIndex < approvalIndex) {
+      state.replayApprovalGranted = false;
+    }
     if (nextIndex >= approvalIndex && approvalIndex >= 0 && !state.replayApprovalGranted) {
       state.resumeAfterApproval = source === "playback";
       stopPlayback();

@@ -312,6 +312,7 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
   assert.match(controller, /Model\.isCompleteEvidenceSnapshot\(state\.snapshot\)/);
   assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
+  assert.match(controller, /if \(approvalIndex >= 0 && nextIndex < approvalIndex\) \{\s*state\.replayApprovalGranted = false/s);
   assert.match(controller, /function liveReadStillCurrent\(context, generation, requestId\)/);
   assert.match(controller, /requestId === state\.liveReadRequestId/);
   assert.equal((controller.match(/\+\+state\.liveReadRequestId/g) || []).length, 3);
