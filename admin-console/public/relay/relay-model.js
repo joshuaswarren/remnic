@@ -14,6 +14,7 @@
     "mission_completed",
   ]);
   const IDENTIFIER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/;
+  const DECISION_STATUS_ORDER = Object.freeze({ active: 0, proposed: 1, superseded: 2 });
 
   const EVENT_META = Object.freeze({
     mission_started: { label: "Source contract", tone: "source", verb: "Mission opened" },
@@ -160,8 +161,10 @@
     const held = snapshot.decisions
       .filter((decision) => decision.heldByAgentIds.includes(agent.agentId))
       .sort((a, b) => {
-        if (a.status === b.status) return a.decisionId.localeCompare(b.decisionId);
-        return a.status === "active" ? -1 : 1;
+        const rankA = DECISION_STATUS_ORDER[a.status] ?? Number.MAX_SAFE_INTEGER;
+        const rankB = DECISION_STATUS_ORDER[b.status] ?? Number.MAX_SAFE_INTEGER;
+        if (rankA !== rankB) return rankA - rankB;
+        return a.decisionId.localeCompare(b.decisionId);
       })[0] || null;
     const recall = (agent.recalls || []).at(-1) || null;
     const output = (agent.outputs || []).at(-1) || null;

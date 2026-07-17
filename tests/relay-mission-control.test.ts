@@ -90,6 +90,30 @@ test("browser model derives Scout, Builder, and late cold-start Reviewer from sn
   assert.equal(reviewer?.decision?.decisionId, "decision-refresh-after-expiry");
 });
 
+test("browser model selects an agent decision with stable total ordering", async () => {
+  const model = await loadModel();
+  const replay = await committedReplay();
+  const completed = replay.frames.at(-1)?.snapshot;
+  assert.ok(completed);
+  const stale = completed.decisions.find((decision) => decision.decisionId === "decision-new-token-every-request");
+  assert.ok(stale);
+
+  const ordered = structuredClone(completed);
+  ordered.decisions = [
+    { ...structuredClone(stale), decisionId: "decision-z-retired", status: "superseded" },
+    { ...structuredClone(stale), decisionId: "decision-proposed", status: "proposed" },
+    { ...structuredClone(stale), decisionId: "decision-active", status: "active" },
+    { ...structuredClone(stale), decisionId: "decision-a-retired", status: "superseded" },
+  ];
+  assert.equal(model.agentCards(ordered).find((card) => card.slot === "builder")?.decision?.decisionId, "decision-active");
+
+  ordered.decisions = ordered.decisions.filter((decision) => decision.status !== "active").reverse();
+  assert.equal(model.agentCards(ordered).find((card) => card.slot === "builder")?.decision?.decisionId, "decision-proposed");
+
+  ordered.decisions = ordered.decisions.filter((decision) => decision.status === "superseded").reverse();
+  assert.equal(model.agentCards(ordered).find((card) => card.slot === "builder")?.decision?.decisionId, "decision-a-retired");
+});
+
 test("browser model preserves the causal event order through recovered receipt", async () => {
   const model = await loadModel();
   const replay = await committedReplay();
