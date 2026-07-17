@@ -928,6 +928,27 @@ test("receipt rejects recorded aggregates that do not match task scores", () => 
       }),
     /aggregate exact_match\.mean does not match task scores/,
   );
+
+  const missingTaskMetric = syntheticResult();
+  missingTaskMetric.results.tasks[1]!.scores = {};
+  missingTaskMetric.results.aggregates.exact_match = {
+    mean: 1,
+    median: 1,
+    stdDev: 0,
+    min: 1,
+    max: 1,
+  };
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...syntheticSources({ result: missingTaskMetric, limit: 2 }),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /task 1 metric names do not match the complete aggregate metric set/,
+  );
 });
 
 test("receipt generation requires an explicit fresh isolated store confirmation", () => {
@@ -1041,6 +1062,56 @@ test("receipt writer removes a partial create-only output after sync failure", a
 
     await assert.rejects(readFile(outputPath), { code: "ENOENT" });
     const receipt = await write();
+    assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt writer does not strand an empty output when initial file identity lookup fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-stat-failure-"));
+  const probePath = join(directory, "probe.json");
+  const outputPath = join(directory, "receipt.json");
+  try {
+    const sources = syntheticSources({ limit: 2 });
+    const resultPath = join(directory, "result.json");
+    const manifestPath = join(directory, "MANIFEST.json");
+    await Promise.all([
+      writeFile(resultPath, sources.resultJson),
+      writeFile(manifestPath, sources.manifestJson),
+    ]);
+
+    const probe = await open(probePath, "wx");
+    const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+      stat: typeof probe.stat;
+    };
+    const originalStat = fileHandlePrototype.stat;
+    await probe.close();
+    await rm(probePath);
+    let failedOnce = false;
+    fileHandlePrototype.stat = (async function (this: typeof probe, ...args: Parameters<typeof probe.stat>) {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error("forced initial receipt fstat failure");
+      }
+      return originalStat.apply(this, args);
+    }) as typeof probe.stat;
+    let receipt;
+    try {
+      receipt = await writeBuildWeekEvidenceReceipt({
+        resultPath,
+        manifestPath,
+        outputPath,
+        datasetVersion: "longmemeval-oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      });
+    } finally {
+      fileHandlePrototype.stat = originalStat;
+    }
+
+    assert.equal(failedOnce, true);
     assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), receipt);
   } finally {
     await rm(directory, { recursive: true, force: true });

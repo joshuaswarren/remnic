@@ -469,6 +469,15 @@ function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["be
   ) {
     throw new Error("benchmark aggregate metric names do not match the task score metrics");
   }
+  for (const [taskIndex, task] of result.results.tasks.entries()) {
+    const taskMetricNames = Object.keys(task.scores).sort();
+    if (
+      taskMetricNames.length !== recordedNames.length ||
+      taskMetricNames.some((name, index) => name !== recordedNames[index])
+    ) {
+      throw new Error(`benchmark task ${taskIndex} metric names do not match the complete aggregate metric set`);
+    }
+  }
   const output: BuildWeekEvidenceReceipt["benchmark"]["aggregates"] = {};
   for (const metric of recomputedNames) {
     const recorded = result.results.aggregates[metric]!;
@@ -867,14 +876,39 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   // Callers that intentionally regenerate a public receipt must choose a new
   // path or remove the prior public artifact outside this safety boundary.
   const output = await open(args.outputPath, "wx", 0o644);
-  const createdStat = await output.stat();
+  let createdStat: Awaited<ReturnType<typeof output.stat>> | undefined;
+  let identityError: unknown;
   let publicationError: unknown;
   let closeError: unknown;
   try {
+    try {
+      createdStat = await output.stat();
+    } catch (error) {
+      // File identity is needed only to remove a failed publication safely.
+      // An fstat failure must not itself strand an otherwise writable,
+      // create-only output before the guarded publication flow begins.
+      identityError = error;
+    }
     await output.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });
     await output.sync();
+    if (!createdStat) {
+      try {
+        createdStat = await output.stat();
+        identityError = undefined;
+      } catch (statError) {
+        identityError = statError;
+      }
+    }
   } catch (error) {
     publicationError = error;
+    if (!createdStat) {
+      try {
+        createdStat = await output.stat();
+        identityError = undefined;
+      } catch (statError) {
+        identityError = statError;
+      }
+    }
   } finally {
     try {
       await output.close();
@@ -884,6 +918,12 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   }
   const outputFailure = publicationError ?? closeError;
   if (outputFailure !== undefined) {
+    if (!createdStat) {
+      throw new AggregateError(
+        [outputFailure, identityError ?? new Error("created receipt file identity is unavailable")],
+        "receipt publication failed and its partial output could not be identified for safe removal",
+      );
+    }
     try {
       const currentStat = await stat(args.outputPath);
       if (currentStat.dev !== createdStat.dev || currentStat.ino !== createdStat.ino) {
