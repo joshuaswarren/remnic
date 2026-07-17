@@ -24,6 +24,11 @@ const requiredFiles = [
   "dist/migrate/from-engram.js",
   "dist/admin-console/public/index.html",
   "dist/admin-console/public/app.js",
+  "dist/admin-console/public/relay/index.html",
+  "dist/admin-console/public/relay/relay.css",
+  "dist/admin-console/public/relay/relay-model.js",
+  "dist/admin-console/public/relay/relay.js",
+  "dist/admin-console/public/relay/replay.json",
 ];
 
 const rootPackageJson = JSON.parse(await readFile(rootPackageJsonPath, "utf8"));
