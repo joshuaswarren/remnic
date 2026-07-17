@@ -187,6 +187,9 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
+  assert.match(controller, /operatorLabelInput\.readOnly = Boolean\(pendingDraft\)/);
+  assert.match(controller, /Retry will reuse this exact approval event/);
+  assert.doesNotMatch(controller, /if \(!approved\) \{\s*safeSessionRemove\(key\)/);
   assert.match(html, /id="operatorIdInput"[^>]*readonly/);
   assert.doesNotMatch(html, /value="relay-operator"/);
   assert.match(controller, /OFFLINE FALLBACK/);

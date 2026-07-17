@@ -70,7 +70,9 @@ percent-encoded server-resolved principal in the
 shows it read-only, scopes retries to that identity, and refuses live approval
 when it is absent or not a valid Relay actor ID. The append boundary also
 rejects mismatched human identities before persistence, so a guessed principal
-cannot poison the append-only receipt.
+cannot poison the append-only receipt. Once drafted, the displayed approval
+label is also locked to the saved event; the draft is cleared only after a
+fresh snapshot verifies acceptance, never merely because the POST returned.
 
 Fresh X-ray reads are visibly labeled **Fresh inspection**. They refresh the
 screen but never count as evidence captured at action time.

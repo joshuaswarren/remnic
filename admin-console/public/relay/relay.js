@@ -376,6 +376,22 @@
     return `remnic-relay-approval:${state.missionId}:${state.namespace}:${correctionId}:${operatorId}`;
   }
 
+  function loadApprovalDraft(correctionId, operatorId) {
+    const key = approvalDraftKey(correctionId, operatorId);
+    const prior = safeSessionGet(key);
+    if (!prior) return { key, event: null };
+    try {
+      const candidate = JSON.parse(prior);
+      if (Model.isReusableApprovalEvent(candidate, correctionId, operatorId)) {
+        return { key, event: candidate };
+      }
+    } catch {
+      // Invalid or truncated drafts are safe to discard before any write.
+    }
+    safeSessionRemove(key);
+    return { key, event: null };
+  }
+
   function approvalCanSubmit() {
     const confirmed = dom.approvalConfirmInput.value.trim().toUpperCase() === "APPROVE";
     return confirmed && (state.mode !== "live" || Model.isValidActorId(state.authenticatedPrincipal));
@@ -399,9 +415,18 @@
     dom.approvalModeLabel.textContent = live ? "AUTHENTICATED LIVE CORRECTION" : "DETERMINISTIC REPLAY GATE";
     dom.liveIdentityFields.hidden = !live;
     dom.operatorIdInput.value = live ? state.authenticatedPrincipal : "";
-    dom.approvalFootnote.textContent = live
-      ? "The principal is read-only and server-resolved. One exact approval event and idempotency key are reused across retries."
-      : "Replay mode advances an integrity-checked fixture; it does not claim a live write.";
+    const pendingDraft = live
+      ? loadApprovalDraft(correction.correctionId, state.authenticatedPrincipal).event
+      : null;
+    dom.operatorLabelInput.readOnly = Boolean(pendingDraft);
+    if (pendingDraft) {
+      dom.operatorLabelInput.value = pendingDraft.payload.approvedBy.label;
+    }
+    dom.approvalFootnote.textContent = !live
+      ? "Replay mode advances an integrity-checked fixture; it does not claim a live write."
+      : pendingDraft
+        ? "Retry locked to the exact saved approval event and idempotency key until the live receipt verifies it."
+        : "The principal is read-only and server-resolved. One exact approval event and idempotency key are reused across retries.";
     dom.approvalConfirmInput.value = "";
     syncApprovalSubmitState();
     dom.approvalError.textContent = "";
@@ -433,24 +458,11 @@
       return;
     }
     const operatorLabel = dom.operatorLabelInput.value.trim();
-    const key = approvalDraftKey(correction.correctionId, operatorId);
-    let event;
-    let reusedPrior = false;
+    const draft = loadApprovalDraft(correction.correctionId, operatorId);
+    const key = draft.key;
+    let event = draft.event;
+    const reusedPrior = Boolean(event);
     try {
-      const prior = safeSessionGet(key);
-      if (prior) {
-        try {
-          const candidate = JSON.parse(prior);
-          if (Model.isReusableApprovalEvent(candidate, correction.correctionId, operatorId)) {
-            event = candidate;
-            reusedPrior = true;
-          } else {
-            safeSessionRemove(key);
-          }
-        } catch {
-          safeSessionRemove(key);
-        }
-      }
       if (!event) {
         event = Model.createApprovalEvent({
           correctionId: correction.correctionId,
@@ -463,6 +475,9 @@
       if (!reusedPrior && !safeSessionSet(key, JSON.stringify(event))) {
         throw new Error("Session storage is unavailable; refusing a non-idempotent approval write");
       }
+      dom.operatorLabelInput.value = event.payload.approvedBy.label;
+      dom.operatorLabelInput.readOnly = true;
+      dom.approvalFootnote.textContent = "Approval draft locked to this exact event until the live receipt verifies it.";
     } catch (error) {
       dom.approvalError.textContent = error instanceof Error ? error.message : "Approval could not be prepared.";
       return;
@@ -487,8 +502,7 @@
       }
       const approved = state.snapshot?.corrections.some((item) => item.correctionId === correction.correctionId && item.approvedAt);
       if (!approved) {
-        safeSessionRemove(key);
-        throw new Error("The event was recorded but the refreshed receipt did not accept it as human approval.");
+        throw new Error("The event was recorded but acceptance is not visible yet. Retry will reuse this exact approval event.");
       }
       safeSessionRemove(key);
       dom.approvalDialog.close();
