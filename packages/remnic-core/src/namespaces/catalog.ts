@@ -741,11 +741,21 @@ export class NamespaceCatalog {
       await this.touch(namespace, kind, metadata);
       return;
     }
-    // Pure timestamp refresh on a known record → defer/coalesce.
+    // Pure timestamp refresh on a known record → coalesce within a FIXED window.
     const key = `${kind}:${ns}`;
     const at = metadata?.at ?? new Date();
     const existing = this.pendingTouches.get(key);
-    if (existing) clearTimeout(existing.timer);
+    if (existing) {
+      // Keep the ORIGINAL timer and only refresh the buffered payload (#1903,
+      // Codex). Re-arming on every touch would make this a debounce that never
+      // flushes under continuous traffic (e.g. a sustained import), leaving
+      // lastWriteAt stale and writtenSince/maintenance consumers blind to an
+      // actively-written namespace. With a fixed window, each window flushes on
+      // schedule carrying the newest buffered timestamp.
+      existing.metadata = metadata;
+      existing.at = at;
+      return;
+    }
     // Cap at Node's maximum setTimeout delay (2^31-1 ms ≈ 24.8 days). Values
     // above that are clamped by Node to 1ms, which would append almost every
     // touch and recreate the churn this coalescing exists to prevent (#1903, Codex).
