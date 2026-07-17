@@ -149,13 +149,30 @@ function syntheticMemCorrectResult(): BenchmarkResult {
     question: `private correction question ${index}`,
     expected: `private corrected value ${index}`,
     actual: `private recalled value ${index}`,
-    scores: { uptake_at_next: 1, non_resurrection: 1 },
+    scores: {
+      uptake_at_next: 1,
+      uptake_latency: 1,
+      uptake_latency_censored: 1,
+      non_resurrection: 1,
+      false_apply: 1,
+      judge_correction_acceptance: 1,
+      judge_stale_harm_avoidance: 1,
+      ...(index === 0 ? { scope_precision: 1 } : {}),
+      ...(index === 1 ? { reassertion: 1 } : {}),
+    },
     latencyMs: 1000,
     tokens: { input: 25, output: 5 },
   }));
   result.results.aggregates = {
     uptake_at_next: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    uptake_latency: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    uptake_latency_censored: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
     non_resurrection: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    false_apply: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    judge_correction_acceptance: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    judge_stale_harm_avoidance: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    scope_precision: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    reassertion: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
   };
   return result;
 }
@@ -167,13 +184,23 @@ function syntheticCanonicalLongMemEvalResult(): BenchmarkResult {
     question: `private question ${index}`,
     expected: `private expected answer ${index}`,
     actual: `private generated answer ${index}`,
-    scores: { exact_match: index % 2 },
+    scores: {
+      contains_answer: index % 2,
+      f1: index % 2,
+      judge_accuracy: index % 2,
+      llm_judge: index % 2,
+      search_hits: 1,
+    },
     latencyMs: 1000,
     tokens: { input: 50, output: 25 },
     ...(index === 0 ? { details: { recall: "private recalled production text" } } : {}),
   }));
   result.results.aggregates = {
-    exact_match: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    contains_answer: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    f1: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    judge_accuracy: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    llm_judge: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    search_hits: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
   };
   return result;
 }
@@ -495,6 +522,13 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
   duplicateTask.results.tasks[1]!.taskId = duplicateTask.results.tasks[0]!.taskId;
   assert.throws(() => build(duplicateTask), /500 unique task identities/);
 
+  const fabricatedMetrics = syntheticCanonicalLongMemEvalResult();
+  for (const task of fabricatedMetrics.results.tasks) task.scores = { fabricated_metric: 1 };
+  fabricatedMetrics.results.aggregates = {
+    fabricated_metric: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+  };
+  assert.throws(() => build(fabricatedMetrics), /metric schema does not match the pinned benchmark metrics/);
+
   const arbitraryInventoryResult = syntheticCanonicalLongMemEvalResult();
   const arbitraryInventorySources = syntheticSources({ result: arbitraryInventoryResult });
   const arbitraryInventoryManifest = JSON.parse(arbitraryInventorySources.manifestJson) as BenchmarkReproManifest;
@@ -680,7 +714,7 @@ test("full LongMemEval receipt rejects a public artifact that diverges from the 
   const artifact = JSON.parse(sources.publicArtifactJson!) as {
     perTaskScores: Array<{ scores: Record<string, number> }>;
   };
-  artifact.perTaskScores[0]!.scores.exact_match = 0.25;
+  artifact.perTaskScores[0]!.scores.f1 = 0.25;
   assert.throws(
     () => buildBuildWeekEvidenceReceipt({
       resultJson: sources.resultJson,
@@ -691,7 +725,7 @@ test("full LongMemEval receipt rejects a public artifact that diverges from the 
       freshIsolatedStoreConfirmed: true,
       publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
     }),
-    /public artifact task 0 score exact_match does not match/,
+    /public artifact task 0 score f1 does not match/,
   );
 });
 

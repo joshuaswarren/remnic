@@ -122,6 +122,27 @@ const MEMCORRECT_BENCHMARK_ID = "memcorrect-v1";
 const MEMCORRECT_BENCHMARK_VERSION = "1.0.0";
 const LONGMEMEVAL_BENCHMARK_ID = "longmemeval";
 const LONGMEMEVAL_BENCHMARK_VERSION = "2.0.0";
+const LONGMEMEVAL_FULL_METRICS = Object.freeze([
+  "contains_answer",
+  "f1",
+  "judge_accuracy",
+  "llm_judge",
+  "search_hits",
+]);
+const MEMCORRECT_REQUIRED_TASK_METRICS = Object.freeze([
+  "false_apply",
+  "judge_correction_acceptance",
+  "judge_stale_harm_avoidance",
+  "non_resurrection",
+  "uptake_at_next",
+  "uptake_latency",
+  "uptake_latency_censored",
+]);
+const MEMCORRECT_FULL_METRICS = Object.freeze([
+  ...MEMCORRECT_REQUIRED_TASK_METRICS,
+  "reassertion",
+  "scope_precision",
+].sort());
 const MEMCORRECT_FULL_SEED = 0xc077e7;
 const MEMCORRECT_GENERATOR_OPTIONS = Object.freeze({
   personaCount: 5,
@@ -453,7 +474,10 @@ function providerReceipt(
   };
 }
 
-function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["benchmark"]["aggregates"] {
+function sortedAggregates(
+  result: BenchmarkResult,
+  allowSparseTaskMetrics: boolean,
+): BuildWeekEvidenceReceipt["benchmark"]["aggregates"] {
   for (const [taskIndex, task] of result.results.tasks.entries()) {
     for (const [metric, score] of Object.entries(task.scores)) {
       requireSafeIdentifier(metric, `task ${taskIndex} score metric name`);
@@ -469,13 +493,15 @@ function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["be
   ) {
     throw new Error("benchmark aggregate metric names do not match the task score metrics");
   }
-  for (const [taskIndex, task] of result.results.tasks.entries()) {
-    const taskMetricNames = Object.keys(task.scores).sort();
-    if (
-      taskMetricNames.length !== recordedNames.length ||
-      taskMetricNames.some((name, index) => name !== recordedNames[index])
-    ) {
-      throw new Error(`benchmark task ${taskIndex} metric names do not match the complete aggregate metric set`);
+  if (!allowSparseTaskMetrics) {
+    for (const [taskIndex, task] of result.results.tasks.entries()) {
+      const taskMetricNames = Object.keys(task.scores).sort();
+      if (
+        taskMetricNames.length !== recordedNames.length ||
+        taskMetricNames.some((name, index) => name !== recordedNames[index])
+      ) {
+        throw new Error(`benchmark task ${taskIndex} metric names do not match the complete aggregate metric set`);
+      }
     }
   }
   const output: BuildWeekEvidenceReceipt["benchmark"]["aggregates"] = {};
@@ -495,6 +521,39 @@ function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["be
     output[safeMetric] = expected;
   }
   return output;
+}
+
+function requirePinnedFullMetricSchema(
+  result: BenchmarkResult,
+  publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
+  aggregates: BuildWeekEvidenceReceipt["benchmark"]["aggregates"],
+): void {
+  if (publicationScope.kind !== "full") return;
+  const expected = result.meta.benchmark === LONGMEMEVAL_BENCHMARK_ID
+    ? LONGMEMEVAL_FULL_METRICS
+    : result.meta.benchmark === MEMCORRECT_BENCHMARK_ID
+      ? MEMCORRECT_FULL_METRICS
+      : undefined;
+  if (!expected) throw new Error(`full metric schema is not pinned for benchmark ${result.meta.benchmark}`);
+  const aggregateNames = Object.keys(aggregates).sort();
+  if (
+    aggregateNames.length !== expected.length ||
+    aggregateNames.some((name, index) => name !== expected[index])
+  ) {
+    throw new Error(`full ${result.meta.benchmark} metric schema does not match the pinned benchmark metrics`);
+  }
+  if (result.meta.benchmark === MEMCORRECT_BENCHMARK_ID) {
+    const allowed = new Set(MEMCORRECT_FULL_METRICS);
+    for (const [taskIndex, task] of result.results.tasks.entries()) {
+      const names = Object.keys(task.scores);
+      if (
+        MEMCORRECT_REQUIRED_TASK_METRICS.some((name) => !names.includes(name)) ||
+        names.some((name) => !allowed.has(name))
+      ) {
+        throw new Error(`MemCorrect task ${taskIndex} metric schema does not match the pinned benchmark metrics`);
+      }
+    }
+  }
 }
 
 function verifyPublicArtifact(
@@ -623,7 +682,9 @@ export function buildBuildWeekEvidenceReceipt(
   if (failureCount > 0) {
     throw new Error(`complete evidence receipt refused because ${failureCount} task(s) contain failure markers`);
   }
-  const validatedAggregates = sortedAggregates(result);
+  const allowSparseTaskMetrics =
+    options.publicationScope.kind === "full" && result.meta.benchmark === MEMCORRECT_BENCHMARK_ID;
+  const validatedAggregates = sortedAggregates(result, allowSparseTaskMetrics);
 
   const resultEntry = manifest.results.find((entry) => entry.resultId === result.meta.id);
   if (!resultEntry) throw new Error("manifest does not bind the benchmark result id");
@@ -646,6 +707,7 @@ export function buildBuildWeekEvidenceReceipt(
         );
         return fileBackedReceipt;
       })();
+  requirePinnedFullMetricSchema(result, options.publicationScope, validatedAggregates);
   if (!SHA256.test(manifest.artifactHash)) throw new Error("manifest artifactHash must be a SHA-256 digest");
   const { artifactHash: _artifactHash, ...manifestWithoutArtifactHash } = manifest;
   if (computeBenchmarkReproManifestArtifactHash(manifestWithoutArtifactHash) !== manifest.artifactHash) {
