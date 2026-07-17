@@ -3694,3 +3694,261 @@ test("router resolve-hook serializer recovers after a prior hook rejects (issue 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Issue #1903: touch-path performance (auto-compaction, coalescing, streaming) ──
+
+async function countCatalogLines(memoryDir: string): Promise<number> {
+  const raw = await readFile(path.join(memoryDir, "state", "namespaces.jsonl"), "utf8").catch(() => "");
+  return raw.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+// 1. Warm cache: with coalescing OFF every touch appends, but a warm cache means
+// none of them re-parses the JSONL after the initial warm-up parse.
+test("#1903 warm cache: repeated touches never re-parse the log (coalescing off)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new CountingNamespaceCatalog(
+      makeConfig(memoryDir, {
+        namespacesCatalogReadTouchCoalesceMs: 0,
+        namespacesCatalogWriteTouchCoalesceMs: 0,
+      }),
+    );
+    // Warm the cache: the first write creates the file; a read then performs the
+    // one-time full parse and warms the in-process cache.
+    await catalog.markWrite("alpha", { discoveredBy: "write" });
+    await catalog.listNamespaces();
+    const warm = catalog.catalogReadCount;
+    assert.ok(warm >= 1, "the warm-up performed at least one full parse");
+    for (let i = 0; i < 25; i++) {
+      await catalog.markWrite("alpha", { discoveredBy: "write" });
+      await catalog.markRead("alpha", { discoveredBy: "read" });
+    }
+    assert.equal(
+      catalog.catalogReadCount,
+      warm,
+      "every subsequent touch is served from the warm cache without a re-parse",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 2. Write-touch coalescing collapses many in-window writes into a single append,
+// and the newest buffered timestamp wins on flush.
+test("#1903 write-touch coalescing collapses 50 in-window writes to one append", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, { namespacesCatalogWriteTouchCoalesceMs: 60_000 }),
+    );
+    // Seed the record, then read it back so the in-process cache is warm — the
+    // following writes are then pure-timestamp refreshes on a known record and
+    // are deferred (a cold cache would force the first one to flush immediately).
+    await catalog.markWrite("alpha", { discoveredBy: "write" });
+    await catalog.getNamespaceRecord("alpha");
+    const linesAfterSeed = await countCatalogLines(memoryDir);
+    let newest = new Date();
+    for (let i = 0; i < 50; i++) {
+      newest = new Date(Date.now() + (i + 1) * 1000);
+      await catalog.markWrite("alpha", { discoveredBy: "write", at: newest });
+    }
+    assert.equal(
+      await countCatalogLines(memoryDir),
+      linesAfterSeed,
+      "coalesced writes stay buffered — no per-touch append",
+    );
+    await catalog.flushPendingTouches();
+    assert.equal(
+      await countCatalogLines(memoryDir),
+      linesAfterSeed + 1,
+      "the 50 buffered writes collapse into exactly one append on flush",
+    );
+    const record = await catalog.getNamespaceRecord("alpha");
+    assert.equal(
+      record?.lastWriteAt,
+      newest.toISOString(),
+      "the newest in-window write timestamp wins",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 3. Read-touch coalescing collapses in-window reads and keeps the latest freshness.
+test("#1903 read-touch coalescing keeps the latest in-window lastReadAt", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, { namespacesCatalogReadTouchCoalesceMs: 60_000 }),
+    );
+    // Seed the read field, then warm the cache so the following reads defer.
+    await catalog.markRead("alpha", { discoveredBy: "read" });
+    await catalog.getNamespaceRecord("alpha");
+    const linesAfterSeed = await countCatalogLines(memoryDir);
+    let newest = new Date();
+    for (let i = 0; i < 30; i++) {
+      newest = new Date(Date.now() + (i + 1) * 1000);
+      await catalog.markRead("alpha", { discoveredBy: "read", at: newest });
+    }
+    assert.equal(
+      await countCatalogLines(memoryDir),
+      linesAfterSeed,
+      "coalesced reads stay buffered — no per-touch append",
+    );
+    await catalog.flushPendingTouches();
+    assert.equal(await countCatalogLines(memoryDir), linesAfterSeed + 1);
+    const record = await catalog.getNamespaceRecord("alpha");
+    assert.equal(
+      record?.lastReadAt,
+      newest.toISOString(),
+      "the newest in-window read timestamp wins",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 4. Provenance upgrade under coalescing: a config pre-registration followed by a
+// write must read back "write" WITHOUT an explicit flush (immediate-flush rule).
+test("#1903 markWrite upgrades config→write under coalescing without an explicit flush", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, {
+        namespacesCatalogReadTouchCoalesceMs: 60_000,
+        namespacesCatalogWriteTouchCoalesceMs: 60_000,
+      }),
+    );
+    const ns = "project-origin-prov";
+    const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await catalog.registerResolved(ns, storageDir);
+    assert.equal(
+      (await catalog.getNamespaceRecord(ns))?.discoveredBy,
+      "config",
+      "pre-registration is discovered by config",
+    );
+    // A real write must upgrade the provenance immediately even with coalescing on.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir });
+    assert.equal(
+      (await catalog.getNamespaceRecord(ns))?.discoveredBy,
+      "write",
+      "the config→write upgrade flushes immediately (not coalesced away)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 5. Zero-limit semantics: CompactBytes=0 never rewrites and CoalesceMs=0 appends
+// one line per touch (line count == touch count) — the pre-#1903 behavior.
+test("#1903 zero knobs restore append-per-touch with no compaction", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, {
+        namespacesCatalogCompactBytes: 0,
+        namespacesCatalogReadTouchCoalesceMs: 0,
+        namespacesCatalogWriteTouchCoalesceMs: 0,
+      }),
+    );
+    const touches = 12;
+    for (let i = 0; i < touches; i++) {
+      await catalog.markWrite("alpha", { discoveredBy: "write" });
+    }
+    assert.equal(
+      await countCatalogLines(memoryDir),
+      touches,
+      "no coalescing and no compaction → exactly one append per touch",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 6. Auto-compaction bounds the log to one row per namespace and preserves every
+// namespace with its newest fields. A tiny limit forces compaction on each touch.
+test("#1903 auto-compaction bounds the log to one row per namespace and preserves all", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, {
+        namespacesCatalogCompactBytes: 100,
+        namespacesCatalogReadTouchCoalesceMs: 0,
+        namespacesCatalogWriteTouchCoalesceMs: 0,
+      }),
+    );
+    const namespaces = [
+      "project-origin-a",
+      "project-origin-b",
+      "project-origin-c",
+      "project-origin-d",
+      "project-origin-e",
+    ];
+    const newest = new Map<string, string>();
+    for (let round = 0; round < 20; round++) {
+      for (const ns of namespaces) {
+        const at = new Date(Date.now() + (round * namespaces.length + namespaces.indexOf(ns)) * 1000);
+        newest.set(ns, at.toISOString());
+        await catalog.markWrite(ns, { discoveredBy: "write", at });
+      }
+    }
+    assert.equal(
+      await countCatalogLines(memoryDir),
+      namespaces.length,
+      "the log is bounded to exactly one row per namespace after compaction",
+    );
+    const list = await catalog.listNamespaces();
+    for (const ns of namespaces) {
+      const record = list.find((r) => r.namespace === ns);
+      assert.ok(record, `namespace ${ns} survives compaction`);
+      assert.equal(
+        record?.lastWriteAt,
+        newest.get(ns),
+        `namespace ${ns} keeps its newest write timestamp through compaction`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// 7. Cross-process cache-coherence: compaction on one instance must never drop
+// another instance's rows (mirrors the rebuild-race tests). A third fresh
+// instance must read back every namespace touched by either.
+test("#1903 cross-instance compaction never drops another instance's rows", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const cfg = () =>
+      makeConfig(memoryDir, {
+        namespacesCatalogCompactBytes: 100,
+        namespacesCatalogReadTouchCoalesceMs: 0,
+        namespacesCatalogWriteTouchCoalesceMs: 0,
+      });
+    // Separate instances behave like separate processes (own lock owner id).
+    const a = new NamespaceCatalog(cfg());
+    const b = new NamespaceCatalog(cfg());
+    const written = new Set<string>();
+    for (let round = 0; round < 8; round++) {
+      const nsA = `project-origin-a${round}`;
+      const nsB = `project-origin-b${round}`;
+      written.add(nsA);
+      written.add(nsB);
+      // Interleave: A appends a fresh namespace while B triggers a compaction of
+      // the shared log. The cross-process lock serializes the two.
+      await Promise.all([
+        a.markWrite(nsA, { discoveredBy: "write" }),
+        b.markWrite(nsB, { discoveredBy: "write" }),
+      ]);
+    }
+    const fresh = new NamespaceCatalog(makeConfig(memoryDir));
+    const list = await fresh.listNamespaces();
+    for (const ns of written) {
+      assert.ok(
+        list.some((r) => r.namespace === ns),
+        `namespace ${ns} must survive cross-instance interleaved compaction`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

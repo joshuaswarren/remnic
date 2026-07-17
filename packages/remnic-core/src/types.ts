@@ -1690,6 +1690,40 @@ export interface PluginConfig {
    * existing single-namespace behavior is unchanged. Default on.
    */
   namespaceCatalogEnabled: boolean;
+  /**
+   * Size (bytes) at which a namespace-catalog touch triggers an in-lock
+   * auto-compaction of `state/namespaces.jsonl` (issue #1903). The append-only
+   * log grows one line per touch; once it exceeds this many bytes the next
+   * touch folds it (last-record-wins, every namespace row preserved) and
+   * atomically rewrites it. Default `16 * 1024 * 1024` (16 MB). `0` disables
+   * auto-compaction (restores the pre-#1903 unbounded-append behavior).
+   */
+  namespacesCatalogCompactBytes: number;
+  /**
+   * Coalescing window (ms) for pure-timestamp READ touches on an
+   * already-known namespace record (issue #1903). Repeated `markRead` touches
+   * that only refresh `lastReadAt` are buffered per (namespace, kind) and
+   * flushed once per window instead of appending a line each time.
+   * Semantically-observable touches (first sight, provenance/field changes)
+   * always flush immediately. Default `60000`. `0` disables read coalescing
+   * (each touch appends immediately, the pre-#1903 behavior).
+   */
+  namespacesCatalogReadTouchCoalesceMs: number;
+  /**
+   * Coalescing window (ms) for pure-timestamp WRITE touches on an
+   * already-known namespace record (issue #1903). Mirrors
+   * `namespacesCatalogReadTouchCoalesceMs` for `markWrite`/`lastWriteAt`.
+   * Default `1000`. `0` disables write coalescing.
+   */
+  namespacesCatalogWriteTouchCoalesceMs: number;
+  /**
+   * Whether pure state-file writes (`state/buffer.json`, ledgers, indexes)
+   * touch the namespace catalog (issue #1903). State files are not namespace
+   * memory data, so by default their writes do NOT record a catalog touch.
+   * Set `true` to restore the pre-#1903 behavior where every secure-file
+   * write touched the catalog. Default `false`.
+   */
+  namespacesCatalogTouchStateWrites: boolean;
   defaultNamespace: string;
   sharedNamespace: string;
   principalFromSessionKeyMode: PrincipalFromSessionKeyMode;

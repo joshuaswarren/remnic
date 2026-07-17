@@ -12,6 +12,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 import type { PluginConfig } from "../types.js";
 import {
   MutationSerializer,
@@ -497,12 +498,46 @@ export class NamespaceCatalog {
   // against this normalized form everywhere instead.
   private readonly defaultNamespaceIdentity: string;
 
+  // Issue #1903 — touch-path performance knobs, resolved with the documented
+  // defaults when an externally-built PluginConfig omits them (so a partial
+  // config object still yields the production behavior). `0` is a real disable
+  // switch for each and is preserved by `??` (0 is not null/undefined).
+  private readonly compactBytesLimit: number;
+  private readonly readCoalesceMs: number;
+  private readonly writeCoalesceMs: number;
+  // Size after the most recent auto-compaction (0 = none yet). Hysteresis for
+  // maybeAutoCompact: a folded catalog that is itself above the limit (many
+  // distinct namespaces) would otherwise be re-folded + re-rewritten on every
+  // touch. We only compact again once the log has grown by >= one limit-worth
+  // since the last compaction (#1903, Codex).
+  private lastCompactedSize = 0;
+
+  // Issue #1903 — per-(namespace, kind) coalescing buffer. Keyed `${kind}:${ns}`.
+  // Holds the latest buffered timestamp/metadata for a pure-timestamp touch on
+  // an already-known record; a `.unref()`'d timer flushes it once per window so
+  // the append-only log does not grow one line per repeat touch. Semantically
+  // observable touches (first sight, provenance/field change) bypass this buffer
+  // and flush immediately (see `coalesceTouch`).
+  private readonly pendingTouches = new Map<
+    string,
+    {
+      namespace: string;
+      kind: "read" | "write";
+      metadata?: NamespaceTouchMetadata;
+      at: Date;
+      timer: NodeJS.Timeout;
+    }
+  >();
+
   constructor(private readonly config: PluginConfig) {
     this.memoryDir = config.memoryDir;
     this.stateDir = path.join(this.memoryDir, STATE_DIR);
     this.catalogPath = path.join(this.stateDir, CATALOG_FILE);
     this.rebuildLockPath = path.join(this.stateDir, REBUILD_LOCK_FILE);
     this.defaultNamespaceIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+    this.compactBytesLimit = config.namespacesCatalogCompactBytes ?? 16 * 1024 * 1024;
+    this.readCoalesceMs = config.namespacesCatalogReadTouchCoalesceMs ?? 60_000;
+    this.writeCoalesceMs = config.namespacesCatalogWriteTouchCoalesceMs ?? 1_000;
   }
 
   /** Whether the catalog is active (namespaces enabled and catalog not opted out). */
@@ -663,11 +698,137 @@ export class NamespaceCatalog {
   // ── Touch API (cheap, failure-tolerant) ─────────────────────────────────
 
   async markRead(namespace: string, metadata?: NamespaceTouchMetadata): Promise<void> {
-    await this.touch(namespace, "read", metadata);
+    await this.coalesceTouch(namespace, "read", metadata);
   }
 
   async markWrite(namespace: string, metadata?: NamespaceTouchMetadata): Promise<void> {
-    await this.touch(namespace, "write", metadata);
+    await this.coalesceTouch(namespace, "write", metadata);
+  }
+
+  /**
+   * Route a read/write touch through the per-(namespace, kind) coalescing buffer
+   * (issue #1903). A touch flushes IMMEDIATELY (bypassing the buffer) whenever it
+   * is semantically observable to an in-process reader — first sight of the
+   * namespace, a `config`→`write` provenance upgrade, the first time a touch
+   * field is set (so `listNamespaces({ writtenSince })` and record presence stay
+   * correct), or a change to `kind`/`principal`/`projectId`/`branch`/
+   * `parentNamespace`. A pure timestamp refresh on an already-known record is
+   * DEFERRED and coalesced: the newest buffered `at`/metadata wins and a single
+   * `touch` runs when the window elapses (or on `flushPendingTouches`). Window
+   * `0` skips the buffer entirely (the pre-#1903 immediate-append behavior).
+   * Best-effort: coalescing decisions read only the warm `compactedCache`, never
+   * forcing a disk parse; a cold cache flushes immediately (and re-warms it).
+   */
+  private async coalesceTouch(
+    namespace: string,
+    kind: "read" | "write",
+    metadata?: NamespaceTouchMetadata,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const window = kind === "read" ? this.readCoalesceMs : this.writeCoalesceMs;
+    if (window <= 0) {
+      await this.touch(namespace, kind, metadata);
+      return;
+    }
+    // Validate up front so an unsafe namespace rejects deterministically, exactly
+    // as the immediate-append path does (touch validates too).
+    const ns = this.validateNamespace(namespace);
+    const cached = this.compactedCache?.records.get(ns);
+    if (cached === undefined || this.touchMustFlushImmediately(kind, metadata, cached)) {
+      // Semantically observable in-process → flush now (also warms the cache).
+      // Any older buffered touch for this key is now redundant (this newer touch
+      // updates the same field with a newer timestamp): drop it so its stale
+      // timer cannot regress the timestamp after this flush.
+      const stale = this.pendingTouches.get(`${kind}:${ns}`);
+      if (stale) {
+        clearTimeout(stale.timer);
+        this.pendingTouches.delete(`${kind}:${ns}`);
+      }
+      await this.touch(namespace, kind, metadata);
+      return;
+    }
+    // Pure timestamp refresh on a known record → coalesce within a FIXED window.
+    const key = `${kind}:${ns}`;
+    const at = metadata?.at ?? new Date();
+    const existing = this.pendingTouches.get(key);
+    if (existing) {
+      // Keep the ORIGINAL timer and only refresh the buffered payload (#1903,
+      // Codex). Re-arming on every touch would make this a debounce that never
+      // flushes under continuous traffic (e.g. a sustained import), leaving
+      // lastWriteAt stale and writtenSince/maintenance consumers blind to an
+      // actively-written namespace. With a fixed window, each window flushes on
+      // schedule carrying the newest buffered timestamp.
+      existing.metadata = metadata;
+      existing.at = at;
+      return;
+    }
+    // Cap at Node's maximum setTimeout delay (2^31-1 ms ≈ 24.8 days). Values
+    // above that are clamped by Node to 1ms, which would append almost every
+    // touch and recreate the churn this coalescing exists to prevent (#1903, Codex).
+    const safeWindow = Math.min(window, 2_147_483_647);
+    const timer = setTimeout(() => {
+      void this.flushPendingTouch(key);
+    }, safeWindow);
+    timer.unref();
+    this.pendingTouches.set(key, { namespace: ns, kind, metadata, at, timer });
+  }
+
+  /**
+   * Whether a read/write touch on an EXISTING cached record must flush
+   * immediately rather than coalesce. Only pure timestamp refreshes (the value
+   * returns false) are safe to defer.
+   */
+  private touchMustFlushImmediately(
+    kind: "read" | "write",
+    metadata: NamespaceTouchMetadata | undefined,
+    cached: NamespaceRecord,
+  ): boolean {
+    // A write upgrading a config pre-registration to "write" changes the
+    // discoveredBy filter result — must be observable at once (~:1261).
+    if (kind === "write" && cached.discoveredBy === "config") return true;
+    // The first time a touch field is set makes the namespace newly match
+    // presence/`writtenSince` reads, so it must not be deferred.
+    if (kind === "write" && cached.lastWriteAt === undefined) return true;
+    if (kind === "read" && cached.lastReadAt === undefined) return true;
+    if (!metadata) return false;
+    if (metadata.kind !== undefined && metadata.kind !== cached.kind) return true;
+    if (metadata.principal !== undefined && metadata.principal !== cached.principal) return true;
+    if (metadata.projectId !== undefined && metadata.projectId !== cached.projectId) return true;
+    if (metadata.branch !== undefined && metadata.branch !== cached.branch) return true;
+    if (metadata.parentNamespace !== undefined && metadata.parentNamespace !== cached.parentNamespace) {
+      return true;
+    }
+    // A changed storageDir repoints routing/containment for this namespace —
+    // must be observable at once, not held stale by the coalesce window (#1903, Cursor).
+    if (metadata.storageDir !== undefined && metadata.storageDir !== cached.storageDir) return true;
+    return false;
+  }
+
+  /** Fire a single buffered touch when its coalescing window elapses. */
+  private async flushPendingTouch(key: string): Promise<void> {
+    const pending = this.pendingTouches.get(key);
+    if (!pending) return;
+    this.pendingTouches.delete(key);
+    clearTimeout(pending.timer);
+    await this.touch(pending.namespace, pending.kind, { ...pending.metadata, at: pending.at }).catch(
+      () => undefined,
+    );
+  }
+
+  /**
+   * Flush every buffered coalesced touch now (issue #1903). Called from the
+   * router/orchestrator shutdown hook so a long-lived host does not drop
+   * buffered read/write timestamps on teardown, and by tests to make coalesced
+   * touches deterministically observable. Best-effort: a failed flush never
+   * throws (each touch is `.catch()`-guarded).
+   */
+  async flushPendingTouches(): Promise<void> {
+    const pending = [...this.pendingTouches.values()];
+    this.pendingTouches.clear();
+    for (const p of pending) {
+      clearTimeout(p.timer);
+      await this.touch(p.namespace, p.kind, { ...p.metadata, at: p.at }).catch(() => undefined);
+    }
   }
 
   async markMaintenance(namespace: string, jobName: string, at?: Date): Promise<void> {
@@ -1269,9 +1430,46 @@ export class NamespaceCatalog {
         }
 
         await this.appendUnchained(record);
+        // Size-triggered auto-compaction (issue #1903), still inside the held
+        // cross-process lock + queueCritical turn so the fold→rename is atomic
+        // against concurrent touches and cross-process rebuilds.
+        await this.maybeAutoCompact();
         return true;
       }),
     );
+  }
+
+  /**
+   * Fold-and-rewrite the JSONL log when it exceeds `compactBytesLimit`
+   * (issue #1903). MUST be called only from inside `touch`'s held-lock +
+   * `queueCritical` critical section — it reuses `loadCompacted` (last-record-
+   * wins fold; every namespace row survives) and `rewriteUnchained` (atomic
+   * temp-file + rename), so the collapse is cross-process safe and never
+   * invokes the disk-scan purge in `finishRebuild`. Best-effort and fail-open
+   * (rule #40): the append already succeeded and is durable, so a failed
+   * compaction must not fail the touch — the next over-limit touch retries.
+   */
+  private async maybeAutoCompact(): Promise<void> {
+    try {
+      const limit = this.compactBytesLimit; // 0 => auto-compaction disabled
+      if (limit <= 0) return;
+      // Exact post-append size when the cache is warm; skip this touch's check
+      // when the cache is cold (a cross-process append invalidated it) — the
+      // next touch re-warms and re-checks.
+      const size = this.compactedCache?.identity.size;
+      if (size === undefined || size <= limit) return;
+      // Hysteresis (issue #1903, Codex): a folded catalog whose deduped state is
+      // itself above the limit (many distinct namespaces) would otherwise be
+      // re-folded + re-rewritten on EVERY touch — O(catalog) per touch. Only
+      // compact again once the log has grown by >= one limit-worth since the last
+      // compaction; by then the new appends are duplicates the fold can collapse.
+      if (this.lastCompactedSize > 0 && size - this.lastCompactedSize < limit) return;
+      const folded = await this.loadCompacted();
+      await this.rewriteUnchained([...folded.values()]);
+      this.lastCompactedSize = this.compactedCache?.identity.size ?? size;
+    } catch {
+      // Fail-open: compaction is best-effort maintenance on already-durable data.
+    }
   }
 
   // ── Rebuild from disk ────────────────────────────────────────────────────
@@ -1957,25 +2155,52 @@ export class NamespaceCatalog {
 
     try {
       this.onCatalogReadForTest?.();
-      const raw = await handle.readFile("utf8");
-      for (const line of raw.split("\n")) {
+      // Streaming chunked parse (issue #1903): the log can reach 100+ MB in
+      // production, so read it in bounded chunks and yield to the event loop
+      // every ~5000 lines instead of buffering the whole file and blocking on a
+      // single giant `split("\n")`. The fold is unchanged (last-record-wins with
+      // field-level touch merge across cross-process full-snapshot appends).
+      const CHUNK_BYTES = 1 << 16; // 64 KiB
+      const YIELD_EVERY_LINES = 5000;
+      const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
+      // StringDecoder buffers partial multi-byte UTF-8 sequences that straddle a
+      // chunk boundary, so a namespace/principal with non-ASCII bytes never
+      // corrupts at the seam.
+      const decoder = new StringDecoder("utf8");
+      let leftover = "";
+      let linesSinceYield = 0;
+      const foldLine = (line: string): void => {
         const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
+        if (trimmed.length === 0) return;
         let parsed: unknown;
         try {
           parsed = JSON.parse(trimmed);
         } catch {
           // Skip corrupt lines (CLAUDE.md rule #18 robustness).
-          continue;
+          return;
         }
         const record = coerceRecord(parsed);
-        if (!record) continue;
-        // Preserve each touch field across cross-process full-snapshot appends.
-        // Field-level touch merge preserves the newest value for every touch
-        // field when full-snapshot appends from separate processes interleave.
+        if (!record) return;
         const prior = records.get(record.namespace);
         records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
+      };
+      for (;;) {
+        const { bytesRead } = await handle.read(chunk, 0, CHUNK_BYTES, null);
+        if (bytesRead === 0) break;
+        leftover += decoder.write(chunk.subarray(0, bytesRead));
+        let newlineIndex = leftover.indexOf("\n");
+        while (newlineIndex !== -1) {
+          foldLine(leftover.slice(0, newlineIndex));
+          leftover = leftover.slice(newlineIndex + 1);
+          if (++linesSinceYield >= YIELD_EVERY_LINES) {
+            linesSinceYield = 0;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          newlineIndex = leftover.indexOf("\n");
+        }
       }
+      leftover += decoder.end();
+      foldLine(leftover);
     } catch {
       this.compactedCache = undefined;
       return new Map();

@@ -19,6 +19,9 @@ test("shared-namespace promotion updates the shared namespace lastWriteAt in the
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -93,6 +96,9 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-integ-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -156,6 +162,9 @@ test("scope profile shared reads do not imply automatic shared promotion", async
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-profile-promo-gate-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -236,6 +245,9 @@ test("scope profile auto-promotion does not require legacy global promotion", as
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-profile-promo-enabled-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -319,6 +331,9 @@ test("shared promotion records catalog write after shared temporal supersession"
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-order-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -433,6 +448,9 @@ test("shared hash-dedup supersession-only update records a shared-namespace cata
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-dedup-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -546,6 +564,9 @@ test("no_recall recall does not record catalog read touches", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-no-recall-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -588,6 +609,9 @@ test("zero recall result limit (topK:0) records no catalog read touches", async 
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-zero-limit-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -636,6 +660,9 @@ test("storageDirNamespace preserves a token-shaped literal raw namespace name", 
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-from-dir-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -687,6 +714,9 @@ test("storageDirNamespace preserves a CONFIGURED namespace named like a canonica
     const literalTokenName = tokenize("alpha"); // "ns-616c706861" — decodes to "alpha"
 
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -704,6 +734,9 @@ test("storageDirNamespace preserves a CONFIGURED namespace named like a canonica
 
     // Control: the identical byte-shape, but NOT configured, still decodes.
     const otherConfig = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -732,6 +765,9 @@ test("storageDirNamespace preserves a CATALOGED dynamic namespace named like a c
     await mkdir(path.join(rawDir, "facts"), { recursive: true });
 
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -788,6 +824,9 @@ test("storageDirNamespace ignores catalog hints whose storageDir belongs to anot
     );
 
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -843,6 +882,9 @@ test("storageDirNamespace compacts catalog hints before choosing token-root owne
     );
 
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -874,6 +916,9 @@ test("persistExtraction records non-fact catalog touch when a later non-fact wri
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonfact-finally-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -951,6 +996,9 @@ test("an already-aborted recall records no catalog read touches", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-aborted-recall-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -1003,6 +1051,9 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-identity-consolidate-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -1085,6 +1136,9 @@ test("semantic consolidation records a catalog write when archival fails after c
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-semantic-partial-catalog-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -1188,6 +1242,9 @@ test("persistExtraction records non-chunked source catalog touch after graph and
   let cleanup: (() => Promise<void>) | undefined;
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -1275,6 +1332,9 @@ test("maintenanceNamespaces skips absent catalog-only read rows but includes exi
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-maintenance-catalog-read-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),
@@ -1330,6 +1390,9 @@ test("maintenanceNamespaces skips catalog write rows whose storage root was dele
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-maintenance-deleted-write-"));
   try {
     const config = parseConfig({
+    namespacesCatalogWriteTouchCoalesceMs: 0,
+    namespacesCatalogReadTouchCoalesceMs: 0,
+    namespacesCatalogTouchStateWrites: true,
       openaiApiKey: "sk-test",
       memoryDir,
       workspaceDir: path.join(memoryDir, "workspace"),

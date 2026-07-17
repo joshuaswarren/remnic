@@ -2161,3 +2161,47 @@ test("parseConfig rejects non-positive extraction retry/breaker numerics and fal
   assert.equal(c.extractionBreakerAuthCooldownMs, 1_800_000, "non-positive auth cooldown -> default");
   assert.deepEqual(c.extractionRetryScheduleMs, [60_000, 300_000, 1_800_000, 7_200_000], "schedule with non-positive entry -> default");
 });
+
+test("parseConfig namespace-catalog touch-path knobs: defaults, 0-accepting numerics, and validation (#1903)", () => {
+  // Documented defaults when absent.
+  const d = parseConfig({});
+  assert.equal(d.namespacesCatalogCompactBytes, 16 * 1024 * 1024, "compactBytes default 16 MB");
+  assert.equal(d.namespacesCatalogReadTouchCoalesceMs, 60_000, "read coalesce default 60000ms");
+  assert.equal(d.namespacesCatalogWriteTouchCoalesceMs, 1_000, "write coalesce default 1000ms");
+  assert.equal(d.namespacesCatalogTouchStateWrites, false, "state-write touch default false");
+
+  // 0 is an accepted disable switch for every numeric (resolveNonNegativeIntegerConfig).
+  assert.equal(parseConfig({ namespacesCatalogCompactBytes: 0 }).namespacesCatalogCompactBytes, 0);
+  assert.equal(parseConfig({ namespacesCatalogReadTouchCoalesceMs: 0 }).namespacesCatalogReadTouchCoalesceMs, 0);
+  assert.equal(parseConfig({ namespacesCatalogWriteTouchCoalesceMs: 0 }).namespacesCatalogWriteTouchCoalesceMs, 0);
+
+  // Positive integers pass through; CLI/env numeric strings coerce.
+  assert.equal(parseConfig({ namespacesCatalogCompactBytes: 4096 }).namespacesCatalogCompactBytes, 4096);
+  assert.equal(parseConfig({ namespacesCatalogReadTouchCoalesceMs: "30000" }).namespacesCatalogReadTouchCoalesceMs, 30_000);
+
+  // Boolean-like coercion for the state-write toggle (gotcha #36).
+  assert.equal(parseConfig({ namespacesCatalogTouchStateWrites: true }).namespacesCatalogTouchStateWrites, true);
+  assert.equal(parseConfig({ namespacesCatalogTouchStateWrites: "true" }).namespacesCatalogTouchStateWrites, true);
+  assert.equal(parseConfig({ namespacesCatalogTouchStateWrites: "off" }).namespacesCatalogTouchStateWrites, false);
+
+  // Negative and non-integer numerics are rejected with the documented message.
+  for (const key of [
+    "namespacesCatalogCompactBytes",
+    "namespacesCatalogReadTouchCoalesceMs",
+    "namespacesCatalogWriteTouchCoalesceMs",
+  ]) {
+    for (const bad of [-1, 1.5, "1.5", "abc", Number.NaN, Infinity]) {
+      assert.throws(
+        () => parseConfig({ [key]: bad }),
+        new RegExp(`${key} must be a non-negative integer`),
+        `${key}=${JSON.stringify(bad)} should throw`,
+      );
+    }
+  }
+
+  // A present-but-malformed boolean toggle fails fast (gotcha #51).
+  assert.throws(
+    () => parseConfig({ namespacesCatalogTouchStateWrites: "maybe" }),
+    /namespacesCatalogTouchStateWrites must be a boolean-like value/,
+  );
+});

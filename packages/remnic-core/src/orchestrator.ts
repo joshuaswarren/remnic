@@ -948,6 +948,9 @@ export class Orchestrator {
     }
     this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
+    // Issue #1903: flush any coalesced namespace-catalog touches before teardown
+    // so a long-lived host does not drop buffered read/write timestamps.
+    await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
     await this.namespaceSearchRouter.dispose();
     await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {

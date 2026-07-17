@@ -2447,6 +2447,32 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Whether pure state-file writes touch the namespace catalog (issue #1903).
+   * Set by `NamespaceStorageRouter.bindCatalogWriteHook` from
+   * `namespacesCatalogTouchStateWrites` (default false). State files
+   * (`state/buffer.json`, ledgers, indexes) are not namespace memory data, so by
+   * default their writes do NOT record a catalog touch.
+   */
+  touchStateWrites = false;
+
+  /**
+   * Post-write catalog hook, gated by file path (issue #1903). Namespace data
+   * (`facts/`, `cold/`, `entities/`, `artifacts/`, `profile.md`, ...) lives
+   * OUTSIDE `stateDir`, so a data write always touches; a write under `stateDir`
+   * is a pure state write and is skipped unless `touchStateWrites` is enabled.
+   */
+  private notifyCatalogWriteForPath(filePath: string): void {
+    if (!this.touchStateWrites && this.isStateFilePath(filePath)) return;
+    this.notifyCatalogWrite();
+  }
+
+  /** Whether `filePath` resolves to `stateDir` itself or a path contained in it. */
+  private isStateFilePath(filePath: string): boolean {
+    const rel = path.relative(this.stateDir, path.resolve(filePath));
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  }
+
   // ── Tombstone store (issue #1579) ───────────────────────────────────────
   // Instance-scoped (rule 11) + namespace-scoped (rule 42) tombstone index.
   // Lazily loaded from <stateDir>/tombstones.jsonl; invalidated together with
@@ -3083,12 +3109,12 @@ export class StorageManager {
   }
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
     return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWrite()
+      this.notifyCatalogWriteForPath(filePath)
     );
   }
   private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWrite()
+      this.notifyCatalogWriteForPath(filePath)
     );
   }
 
@@ -3340,14 +3366,14 @@ export class StorageManager {
         if (isEncryptedFile(await readFile(filePath))) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
-          this.notifyCatalogWrite();
+          this.notifyCatalogWriteForPath(filePath);
           return;
         }
       } catch (err) {
         if (!isErrnoCode(err, "ENOENT")) throw err;
       }
       await appendFile(filePath, content, "utf-8");
-      this.notifyCatalogWrite();
+      this.notifyCatalogWriteForPath(filePath);
       return;
     }
 
@@ -3358,7 +3384,7 @@ export class StorageManager {
       if (!isErrnoCode(err, "ENOENT")) throw err;
     }
     await writeMaybeEncryptedFile(filePath, `${existing}${content}`, writeKey, {}, this.baseDir);
-    this.notifyCatalogWrite();
+    this.notifyCatalogWriteForPath(filePath);
   }
   private get stateDir(): string {
     return path.join(this.baseDir, "state");
