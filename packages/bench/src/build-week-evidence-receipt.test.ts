@@ -169,6 +169,9 @@ function syntheticCanonicalLongMemEvalResult(): BenchmarkResult {
     tokens: { input: 50, output: 25 },
     ...(index === 0 ? { details: { recall: "private recalled production text" } } : {}),
   }));
+  result.results.aggregates = {
+    exact_match: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+  };
   return result;
 }
 
@@ -806,6 +809,19 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
     /secret or private-account material/,
   );
 
+  const pathLike = syntheticResult({ id: "staging/../../secrets" });
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...syntheticSources({ result: pathLike, limit: 2 }),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /compact public identifier/,
+  );
+
   const unsafeReasoningEffort = syntheticResult();
   unsafeReasoningEffort.config.systemProvider!.reasoningEffort = "/home/private/reasoning" as "medium";
   assert.throws(
@@ -818,6 +834,22 @@ test("receipt metadata rejects path and secret-bearing public identifiers", () =
         publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
       }),
     /reasoningEffort must be one of/,
+  );
+});
+
+test("receipt rejects recorded aggregates that do not match task scores", () => {
+  const stale = syntheticResult();
+  stale.results.aggregates.exact_match!.mean = 1;
+  assert.throws(
+    () =>
+      buildBuildWeekEvidenceReceipt({
+        ...syntheticSources({ result: stale, limit: 2 }),
+        datasetVersion: "oracle-v1",
+        limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+        freshIsolatedStoreConfirmed: true,
+        publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+      }),
+    /aggregate exact_match\.mean does not match task scores/,
   );
 });
 

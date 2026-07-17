@@ -7,6 +7,7 @@ import {
   computeBenchmarkReproManifestArtifactHash,
   type BenchmarkReproManifest,
 } from "./repro-manifest.js";
+import { aggregateTaskScores } from "./scorer.js";
 import type { BenchmarkResult, ProviderConfig } from "./types.js";
 
 export const BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1 as const;
@@ -109,7 +110,7 @@ export interface BuildBuildWeekEvidenceReceiptOptions {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_DATASET_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+@/-]{0,127}$/;
-const SAFE_PUBLIC_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+@:/-]{0,255}$/;
+const SAFE_PUBLIC_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+@:-]{0,255}$/;
 const SOL_MODEL = /^gpt-5\.6-sol$/i;
 const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 const MEMCORRECT_BENCHMARK_ID = "memcorrect-v1";
@@ -430,17 +431,36 @@ function providerReceipt(
 }
 
 function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["benchmark"]["aggregates"] {
+  for (const [taskIndex, task] of result.results.tasks.entries()) {
+    for (const [metric, score] of Object.entries(task.scores)) {
+      requireSafeIdentifier(metric, `task ${taskIndex} score metric name`);
+      requireFinite(score, `task ${taskIndex} score ${metric}`);
+    }
+  }
+  const recomputed = aggregateTaskScores(result.results.tasks.map((task) => task.scores));
+  const recordedNames = Object.keys(result.results.aggregates).sort();
+  const recomputedNames = Object.keys(recomputed).sort();
+  if (
+    recordedNames.length !== recomputedNames.length ||
+    recordedNames.some((name, index) => name !== recomputedNames[index])
+  ) {
+    throw new Error("benchmark aggregate metric names do not match the task score metrics");
+  }
   const output: BuildWeekEvidenceReceipt["benchmark"]["aggregates"] = {};
-  for (const metric of Object.keys(result.results.aggregates).sort()) {
-    const aggregate = result.results.aggregates[metric];
-    if (!aggregate) continue;
-    output[requireSafeIdentifier(metric, "aggregate metric name")] = {
-      mean: requireFinite(aggregate.mean, `${metric}.mean`),
-      median: requireFinite(aggregate.median, `${metric}.median`),
-      stdDev: requireFiniteNonNegative(aggregate.stdDev, `${metric}.stdDev`),
-      min: requireFinite(aggregate.min, `${metric}.min`),
-      max: requireFinite(aggregate.max, `${metric}.max`),
-    };
+  for (const metric of recomputedNames) {
+    const recorded = result.results.aggregates[metric]!;
+    const expected = recomputed[metric]!;
+    const safeMetric = requireSafeIdentifier(metric, "aggregate metric name");
+    for (const field of ["mean", "median", "stdDev", "min", "max"] as const) {
+      const observed = field === "stdDev"
+        ? requireFiniteNonNegative(recorded[field], `${metric}.${field}`)
+        : requireFinite(recorded[field], `${metric}.${field}`);
+      const tolerance = Number.EPSILON * Math.max(1, Math.abs(expected[field])) * 16;
+      if (Math.abs(observed - expected[field]) > tolerance) {
+        throw new Error(`benchmark aggregate ${metric}.${field} does not match task scores`);
+      }
+    }
+    output[safeMetric] = expected;
   }
   return output;
 }
