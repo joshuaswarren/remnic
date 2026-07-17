@@ -1,28 +1,24 @@
 import { z } from "zod";
 
-import { defineOperation, type OperationContext } from "../access-boundary.js";
+import { type OperationContext, defineOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
 import {
   RELAY_MISSION_MAX_EVENT_LIMIT,
-  RelayMissionEventInputSchema,
-  RelayMissionReadOptionsSchema,
-  RelayMissionStore,
   type RelayMissionAppendResult,
   type RelayMissionEventInput,
+  RelayMissionEventInputSchema,
+  RelayMissionIdSchema,
   type RelayMissionReadOptions,
+  RelayMissionReadOptionsSchema,
   type RelayMissionSnapshot,
+  RelayMissionStore,
 } from "./mission.js";
 
-const missionIdSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 const namespaceSchema = z.string().trim().min(1).max(128).nullable().optional();
 
 const RelayMissionAppendAccessSchema = z
   .object({
-    missionId: missionIdSchema,
+    missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
     event: RelayMissionEventInputSchema,
   })
@@ -36,7 +32,7 @@ const optionalLimitSchema = z.preprocess((value) => {
 
 const RelayMissionReadAccessSchema = z
   .object({
-    missionId: missionIdSchema,
+    missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
     since: z.string().datetime({ offset: true }).optional(),
     until: z.string().datetime({ offset: true }).optional(),

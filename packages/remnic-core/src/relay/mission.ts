@@ -12,7 +12,7 @@ export const RELAY_MISSION_MAX_EVENTS = 2_000;
 export const RELAY_MISSION_DEFAULT_EVENT_LIMIT = 200;
 export const RELAY_MISSION_MAX_EVENT_LIMIT = 500;
 
-const missionIdSchema = z
+export const RelayMissionIdSchema = z
   .string()
   .min(1)
   .max(64)
@@ -194,15 +194,42 @@ export const RelayMissionPayloadSchema = RelayMissionPayloadUnionSchema.superRef
       path: ["replacementDecisionId"],
     });
   }
-  if (value.kind !== "recall_observed") return;
-  for (const [index, evidence] of value.evidence.entries()) {
-    if (evidence.kind !== "recall_audit") continue;
+  if (value.kind === "correction_approved" && !value.evidence.some((item) => item.kind === "approval")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "correction approval requires approval evidence",
+      path: ["evidence"],
+    });
+  }
+  if (
+    value.kind === "decision_superseded" &&
+    !value.evidence.some((item) => item.kind === "correction" && item.id === value.correctionId)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision supersession requires matching correction evidence",
+      path: ["evidence"],
+    });
+  }
+  if (value.kind !== "recall_observed" && value.kind !== "propagation_verified") return;
+  const matchingRecallEvidence = value.evidence.find(
+    (item) => item.kind === "recall_audit" && item.id === value.recallReceiptId
+  );
+  if (!matchingRecallEvidence) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "recall proof requires a matching recall-audit reference",
+      path: ["evidence"],
+    });
+    return;
+  }
+  if (value.kind === "recall_observed") {
     const expectedCapture = value.capturedAtAction ? "at_action" : "historical_lookup";
-    if (evidence.capture !== expectedCapture && evidence.capture !== "fixture") {
+    if (matchingRecallEvidence.capture !== expectedCapture && matchingRecallEvidence.capture !== "fixture") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `recall evidence must be labeled ${expectedCapture}`,
-        path: ["evidence", index, "capture"],
+        path: ["evidence", value.evidence.indexOf(matchingRecallEvidence), "capture"],
       });
     }
   }
@@ -224,7 +251,7 @@ export const RelayMissionEventSchema = z
   .object({
     schemaVersion: z.literal(RELAY_MISSION_SCHEMA_VERSION),
     eventId: identifierSchema,
-    missionId: missionIdSchema,
+    missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
     recordedAt: isoDateTimeSchema,
     occurredAt: isoDateTimeSchema,
@@ -272,6 +299,7 @@ export interface RelayRecallSnapshot {
   decisionId: string;
   query: string;
   capturedAtAction: boolean;
+  coldStart: boolean;
   occurredAt: string;
   evidence: RelayEvidenceRef[];
 }
@@ -324,6 +352,7 @@ export interface RelayCorrectionSnapshot {
   approvedAt?: string;
   approvedBy?: { kind: "human" | "agent"; id: string; label: string };
   approvalNote?: string;
+  appliedAt?: string;
   propagatedAt?: string;
   evidence: RelayEvidenceRef[];
 }
@@ -463,7 +492,7 @@ export class RelayMissionStore {
     inputValue: RelayMissionEventInput,
     hooks: { beforeAppend?: () => void | Promise<void> } = {}
   ): Promise<RelayMissionAppendResult> {
-    const missionId = missionIdSchema.parse(missionIdValue);
+    const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const input = RelayMissionEventInputSchema.parse(inputValue);
     const missionDir = await this.ensureMissionDirectory();
     const filePath = path.join(missionDir, `${missionId}.jsonl`);
@@ -539,7 +568,7 @@ export class RelayMissionStore {
   }
 
   async read(missionIdValue: string, readOptions: RelayMissionReadOptions = {}): Promise<RelayMissionSnapshot> {
-    const missionId = missionIdSchema.parse(missionIdValue);
+    const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const options = RelayMissionReadOptionsSchema.parse(readOptions);
     const missionDir = await this.ensureMissionDirectory();
     const filePath = path.join(missionDir, `${missionId}.jsonl`);
@@ -657,7 +686,7 @@ interface ReduceRelayMissionInput {
 }
 
 export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMissionSnapshot {
-  const missionId = missionIdSchema.parse(input.missionId);
+  const missionId = RelayMissionIdSchema.parse(input.missionId);
   const namespace = namespaceSchema.parse(input.namespace);
   const options = RelayMissionReadOptionsSchema.parse(input.options ?? {});
   const corruptLines = input.corruptLines ?? 0;
@@ -676,6 +705,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   const tests: RelayTestSnapshot[] = [];
   const propagation: RelayPropagationSnapshot[] = [];
   const missingEvidence = new Set<string>();
+  const substantiveAgentIds = new Set<string>();
+  const substantiveSessionIds = new Set<string>();
   let title: string | null = null;
   let objective: string | null = null;
   let runMode: "live" | "replay" | "fixture" | null = null;
@@ -705,19 +736,33 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     return created;
   };
 
+  const markSubstantiveParticipation = (agentId: string, sessionId?: string): void => {
+    substantiveAgentIds.add(agentId);
+    if (sessionId) substantiveSessionIds.add(sessionId);
+  };
+
   for (const event of orderedEvents) {
     const payload = event.payload;
+    if (outcome !== null && payload.kind !== "mission_completed") {
+      missingEvidence.add(`mission:event-after-completion:${event.eventId}`);
+    }
     switch (payload.kind) {
       case "mission_started":
+        if (startedAt !== null) {
+          missingEvidence.add("mission:duplicate-start");
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
         title = payload.title;
         objective = payload.objective;
         runMode = payload.runMode;
         startedAt = event.occurredAt;
-        status = "active";
+        if (outcome === null) status = "active";
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
       case "agent_status": {
         const agent = ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        markSubstantiveParticipation(payload.agentId, payload.sessionId);
         agent.label = payload.label;
         agent.role = payload.role;
         agent.status = payload.status;
@@ -726,6 +771,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       }
       case "agent_output": {
         const agent = ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        markSubstantiveParticipation(payload.agentId, payload.sessionId);
         agent.outputs.push({
           outputId: payload.outputId,
           summary: payload.summary,
@@ -737,6 +783,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       }
       case "belief_observed": {
         ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        markSubstantiveParticipation(payload.agentId, payload.sessionId);
         const existing = decisions.get(payload.decisionId);
         if (existing) {
           if (!existing.heldByAgentIds.includes(payload.agentId)) {
@@ -758,18 +805,24 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
       }
-      case "conflict_detected":
-        conflicts.set(payload.conflictId, {
-          conflictId: payload.conflictId,
-          decisionIds: uniqueSorted(payload.decisionIds),
-          agentIds: uniqueSorted(payload.agentIds),
-          summary: payload.summary,
-          status: "open",
-          occurredAt: event.occurredAt,
-          evidence: payload.evidence,
-        });
+      case "conflict_detected": {
+        if (conflicts.has(payload.conflictId)) {
+          missingEvidence.add(`conflict:${payload.conflictId}:duplicate`);
+        } else {
+          conflicts.set(payload.conflictId, {
+            conflictId: payload.conflictId,
+            decisionIds: uniqueSorted(payload.decisionIds),
+            agentIds: uniqueSorted(payload.agentIds),
+            summary: payload.summary,
+            status: "open",
+            occurredAt: event.occurredAt,
+            evidence: payload.evidence,
+          });
+        }
+        for (const agentId of payload.agentIds) substantiveAgentIds.add(agentId);
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
+      }
       case "test_result":
         tests.push({
           testId: payload.testId,
@@ -783,6 +836,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
       case "correction_proposed": {
+        if (corrections.has(payload.correctionId)) {
+          missingEvidence.add(`correction:${payload.correctionId}:duplicate-proposal`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        substantiveAgentIds.add(payload.proposedBy);
         corrections.set(payload.correctionId, {
           correctionId: payload.correctionId,
           conflictId: payload.conflictId,
@@ -808,14 +867,21 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         }
         const conflict = conflicts.get(payload.conflictId);
         if (conflict) {
+          const requiredDecisionIds = [payload.proposedDecisionId, ...payload.supersedesDecisionIds];
+          if (!requiredDecisionIds.every((decisionId) => conflict.decisionIds.includes(decisionId))) {
+            missingEvidence.add(`conflict:${payload.conflictId}:decision-link`);
+          }
           conflict.status = "proposed";
           conflict.correctionId = payload.correctionId;
+        } else {
+          missingEvidence.add(`conflict:${payload.conflictId}:observation`);
         }
         status = "awaiting_approval";
         collectMissingEvidence(missingEvidence, event, payload.evidence);
         break;
       }
       case "correction_approved": {
+        if (payload.approvedBy.kind === "agent") substantiveAgentIds.add(payload.approvedBy.id);
         const correction = corrections.get(payload.correctionId);
         if (correction) {
           if (correction.approvedAt === undefined) {
@@ -823,6 +889,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
             correction.approvedBy = payload.approvedBy;
             correction.approvalNote = payload.note;
             if (correction.status === "proposed") correction.status = "approved";
+          } else {
+            missingEvidence.add(`correction:${payload.correctionId}:duplicate-approval`);
           }
           correction.evidence.push(...payload.evidence);
         } else {
@@ -871,6 +939,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         replacement.evidence.push(...payload.evidence);
         correction.evidence.push(...payload.evidence);
         if (correctionSupersessionComplete(correction, decisions)) {
+          correction.appliedAt ??= event.occurredAt;
           if (correction.status !== "propagated") correction.status = "applied";
           const conflict = conflicts.get(correction.conflictId);
           if (conflict) conflict.status = "resolved";
@@ -880,15 +949,21 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       }
       case "recall_observed": {
         const agent = ensureAgent(payload.agentId, payload.sessionId, event.occurredAt);
+        const coldStart =
+          !substantiveAgentIds.has(payload.agentId) &&
+          !substantiveSessionIds.has(payload.sessionId) &&
+          agent.recalls.length === 0;
         agent.recalls.push({
           recallReceiptId: payload.recallReceiptId,
           sessionId: payload.sessionId,
           decisionId: payload.decisionId,
           query: payload.query,
           capturedAtAction: payload.capturedAtAction,
+          coldStart,
           occurredAt: event.occurredAt,
           evidence: payload.evidence,
         });
+        markSubstantiveParticipation(payload.agentId, payload.sessionId);
         const decision = decisions.get(payload.decisionId);
         if (decision && !decision.heldByAgentIds.includes(payload.agentId)) {
           decision.heldByAgentIds.push(payload.agentId);
@@ -912,6 +987,7 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         }
         if (
           (correction.status !== "applied" && correction.status !== "propagated") ||
+          correction.appliedAt === undefined ||
           correction.proposedDecisionId !== payload.decisionId
         ) {
           missingEvidence.add(`correction:${payload.correctionId}:supersession`);
@@ -931,6 +1007,21 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         }
         if (!recalled.capturedAtAction) {
           missingEvidence.add(`recall:${payload.recallReceiptId}:at-action`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (!recalled.coldStart) {
+          missingEvidence.add(`recall:${payload.recallReceiptId}:cold-start`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (compareInstants(correction.appliedAt, recalled.occurredAt) >= 0) {
+          missingEvidence.add(`recall:${payload.recallReceiptId}:post-application`);
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (compareInstants(recalled.occurredAt, event.occurredAt) >= 0) {
+          missingEvidence.add(`recall:${payload.recallReceiptId}:propagation-order`);
           collectMissingEvidence(missingEvidence, event, payload.evidence);
           break;
         }
@@ -955,6 +1046,12 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         break;
       }
       case "mission_completed":
+        if (outcome !== null) {
+          missingEvidence.add("mission:duplicate-completion");
+          collectMissingEvidence(missingEvidence, event, payload.evidence);
+          break;
+        }
+        if (startedAt === null) missingEvidence.add("mission:start");
         outcome = {
           result: payload.outcome,
           summary: payload.summary,
@@ -971,6 +1068,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   for (const conflict of conflicts.values()) {
     for (const decisionId of conflict.decisionIds) {
       if (!decisions.has(decisionId)) missingEvidence.add(`decision:${decisionId}:conflict-target`);
+    }
+    for (const agentId of conflict.agentIds) {
+      if (!agents.has(agentId)) missingEvidence.add(`agent:${agentId}:conflict-participant`);
     }
   }
   for (const correction of corrections.values()) {
@@ -1007,6 +1107,10 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
   if (outcome && !passingOutcomeVerified) missingEvidence.add("outcome:passing-test");
   if (outcome?.result === "recovered" && !coldStartVerified) {
     missingEvidence.add("outcome:cold-start-propagation");
+  }
+  if (input.events.length > 0 && startedAt === null) missingEvidence.add("mission:start");
+  if (startedAt !== null && completedAt !== null && compareInstants(startedAt, completedAt) >= 0) {
+    missingEvidence.add("mission:lifecycle-order");
   }
 
   const eventWindow = filteredEvents.slice(Math.max(0, filteredEvents.length - options.limit));
@@ -1046,7 +1150,11 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     outcome,
     receipt: {
       complete:
-        outcome?.result === "recovered" && passingOutcomeVerified && coldStartVerified && missingEvidence.size === 0,
+        status === "completed" &&
+        outcome?.result === "recovered" &&
+        passingOutcomeVerified &&
+        coldStartVerified &&
+        missingEvidence.size === 0,
       missingEvidence: [...missingEvidence].sort(compareText),
       activeDecisionIds: sortedDecisions
         .filter((decision) => decision.status === "active")

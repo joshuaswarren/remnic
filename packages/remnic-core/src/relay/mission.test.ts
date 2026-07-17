@@ -71,6 +71,8 @@ test("fixture reduces to a complete correction and cold-start receipt", async ()
     assert.deepEqual(snapshot.receipt.missingEvidence, []);
     assert.equal(snapshot.receipt.complete, true);
     assert.equal(snapshot.corrections[0]?.status, "propagated");
+    assert.equal(snapshot.corrections[0]?.appliedAt, "2026-07-17T18:00:23.000Z");
+    assert.equal(snapshot.agents.find((agent) => agent.agentId === "agent-orbit")?.recalls[0]?.coldStart, true);
     assert.equal(
       snapshot.decisions.find((item) => item.status === "superseded")?.supersededBy,
       "decision-refresh-after-expiry"
@@ -189,6 +191,19 @@ test("event contract rejects invalid identifiers, self-supersession, and mislabe
     }).success,
     false
   );
+  assert.equal(
+    RelayMissionEventInputSchema.safeParse({
+      ...recall,
+      payload: {
+        ...recall.payload,
+        evidence: recall.payload.evidence.map((item) => ({
+          ...item,
+          id: "different-recall-receipt",
+        })),
+      },
+    }).success,
+    false
+  );
 });
 
 test("reducer sorts equal-time events with a stable event-id tie break", () => {
@@ -252,6 +267,60 @@ test("time windows filter the event feed without rewriting authoritative receipt
   assert.equal(snapshot.bounds.totalEvents, 0);
   assert.equal(snapshot.bounds.returnedEvents, 0);
   assert.deepEqual(snapshot.events, []);
+});
+
+test("receipt requires an observed, decision-linked conflict and coherent mission lifecycle", () => {
+  const withoutConflict = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: fixtureEvents().filter((event) => event.payload.kind !== "conflict_detected"),
+  });
+  assert.equal(withoutConflict.receipt.complete, false);
+  assert.deepEqual(withoutConflict.conflicts, []);
+  assert.ok(withoutConflict.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:observation"));
+
+  const lateStart = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: fixtureEvents().map((event) =>
+      event.payload.kind === "mission_started" ? { ...event, occurredAt: "2026-07-17T18:00:40.000Z" } : event
+    ),
+  });
+  assert.equal(lateStart.status, "completed");
+  assert.equal(lateStart.receipt.complete, false);
+  assert.ok(lateStart.receipt.missingEvidence.includes("mission:lifecycle-order"));
+});
+
+test("propagation requires a matching post-application recall from a cold agent session", () => {
+  const recallBeforeApplication = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: fixtureEvents().map((event) =>
+      event.payload.kind === "recall_observed" ? { ...event, occurredAt: "2026-07-17T18:00:22.000Z" } : event
+    ),
+  });
+  assert.equal(recallBeforeApplication.receipt.complete, false);
+  assert.equal(recallBeforeApplication.receipt.coldStartVerified, false);
+  assert.ok(recallBeforeApplication.receipt.missingEvidence.includes("recall:recall-orbit-cold:post-application"));
+
+  const warmAgent = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: fixtureEvents().map((event) => {
+      if (event.payload.kind !== "recall_observed" && event.payload.kind !== "propagation_verified") return event;
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          agentId: "agent-atlas",
+          sessionId: "session-atlas",
+        },
+      };
+    }),
+  });
+  assert.equal(warmAgent.receipt.complete, false);
+  assert.equal(warmAgent.receipt.coldStartVerified, false);
+  assert.ok(warmAgent.receipt.missingEvidence.includes("recall:recall-orbit-cold:cold-start"));
 });
 
 test("receipt cannot apply or propagate a correction without prior approval", () => {
