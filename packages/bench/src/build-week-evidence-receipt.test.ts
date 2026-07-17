@@ -9,6 +9,7 @@ import {
   BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
   BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT,
   BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256,
+  BUILD_WEEK_LONGMEMEVAL_TASK_ID_SET_SHA256,
   BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
   BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT,
   BUILD_WEEK_MEMCORRECT_PAYLOAD_SHA256,
@@ -16,6 +17,7 @@ import {
   serializeBuildWeekEvidenceReceipt,
   writeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
+import { LONGMEMEVAL_CANONICAL_TASK_IDS } from "./longmemeval-canonical-task-ids.test-fixture.ts";
 import {
   computeBenchmarkReproDatasetInventoryHash,
   computeBenchmarkReproManifestArtifactHash,
@@ -159,8 +161,8 @@ function syntheticMemCorrectResult(): BenchmarkResult {
 
 function syntheticCanonicalLongMemEvalResult(): BenchmarkResult {
   const result = syntheticResult({ version: "2.0.0", datasetHash: BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256 });
-  result.results.tasks = Array.from({ length: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT }, (_, index) => ({
-    taskId: `private-task-${index}`,
+  result.results.tasks = LONGMEMEVAL_CANONICAL_TASK_IDS.map((taskId, index) => ({
+    taskId,
     question: `private question ${index}`,
     expected: `private expected answer ${index}`,
     actual: `private generated answer ${index}`,
@@ -192,6 +194,15 @@ test("pinned Build Week MemCorrect identity matches the deterministic full corpu
       { length: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
       (_, index) => `memcorrect-${0xc077e7}-${index.toString(16)}`,
     ),
+  );
+});
+
+test("pinned LongMemEval task identity hash matches its public ID fixture", () => {
+  assert.equal(LONGMEMEVAL_CANONICAL_TASK_IDS.length, BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT);
+  assert.equal(new Set(LONGMEMEVAL_CANONICAL_TASK_IDS).size, BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT);
+  assert.equal(
+    sha256(JSON.stringify([...LONGMEMEVAL_CANONICAL_TASK_IDS].sort())),
+    BUILD_WEEK_LONGMEMEVAL_TASK_ID_SET_SHA256,
   );
 });
 
@@ -455,6 +466,10 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
   const tooShort = syntheticCanonicalLongMemEvalResult();
   tooShort.results.tasks.pop();
   assert.throws(() => build(tooShort), /exactly 500 tasks/);
+
+  const duplicateTask = syntheticCanonicalLongMemEvalResult();
+  duplicateTask.results.tasks[1]!.taskId = duplicateTask.results.tasks[0]!.taskId;
+  assert.throws(() => build(duplicateTask), /500 unique task identities/);
 
   const arbitraryInventoryResult = syntheticCanonicalLongMemEvalResult();
   const arbitraryInventorySources = syntheticSources({ result: arbitraryInventoryResult });

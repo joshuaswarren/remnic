@@ -25,6 +25,8 @@ export const BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION = "longmemeval-oracle" as co
 export const BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256 =
   "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c" as const;
 export const BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT = 500 as const;
+export const BUILD_WEEK_LONGMEMEVAL_TASK_ID_SET_SHA256 =
+  "f448abc019682167d03901d423bb0365e6ff6b6ec8342420c80ce5e0f1fb9591" as const;
 
 export const BUILD_WEEK_LIMITATIONS = {
   boundedSubset: "This result covers a bounded subset, not the benchmark's complete dataset.",
@@ -392,6 +394,16 @@ function requirePinnedFullFileBackedCorpus(
   }
   if (datasetReceipt.payloadSha256 !== BUILD_WEEK_LONGMEMEVAL_PAYLOAD_SHA256) {
     throw new Error("LongMemEval payload hash does not match the pinned full corpus");
+  }
+  const taskIds = result.results.tasks.map((task, index) =>
+    requireSafeIdentifier(task.taskId, `LongMemEval task ${index} id`),
+  );
+  if (new Set(taskIds).size !== BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT) {
+    throw new Error("LongMemEval full receipts require 500 unique task identities");
+  }
+  const taskIdSetHash = sha256(JSON.stringify([...taskIds].sort()));
+  if (taskIdSetHash !== BUILD_WEEK_LONGMEMEVAL_TASK_ID_SET_SHA256) {
+    throw new Error("LongMemEval task identities do not match the pinned full corpus");
   }
   const dataset = manifest.datasets.find((entry) => entry.benchmark === LONGMEMEVAL_BENCHMARK_ID);
   const file = dataset?.files[0];
@@ -763,7 +775,8 @@ export async function writeBuildWeekEvidenceReceipt(args: {
       closeError = error;
     }
   }
-  if (publicationError !== undefined) {
+  const outputFailure = publicationError ?? closeError;
+  if (outputFailure !== undefined) {
     try {
       const currentStat = await stat(args.outputPath);
       if (currentStat.dev !== createdStat.dev || currentStat.ino !== createdStat.ino) {
@@ -773,19 +786,18 @@ export async function writeBuildWeekEvidenceReceipt(args: {
     } catch (cleanupError) {
       if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new AggregateError(
-          [publicationError, cleanupError],
+          [outputFailure, cleanupError],
           "receipt publication failed and its partial output could not be removed safely",
         );
       }
     }
-    if (closeError !== undefined) {
+    if (publicationError !== undefined && closeError !== undefined) {
       throw new AggregateError(
         [publicationError, closeError],
         "receipt publication failed and closing its partial output also failed",
       );
     }
-    throw publicationError;
+    throw outputFailure;
   }
-  if (closeError !== undefined) throw closeError;
   return receipt;
 }
