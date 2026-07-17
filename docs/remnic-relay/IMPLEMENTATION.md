@@ -58,4 +58,3 @@ work. Close every child issue only after its merged current head is verified.
 At every decision ask: “Is this OpenAI-attention and 1st place Build Week winning
 worthy?” Prefer visible product leverage, honest proof, and reliable judge
 reproduction over broad infrastructure or speculative generality.
-

@@ -72,4 +72,3 @@ The winning bar for every addition is whether it improves at least one of:
 
 Performance work, generic orchestration, autonomous corrections, and production
 data integration do not pass that bar for this submission.
-

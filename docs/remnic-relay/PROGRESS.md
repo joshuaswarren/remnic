@@ -19,7 +19,7 @@ Last updated: 2026-07-17
 - [x] Deterministic bounded reducer with explicit evidence completeness.
 - [x] Namespace-authorized access operations and HTTP routes.
 - [x] Deterministic synthetic fixture and failure-path tests.
-- [ ] Focused checks and repository preflight.
+- [x] Focused checks and repository preflight.
 - [ ] PR loop reports current-head `MERGE_READY`.
 - [ ] PR manually merged and `origin/main` verified.
 
