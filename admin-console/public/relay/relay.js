@@ -51,6 +51,8 @@
     token: "",
     authenticatedPrincipal: "",
     authenticatedContext: null,
+    connectionGeneration: 0,
+    connectionRequestId: 0,
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -175,13 +177,16 @@
     dom.correctionGate.hidden = !requiresApproval;
     if (requiresApproval) {
       const livePrincipalReady = Model.isValidActorId(state.authenticatedPrincipal);
+      const evidenceComplete = Model.isCompleteEvidenceSnapshot(snapshot);
       dom.gateCopy.textContent = state.mode !== "live"
         ? "Playback pauses here. Cross the explicit human gate to continue the integrity-checked replay."
-        : livePrincipalReady
-          ? `This write changes shared mission state as server-authenticated principal ${state.authenticatedPrincipal}.`
-          : "Live approval is disabled: this Relay server did not resolve a valid authenticated principal.";
+        : !evidenceComplete
+          ? "Live approval is disabled: this snapshot is partial, truncated, corrupt, or otherwise incomplete."
+          : livePrincipalReady
+            ? `This write changes shared mission state as server-authenticated principal ${state.authenticatedPrincipal}.`
+            : "Live approval is disabled: this Relay server did not resolve a valid authenticated principal.";
       dom.approveButton.textContent = state.mode === "live" ? "Approve correction" : "Review correction";
-      dom.approveButton.disabled = state.mode === "live" && !livePrincipalReady;
+      dom.approveButton.disabled = state.mode === "live" && (!livePrincipalReady || !evidenceComplete);
     }
   }
 
@@ -296,6 +301,7 @@
     renderReceipt(snapshot);
     renderAgents(snapshot);
     renderTimeline(snapshot);
+    if (dom.approvalDialog.open) syncApprovalSubmitState();
     dom.dataProvenance.textContent = state.mode === "live"
       ? "LIVE RELAY SNAPSHOT · AUTHENTICATED APPEND-ONLY EVIDENCE"
       : "DETERMINISTIC SYNTHETIC REPLAY · ZERO MODEL CREDITS";
@@ -395,7 +401,15 @@
 
   function approvalCanSubmit() {
     const confirmed = dom.approvalConfirmInput.value.trim().toUpperCase() === "APPROVE";
-    return confirmed && (state.mode !== "live" || Model.isValidActorId(state.authenticatedPrincipal));
+    return confirmed && (state.mode !== "live" || isLiveApprovalReady());
+  }
+
+  function isLiveApprovalReady() {
+    return Boolean(
+      state.snapshot
+      && Model.isValidActorId(state.authenticatedPrincipal)
+      && Model.isCompleteEvidenceSnapshot(state.snapshot)
+    );
   }
 
   function syncApprovalSubmitState() {
@@ -409,6 +423,10 @@
       return;
     }
     const live = state.mode === "live";
+    if (live && !Model.isCompleteEvidenceSnapshot(state.snapshot)) {
+      showToast("Live approval requires a complete, untruncated Relay evidence snapshot.");
+      return;
+    }
     if (live && !Model.isValidActorId(state.authenticatedPrincipal)) {
       showToast("Live approval requires a valid principal resolved by the Relay server.");
       return;
@@ -436,6 +454,11 @@
   }
 
   async function submitApproval() {
+    if (state.mode === "live" && (!state.snapshot || !Model.isCompleteEvidenceSnapshot(state.snapshot))) {
+      dom.approvalError.textContent = "Approval is read-only until Relay loads a complete, untruncated evidence snapshot.";
+      syncApprovalSubmitState();
+      return;
+    }
     if (!approvalCanSubmit()) return;
     if (state.mode === "replay") {
       state.replayApprovalGranted = true;
@@ -557,6 +580,10 @@
       && left.token === right.token);
   }
 
+  function liveReadStillCurrent(context, generation) {
+    return generation === state.connectionGeneration && sameLiveContext(context, currentLiveContext());
+  }
+
   function bindAuthenticatedPrincipal(principal, context) {
     if (!Model.isValidActorId(principal)) {
       state.authenticatedPrincipal = "";
@@ -606,8 +633,10 @@
 
   async function refreshLive(reason = "manual") {
     const context = currentLiveContext();
+    const generation = state.connectionGeneration;
     try {
       const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
+      if (!liveReadStillCurrent(context, generation)) return false;
       state.mode = "live";
       state.snapshot = snapshot;
       bindAuthenticatedPrincipal(authenticatedPrincipal, context);
@@ -615,6 +644,7 @@
       if (reason === "manual") showToast("Fresh live mission snapshot loaded.");
       return true;
     } catch (error) {
+      if (!liveReadStillCurrent(context, generation)) return false;
       retainOrClearAuthenticatedPrincipal(error, context);
       if (state.mode === "live" && state.snapshot) render();
       setBanner(`OFFLINE · ${error instanceof Error ? error.message : "Live Relay API is unavailable."}`, "error");
@@ -698,15 +728,24 @@
     dom.freshInspectionButton.disabled = true;
     dom.freshInspectionResult.textContent = "Reading live mission now…";
     const context = currentLiveContext();
+    const generation = state.connectionGeneration;
     try {
       const before = state.snapshot.events.length;
       const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
+      if (!liveReadStillCurrent(context, generation)) {
+        dom.freshInspectionResult.textContent = "Fresh inspection discarded because the live connection changed.";
+        return;
+      }
       state.snapshot = snapshot;
       bindAuthenticatedPrincipal(authenticatedPrincipal, context);
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `FRESH INSPECTION · ${new Date().toISOString()} · ${state.snapshot.events.length} events (${state.snapshot.events.length - before >= 0 ? "+" : ""}${state.snapshot.events.length - before}). Not receipt evidence.`;
     } catch (error) {
+      if (!liveReadStillCurrent(context, generation)) {
+        dom.freshInspectionResult.textContent = "Fresh inspection discarded because the live connection changed.";
+        return;
+      }
       retainOrClearAuthenticatedPrincipal(error, context);
       render();
       renderDrawer();
@@ -718,6 +757,7 @@
 
   async function connectLive() {
     dom.connectionError.textContent = "";
+    const requestId = ++state.connectionRequestId;
     const missionId = dom.missionInput.value.trim();
     const namespace = dom.namespaceInput.value.trim();
     const token = dom.tokenInput.value || state.token;
@@ -730,10 +770,14 @@
     try {
       liveResult = await fetchLiveSnapshot(context);
     } catch (error) {
+      if (requestId !== state.connectionRequestId) return;
       dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
       setBanner("CONNECTION FAILED · The current mission and authenticated identity remain unchanged.", "error");
       return;
     }
+    if (requestId !== state.connectionRequestId) return;
+    stopPlayback();
+    state.connectionGeneration += 1;
     state.missionId = context.missionId;
     state.namespace = context.namespace;
     state.token = context.token;

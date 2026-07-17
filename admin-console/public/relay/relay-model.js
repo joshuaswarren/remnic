@@ -309,6 +309,18 @@
       && input?.status !== 403;
   }
 
+  function isCompleteEvidenceSnapshot(snapshot) {
+    validateSnapshot(snapshot);
+    const bounds = snapshot.bounds;
+    return snapshot.readHealth === "ok"
+      && isObject(bounds)
+      && bounds.truncated === false
+      && bounds.corruptLines === 0
+      && Number.isInteger(bounds.totalEvents)
+      && Number.isInteger(bounds.returnedEvents)
+      && bounds.returnedEvents === bounds.totalEvents;
+  }
+
   function createApprovalEvent(input) {
     const correctionId = String(input?.correctionId || "").trim();
     const operatorId = String(input?.operatorId || "").trim();
@@ -371,6 +383,7 @@
     collectEvidence,
     createApprovalEvent,
     currentCorrection,
+    isCompleteEvidenceSnapshot,
     isValidActorId,
     isReusableApprovalEvent,
     lineage,

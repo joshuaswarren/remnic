@@ -26,6 +26,7 @@ interface RelayBrowserModel {
   }): boolean;
   createApprovalEvent(input: Record<string, string>): unknown;
   currentCorrection(snapshot: unknown): { correctionId: string; status: string; proposedAt: string } | null;
+  isCompleteEvidenceSnapshot(snapshot: unknown): boolean;
   isValidActorId(value: unknown): boolean;
   isReusableApprovalEvent(candidate: unknown, correctionId: string, operatorId?: string): boolean;
   lineage(snapshot: unknown): {
@@ -212,6 +213,30 @@ test("authenticated principal retention distinguishes transient refreshes from i
   assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, priorPrincipalValid: false }), false);
 });
 
+test("live approval safety requires the complete evidence window", async () => {
+  const model = await loadModel();
+  const replay = await committedReplay();
+  const completed = replay.frames.at(-1)?.snapshot;
+  assert.ok(completed);
+  assert.equal(model.isCompleteEvidenceSnapshot(completed), true);
+
+  const partial = structuredClone(completed);
+  partial.readHealth = "partial";
+  assert.equal(model.isCompleteEvidenceSnapshot(partial), false);
+
+  const truncated = structuredClone(completed);
+  truncated.bounds.truncated = true;
+  assert.equal(model.isCompleteEvidenceSnapshot(truncated), false);
+
+  const corrupt = structuredClone(completed);
+  corrupt.bounds.corruptLines = 1;
+  assert.equal(model.isCompleteEvidenceSnapshot(corrupt), false);
+
+  const underfilled = structuredClone(completed);
+  underfilled.bounds.returnedEvents -= 1;
+  assert.equal(model.isCompleteEvidenceSnapshot(underfilled), false);
+});
+
 test("browser approval builder emits a schema-valid, at-action human approval", async () => {
   const model = await loadModel();
   const candidate = model.createApprovalEvent({
@@ -276,7 +301,11 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
+  assert.match(controller, /Model\.isCompleteEvidenceSnapshot\(state\.snapshot\)/);
   assert.equal((controller.match(/Model\.currentCorrection\(state\.snapshot\)/g) || []).length, 2);
+  assert.match(controller, /function liveReadStillCurrent\(context, generation\)/);
+  assert.equal((controller.match(/!liveReadStillCurrent\(context, generation\)/g) || []).length, 4);
+  assert.match(controller, /stopPlayback\(\);\s*state\.connectionGeneration \+= 1;\s*state\.missionId/s);
   assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
   assert.match(controller, /function relayResponseError\(status, body\)/);
   assert.match(controller, /error\.relayStatus = status/);
