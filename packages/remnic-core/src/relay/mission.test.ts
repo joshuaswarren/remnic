@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -560,6 +560,25 @@ test("receipt requires human approval and a passing test after verified propagat
   });
   assert.equal(ungroundedPassSnapshot.receipt.passingOutcomeVerified, false);
   assert.ok(ungroundedPassSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
+
+  const noTestArtifact = fixtureEvents().map((event) =>
+    event.payload.kind === "test_result" && event.payload.status === "passed"
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            evidence: event.payload.evidence.filter((item) => item.kind !== "test"),
+          },
+        }
+      : event
+  );
+  const noTestArtifactSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: noTestArtifact,
+  });
+  assert.equal(noTestArtifactSnapshot.receipt.passingOutcomeVerified, false);
+  assert.ok(noTestArtifactSnapshot.receipt.missingEvidence.includes("outcome:passing-test"));
 });
 
 test("missing evidence is explicit rather than conflated with a complete receipt", () => {
@@ -607,6 +626,32 @@ test("store rejects a symlinked Relay directory and event-count overflow", async
       bounded.append(RELAY_DEMO_MISSION_ID, second),
       (error: unknown) => error instanceof RelayMissionStoreError && error.code === "limit_exceeded"
     );
+  });
+});
+
+test("append remains pinned inside the Relay root when the missions pathname is swapped", async () => {
+  await withTempRoot(async (root) => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-swap-outside-"));
+    const missionDir = path.join(root, "state", "relay", "missions");
+    const pinnedDir = path.join(root, "state", "relay", "missions-pinned");
+    const missionFileName = `${RELAY_DEMO_MISSION_ID}.jsonl`;
+    try {
+      const store = deterministicStore(root);
+      await store.append(RELAY_DEMO_MISSION_ID, firstFixtureInput(), {
+        beforeAppend: async () => {
+          await rename(missionDir, pinnedDir);
+          await symlink(outside, missionDir);
+        },
+      });
+
+      assert.match(await readFile(path.join(pinnedDir, missionFileName), "utf8"), /mission_started/);
+      await assert.rejects(
+        readFile(path.join(outside, missionFileName), "utf8"),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+      );
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

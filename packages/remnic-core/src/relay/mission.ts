@@ -469,6 +469,12 @@ interface MissionFileRead {
   rawBytes: number;
 }
 
+interface PinnedMissionDirectory {
+  logicalPath: string;
+  accessPath: string;
+  handle: import("node:fs/promises").FileHandle;
+}
+
 export interface RelayMissionAppendResult {
   appended: boolean;
   replayed: boolean;
@@ -504,118 +510,136 @@ export class RelayMissionStore {
   ): Promise<RelayMissionAppendResult> {
     const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const input = RelayMissionEventInputSchema.parse(inputValue);
-    const missionDir = await this.ensureMissionDirectory();
-    const filePath = path.join(missionDir, `${missionId}.jsonl`);
+    const missionDir = await this.openMissionDirectory();
+    const filePath = path.join(missionDir.accessPath, `${missionId}.jsonl`);
+    const logicalFilePath = path.join(missionDir.logicalPath, `${missionId}.jsonl`);
     const lockPath = `${filePath}.lock`;
 
-    return serializeMutations(`relay-mission:${filePath}`, () =>
-      withHeldFileLock(
-        lockPath,
-        { staleMs: 30_000, maxWaitMs: this.lockMaxWaitMs, heartbeatMs: 10_000 },
-        async (acquired) => {
-          if (!acquired) {
-            throw new RelayMissionStoreError("lock_unavailable", "could not acquire Relay mission lock");
-          }
-
-          const existing = await this.readFile(filePath, missionId);
-          if (input.idempotencyKey) {
-            const replay = existing.events.find((event) => event.idempotencyKey === input.idempotencyKey);
-            if (replay) {
-              if (!sameIdempotentInput(replay, input)) {
-                throw new RelayMissionStoreError(
-                  "idempotency_conflict",
-                  `idempotency key ${input.idempotencyKey} was already used for different input`
-                );
-              }
-              return { appended: false, replayed: true, event: replay };
+    try {
+      return await serializeMutations(`relay-mission:${logicalFilePath}`, () =>
+        withHeldFileLock(
+          lockPath,
+          { staleMs: 30_000, maxWaitMs: this.lockMaxWaitMs, heartbeatMs: 10_000 },
+          async (acquired) => {
+            if (!acquired) {
+              throw new RelayMissionStoreError("lock_unavailable", "could not acquire Relay mission lock");
             }
-          }
 
-          if (existing.events.length >= this.maxEvents) {
-            throw new RelayMissionStoreError(
-              "limit_exceeded",
-              `mission ${missionId} reached the ${this.maxEvents}-event limit`
-            );
-          }
+            const existing = await this.readFile(filePath, missionId);
+            if (input.idempotencyKey) {
+              const replay = existing.events.find((event) => event.idempotencyKey === input.idempotencyKey);
+              if (replay) {
+                if (!sameIdempotentInput(replay, input)) {
+                  throw new RelayMissionStoreError(
+                    "idempotency_conflict",
+                    `idempotency key ${input.idempotencyKey} was already used for different input`
+                  );
+                }
+                return { appended: false, replayed: true, event: replay };
+              }
+            }
 
-          // Transport quotas run only after idempotency replay detection and
-          // while this mission's mutation lock is held. A response-lost retry
-          // remains replayable even when the original append used the final
-          // quota slot.
-          await hooks.beforeAppend?.();
+            if (existing.events.length >= this.maxEvents) {
+              throw new RelayMissionStoreError(
+                "limit_exceeded",
+                `mission ${missionId} reached the ${this.maxEvents}-event limit`
+              );
+            }
 
-          const recordedAt = validNow(this.now);
-          const event = RelayMissionEventSchema.parse({
-            schemaVersion: RELAY_MISSION_SCHEMA_VERSION,
-            eventId: this.createEventId(),
-            missionId,
-            namespace: this.namespace,
-            recordedAt,
-            occurredAt: input.occurredAt ?? recordedAt,
-            ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-            payload: input.payload,
-          });
-          const line = `${JSON.stringify(event)}\n`;
-          const lineBytes = Buffer.byteLength(line, "utf8");
-          if (lineBytes > RELAY_MISSION_MAX_LINE_BYTES) {
-            throw new RelayMissionStoreError(
-              "limit_exceeded",
-              `Relay mission event exceeds ${RELAY_MISSION_MAX_LINE_BYTES} bytes`
-            );
-          }
-          if (existing.rawBytes + lineBytes > this.maxFileBytes) {
-            throw new RelayMissionStoreError(
-              "limit_exceeded",
-              `mission ${missionId} would exceed the ${this.maxFileBytes}-byte limit`
-            );
-          }
+            // Transport quotas run only after idempotency replay detection and
+            // while this mission's mutation lock is held. A response-lost retry
+            // remains replayable even when the original append used the final
+            // quota slot.
+            await hooks.beforeAppend?.();
 
-          await this.appendFile(filePath, line);
-          return { appended: true, replayed: false, event };
-        }
-      )
-    );
+            const recordedAt = validNow(this.now);
+            const event = RelayMissionEventSchema.parse({
+              schemaVersion: RELAY_MISSION_SCHEMA_VERSION,
+              eventId: this.createEventId(),
+              missionId,
+              namespace: this.namespace,
+              recordedAt,
+              occurredAt: input.occurredAt ?? recordedAt,
+              ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+              payload: input.payload,
+            });
+            const line = `${JSON.stringify(event)}\n`;
+            const lineBytes = Buffer.byteLength(line, "utf8");
+            if (lineBytes > RELAY_MISSION_MAX_LINE_BYTES) {
+              throw new RelayMissionStoreError(
+                "limit_exceeded",
+                `Relay mission event exceeds ${RELAY_MISSION_MAX_LINE_BYTES} bytes`
+              );
+            }
+            if (existing.rawBytes + lineBytes > this.maxFileBytes) {
+              throw new RelayMissionStoreError(
+                "limit_exceeded",
+                `mission ${missionId} would exceed the ${this.maxFileBytes}-byte limit`
+              );
+            }
+
+            await this.appendFile(filePath, line);
+            return { appended: true, replayed: false, event };
+          }
+        )
+      );
+    } finally {
+      await missionDir.handle.close().catch(() => undefined);
+    }
   }
 
   async read(missionIdValue: string, readOptions: RelayMissionReadOptions = {}): Promise<RelayMissionSnapshot> {
     const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const options = RelayMissionReadOptionsSchema.parse(readOptions);
-    const missionDir = await this.ensureMissionDirectory();
-    const filePath = path.join(missionDir, `${missionId}.jsonl`);
+    const missionDir = await this.openMissionDirectory();
+    const filePath = path.join(missionDir.accessPath, `${missionId}.jsonl`);
+    const logicalFilePath = path.join(missionDir.logicalPath, `${missionId}.jsonl`);
     const lockPath = `${filePath}.lock`;
 
-    return serializeMutations(`relay-mission:${filePath}`, () =>
-      withHeldFileLock(
-        lockPath,
-        { staleMs: 30_000, maxWaitMs: this.lockMaxWaitMs, heartbeatMs: 10_000 },
-        async (acquired) => {
-          if (!acquired) {
-            throw new RelayMissionStoreError("lock_unavailable", "could not acquire Relay mission read lock");
+    try {
+      return await serializeMutations(`relay-mission:${logicalFilePath}`, () =>
+        withHeldFileLock(
+          lockPath,
+          { staleMs: 30_000, maxWaitMs: this.lockMaxWaitMs, heartbeatMs: 10_000 },
+          async (acquired) => {
+            if (!acquired) {
+              throw new RelayMissionStoreError("lock_unavailable", "could not acquire Relay mission read lock");
+            }
+            const read = await this.readFile(filePath, missionId);
+            return reduceRelayMission({
+              missionId,
+              namespace: this.namespace,
+              events: read.events,
+              corruptLines: read.corruptLines,
+              fileExists: read.exists,
+              options,
+            });
           }
-          const read = await this.readFile(filePath, missionId);
-          return reduceRelayMission({
-            missionId,
-            namespace: this.namespace,
-            events: read.events,
-            corruptLines: read.corruptLines,
-            fileExists: read.exists,
-            options,
-          });
-        }
-      )
-    );
+        )
+      );
+    } finally {
+      await missionDir.handle.close().catch(() => undefined);
+    }
   }
 
-  private async ensureMissionDirectory(): Promise<string> {
+  private async openMissionDirectory(): Promise<PinnedMissionDirectory> {
+    let currentHandle: import("node:fs/promises").FileHandle | undefined;
     try {
-      await assertExistingSafeDirectory(this.rootDir);
-      let current = this.rootDir;
+      currentHandle = await openVerifiedDirectory(this.rootDir, "Relay root must be a real directory");
+      let logicalPath = this.rootDir;
       for (const segment of ["state", "relay", "missions"]) {
-        current = path.join(current, segment);
-        await ensureSafeChildDirectory(current);
+        const childHandle = await openOrCreatePinnedChildDirectory(currentHandle, segment);
+        await currentHandle.close();
+        currentHandle = childHandle;
+        logicalPath = path.join(logicalPath, segment);
       }
-      return current;
+      return {
+        logicalPath,
+        accessPath: pinnedDirectoryPath(currentHandle),
+        handle: currentHandle,
+      };
     } catch (error) {
+      await currentHandle?.close().catch(() => undefined);
       if (error instanceof RelayMissionStoreError) throw error;
       throw new RelayMissionStoreError("unsafe_path", "Relay mission directory is unavailable or unsafe", {
         cause: error,
@@ -626,7 +650,6 @@ export class RelayMissionStore {
   private async readFile(filePath: string, missionId: string): Promise<MissionFileRead> {
     let handle: import("node:fs/promises").FileHandle | undefined;
     try {
-      await assertParentDirectoryStable(filePath);
       handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const info = await handle.stat();
       if (!info.isFile()) {
@@ -657,7 +680,6 @@ export class RelayMissionStore {
   private async appendFile(filePath: string, line: string): Promise<void> {
     let handle: import("node:fs/promises").FileHandle | undefined;
     try {
-      await assertParentDirectoryStable(filePath);
       handle = await fs.open(
         filePath,
         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW,
@@ -1176,7 +1198,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       if (
         correction?.status !== "propagated" ||
         correction.proposedDecisionId !== test.decisionId ||
-        !test.evidence.some((item) => item.kind === "correction" && item.id === correction.correctionId)
+        !test.evidence.some((item) => item.kind === "correction" && item.id === correction.correctionId) ||
+        !test.evidence.some((item) => item.kind === "test")
       ) {
         return false;
       }
@@ -1414,52 +1437,57 @@ function validNow(now: () => Date): string {
   return value.toISOString();
 }
 
-async function assertExistingSafeDirectory(directory: string): Promise<void> {
-  const info = await fs.lstat(directory);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new RelayMissionStoreError("unsafe_path", "Relay root must be a real directory");
-  }
-}
-
-async function ensureSafeChildDirectory(directory: string): Promise<void> {
+async function openOrCreatePinnedChildDirectory(
+  parentHandle: import("node:fs/promises").FileHandle,
+  segment: string
+): Promise<import("node:fs/promises").FileHandle> {
+  const directory = path.join(pinnedDirectoryPath(parentHandle), segment);
   try {
     await fs.mkdir(directory, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  const info = await fs.lstat(directory);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new RelayMissionStoreError("unsafe_path", "Relay directory symlinks are rejected");
+  return openVerifiedDirectory(directory, "Relay directory symlinks are rejected");
+}
+
+async function openVerifiedDirectory(
+  directory: string,
+  unsafeMessage: string
+): Promise<import("node:fs/promises").FileHandle> {
+  const before = await fs.lstat(directory);
+  if (before.isSymbolicLink() || !before.isDirectory()) {
+    throw new RelayMissionStoreError("unsafe_path", unsafeMessage);
   }
   const handle = await fs.open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
   try {
     const openInfo = await handle.stat();
-    const pathInfo = await fs.lstat(directory);
-    if (openInfo.dev !== pathInfo.dev || openInfo.ino !== pathInfo.ino) {
+    const after = await fs.lstat(directory);
+    if (
+      after.isSymbolicLink() ||
+      !after.isDirectory() ||
+      before.dev !== openInfo.dev ||
+      before.ino !== openInfo.ino ||
+      after.dev !== openInfo.dev ||
+      after.ino !== openInfo.ino
+    ) {
       throw new RelayMissionStoreError("unsafe_path", "Relay directory changed during validation");
     }
-  } finally {
-    await handle.close();
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
   }
 }
 
-async function assertParentDirectoryStable(filePath: string): Promise<void> {
-  const parent = path.dirname(filePath);
-  const handle = await fs.open(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
-  try {
-    const openInfo = await handle.stat();
-    const pathInfo = await fs.lstat(parent);
-    if (
-      pathInfo.isSymbolicLink() ||
-      !pathInfo.isDirectory() ||
-      openInfo.dev !== pathInfo.dev ||
-      openInfo.ino !== pathInfo.ino
-    ) {
-      throw new RelayMissionStoreError("unsafe_path", "Relay mission parent is unsafe");
-    }
-  } finally {
-    await handle.close();
+function pinnedDirectoryPath(handle: import("node:fs/promises").FileHandle): string {
+  if (process.platform === "linux") return `/proc/self/fd/${handle.fd}`;
+  if (process.platform === "darwin" || process.platform === "freebsd" || process.platform === "openbsd") {
+    return `/dev/fd/${handle.fd}`;
   }
+  throw new RelayMissionStoreError(
+    "unsafe_path",
+    `Relay pinned directory access is unsupported on ${process.platform}`
+  );
 }
 
 export function relayMissionReceiptDigest(snapshot: RelayMissionSnapshot): string {
