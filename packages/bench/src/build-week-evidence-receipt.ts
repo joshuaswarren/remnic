@@ -144,7 +144,7 @@ const MEMCORRECT_FULL_METRICS = Object.freeze([
   "reassertion",
   "scope_precision",
 ].sort());
-const NORMALIZED_FULL_METRICS = new Set([
+const NORMALIZED_METRICS = new Set([
   "contains_answer",
   "f1",
   "judge_accuracy",
@@ -157,7 +157,16 @@ const NORMALIZED_FULL_METRICS = new Set([
   "scope_precision",
   "uptake_at_next",
 ]);
-const NON_NEGATIVE_INTEGER_FULL_METRICS = new Set(["search_hits", "uptake_latency"]);
+const BINARY_METRICS = new Set([
+  "contains_answer",
+  "judge_accuracy",
+  "non_resurrection",
+  "reassertion",
+  "scope_precision",
+  "uptake_at_next",
+  "uptake_latency_censored",
+]);
+const NON_NEGATIVE_INTEGER_METRICS = new Set(["search_hits", "uptake_latency"]);
 const MEMCORRECT_FULL_SEED = 0xc077e7;
 // The immutable Build Week run predates persistence of `nowIso`. Its exact
 // result bytes, identity, and source commit are pinned so only that historical
@@ -615,6 +624,19 @@ function requirePinnedFullMetricSchema(
   publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
   aggregates: BuildWeekEvidenceReceipt["benchmark"]["aggregates"],
 ): void {
+  for (const [taskIndex, task] of result.results.tasks.entries()) {
+    for (const [metric, score] of Object.entries(task.scores)) {
+      if (NORMALIZED_METRICS.has(metric) && (score < 0 || score > 1)) {
+        throw new Error(`${result.meta.benchmark} task ${taskIndex} metric ${metric} must be within [0, 1]`);
+      }
+      if (NON_NEGATIVE_INTEGER_METRICS.has(metric) && (!Number.isInteger(score) || score < 0)) {
+        throw new Error(`${result.meta.benchmark} task ${taskIndex} metric ${metric} must be a non-negative integer`);
+      }
+      if (BINARY_METRICS.has(metric) && score !== 0 && score !== 1) {
+        throw new Error(`${result.meta.benchmark} task ${taskIndex} metric ${metric} must be binary`);
+      }
+    }
+  }
   if (publicationScope.kind !== "full") return;
   const expected = result.meta.benchmark === LONGMEMEVAL_BENCHMARK_ID
     ? LONGMEMEVAL_FULL_METRICS
@@ -628,19 +650,6 @@ function requirePinnedFullMetricSchema(
     aggregateNames.some((name, index) => name !== expected[index])
   ) {
     throw new Error(`full ${result.meta.benchmark} metric schema does not match the pinned benchmark metrics`);
-  }
-  for (const [taskIndex, task] of result.results.tasks.entries()) {
-    for (const [metric, score] of Object.entries(task.scores)) {
-      if (NORMALIZED_FULL_METRICS.has(metric) && (score < 0 || score > 1)) {
-        throw new Error(`${result.meta.benchmark} task ${taskIndex} metric ${metric} must be within [0, 1]`);
-      }
-      if (NON_NEGATIVE_INTEGER_FULL_METRICS.has(metric) && (!Number.isInteger(score) || score < 0)) {
-        throw new Error(`${result.meta.benchmark} task ${taskIndex} metric ${metric} must be a non-negative integer`);
-      }
-      if (metric === "uptake_latency_censored" && score !== 0 && score !== 1) {
-        throw new Error(`MemCorrect task ${taskIndex} metric uptake_latency_censored must be binary`);
-      }
-    }
   }
   if (result.meta.benchmark === MEMCORRECT_BENCHMARK_ID) {
     const allowed = new Set(MEMCORRECT_FULL_METRICS);

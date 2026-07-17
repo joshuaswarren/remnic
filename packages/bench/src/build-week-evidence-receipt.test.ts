@@ -916,6 +916,59 @@ test("full MemCorrect receipts reject impossible pinned metric values", () => {
     }),
     /metric uptake_latency_censored must be binary/,
   );
+
+  const fractionalBinaryMetric = syntheticMemCorrectResult();
+  for (const task of fractionalBinaryMetric.results.tasks) task.scores.uptake_at_next = 0.5;
+  fractionalBinaryMetric.results.aggregates.uptake_at_next = {
+    mean: 0.5,
+    median: 0.5,
+    stdDev: 0,
+    min: 0.5,
+    max: 0.5,
+  };
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: fractionalBinaryMetric }),
+      datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+      limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+    }),
+    /metric uptake_at_next must be binary/,
+  );
+});
+
+test("bounded-subset receipts enforce metric domains without requiring the full schema", () => {
+  const result = syntheticResult({ version: "2.0.0" });
+  result.results.tasks = result.results.tasks.map((task) => ({
+    ...task,
+    scores: { contains_answer: 1, f1: 0.5, search_hits: 2 },
+  }));
+  result.results.aggregates = {
+    contains_answer: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    f1: { mean: 0.5, median: 0.5, stdDev: 0, min: 0.5, max: 0.5 },
+    search_hits: { mean: 2, median: 2, stdDev: 0, min: 2, max: 2 },
+  };
+  const build = () => buildBuildWeekEvidenceReceipt({
+    ...syntheticSources({ result, limit: 2 }),
+    datasetVersion: "longmemeval-bounded",
+    limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+    freshIsolatedStoreConfirmed: true,
+    publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+  });
+
+  assert.doesNotThrow(build);
+  for (const task of result.results.tasks) task.scores.contains_answer = 0.5;
+  result.results.aggregates.contains_answer = { mean: 0.5, median: 0.5, stdDev: 0, min: 0.5, max: 0.5 };
+  assert.throws(build, /metric contains_answer must be binary/);
+
+  for (const task of result.results.tasks) {
+    task.scores.contains_answer = 1;
+    task.scores.search_hits = -1;
+  }
+  result.results.aggregates.contains_answer = { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 };
+  result.results.aggregates.search_hits = { mean: -1, median: -1, stdDev: 0, min: -1, max: -1 };
+  assert.throws(build, /metric search_hits must be a non-negative integer/);
 });
 
 test("file-backed benchmark receipts still reject non-hashed dataset manifests", () => {
