@@ -4,6 +4,7 @@ import { StorageManager } from "../storage.js";
 import { decideLifecycleTransition } from "../lifecycle.js";
 import type { MemoryFile, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
@@ -1015,6 +1016,11 @@ export async function restoreMemoryGovernanceRun(
     await mkdir(path.dirname(entry.originalPath), { recursive: true });
     await writeFile(entry.originalPath, entry.beforeRaw, "utf-8");
     restoredActions += 1;
+    // Restore writes/removes memory files directly (out-of-band — not through a
+    // StorageManager mutation). Bump the corpus sentinel PER entry so a
+    // same-process or peer readAllMemories rescans mid-batch and never serves a
+    // partially-restored corpus (Cursor Medium, #1902).
+    bumpMemoryCorpusVersionForDir(options.memoryDir);
   }
 
   return {

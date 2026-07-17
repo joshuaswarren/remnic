@@ -116,18 +116,31 @@ export async function searchVerifiedSemanticRules(options: {
   query: string;
   maxResults: number;
   minEffectiveConfidence?: number;
+  /** Hot-memories cache gate (issue #1902, Codex P2). Threaded from the caller
+   *  so a named-namespace root (never registered in the per-dir default map)
+   *  honors the owning daemon's config instead of the process-wide default. */
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedSemanticRuleResult[]> {
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
-  const storage = new StorageManager(options.memoryDir);
-  const version = storage.getMemoryStatusVersion();
+  const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
+  // Key the derived rule cache on the CORPUS version, not memory-status (Codex
+  // P1, #1902): rule memories are derived from the full corpus, and plain
+  // creates/writeChunk bump only the corpus sentinel. Keying on memory-status
+  // would let a peer process serve a stale rule set that omits newly created
+  // rule memories.
+  const version = storage.getMemoryCorpusVersion();
 
-  // Use derived rule cache to avoid O(146K) iteration on every call.
-  let cachedRules = getCachedRuleMemories(storage.dir, version);
+  // Use derived rule cache to avoid O(146K) iteration on every call — but honor
+  // the hotMemoriesCacheEnabled opt-out (Codex P2): when disabled, never read or
+  // retain the derived cache, always rebuild from a fresh scan.
+  const cacheEnabled = storage.isHotCacheEnabled();
+  const keyId = storage.hotCacheKeyId();
+  let cachedRules = cacheEnabled ? getCachedRuleMemories(storage.dir, version, keyId, storage.hotCacheTtlMs()) : null;
   if (!cachedRules) {
     const allMems = await storage.readAllMemories();
-    cachedRules = setCachedRuleMemories(storage.dir, allMems, version);
+    cachedRules = setCachedRuleMemories(storage.dir, allMems, version, cacheEnabled, keyId);
   }
   const { all: ruleMemories, byId: memoryById } = cachedRules;
   const minEffectiveConfidence = options.minEffectiveConfidence ?? DEFAULT_MIN_EFFECTIVE_CONFIDENCE;

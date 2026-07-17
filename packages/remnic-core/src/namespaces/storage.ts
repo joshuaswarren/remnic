@@ -292,7 +292,26 @@ export class NamespaceStorageRouter {
       }
     }
 
-    const sm = new StorageManager(root, this.config.entitySchemas);
+    // Pass the hot-memories cache gate explicitly (issue #1902, Codex P2): a
+    // per-namespace child root is never registered in the per-dir default map,
+    // so without this it would fall back to the process-wide default and ignore
+    // THIS daemon's hotMemoriesCacheEnabled config. Threading it from config
+    // keeps every namespace storage aligned with its owning orchestrator.
+    const sm = new StorageManager(
+      root,
+      this.config.entitySchemas,
+      this.config.hotMemoriesCacheEnabled,
+    );
+    // Register this child root's gate AND TTL in the per-dir maps (issue #1902,
+    // Codex P2). The constructor override above fixes the child's own gate, but
+    // its TTL is resolved via the per-dir map (hotCacheTtlMs); an unregistered
+    // child root would fall back to the last process-wide TTL and could inherit
+    // another daemon's value. Registering keyed by root keeps both per-dir.
+    StorageManager.setHotMemoriesCacheDefault(
+      root,
+      this.config.hotMemoriesCacheEnabled,
+      this.config.hotMemoriesCacheTtlMs,
+    );
     // Propagate the inline-attribution template so that router-created storages
     // (used by extraction and shared-promotion paths) strip citations consistently,
     // matching the behaviour of the primary this.storage instance in the orchestrator.

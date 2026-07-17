@@ -5,49 +5,107 @@ interface CacheEntry {
   memories: Map<string, MemoryFile>; // keyed by file path
   version: number;
   loadedAt: number;
+  // Secure-store key identity that decrypted these memories (issue #1902, Codex
+  // P1). "" for plaintext/locked stores. A manager only reads an entry whose
+  // keyId matches its own, so a locked/unkeyed instance never sees content
+  // another instance decrypted under a key for the same baseDir.
+  keyId: string;
+  // Effective TTL (ms) this entry was stored under (issue #1902, Codex Medium),
+  // so the opportunistic sweep can evict abandoned corpora that are never
+  // revisited. 0 = no TTL (never swept by age).
+  ttlMs: number;
 }
 
 // Module-level singleton — shared across all StorageManager instances and sessions
 const hotCacheByDir = new Map<string, CacheEntry>();
 const archiveCacheByDir = new Map<string, CacheEntry>();
 
-export function getCachedMemories(baseDir: string, currentVersion: number): MemoryFile[] | null {
+/**
+ * Evict every hot entry whose own TTL has elapsed (issue #1902, Codex Medium).
+ * Called opportunistically on each set so a long-running process that reads many
+ * namespace/temporary roots and never revisits some of them still releases their
+ * (potentially hundreds-of-MB) corpora within the TTL, instead of holding them
+ * resident until an explicit global clear. O(entries) over a small map.
+ */
+function sweepExpiredHotEntries(now: number): void {
+  for (const [dir, entry] of hotCacheByDir) {
+    if (entry.ttlMs > 0 && now - entry.loadedAt > entry.ttlMs) hotCacheByDir.delete(dir);
+  }
+}
+
+export function getCachedMemories(
+  baseDir: string,
+  currentVersion: number,
+  keyId = "",
+  ttlMs = 0,
+): MemoryFile[] | null {
   // Don't serve from cache when version tracking is unavailable (version=0).
   // This ensures tests and fresh installs without a version file always read disk.
   if (currentVersion === 0) return null;
   const entry = hotCacheByDir.get(baseDir);
-  if (!entry || entry.version !== currentVersion) return null;
+  if (!entry || entry.version !== currentVersion || entry.keyId !== keyId) return null;
+  // TTL safety net (issue #1902): bound staleness from external filesystem edits
+  // that bypass the version sentinel. ttlMs <= 0 disables the check. On expiry
+  // evict the entry (not just return null) so a revisited-but-stale dir releases
+  // its resident corpus instead of lingering until an explicit clear.
+  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
+    hotCacheByDir.delete(baseDir);
+    return null;
+  }
   return [...entry.memories.values()];
 }
 
-export function setCachedMemories(baseDir: string, memories: MemoryFile[], version: number): void {
+export function setCachedMemories(
+  baseDir: string,
+  memories: MemoryFile[],
+  version: number,
+  keyId = "",
+  ttlMs = 0,
+): void {
   const map = new Map<string, MemoryFile>();
   for (const m of memories) map.set(m.path, m);
-  hotCacheByDir.set(baseDir, { memories: map, version, loadedAt: Date.now() });
+  const now = Date.now();
+  hotCacheByDir.set(baseDir, { memories: map, version, loadedAt: now, keyId, ttlMs });
+  // Release abandoned corpora that expired but were never revisited (Codex Medium).
+  sweepExpiredHotEntries(now);
 }
 
-export function updateCacheOnWrite(baseDir: string, memory: MemoryFile): void {
+export function updateCacheOnWrite(baseDir: string, memory: MemoryFile, keyId = ""): void {
   const entry = hotCacheByDir.get(baseDir);
-  if (entry) entry.memories.set(memory.path, memory);
+  // Only mutate an entry that belongs to THIS key identity (issue #1902, Codex
+  // Medium). A concurrent differently-keyed manager may have replaced the
+  // single hotCacheByDir slot during an awaited parse; inserting our decrypted
+  // MemoryFile into its entry would leak plaintext across the key boundary.
+  if (entry && entry.keyId === keyId) entry.memories.set(memory.path, memory);
 }
 
-export function updateCacheOnDelete(baseDir: string, filePath: string): void {
+export function updateCacheOnDelete(baseDir: string, filePath: string, keyId = ""): void {
   const entry = hotCacheByDir.get(baseDir);
-  if (entry) entry.memories.delete(filePath);
+  if (entry && entry.keyId === keyId) entry.memories.delete(filePath);
 }
-
 // Archive cache — same pattern, separate store
-export function getCachedArchivedMemories(baseDir: string, currentVersion: number): MemoryFile[] | null {
+export function getCachedArchivedMemories(
+  baseDir: string,
+  currentVersion: number,
+  keyId = "",
+): MemoryFile[] | null {
   if (currentVersion === 0) return null;
   const entry = archiveCacheByDir.get(baseDir);
-  if (!entry || entry.version !== currentVersion) return null;
+  if (!entry || entry.version !== currentVersion || entry.keyId !== keyId) return null;
   return [...entry.memories.values()];
 }
 
-export function setCachedArchivedMemories(baseDir: string, memories: MemoryFile[], version: number): void {
+export function setCachedArchivedMemories(
+  baseDir: string,
+  memories: MemoryFile[],
+  version: number,
+  keyId = "",
+): void {
   const map = new Map<string, MemoryFile>();
   for (const m of memories) map.set(m.path, m);
-  archiveCacheByDir.set(baseDir, { memories: map, version, loadedAt: Date.now() });
+  // ttlMs: 0 — the archive cache has no age TTL; it is version-keyed and cleared
+  // via invalidation. The field satisfies the shared CacheEntry shape (#1902).
+  archiveCacheByDir.set(baseDir, { memories: map, version, loadedAt: Date.now(), keyId, ttlMs: 0 });
 }
 
 // Entity cache — same pattern as memory cache, but keyed by schema-aware parse inputs.
@@ -108,41 +166,77 @@ export function invalidateCachedEntities(baseDir: string): void {
 interface DerivedCacheEntry<T> {
   data: T;
   sourceVersion: number; // matches the hot cache version it was derived from
+  keyId: string; // secure-store key identity of the corpus it was derived from (#1902)
+  loadedAt: number; // build time — bounds staleness from external edits via ttlMs (#1902)
 }
 
 const episodeMapByDir = new Map<string, DerivedCacheEntry<Map<string, MemoryFile>>>();
 const ruleMemoriesByDir = new Map<string, DerivedCacheEntry<{ all: MemoryFile[]; byId: Map<string, MemoryFile> }>>();
 
-/** Get a pre-filtered Map of episode memories (keyed by ID). Derived from hot cache. */
-export function getCachedEpisodeMap(baseDir: string, currentVersion: number): Map<string, MemoryFile> | null {
+export function getCachedEpisodeMap(
+  baseDir: string,
+  currentVersion: number,
+  keyId = "",
+  ttlMs = 0,
+): Map<string, MemoryFile> | null {
   if (currentVersion === 0) return null;
   const entry = episodeMapByDir.get(baseDir);
-  if (!entry || entry.sourceVersion !== currentVersion) return null;
+  if (!entry || entry.sourceVersion !== currentVersion || entry.keyId !== keyId) return null;
+  // TTL safety net (issue #1902): the version sentinel doesn't move on a direct
+  // external edit, so bound how long a derived view is served before a rebuild
+  // (which re-reads via readAllMemories, itself TTL-bounded). ttlMs <= 0 disables.
+  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
+    episodeMapByDir.delete(baseDir);
+    return null;
+  }
   return entry.data;
 }
 
 /** Build and cache the episode memory map from the full memory list. */
-export function setCachedEpisodeMap(baseDir: string, memories: MemoryFile[], version: number): Map<string, MemoryFile> {
+export function setCachedEpisodeMap(
+  baseDir: string,
+  memories: MemoryFile[],
+  version: number,
+  cache = true,
+  keyId = "",
+): Map<string, MemoryFile> {
   const map = new Map<string, MemoryFile>();
   for (const m of memories) {
     if (m.frontmatter.status === "archived" || m.frontmatter.status === "forgotten") continue;
     if (m.frontmatter.memoryKind !== "episode") continue;
     map.set(m.frontmatter.id, m);
   }
-  episodeMapByDir.set(baseDir, { data: map, sourceVersion: version });
+  if (cache) episodeMapByDir.set(baseDir, { data: map, sourceVersion: version, keyId, loadedAt: Date.now() });
   return map;
 }
 
 /** Get pre-filtered rule memories. Derived from hot cache. */
-export function getCachedRuleMemories(baseDir: string, currentVersion: number): { all: MemoryFile[]; byId: Map<string, MemoryFile> } | null {
+export function getCachedRuleMemories(
+  baseDir: string,
+  currentVersion: number,
+  keyId = "",
+  ttlMs = 0,
+): { all: MemoryFile[]; byId: Map<string, MemoryFile> } | null {
   if (currentVersion === 0) return null;
   const entry = ruleMemoriesByDir.get(baseDir);
-  if (!entry || entry.sourceVersion !== currentVersion) return null;
+  if (!entry || entry.sourceVersion !== currentVersion || entry.keyId !== keyId) return null;
+  // TTL safety net (issue #1902): bound staleness from direct external edits
+  // that don't move the version sentinel. ttlMs <= 0 disables.
+  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
+    ruleMemoriesByDir.delete(baseDir);
+    return null;
+  }
   return entry.data;
 }
 
 /** Build and cache the rule memories from the full memory list. */
-export function setCachedRuleMemories(baseDir: string, memories: MemoryFile[], version: number): { all: MemoryFile[]; byId: Map<string, MemoryFile> } {
+export function setCachedRuleMemories(
+  baseDir: string,
+  memories: MemoryFile[],
+  version: number,
+  cache = true,
+  keyId = "",
+): { all: MemoryFile[]; byId: Map<string, MemoryFile> } {
   const byId = new Map<string, MemoryFile>();
   const all: MemoryFile[] = [];
   for (const m of memories) {
@@ -156,7 +250,7 @@ export function setCachedRuleMemories(baseDir: string, memories: MemoryFile[], v
     }
   }
   const result = { all, byId };
-  ruleMemoriesByDir.set(baseDir, { data: result, sourceVersion: version });
+  if (cache) ruleMemoriesByDir.set(baseDir, { data: result, sourceVersion: version, keyId, loadedAt: Date.now() });
   return result;
 }
 
@@ -291,6 +385,36 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
  */
 export function invalidateAllForDir(baseDir: string): void {
   for (const layer of ALL_CACHE_LAYERS) {
+    layer.invalidateForDir(baseDir);
+  }
+}
+
+/**
+ * Invalidate every cache layer for `baseDir` EXCEPT the hot-memories layer
+ * (issue #1902). Single-file write paths use this instead of
+ * `invalidateAllForDir` because they patch the hot-memories entry in place
+ * (via `updateCacheOnWrite`/`updateCacheOnDelete`) and re-key it to the bumped
+ * version — so dropping it here would defeat the whole warm-cache fast path.
+ * The derived episode/rule views and the global QMD caches are cheap to
+ * rebuild and are not patched, so they are still evicted here. Every other
+ * layer remains reachable for the wholesale `invalidateAllForDir` /
+ * `clearMemoryCache` chokepoint used by bulk/ambiguous mutations.
+ */
+export function invalidateDerivedAndGlobalForDir(baseDir: string): void {
+  // Preserve the layers a single-file write intentionally keeps warm (issue
+  // #1902, Codex Medium): hot-memories is patched + re-keyed in place; the
+  // entities layer is keyed on memory-status, which plain create/content writes
+  // deliberately do NOT bump (so entity retrieval stays warm); and the
+  // archive-memories layer is version-keyed on the archive tier, untouched by a
+  // hot-tier write. Evict ONLY the derived (episode/rule) and global (QMD) views.
+  for (const layer of ALL_CACHE_LAYERS) {
+    if (
+      layer.name === "hot-memories" ||
+      layer.name === "entities" ||
+      layer.name === "archive-memories"
+    ) {
+      continue;
+    }
     layer.invalidateForDir(baseDir);
   }
 }

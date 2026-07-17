@@ -1090,6 +1090,16 @@
       "remnic-source": "./src/importance.ts",
       "import": "./dist/importance.js"
     },
+    "./in-flight-reads": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
+    },
+    "./in-flight-reads.js": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
+    },
     "./index": {
       "types": "./dist/index.d.ts",
       "remnic-source": "./src/index.ts",

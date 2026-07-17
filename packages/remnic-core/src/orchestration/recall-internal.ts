@@ -2032,9 +2032,10 @@ export class RecallInternalCoordinator {
     // Verified recall and semantic rules both need readAllMemories().
     // Instead of a shared preload (which has namespace/dir mismatch issues),
     // each subsystem calls readAllMemories() on its correct storage instance.
-    // The process-level memory cache (keyed by baseDir + memoryStatusVersion)
-    // ensures only one actual disk scan happens — subsequent calls return
-    // from cache in <1ms.
+    // The version-keyed hot-memories cache (keyed by baseDir + the corpus
+    // version sentinel, issue #1902) serves repeat reads within a version epoch
+    // from memory, so these subsystems share one disk scan; a memory write
+    // between recalls bumps the corpus version and forces exactly one rescan.
 
     const verifiedRecallPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
@@ -2081,6 +2082,7 @@ export class RecallInternalCoordinator {
               query: retrievalQuery,
               maxResults,
               boxRecallDays: this.deps.config.boxRecallDays,
+              hotMemoriesCacheEnabled: this.deps.config.hotMemoriesCacheEnabled,
             }).catch((err) => {
               log.debug(`verified recall directory scan failed: ${err}`);
               return [] as VerifiedEpisodeResult[];
@@ -2169,6 +2171,7 @@ export class RecallInternalCoordinator {
               memoryDir,
               query: retrievalQuery,
               maxResults,
+              hotMemoriesCacheEnabled: this.deps.config.hotMemoriesCacheEnabled,
             }).catch((err) => {
               log.debug(`verified rules directory scan failed: ${err}`);
               return [] as VerifiedSemanticRuleResult[];

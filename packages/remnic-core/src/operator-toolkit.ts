@@ -2297,7 +2297,13 @@ export async function runOperatorInventory(options: OperatorInventoryOptions): P
   let rejected = 0;
 
   for (const entry of uniqueRootEntries.values()) {
-    const storage = new StorageManager(entry.rootDir);
+    // Disable the hot-memories cache for these transient, one-shot inventory
+    // reads (issue #1902, Codex Medium). Each namespace root is read exactly once
+    // here; caching gives no benefit and would warm+RETAIN the full corpus under
+    // the process-wide gate/TTL (this path bypasses NamespaceStorageRouter, so
+    // the root is never registered in the per-dir maps). Disabling sidesteps both
+    // the cross-namespace gate/TTL inheritance and the retained-memory footprint.
+    const storage = new StorageManager(entry.rootDir, undefined, false);
     const memories = await storage.readAllMemories();
     const entities = await storage.readAllEntityFiles();
     namespaces.push({

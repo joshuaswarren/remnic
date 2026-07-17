@@ -69,7 +69,11 @@ function makeEntity(name: string): EntityFile {
  *  has no seeder, so adding a cache layer forces updating this test. */
 function seedAllLayers(dir: string): void {
   const seeders: Record<string, (baseDir: string) => void> = {
-    "hot-memories": (baseDir) => setCachedMemories(baseDir, [makeMemory("h1", `${baseDir}/facts/h1.md`)], 1),
+    // Seed the hot layer at a version that cannot collide with the small
+    // corpus-version sentinel these tiny tests produce (issue #1902): reads
+    // must miss this fake entry (version mismatch) and rescan real disk data,
+    // so read-then-mutate paths (e.g. invalidateMemory) find the real memory.
+    "hot-memories": (baseDir) => setCachedMemories(baseDir, [makeMemory("h1", `${baseDir}/facts/h1.md`)], 1_000_000),
     "archive-memories": (baseDir) =>
       setCachedArchivedMemories(baseDir, [makeMemory("a1", `${baseDir}/archive/a1.md`)], 1),
     entities: (baseDir) => {
@@ -96,6 +100,36 @@ function assertAllLayersEmpty(dir: string, mutation: string): void {
       layer.hasEntriesFor(dir),
       false,
       `cache layer "${layer.name}" still holds entries after ${mutation}`,
+    );
+  }
+}
+
+/**
+ * Single-file write paths (writeMemory/updateMemory/writeMemoryFrontmatter)
+ * PATCH the hot-memories layer in place and deliberately do NOT bump the
+ * memory-status sentinel (issue #1902, Codex Medium), so they keep three layers
+ * warm: hot-memories (patched/re-keyed), entities (keyed on the unchanged
+ * memory-status), and archive-memories (keyed on the untouched archive tier).
+ * Only the derived (episode/rule) and global (QMD) views are cleared. hot is
+ * not asserted here (its warmth is version-dependent given the fake seed
+ * version); entities and archive MUST remain warm, and the rest MUST be gone.
+ */
+function assertOnlyDerivedAndGlobalCleared(dir: string, mutation: string): void {
+  const keptWarm = new Set(["entities", "archive-memories"]);
+  for (const layer of ALL_CACHE_LAYERS) {
+    if (layer.name === "hot-memories") continue;
+    if (keptWarm.has(layer.name)) {
+      assert.equal(
+        layer.hasEntriesFor(dir),
+        true,
+        `cache layer "${layer.name}" should stay warm after ${mutation} (memory-status/archive tier unchanged)`,
+      );
+      continue;
+    }
+    assert.equal(
+      layer.hasEntriesFor(dir),
+      false,
+      `derived/global cache layer "${layer.name}" still holds entries after ${mutation}`,
     );
   }
 }
@@ -162,31 +196,31 @@ test("repro #1535: editing a memory invalidates a warmed QMD recall cache entry 
 // registered cache layer (rule 37: cache invalidation must clear ALL layers).
 // ---------------------------------------------------------------------------
 
-test("mutation matrix: writeMemory clears every cache layer", async () => {
+test("mutation matrix: writeMemory clears every cache layer except the patched hot layer (#1902)", async () => {
   await withStorage(async (storage, dir) => {
     seedAllLayers(dir);
     await storage.writeMemory("fact", "a brand new memory", { source: "test" });
-    assertAllLayersEmpty(dir, "writeMemory");
+    assertOnlyDerivedAndGlobalCleared(dir, "writeMemory");
   });
 });
 
-test("mutation matrix: updateMemory clears every cache layer", async () => {
+test("mutation matrix: updateMemory clears every cache layer except the patched hot layer (#1902)", async () => {
   await withStorage(async (storage, dir) => {
     const { id: id } = await storage.writeMemory("fact", "original content", { source: "test" });
     seedAllLayers(dir);
     assert.equal(await storage.updateMemory(id, "edited content"), true);
-    assertAllLayersEmpty(dir, "updateMemory");
+    assertOnlyDerivedAndGlobalCleared(dir, "updateMemory");
   });
 });
 
-test("mutation matrix: writeMemoryFrontmatter clears every cache layer", async () => {
+test("mutation matrix: writeMemoryFrontmatter clears every cache layer except the patched hot layer (#1902)", async () => {
   await withStorage(async (storage, dir) => {
     const { id: id } = await storage.writeMemory("fact", "frontmatter target", { source: "test" });
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
     seedAllLayers(dir);
     assert.equal(await storage.writeMemoryFrontmatter(memory, { tags: ["patched"] }), true);
-    assertAllLayersEmpty(dir, "writeMemoryFrontmatter");
+    assertOnlyDerivedAndGlobalCleared(dir, "writeMemoryFrontmatter");
   });
 });
 

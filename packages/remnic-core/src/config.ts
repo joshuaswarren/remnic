@@ -2106,6 +2106,20 @@ export function parseConfig(
     // opt out with recallMemoryWorthFilterEnabled=false.
     recallMemoryWorthFilterEnabled:
       coerceBool(cfg.recallMemoryWorthFilterEnabled) ?? true,
+    // Hot-memories result cache (issue #1902). Default on: readAllMemories()
+    // serves from the version-keyed in-process corpus cache. coerceBool
+    // handles "false"/"0" string forms; set false to force disk scans.
+    hotMemoriesCacheEnabled: coerceBool(cfg.hotMemoriesCacheEnabled) ?? true,
+    // External-edit safety net (issue #1902): the version sentinel gives
+    // immediate coherence for cooperating writers, but direct user/git/editor
+    // writes to memory files (which the project supports) don't bump it. Bound
+    // the hot cache's staleness with a TTL so such edits self-heal. Default 60s;
+    // 0 disables the TTL (version invalidation only — max perf for pure-daemon
+    // deployments with no external edits). coerceNumber handles string forms.
+    hotMemoriesCacheTtlMs: (() => {
+      const n = coerceNumber(cfg.hotMemoriesCacheTtlMs);
+      return n !== undefined && n >= 0 ? n : 60_000;
+    })(),
     recallMemoryWorthHalfLifeMs: (() => {
       const n = coerceNumber(cfg.recallMemoryWorthHalfLifeMs);
       return n !== undefined && n >= 0 ? n : 0;

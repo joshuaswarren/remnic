@@ -1,6 +1,7 @@
 import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
+import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -364,6 +365,7 @@ export async function mergeCapsule(
       // No local copy — always write regardless of mode.
       await mkdir(path.dirname(targetAbs), { recursive: true });
       await writeFile(targetAbs, rec.content, "utf-8");
+      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
@@ -408,6 +410,7 @@ export async function mergeCapsule(
     }
 
     await writeFile(targetAbs, rec.content, "utf-8");
+    bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }
 
@@ -415,6 +418,10 @@ export async function mergeCapsule(
   merged.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
   skipped.sort((a, b) => a.path.localeCompare(b.path));
   conflicts.sort((a, b) => a.path.localeCompare(b.path));
+
+  // Per-write corpus bumps happen inside the loop above (Cursor Medium, #1902):
+  // a concurrent readAllMemories during the merge rescans and never serves the
+  // pre-merge corpus mid-batch.
 
   return { merged, skipped, conflicts, manifest };
 }

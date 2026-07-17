@@ -98,18 +98,32 @@ export async function searchVerifiedEpisodes(options: {
   query: string;
   maxResults: number;
   boxRecallDays?: number;
+  /** Hot-memories cache gate (issue #1902, Codex P2). Threaded from the caller
+   *  so a named-namespace root (never registered in the per-dir default map)
+   *  honors the owning daemon's config instead of the process-wide default. */
+  hotMemoriesCacheEnabled?: boolean;
 }): Promise<VerifiedEpisodeResult[]> {
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
-  const storage = new StorageManager(options.memoryDir);
-  const version = storage.getMemoryStatusVersion();
+  const storage = new StorageManager(options.memoryDir, undefined, options.hotMemoriesCacheEnabled);
+  // Key the derived episode cache on the CORPUS version, not memory-status
+  // (Codex P1, #1902): the episode map is derived from the full corpus, and
+  // plain creates/writeChunk bump only the corpus sentinel (memory-status is
+  // deliberately left unchanged to keep the entity cache warm). Keying on
+  // memory-status would let a peer process serve a stale episode map that omits
+  // newly created memories.
+  const version = storage.getMemoryCorpusVersion();
 
-  // Use derived episode cache to avoid O(146K) filter+map on every call.
-  let verifiedMemoryById = getCachedEpisodeMap(storage.dir, version);
+  // Use derived episode cache to avoid O(146K) filter+map on every call — but
+  // honor the hotMemoriesCacheEnabled opt-out (Codex P2): when disabled, never
+  // read or retain the derived map, always rebuild from a fresh scan.
+  const cacheEnabled = storage.isHotCacheEnabled();
+  const keyId = storage.hotCacheKeyId();
+  let verifiedMemoryById = cacheEnabled ? getCachedEpisodeMap(storage.dir, version, keyId, storage.hotCacheTtlMs()) : null;
   if (!verifiedMemoryById) {
     const allMemories = await storage.readAllMemories();
-    verifiedMemoryById = setCachedEpisodeMap(storage.dir, allMemories, version);
+    verifiedMemoryById = setCachedEpisodeMap(storage.dir, allMemories, version, cacheEnabled, keyId);
   }
   const boxes = await createReadOnlyBoxBuilder(options.memoryDir)
     .readRecentBoxes(Math.max(1, Math.floor(options.boxRecallDays ?? 3)))

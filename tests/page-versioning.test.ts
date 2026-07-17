@@ -395,3 +395,41 @@ test("maxVersionsPerPage = 0 disables pruning", async () => {
   const history = await listVersions(pagePath, cfg, tmp);
   assert.equal(history.versions.length, 10);
 });
+
+test("revertToVersion bumps the corpus sentinel for recall pages but not non-recall pages (#1902)", async () => {
+  const tmp = await makeTmpDir();
+  const cfg = config(tmp);
+  const sentinel = path.join(tmp, "state", ".memory-corpus-version.log");
+  const size = async (): Promise<number> => {
+    try {
+      return (await fs.stat(sentinel)).size;
+    } catch {
+      return 0;
+    }
+  };
+
+  // Recall-category page (facts/): a revert overwrites the file out-of-band, so
+  // it must advance the corpus sentinel to force a warm hot-memories cache to
+  // rescan and serve the reverted content.
+  const factPath = path.join(tmp, "facts", "pref.md");
+  await fs.mkdir(path.dirname(factPath), { recursive: true });
+  await fs.writeFile(factPath, "v1", "utf-8");
+  await createVersion(factPath, "v1", "write", cfg, undefined, undefined, tmp);
+  await fs.writeFile(factPath, "v2", "utf-8");
+  await createVersion(factPath, "v2", "write", cfg, undefined, undefined, tmp);
+  const beforeFact = await size();
+  await revertToVersion(factPath, "1", cfg, undefined, tmp);
+  assert.ok((await size()) > beforeFact, "reverting a recall page bumps the corpus sentinel");
+  assert.equal(await fs.readFile(factPath, "utf-8"), "v1", "content reverted");
+
+  // Non-recall page (entities/ is outside the corpus scan): must NOT bump.
+  const entPath = path.join(tmp, "entities", "person-x.md");
+  await fs.mkdir(path.dirname(entPath), { recursive: true });
+  await fs.writeFile(entPath, "e1", "utf-8");
+  await createVersion(entPath, "e1", "write", cfg, undefined, undefined, tmp);
+  await fs.writeFile(entPath, "e2", "utf-8");
+  await createVersion(entPath, "e2", "write", cfg, undefined, undefined, tmp);
+  const beforeEnt = await size();
+  await revertToVersion(entPath, "1", cfg, undefined, tmp);
+  assert.equal(await size(), beforeEnt, "reverting a non-recall page does not bump the corpus sentinel");
+});
