@@ -54,6 +54,7 @@
     connectionGeneration: 0,
     connectionRequestId: 0,
     liveReadRequestId: 0,
+    approvalRequestId: 0,
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -412,6 +413,7 @@
     return Boolean(
       state.snapshot
       && Model.isValidActorId(state.authenticatedPrincipal)
+      && sameLiveContext(state.authenticatedContext, currentLiveContext())
       && Model.isCompleteEvidenceSnapshot(state.snapshot)
     );
   }
@@ -485,6 +487,13 @@
       dom.approvalError.textContent = "The Relay server did not provide a valid authenticated principal.";
       return;
     }
+    const context = currentLiveContext();
+    const generation = state.connectionGeneration;
+    if (!sameLiveContext(state.authenticatedContext, context)) {
+      dom.approvalError.textContent = "The authenticated principal no longer belongs to this Relay connection.";
+      syncApprovalSubmitState();
+      return;
+    }
     const operatorLabel = dom.operatorLabelInput.value.trim();
     const draft = loadApprovalDraft(correction.correctionId, operatorId);
     const key = draft.key;
@@ -513,16 +522,22 @@
 
     dom.confirmApprovalButton.disabled = true;
     dom.confirmApprovalButton.textContent = "Writing approval…";
+    const requestId = ++state.approvalRequestId;
+    const approvalWriteStillCurrent = () => requestId === state.approvalRequestId
+      && generation === state.connectionGeneration
+      && sameLiveContext(context, currentLiveContext());
     try {
-      const response = await fetch(missionApiUrl("events"), {
+      const response = await fetch(missionApiUrl("events", context), {
         method: "POST",
-        headers: liveHeaders(true),
+        headers: liveHeaders(true, context),
         cache: "no-store",
-        body: JSON.stringify({ namespace: state.namespace, event }),
+        body: JSON.stringify({ namespace: context.namespace, event }),
       });
       const body = await response.text();
+      if (!approvalWriteStillCurrent()) return;
       if (!response.ok) throw relayResponseError(response.status, body);
       const refreshed = await refreshLive("approval");
+      if (!approvalWriteStillCurrent()) return;
       if (!refreshed) {
         dom.approvalDialog.close();
         showToast("Approval event recorded; live verification is pending. The next retry will reuse the exact event.");
@@ -536,25 +551,28 @@
       dom.approvalDialog.close();
       showToast("Authenticated human approval recorded in the mission lineage.");
     } catch (error) {
-      retainOrClearAuthenticatedPrincipal(error, currentLiveContext());
+      if (!approvalWriteStillCurrent()) return;
+      retainOrClearAuthenticatedPrincipal(error, context);
       if (!Model.isValidActorId(state.authenticatedPrincipal)) dom.operatorIdInput.value = "";
       if (state.mode === "live" && state.snapshot) render();
       dom.approvalError.textContent = error instanceof Error ? error.message : "Approval failed.";
     } finally {
-      dom.confirmApprovalButton.textContent = "Approve correction →";
-      syncApprovalSubmitState();
+      if (approvalWriteStillCurrent()) {
+        dom.confirmApprovalButton.textContent = "Approve correction →";
+        syncApprovalSubmitState();
+      }
     }
   }
 
-  function liveHeaders(json = false) {
-    const headers = { accept: "application/json", authorization: `Bearer ${state.token}` };
+  function liveHeaders(json = false, context = currentLiveContext()) {
+    const headers = { accept: "application/json", authorization: `Bearer ${context.token}` };
     if (json) headers["content-type"] = "application/json";
     return headers;
   }
 
-  function missionApiUrl(suffix = "") {
-    const url = new URL(`/engram/v1/relay/missions/${encodeURIComponent(state.missionId)}${suffix ? `/${suffix}` : ""}`, window.location.origin);
-    if (!suffix) url.searchParams.set("namespace", state.namespace);
+  function missionApiUrl(suffix = "", context = currentLiveContext()) {
+    const url = new URL(`/engram/v1/relay/missions/${encodeURIComponent(context.missionId)}${suffix ? `/${suffix}` : ""}`, window.location.origin);
+    if (!suffix) url.searchParams.set("namespace", context.namespace);
     return url.toString();
   }
 
