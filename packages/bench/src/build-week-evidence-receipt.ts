@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open, realpath, readFile, stat, unlink } from "node:fs/promises";
+import { lstat, open, realpath, readFile, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -899,6 +899,17 @@ export async function writeBuildWeekEvidenceReceipt(args: {
         identityError = statError;
       }
     }
+    if (!createdStat) {
+      throw identityError ?? new Error("created receipt file identity is unavailable");
+    }
+    const publishedStat = await lstat(args.outputPath);
+    if (
+      !publishedStat.isFile() ||
+      publishedStat.dev !== createdStat.dev ||
+      publishedStat.ino !== createdStat.ino
+    ) {
+      throw new Error("receipt output path file identity changed during publication");
+    }
   } catch (error) {
     publicationError = error;
     if (!createdStat) {
@@ -925,7 +936,7 @@ export async function writeBuildWeekEvidenceReceipt(args: {
       );
     }
     try {
-      const currentStat = await stat(args.outputPath);
+      const currentStat = await lstat(args.outputPath);
       if (currentStat.dev !== createdStat.dev || currentStat.ino !== createdStat.ino) {
         throw new Error("refusing to remove a failed receipt output whose file identity changed");
       }

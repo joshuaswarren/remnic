@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { link, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1113,6 +1113,56 @@ test("receipt writer does not strand an empty output when initial file identity 
 
     assert.equal(failedOnce, true);
     assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt writer rejects a success-path output swap without removing the replacement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-output-swap-"));
+  const probePath = join(directory, "probe.json");
+  const outputPath = join(directory, "receipt.json");
+  const displacedPath = join(directory, "displaced-receipt.json");
+  try {
+    const sources = syntheticSources({ limit: 2 });
+    const resultPath = join(directory, "result.json");
+    const manifestPath = join(directory, "MANIFEST.json");
+    await Promise.all([
+      writeFile(resultPath, sources.resultJson),
+      writeFile(manifestPath, sources.manifestJson),
+    ]);
+
+    const probe = await open(probePath, "wx");
+    const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+      sync: typeof probe.sync;
+    };
+    const originalSync = fileHandlePrototype.sync;
+    await probe.close();
+    await rm(probePath);
+    fileHandlePrototype.sync = async function () {
+      await originalSync.call(this);
+      await rename(outputPath, displacedPath);
+      await writeFile(outputPath, "replacement must survive");
+    };
+    try {
+      await assert.rejects(
+        writeBuildWeekEvidenceReceipt({
+          resultPath,
+          manifestPath,
+          outputPath,
+          datasetVersion: "longmemeval-oracle-v1",
+          limitationCodes: ["boundedSubset", "singleRun", "estimatedAccounting", "modelJudged"],
+          freshIsolatedStoreConfirmed: true,
+          publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+        }),
+        /partial output could not be removed safely/,
+      );
+    } finally {
+      fileHandlePrototype.sync = originalSync;
+    }
+
+    assert.equal(await readFile(outputPath, "utf8"), "replacement must survive");
+    assert.match(await readFile(displacedPath, "utf8"), /"schemaVersion": 1/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
