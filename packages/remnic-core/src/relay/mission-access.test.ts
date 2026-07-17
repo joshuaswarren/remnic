@@ -80,7 +80,12 @@ test("HTTP fixture endpoint returns one complete, namespace-authorized Relay rec
           headers: authHeaders(),
           body: JSON.stringify({ namespace: RELAY_DEMO_NAMESPACE, event: input }),
         });
-        assert.equal(response.status, 201, await response.text());
+        const responseBody = await response.text();
+        assert.equal(response.status, 201, responseBody);
+        assert.equal(
+          (JSON.parse(responseBody) as { event: { authenticatedPrincipal?: string } }).event.authenticatedPrincipal,
+          "relay-operator"
+        );
       }
 
       const replay = await fetch(`${base}/events`, {

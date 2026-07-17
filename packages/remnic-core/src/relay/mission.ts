@@ -29,6 +29,7 @@ const identifierSchema = z
   });
 
 const namespaceSchema = z.string().trim().min(1).max(128);
+const authenticatedPrincipalSchema = z.string().trim().min(1).max(256);
 const shortTextSchema = z.string().trim().min(1).max(240);
 const statementSchema = z.string().trim().min(1).max(4_000);
 const uniqueIdentifierListSchema = (minimum: number, maximum: number) =>
@@ -261,6 +262,7 @@ export const RelayMissionEventSchema = z
     eventId: identifierSchema,
     missionId: RelayMissionIdSchema,
     namespace: namespaceSchema,
+    authenticatedPrincipal: authenticatedPrincipalSchema.optional(),
     recordedAt: isoDateTimeSchema,
     occurredAt: isoDateTimeSchema,
     idempotencyKey: identifierSchema.optional(),
@@ -360,6 +362,7 @@ export interface RelayCorrectionSnapshot {
   approvedAt?: string;
   approvedBy?: { kind: "human" | "agent"; id: string; label: string };
   approvalNote?: string;
+  approvalPrincipal?: string;
   appliedAt?: string;
   propagatedAt?: string;
   evidence: RelayEvidenceRef[];
@@ -506,10 +509,14 @@ export class RelayMissionStore {
   async append(
     missionIdValue: string,
     inputValue: RelayMissionEventInput,
-    hooks: { beforeAppend?: () => void | Promise<void> } = {}
+    hooks: { authenticatedPrincipal?: string; beforeAppend?: () => void | Promise<void> } = {}
   ): Promise<RelayMissionAppendResult> {
     const missionId = RelayMissionIdSchema.parse(missionIdValue);
     const input = RelayMissionEventInputSchema.parse(inputValue);
+    const authenticatedPrincipal =
+      hooks.authenticatedPrincipal === undefined
+        ? undefined
+        : authenticatedPrincipalSchema.parse(hooks.authenticatedPrincipal);
     const missionDir = await this.openMissionDirectory();
     const filePath = path.join(missionDir.accessPath, `${missionId}.jsonl`);
     const logicalFilePath = path.join(missionDir.logicalPath, `${missionId}.jsonl`);
@@ -529,7 +536,7 @@ export class RelayMissionStore {
             if (input.idempotencyKey) {
               const replay = existing.events.find((event) => event.idempotencyKey === input.idempotencyKey);
               if (replay) {
-                if (!sameIdempotentInput(replay, input)) {
+                if (!sameIdempotentInput(replay, input, authenticatedPrincipal)) {
                   throw new RelayMissionStoreError(
                     "idempotency_conflict",
                     `idempotency key ${input.idempotencyKey} was already used for different input`
@@ -558,6 +565,7 @@ export class RelayMissionStore {
               eventId: this.createEventId(),
               missionId,
               namespace: this.namespace,
+              ...(authenticatedPrincipal === undefined ? {} : { authenticatedPrincipal }),
               recordedAt,
               occurredAt: input.occurredAt ?? recordedAt,
               ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
@@ -862,6 +870,28 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         break;
       }
       case "conflict_detected": {
+        const participantHoldings = payload.agentIds.map((agentId) => ({
+          agentId,
+          decisionIds: uniqueSorted(
+            payload.decisionIds.filter((decisionId) => decisions.get(decisionId)?.heldByAgentIds.includes(agentId))
+          ),
+        }));
+        for (const participant of participantHoldings) {
+          if (participant.decisionIds.length === 0) {
+            missingEvidence.add(`conflict:${payload.conflictId}:participant:${participant.agentId}:decision-link`);
+          }
+        }
+        for (const decisionId of payload.decisionIds) {
+          if (!participantHoldings.some((participant) => participant.decisionIds.includes(decisionId))) {
+            missingEvidence.add(`conflict:${payload.conflictId}:decision:${decisionId}:participant-link`);
+          }
+        }
+        if (
+          participantHoldings.every((participant) => participant.decisionIds.length > 0) &&
+          new Set(participantHoldings.map((participant) => participant.decisionIds.join("\0"))).size < 2
+        ) {
+          missingEvidence.add(`conflict:${payload.conflictId}:distinct-participant-beliefs`);
+        }
         if (conflicts.has(payload.conflictId)) {
           missingEvidence.add(`conflict:${payload.conflictId}:duplicate`);
         } else {
@@ -956,10 +986,19 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
         if (payload.approvedBy.kind === "agent") substantiveAgentIds.add(payload.approvedBy.id);
         const correction = corrections.get(payload.correctionId);
         if (correction) {
-          if (correction.approvedAt === undefined) {
+          const authenticatedHumanApproval =
+            payload.approvedBy.kind !== "human" ||
+            runMode !== "live" ||
+            event.authenticatedPrincipal === payload.approvedBy.id;
+          if (!authenticatedHumanApproval) {
+            missingEvidence.add(`correction:${payload.correctionId}:authenticated-human-approval`);
+          } else if (correction.approvedAt === undefined) {
             correction.approvedAt = event.occurredAt;
             correction.approvedBy = payload.approvedBy;
             correction.approvalNote = payload.note;
+            if (event.authenticatedPrincipal !== undefined) {
+              correction.approvalPrincipal = event.authenticatedPrincipal;
+            }
             if (correction.status === "proposed") correction.status = "approved";
           } else {
             missingEvidence.add(`correction:${payload.correctionId}:duplicate-approval`);
@@ -1166,6 +1205,8 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       missingEvidence.add(`correction:${correction.correctionId}:approval`);
     } else if (correction.approvedBy.kind !== "human") {
       missingEvidence.add(`correction:${correction.correctionId}:human-approval`);
+    } else if (runMode === "live" && correction.approvalPrincipal !== correction.approvedBy.id) {
+      missingEvidence.add(`correction:${correction.correctionId}:authenticated-human-approval`);
     }
     if (correction.status === "approved" || correction.status === "proposed") {
       missingEvidence.add(`correction:${correction.correctionId}:supersession`);
@@ -1352,7 +1393,12 @@ function collectMissingEvidence(missing: Set<string>, event: RelayMissionEvent, 
   if (evidence.length === 0) missing.add(`event:${event.eventId}:evidence`);
 }
 
-function sameIdempotentInput(event: RelayMissionEvent, input: z.infer<typeof RelayMissionEventInputSchema>): boolean {
+function sameIdempotentInput(
+  event: RelayMissionEvent,
+  input: z.infer<typeof RelayMissionEventInputSchema>,
+  authenticatedPrincipal: string | undefined
+): boolean {
+  if (event.authenticatedPrincipal !== authenticatedPrincipal) return false;
   if (input.occurredAt !== undefined && event.occurredAt !== input.occurredAt) return false;
   return stableJson(event.payload) === stableJson(input.payload);
 }

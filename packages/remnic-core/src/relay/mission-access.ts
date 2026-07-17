@@ -80,7 +80,7 @@ export async function appendRelayMissionEvent(
     rootDir: resolved.storage.dir,
     namespace: resolved.namespace,
   });
-  return store.append(input.missionId, input.event, { beforeAppend });
+  return store.append(input.missionId, input.event, { authenticatedPrincipal, beforeAppend });
 }
 
 /** Namespace-authorized, bounded Relay snapshot read shared by HTTP and UI. */

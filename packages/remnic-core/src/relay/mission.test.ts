@@ -50,6 +50,20 @@ function fixtureEvents(): RelayMissionEvent[] {
   );
 }
 
+function liveFixtureEvents(authenticatedPrincipal: string): RelayMissionEvent[] {
+  return fixtureEvents().map((event) =>
+    RelayMissionEventSchema.parse({
+      ...event,
+      authenticatedPrincipal,
+      payload: {
+        ...event.payload,
+        ...(event.payload.kind === "mission_started" ? { runMode: "live" } : {}),
+        evidence: event.payload.evidence.map((item) => ({ ...item, capture: "at_action" })),
+      },
+    })
+  );
+}
+
 function firstFixtureInput() {
   const [first] = createRelayMissionFixture();
   if (!first) throw new Error("Relay mission fixture must contain a start event");
@@ -123,10 +137,20 @@ test("idempotent append replays matching input and rejects conflicting input", a
     assert.ok(first);
     assert.equal(first.payload.kind, "mission_started");
     if (first.payload.kind !== "mission_started") throw new Error("fixture contract drift");
-    const initial = await store.append(RELAY_DEMO_MISSION_ID, first);
-    const replay = await store.append(RELAY_DEMO_MISSION_ID, first);
+    const initial = await store.append(RELAY_DEMO_MISSION_ID, first, {
+      authenticatedPrincipal: "relay-operator",
+    });
+    const replay = await store.append(RELAY_DEMO_MISSION_ID, first, {
+      authenticatedPrincipal: "relay-operator",
+    });
     assert.equal(replay.replayed, true);
     assert.equal(replay.event.eventId, initial.event.eventId);
+    assert.equal(initial.event.authenticatedPrincipal, "relay-operator");
+
+    await assert.rejects(
+      store.append(RELAY_DEMO_MISSION_ID, first, { authenticatedPrincipal: "different-operator" }),
+      (error: unknown) => error instanceof RelayMissionStoreError && error.code === "idempotency_conflict"
+    );
 
     await assert.rejects(
       store.append(RELAY_DEMO_MISSION_ID, {
@@ -337,6 +361,27 @@ test("receipt requires an observed, decision-linked conflict and coherent missio
   );
 });
 
+test("conflict participants must hold distinct conflicting decisions at detection time", () => {
+  const singleHolder = fixtureEvents().map((event) =>
+    event.payload.kind === "belief_observed" && event.payload.decisionId === "decision-refresh-after-expiry"
+      ? {
+          ...event,
+          payload: { ...event.payload, agentId: "agent-atlas" },
+        }
+      : event
+  );
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: singleHolder,
+  });
+
+  assert.equal(snapshot.receipt.complete, false);
+  assert.ok(
+    snapshot.receipt.missingEvidence.includes("conflict:conflict-token-lifecycle:participant:agent-nova:decision-link")
+  );
+});
+
 test("a correction must account for every decision in its observed conflict", () => {
   const events = fixtureEvents();
   const belief = events.find((event) => event.payload.kind === "belief_observed");
@@ -537,6 +582,26 @@ test("receipt requires human approval and a passing test after verified propagat
   assert.ok(
     agentApprovedSnapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:human-approval")
   );
+
+  const forgedHumanSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: liveFixtureEvents("agent-runner"),
+  });
+  assert.equal(forgedHumanSnapshot.receipt.complete, false);
+  assert.ok(
+    forgedHumanSnapshot.receipt.missingEvidence.includes(
+      "correction:correction-token-refresh:authenticated-human-approval"
+    )
+  );
+
+  const authenticatedHumanSnapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: liveFixtureEvents("operator-build-week"),
+  });
+  assert.equal(authenticatedHumanSnapshot.receipt.complete, true);
+  assert.equal(authenticatedHumanSnapshot.corrections[0]?.approvalPrincipal, "operator-build-week");
 
   const passBeforePropagation = fixtureEvents().map((event) =>
     event.payload.kind === "test_result" && event.payload.status === "passed"
