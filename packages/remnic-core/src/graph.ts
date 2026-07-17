@@ -60,13 +60,17 @@ export interface GraphConfig {
    */
   graphTraversalPageRankIterations: number;
   /**
-   * Issue #1904 — incremental GraphIndex edge cache. When true (default), a
-   * single-writer edge append is pushed into the warm edge cache in place
-   * (revalidated by file size for cross-process coherence) instead of nulling
-   * the cache and paying a full 6 MB re-read + parse on the next traversal.
-   * Set false to restore the pre-#1904 null-on-every-write behavior.
+   * Issue #1904 — incremental GraphIndex edge cache. When true (the default,
+   * and the value when omitted), a single-writer edge append is pushed into the
+   * warm edge cache in place (revalidated by file size for cross-process
+   * coherence) instead of nulling the cache and paying a full 6 MB re-read +
+   * parse on the next traversal. Set false to restore the pre-#1904
+   * null-on-every-write behavior. Optional here (unlike the required
+   * PluginConfig field parseConfig always sets) so GraphConfig can still be
+   * constructed directly with a partial config; only an explicit `false` opts
+   * out, so an omitted field keeps the incremental default.
    */
-  graphEdgeCacheIncrementalEnabled: boolean;
+  graphEdgeCacheIncrementalEnabled?: boolean;
 }
 
 /** Default minimum edge confidence required for traversal (issue #681 PR 3/3). */
