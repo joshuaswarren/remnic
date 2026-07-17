@@ -547,6 +547,11 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
   };
   assert.throws(() => build(fabricatedMetrics), /metric schema does not match the pinned benchmark metrics/);
 
+  const impossibleNormalizedScore = syntheticCanonicalLongMemEvalResult();
+  for (const task of impossibleNormalizedScore.results.tasks) task.scores.f1 = 2;
+  impossibleNormalizedScore.results.aggregates.f1 = { mean: 2, median: 2, stdDev: 0, min: 2, max: 2 };
+  assert.throws(() => build(impossibleNormalizedScore), /metric f1 must be within \[0, 1\]/);
+
   const arbitraryInventoryResult = syntheticCanonicalLongMemEvalResult();
   const arbitraryInventorySources = syntheticSources({ result: arbitraryInventoryResult });
   const arbitraryInventoryManifest = JSON.parse(arbitraryInventorySources.manifestJson) as BenchmarkReproManifest;
@@ -875,6 +880,42 @@ test("MemCorrect receipts reject non-full coverage, failed tasks, wrong adapter,
   const missingJudgeCall = syntheticMemCorrectResult();
   missingJudgeCall.cost.judgeModelCalls = 79;
   assert.throws(() => build(missingJudgeCall), /two specialized judge calls per task/);
+});
+
+test("full MemCorrect receipts reject impossible pinned metric values", () => {
+  const impossibleLatency = syntheticMemCorrectResult();
+  for (const task of impossibleLatency.results.tasks) task.scores.uptake_latency = -1;
+  impossibleLatency.results.aggregates.uptake_latency = { mean: -1, median: -1, stdDev: 0, min: -1, max: -1 };
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: impossibleLatency }),
+      datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+      limitationCodes: ["singleRun", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+    }),
+    /metric uptake_latency must be a non-negative integer/,
+  );
+
+  const impossibleCensorFlag = syntheticMemCorrectResult();
+  for (const task of impossibleCensorFlag.results.tasks) task.scores.uptake_latency_censored = 0.5;
+  impossibleCensorFlag.results.aggregates.uptake_latency_censored = {
+    mean: 0.5,
+    median: 0.5,
+    stdDev: 0,
+    min: 0.5,
+    max: 0.5,
+  };
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      ...syntheticSources({ result: impossibleCensorFlag }),
+      datasetVersion: BUILD_WEEK_MEMCORRECT_DATASET_VERSION,
+      limitationCodes: ["singleRun", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_MEMCORRECT_FULL_TASK_COUNT },
+    }),
+    /metric uptake_latency_censored must be binary/,
+  );
 });
 
 test("file-backed benchmark receipts still reject non-hashed dataset manifests", () => {
