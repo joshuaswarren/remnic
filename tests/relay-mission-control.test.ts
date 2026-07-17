@@ -18,6 +18,12 @@ interface RelayBrowserModel {
     recall: { coldStart: boolean } | null;
   }>;
   collectEvidence(snapshot: unknown): Array<{ id: string; capture: string; contexts: string[] }>;
+  canRetainAuthenticatedPrincipal(input: {
+    sameConnection: boolean;
+    priorPrincipalValid: boolean;
+    status: number | null;
+    metadataInvalid: boolean;
+  }): boolean;
   createApprovalEvent(input: Record<string, string>): unknown;
   isValidActorId(value: unknown): boolean;
   isReusableApprovalEvent(candidate: unknown, correctionId: string, operatorId?: string): boolean;
@@ -121,6 +127,30 @@ test("browser model preserves the causal event order through recovered receipt",
   assert.equal(lineage.stale?.status, "superseded");
   assert.equal(lineage.replacement?.decisionId, "decision-refresh-after-expiry");
   assert.equal(lineage.state, "propagated");
+
+  const withOlderRetiredDecision = structuredClone(finalSnapshot);
+  withOlderRetiredDecision.decisions.unshift({
+    ...structuredClone(withOlderRetiredDecision.decisions.find((item) => item.status === "superseded")!),
+    decisionId: "decision-unrelated-retired-belief",
+    statement: "An older, unrelated belief.",
+  });
+  assert.equal(
+    model.lineage(withOlderRetiredDecision).stale?.decisionId,
+    "decision-new-token-every-request",
+    "lineage must select the decision targeted by the active correction"
+  );
+});
+
+test("authenticated principal retention distinguishes transient refreshes from invalid auth", async () => {
+  const model = await loadModel();
+  const base = { sameConnection: true, priorPrincipalValid: true, status: null, metadataInvalid: false };
+  assert.equal(model.canRetainAuthenticatedPrincipal(base), true);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, status: 503 }), true);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, status: 401 }), false);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, status: 403 }), false);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, sameConnection: false }), false);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, metadataInvalid: true }), false);
+  assert.equal(model.canRetainAuthenticatedPrincipal({ ...base, priorPrincipalValid: false }), false);
 });
 
 test("browser approval builder emits a schema-valid, at-action human approval", async () => {
@@ -187,6 +217,8 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);
+  assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
+  assert.match(controller, /error\.relayStatus = response\.status/);
   assert.match(controller, /operatorLabelInput\.readOnly = Boolean\(pendingDraft\)/);
   assert.match(controller, /Retry will reuse this exact approval event/);
   assert.doesNotMatch(controller, /if \(!approved\) \{\s*safeSessionRemove\(key\)/);

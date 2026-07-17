@@ -197,8 +197,10 @@
   function lineage(snapshot) {
     validateSnapshot(snapshot);
     const correction = snapshot.corrections.at(-1) || null;
-    const stale = snapshot.decisions.find((decision) => decision.status === "superseded")
-      || snapshot.decisions.find((decision) => correction?.supersedesDecisionIds?.includes(decision.decisionId))
+    const stale = correction?.supersedesDecisionIds
+      ?.map((decisionId) => snapshot.decisions.find((decision) => decision.decisionId === decisionId))
+      .find(Boolean)
+      || snapshot.decisions.find((decision) => decision.status === "superseded")
       || snapshot.decisions[0]
       || null;
     const replacement = snapshot.decisions.find((decision) => decision.decisionId === correction?.proposedDecisionId)
@@ -275,6 +277,14 @@
     return typeof value === "string" && IDENTIFIER_PATTERN.test(value);
   }
 
+  function canRetainAuthenticatedPrincipal(input) {
+    return input?.sameConnection === true
+      && input?.priorPrincipalValid === true
+      && input?.metadataInvalid !== true
+      && input?.status !== 401
+      && input?.status !== 403;
+  }
+
   function createApprovalEvent(input) {
     const correctionId = String(input?.correctionId || "").trim();
     const operatorId = String(input?.operatorId || "").trim();
@@ -332,6 +342,7 @@
 
   globalScope.RelayModel = Object.freeze({
     agentCards,
+    canRetainAuthenticatedPrincipal,
     captureLabel,
     collectEvidence,
     createApprovalEvent,

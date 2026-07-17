@@ -73,6 +73,13 @@ rejects mismatched human identities before persistence, so a guessed principal
 cannot poison the append-only receipt. Once drafted, the displayed approval
 label is also locked to the saved event; the draft is cleared only after a
 fresh snapshot verifies acceptance, never merely because the POST returned.
+The last server-verified principal remains bound only to the exact mission,
+namespace, and bearer token that established it. A transient network or 5xx
+refresh failure can retain that binding because the append endpoint
+re-authenticates every write; a 401/403, changed connection, invalid principal
+metadata, or previously invalid principal clears it and disables the gate.
+Changing live settings is atomic: Mission Control does not replace the current
+mission or credential binding unless the candidate connection succeeds.
 
 Fresh X-ray reads are visibly labeled **Fresh inspection**. They refresh the
 screen but never count as evidence captured at action time.
@@ -86,6 +93,8 @@ screen but never count as evidence captured at action time.
 | Partial/corrupt | Marks the receipt incomplete and warns against treating it as sealed. |
 | Awaiting approval | Stops playback and exposes the source/test diff plus typed human gate. |
 | Approval retry | Reuses the persisted event and idempotency key until the server responds. |
+| Transient live refresh failure | Keeps the last identity only for the unchanged connection; the write remains server-authenticated. |
+| Invalid auth or changed connection | Clears the identity binding and disables live approval. |
 | Offline live API | Falls back to the explicitly labeled synthetic replay. |
 | Replay | Keeps the mode and zero-credit/synthetic-data provenance visible. |
 | Recovered | Seals only after human approval, cold-start propagation, and passing outcome proof. |

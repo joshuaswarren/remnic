@@ -50,6 +50,7 @@
     namespace: "relay-build-week",
     token: "",
     authenticatedPrincipal: "",
+    authenticatedContext: null,
     drawer: null,
     drawerInvoker: null,
     lastAgentIds: new Set(),
@@ -536,18 +537,60 @@
     }
   }
 
-  async function fetchLiveSnapshot() {
-    if (!state.token) throw new Error("A bearer token is required for live Relay data.");
-    const response = await fetch(missionApiUrl(), { headers: liveHeaders(), cache: "no-store" });
+  function currentLiveContext() {
+    return { missionId: state.missionId, namespace: state.namespace, token: state.token };
+  }
+
+  function sameLiveContext(left, right) {
+    return Boolean(left && right
+      && left.missionId === right.missionId
+      && left.namespace === right.namespace
+      && left.token === right.token);
+  }
+
+  function bindAuthenticatedPrincipal(principal, context) {
+    if (!Model.isValidActorId(principal)) {
+      state.authenticatedPrincipal = "";
+      state.authenticatedContext = null;
+      return;
+    }
+    state.authenticatedPrincipal = principal;
+    state.authenticatedContext = { ...context };
+  }
+
+  function retainOrClearAuthenticatedPrincipal(error, context) {
+    const retain = Model.canRetainAuthenticatedPrincipal({
+      sameConnection: sameLiveContext(state.authenticatedContext, context),
+      priorPrincipalValid: Model.isValidActorId(state.authenticatedPrincipal),
+      status: Number.isInteger(error?.relayStatus) ? error.relayStatus : null,
+      metadataInvalid: error?.relayPrincipalMetadataInvalid === true,
+    });
+    if (!retain) bindAuthenticatedPrincipal("", context);
+  }
+
+  async function fetchLiveSnapshot(context = currentLiveContext()) {
+    if (!context.token) throw new Error("A bearer token is required for live Relay data.");
+    const url = new URL(`/engram/v1/relay/missions/${encodeURIComponent(context.missionId)}`, window.location.origin);
+    url.searchParams.set("namespace", context.namespace);
+    const response = await fetch(url.toString(), {
+      headers: { accept: "application/json", authorization: `Bearer ${context.token}` },
+      cache: "no-store",
+    });
     const body = await response.text();
-    if (!response.ok) throw new Error(apiError(response.status, body));
+    if (!response.ok) {
+      const error = new Error(apiError(response.status, body));
+      error.relayStatus = response.status;
+      throw error;
+    }
     const encodedPrincipal = response.headers.get("x-remnic-authenticated-principal");
     let authenticatedPrincipal = "";
     if (encodedPrincipal) {
       try {
         authenticatedPrincipal = decodeURIComponent(encodedPrincipal);
       } catch {
-        throw new Error("Relay API returned invalid authenticated-principal metadata.");
+        const error = new Error("Relay API returned invalid authenticated-principal metadata.");
+        error.relayPrincipalMetadataInvalid = true;
+        throw error;
       }
     }
     return {
@@ -557,16 +600,17 @@
   }
 
   async function refreshLive(reason = "manual") {
+    const context = currentLiveContext();
     try {
-      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot();
+      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
       state.mode = "live";
       state.snapshot = snapshot;
-      state.authenticatedPrincipal = authenticatedPrincipal;
+      bindAuthenticatedPrincipal(authenticatedPrincipal, context);
       render();
       if (reason === "manual") showToast("Fresh live mission snapshot loaded.");
       return true;
     } catch (error) {
-      state.authenticatedPrincipal = "";
+      retainOrClearAuthenticatedPrincipal(error, context);
       if (state.mode === "live" && state.snapshot) render();
       setBanner(`OFFLINE · ${error instanceof Error ? error.message : "Live Relay API is unavailable."}`, "error");
       if (reason === "connection") dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
@@ -648,16 +692,17 @@
     if (state.mode !== "live") return;
     dom.freshInspectionButton.disabled = true;
     dom.freshInspectionResult.textContent = "Reading live mission now…";
+    const context = currentLiveContext();
     try {
       const before = state.snapshot.events.length;
-      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot();
+      const { snapshot, authenticatedPrincipal } = await fetchLiveSnapshot(context);
       state.snapshot = snapshot;
-      state.authenticatedPrincipal = authenticatedPrincipal;
+      bindAuthenticatedPrincipal(authenticatedPrincipal, context);
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `FRESH INSPECTION · ${new Date().toISOString()} · ${state.snapshot.events.length} events (${state.snapshot.events.length - before >= 0 ? "+" : ""}${state.snapshot.events.length - before}). Not receipt evidence.`;
     } catch (error) {
-      state.authenticatedPrincipal = "";
+      retainOrClearAuthenticatedPrincipal(error, context);
       render();
       renderDrawer();
       dom.freshInspectionResult.textContent = `Fresh inspection failed: ${error instanceof Error ? error.message : "unknown error"}`;
@@ -675,21 +720,32 @@
       dom.connectionError.textContent = "Mission, namespace, and bearer token are required.";
       return;
     }
-    state.missionId = missionId;
-    state.namespace = namespace;
-    state.token = token;
-    if (!safeSessionSet(TOKEN_KEY, token)) {
-      dom.connectionError.textContent = "Session storage is unavailable; live credentials will not be retained in this tab.";
+    const context = { missionId, namespace, token };
+    let liveResult;
+    try {
+      liveResult = await fetchLiveSnapshot(context);
+    } catch (error) {
+      dom.connectionError.textContent = error instanceof Error ? error.message : "Connection failed.";
+      setBanner("CONNECTION FAILED · The current mission and authenticated identity remain unchanged.", "error");
+      return;
     }
-    const connected = await refreshLive("connection");
-    if (!connected) return;
+    state.missionId = context.missionId;
+    state.namespace = context.namespace;
+    state.token = context.token;
+    state.mode = "live";
+    state.snapshot = liveResult.snapshot;
+    bindAuthenticatedPrincipal(liveResult.authenticatedPrincipal, context);
+    const tokenRetained = safeSessionSet(TOKEN_KEY, token);
+    render();
     const url = new URL(window.location.href);
     url.searchParams.set("mode", "live");
     url.searchParams.set("mission", state.missionId);
     url.searchParams.set("namespace", state.namespace);
     history.replaceState(null, "", url);
     dom.connectionDialog.close();
-    showToast("Mission Control is reading the authenticated live Relay API.");
+    showToast(tokenRetained
+      ? "Mission Control is reading the authenticated live Relay API."
+      : "Connected live; session storage is unavailable, so this tab will not retain the credential.");
   }
 
   function openConnectionDialog() {
