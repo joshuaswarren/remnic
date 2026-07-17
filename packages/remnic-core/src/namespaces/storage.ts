@@ -312,7 +312,8 @@ export class NamespaceStorageRouter {
       this.config.hotMemoriesCacheEnabled,
       this.config.hotMemoriesCacheTtlMs,
     );
-    StorageManager.setScopedCacheInvalidationDefault(root, this.config.scopedCacheInvalidationEnabled);
+    const { scopedCacheInvalidationEnabled } = this.config;
+    StorageManager.setScopedCacheInvalidationDefault(root, scopedCacheInvalidationEnabled);
     // Propagate the inline-attribution template so that router-created storages
     // (used by extraction and shared-promotion paths) strip citations consistently,
     // matching the behaviour of the primary this.storage instance in the orchestrator.

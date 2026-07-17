@@ -2767,7 +2767,7 @@ export class StorageManager {
 
   /** Register the operator's scope-aware cache invalidation gate for a memory
    *  dir (issue #1904). The orchestrator/access layer calls this with
-   *  config.scopedCacheInvalidationEnabled so the setting reaches every
+   *  the operator's scopedCacheInvalidationEnabled flag so the setting reaches every
    *  StorageManager built over the dir, including ephemeral recall-sub-stage
    *  instances. Only an explicit `false` disables; `undefined` leaves it on. */
   static setScopedCacheInvalidationDefault(memoryDir: string, enabled: boolean | undefined): void {

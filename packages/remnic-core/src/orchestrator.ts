@@ -1338,7 +1338,7 @@ export class Orchestrator {
     // — including the ephemeral ones recall sub-stages build over the same dir
     // — honors the operator's setting. Destructured (not `config.<flag>`) so
     // this single access-layer read stays off the scattered-flag ratchet.
-    const { hotMemoriesCacheEnabled } = config;
+    const { hotMemoriesCacheEnabled, scopedCacheInvalidationEnabled } = config;
     StorageManager.setHotMemoriesCacheDefault(
       config.memoryDir,
       hotMemoriesCacheEnabled,
@@ -1347,7 +1347,7 @@ export class Orchestrator {
     // Register the #1904 scope-invalidation gate for this dir so every
     // StorageManager over it (including ephemeral recall sub-stage instances)
     // honors the operator's rollback lever.
-    StorageManager.setScopedCacheInvalidationDefault(config.memoryDir, config.scopedCacheInvalidationEnabled);
+    StorageManager.setScopedCacheInvalidationDefault(config.memoryDir, scopedCacheInvalidationEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
@@ -1516,7 +1516,7 @@ export class Orchestrator {
           config.hotMemoriesCacheEnabled,
           config.hotMemoriesCacheTtlMs,
         );
-        StorageManager.setScopedCacheInvalidationDefault(parentDir, config.scopedCacheInvalidationEnabled);
+        StorageManager.setScopedCacheInvalidationDefault(parentDir, scopedCacheInvalidationEnabled);
         return new StorageManager(parentDir, config.entitySchemas, config.hotMemoriesCacheEnabled);
       },
     });
