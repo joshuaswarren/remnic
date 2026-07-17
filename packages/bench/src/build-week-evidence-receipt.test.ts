@@ -836,7 +836,7 @@ test("receipt generation requires an explicit fresh isolated store confirmation"
   );
 });
 
-test("receipt writer rejects output paths that alias private source files", async () => {
+test("receipt writer is create-only and rejects paths that could replace existing files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "remnic-build-week-receipt-"));
   try {
     const sources = syntheticSources({ limit: 2 });
@@ -846,10 +846,13 @@ test("receipt writer rejects output paths that alias private source files", asyn
     const hardLinkPath = join(directory, "receipt-hard-link.json");
     const harmlessTargetPath = join(directory, "harmless-target.txt");
     const replaceableSymlinkPath = join(directory, "replaceable-receipt-link.json");
+    const existingOutputPath = join(directory, "existing-receipt.json");
+    const newOutputPath = join(directory, "new-receipt.json");
     await Promise.all([
       writeFile(resultPath, sources.resultJson),
       writeFile(manifestPath, sources.manifestJson),
       writeFile(harmlessTargetPath, "leave this file unchanged"),
+      writeFile(existingOutputPath, "leave this existing output unchanged"),
     ]);
 
     const write = (outputPath: string) =>
@@ -875,9 +878,14 @@ test("receipt writer rejects output paths that alias private source files", asyn
     assert.equal(await readFile(resultPath, "utf8"), sources.resultJson);
 
     await symlink(harmlessTargetPath, replaceableSymlinkPath);
-    const receipt = await write(replaceableSymlinkPath);
+    await assert.rejects(write(replaceableSymlinkPath), /EEXIST/);
     assert.equal(await readFile(harmlessTargetPath, "utf8"), "leave this file unchanged");
-    assert.deepEqual(JSON.parse(await readFile(replaceableSymlinkPath, "utf8")), receipt);
+
+    await assert.rejects(write(existingOutputPath), /EEXIST/);
+    assert.equal(await readFile(existingOutputPath, "utf8"), "leave this existing output unchanged");
+
+    const receipt = await write(newOutputPath);
+    assert.deepEqual(JSON.parse(await readFile(newOutputPath, "utf8")), receipt);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { open, realpath, readFile, rename, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, realpath, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
@@ -723,22 +723,16 @@ export async function writeBuildWeekEvidenceReceipt(args: {
     freshIsolatedStoreConfirmed: args.freshIsolatedStoreConfirmed,
     publicationScope: args.publicationScope,
   });
-  const temporaryOutputPath = join(
-    dirname(args.outputPath),
-    `.${basename(args.outputPath)}.${randomUUID()}.tmp`,
-  );
-  let temporaryOutput: Awaited<ReturnType<typeof open>> | undefined = await open(temporaryOutputPath, "wx", 0o644);
+  // Publish create-only. O_EXCL prevents both a leaf substitution and a
+  // parent-directory swap from replacing any existing private source entry.
+  // Callers that intentionally regenerate a public receipt must choose a new
+  // path or remove the prior public artifact outside this safety boundary.
+  const output = await open(args.outputPath, "wx", 0o644);
   try {
-    await temporaryOutput.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });
-    await temporaryOutput.sync();
-    await temporaryOutput.close();
-    temporaryOutput = undefined;
-    // Atomic rename replaces the directory entry without following a symlink
-    // or hard link introduced after the alias checks above.
-    await rename(temporaryOutputPath, args.outputPath);
+    await output.writeFile(serializeBuildWeekEvidenceReceipt(receipt), { encoding: "utf8" });
+    await output.sync();
   } finally {
-    await temporaryOutput?.close().catch(() => undefined);
-    await rm(temporaryOutputPath, { force: true }).catch(() => undefined);
+    await output.close();
   }
   return receipt;
 }
