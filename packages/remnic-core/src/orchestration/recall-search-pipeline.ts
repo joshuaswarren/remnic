@@ -33,7 +33,7 @@ import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
-import { extractTagsFromPrompt, isTemporalQuery, queryByDateRangeAsync, queryByTagsAsync, recencyWindowFromPrompt, resolvePromptTagPrefilterAsync } from "../temporal-index.js";
+import { extractTagsFromPrompt, isTemporalQuery, queryByDateRangeAsync, queryByTagsAsync, readIndexSnapshotAsync, recencyWindowFromPrompt, resolvePromptTagPrefilterAsync } from "../temporal-index.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
@@ -305,18 +305,26 @@ export class RecallSearchPipelineCoordinator {
     const temporalFromDate = isTemporalQuery(prompt)
       ? recencyWindowFromPrompt(prompt, Date.now())
       : null;
-    const [rawTemporal, tagSignals] = await Promise.all([
-      temporalFromDate
-        ? queryByDateRangeAsync(this.deps.config.memoryDir, temporalFromDate)
-        : Promise.resolve<Set<string> | null>(null),
-      resolvePromptTagPrefilterAsync(this.deps.config.memoryDir, prompt).catch(
-        () => ({
-          matchedTags: extractTagsFromPrompt(prompt),
-          expandedTags: extractTagsFromPrompt(prompt),
-          paths: null,
-        }),
-      ),
-    ]);
+    // Read the temporal + tag prefilter indexes as ONE consistent snapshot
+    // (issue #1911, Codex Medium) so a concurrent async index mutation can't be
+    // observed half-applied (new temporal row, tag membership not yet written),
+    // which would drop the current memory from the tag prefilter.
+    const [rawTemporal, tagSignals] = await readIndexSnapshotAsync(
+      this.deps.config.memoryDir,
+      () =>
+        Promise.all([
+          temporalFromDate
+            ? queryByDateRangeAsync(this.deps.config.memoryDir, temporalFromDate)
+            : Promise.resolve<Set<string> | null>(null),
+          resolvePromptTagPrefilterAsync(this.deps.config.memoryDir, prompt).catch(
+            () => ({
+              matchedTags: extractTagsFromPrompt(prompt),
+              expandedTags: extractTagsFromPrompt(prompt),
+              paths: null,
+            }),
+          ),
+        ]),
+    );
 
     const temporalCandidates = this.deps.scopeQueryAwarePaths(
       rawTemporal,
@@ -1516,14 +1524,21 @@ export class RecallSearchPipelineCoordinator {
       promptTags = extractTagsFromPrompt(prompt);
     }
 
-    const [rawTemporal, rawTags] = await Promise.all([
-      temporalFromDate !== null
-        ? queryByDateRangeAsync(this.deps.config.memoryDir, temporalFromDate)
-        : Promise.resolve<Set<string> | null>(null),
-      promptTags.length > 0
-        ? queryByTagsAsync(this.deps.config.memoryDir, promptTags)
-        : Promise.resolve<Set<string> | null>(null),
-    ]);
+    // Consistent temporal+tag snapshot (issue #1911, Codex Medium): read both
+    // indexes under one op-lock so an in-flight async mutation is never observed
+    // half-applied.
+    const [rawTemporal, rawTags] = await readIndexSnapshotAsync(
+      this.deps.config.memoryDir,
+      () =>
+        Promise.all([
+          temporalFromDate !== null
+            ? queryByDateRangeAsync(this.deps.config.memoryDir, temporalFromDate)
+            : Promise.resolve<Set<string> | null>(null),
+          promptTags.length > 0
+            ? queryByTagsAsync(this.deps.config.memoryDir, promptTags)
+            : Promise.resolve<Set<string> | null>(null),
+        ]),
+    );
 
     const queryIntent =
       resolveConversationContextCapabilities(this.deps.config).intentRouting && prompt

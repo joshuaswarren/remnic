@@ -15,7 +15,6 @@ import {
   applyTagIndexCompatibilityMutation,
   applyTemporalIndexCompatibilityMutation,
   hasCurrentTemporalIndexSchemaForCompatibility,
-  indexOperationLockPath,
   type TemporalIndexCompatibilityMutation,
   type TemporalIndexEntry,
 } from "./temporal-index.js";
@@ -158,10 +157,18 @@ function removeAbandonedIndexLock(lockDir: string): IndexLockCleanupResult {
 
 function withIndexFileLock(filePath: string, update: () => void): void {
   const lockDir = `${filePath}.lock.d`;
-  while (true) {
+  // Bound the acquisition (issue #1911, Codex Medium). sleepSync() blocks the
+  // Node event loop, so an UNBOUNDED wait here would stall the whole process if
+  // the lock is held elsewhere. Cap the total blocking wait and fail open
+  // (advisory indexes) rather than risk starving the loop — e.g. a lock held by
+  // in-flight async work that needs the very loop this call is blocking.
+  const maxAttempts = Math.max(1, Math.ceil(INDEX_LOCK_STALE_MS / INDEX_LOCK_POLL_MS));
+  let acquired = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       fs.mkdirSync(lockDir);
       writeIndexLockOwner(lockDir);
+      acquired = true;
       break;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
@@ -179,6 +186,7 @@ function withIndexFileLock(filePath: string, update: () => void): void {
       sleepSync(INDEX_LOCK_POLL_MS);
     }
   }
+  if (!acquired) return; // fail open — could not acquire within the bound
 
   try {
     update();
@@ -221,13 +229,16 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 function applyMutation(memoryDir: string, mutation: TemporalIndexCompatibilityMutation): void {
   try {
     fs.mkdirSync(stateDir(memoryDir), { recursive: true });
-    // Hold ONE operation-level lock across BOTH file writes (issue #1911, Codex
-    // Medium), on the same path the async mutators use. Previously each file was
-    // locked+released separately, so a legacy sync call could interleave with an
-    // async mutation (or another process) and leave the temporal half from one
-    // op with the tag half from another. The shared op-lock makes the paired
-    // write atomic across both API surfaces and processes.
-    withIndexFileLock(indexOperationLockPath(memoryDir), () => {
+    // Hold ONE lock across BOTH file writes so two sync calls can't interleave
+    // and commit mismatched temporal/tag halves. Use a DEDICATED op-lock path
+    // (.index-op.lock.d), NOT the per-file lockdirs the async mutators hold
+    // across awaited I/O (issue #1911, Codex Medium): sharing a lock between the
+    // event-loop-BLOCKING sync waiter and an async holder would deadlock. The
+    // async surface serializes itself in-memory and readers take a consistent
+    // snapshot, so the two surfaces need no shared on-disk lock. Cross-surface
+    // writes stay torn-free via writeJsonAtomic; advisory indexes fail open.
+    const opLock = path.join(stateDir(memoryDir), ".index-op");
+    withIndexFileLock(opLock, () => {
       const temporalPath = temporalIndexPath(memoryDir);
       writeJsonAtomic(
         temporalPath,
