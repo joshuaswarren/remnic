@@ -70,6 +70,21 @@ function firstFixtureInput() {
   return first;
 }
 
+function moveEventBefore(
+  events: RelayMissionEvent[],
+  select: (event: RelayMissionEvent) => boolean,
+  before: (event: RelayMissionEvent) => boolean
+): RelayMissionEvent[] {
+  const movingIndex = events.findIndex(select);
+  assert.notEqual(movingIndex, -1, "moving event must exist");
+  const moving = events[movingIndex];
+  assert.ok(moving);
+  const remaining = events.filter((_, index) => index !== movingIndex);
+  const anchorIndex = remaining.findIndex(before);
+  assert.notEqual(anchorIndex, -1, "anchor event must exist");
+  return [...remaining.slice(0, anchorIndex), moving, ...remaining.slice(anchorIndex)];
+}
+
 test("fixture reduces to a complete correction and cold-start receipt", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);
@@ -583,6 +598,66 @@ test("receipt cannot apply or propagate a correction without prior approval", ()
   );
   assert.equal(snapshot.corrections[0]?.status, "proposed");
   assert.ok(snapshot.receipt.missingEvidence.includes("correction:correction-token-refresh:approval"));
+});
+
+test("receipt binds the full correction proof chain to server append order", () => {
+  const scenarios = [
+    {
+      name: "conflict appended before its beliefs",
+      events: moveEventBefore(
+        fixtureEvents(),
+        (event) => event.payload.kind === "conflict_detected",
+        (event) => event.payload.kind === "belief_observed"
+      ),
+      missing: "conflict:conflict-token-lifecycle:decision:decision-new-token-every-request:append-order",
+    },
+    {
+      name: "proposal appended before conflict",
+      events: moveEventBefore(
+        fixtureEvents(),
+        (event) => event.payload.kind === "correction_proposed",
+        (event) => event.payload.kind === "conflict_detected"
+      ),
+      missing: "correction:correction-token-refresh:conflict-append-order",
+    },
+    {
+      name: "approval appended after supersession",
+      events: moveEventBefore(
+        fixtureEvents(),
+        (event) => event.payload.kind === "decision_superseded",
+        (event) => event.payload.kind === "correction_approved"
+      ),
+      missing: "correction:correction-token-refresh:approval-append-order",
+    },
+    {
+      name: "recall appended after propagation",
+      events: moveEventBefore(
+        fixtureEvents(),
+        (event) => event.payload.kind === "propagation_verified",
+        (event) => event.payload.kind === "recall_observed"
+      ),
+      missing: "recall:recall-orbit-cold:propagation-append-order",
+    },
+    {
+      name: "passing test appended before propagation",
+      events: moveEventBefore(
+        fixtureEvents(),
+        (event) => event.payload.kind === "test_result" && event.payload.status === "passed",
+        (event) => event.payload.kind === "propagation_verified"
+      ),
+      missing: "outcome:passing-test",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const snapshot = reduceRelayMission({
+      missionId: RELAY_DEMO_MISSION_ID,
+      namespace: RELAY_DEMO_NAMESPACE,
+      events: scenario.events,
+    });
+    assert.equal(snapshot.receipt.complete, false, scenario.name);
+    assert.ok(snapshot.receipt.missingEvidence.includes(scenario.missing), scenario.name);
+  }
 });
 
 test("receipt requires human approval and a passing test after verified propagation", () => {
