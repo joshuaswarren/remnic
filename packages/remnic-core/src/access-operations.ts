@@ -678,6 +678,8 @@ export const codegraphIngestTracesOperation = defineOperation<
 // Batch-migrated operations (issue #1525): registers all remaining
 // handlers through the boundary as a side effect of importing this module.
 import "./access-operations-batch.js";
+// Remnic Relay mission evidence operations (issue #1966).
+import "./relay/mission-access.js";
 
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,

@@ -282,7 +282,7 @@ test("MCP write quota is recorded after commit even when the client disconnects 
   });
   const serverHost = server as unknown as {
     mcpServer: EngramMcpServer;
-    writeRequestTimestamps: number[];
+    writeRequestSlots: Array<{ readonly recordedAt: number }>;
   };
   const originalHandleRequest = serverHost.mcpServer.handleRequest.bind(serverHost.mcpServer);
   serverHost.mcpServer.handleRequest = async (request, options) => {
@@ -318,7 +318,7 @@ test("MCP write quota is recorded after commit even when the client disconnects 
 
     await waitFor(operationSettled.promise);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(serverHost.writeRequestTimestamps.length, 1);
+    assert.equal(serverHost.writeRequestSlots.length, 1);
     assert.equal(responseStarted, false, "the disconnected client must not receive the committed write response");
   } finally {
     releaseOperation.resolve();

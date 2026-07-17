@@ -193,6 +193,8 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/lcm/compaction/flush", operation: "lcm_compaction_flush" },
   { method: "POST", pathname: "/engram/v1/lcm/compaction/record", operation: "lcm_compaction_record" },
   { method: "GET", pathname: "/engram/v1/lcm/status", operation: "lcm_status" },
+  { method: "GET", pathname: "/engram/v1/relay/missions/:id", operation: "relay_mission_read" },
+  { method: "POST", pathname: "/engram/v1/relay/missions/:id/events", operation: "relay_mission_append" },
   // Correction Contract (issue #1580) — plan/apply/pending.
   { method: "POST", pathname: "/engram/v1/correction/plan", operation: "memory_correct_plan" },
   { method: "POST", pathname: "/engram/v1/correction/apply", operation: "memory_correct_apply" },

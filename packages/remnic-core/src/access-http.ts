@@ -53,6 +53,7 @@ import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 import { cleanupExpiredChatSessions, enforceChatSessionNamespace } from "./chat/chat-session.js";
 import { isDefaultReviewNamespace, listPairs, readPair } from "./contradiction/contradiction-review.js";
 import { isValidResolutionVerb, executeResolution } from "./contradiction/resolution.js";
+import { RelayMissionStoreError } from "./relay/mission.js";
 
 export interface AccessHttpReadinessState {
   ready: boolean;
@@ -339,6 +340,22 @@ function decodePeerIdSegment(raw: string): string {
   }
 }
 
+function decodeRelayMissionIdSegment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new EngramAccessInputError(
+      "missionId path segment is not valid percent-encoded input",
+    );
+  }
+}
+
+function rejectBlankRelayNamespace(value: string | null | undefined): void {
+  if (value !== undefined && value !== null && value.trim().length === 0) {
+    throw new EngramAccessInputError("Relay namespace must not be blank when provided");
+  }
+}
+
 function codingContextFromProjectTag(projectTag: string): {
   projectId: string;
   branch: string | null;
@@ -378,7 +395,7 @@ export class EngramAccessHttpServer {
     res: ServerResponse,
     ctx: { authorized: boolean },
   ) => Promise<boolean>;
-  private readonly writeRequestTimestamps: number[] = [];
+  private readonly writeRequestSlots: Array<{ readonly recordedAt: number }> = [];
   private readonly writeRateLimitMaxRequests: number;
   private readonly writeRateLimitWindowMs: number;
   private readonly mcpServer: EngramMcpServer;
@@ -497,6 +514,20 @@ export class EngramAccessHttpServer {
           }
           if (err instanceof CorrectionContractError) {
             this.respondJson(res, 400, { error: err.message, code: "correction_contract_error" });
+            return;
+          }
+          if (err instanceof RelayMissionStoreError) {
+            const status = err.code === "idempotency_conflict"
+              ? 409
+              : err.code === "limit_exceeded"
+                ? 413
+                : err.code === "lock_unavailable"
+                  ? 503
+                  : 500;
+            this.respondJson(res, status, {
+              error: status >= 500 ? "relay_backend_unavailable" : err.message,
+              code: `relay_${err.code}`,
+            });
             return;
           }
           if (res.headersSent) {
@@ -1667,6 +1698,103 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && pathname === "/engram/v1/lcm/status") {
       this.enforceTokenOp("lcm_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.lcmStatus());
+      return;
+    }
+
+    // Remnic Relay mission receipts (issue #1966). These two routes share the
+    // access-boundary schemas and namespace-resolved storage contract. The
+    // browser receives an already-reduced snapshot; it never scans general
+    // memories, recall logs, or production state.
+    const relayEventMatch = /^\/engram\/v1\/relay\/missions\/([^/]+)\/events$/.exec(pathname);
+    if (req.method === "POST" && relayEventMatch) {
+      const missionId = decodeRelayMissionIdSegment(relayEventMatch[1] ?? "");
+      const body = await this.readJsonBody(req);
+      const unexpectedFields = Object.keys(body).filter(
+        (key) => key !== "namespace" && key !== "event",
+      );
+      if (unexpectedFields.length > 0) {
+        throw new EngramAccessInputError(
+          `Relay append body contains unexpected field(s): ${unexpectedFields.sort().join(", ")}`,
+        );
+      }
+      if (!Object.prototype.hasOwnProperty.call(body, "event")) {
+        throw new EngramAccessInputError("Relay append body must contain an event object");
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(body, "namespace") &&
+        body.namespace !== undefined &&
+        body.namespace !== null &&
+        typeof body.namespace !== "string"
+      ) {
+        throw new EngramAccessInputError("namespace must be a string when provided");
+      }
+      rejectBlankRelayNamespace(
+        typeof body.namespace === "string" ? body.namespace : undefined,
+      );
+      const namespace = this.resolveNamespace(
+        req,
+        typeof body.namespace === "string" ? body.namespace : undefined,
+      );
+      const op = getOperation("relay_mission_append");
+      if (!op) {
+        throw new Error("access-boundary: operation not registered: relay_mission_append");
+      }
+      let releaseWriteQuota: (() => void) | undefined;
+      try {
+        const output = (await op.run(
+          { missionId, namespace, event: body.event },
+          {
+            service: this.service,
+            authenticatedPrincipal: this.resolveRequestPrincipal(req),
+            hooks: {
+              enforceWriteQuota: () => {
+                releaseWriteQuota ??= this.reserveWriteRateLimitSlot();
+              },
+            },
+          },
+        )) as { result: { appended: boolean; replayed: boolean; event: unknown } };
+        if (output.result.appended) {
+          // The reservation is now the committed quota hit. Do not record a
+          // second timestamp after the append returns.
+          releaseWriteQuota = undefined;
+        }
+        this.respondJson(res, output.result.appended ? 201 : 200, output.result);
+      } finally {
+        // Replays never invoke the hook. If a future store path invokes it but
+        // does not append, or persistence throws after reservation, return the
+        // slot so a failed write cannot exhaust the rolling window.
+        releaseWriteQuota?.();
+      }
+      return;
+    }
+
+    const relayMissionMatch = /^\/engram\/v1\/relay\/missions\/([^/]+)$/.exec(pathname);
+    if (req.method === "GET" && relayMissionMatch) {
+      const missionId = decodeRelayMissionIdSegment(relayMissionMatch[1] ?? "");
+      rejectBlankRelayNamespace(parsed.searchParams.get("namespace"));
+      const namespace = this.resolveNamespace(
+        req,
+        parsed.searchParams.get("namespace") ?? undefined,
+      );
+      const op = getOperation("relay_mission_read");
+      if (!op) {
+        throw new Error("access-boundary: operation not registered: relay_mission_read");
+      }
+      const output = (await op.run(
+        {
+          missionId,
+          namespace,
+          since: parsed.searchParams.get("since") ?? undefined,
+          until: parsed.searchParams.get("until") ?? undefined,
+          limit: parsed.searchParams.get("limit") ?? undefined,
+        },
+        {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        },
+      )) as { result: unknown };
+      res.setHeader("cache-control", "no-store");
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -3711,18 +3839,31 @@ export class EngramAccessHttpServer {
   private ensureWriteRateLimitAvailable(): void {
     const now = Date.now();
     while (
-      this.writeRequestTimestamps.length > 0 &&
-      now - (this.writeRequestTimestamps[0] ?? 0) > this.writeRateLimitWindowMs
+      this.writeRequestSlots.length > 0 &&
+      now - (this.writeRequestSlots[0]?.recordedAt ?? 0) > this.writeRateLimitWindowMs
     ) {
-      this.writeRequestTimestamps.shift();
+      this.writeRequestSlots.shift();
     }
-    if (this.writeRequestTimestamps.length >= this.writeRateLimitMaxRequests) {
+    if (this.writeRequestSlots.length >= this.writeRateLimitMaxRequests) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
   }
 
   private recordWriteRateLimitHit(): void {
-    this.writeRequestTimestamps.push(Date.now());
+    this.writeRequestSlots.push({ recordedAt: Date.now() });
+  }
+
+  private reserveWriteRateLimitSlot(): () => void {
+    this.ensureWriteRateLimitAvailable();
+    const slot = { recordedAt: Date.now() };
+    this.writeRequestSlots.push(slot);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      const index = this.writeRequestSlots.indexOf(slot);
+      if (index >= 0) this.writeRequestSlots.splice(index, 1);
+    };
   }
 
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {
