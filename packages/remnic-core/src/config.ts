@@ -435,6 +435,26 @@ function resolvePositiveIntegerConfig(
   return coerced;
 }
 
+function resolveNonNegativeIntegerConfig(
+  value: unknown,
+  defaultValue: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return defaultValue;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < 0
+  ) {
+    throw new Error(
+      `${keyName} must be a non-negative integer; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
 export function isOpenaiApiKeyDisabled(value: unknown): boolean {
   return value === false || (typeof value === "string" && value.trim().toLowerCase() === "false");
 }
@@ -2934,6 +2954,29 @@ export function parseConfig(
     // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
     // only when the value is absent.
     namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig, runtimeSet),
+    // Namespace catalog touch-path performance knobs (issue #1903). Numerics use
+    // resolveNonNegativeIntegerConfig so 0 is an accepted disable switch; a
+    // present-but-invalid value (negative/non-integer) is REJECTED (rule #51).
+    namespacesCatalogCompactBytes: resolveNonNegativeIntegerConfig(
+      cfg.namespacesCatalogCompactBytes,
+      16 * 1024 * 1024,
+      "namespacesCatalogCompactBytes",
+    ),
+    namespacesCatalogReadTouchCoalesceMs: resolveNonNegativeIntegerConfig(
+      cfg.namespacesCatalogReadTouchCoalesceMs,
+      60_000,
+      "namespacesCatalogReadTouchCoalesceMs",
+    ),
+    namespacesCatalogWriteTouchCoalesceMs: resolveNonNegativeIntegerConfig(
+      cfg.namespacesCatalogWriteTouchCoalesceMs,
+      1_000,
+      "namespacesCatalogWriteTouchCoalesceMs",
+    ),
+    namespacesCatalogTouchStateWrites: resolveBooleanConfig(
+      cfg.namespacesCatalogTouchStateWrites,
+      false,
+      "namespacesCatalogTouchStateWrites",
+    ),
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),

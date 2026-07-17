@@ -414,6 +414,10 @@ export class NamespaceStorageRouter {
    * default-namespace storage (`this.storage`) that bypasses the router.
    */
   bindCatalogWriteHook(sm: StorageManager, namespace: string): void {
+    // Issue #1903: pure state-file writes only touch the catalog when explicitly
+    // opted in. Router-created storages (storageFor) and the legacy default
+    // storage both flow through here, so this is the single wiring point.
+    sm.touchStateWrites = this.config.namespacesCatalogTouchStateWrites === true;
     sm.onCatalogWrite = () => this.touchCatalogWrite(namespace, sm.dir);
   }
 
