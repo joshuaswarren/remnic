@@ -24,6 +24,7 @@ interface RelayBrowserModel {
     status: number | null;
     metadataInvalid: boolean;
   }): boolean;
+  createApprovalId(cryptoSource: unknown): string;
   createApprovalEvent(input: Record<string, string>): unknown;
   currentCorrection(snapshot: unknown): { correctionId: string; status: string; proposedAt: string } | null;
   isCompleteEvidenceSnapshot(snapshot: unknown): boolean;
@@ -239,6 +240,14 @@ test("live approval safety requires the complete evidence window", async () => {
 
 test("browser approval builder emits a schema-valid, at-action human approval", async () => {
   const model = await loadModel();
+  const approvalId = model.createApprovalId({
+    getRandomValues(bytes: Uint8Array) {
+      bytes.fill(0);
+      return bytes;
+    },
+  });
+  assert.equal(approvalId, "relay-approval-00000000-0000-4000-8000-000000000000");
+  assert.throws(() => model.createApprovalId({}), /Secure approval id generation/);
   const candidate = model.createApprovalEvent({
     correctionId: "correction-token-refresh",
     operatorId: "relay-operator",
@@ -308,6 +317,8 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(controller, /stopPlayback\(\);\s*state\.connectionGeneration \+= 1;\s*state\.missionId/s);
   assert.match(controller, /sameLiveContext\(state\.authenticatedContext, context\)/);
   assert.match(controller, /function relayResponseError\(status, body\)/);
+  assert.match(controller, /Model\.createApprovalId\(globalThis\.crypto\)/);
+  assert.doesNotMatch(controller, /randomUUID/);
   assert.match(controller, /error\.relayStatus = status/);
   assert.equal((controller.match(/throw relayResponseError\(response\.status, body\)/g) || []).length, 2);
   assert.match(controller, /retainOrClearAuthenticatedPrincipal\(error, currentLiveContext\(\)\)/);

@@ -493,7 +493,7 @@
           operatorId,
           operatorLabel,
           occurredAt: new Date().toISOString(),
-          idempotencyKey: `relay-approval-${crypto.randomUUID()}`,
+          idempotencyKey: Model.createApprovalId(globalThis.crypto),
         });
       }
       if (!reusedPrior && !safeSessionSet(key, JSON.stringify(event))) {
