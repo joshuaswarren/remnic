@@ -150,6 +150,19 @@ function tagIndexPath(memoryDir: string): string {
   return path.join(stateDir(memoryDir), TAG_INDEX_FILE);
 }
 
+/**
+ * Operation-level lock base path (issue #1911, Codex Medium). A single logical
+ * index mutation writes BOTH index files; both the async mutators and the sync
+ * compat wrappers acquire an on-disk lock at `<state>/.index-op.lock.d` around
+ * the whole paired operation, so a mutation on one API surface (or another
+ * process) cannot interleave with a mutation on the other and commit mismatched
+ * temporal/tag halves. Exported so temporal-index-compat.ts uses the exact
+ * same path.
+ */
+export function indexOperationLockPath(memoryDir: string): string {
+  return path.join(stateDir(memoryDir), ".index-op");
+}
+
 async function ensureStateDir(memoryDir: string): Promise<void> {
   await fs.promises.mkdir(stateDir(memoryDir), { recursive: true });
 }
@@ -231,6 +244,21 @@ function withMemoryDirMutex<T>(memoryDir: string, op: () => Promise<T>): Promise
     if (opChains.get(memoryDir) === tail) opChains.delete(memoryDir);
   });
   return run;
+}
+
+/**
+ * Operation lock spanning BOTH index files across process AND API surface
+ * (issue #1911, Codex Medium). Combines the in-memory per-memoryDir chain
+ * (fast, same-process ordering) with the on-disk op-lock at
+ * `indexOperationLockPath` (cross-process + shared with the sync compat
+ * wrappers). A paired temporal+tag mutation runs fully before any other
+ * mutation on the same memoryDir — from either surface or another process —
+ * begins, so the two halves can never be committed out of order.
+ */
+function withIndexOperationLock(memoryDir: string, op: () => Promise<void>): Promise<void> {
+  return withMemoryDirMutex(memoryDir, () =>
+    withIndexFileLock(indexOperationLockPath(memoryDir), op),
+  );
 }
 
 async function primeCacheAfterWrite(filePath: string, index: unknown): Promise<void> {
@@ -900,7 +928,7 @@ export async function indexMemoryAsync(
     await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    await withMemoryDirMutex(memoryDir, async () => {
+    await withIndexOperationLock(memoryDir, async () => {
       await updateTemporalIndex(memoryDir, (index) => {
         index.version = INDEX_VERSION;
         removePathFromAllSets(index.dates, memoryPath);
@@ -940,7 +968,7 @@ export async function deindexMemoryAsync(
     await ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
-    await withMemoryDirMutex(memoryDir, async () => {
+    await withIndexOperationLock(memoryDir, async () => {
       await updateTemporalIndex(memoryDir, (index) => {
         removePathFromSet(index.dates, dateKey, memoryPath);
         delete index.events[memoryPath];
@@ -967,7 +995,7 @@ export async function deindexMemoryAsync(
 export async function clearIndexesAsync(memoryDir: string): Promise<void> {
   try {
     await ensureStateDir(memoryDir);
-    await withMemoryDirMutex(memoryDir, async () => {
+    await withIndexOperationLock(memoryDir, async () => {
       await updateTemporalIndex(memoryDir, (index) => {
         index.version = INDEX_VERSION;
         index.lastRebuildAt = undefined;
@@ -1016,7 +1044,7 @@ export async function indexMemoriesBatchAsync(
   try {
     await ensureStateDir(memoryDir);
 
-    await withMemoryDirMutex(memoryDir, async () => {
+    await withIndexOperationLock(memoryDir, async () => {
       await updateTemporalIndex(memoryDir, (index) => {
         index.version = INDEX_VERSION;
         for (const entry of entries) {

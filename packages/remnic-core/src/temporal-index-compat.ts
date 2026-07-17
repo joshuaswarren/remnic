@@ -15,6 +15,7 @@ import {
   applyTagIndexCompatibilityMutation,
   applyTemporalIndexCompatibilityMutation,
   hasCurrentTemporalIndexSchemaForCompatibility,
+  indexOperationLockPath,
   type TemporalIndexCompatibilityMutation,
   type TemporalIndexEntry,
 } from "./temporal-index.js";
@@ -220,15 +221,19 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 function applyMutation(memoryDir: string, mutation: TemporalIndexCompatibilityMutation): void {
   try {
     fs.mkdirSync(stateDir(memoryDir), { recursive: true });
-    const temporalPath = temporalIndexPath(memoryDir);
-    withIndexFileLock(temporalPath, () => {
+    // Hold ONE operation-level lock across BOTH file writes (issue #1911, Codex
+    // Medium), on the same path the async mutators use. Previously each file was
+    // locked+released separately, so a legacy sync call could interleave with an
+    // async mutation (or another process) and leave the temporal half from one
+    // op with the tag half from another. The shared op-lock makes the paired
+    // write atomic across both API surfaces and processes.
+    withIndexFileLock(indexOperationLockPath(memoryDir), () => {
+      const temporalPath = temporalIndexPath(memoryDir);
       writeJsonAtomic(
         temporalPath,
         applyTemporalIndexCompatibilityMutation(readJson(temporalPath), mutation),
       );
-    });
-    const tagPath = tagIndexPath(memoryDir);
-    withIndexFileLock(tagPath, () => {
+      const tagPath = tagIndexPath(memoryDir);
       writeJsonAtomic(tagPath, applyTagIndexCompatibilityMutation(readJson(tagPath), mutation));
     });
   } catch {
