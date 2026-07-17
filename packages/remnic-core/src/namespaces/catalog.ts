@@ -505,6 +505,12 @@ export class NamespaceCatalog {
   private readonly compactBytesLimit: number;
   private readonly readCoalesceMs: number;
   private readonly writeCoalesceMs: number;
+  // Size after the most recent auto-compaction (0 = none yet). Hysteresis for
+  // maybeAutoCompact: a folded catalog that is itself above the limit (many
+  // distinct namespaces) would otherwise be re-folded + re-rewritten on every
+  // touch. We only compact again once the log has grown by >= one limit-worth
+  // since the last compaction (#1903, Codex).
+  private lastCompactedSize = 0;
 
   // Issue #1903 — per-(namespace, kind) coalescing buffer. Keyed `${kind}:${ns}`.
   // Holds the latest buffered timestamp/metadata for a pure-timestamp touch on
@@ -1452,8 +1458,15 @@ export class NamespaceCatalog {
       // next touch re-warms and re-checks.
       const size = this.compactedCache?.identity.size;
       if (size === undefined || size <= limit) return;
+      // Hysteresis (issue #1903, Codex): a folded catalog whose deduped state is
+      // itself above the limit (many distinct namespaces) would otherwise be
+      // re-folded + re-rewritten on EVERY touch — O(catalog) per touch. Only
+      // compact again once the log has grown by >= one limit-worth since the last
+      // compaction; by then the new appends are duplicates the fold can collapse.
+      if (this.lastCompactedSize > 0 && size - this.lastCompactedSize < limit) return;
       const folded = await this.loadCompacted();
       await this.rewriteUnchained([...folded.values()]);
+      this.lastCompactedSize = this.compactedCache?.identity.size ?? size;
     } catch {
       // Fail-open: compaction is best-effort maintenance on already-durable data.
     }
