@@ -93,6 +93,29 @@ test("fixture reduces to a complete correction and cold-start receipt", async ()
   });
 });
 
+test("live receipts reject fixture-captured evidence", () => {
+  const forgedLiveEvents = fixtureEvents().map((event) =>
+    event.payload.kind === "mission_started"
+      ? {
+          ...event,
+          payload: { ...event.payload, runMode: "live" as const },
+        }
+      : event
+  );
+
+  const snapshot = reduceRelayMission({
+    missionId: RELAY_DEMO_MISSION_ID,
+    namespace: RELAY_DEMO_NAMESPACE,
+    events: forgedLiveEvents,
+  });
+
+  assert.equal(snapshot.mission.runMode, "live");
+  assert.equal(snapshot.receipt.complete, false);
+  assert.equal(snapshot.receipt.coldStartVerified, false);
+  assert.equal(snapshot.receipt.passingOutcomeVerified, false);
+  assert.ok(snapshot.receipt.missingEvidence.includes("mission:live-fixture-evidence:fixture-event-001"));
+});
+
 test("idempotent append replays matching input and rejects conflicting input", async () => {
   await withTempRoot(async (root) => {
     const store = deterministicStore(root);

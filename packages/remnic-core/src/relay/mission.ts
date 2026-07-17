@@ -1175,6 +1175,17 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
     }
   }
 
+  const liveFixtureEvidenceEventIds =
+    runMode === "live"
+      ? orderedEvents
+          .filter((event) => event.payload.evidence.some((item) => item.capture === "fixture"))
+          .map((event) => event.eventId)
+      : [];
+  for (const eventId of liveFixtureEvidenceEventIds) {
+    missingEvidence.add(`mission:live-fixture-evidence:${eventId}`);
+  }
+  const captureTrustValid = liveFixtureEvidenceEventIds.length === 0;
+
   const sortedDecisions = [...decisions.values()]
     .map((decision) => ({
       ...decision,
@@ -1183,8 +1194,9 @@ export function reduceRelayMission(input: ReduceRelayMissionInput): RelayMission
       evidence: uniqueEvidence(decision.evidence),
     }))
     .sort((a, b) => compareText(a.decisionId, b.decisionId));
-  const coldStartVerified = propagation.some((item) => item.staleDecisionAbsent);
+  const coldStartVerified = captureTrustValid && propagation.some((item) => item.staleDecisionAbsent);
   const passingOutcomeVerified =
+    captureTrustValid &&
     outcome?.result === "recovered" &&
     tests.some((test) => {
       if (
