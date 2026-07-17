@@ -86,7 +86,8 @@
   "integrity": {
     "resultSha256": "00150a8f5c52bf84576a669b22d2a5cf92df0b2295a3ce1a41b5a79c710deaf5",
     "manifestSha256": "c1e125a951326e371a1eae126abe8926b4fc86269a9aef394e681e557ed874e1",
-    "manifestArtifactHash": "d99dc27e296005e8e8ebe5415f690087ad177bed64dc8996a82dda9b7fb9de78"
+    "manifestArtifactHash": "d99dc27e296005e8e8ebe5415f690087ad177bed64dc8996a82dda9b7fb9de78",
+    "publicArtifactSha256": "d6157c56553dc43f9919b26f369542d827b20b63b6b829ad2bae042059a1d73b"
   },
   "estimatedUsage": {
     "label": "local estimates; not account billing",

@@ -53,6 +53,7 @@ async function main(): Promise<void> {
   await writeBuildWeekEvidenceReceipt({
     resultPath: requiredFlag("--result"),
     manifestPath: requiredFlag("--manifest"),
+    publicArtifactPath: readFlag("--public-artifact"),
     outputPath: requiredFlag("--output"),
     datasetVersion: requiredFlag("--dataset-version"),
     limitationCodes: limitationCodes(),

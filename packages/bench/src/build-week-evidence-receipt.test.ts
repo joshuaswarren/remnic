@@ -18,6 +18,7 @@ import {
   writeBuildWeekEvidenceReceipt,
 } from "./build-week-evidence-receipt.ts";
 import { LONGMEMEVAL_CANONICAL_TASK_IDS } from "./longmemeval-canonical-task-ids.test-fixture.ts";
+import { buildBenchmarkArtifact, serializeBenchmarkArtifact } from "./published-artifact.ts";
 import {
   computeBenchmarkReproDatasetInventoryHash,
   computeBenchmarkReproManifestArtifactHash,
@@ -210,7 +211,7 @@ function syntheticSources(args: {
   result?: BenchmarkResult;
   limit?: number;
   usageModel?: string;
-} = {}): { resultJson: string; manifestJson: string } {
+} = {}): { resultJson: string; manifestJson: string; publicArtifactJson?: string } {
   const result = args.result ?? syntheticResult();
   const resultJson = `${JSON.stringify(result, null, 2)}\n`;
   const fileDatasetFiles: BenchmarkReproManifestDataset["files"] = [
@@ -332,7 +333,28 @@ function syntheticSources(args: {
     artifactHash: "",
   };
   rehashManifest(manifest);
-  return { resultJson, manifestJson: `${JSON.stringify(manifest, null, 2)}\n` };
+  const publicArtifactJson =
+    result.meta.benchmark === "longmemeval" &&
+    result.meta.version === "2.0.0" &&
+    result.results.tasks.length === BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT
+      ? serializeBenchmarkArtifact(
+          buildBenchmarkArtifact({
+            benchmarkId: "longmemeval",
+            datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
+            model: result.config.systemProvider!.model,
+            seed: result.meta.seeds[0]!,
+            startedAt: "2026-07-16T20:00:00.000Z",
+            finishedAt: "2026-07-16T21:00:00.000Z",
+            result,
+            tier: "frontier",
+          }),
+        )
+      : undefined;
+  return {
+    resultJson,
+    manifestJson: `${JSON.stringify(manifest, null, 2)}\n`,
+    ...(publicArtifactJson ? { publicArtifactJson } : {}),
+  };
 }
 
 test("buildBuildWeekEvidenceReceipt emits deterministic aggregate-only evidence", () => {
@@ -356,6 +378,7 @@ test("buildBuildWeekEvidenceReceipt emits deterministic aggregate-only evidence"
   assert.equal(first.estimatedUsage.localBudgetUnits, 42.5);
   assert.equal(first.integrity.resultSha256, sha256(sources.resultJson));
   assert.equal(first.integrity.manifestSha256, sha256(sources.manifestJson));
+  assert.equal(first.integrity.publicArtifactSha256, sha256(sources.publicArtifactJson!));
   assert.deepEqual(first.provenance.providers, [
     { role: "system", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: null },
     { role: "internal", provider: "codex-cli", model: "gpt-5.6-luna", reasoningEffort: "medium", serviceTier: null },
@@ -428,6 +451,7 @@ test("canonical successful results may omit status and derive LongMem payload ha
   const receipt = buildBuildWeekEvidenceReceipt({
     resultJson: sources.resultJson,
     manifestJson: JSON.stringify(manifest),
+    publicArtifactJson: sources.publicArtifactJson,
     datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
     limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
     freshIsolatedStoreConfirmed: true,
@@ -445,7 +469,7 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
       datasetVersion,
       limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
       freshIsolatedStoreConfirmed: true,
-      publicationScope: { kind: "full", expectedTaskCount: result.results.tasks.length },
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
     });
 
   assert.doesNotThrow(() => build(syntheticCanonicalLongMemEvalResult()));
@@ -465,7 +489,7 @@ test("full LongMemEval receipts bind the canonical corpus identity", () => {
 
   const tooShort = syntheticCanonicalLongMemEvalResult();
   tooShort.results.tasks.pop();
-  assert.throws(() => build(tooShort), /exactly 500 tasks/);
+  assert.throws(() => build(tooShort), /does not match expected 500/);
 
   const duplicateTask = syntheticCanonicalLongMemEvalResult();
   duplicateTask.results.tasks[1]!.taskId = duplicateTask.results.tasks[0]!.taskId;
@@ -630,6 +654,44 @@ test("every configured provider is backed by positive Codex CLI run usage", () =
       publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
     }),
     /does not bind configured model gpt-5\.6-luna/,
+  );
+
+  const malformedSources = syntheticSources({ limit: 2 });
+  const malformedManifest = JSON.parse(malformedSources.manifestJson) as BenchmarkReproManifest;
+  malformedManifest.codexCredit!.run!.models[0]!.calls = -1;
+  malformedManifest.codexCredit!.run!.models[1]!.calls = 7;
+  rehashManifest(malformedManifest);
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      resultJson: malformedSources.resultJson,
+      manifestJson: JSON.stringify(malformedManifest),
+      datasetVersion: "oracle-v1",
+      limitationCodes,
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "bounded-subset", expectedTaskCount: 2 },
+    }),
+    /run usage model gpt-5\.6-luna calls must be a finite non-negative number/,
+  );
+});
+
+test("full LongMemEval receipt rejects a public artifact that diverges from the private result", () => {
+  const result = syntheticCanonicalLongMemEvalResult();
+  const sources = syntheticSources({ result });
+  const artifact = JSON.parse(sources.publicArtifactJson!) as {
+    perTaskScores: Array<{ scores: Record<string, number> }>;
+  };
+  artifact.perTaskScores[0]!.scores.exact_match = 0.25;
+  assert.throws(
+    () => buildBuildWeekEvidenceReceipt({
+      resultJson: sources.resultJson,
+      manifestJson: sources.manifestJson,
+      publicArtifactJson: JSON.stringify(artifact),
+      datasetVersion: BUILD_WEEK_LONGMEMEVAL_DATASET_VERSION,
+      limitationCodes: ["singleRun", "estimatedAccounting", "modelJudged"],
+      freshIsolatedStoreConfirmed: true,
+      publicationScope: { kind: "full", expectedTaskCount: BUILD_WEEK_LONGMEMEVAL_FULL_TASK_COUNT },
+    }),
+    /public artifact task 0 score exact_match does not match/,
   );
 });
 

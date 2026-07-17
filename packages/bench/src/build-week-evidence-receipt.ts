@@ -7,6 +7,7 @@ import {
   computeBenchmarkReproManifestArtifactHash,
   type BenchmarkReproManifest,
 } from "./repro-manifest.js";
+import { parseBenchmarkArtifact } from "./published-artifact.js";
 import { aggregateTaskScores } from "./scorer.js";
 import type { BenchmarkResult, ProviderConfig } from "./types.js";
 
@@ -77,6 +78,7 @@ export interface BuildWeekEvidenceReceipt {
     resultSha256: string;
     manifestSha256: string;
     manifestArtifactHash: string;
+    publicArtifactSha256: string | null;
   };
   estimatedUsage: {
     label: "local estimates; not account billing";
@@ -102,6 +104,7 @@ export interface BuildWeekEvidenceReceipt {
 export interface BuildBuildWeekEvidenceReceiptOptions {
   resultJson: string | Buffer;
   manifestJson: string | Buffer;
+  publicArtifactJson?: string | Buffer;
   datasetVersion: string;
   limitationCodes: readonly BuildWeekLimitationCode[];
   freshIsolatedStoreConfirmed: true;
@@ -182,6 +185,14 @@ function requireFiniteNonNegative(value: unknown, label: string): number {
     throw new Error(`${label} must be a finite non-negative number`);
   }
   return value;
+}
+
+function requireNonNegativeInteger(value: unknown, label: string): number {
+  const finite = requireFiniteNonNegative(value, label);
+  if (!Number.isInteger(finite)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  return finite;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -477,6 +488,75 @@ function sortedAggregates(result: BenchmarkResult): BuildWeekEvidenceReceipt["be
   return output;
 }
 
+function verifyPublicArtifact(
+  result: BenchmarkResult,
+  datasetVersion: string,
+  publicationScope: BuildBuildWeekEvidenceReceiptOptions["publicationScope"],
+  publicArtifactJson: string | Buffer | undefined,
+  aggregates: BuildWeekEvidenceReceipt["benchmark"]["aggregates"],
+): string | null {
+  const required =
+    publicationScope.kind === "full" && result.meta.benchmark === LONGMEMEVAL_BENCHMARK_ID;
+  if (publicArtifactJson === undefined) {
+    if (required) throw new Error("full LongMemEval receipts require the published public artifact");
+    return null;
+  }
+  const raw = publicArtifactJson.toString();
+  const artifact = parseBenchmarkArtifact(raw);
+  if (
+    artifact.benchmarkId !== result.meta.benchmark ||
+    artifact.datasetVersion !== datasetVersion ||
+    artifact.system.version !== result.meta.remnicVersion ||
+    artifact.system.gitSha !== result.meta.gitSha
+  ) {
+    throw new Error("public artifact identity does not match the benchmark result");
+  }
+  if (
+    artifact.model !== result.config.systemProvider?.model ||
+    result.meta.seeds.length !== 1 ||
+    artifact.seed !== result.meta.seeds[0]
+  ) {
+    throw new Error("public artifact model or seed does not match the benchmark result");
+  }
+  const metricNames = Object.keys(aggregates).sort();
+  const artifactMetricNames = Object.keys(artifact.metrics).sort();
+  if (
+    metricNames.length !== artifactMetricNames.length ||
+    metricNames.some((name, index) => name !== artifactMetricNames[index])
+  ) {
+    throw new Error("public artifact metric names do not match the benchmark result");
+  }
+  for (const metric of metricNames) {
+    if (artifact.metrics[metric] !== aggregates[metric]!.mean) {
+      throw new Error(`public artifact metric ${metric} does not match the benchmark result`);
+    }
+  }
+  if (artifact.perTaskScores.length !== result.results.tasks.length) {
+    throw new Error("public artifact task count does not match the benchmark result");
+  }
+  for (let index = 0; index < result.results.tasks.length; index += 1) {
+    const source = result.results.tasks[index]!;
+    const published = artifact.perTaskScores[index]!;
+    if (published.taskId !== source.taskId) {
+      throw new Error(`public artifact task ${index} identity does not match the benchmark result`);
+    }
+    const sourceScoreNames = Object.keys(source.scores).sort();
+    const publishedScoreNames = Object.keys(published.scores).sort();
+    if (
+      sourceScoreNames.length !== publishedScoreNames.length ||
+      sourceScoreNames.some((name, scoreIndex) => name !== publishedScoreNames[scoreIndex])
+    ) {
+      throw new Error(`public artifact task ${index} score names do not match the benchmark result`);
+    }
+    for (const score of sourceScoreNames) {
+      if (published.scores[score] !== source.scores[score]) {
+        throw new Error(`public artifact task ${index} score ${score} does not match the benchmark result`);
+      }
+    }
+  }
+  return sha256(publicArtifactJson);
+}
+
 /**
  * Convert private benchmark sources into a deterministic, aggregate-only receipt.
  * The returned object never copies per-task content, command arguments, paths,
@@ -534,6 +614,7 @@ export function buildBuildWeekEvidenceReceipt(
   if (failureCount > 0) {
     throw new Error(`complete evidence receipt refused because ${failureCount} task(s) contain failure markers`);
   }
+  const validatedAggregates = sortedAggregates(result);
 
   const resultEntry = manifest.results.find((entry) => entry.resultId === result.meta.id);
   if (!resultEntry) throw new Error("manifest does not bind the benchmark result id");
@@ -578,6 +659,21 @@ export function buildBuildWeekEvidenceReceipt(
   }
   if (runUsage.models.some((entry) => SOL_MODEL.test(entry.model))) {
     throw new Error("Codex usage receipt contains a forbidden gpt-5.6-sol model");
+  }
+  const usageModelNames = new Set<string>();
+  for (const [index, entry] of runUsage.models.entries()) {
+    const model = requireSafeIdentifier(entry.model, `run usage model ${index}`);
+    if (usageModelNames.has(model)) {
+      throw new Error(`run usage model ${model} must appear exactly once`);
+    }
+    usageModelNames.add(model);
+    for (const field of ["calls", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const) {
+      requireNonNegativeInteger(entry[field], `run usage model ${model} ${field}`);
+    }
+    requireFiniteNonNegative(entry.budgetUnits, `run usage model ${model} budgetUnits`);
+  }
+  for (const field of ["calls", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const) {
+    requireNonNegativeInteger(runUsage[field], `run usage ${field}`);
   }
   const modelTotals = runUsage.models.reduce(
     (totals, entry) => ({
@@ -632,6 +728,13 @@ export function buildBuildWeekEvidenceReceipt(
     throw new Error("the singleRun limitation is only valid when runCount is 1");
   }
   const limitations = [...limitationCodes].sort().map((code) => BUILD_WEEK_LIMITATIONS[code]);
+  const publicArtifactSha256 = verifyPublicArtifact(
+    result,
+    options.datasetVersion,
+    options.publicationScope,
+    options.publicArtifactJson,
+    validatedAggregates,
+  );
 
   return {
     schemaVersion: BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION,
@@ -642,7 +745,7 @@ export function buildBuildWeekEvidenceReceipt(
       status: "complete",
       taskCount: result.results.tasks.length,
       failureCount,
-      aggregates: sortedAggregates(result),
+      aggregates: validatedAggregates,
     },
     provenance: {
       resultId: requireSafeIdentifier(result.meta.id, "result id"),
@@ -668,6 +771,7 @@ export function buildBuildWeekEvidenceReceipt(
       resultSha256,
       manifestSha256,
       manifestArtifactHash: manifest.artifactHash,
+      publicArtifactSha256,
     },
     estimatedUsage: {
       label: "local estimates; not account billing",
@@ -714,6 +818,7 @@ async function canonicalOutputPath(outputPath: string): Promise<string> {
 export async function writeBuildWeekEvidenceReceipt(args: {
   resultPath: string;
   manifestPath: string;
+  publicArtifactPath?: string;
   outputPath: string;
   datasetVersion: string;
   limitationCodes: readonly BuildWeekLimitationCode[];
@@ -743,13 +848,15 @@ export async function writeBuildWeekEvidenceReceipt(args: {
   ) {
     throw new Error("receipt output file must not share identity with the private result or manifest source");
   }
-  const [resultJson, manifestJson] = await Promise.all([
+  const [resultJson, manifestJson, publicArtifactJson] = await Promise.all([
     readFile(args.resultPath),
     readFile(args.manifestPath),
+    args.publicArtifactPath ? readFile(args.publicArtifactPath) : undefined,
   ]);
   const receipt = buildBuildWeekEvidenceReceipt({
     resultJson,
     manifestJson,
+    publicArtifactJson,
     datasetVersion: args.datasetVersion,
     limitationCodes: args.limitationCodes,
     freshIsolatedStoreConfirmed: args.freshIsolatedStoreConfirmed,
