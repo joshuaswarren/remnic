@@ -285,6 +285,19 @@ export function setCachedQmdSearch(cacheKey: string, results: unknown[]): void {
 }
 
 /**
+ * Mutation scopes (issue #1904). A cache layer declares (via `evictOn`) which
+ * of these mutation kinds evict it, so the invalidation chokepoint can clear
+ * only the layers a given write actually affects instead of nuking every
+ * layer on every write (the permanently-cold-cache regression #1904 fixes).
+ */
+export type MemoryMutationScope =
+  | "memory-create" // a new memory doc added; no existing doc's recall-visibility changes
+  | "memory-mutate" // existing doc changed/moved/removed/status-changed (update, supersede,
+  //   archive, invalidate, frontmatter, cold-tier change, bulk delete)
+  | "entity-write" // an entity file changed
+  | "secure-key-change"; // encryption key rotated; everything is now unreadable → evict all
+
+/**
  * Cache-layer registry (issue #1535).
  *
  * EVERY process-level cache that can serve memory-derived content is
@@ -305,6 +318,11 @@ export interface MemoryCacheLayer {
    *  the simple-and-correct choice — these caches are re-warmable
    *  (issue #1535, implementation guide option (b)). */
   readonly scope: "dir" | "global";
+  /** Which mutation scopes evict this layer (issue #1904). A `memory-create`
+   *  only refreshes the full-memory-list views (hot + derived episode/rule); a
+   *  `memory-mutate`/`entity-write`/`secure-key-change` evicts every layer whose
+   *  content it can affect. Adding a layer REQUIRES declaring this. */
+  readonly evictOn: Partial<Record<MemoryMutationScope, true>>;
   /** Evict entries for baseDir ("dir" scope) or everything ("global" scope). */
   readonly invalidateForDir: (baseDir: string) => void;
   /** Evict every entry across all dirs. */
@@ -318,6 +336,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "hot-memories",
     scope: "dir",
+    evictOn: { "memory-create": true, "memory-mutate": true, "secure-key-change": true },
     invalidateForDir: (baseDir) => void hotCacheByDir.delete(baseDir),
     clearAll: () => hotCacheByDir.clear(),
     hasEntriesFor: (baseDir) => hotCacheByDir.has(baseDir),
@@ -325,6 +344,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "archive-memories",
     scope: "dir",
+    evictOn: { "memory-mutate": true, "secure-key-change": true },
     invalidateForDir: (baseDir) => void archiveCacheByDir.delete(baseDir),
     clearAll: () => archiveCacheByDir.clear(),
     hasEntriesFor: (baseDir) => archiveCacheByDir.has(baseDir),
@@ -332,6 +352,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "entities",
     scope: "dir",
+    evictOn: { "entity-write": true, "secure-key-change": true },
     invalidateForDir: (baseDir) => invalidateCachedEntities(baseDir),
     clearAll: () => entityCacheByDir.clear(),
     hasEntriesFor: (baseDir) => {
@@ -345,6 +366,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "derived-episode-map",
     scope: "dir",
+    evictOn: { "memory-create": true, "memory-mutate": true, "secure-key-change": true },
     invalidateForDir: (baseDir) => void episodeMapByDir.delete(baseDir),
     clearAll: () => episodeMapByDir.clear(),
     hasEntriesFor: (baseDir) => episodeMapByDir.has(baseDir),
@@ -352,6 +374,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "derived-rule-memories",
     scope: "dir",
+    evictOn: { "memory-create": true, "memory-mutate": true, "secure-key-change": true },
     invalidateForDir: (baseDir) => void ruleMemoriesByDir.delete(baseDir),
     clearAll: () => ruleMemoriesByDir.clear(),
     hasEntriesFor: (baseDir) => ruleMemoriesByDir.has(baseDir),
@@ -359,6 +382,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "qmd-search",
     scope: "global",
+    evictOn: { "memory-mutate": true, "entity-write": true, "secure-key-change": true },
     invalidateForDir: () => qmdSearchCache.clear(),
     clearAll: () => qmdSearchCache.clear(),
     hasEntriesFor: () => qmdSearchCache.size > 0,
@@ -366,6 +390,7 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
   {
     name: "qmd-recall",
     scope: "global",
+    evictOn: { "memory-mutate": true, "entity-write": true, "secure-key-change": true },
     invalidateForDir: () => clearQmdRecallCache(),
     clearAll: () => clearQmdRecallCache(),
     hasEntriesFor: () => qmdRecallCacheSize() > 0,
@@ -386,6 +411,37 @@ export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
 export function invalidateAllForDir(baseDir: string): void {
   for (const layer of ALL_CACHE_LAYERS) {
     layer.invalidateForDir(baseDir);
+  }
+}
+
+/**
+ * Scope-aware invalidation chokepoint (issue #1904). Evicts only the layers
+ * whose `evictOn` includes `scope`, so the highest-frequency write
+ * (`memory-create`, fired continuously by extraction) stops nuking the QMD
+ * result caches and the version-keyed entity cache it cannot affect. This is
+ * the single scoped entry point — like `invalidateAllForDir`, it iterates the
+ * `ALL_CACHE_LAYERS` registry rather than clearing any layer ad hoc, so the
+ * single-chokepoint invariant (#1535) holds: a new layer only participates by
+ * declaring `evictOn`.
+ */
+export function invalidateForScope(baseDir: string, scope: MemoryMutationScope): void {
+  for (const layer of ALL_CACHE_LAYERS) {
+    if (layer.evictOn[scope]) layer.invalidateForDir(baseDir);
+  }
+}
+
+/**
+ * Companion to {@link invalidateForScope} for the single-file write fast path
+ * (issue #1902 + #1904): it patches the hot-memories entry in place and
+ * re-keys it, so this evicts every OTHER layer the scope would clear but leaves
+ * hot-memories alone. A `memory-create` thus evicts only the derived
+ * episode/rule views (hot patched, QMD/entities/archive kept warm), which is
+ * the whole point of #1904 — a create must not evict the QMD result caches.
+ */
+export function invalidateForScopeExceptHot(baseDir: string, scope: MemoryMutationScope): void {
+  for (const layer of ALL_CACHE_LAYERS) {
+    if (layer.name === "hot-memories") continue;
+    if (layer.evictOn[scope]) layer.invalidateForDir(baseDir);
   }
 }
 

@@ -1344,6 +1344,10 @@ export class Orchestrator {
       hotMemoriesCacheEnabled,
       config.hotMemoriesCacheTtlMs,
     );
+    // Register the #1904 scope-invalidation gate for this dir so every
+    // StorageManager over it (including ephemeral recall sub-stage instances)
+    // honors the operator's rollback lever.
+    StorageManager.setScopedCacheInvalidationDefault(config.memoryDir, config.scopedCacheInvalidationEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
@@ -1512,6 +1516,7 @@ export class Orchestrator {
           config.hotMemoriesCacheEnabled,
           config.hotMemoriesCacheTtlMs,
         );
+        StorageManager.setScopedCacheInvalidationDefault(parentDir, config.scopedCacheInvalidationEnabled);
         return new StorageManager(parentDir, config.entitySchemas, config.hotMemoriesCacheEnabled);
       },
     });

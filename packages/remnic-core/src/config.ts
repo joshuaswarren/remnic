@@ -2130,6 +2130,10 @@ export function parseConfig(
     // serves from the version-keyed in-process corpus cache. coerceBool
     // handles "false"/"0" string forms; set false to force disk scans.
     hotMemoriesCacheEnabled: coerceBool(cfg.hotMemoriesCacheEnabled) ?? true,
+    // Scope-aware cache invalidation (issue #1904). Default on: a plain fact
+    // create no longer nukes the QMD/entity caches it can't affect. coerceBool
+    // handles "false"/"0" string forms; set false to restore full-clear-per-write.
+    scopedCacheInvalidationEnabled: coerceBool(cfg.scopedCacheInvalidationEnabled) ?? true,
     // External-edit safety net (issue #1902): the version sentinel gives
     // immediate coherence for cooperating writers, but direct user/git/editor
     // writes to memory files (which the project supports) don't bump it. Bound
@@ -3522,6 +3526,11 @@ export function parseConfig(
     memoryReconstructionMaxExpansions:
       typeof cfg.memoryReconstructionMaxExpansions === "number" ? Math.max(0, Math.round(cfg.memoryReconstructionMaxExpansions)) : 3,
     graphLateralInhibitionEnabled: cfg.graphLateralInhibitionEnabled !== false,
+    // Incremental GraphIndex edge cache (issue #1904). Default on: single-writer
+    // edge appends are pushed into the warm cache in place (size-revalidated for
+    // cross-process coherence) instead of nulling + re-reading the 6 MB edge
+    // file. coerceBool handles string forms; set false to null the cache per write.
+    graphEdgeCacheIncrementalEnabled: coerceBool(cfg.graphEdgeCacheIncrementalEnabled) ?? true,
     graphLateralInhibitionBeta:
       typeof cfg.graphLateralInhibitionBeta === "number"
         ? Math.max(0, Math.min(1, cfg.graphLateralInhibitionBeta))

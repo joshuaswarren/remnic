@@ -20,6 +20,7 @@ function makeGraphConfig(): GraphConfig {
     graphLateralInhibitionTopM: 0,
     graphTraversalConfidenceFloor: 0.2,
     graphTraversalPageRankIterations: 0,
+    graphEdgeCacheIncrementalEnabled: true,
   };
 }
 

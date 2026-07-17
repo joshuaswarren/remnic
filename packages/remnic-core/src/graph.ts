@@ -10,7 +10,7 @@
  * All writes are fail-open: errors are caught/logged, never thrown.
  */
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
@@ -59,6 +59,14 @@ export interface GraphConfig {
    * and return raw BFS scores. Default 8.
    */
   graphTraversalPageRankIterations: number;
+  /**
+   * Issue #1904 — incremental GraphIndex edge cache. When true (default), a
+   * single-writer edge append is pushed into the warm edge cache in place
+   * (revalidated by file size for cross-process coherence) instead of nulling
+   * the cache and paying a full 6 MB re-read + parse on the next traversal.
+   * Set false to restore the pre-#1904 null-on-every-write behavior.
+   */
+  graphEdgeCacheIncrementalEnabled: boolean;
 }
 
 /** Default minimum edge confidence required for traversal (issue #681 PR 3/3). */
@@ -378,7 +386,15 @@ export class GraphIndex {
   // file read + JSON parse takes 2-4 s per call.  This instance-level cache
   // eliminates that overhead on every spreadingActivation() call; it is
   // invalidated (set to null) in onMemoryWritten() so new edges appear promptly.
-  private edgeCache: { allEdges: GraphEdge[]; loadedAt: number } | null = null;
+  private edgeCache: {
+    allEdges: GraphEdge[];
+    loadedAt: number;
+    // Bytes of each enabled graph file observed at load (issue #1904). An
+    // incremental push is trusted only when the on-disk size equals this
+    // baseline plus exactly the bytes WE appended — a divergence means a peer
+    // process appended, forcing a full reload for cross-process coherence.
+    sizes: Partial<Record<GraphType, number>>;
+  } | null = null;
   private static readonly EDGE_CACHE_TTL_MS = 300_000; // 5 minutes
 
   constructor(memoryDir: string, cfg: GraphConfig) {
@@ -401,8 +417,30 @@ export class GraphIndex {
       timeGraph: this.cfg.timeGraphEnabled,
       causalGraph: this.cfg.causalGraphEnabled,
     });
-    this.edgeCache = { allEdges, loadedAt: Date.now() };
+    this.edgeCache = { allEdges, loadedAt: Date.now(), sizes: await this.readEnabledGraphFileSizes() };
     return allEdges;
+  }
+
+  /**
+   * Byte size of each ENABLED graph file (issue #1904). Missing files (ENOENT)
+   * and any stat error map to 0 so the size baseline is fail-open: a later
+   * revalidation simply sees a mismatch and forces a full reload rather than
+   * trusting a stale incremental push.
+   */
+  private async readEnabledGraphFileSizes(): Promise<Partial<Record<GraphType, number>>> {
+    const enabled: GraphType[] = [];
+    if (this.cfg.entityGraphEnabled) enabled.push("entity");
+    if (this.cfg.timeGraphEnabled) enabled.push("time");
+    if (this.cfg.causalGraphEnabled) enabled.push("causal");
+    const sizes: Partial<Record<GraphType, number>> = {};
+    for (const type of enabled) {
+      try {
+        sizes[type] = (await stat(graphFilePath(this.memoryDir, type))).size;
+      } catch {
+        sizes[type] = 0;
+      }
+    }
+    return sizes;
   }
 
   /**
@@ -444,20 +482,25 @@ export class GraphIndex {
     const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
     const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
+    // Collect the edges appended this call so a coherent single-writer push can
+    // extend the warm edge cache in place instead of nulling it (issue #1904).
+    const appended: GraphEdge[] = [];
 
     try {
       // Entity graph
       if (entityOn && opts.entityRef && opts.entitySiblings?.length) {
         const siblings = opts.entitySiblings.slice(0, this.cfg.maxEntityGraphEdgesPerMemory);
         for (const sibling of siblings) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: opts.memoryPath,
             to: sibling,
             type: "entity",
             weight: 1.0,
             label: opts.entityRef,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
 
@@ -465,14 +508,16 @@ export class GraphIndex {
       if (timeOn && opts.threadId && opts.recentInThread?.length) {
         const predecessor = opts.recentInThread[opts.recentInThread.length - 1];
         if (predecessor && predecessor !== opts.memoryPath) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: predecessor,
             to: opts.memoryPath,
             type: "time",
             weight: 1.0,
             label: opts.threadId,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
 
@@ -480,14 +525,16 @@ export class GraphIndex {
       if (causalOn && opts.causalPredecessor) {
         const phrase = detectCausalPhrase(opts.content);
         if (phrase) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: opts.causalPredecessor,
             to: opts.memoryPath,
             type: "causal",
             weight: 1.0,
             label: phrase,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
     } catch (err) {
@@ -495,10 +542,68 @@ export class GraphIndex {
       const { log } = await import("./logger.js");
       log.warn(`[graph] onMemoryWritten error: ${err}`);
     } finally {
-      // Invalidate edge cache so spreadingActivation() picks up new edges.
-      // In `finally` so the cache is cleared even on partial write failure.
-      this.edgeCache = null;
+      // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
+      // every write, paying a 2-4 s full re-read + parse on the next traversal.
+      if (!this.edgeCache || Date.now() - this.edgeCache.loadedAt >= GraphIndex.EDGE_CACHE_TTL_MS) {
+        // Nothing warm, or the entry is past its 5-min TTL backstop — reload.
+        this.edgeCache = null;
+      } else if (this.cfg.graphEdgeCacheIncrementalEnabled === false) {
+        // Rollback lever: restore the pre-#1904 null-on-every-write behavior.
+        this.edgeCache = null;
+      } else {
+        // Trust an in-place push ONLY when WE are the sole writer since load:
+        // every enabled graph file's on-disk size must equal our baseline plus
+        // exactly the bytes we appended to it. A divergence means a peer process
+        // (backup daemon / CLI / decay job) also wrote — force a full reload for
+        // cross-process coherence. Any stat error fails open to a full reload.
+        try {
+          if (await this.edgeFilesUnchangedExceptOurAppends(appended)) {
+            if (appended.length > 0) this.edgeCache.allEdges.push(...appended);
+          } else {
+            this.edgeCache = null;
+          }
+        } catch {
+          this.edgeCache = null;
+        }
+      }
     }
+  }
+
+  /**
+   * Cross-process coherence check for the incremental edge cache (issue #1904).
+   *
+   * Returns true iff every ENABLED graph file's current byte size equals the
+   * size observed at cache load plus exactly the bytes THIS call appended to it
+   * — i.e. no other process wrote to any graph file since load. Uses the same
+   * `${JSON.stringify(edge)}\n` serialization `appendEdge` writes, so the byte
+   * delta is exact. On success it commits the new size baseline so the next
+   * append revalidates against post-this-write truth. Fail-open: a missing or
+   * unreadable file returns false, forcing a full reload.
+   */
+  private async edgeFilesUnchangedExceptOurAppends(appended: GraphEdge[]): Promise<boolean> {
+    if (!this.edgeCache) return false;
+    const expectedDelta: Partial<Record<GraphType, number>> = {};
+    for (const edge of appended) {
+      const bytes = Buffer.byteLength(`${JSON.stringify(edge)}\n`, "utf8");
+      expectedDelta[edge.type] = (expectedDelta[edge.type] ?? 0) + bytes;
+    }
+    const enabled: GraphType[] = [];
+    if (this.cfg.entityGraphEnabled) enabled.push("entity");
+    if (this.cfg.timeGraphEnabled) enabled.push("time");
+    if (this.cfg.causalGraphEnabled) enabled.push("causal");
+    const observed: Partial<Record<GraphType, number>> = {};
+    for (const type of enabled) {
+      let size: number;
+      try {
+        size = (await stat(graphFilePath(this.memoryDir, type))).size;
+      } catch {
+        return false;
+      }
+      if (size !== (this.edgeCache.sizes[type] ?? 0) + (expectedDelta[type] ?? 0)) return false;
+      observed[type] = size;
+    }
+    this.edgeCache.sizes = observed;
+    return true;
   }
 
   /**

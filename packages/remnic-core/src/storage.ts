@@ -33,6 +33,8 @@ import {
   getCachedMemories,
   invalidateAllForDir,
   invalidateDerivedAndGlobalForDir,
+  invalidateForScope,
+  invalidateForScopeExceptHot,
   setCachedEntities,
   setCachedMemories,
   updateCacheOnDelete,
@@ -2385,6 +2387,17 @@ export class StorageManager {
    */
   private static hotMemoriesCacheProcessDefaultSeeded = false;
 
+  /**
+   * Per-memory-directory gate for scope-aware cache invalidation (issue #1904).
+   * Registered from config by the orchestrator via
+   * setScopedCacheInvalidationDefault() so every StorageManager built over a
+   * memory dir — including ephemeral recall sub-stage instances — honors the
+   * operator's setting. Unregistered dirs default to `true` (scoped on). Set
+   * `false` to restore the pre-#1904 full-clear-per-write behavior (rollback
+   * lever). Read once per write via isScopedCacheInvalidationEnabled().
+   */
+  private static readonly scopedCacheInvalidationByDir = new Map<string, boolean>();
+
   // Module-level maps for readAllMemories() keyed by base directory, shared
   // across all StorageManager instances (static) so concurrent callers over
   // the same dir cooperate.
@@ -2750,6 +2763,15 @@ export class StorageManager {
       if (ttlValid) StorageManager.hotMemoriesCacheTtlMs = ttlMs as number;
       StorageManager.hotMemoriesCacheProcessDefaultSeeded = true;
     }
+  }
+
+  /** Register the operator's scope-aware cache invalidation gate for a memory
+   *  dir (issue #1904). The orchestrator/access layer calls this with
+   *  config.scopedCacheInvalidationEnabled so the setting reaches every
+   *  StorageManager built over the dir, including ephemeral recall-sub-stage
+   *  instances. Only an explicit `false` disables; `undefined` leaves it on. */
+  static setScopedCacheInvalidationDefault(memoryDir: string, enabled: boolean | undefined): void {
+    StorageManager.scopedCacheInvalidationByDir.set(memoryDir, enabled !== false);
   }
 
   /**
@@ -4110,7 +4132,7 @@ export class StorageManager {
 
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
-    await this.patchHotMemoriesCache({ addedPath: filePath });
+    await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
       memoryId: id,
       eventType: "created",
@@ -4559,6 +4581,10 @@ export class StorageManager {
     StorageManager.hotMemoriesCacheDefault = true;
     StorageManager.hotMemoriesCacheTtlMs = 60_000;
     StorageManager.hotMemoriesCacheProcessDefaultSeeded = false;
+    // Reset the #1904 scope-invalidation gate so a legacy-mode (=false) test
+    // dir cannot leak its setting into a later test constructing over a reused
+    // temp path.
+    StorageManager.scopedCacheInvalidationByDir.clear();
   }
 
   /** Cancel any in-flight concurrent read so the next readAllMemories()
@@ -4579,13 +4605,21 @@ export class StorageManager {
     // corpus sentinel too so PEER processes rescan instead of serving a warm
     // pre-mutation corpus entry (issue #1902 cross-process coherence).
     this.bumpMemoryCorpusVersion();
-    // Invalidation chokepoint (issue #1535): eagerly evict EVERY process-level
-    // cache layer that can serve memory-derived content for this dir — hot,
-    // archive, entity, derived episode/rule views, and both QMD result caches
-    // (qmdSearchCache and qmdRecallCache). Before this call was added, the QMD
-    // recall cache was never invalidated on mutations, so recall served
-    // pre-edit bundles for the remainder of its fresh/stale TTL window.
-    invalidateAllForDir(this.baseDir);
+    // Invalidation chokepoint (issue #1535 / #1904): evict the layers a
+    // memory-mutate can affect — hot, archive, derived episode/rule views, and
+    // both QMD result caches (qmdSearchCache and qmdRecallCache). Before the QMD
+    // caches were invalidated on mutations, recall served pre-edit bundles for
+    // the remainder of its fresh/stale TTL window. The `entities` layer is NOT
+    // in memory-mutate scope: these funnel callers (update/frontmatter/move/
+    // archive/invalidate/bulk/offline-sync) never rewrite entity files, and the
+    // ones that touch entity-derived state additionally bump the status version
+    // (which does the full clear). scopedCacheInvalidationEnabled=false restores
+    // the pre-#1904 full clear of every layer (rollback lever).
+    if (StorageManager.scopedCacheInvalidationByDir.get(this.baseDir) ?? true) {
+      invalidateForScope(this.baseDir, "memory-mutate");
+    } else {
+      invalidateAllForDir(this.baseDir);
+    }
     // Issue #1579 — tombstone store is a cache layer too (rule 25: clear ALL
     // cache layers). A tombstone append from another path (supersession /
     // correction) must be visible to the next writeMemory lookup on this
@@ -4614,7 +4648,10 @@ export class StorageManager {
    * coherence is preserved. Bulk/ambiguous mutations keep the wholesale
    * invalidateAllMemoriesCache() drop instead (issue #1902 Step 5).
    */
-  private async patchHotMemoriesCache(opts: { addedPath?: string; removedPath?: string }): Promise<void> {
+  private async patchHotMemoriesCache(
+    opts: { addedPath?: string; removedPath?: string },
+    scope: "memory-create" | "memory-mutate" = "memory-mutate",
+  ): Promise<void> {
     const prevVersion = this.getMemoryCorpusVersion();
     // Snapshot the key identity once (issue #1902, Codex Medium): a mid-await
     // setSecureStoreKey change would otherwise let the post-await patch/re-key
@@ -4684,9 +4721,19 @@ export class StorageManager {
       const patched = getCachedMemories(this.baseDir, prevVersion, keyId);
       if (patched) setCachedMemories(this.baseDir, patched, produced, keyId, this.hotCacheTtlMs());
     }
-    // Evict every OTHER layer; the hot layer is patched (or intentionally left
-    // to be version-rejected) above, not dropped here.
-    invalidateDerivedAndGlobalForDir(this.baseDir);
+    // Evict the non-hot layers; the hot layer is patched (or intentionally left
+    // to be version-rejected) above, not dropped here. Scope-aware (issue #1904):
+    // a `memory-create` evicts ONLY the derived episode/rule views, keeping the
+    // global QMD result caches and the version-keyed entity cache warm (a create
+    // adds a doc that is not yet in the QMD index and changes no existing doc's
+    // recall visibility). A `memory-mutate` (or scoped-off rollback) still evicts
+    // the derived + global QMD views so a superseded/edited memory cannot resurface
+    // from a stale recall bundle (issue #1535 correctness contract).
+    if (scope === "memory-create" && (StorageManager.scopedCacheInvalidationByDir.get(this.baseDir) ?? true)) {
+      invalidateForScopeExceptHot(this.baseDir, "memory-create");
+    } else {
+      invalidateDerivedAndGlobalForDir(this.baseDir);
+    }
     if (this.tombstoneStore) {
       this.tombstoneStore.invalidate();
       this.tombstoneStore = null;
@@ -6648,7 +6695,7 @@ export class StorageManager {
     await this.writeStorageSecureFile(filePath, fileContent);
     // Keep the version-keyed hot-memories cache coherent with the new chunk
     // file (issue #1902) — same single-file patch path writeMemory uses.
-    await this.patchHotMemoriesCache({ addedPath: filePath });
+    await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
     return id;
   }
