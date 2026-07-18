@@ -407,15 +407,16 @@ async function writeReplacementMemory(
   // Sealed-envelope write (issue #1989 PR4): correction drafts carry
   // plan-derived (machine) field values — salvage so one malformed optional
   // field cannot make a correction unapplicable; drops are warn-logged.
-  // An unrecognized draft category falls back to "fact" (the legacy default
-  // for an ABSENT category) with a warning, since category stays fatal in
-  // the composer.
-  const draftCategory =
-    draft.category !== undefined && isMemoryCategory(draft.category)
-      ? draft.category
-      : (draft.category !== undefined
-          ? (log.warn(`correction draft carries unrecognized category ${JSON.stringify(draft.category)} — defaulting to "fact"`), "fact" as const)
-          : ("fact" as const));
+  // Category is IDENTITY and stays fatal (#2022 review): default to "fact"
+  // only when ABSENT (the legacy default); an explicit unrecognized value
+  // must surface as a contract error, not silently change the correction's
+  // meaning before it supersedes the target.
+  if (draft.category !== undefined && !isMemoryCategory(draft.category)) {
+    throw new CorrectionContractError(
+      `correction draft carries unrecognized category ${JSON.stringify(draft.category)} — expected a valid memory category`,
+    );
+  }
+  const draftCategory = draft.category ?? ("fact" as const);
   const draftEnvelope = composeMemoryEnvelope(
     {
       content: draft.content,

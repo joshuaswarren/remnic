@@ -7,15 +7,32 @@ import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
  * Returns the user-facing result message.
  */
+/** Namespace names: bounded, path-safe (no separators/traversal). */
+const SAFE_NAMESPACE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SAFE_MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
+
 export async function executeMemoryPromote(
   orchestrator: Orchestrator,
   params: { memoryId: string; fromNamespace?: string; toNamespace?: string; note?: string },
 ): Promise<string> {
   const { memoryId, fromNamespace, toNamespace, note } = params;
-  const srcNs =
-    fromNamespace && fromNamespace.length > 0 ? fromNamespace : orchestrator.config.defaultNamespace;
-  const dstNs =
-    toNamespace && toNamespace.length > 0 ? toNamespace : orchestrator.config.sharedNamespace;
+  // Reject invalid input instead of reinterpreting it (#2022 review): a
+  // blank or malformed namespace must not silently select the default and
+  // read/write somewhere the caller never named. Defaults apply only when
+  // the optional fields are truly ABSENT.
+  if (typeof memoryId !== "string" || !SAFE_MEMORY_ID_RE.test(memoryId)) {
+    return `Invalid memoryId: ${JSON.stringify(memoryId)} — expected a filename-safe id like fact-123.`;
+  }
+  for (const [name, value] of [
+    ["fromNamespace", fromNamespace],
+    ["toNamespace", toNamespace],
+  ] as const) {
+    if (value !== undefined && !SAFE_NAMESPACE_RE.test(value)) {
+      return `Invalid ${name}: ${JSON.stringify(value)} — expected a path-safe namespace name.`;
+    }
+  }
+  const srcNs = fromNamespace ?? orchestrator.config.defaultNamespace;
+  const dstNs = toNamespace ?? orchestrator.config.sharedNamespace;
 
   const src = await orchestrator.getStorage(srcNs);
   const mem = await src.getMemoryById(memoryId);
@@ -60,20 +77,27 @@ export async function executeMemoryPromote(
 
   // Update temporal + tag indexes for the promoted copy (v8.1). Same guard
   // as memory_store: skip if indexes don't exist yet to avoid blocking the
-  // full corpus bootstrap on the next extraction.
-  if (
-    orchestrator.config.queryAwareIndexingEnabled &&
-    (await indexesExistAsync(orchestrator.config.memoryDir))
-  ) {
-    const promoted = await dst.getMemoryById(newId).catch(() => null);
-    if (promoted?.path && promoted.frontmatter?.created) {
-      await indexMemoryAsync(
-        orchestrator.config.memoryDir,
-        promoted.path,
-        promoted.frontmatter.created,
-        promoted.frontmatter.tags ?? [],
-      );
+  // full corpus bootstrap on the next extraction. Indexing is a SIDE
+  // EFFECT: the promotion is durable already, so an index failure reports
+  // instead of throwing — a thrown error here would read as a failed
+  // promotion and invite a duplicating retry (#2022 review).
+  try {
+    if (
+      orchestrator.config.queryAwareIndexingEnabled &&
+      (await indexesExistAsync(orchestrator.config.memoryDir))
+    ) {
+      const promoted = await dst.getMemoryById(newId).catch(() => null);
+      if (promoted?.path && promoted.frontmatter?.created) {
+        await indexMemoryAsync(
+          orchestrator.config.memoryDir,
+          promoted.path,
+          promoted.frontmatter.created,
+          promoted.frontmatter.tags ?? [],
+        );
+      }
     }
+  } catch (err) {
+    return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId} (index refresh failed — recall picks it up on the next maintenance pass: ${err instanceof Error ? err.message : String(err)})`;
   }
 
   return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId}`;

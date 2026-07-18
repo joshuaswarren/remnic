@@ -28,7 +28,16 @@ const ALLOWED = new Set([
   "packages/remnic-core/src/write-envelope.ts",
 ]);
 
-const SCAN_ROOTS = ["packages/remnic-core/src", "src"];
+// Every production package participates (review finding: plugin-openclaw,
+// remnic-cli, and belief-ledger carried unmigrated writers the narrow scan
+// missed). Package src roots are discovered, not hand-listed.
+import { readdirSync as readdirSyncForRoots } from "node:fs";
+const SCAN_ROOTS = [
+  "src",
+  ...readdirSyncForRoots(path.join(ROOT, "packages"), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .map((entry) => `packages/${entry.name}/src`),
+];
 const SKIPPED_DIR_NAMES = new Set(["node_modules", ".git", "dist"]);
 
 function isProductionSource(name) {

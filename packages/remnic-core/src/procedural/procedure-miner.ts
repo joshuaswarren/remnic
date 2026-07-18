@@ -15,7 +15,7 @@ import {
 import { buildProcedurePersistBody, normalizeProcedureSteps, type ProcedureStep } from "./procedure-types.js";
 import { clusterByKey } from "./reinforcement-core.js";
 import { log } from "../logger.js";
-import { composeMemoryEnvelope } from "../write-envelope.js";
+import { composeMemoryEnvelope, STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 
 /** Must match truncation on `procedure_cluster` structured attribute (dedupe + storage). */
 const PROCEDURE_CLUSTER_ATTR_MAX = 500;
@@ -23,6 +23,19 @@ const PROCEDURE_CLUSTER_LOCK_STALE_MS = 120_000;
 const PROCEDURE_CLUSTER_LOCK_TIMEOUT_MS = 30_000;
 
 const inProcessClusterWriteLocks = new Map<string, Promise<void>>();
+
+/** Join ids with commas, keeping only WHOLE ids within maxLength. */
+function capJoinedIds(ids: string[], maxLength: number): string {
+  const kept: string[] = [];
+  let length = 0;
+  for (const id of ids) {
+    const addition = kept.length === 0 ? id.length : id.length + 1;
+    if (length + addition > maxLength) break;
+    kept.push(id);
+    length += addition;
+  }
+  return kept.join(",");
+}
 
 export interface ProcedureMiningResult {
   clustersProcessed: number;
@@ -242,10 +255,15 @@ export async function runProcedureMining(options: {
           structuredAttributes: {
             procedure_cluster: key.slice(0, PROCEDURE_CLUSTER_ATTR_MAX),
             procedure_cluster_hash: clusterHash,
-            trajectory_ids: group
-              .map((g) => g.trajectoryId)
-              .join(",")
-              .slice(0, 1900),
+            // Capped to the envelope attribute-value limit AT AN ID
+            // BOUNDARY (#2022 review): the legacy 1900-char slice now
+            // exceeds STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength, and a
+            // salvage drop would lose ALL trajectory provenance instead
+            // of the tail.
+            trajectory_ids: capJoinedIds(
+              group.map((g) => g.trajectoryId),
+              STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength,
+            ),
             trajectory_count: String(group.length),
             success_rate: rate.toFixed(4),
           },

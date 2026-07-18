@@ -1,3 +1,4 @@
+import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
 import type { MemoryFile, StorageManager } from "@remnic/core";
 import { sanitizeMemoryContent } from "@remnic/core/sanitize";
 import { ContentHashIndex, normalizeAttributePairs } from "@remnic/core/storage";
@@ -55,17 +56,26 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    const { id: memoryId, tombstoneBlocked } = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
+    // Sealed-envelope write (issue #1989 PR4): the claim body and
+    // attributes are system-serialized — strict compose; an invalid claim
+    // is a ledger bug that must surface.
+    const claimEnvelope = composeMemoryEnvelope(
+      {
+        content: serializeClaimBody(pending),
+        category: "fact",
+        confidence: pending.confidence,
+        tags: claimTags(pending),
+        entityRef: pending.scope.entities[0],
+        validAt: pending.createdAt,
+        structuredAttributes: claimToStructuredAttributes(pending),
+      },
+      { source: this.source },
+    );
+    const { id: memoryId, tombstoneBlocked } = await this.storage.writeSealedMemory(claimEnvelope, {
       actor: this.source,
-      confidence: pending.confidence,
-      tags: claimTags(pending),
-      entityRef: pending.scope.entities[0],
-      source: this.source,
       supersedes: pending.supersedes,
       lineage: pending.parentIds.length > 0 ? pending.parentIds : undefined,
       memoryKind: "note",
-      validAt: pending.createdAt,
-      structuredAttributes: claimToStructuredAttributes(pending),
       status: remnicMemoryStatusForClaim(pending),
     });
 
@@ -231,16 +241,18 @@ export class RemnicLedgerStore implements LedgerStore {
     reason: string
   ): Promise<void> {
     try {
-      await this.storage.writeMemory(
-        "correction",
-        `Superseded: ${prior.statement}\n\nReplacement: ${next.statement}\n\nReason: ${reason}`,
-        {
-          actor: this.source,
-          confidence: 1,
-          tags: ["belief-ledger:audit", "supersession", "auto-resolved"],
-          source: this.source,
-          lineage: [prior.id, next.id],
-        }
+      // Sealed-envelope write (issue #1989 PR4): system-built audit body.
+      await this.storage.writeSealedMemory(
+        composeMemoryEnvelope(
+          {
+            content: `Superseded: ${prior.statement}\n\nReplacement: ${next.statement}\n\nReason: ${reason}`,
+            category: "correction",
+            confidence: 1,
+            tags: ["belief-ledger:audit", "supersession", "auto-resolved"],
+          },
+          { source: this.source },
+        ),
+        { actor: this.source, lineage: [prior.id, next.id] },
       );
     } catch {
       // The ledger link is already durable; correction memory is an audit side effect.

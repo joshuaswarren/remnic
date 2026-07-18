@@ -190,7 +190,7 @@ test("a fact-write failure warns and retries instead of aborting the sync", asyn
     const { deps, memoryWrites } = makeDeps(memoryDir);
     assert.ok(deps.memoryGen);
     const healthyWrite = deps.memoryGen.writer.writeSealedMemory;
-    deps.memoryGen.writer.writeSealedMemory = async () => {
+    deps.memoryGen.writer.writeSealedMemory = async (_envelope, _extras) => {
       throw new Error("storage write exploded");
     };
     const first = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
@@ -321,7 +321,7 @@ test("#1645: a tombstone-blocked wearable write propagates to summary.memoriesBl
     assert.ok(deps.memoryGen, "memory-gen deps wired");
     // Force every extraction write to be tombstone-blocked (#1579): the
     // write lands pending_review with no active copy.
-    deps.memoryGen.writer.writeSealedMemory = async () => ({
+    deps.memoryGen.writer.writeSealedMemory = async (_envelope, _extras) => ({
       id: "blocked-mem-1",
       tombstoneBlocked: true,
       blockedBy: "tomb-1",
