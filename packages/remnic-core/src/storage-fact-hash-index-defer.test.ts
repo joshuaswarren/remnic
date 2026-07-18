@@ -8,8 +8,9 @@ import test, { mock } from "node:test";
 import { ContentHashIndex, StorageManager } from "./storage.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
-// ~6.4MB fact-hash index on EVERY fact, even though the extraction persist
-// path already batch-saves the authoritative superset once at the end. The
+// fact-hash index (which grows with corpus size) on EVERY fact, even though
+// the extraction persist path already batch-saves the authoritative superset
+// once at the end. The
 // `deferHashIndexSave` option marks the index dirty but skips the per-fact
 // flush; single-write callers keep the immediate, crash-safe save.
 

@@ -2044,7 +2044,8 @@ export interface WriteMemoryOptions {
    * subsequent batch save (issue #1909). The extraction persist path sets
    * this and relies on the orchestrator's authoritative
    * `saveContentHashIndexes()` batch save plus a per-storage union flush,
-   * avoiding a whole-index (~6.4MB) rewrite per fact. Default false: every
+   * avoiding a whole-index (which grows with corpus size) rewrite per fact.
+   * Default false: every
    * other (single-write) caller keeps the immediate, crash-safe save.
    */
   deferHashIndexSave?: boolean;
