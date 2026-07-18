@@ -332,9 +332,24 @@ export class SmartBuffer {
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
     if (now - this.firstPendingAtMs >= ms * BUFFER_SAVE_MAX_DEFER_MULTIPLIER) {
-      // Staleness cap hit: persist now rather than deferring further.
-      this.cancelScheduledSave();
-      await this.saveUnlocked();
+      // Staleness cap hit: persist now rather than deferring further. Drop the
+      // armed timer, attempt the write, and only mark clean on success — a
+      // failure keeps the save pending + re-arms so shutdown/the next timer
+      // retries (issue #1909 review round 2), never diverging memory from disk.
+      clearTimeout(this.saveTimer ?? undefined);
+      this.saveTimer = null;
+      try {
+        await this.saveUnlocked();
+        this.pendingSave = false;
+        this.firstPendingAtMs = null;
+      } catch (err) {
+        log.warn(`buffer.scheduleSave: staleness-cap save failed, keeping it pending: ${describeError(err)}`);
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
       return;
     }
     // True trailing edge: drop any armed timer and re-arm from now.
@@ -369,9 +384,28 @@ export class SmartBuffer {
       this.saveTimer = null;
     }
     if (!this.pendingSave) return;
+    try {
+      await this.enqueueMutation(async () => this.saveUnlocked());
+    } catch (err) {
+      // The write failed: memory and disk diverge (issue #1909 review round 2).
+      // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
+      // graceful shutdown flush and the re-armed timer both retry it — clearing
+      // the flag here would drop the buffered turns permanently. Re-arm a
+      // background retry when debounced; fail-open (never crash the caller).
+      log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
+      const ms = this.config.bufferSaveDebounceMs;
+      if (ms > 0 && !this.saveTimer) {
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
+      return;
+    }
+    // Only mark clean AFTER the write succeeds.
     this.pendingSave = false;
     this.firstPendingAtMs = null;
-    await this.enqueueMutation(async () => this.saveUnlocked());
   }
 
   async addTurn(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {

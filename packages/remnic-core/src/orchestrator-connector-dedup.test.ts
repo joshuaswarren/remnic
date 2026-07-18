@@ -21,7 +21,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
-import { ContentHashIndex, type StorageManager } from "./storage.js";
+import { ContentHashIndex, StorageManager } from "./storage.js";
 import type { ExtractionResult, ExtractedFact, MemoryFile } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 
@@ -1078,5 +1078,46 @@ test("shared backfill: operator (no-connector) extraction must NOT patch a conne
     taggedAfter!.frontmatter.invalid_at,
     undefined,
     "tagged fact must NOT get invalid_at from connectorless/operator backfill",
+  );
+});
+// ---------------------------------------------------------------------------
+// Issue #1909 review round 2 finding 2 — defer only covered by the batch save
+// ---------------------------------------------------------------------------
+
+test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fact-hash index immediately", async () => {
+  // With dedup off, contentHashIndexForStorage() returns null so the
+  // orchestrator's end-of-persist batch save is a no-op. The main-path fact
+  // write must therefore NOT defer its per-fact index flush — otherwise the
+  // storage-owned fact-hash index is never written, and a restart with
+  // fact-hashes.ready present trusts a stale index missing the fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-dedup-off-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  // Warm the index authoritative and create the .ready marker over the current
+  // (empty) corpus, so a later fresh session trusts the on-disk index.
+  assert.equal(await storage.hasFactContentHash("warm"), false);
+
+  const body = "The billing service retries failed charges with exponential backoff.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written");
+
+  // Fresh StorageManager with .ready present trusts the on-disk fact-hash index
+  // (no rebuild). The hash must be there via the immediate per-fact save.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(
+    await restarted.hasFactContentHash(body),
+    true,
+    "the fact hash was flushed immediately despite the batch saver being a no-op",
   );
 });

@@ -698,3 +698,50 @@ test("debounce on: sustained activity forces an inline save at the 5x staleness 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "turn @560"));
   assert.equal(storage.saveCount, 1, "the 5x staleness cap forced an inline save mid-activity");
 });
+
+class FailOnceBufferStorage {
+  public saved: BufferState | null = null;
+  public saveCount = 0;
+  public failNext = true;
+
+  async loadBuffer(): Promise<BufferState> {
+    return emptyBufferState();
+  }
+
+  async saveBuffer(state: BufferState): Promise<void> {
+    if (this.failNext) {
+      this.failNext = false;
+      throw new Error("simulated buffer write failure");
+    }
+    this.saveCount += 1;
+    this.saved = structuredClone(state);
+  }
+}
+
+test("debounce on: a failed flush keeps the save pending so a retry (or shutdown) persists", async () => {
+  // Issue #1909 review round 2 finding 1: flushPendingSave must not clear
+  // pendingSave until the write SUCCEEDS — otherwise a failed write diverges
+  // memory from disk and a later shutdown flush early-returns, dropping turns.
+  const storage = new FailOnceBufferStorage();
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "buffered turn")); // schedules a save
+  // First flush: the underlying write throws (swallowed, fail-open).
+  await buffer.flushPendingSave();
+  const internals = buffer as unknown as DebouncedBufferInternals;
+  assert.equal(internals.pendingSave, true, "a failed save leaves the save pending for retry");
+  assert.equal(storage.saveCount, 0, "nothing was persisted on the failed attempt");
+
+  // Retry (mirrors the re-armed timer or graceful-shutdown flush) succeeds.
+  await buffer.flushPendingSave();
+  assert.equal(storage.saveCount, 1, "the retry performed exactly one successful write");
+  assert.equal(
+    storage.saved?.entries?.["thread-a"]?.turns.length,
+    1,
+    "the previously-unpersisted turn is now durable",
+  );
+  assert.equal(internals.pendingSave, false, "pending is cleared only after the write succeeds");
+});

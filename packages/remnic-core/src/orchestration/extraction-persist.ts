@@ -38,6 +38,7 @@ import {
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
   resolveConversationContextCapabilities,
+  resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
@@ -232,6 +233,14 @@ export class ExtractionPersistCoordinator {
     // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
+    // #1909 (review round 2): the main-path fact writes may defer their per-fact
+    // fact-hash-index flush to the orchestrator's end-of-persist batch save ONLY
+    // when fact deduplication is enabled. With it disabled,
+    // contentHashIndexForStorage() returns null and the batch save is a no-op —
+    // so deferring would leave the storage-owned index unflushed and a restart
+    // (or re-enabling dedup) with fact-hashes.ready present would trust a stale
+    // index. Defer only when the batch will actually cover the write.
+    const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -2190,8 +2199,9 @@ export class ExtractionPersistCoordinator {
               // Claim-level provenance spans (issue #1575 PR 2).
               ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
               ...(fact.provenance ? { provenance: fact.provenance } : {}),
-              // #1909: defer the per-fact index flush to the batch save.
-              deferHashIndexSave: true,
+              // #1909: defer the per-fact index flush to the batch save only when
+              // fact dedup is on (the batch saver is a no-op otherwise).
+              deferHashIndexSave: factDedupEnabled,
             },
           );
           const parentId = parentWrite.id;
@@ -2550,8 +2560,9 @@ export class ExtractionPersistCoordinator {
           // through to frontmatter so they survive end-to-end.
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
-          // #1909: defer the per-fact index flush to the batch save.
-          deferHashIndexSave: true,
+          // #1909: defer the per-fact index flush to the batch save only when
+          // fact dedup is on (the batch saver is a no-op otherwise).
+          deferHashIndexSave: factDedupEnabled,
         },
       );
       const memoryId = factWrite.id;
