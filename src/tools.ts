@@ -17,7 +17,8 @@ import {
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
-import { composeMemoryEnvelope } from "./write-envelope.js";
+import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
+import { executeMemoryPromote } from "./memory-promote.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -1722,16 +1723,12 @@ Best for:
 
         switch (action) {
           case "store_episode": {
-            // Sealed-envelope write (issue #1989 PR4): agent-supplied action
-            // input — salvage; drops are warn-logged by the composer notes.
-            const episodeEnvelope = composeMemoryEnvelope(
+            // Sealed-envelope write (issue #1989 PR4): agent-supplied input.
+            const episodeEnvelope = composeSalvagedEnvelope(
+              "memory-action",
               { content: contentValue!, category: normalizedCategory ?? "fact" },
               { source: "memory_action_apply" },
-              { salvage: true },
             );
-            if (episodeEnvelope.salvageNotes.length > 0) {
-              log.warn(`memory-action write salvaged invalid fields: ${episodeEnvelope.salvageNotes.join("; ")}`);
-            }
             const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(episodeEnvelope, {
               actor: "tool.memory_action_apply",
               memoryKind: "episode",
@@ -1747,14 +1744,11 @@ Best for:
           }
           case "store_note": {
             // Sealed-envelope write (issue #1989 PR4): see store_episode.
-            const noteEnvelope = composeMemoryEnvelope(
+            const noteEnvelope = composeSalvagedEnvelope(
+              "memory-action",
               { content: contentValue!, category: normalizedCategory ?? "fact" },
               { source: "memory_action_apply" },
-              { salvage: true },
             );
-            if (noteEnvelope.salvageNotes.length > 0) {
-              log.warn(`memory-action write salvaged invalid fields: ${noteEnvelope.salvageNotes.join("; ")}`);
-            }
             const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(noteEnvelope, {
               actor: "tool.memory_action_apply",
             });
@@ -1809,14 +1803,11 @@ Best for:
           }
           case "summarize_node": {
             // Sealed-envelope write (issue #1989 PR4): see store_episode.
-            const summaryEnvelope = composeMemoryEnvelope(
+            const summaryEnvelope = composeSalvagedEnvelope(
+              "memory-action",
               { content: contentValue!, category: normalizedCategory ?? "fact" },
               { source: "memory_action_apply" },
-              { salvage: true },
             );
-            if (summaryEnvelope.salvageNotes.length > 0) {
-              log.warn(`memory-action write salvaged invalid fields: ${summaryEnvelope.salvageNotes.join("; ")}`);
-            }
             const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(summaryEnvelope, {
               actor: "tool.memory_action_apply",
               sourceMemoryId: memoryIdValue,
@@ -2217,68 +2208,12 @@ Best for:
             "Namespaces are disabled. Enable `namespacesEnabled: true` to use memory promotion.",
           );
         }
-
-        const { memoryId, fromNamespace, toNamespace, note } = params as {
-          memoryId: string;
-          fromNamespace?: string;
-          toNamespace?: string;
-          note?: string;
-        };
-
-        const srcNs = fromNamespace && fromNamespace.length > 0 ? fromNamespace : orchestrator.config.defaultNamespace;
-        const dstNs = toNamespace && toNamespace.length > 0 ? toNamespace : orchestrator.config.sharedNamespace;
-
-        const src = await orchestrator.getStorage(srcNs);
-        const mem = await src.getMemoryById(memoryId);
-        if (!mem) {
-          return toolResult(`Memory not found in ${srcNs}: ${memoryId}`);
-        }
-
-        const dst = await orchestrator.getStorage(dstNs);
-        // Sealed-envelope write (issue #1989 PR4): a promotion REPLAYS a
-        // stored row — legacy data may predate current limits, so salvage
-        // (drops warn-logged).
-        const promoteEnvelope = composeMemoryEnvelope(
-          {
-            content: mem.content,
-            category: mem.frontmatter.category,
-            confidence: mem.frontmatter.confidence,
-            tags: Array.from(new Set([...(mem.frontmatter.tags ?? []), "promoted", `promotedFrom:${srcNs}:${memoryId}`, ...(note ? [`note:${note}`] : [])])),
-            entityRef: mem.frontmatter.entityRef,
-          },
-          { source: "promote" },
-          { salvage: true },
+        // Executor extracted to ./memory-promote.ts (issue #1989 PR4).
+        const message = await executeMemoryPromote(
+          orchestrator,
+          params as { memoryId: string; fromNamespace?: string; toNamespace?: string; note?: string },
         );
-        if (promoteEnvelope.salvageNotes.length > 0) {
-          log.warn(`promote write salvaged invalid fields: ${promoteEnvelope.salvageNotes.join("; ")}`);
-        }
-        const { id: newId, tombstoneBlocked } = await dst.writeSealedMemory(promoteEnvelope, {
-          importance: mem.frontmatter.importance,
-          supersedes: mem.frontmatter.supersedes,
-          links: mem.frontmatter.links,
-        });
-
-        // #1645 (review threads TWB/Yhu): if the destination namespace's
-        // tombstone blocked this promotion, the copy landed pending_review (no
-        // active promoted memory). Surface that honestly and SKIP query-aware
-        // indexing so the blocked copy is not embedded as if it were active.
-        if (tombstoneBlocked) {
-          return toolResult(
-            `Promotion of ${srcNs}:${memoryId} → ${dstNs}:${newId} is queued for review (tombstone-blocked): no active promoted copy was created.`,
-          );
-        }
-
-        // Update temporal + tag indexes for the promoted copy (v8.1).
-        // Same guard as memory_store: skip if indexes don't exist yet to avoid
-        // blocking the full corpus bootstrap on the next extraction.
-        if (orchestrator.config.queryAwareIndexingEnabled && await indexesExistAsync(orchestrator.config.memoryDir)) {
-          const promoted = await dst.getMemoryById(newId).catch(() => null);
-          if (promoted?.path && promoted.frontmatter?.created) {
-            await indexMemoryAsync(orchestrator.config.memoryDir, promoted.path, promoted.frontmatter.created, promoted.frontmatter.tags ?? []);
-          }
-        }
-
-        return toolResult(`Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId}`);
+        return toolResult(message);
       },
     },
     { name: "memory_promote" },

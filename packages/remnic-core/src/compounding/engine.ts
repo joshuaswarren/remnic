@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
-import { composeMemoryEnvelope } from "../write-envelope.js";
+import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { StorageManager } from "../storage.js";
 import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
@@ -718,21 +718,12 @@ export class CompoundingEngine {
       return report;
     }
 
-    // Sealed-envelope write (issue #1989 PR4): compounding candidates are
-    // synthesized from weekly reports (machine data) — salvage; drops are
-    // warn-logged.
-    const promotionEnvelope = composeMemoryEnvelope(
-      { content: persistedContent, category: candidate.category, confidence, tags: uniqueTags },
-      { source: "compounding-promotion" },
-      { salvage: true },
+    // Sealed-envelope write (issue #1989 PR4): synthesized machine data.
+    const promotionInput = { content: persistedContent, category: candidate.category, confidence, tags: uniqueTags };
+    const { id, tombstoneBlocked } = await storage.writeSealedMemory(
+      composeSalvagedEnvelope("compounding-promotion", promotionInput, { source: "compounding-promotion" }),
+      { lineage, memoryKind: "note" },
     );
-    if (promotionEnvelope.salvageNotes.length > 0) {
-      log.warn(`compounding-promotion write salvaged invalid fields: ${promotionEnvelope.salvageNotes.join("; ")}`);
-    }
-    const { id, tombstoneBlocked } = await storage.writeSealedMemory(promotionEnvelope, {
-      lineage,
-      memoryKind: "note",
-    });
     // #1645: a tombstone-blocked promotion lands pending_review (no active
     // copy) — divert it to the tombstoneBlocked list so the report never
     // claims a blocked write as a successfully promoted active memory.
