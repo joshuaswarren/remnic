@@ -585,11 +585,22 @@ jobs:
                   // anything useful about generated corpora, and the rounds
                   // they burn on them bury real findings. Threads bots file
                   // anyway still gate via review-thread-guard (unchanged).
-                  const ignorePatterns = await loadIgnoreManifest(
-                    owner,
-                    repo,
-                    pullRequest.data.base?.sha,
-                  );
+                  // GitHub's listFiles API returns at most 3,000 files total;
+                  // beyond that the list is TRUNCATED and unseen files could be
+                  // real source. Fail-safe: never apply the exception unless we
+                  // provably saw the complete file set (review finding on #2002).
+                  const reportedChangedFiles = pullRequest.data.changed_files;
+                  const fileListComplete =
+                    files.length < 3000 &&
+                    (typeof reportedChangedFiles !== 'number' || reportedChangedFiles === files.length);
+                  const ignorePatterns = fileListComplete
+                    ? await loadIgnoreManifest(owner, repo, pullRequest.data.base?.sha)
+                    : null;
+                  if (!fileListComplete) {
+                    core.info(
+                      `PR #${pr}: file list may be truncated (${files.length} fetched, API reports ${reportedChangedFiles ?? 'unknown'}) — artifact-only exception not considered.`,
+                    );
+                  }
                   if (ignorePatterns && isArtifactOnlyPullRequest(files, ignorePatterns)) {
                     core.notice(
                       `PR #${pr}: artifact-only exception applied — all ${files.length} changed file(s) match ${IGNORE_MANIFEST_PATH}; no AI review round required. The unresolved-thread guard and all other required checks remain required.`,
