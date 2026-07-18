@@ -26,6 +26,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compareArtifactsByRecency } from "../scripts/generate-paper-figures.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -41,10 +42,26 @@ const TRUST_SCORE_SRC = join(
 );
 
 function runGenerator(env = {}) {
+  // Hermetic env (#2004): the root test runner injects
+  // NODE_OPTIONS=--conditions=remnic-source and may carry stray
+  // REMNIC_FIGURES_* / locale vars into the worker that an isolated
+  // `tsx --test` run never sees. The committed figures are produced by
+  // `pnpm run figures:paper` (`node scripts/generate-paper-figures.mjs`, a
+  // clean env), so the regeneration MUST run in that same environment or the
+  // byte-identical assertion compares two different regimes and flakes.
+  // Strip the leaking vars and pin the collation locale so any locale-sensitive
+  // compare is stable regardless of who spawned the suite.
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_OPTIONS;
+  delete childEnv.REMNIC_FIGURES_RESULTS_DIR;
+  delete childEnv.REMNIC_FIGURES_OUT_DIR;
+  delete childEnv.REMNIC_FIGURES_DEBUG;
+  childEnv.LC_ALL = "C";
+  childEnv.LANG = "C";
   return spawnSync(process.execPath, [GEN], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...childEnv, ...env },
   });
 }
 
@@ -118,9 +135,12 @@ function copyTrackedResults(dest) {
 }
 
 function findRealArtifact(benchmarkId, tier) {
-  // Match the generator: among committed (manifest-tracked), non-mock
-  // artifacts for this benchmark+tier, return the NEWEST by finishedAt — not
-  // the first filename sort (cursor thread: picks wrong benchmark artifact).
+  // Match the generator EXACTLY (#2004): among committed (manifest-tracked),
+  // non-mock artifacts for this benchmark+tier, return the NEWEST run using the
+  // generator's own deterministic comparator (epoch-ms + filename tiebreak, no
+  // locale-sensitive localeCompare). Using the same comparator the committed
+  // figure was rendered with is what keeps this assertion in lockstep with the
+  // SVG across environments.
   const matches = [];
   for (const name of readdirSync(RESULTS_DIR)) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
@@ -130,7 +150,7 @@ function findRealArtifact(benchmarkId, tier) {
       matches.push({ name, doc });
     }
   }
-  matches.sort((a, b) => String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt)));
+  matches.sort(compareArtifactsByRecency);
   return matches[0] ?? null;
 }
 
@@ -188,7 +208,12 @@ test("committed figures are in sync with the generator (regeneration is byte-ide
       copyTrackedResults(tmpResults).length > 0,
       "git-tracked artifacts must exist to regenerate from",
     );
-    runGenerator({ REMNIC_FIGURES_RESULTS_DIR: tmpResults, REMNIC_FIGURES_OUT_DIR: tmpOut });
+    const res = runGenerator({ REMNIC_FIGURES_RESULTS_DIR: tmpResults, REMNIC_FIGURES_OUT_DIR: tmpOut });
+    // Surface a spawn failure as a clear assertion instead of a downstream
+    // ENOENT when readFileSync can't find an unwritten figure (#2004): under
+    // full-suite concurrency a failed/partial spawn otherwise masquerades as a
+    // figure mismatch flake.
+    assert.equal(res.status, 0, `generator failed:\n${res.stderr}`);
     for (const f of [
       "fig1-locomo-longmemeval.svg",
       "fig2-memcorrect-metrics.svg",
@@ -202,6 +227,30 @@ test("committed figures are in sync with the generator (regeneration is byte-ide
     rmSync(tmpResults, { recursive: true, force: true });
     rmSync(tmpOut, { recursive: true, force: true });
   }
+});
+
+test("artifact selection breaks a finishedAt tie deterministically (no localeCompare/readdir dependence) — #2004", () => {
+  // Root cause of the #2004 flake: two committed same-benchmark+tier artifacts
+  // whose finishedAt collate-equal made the "newest wins" sort fall back to
+  // readdirSync order, which is filesystem/OS/load dependent. The figure
+  // committed in one environment and the figure regenerated inside the
+  // full-suite worker could then choose different artifacts — byte mismatch in
+  // the full suite, pass in isolation. The comparator must break ties by a
+  // stable key (filename codepoint order), never by input/readdir order.
+  const tie = "2026-07-17T07:29:53.153Z";
+  const A = { name: "2026-07-17-longmemeval-alpha.json", doc: { finishedAt: tie } };
+  const B = { name: "2026-07-17-longmemeval-bravo.json", doc: { finishedAt: tie } };
+  const pick = (arr) => [...arr].sort(compareArtifactsByRecency)[0].name;
+  assert.equal(
+    pick([A, B]),
+    pick([B, A]),
+    "tie winner must not depend on candidate/readdir order (was localeCompare→0→input order)",
+  );
+  // Distinct timestamps still resolve newest-first, regardless of input order.
+  const older = { name: "2026-07-14-longmemeval-opus.json", doc: { finishedAt: "2026-07-14T04:02:21.944Z" } };
+  const newer = { name: "2026-07-17-longmemeval-luna.json", doc: { finishedAt: tie } };
+  assert.equal(pick([older, newer]), newer.name, "newest finishedAt wins");
+  assert.equal(pick([newer, older]), newer.name, "newest finishedAt wins regardless of input order");
 });
 
 // ─── 2. Real values trace to committed artifacts / source ─────────────────
