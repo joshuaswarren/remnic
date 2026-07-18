@@ -233,7 +233,11 @@ node scripts/verify-relay-judge-package.mjs
 ```
 
 The attested path invokes Node directly, preventing npm pre/post lifecycle
-hooks from running before the clean-room safety receipt.
+hooks from running before the clean-room safety receipt. For a checkout that
+may itself be modified, the [judge guide](docs/remnic-relay/JUDGE-GUIDE.md#clean-room-smoke)
+provides a no-install, out-of-band trust chain: SHA-256-check one staged
+launcher against the GitHub attestation, then let that trusted launcher pin
+both executable modules before either is spawned or imported.
 
 Codex collaborated throughout the in-window extension: it modeled and built
 the Relay event/API contract, designed Mission Control, implemented the Linux

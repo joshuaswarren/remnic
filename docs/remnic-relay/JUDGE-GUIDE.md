@@ -82,27 +82,59 @@ The dependency-free verifier does not merely trust the final JSON. It:
 
 ## Clean-room smoke
 
+For an ordinary checkout already trusted to match the reviewed commit, the
+short command is `node scripts/verify-relay-judge-package.mjs`. For the
+stronger case where the checkout itself may be modified, use this trust-root
+procedure instead. First compare `RELAY_LAUNCHER_SHA256` with the pinned
+GitHub comment on PR #2012 or issue #1969; that comment is deliberately
+out-of-band from checkout contents. Do not derive the expected value from the
+checkout being tested.
+
 ```bash
-node scripts/verify-relay-judge-package.mjs
+RELAY_LAUNCHER_SHA256=c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7
+relay_trust_dir="$(mktemp -d)"
+trap 'rm -r -- "$relay_trust_dir"' EXIT
+
+node -e '
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const [source, target, expected] = process.argv.slice(1);
+const bytes = fs.readFileSync(source);
+const actual = crypto.createHash("sha256").update(bytes).digest("hex");
+if (actual !== expected) {
+  process.stderr.write(`Relay launcher digest mismatch: ${actual}\n`);
+  process.exit(1);
+}
+fs.writeFileSync(target, bytes, { flag: "wx", mode: 0o500 });
+' scripts/verify-relay-judge-package.mjs "$relay_trust_dir/launcher.mjs" "$RELAY_LAUNCHER_SHA256"
+
+node "$relay_trust_dir/launcher.mjs" --source-root "$PWD"
 ```
 
 Expected output on the verified platform:
 
 ```text
-RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false sensitiveFiles=39
+RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked executables=trusted-launcher-pinned-sha256 externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
-This direct Node command first snapshots the package manifest, five static UI
-files, sealed recording, synthetic fixtures, demo script, and verifier through
-mount-locked no-follow descriptors. It rejects symlinks, hard links, mount
-crossings, and concurrent source changes before any verified byte is copied to
-a new temporary directory. It then asserts that no symlink or `node_modules`
-directory exists in the copy, runs
-the exact dependency-free Node verifier with isolated home/temp variables and empty `NODE_PATH`,
-serves the UI on ephemeral loopback, fetches the page/replay/receipt, rejects
-an unlisted path, and removes the temporary package. Invoking Node directly is
-part of the trust boundary: npm pre/post lifecycle hooks cannot run before the
-clean-room receipt.
+The inline Node bootstrap reads the candidate launcher once, hashes those exact
+bytes, and writes the same bytes into a new private temporary directory. That
+avoids a check-then-copy race. The externally anchored launcher then snapshots
+the package manifest, five static UI files, sealed recording, synthetic
+fixtures, demo script, decision contract, and verifier through mount-locked
+no-follow descriptors. Before it executes checkout code, it requires the
+decision contract and verifier to match two SHA-256 values pinned inside the
+trusted launcher. A regression replaces each executable with code that would
+write a host marker and proves the marker is never created.
+
+The launcher also rejects symlinks, hard links, mount crossings, and concurrent
+source changes before any verified byte is copied to a new temporary
+directory. It asserts that no symlink or `node_modules` directory exists in the
+copy, runs the trusted dependency-free Node verifier with isolated home/temp
+variables and empty `NODE_PATH`, serves the UI on ephemeral loopback,
+fetches the page/replay/receipt, rejects an unlisted path, and removes the
+temporary package. Invoking Node directly remains part of the trust boundary:
+npm pre/post lifecycle hooks cannot run before the clean-room receipt.
 
 ## What the recording proves
 
@@ -181,6 +213,9 @@ reproducible competition evidence.
 - Integrity or semantic verification failure: do not bypass it. Restore the
   committed files and rerun; a changed byte or causal claim is intentionally a
   hard failure.
+- Launcher digest mismatch: stop. Cross-check the expected digest against the
+  GitHub trust-root comment, then obtain a clean copy of the launcher; never
+  execute the mismatched checkout copy.
 - Live preflight reports namespace/chroot failure: use the offline judge path;
   the host is not supported for a live run.
 - Stop the demo with `Ctrl+C`. It binds only `127.0.0.1`, writes no Remnic data,

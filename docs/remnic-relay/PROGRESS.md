@@ -67,6 +67,8 @@ Last updated: 2026-07-18
   symlink, hard-link, mount-crossing, and concurrent-change rejection.
 - [x] Every opened evidence descriptor is locked to the pinned repository
   mount ID, rejecting nested and same-device bind mounts before content reads.
+- [x] Out-of-band launcher SHA-256 anchors both executable modules before
+  spawn/import; marker-writing tamper regressions prove neither can run first.
 - [x] Coordinated-reseal rejection and secret/private-path scan.
 - [x] Measured narration: 326 words, estimated 165 seconds including action
   allowance.

@@ -748,9 +748,40 @@ descriptorPinnedTest("Relay judge package passes from a copied clean room with n
   assert.equal(receipt.uiSha256, RELAY_UI_ROOT_SHA256);
   assert.equal(receipt.nodeModulesPresent, false);
   assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
+  assert.equal(receipt.executableVerification, "trusted-launcher-pinned-sha256");
+  assert.deepEqual(receipt.trustedExecutableSha256, {
+    "scripts/relay/checkout-decision-contract.mjs": "a46b51d8d4b2322a52260cdf22b247e8f4e28fd79f9e88e06ab8dff92044f37e",
+    "scripts/relay/judge-package.mjs": "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e",
+  });
+  assert.equal(receipt.launcherSha256, "c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
+});
+
+descriptorPinnedTest("Relay trusted launcher rejects modified executables before they run", async (t) => {
+  for (const relative of ["scripts/relay/checkout-decision-contract.mjs", "scripts/relay/judge-package.mjs"]) {
+    await t.test(relative, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-untrusted-executable-"));
+      const marker = path.join(parent, "untrusted-executable-ran");
+      try {
+        await copyJudgePackage(parent);
+        await copyCleanRoomLauncher(parent);
+        await writeFile(
+          path.join(parent, relative),
+          `import { writeFile } from "node:fs/promises";\nawait writeFile(${JSON.stringify(marker)}, "executed");\n`
+        );
+
+        const result = await captureNode(["scripts/verify-relay-judge-package.mjs", "--source-root", parent, "--json"]);
+        assert.notEqual(result.code, 0, result.stdout);
+        assert.ok(result.stderr.includes(relative), result.stderr);
+        assert.match(result.stderr, /does not match the trusted executable digest/);
+        await assert.rejects(lstat(marker), { code: "ENOENT" });
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 descriptorPinnedTest("Relay direct clean-room launcher never executes npm lifecycle hooks", async (t) => {

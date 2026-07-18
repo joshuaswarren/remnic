@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -6,7 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const defaultRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packagePaths = [
   "package.json",
   "admin-console/public/relay",
@@ -16,9 +17,29 @@ const packagePaths = [
   "scripts/relay/checkout-decision-contract.mjs",
   "scripts/relay/judge-package.mjs",
 ];
+const trustedExecutableSha256 = new Map([
+  ["scripts/relay/checkout-decision-contract.mjs", "a46b51d8d4b2322a52260cdf22b247e8f4e28fd79f9e88e06ab8dff92044f37e"],
+  ["scripts/relay/judge-package.mjs", "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e"],
+]);
+const executableVerificationMode = "trusted-launcher-pinned-sha256";
 
 function invariant(condition, message) {
   if (!condition) throw new Error(`Relay clean-room verification failed: ${message}`);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function assertTrustedExecutableSnapshot(snapshot) {
+  for (const [relative, expected] of trustedExecutableSha256) {
+    const contents = snapshot.get(relative);
+    invariant(contents, `${relative} is missing from the immutable source snapshot`);
+    invariant(
+      sha256(contents) === expected,
+      `${relative} does not match the trusted executable digest; obtain a clean reviewed checkout`
+    );
+  }
 }
 
 function sameOpenedNode(before, after) {
@@ -287,21 +308,38 @@ function cleanRoomEnvironment(home, temporaryDirectory) {
 function parseArgs(argv) {
   let keep = false;
   let json = false;
-  for (const arg of argv) {
+  let sourceRoot = defaultRepoRoot;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === "--") continue;
     if (arg === "--keep") keep = true;
     else if (arg === "--json") json = true;
-    else if (arg === "--help" || arg === "-h") {
-      process.stdout.write("Usage: node scripts/verify-relay-judge-package.mjs [--keep] [--json]\n");
+    else if (arg === "--source-root") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--source-root requires a directory");
+      const expanded =
+        value === "~"
+          ? os.homedir()
+          : value.startsWith("~/") || value.startsWith("~\\")
+            ? path.join(os.homedir(), value.slice(2))
+            : value;
+      sourceRoot = path.resolve(expanded);
+      index += 1;
+    } else if (arg === "--help" || arg === "-h") {
+      process.stdout.write(
+        "Usage: node scripts/verify-relay-judge-package.mjs [--source-root <checkout>] [--keep] [--json]\n"
+      );
       process.exit(0);
     } else throw new Error(`Unknown Relay clean-room argument: ${arg}`);
   }
-  return { keep, json };
+  return { keep, json, sourceRoot };
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const sourceSnapshot = await snapshotPackageSources(repoRoot, packagePaths);
+  const sourceSnapshot = await snapshotPackageSources(options.sourceRoot, packagePaths);
+  assertTrustedExecutableSnapshot(sourceSnapshot);
+  const launcherSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
   const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-judge-"));
   const cleanRoot = path.join(parent, "remnic-relay-judge-package");
   await mkdir(cleanRoot, { mode: 0o700 });
@@ -369,6 +407,9 @@ async function main() {
       model: receipt.model,
       calls: receipt.calls,
       filesystemVerification: receipt.filesystemVerification,
+      executableVerification: executableVerificationMode,
+      trustedExecutableSha256: Object.fromEntries(trustedExecutableSha256),
+      launcherSha256,
       externalCalls: 0,
       productionDataRead: false,
       sensitiveFilesScanned: receipt.sensitiveFilesScanned,
@@ -379,7 +420,7 @@ async function main() {
       process.stdout.write(
         `RELAY_JUDGE_CLEAN_ROOM_OK platform=${result.platform}/${result.architecture} node=${result.node} ` +
           `root=${result.recordingSha256} ui=${result.uiSha256} dependencies=0 ` +
-          `filesystem=${result.filesystemVerification} externalCalls=0 ` +
+          `filesystem=${result.filesystemVerification} executables=${result.executableVerification} externalCalls=0 ` +
           `productionDataRead=false sensitiveFiles=${result.sensitiveFilesScanned}\n`
       );
       if (options.keep) process.stdout.write(`Clean-room package preserved at ${cleanRoot}\n`);

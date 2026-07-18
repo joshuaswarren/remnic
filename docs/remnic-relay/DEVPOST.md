@@ -92,7 +92,10 @@ The direct Node commands bypass npm pre/post lifecycle hooks. The clean-room
 smoke copies only the judge package into a new temporary root,
 proves there is no `node_modules` or symlink, runs the exact Node verifier with
 an isolated environment, serves/fetches the replay locally, checks the route
-allow-list, and cleans up.
+allow-list, and cleans up. For an adversarially modified checkout, the judge
+guide adds an out-of-band SHA-256 trust root for a staged launcher; that
+launcher pins the decision contract and verifier before either executable can
+run.
 
 ### Evidence, not a victory lap
 
@@ -109,6 +112,8 @@ the exact five-file UI root to the sealed trace, scans every copied evidence
 text file for private material, verifies a single immutable filesystem
 snapshot without symlinks or hard links, and rejects both a hand-edited frame
 and a coordinated attempt to rewrite and reseal the cold Builder's decision.
+The clean-room regression also replaces each executable with marker-writing
+code and proves the trusted launcher rejects it before execution.
 This is one synthetic mission—not a claim that Relay has eliminated
 stale-memory failures everywhere.
 
@@ -186,7 +191,9 @@ and gallery there, or run these commands in a Linux environment.
 4. Compare Scout and Builder, press E for evidence, advance to the human gate,
    type APPROVE, and continue through cold-start recall to Outcome recovered.
 5. Terminal-only verification: node scripts/relay/judge-package.mjs verify
-6. Fresh temporary package: node scripts/verify-relay-judge-package.mjs
+6. Fresh temporary package: follow JUDGE-GUIDE.md's Clean-room smoke block.
+   Cross-check launcher SHA-256 c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7
+   against the pinned PR #2012 or issue #1969 GitHub comment first.
 
 No credentials, model calls, datasets, build, dependency install, or external
 network calls are required. If port 4173 is busy, run:
