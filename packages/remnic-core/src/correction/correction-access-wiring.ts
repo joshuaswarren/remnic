@@ -21,6 +21,8 @@
  */
 
 import path from "node:path";
+import { composeMemoryEnvelope, isMemoryCategory } from "../write-envelope.js";
+import { log } from "../logger.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Orchestrator } from "../orchestrator.js";
@@ -402,20 +404,38 @@ async function writeReplacementMemory(
   // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
   // here (rule 43). Tombstone blocking also fires here (#1579), so a
   // resurrected fact lands as pending_review rather than silently overwriting.
-  const { id, tombstoneBlocked } = await storage.writeMemory(
-    (draft.category ?? "fact") as Parameters<typeof storage.writeMemory>[0],
-    draft.content,
+  // Sealed-envelope write (issue #1989 PR4): correction drafts carry
+  // plan-derived (machine) field values — salvage so one malformed optional
+  // field cannot make a correction unapplicable; drops are warn-logged.
+  // An unrecognized draft category falls back to "fact" (the legacy default
+  // for an ABSENT category) with a warning, since category stays fatal in
+  // the composer.
+  const draftCategory =
+    draft.category !== undefined && isMemoryCategory(draft.category)
+      ? draft.category
+      : (draft.category !== undefined
+          ? (log.warn(`correction draft carries unrecognized category ${JSON.stringify(draft.category)} — defaulting to "fact"`), "fact" as const)
+          : ("fact" as const));
+  const draftEnvelope = composeMemoryEnvelope(
     {
-      source: "correction",
+      content: draft.content,
+      category: draftCategory,
       confidence: draft.confidence ?? 0.9,
       tags: draft.tags ?? [],
       ...(draft.entityRef ? { entityRef: draft.entityRef } : {}),
       ...(draft.validAt ? { validAt: draft.validAt } : {}),
-      ...(draft.observedAt ? { observedAt: draft.observedAt } : {}),
       ...(draft.structuredAttributes ? { structuredAttributes: draft.structuredAttributes } : {}),
-      ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
     },
+    { source: "correction" },
+    { salvage: true },
   );
+  if (draftEnvelope.salvageNotes.length > 0) {
+    log.warn(`correction write salvaged invalid fields: ${draftEnvelope.salvageNotes.join("; ")}`);
+  }
+  const { id, tombstoneBlocked } = await storage.writeSealedMemory(draftEnvelope, {
+    ...(draft.observedAt ? { observedAt: draft.observedAt } : {}),
+    ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
+  });
   if (tombstoneBlocked) {
     // #1645 (review thread): the replacement content matched a tombstone, so it
     // landed pending_review (non-active). Returning the id would let the
@@ -516,13 +536,27 @@ async function rescopeMemoryFn(
   const destContent = fm.structuredAttributes
     ? stripAttributesSuffix(memory.content)
     : memory.content;
-  const { id: destId, tombstoneBlocked: destBlocked } = await destStorage.writeMemory(fm.category, destContent, {
-    source: `correction:rescope:${namespace}`,
-    ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
-    ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
-    ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
-    ...(fm.structuredAttributes ? { structuredAttributes: fm.structuredAttributes } : {}),
-    ...(fm.valid_at ? { validAt: fm.valid_at } : {}),
+  // Sealed-envelope write (issue #1989 PR4): a rescope REPLAYS stored
+  // frontmatter — legacy rows may predate current field limits, and a
+  // rescope must never be impossible for data already in the store, so
+  // compose in salvage mode (drops warn-logged).
+  const rescopeEnvelope = composeMemoryEnvelope(
+    {
+      content: destContent,
+      category: fm.category,
+      ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
+      ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
+      ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
+      ...(fm.structuredAttributes ? { structuredAttributes: fm.structuredAttributes } : {}),
+      ...(fm.valid_at ? { validAt: fm.valid_at } : {}),
+    },
+    { source: `correction:rescope:${namespace}` },
+    { salvage: true },
+  );
+  if (rescopeEnvelope.salvageNotes.length > 0) {
+    log.warn(`rescope write salvaged invalid fields: ${rescopeEnvelope.salvageNotes.join("; ")}`);
+  }
+  const { id: destId, tombstoneBlocked: destBlocked } = await destStorage.writeSealedMemory(rescopeEnvelope, {
     ...(fm.observedAt ? { observedAt: fm.observedAt } : {}),
     ...(fm.memoryKind ? { memoryKind: fm.memoryKind } : {}),
     ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
@@ -669,11 +703,20 @@ async function appendAuditRecordFn(
   // Corrections are themselves memories, searchable and namespaced (issue
   // #1580 design §4). Write a correction-category memory capturing the
   // plan + outcome as the audit trail.
-  const { id: id } = await storage.writeMemory("correction", buildAuditBody(record), {
-    source: "correction-contract",
-    confidence: 1.0,
-    tags: ["correction-audit", `plan:${record.planId}`, `classification:${record.classification}`],
-  });
+  // Sealed-envelope write (issue #1989 PR4): system-built audit body —
+  // strict compose; an invalid audit record is a code bug.
+  const { id: id } = await storage.writeSealedMemory(
+    composeMemoryEnvelope(
+      {
+        content: buildAuditBody(record),
+        category: "correction",
+        confidence: 1.0,
+        tags: ["correction-audit", `plan:${record.planId}`, `classification:${record.classification}`],
+      },
+      { source: "correction-contract" },
+    ),
+    {},
+  );
   return id;
 }
 
