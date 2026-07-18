@@ -87,9 +87,15 @@ function readChangedFileScope() {
   // Accept newline- OR NUL-separated entries: CI writes the scope with
   // `git diff -z -c core.quotePath=off` so unusual filenames (spaces,
   // non-ASCII) arrive verbatim instead of C-quoted (round-3 finding).
-  for (const line of readFileSync(CHANGED_FILES_PATH, "utf8").split(/[\n\0]/)) {
-    const trimmed = line.trim();
-    if (trimmed.length > 0) scope.add(trimmed.replaceAll("\\", "/"));
+  // Entries are preserved byte-for-byte except: empty entries dropped and a
+  // single trailing \r stripped (CRLF tolerance). Filenames may legally
+  // begin or end with spaces on Linux — trim() would corrupt them and
+  // silently un-scope real files (round-4 finding). Both this reader and
+  // the scanner decode names as UTF-8 with identical replacement-char
+  // degradation, so matching stays consistent even for non-UTF-8 names.
+  for (const rawEntry of readFileSync(CHANGED_FILES_PATH, "utf8").split(/[\n\0]/)) {
+    const entry = rawEntry.endsWith("\r") ? rawEntry.slice(0, -1) : rawEntry;
+    if (entry.length > 0) scope.add(entry.replaceAll("\\", "/"));
   }
   return scope;
 }
