@@ -33,6 +33,7 @@ import {
   RelayScoutOutputSchema,
   promptFilenameForRole,
   relayBuilderSessionKey,
+  relayModelOutputSha256,
   schemaFilenameForRole,
   schemaForRole,
 } from "./contracts.js";
@@ -54,6 +55,7 @@ export const RELAY_DISABLED_CODEX_FEATURES = [
   "plugin_sharing",
   "plugins",
   "remote_plugin",
+  "unified_exec",
 ] as const;
 
 export interface RunRelayCodexOneShotOptions {
@@ -119,7 +121,7 @@ export function buildRelayCodexConfigArgs(mcpUrl: string): string[] {
     'web_search="disabled"',
     'shell_environment_policy.inherit="none"',
     "shell_environment_policy.ignore_default_excludes=false",
-    'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/codex-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
+    'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/tmp/relay-model-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
     `mcp_servers.relay.url=${tomlString(mcpUrl)}`,
     'mcp_servers.relay.bearer_token_env_var="REMNIC_RELAY_MCP_TOKEN"',
     'mcp_servers.relay.enabled_tools=["remnic.recall"]',
@@ -585,7 +587,7 @@ export async function runRelayCodexOneShot(
     reasoningEffort: RELAY_REASONING_EFFORT,
     threadId,
     promptSha256: sha256(prompt),
-    outputSha256: sha256(finalRaw),
+    outputSha256: relayModelOutputSha256(options.role, modelOutput),
     exitCode,
     durationMs: capture.durationMs,
     usage,

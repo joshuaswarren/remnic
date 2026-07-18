@@ -13,6 +13,7 @@ import {
 } from "@remnic/core";
 
 import {
+  RELAY_BUILDER_CHANGED_FILE,
   RELAY_COLD_PROBE_SESSION_KEY,
   RELAY_CONFLICT_ID,
   RELAY_CORRECTION_ID,
@@ -53,13 +54,13 @@ import {
   RELAY_CANONICAL_CHECKOUT_DECISION,
   assertRelayCheckoutDecision,
   assertRelaySourceLocators,
+  assertRelayStaleCheckoutDecision,
   normalizeRelaySourceLocator,
 } from "./source-grounding.js";
 
 const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 20_000;
 const STALE_DECISION = "Mint a new checkout token for every request and every retry.";
-const BUILDER_CHANGED_FILE = "src/token-policy.mjs";
 const PUBLIC_CONTRACT_TEST_NAMES = ["the first checkout request obtains a token"] as const;
 const HIDDEN_CONTRACT_TEST_NAMES = [
   "ordinary retries reuse the checkout-session token",
@@ -341,13 +342,17 @@ async function validateBuilderWorkspace(
     digestFixtureTree(workspace),
   ]);
   const changed = changedPaths(before, after);
-  if (JSON.stringify(changed) !== JSON.stringify([BUILDER_CHANGED_FILE])) {
-    throw new Error(`Relay ${runId} Builder changed files outside ${BUILDER_CHANGED_FILE}: ${changed.join(", ")}`);
+  if (JSON.stringify(changed) !== JSON.stringify([RELAY_BUILDER_CHANGED_FILE])) {
+    throw new Error(
+      `Relay ${runId} Builder changed files outside ${RELAY_BUILDER_CHANGED_FILE}: ${changed.join(", ")}`
+    );
   }
   const reported = [...new Set(output.files_changed.map(normalizeRelaySourceLocator))].sort();
-  if (JSON.stringify(reported) !== JSON.stringify([BUILDER_CHANGED_FILE])) {
+  if (JSON.stringify(reported) !== JSON.stringify([RELAY_BUILDER_CHANGED_FILE])) {
     throw new Error(`Relay ${runId} Builder reported an unexpected mutation set`);
   }
+  if (runId === "stale") assertRelayStaleCheckoutDecision(output.decision_applied, "stale Builder");
+  else assertRelayCheckoutDecision(output.decision_applied, "cold Builder");
   if (!output.tests_run.some((item) => /npm\s+test/i.test(item))) {
     throw new Error(`Relay ${runId} Builder did not report running npm test`);
   }

@@ -62,6 +62,15 @@ if [[ ! -f "${RELAY_NETWORK_PROXY_SCRIPT}" || -L "${RELAY_NETWORK_PROXY_SCRIPT}"
   echo "relay isolation: network proxy must be a regular non-symlink file" >&2
   exit 70
 fi
+model_shell_guard="${RELAY_NETWORK_PROXY_SCRIPT%/*}/model-shell-guard.sh"
+if [[ ! -f "${model_shell_guard}" || -L "${model_shell_guard}" || ! -x "${model_shell_guard}" ]]; then
+  echo "relay isolation: model shell guard must be an executable regular sibling file" >&2
+  exit 70
+fi
+if [[ ! -f /usr/bin/bash || -L /usr/bin/bash ]]; then
+  echo "relay isolation: trusted command interpreter must be regular /usr/bin/bash" >&2
+  exit 70
+fi
 if [[ "${RELAY_NETWORK_GATEWAY_SOCKET}" != "${RELAY_OUTPUT_DIR}/network-gateway.sock" || ! -S "${RELAY_NETWORK_GATEWAY_SOCKET}" || -L "${RELAY_NETWORK_GATEWAY_SOCKET}" ]]; then
   echo "relay isolation: network gateway must be the run-scoped output socket" >&2
   exit 70
@@ -124,6 +133,20 @@ mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/codex"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount --bind "${RELAY_NETWORK_PROXY_SCRIPT}" "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
+install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
+mount --bind /usr/bin/bash "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
+mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
+install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-shell-guard"
+mount --bind "${model_shell_guard}" "${RELAY_ROOTFS}/opt/codex/relay-shell-guard"
+mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-shell-guard"
+
+for shell_name in bash dash zsh pwsh powershell; do
+  shell_target="${RELAY_ROOTFS}/usr/bin/${shell_name}"
+  if [[ -f "${shell_target}" && ! -L "${shell_target}" ]]; then
+    mount --bind "${model_shell_guard}" "${shell_target}"
+    mount -o remount,bind,ro,nosuid,nodev "${shell_target}"
+  fi
+done
 
 mount --bind "${RELAY_WORKSPACE}" "${RELAY_ROOTFS}/workspace"
 if [[ "${RELAY_WORKSPACE_READ_ONLY}" == "1" ]]; then

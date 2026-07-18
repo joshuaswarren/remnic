@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-18T02:59:29.211Z",
+  "generatedAt": "2026-07-18T04:40:05.598Z",
   "missionId": "checkout-token-recovery",
   "namespace": "relay-build-week",
   "runMode": "live",
@@ -11,7 +11,7 @@
   "quarantinedLedgerSha256": "2c5436ca2724170434782ae5755c731f4f22fca80953312a382b0f5b8318f929",
   "effectiveBudgetUnits": 2173,
   "fixtureManifestSha256": "19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec",
-  "missionReceiptSha256": "2d49f0a13babc12ca1dececfd54208c6f83d73c434c4b2554f9f7491b0e8f77c",
+  "missionReceiptSha256": "ef04b66dadcb31af5312cce5a820662ae7169e6cece33e16e39a7abba3433013",
   "callOrder": [
     "scout",
     "stale-builder",
@@ -19,16 +19,16 @@
     "cold-builder"
   ],
   "threadIds": [
-    "019f7328-9240-7e50-875a-c45086e3620d",
-    "019f7328-bdfc-71a3-8dc9-31f860269744",
-    "019f7329-2420-7e41-9469-955926b4c0cf",
-    "019f7329-4dcf-7db3-90ad-52991d121c49"
+    "019f7384-f5aa-73d1-89c7-61cceaed4dfc",
+    "019f7385-1810-72e0-a249-2ecb26e9e2b2",
+    "019f7385-8152-7dc0-a009-e1396cf9f14f",
+    "019f7385-ae54-7152-a1c4-2564d065c4be"
   ],
   "testTransition": [
     "failed",
     "passed"
   ],
-  "creditUnitsSpentByRun": 4.481825,
+  "creditUnitsSpentByRun": 5.8096,
   "evidence": {
     "syntheticFixturesOnly": true,
     "productionDataRead": false,

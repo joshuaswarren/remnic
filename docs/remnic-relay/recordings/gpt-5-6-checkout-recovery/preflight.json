@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-07-18T02:57:45.816Z",
+  "checkedAt": "2026-07-18T04:38:40.641Z",
   "status": "passed",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
@@ -13,8 +13,8 @@
   "reserveUnits": 473,
   "plannedSpendCeilingUnits": 1700,
   "worstCasePlannedSpendUnits": 1200,
-  "ledgerSpentUnits": 36.568425,
-  "ledgerRemainingPlannedUnits": 1663.431575,
+  "ledgerSpentUnits": 41.05025,
+  "ledgerRemainingPlannedUnits": 1658.94975,
   "codexVersion": "codex-cli 0.144.4",
   "authMethod": "ChatGPT",
   "codexToolSurface": {

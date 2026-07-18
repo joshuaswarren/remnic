@@ -4,6 +4,7 @@ export const RELAY_CANONICAL_CHECKOUT_DECISION =
   "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.";
 
 export const RELAY_CHECKOUT_DECISION_CONTRACT_KEY = "checkout-session-reuse-one-post-expiry-replacement";
+export const RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY = "checkout-token-per-request-and-retry-rotation";
 
 export const RELAY_AUTHORITATIVE_SOURCE_LOCATORS = [
   "CONTRACT.md",
@@ -48,6 +49,23 @@ export function assertRelayCheckoutDecision(value: string, context: string): str
   const contractKey = relayCheckoutDecisionContractKey(value);
   if (!contractKey) {
     throw new Error(`Relay ${context} decision does not match checkout-session reuse and one post-expiry replacement`);
+  }
+  return contractKey;
+}
+
+export function relayStaleCheckoutDecisionContractKey(value: string): string | null {
+  const normalized = value.toLowerCase();
+  const rotatesEveryRequest =
+    /(?:mint|create|issue|rotate).{0,80}(?:new )?(?:checkout )?token/.test(normalized) &&
+    /every (?:checkout )?request/.test(normalized) &&
+    /every (?:ordinary )?retr(?:y|ies)/.test(normalized);
+  return rotatesEveryRequest ? RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY : null;
+}
+
+export function assertRelayStaleCheckoutDecision(value: string, context: string): string {
+  const contractKey = relayStaleCheckoutDecisionContractKey(value);
+  if (!contractKey) {
+    throw new Error(`Relay ${context} decision does not match per-request and per-retry token rotation`);
   }
   return contractKey;
 }

@@ -3,16 +3,16 @@
     "role": "cold-builder",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f7329-4dcf-7db3-90ad-52991d121c49",
+    "threadId": "019f7385-ae54-7152-a1c4-2564d065c4be",
     "promptSha256": "dbedabf8c10f712d107e09d78758e754dec9388983aac04087dbbf1d978bd153",
-    "outputSha256": "d6631c23601e7f325358d6ee404895ba808c60611882d416308946a50340307e",
+    "outputSha256": "9841476313410819c39b2e15aeef72380eb3f83fb8b0d91a4de085c35b4ad6c6",
     "exitCode": 0,
-    "durationMs": 54973,
+    "durationMs": 37143,
     "usage": {
-      "inputTokens": 78051,
-      "cachedInputTokens": 70912,
-      "outputTokens": 919,
-      "reasoningOutputTokens": 204
+      "inputTokens": 92113,
+      "cachedInputTokens": 72448,
+      "outputTokens": 1539,
+      "reasoningOutputTokens": 576
     },
     "recallToolCalls": 1,
     "recallReceipt": {
@@ -31,21 +31,21 @@
       "count": 1,
       "plannerMode": "full",
       "memoryIds": [
-        "decision-1784343514000-15qt"
+        "decision-1784349567966-pt7p"
       ]
     },
     "status": "completed"
   },
   "output": {
-    "summary": "Implemented checkout token selection and verified the test suite passes.",
-    "decision_applied": "Reuse the existing checkout-session token on ordinary retries; mint a token only when none exists or when the current token is explicitly expired, then reuse that replacement token.",
+    "summary": "Implemented the checkout token lifecycle policy.",
+    "decision_applied": "Reuse the existing checkout-session token on ordinary retries; mint exactly one replacement only after explicit expiry, then reuse that replacement on subsequent retries.",
     "files_changed": [
       "src/token-policy.mjs"
     ],
     "tests_run": [
-      "npm test"
+      "npm test (blocked by environment: unshare failed: Operation not permitted)"
     ],
-    "recall_memory_id": "decision-1784343514000-15qt",
+    "recall_memory_id": "decision-1784349567966-pt7p",
     "recall_provenance": "Relay captured completed Codex MCP recall for query checkout token retry policy decision in namespace relay-build-week"
   }
 }

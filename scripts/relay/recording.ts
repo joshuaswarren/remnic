@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
+import { type CodexCreditReceipt, type CodexCreditReceiptScope, calculateCodexBudgetUnits } from "@remnic/bench";
 import {
   type RelayEvidenceRef,
   type RelayMissionEvent,
@@ -14,6 +14,7 @@ import { z } from "zod";
 
 import {
   RELAY_ACCOUNT_CREDIT_CAP_UNITS,
+  RELAY_BUILDER_CHANGED_FILE,
   RELAY_CONFLICT_ID,
   RELAY_CORRECTION_ID,
   RELAY_CREDIT_BUDGET_UNITS,
@@ -39,11 +40,17 @@ import {
   RelayScoutOutputSchema,
   RelayTestResultSchema,
   relayBuilderSessionKey,
+  relayModelOutputSha256,
 } from "./contracts.js";
 import { type RelayFixtureManifest, verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import { assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "./mission-runner.js";
-import { assertRelayCheckoutDecision, assertRelaySourceLocators } from "./source-grounding.js";
+import {
+  assertRelayCheckoutDecision,
+  assertRelaySourceLocators,
+  assertRelayStaleCheckoutDecision,
+  normalizeRelaySourceLocator,
+} from "./source-grounding.js";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const finiteNonnegative = z.number().finite().nonnegative();
@@ -384,6 +391,47 @@ function requiredCall(calls: SanitizedRelayCall[], role: RelayRole): SanitizedRe
   return call;
 }
 
+function sameBudgetUnits(left: number, right: number): boolean {
+  return Math.round(left * 1_000_000_000) === Math.round(right * 1_000_000_000);
+}
+
+function assertCreditReceiptMatchesCalls(receipt: RelaySanitizedCreditReceipt, calls: SanitizedRelayCall[]): void {
+  const expectedUsage = calls.reduce(
+    (total, call) => ({
+      inputTokens: total.inputTokens + call.summary.usage.inputTokens,
+      cachedInputTokens: total.cachedInputTokens + call.summary.usage.cachedInputTokens,
+      outputTokens: total.outputTokens + call.summary.usage.outputTokens,
+      reasoningOutputTokens: total.reasoningOutputTokens + call.summary.usage.reasoningOutputTokens,
+    }),
+    { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }
+  );
+  const expectedBudgetUnits = calls.reduce(
+    (total, call) => total + calculateCodexBudgetUnits(call.summary.model, call.summary.usage),
+    0
+  );
+  const model = receipt.run.models[0];
+  const usageMatches = (scope: CodexCreditReceiptScope | NonNullable<typeof model>): boolean =>
+    scope.inputTokens === expectedUsage.inputTokens &&
+    scope.cachedInputTokens === expectedUsage.cachedInputTokens &&
+    scope.outputTokens === expectedUsage.outputTokens &&
+    scope.reasoningOutputTokens === expectedUsage.reasoningOutputTokens;
+  if (
+    receipt.run.calls !== calls.length ||
+    receipt.run.accountBalanceResolutionCount !== 0 ||
+    receipt.run.conservativeResolutionChargeUnits !== 0 ||
+    receipt.run.models.length !== 1 ||
+    !model ||
+    model.model !== RELAY_MODEL ||
+    model.calls !== calls.length ||
+    !usageMatches(receipt.run) ||
+    !usageMatches(model) ||
+    !sameBudgetUnits(receipt.run.budgetUnits, expectedBudgetUnits) ||
+    !sameBudgetUnits(model.budgetUnits, expectedBudgetUnits)
+  ) {
+    throw new Error("Relay recording credit receipt totals do not match the four individual call summaries");
+  }
+}
+
 function assertRecordingLocators(events: RelayMissionEvent[]): void {
   const allowed = new Set(expectedFiles());
   for (const event of events) {
@@ -486,6 +534,22 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
     coldOutput.recall_memory_id !== replacementMemory.memoryId
   ) {
     throw new Error("Relay recording Builder calls are not bound to their corresponding memory artifacts");
+  }
+  assertRelayStaleCheckoutDecision(staleOutput.decision_applied, "stale Builder output");
+  assertRelayCheckoutDecision(coldOutput.decision_applied, "cold Builder output");
+  for (const [role, output] of [
+    ["stale-builder", staleOutput],
+    ["cold-builder", coldOutput],
+  ] as const) {
+    const changed = [...new Set(output.files_changed.map(normalizeRelaySourceLocator))].sort();
+    if (JSON.stringify(changed) !== JSON.stringify([RELAY_BUILDER_CHANGED_FILE])) {
+      throw new Error(`Relay recording ${role} output does not name the sealed checkout-policy mutation`);
+    }
+  }
+  for (const call of calls) {
+    if (call.summary.outputSha256 !== relayModelOutputSha256(call.summary.role, call.output)) {
+      throw new Error(`Relay recording ${call.summary.role} output digest does not match its retained output`);
+    }
   }
 
   const staleBeliefs = payloadsOfKind(events, "belief_observed").filter(
@@ -721,6 +785,7 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
       throw new Error("Relay mission fixture evidence does not match the committed synthetic fixture manifest");
     }
     const creditReceipt = sanitizeCreditReceipt(options.creditReceipt, options.runId);
+    assertCreditReceiptMatchesCalls(creditReceipt, options.missionRun.calls);
     const metadata = RelayRecordingMetadataSchema.parse({
       schemaVersion: 1,
       generatedAt: options.generatedAt,
@@ -882,6 +947,7 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   const committedFixtureManifest = await verifyRelayFixtureManifest(
     path.join(path.resolve(repoRoot), "fixtures", "remnic-relay")
   );
+  assertCreditReceiptMatchesCalls(creditReceipt, calls);
 
   if (JSON.stringify(calls.map((call) => call.summary.role)) !== JSON.stringify(metadata.callOrder)) {
     throw new Error("Relay recording call artifacts do not match the declared call order");

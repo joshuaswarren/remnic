@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
+import { type CodexCreditReceipt, type CodexCreditReceiptScope, calculateCodexBudgetUnits } from "@remnic/bench";
 import {
   RELAY_DEMO_MISSION_ID,
   RELAY_DEMO_NAMESPACE,
@@ -31,6 +31,7 @@ import {
   type RelayPreflightReceipt,
   type RelayRole,
   relayBuilderSessionKey,
+  relayModelOutputSha256,
 } from "../scripts/relay/contracts.js";
 import { verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
 import { digestFixtureTree } from "../scripts/relay/isolation.js";
@@ -40,14 +41,14 @@ import { verifyRelayRecording, writeRelayRecording } from "../scripts/relay/reco
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtureRoot = path.join(repoRoot, "fixtures", "remnic-relay");
 
-function callSummary(role: RelayRole): RelayCodexCallSummary {
+function callSummary(role: RelayRole, output: unknown): RelayCodexCallSummary {
   return {
     role,
     model: RELAY_MODEL,
     reasoningEffort: "medium",
     threadId: randomUUID(),
     promptSha256: "a".repeat(64),
-    outputSha256: "b".repeat(64),
+    outputSha256: relayModelOutputSha256(role, output),
     exitCode: 0,
     durationMs: 100,
     usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5 },
@@ -87,53 +88,66 @@ function callSummary(role: RelayRole): RelayCodexCallSummary {
 }
 
 function fixtureCalls(): RelayMissionRunResult["calls"] {
+  const scoutOutput = {
+    decision: "Reuse the session token and mint exactly one replacement after expiry.",
+    rationale: "The sources agree.",
+    source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
+    confidence: 0.99,
+  };
   const scout: SanitizedRelayCall = {
-    summary: callSummary("scout"),
-    output: {
-      decision: "Reuse the session token and mint exactly one replacement after expiry.",
-      rationale: "The sources agree.",
-      source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
-      confidence: 0.99,
-    },
+    summary: callSummary("scout", scoutOutput),
+    output: scoutOutput,
+  };
+  const staleOutput = {
+    summary: "Implemented stale rotation.",
+    recall_memory_id: "memory-stale-token-policy",
+    recall_provenance: "Remnic recall",
+    decision_applied: "Mint a new checkout token for every request and every retry.",
+    files_changed: ["src/token-policy.mjs"],
+    tests_run: ["npm test"],
   };
   const stale: SanitizedRelayCall = {
-    summary: callSummary("stale-builder"),
-    output: {
-      summary: "Implemented stale rotation.",
-      recall_memory_id: "memory-stale-token-policy",
-      recall_provenance: "Remnic recall",
-      decision_applied: "Mint every retry.",
-      files_changed: ["src/token-policy.mjs"],
-      tests_run: ["npm test"],
-    },
+    summary: callSummary("stale-builder", staleOutput),
+    output: staleOutput,
+  };
+  const resolverOutput = {
+    replacement_decision: "Reuse the session token and mint exactly one replacement after expiry.",
+    rationale: "The accepted contract and executable test agree.",
+    source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
+    confidence: 0.99,
   };
   const resolver: SanitizedRelayCall = {
-    summary: callSummary("resolver"),
-    output: {
-      replacement_decision: "Reuse the session token and mint exactly one replacement after expiry.",
-      rationale: "The accepted contract and executable test agree.",
-      source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
-      confidence: 0.99,
-    },
+    summary: callSummary("resolver", resolverOutput),
+    output: resolverOutput,
+  };
+  const coldOutput = {
+    summary: "Implemented corrected reuse.",
+    recall_memory_id: "memory-replacement-token-policy",
+    recall_provenance: "Remnic recall",
+    decision_applied:
+      "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
+    files_changed: ["src/token-policy.mjs"],
+    tests_run: ["npm test"],
   };
   const cold: SanitizedRelayCall = {
-    summary: callSummary("cold-builder"),
-    output: {
-      summary: "Implemented corrected reuse.",
-      recall_memory_id: "memory-replacement-token-policy",
-      recall_provenance: "Remnic recall",
-      decision_applied: "Reuse until expiry and mint exactly one replacement.",
-      files_changed: ["src/token-policy.mjs"],
-      tests_run: ["npm test"],
-    },
+    summary: callSummary("cold-builder", coldOutput),
+    output: coldOutput,
   };
   return [scout, stale, resolver, cold] as RelayMissionRunResult["calls"];
 }
 
 function creditScope(): CodexCreditReceiptScope {
+  const budgetUnits =
+    4 *
+    calculateCodexBudgetUnits(RELAY_MODEL, {
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 20,
+      reasoningOutputTokens: 5,
+    });
   return {
     calls: 4,
-    budgetUnits: 1,
+    budgetUnits,
     inputTokens: 400,
     cachedInputTokens: 0,
     outputTokens: 80,
@@ -144,7 +158,7 @@ function creditScope(): CodexCreditReceiptScope {
       {
         model: RELAY_MODEL,
         calls: 4,
-        budgetUnits: 1,
+        budgetUnits,
         inputTokens: 400,
         cachedInputTokens: 0,
         outputTokens: 80,
@@ -567,6 +581,73 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
         cold.summary.exitCode = 9;
       },
       /cold-builder call does not prove successful completion/
+    );
+    await assertResealedJsonTamperRejected<{
+      summary: { role: RelayRole; outputSha256: string };
+      output: { decision_applied: string };
+    }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.output.decision_applied = "Mint a new checkout token for every request and every retry.";
+        cold.summary.outputSha256 = relayModelOutputSha256(cold.summary.role, cold.output);
+      },
+      /cold Builder output decision/
+    );
+    await assertResealedJsonTamperRejected<{
+      summary: { role: RelayRole; outputSha256: string };
+      output: { decision_applied: string };
+    }>(
+      recordingDir,
+      "calls/stale-builder.json",
+      (stale) => {
+        stale.output.decision_applied =
+          "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.";
+        stale.summary.outputSha256 = relayModelOutputSha256(stale.summary.role, stale.output);
+      },
+      /stale Builder output decision/
+    );
+    await assertResealedJsonTamperRejected<{
+      summary: { role: RelayRole; outputSha256: string };
+      output: { files_changed: string[] };
+    }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.output.files_changed = ["src/unrelated.mjs"];
+        cold.summary.outputSha256 = relayModelOutputSha256(cold.summary.role, cold.output);
+      },
+      /does not name the sealed checkout-policy mutation/
+    );
+    await assertResealedJsonTamperRejected<{ output: { summary: string } }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.output.summary = "Unbound retained output.";
+      },
+      /output digest does not match its retained output/
+    );
+    await assertResealedJsonTamperRejected<{
+      run: {
+        budgetUnits: number;
+        models: Array<{ budgetUnits: number }>;
+      };
+    }>(
+      recordingDir,
+      "credit-receipt.json",
+      (receipt) => {
+        receipt.run.budgetUnits = 0;
+        receipt.run.models[0].budgetUnits = 0;
+      },
+      /credit receipt totals do not match the four individual call summaries/
+    );
+    await assertResealedJsonTamperRejected<{ run: { models: unknown[] } }>(
+      recordingDir,
+      "credit-receipt.json",
+      (receipt) => {
+        receipt.run.models = [];
+      },
+      /credit receipt totals do not match the four individual call summaries/
     );
     await assertResealedJsonSetTamperRejected(
       recordingDir,

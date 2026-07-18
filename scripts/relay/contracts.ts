@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 export const RELAY_MODEL = "gpt-5.6-terra" as const;
@@ -18,6 +20,7 @@ export const RELAY_REPLACEMENT_DECISION_ID = "decision-refresh-after-expiry" as 
 export const RELAY_CORRECTION_ID = "correction-token-refresh" as const;
 export const RELAY_CONFLICT_ID = "conflict-token-lifecycle" as const;
 export const RELAY_QUERY = "checkout token retry policy decision" as const;
+export const RELAY_BUILDER_CHANGED_FILE = "src/token-policy.mjs" as const;
 export const RELAY_RECALL_MODE = "full" as const;
 export const RELAY_RECALL_TOP_K = 5 as const;
 export const RELAY_RECALL_DISCLOSURE = "section" as const;
@@ -226,6 +229,22 @@ export function schemaForRole(role: RelayRole) {
   if (role === "scout") return RelayScoutOutputSchema;
   if (role === "resolver") return RelayResolverOutputSchema;
   return RelayBuilderModelOutputSchema;
+}
+
+export function relayModelOutputSha256(role: RelayRole, output: unknown): string {
+  const modelOutput =
+    role === "stale-builder" || role === "cold-builder"
+      ? (() => {
+          const value = output as Record<string, unknown>;
+          return RelayBuilderModelOutputSchema.parse({
+            summary: value.summary,
+            decision_applied: value.decision_applied,
+            files_changed: value.files_changed,
+            tests_run: value.tests_run,
+          });
+        })()
+      : schemaForRole(role).parse(output);
+  return createHash("sha256").update(JSON.stringify(modelOutput)).digest("hex");
 }
 
 export function schemaFilenameForRole(role: RelayRole): string {

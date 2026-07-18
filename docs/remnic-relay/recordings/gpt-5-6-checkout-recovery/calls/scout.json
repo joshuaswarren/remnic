@@ -3,24 +3,24 @@
     "role": "scout",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f7328-9240-7e50-875a-c45086e3620d",
+    "threadId": "019f7384-f5aa-73d1-89c7-61cceaed4dfc",
     "promptSha256": "8c7991e421a163598a7d3d7fe2e5c030979d235dcd8fc33dc028d1c8b0aeffaf",
-    "outputSha256": "a08a5c2b0304ff0a3b69b72400a91d48776ce96df4eda586c97a0c50900a5de5",
+    "outputSha256": "6209b3722e822c73a13c7ecb416cd825c5dd95d591c8d80cbd1735f5fb7f6942",
     "exitCode": 0,
-    "durationMs": 11120,
+    "durationMs": 8723,
     "usage": {
-      "inputTokens": 18603,
-      "cachedInputTokens": 15872,
-      "outputTokens": 309,
-      "reasoningOutputTokens": 36
+      "inputTokens": 17802,
+      "cachedInputTokens": 8448,
+      "outputTokens": 295,
+      "reasoningOutputTokens": 76
     },
     "recallToolCalls": 0,
     "recallReceipt": null,
     "status": "completed"
   },
   "output": {
-    "decision": "The checkout service must mint one token for a checkout session on its first request, reuse that token for ordinary retries while it is valid, and after explicit expiry mint exactly one replacement token that later retries reuse. Rotating tokens on every request is unsupported because it breaks idempotency.",
-    "rationale": "The authoritative contract explicitly defines this lifecycle; the reference policy returns the current token unless expiry is exactly true, and the contract tests verify one mint for an initial request plus retry and one mint for an expiry replacement plus retry.",
+    "decision": "One checkout token is owned per checkout session: mint on the first request, reuse it for ordinary retries while valid, and after explicit expiry mint exactly one replacement that later retries reuse. Do not rotate tokens on every request.",
+    "rationale": "The accepted authoritative contract states this lifecycle and explicitly rejects retry-based rotation; the reference implementation returns a current non-expired token and mints otherwise, with contract tests covering both cases.",
     "source_locators": [
       "CONTRACT.md",
       "src/reference-token-policy.mjs",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -171,7 +172,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
         recall_memory_id: activeMemoryId,
         recall_provenance: `Remnic recall in namespace ${RELAY_NAMESPACE}, memory ${activeMemoryId}`,
         decision_applied: corrected
-          ? "Mint when no token exists; reuse a current token for ordinary retries; mint a replacement only when expiry is explicitly indicated."
+          ? "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry."
           : "Mint a new checkout token for every request and every retry.",
         files_changed: ["src/token-policy.mjs"],
         tests_run: ["npm test"],
@@ -226,7 +227,14 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
     "plugin_sharing",
     "plugins",
     "remote_plugin",
+    "unified_exec",
   ]);
+  assert.ok(args.includes("unified_exec"));
+  assert.ok(
+    args.some((arg) =>
+      arg.includes('shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/tmp/relay-model-home"')
+    )
+  );
   for (const feature of RELAY_DISABLED_CODEX_FEATURES) {
     const featureIndex = args.indexOf(feature);
     assert.ok(featureIndex > 0, `missing disabled Codex feature ${feature}`);
@@ -256,6 +264,101 @@ test("Relay gives every Codex call a network namespace with allow-listed egress 
   assert.equal(isRelayNetworkTargetAllowed("8.8.8.8", 443, 54_321), false);
   assert.equal(isRelayNetworkTargetAllowed("api.openai.com", 80, 54_321), false);
 });
+
+test(
+  "model shell cannot read Codex auth, trusted output, parent mounts, or trusted environment",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "relay-credential-boundary-"));
+    const directories = await prepareRelayRunDirectories(repoRoot, path.join(parent, "run"));
+    const workspace = path.join(directories.workspacesDir, "workspace");
+    const codexHome = path.join(directories.codexHomesDir, "fake-codex");
+    const outputDir = path.join(directories.outputsDir, "credential-boundary");
+    await Promise.all([mkdir(workspace), mkdir(codexHome), mkdir(outputDir)]);
+    const secret = "relay-test-auth-secret-never-print";
+    await writeFile(path.join(codexHome, "auth.json"), `${JSON.stringify({ token: secret })}\n`, { mode: 0o600 });
+    await writeFile(path.join(outputDir, "schema.json"), "trusted-output\n", { mode: 0o600 });
+    const adversarialCommand = `set -eu
+test ! -r /codex-home/auth.json
+test ! -r /proc/1/root/codex-home/auth.json
+test ! -r /output/schema.json
+test -z "\${REMNIC_RELAY_MCP_TOKEN:-}"
+test -z "\${CODEX_HOME:-}"
+grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
+grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status
+`;
+    const fakeCodex = path.join(parent, "fake-codex.mjs");
+    await writeFile(
+      fakeCodex,
+      `#!/usr/bin/node
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const expected = ${JSON.stringify(secret)};
+const command = ${JSON.stringify(adversarialCommand)};
+const before = readFileSync("/codex-home/auth.json", "utf8");
+if (!before.includes(expected)) process.exit(80);
+const safeEnv = { PATH: "/usr/bin:/bin", HOME: "/tmp/relay-model-home", TMPDIR: "/tmp", LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
+for (const shell of ["/bin/bash", "/bin/sh"]) {
+  const result = spawnSync(shell, ["-c", command], { env: safeEnv, encoding: "utf8" });
+  if (result.status !== 0) {
+    process.stderr.write("relay boundary shell failed: " + shell + ":" + result.status + ":" + result.stderr);
+    process.exit(81);
+  }
+}
+const after = readFileSync("/codex-home/auth.json", "utf8");
+if (after !== before || readFileSync("/output/schema.json", "utf8") !== "trusted-output\\n") process.exit(82);
+process.stdout.write("RELAY_MODEL_SHELL_CREDENTIAL_BOUNDARY_OK\\n");
+`,
+      { mode: 0o755 }
+    );
+    const gateway = await startRelayNetworkGateway({ outputDir, mcpUrl: "http://127.0.0.1:1/mcp" });
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn(
+          "/usr/bin/unshare",
+          [...RELAY_UNSHARE_NAMESPACE_ARGS, path.join(repoRoot, "scripts", "relay", "isolate-codex.sh")],
+          {
+            cwd: repoRoot,
+            env: {
+              PATH: "/usr/sbin:/usr/bin:/sbin:/bin",
+              LANG: "C.UTF-8",
+              LC_ALL: "C.UTF-8",
+              RELAY_ROOTFS: directories.rootfsDir,
+              RELAY_WORKSPACE: workspace,
+              RELAY_CODEX_HOME: codexHome,
+              RELAY_OUTPUT_DIR: outputDir,
+              RELAY_CODEX_BIN: fakeCodex,
+              RELAY_WORKSPACE_READ_ONLY: "0",
+              RELAY_NETWORK_PROXY_SCRIPT: path.join(repoRoot, "scripts", "relay", "network-proxy.mjs"),
+              RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
+              RELAY_NETWORK_PROXY_PORT: String(RELAY_NETWORK_PROXY_PORT),
+              RELAY_NETWORK_MCP_TARGET_PORT: String(gateway.mcpTargetPort),
+              REMNIC_RELAY_MCP_TOKEN: "trusted-parent-only-mcp-token",
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          }
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.once("error", reject);
+        child.once("close", (code) => resolve({ code, stdout, stderr }));
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /RELAY_MODEL_SHELL_CREDENTIAL_BOUNDARY_OK/);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(secret));
+    } finally {
+      await gateway.stop();
+      await cleanupRelayRun(directories);
+      await rm(parent, { recursive: true, force: true });
+    }
+  }
+);
 
 test("Relay network gateway tunnels only the exact run-scoped MCP target", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-network-gateway-"));
