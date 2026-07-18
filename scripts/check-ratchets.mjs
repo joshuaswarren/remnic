@@ -84,18 +84,22 @@ function readChangedFileScope() {
     );
   }
   const scope = new Set();
-  // Accept newline- OR NUL-separated entries: CI writes the scope with
-  // `git diff -z -c core.quotePath=off` so unusual filenames (spaces,
-  // non-ASCII) arrive verbatim instead of C-quoted (round-3 finding).
-  // Entries are preserved byte-for-byte except: empty entries dropped and a
-  // single trailing \r stripped (CRLF tolerance). Filenames may legally
-  // begin or end with spaces on Linux — trim() would corrupt them and
-  // silently un-scope real files (round-4 finding). Both this reader and
-  // the scanner decode names as UTF-8 with identical replacement-char
-  // degradation, so matching stays consistent even for non-UTF-8 names.
-  for (const rawEntry of readFileSync(CHANGED_FILES_PATH, "utf8").split(/[\n\0]/)) {
-    const entry = rawEntry.endsWith("\r") ? rawEntry.slice(0, -1) : rawEntry;
-    if (entry.length > 0) scope.add(entry.replaceAll("\\", "/"));
+  // CI writes the scope with `git diff -z -c core.quotePath=off`, so entries
+  // are NUL-separated and filenames arrive verbatim (round-3 finding). When
+  // ANY NUL is present it is the ONLY separator — filenames may contain
+  // literal newlines and must not be split on them (round-5 finding). A
+  // NUL-free file (hand-written/local) splits on newlines, with a single
+  // trailing \r stripped per entry (CRLF tolerance). Entries are otherwise
+  // preserved byte-for-byte: no trim() (space-edged filenames are legal —
+  // round-4 finding) and no backslash rewriting (git emits forward-slash
+  // separators on every platform; a literal backslash is CONTENT on Linux —
+  // round-5 finding).
+  const raw = readFileSync(CHANGED_FILES_PATH, "utf8");
+  const entries = raw.includes("\0")
+    ? raw.split("\0")
+    : raw.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  for (const entry of entries) {
+    if (entry.length > 0) scope.add(entry);
   }
   return scope;
 }

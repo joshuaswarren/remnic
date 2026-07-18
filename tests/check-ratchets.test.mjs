@@ -560,3 +560,29 @@ test("file-size ratchet: scope entries with leading/trailing spaces are preserve
     assert.match(run.stderr, /grew from its grandfathered ceiling/);
   });
 });
+
+test("file-size ratchet: NUL-present scope files never split on newlines; backslashes are content (round 5)", () => {
+  withFixture((fixture) => {
+    const wildName = "back\\slash big.ts";
+    writeFileSync(path.join(fixture.src, wildName), "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(path.join(fixture.src, wildName), "pad\n".repeat(5));
+
+    const scopePath = path.join(fixture.root, "changed.bin");
+    // NUL-separated entry whose name contains a literal backslash: must
+    // match without any backslash rewriting, and the trailing empty entry
+    // after the final NUL is dropped.
+    writeFileSync(scopePath, `packages/remnic-core/src/${wildName}\u0000`);
+    const run = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /grew from its grandfathered ceiling/);
+  });
+});
