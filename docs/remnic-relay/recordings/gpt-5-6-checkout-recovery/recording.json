@@ -12,21 +12,17 @@
   "effectiveBudgetUnits": 2173,
   "fixtureManifestSha256": "19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec",
   "missionReceiptSha256": "ef04b66dadcb31af5312cce5a820662ae7169e6cece33e16e39a7abba3433013",
-  "callOrder": [
-    "scout",
-    "stale-builder",
-    "resolver",
-    "cold-builder"
-  ],
+  "callOrder": ["scout", "stale-builder", "resolver", "cold-builder"],
   "threadIds": [
     "019f7384-f5aa-73d1-89c7-61cceaed4dfc",
     "019f7385-1810-72e0-a249-2ecb26e9e2b2",
     "019f7385-8152-7dc0-a009-e1396cf9f14f",
     "019f7385-ae54-7152-a1c4-2564d065c4be"
   ],
-  "testTransition": [
-    "failed",
-    "passed"
+  "testTransition": ["failed", "passed"],
+  "testOutputSha256": [
+    "50a4180e06746bb790535ae07b72e16b211e6ba986947d175863064913d6ca1a",
+    "37d2becb5a1c3c127b20df40566c52fc42c68dd3a036819da6b40c48a0af2164"
   ],
   "creditUnitsSpentByRun": 5.8096,
   "evidence": {
