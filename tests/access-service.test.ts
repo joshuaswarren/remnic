@@ -4705,7 +4705,7 @@ test("a keyed recall whose idempotency.put FAILS rejects, persists nothing, and 
     query: "hello",
     sessionKey: "agent:project-x:chat",
     namespace: "shared",
-    idempotencyKey: "r12-putfail-key",
+    idempotencyKey: "r12-putfail-key", // gitleaks:allow — test-only idempotency key, not a secret
   };
 
   try {

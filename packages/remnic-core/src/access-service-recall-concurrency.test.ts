@@ -1837,3 +1837,100 @@ test("a keyed follower aborting during the leader's put releases ONLY its own re
   await leader;
   assert.equal(h.liveBudget(), 1, "the leader's reservation remains after it persisted");
 });
+
+test("a queued keyed flight cancels once its leader AND its existing-join follower both abort (round 15 #2)", async () => {
+  // A keyed leader queued behind the concurrency cap runs race=false; a keyed
+  // existing-join follower is also non-racing. The follower's abort must still
+  // be COUNTED in the flight's live refcount while the flight is only queued:
+  // otherwise, when both callers disconnect before a slot frees, the leader's
+  // abort drops live 2 -> 1 but the follower's is never counted, so the flight
+  // executes + reserves + persists with no caller connected.
+  const holderGate = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 1,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") await holderGate.promise;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => options.execute();
+
+  // Occupy the single slot with unrelated work.
+  const holder = h.service.recall({ query: "holder" });
+  await flushMacrotasks();
+
+  // Leader (key-A) registers the keyed flight and queues behind the cap.
+  const leaderCtl = new AbortController();
+  const leader = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-A",
+    abortSignal: leaderCtl.signal,
+  });
+  await flushMacrotasks();
+  // A second keyed caller (same work, distinct key) joins via the existing-join
+  // and parks on the queued flight.
+  const followerCtl = new AbortController();
+  const follower = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-B",
+    abortSignal: followerCtl.signal,
+  });
+  await flushMacrotasks();
+  assert.equal(h.recallInFlight.size, 2, "holder + the one shared keyed flight registered");
+
+  // Both callers disconnect while the flight is still queued. Only when BOTH
+  // are counted does live reach 0 and cancel the not-yet-committed flight.
+  leaderCtl.abort();
+  followerCtl.abort();
+  await assert.rejects(leader, (error: Error) => error.name === "AbortError");
+  await assert.rejects(follower, (error: Error) => error.name === "AbortError");
+
+  // Free the slot; a still-alive queued flight would now execute + reserve.
+  holderGate.resolve();
+  await holder;
+  await flushMacrotasks();
+
+  assert.equal(pipelineRuns, 1, "only the holder ran — the fully-abandoned queued keyed flight never executed");
+  assert.equal(h.liveBudget(), 1, "the cancelled queued keyed flight reserved no budget (only the holder's stands)");
+  assert.equal(h.recallInFlight.size, 0, "the cancelled keyed flight unregistered");
+  assert.equal(h.recallSemaphores.size, 0, "the semaphore did not leak");
+});
+
+test("raceAbort rejects for an already-aborted signal even when p is already fulfilled (round 15 #1)", async () => {
+  // Promise.race settles already-resolved members in array order, so a fulfilled
+  // p (index 0) would beat a synchronously-rejected abort racer (index 1). Without
+  // a pre-check, a caller that aborted before raceAbort is called (e.g. the keyed
+  // follower persistence wait) would proceed past the helper. raceAbort must
+  // reject synchronously for an already-aborted signal.
+  const { service } = makeService({ pipeline: async () => stubResponse([]) });
+  const host = service as unknown as {
+    raceAbort: <T>(p: Promise<T>, signal?: AbortSignal) => Promise<T>;
+  };
+  const raceAbort = host.raceAbort.bind(service);
+
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(
+    raceAbort(Promise.resolve("value"), aborted.signal),
+    (error: Error) => error.name === "AbortError",
+    "an already-aborted signal wins over an already-fulfilled p",
+  );
+
+  // The non-aborted branch is unchanged: p resolves through the race.
+  const live = new AbortController();
+  assert.equal(
+    await raceAbort(Promise.resolve("value"), live.signal),
+    "value",
+    "a live signal lets the fulfilled p win the race",
+  );
+});

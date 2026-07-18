@@ -2586,15 +2586,19 @@ export class EngramAccessService {
    * abort listener is removed as soon as the race settles (either `p` won or
    * the abort fired) so a settled-first promise never leaks a listener on a
    * long-lived signal.
+   *
+   * Pre-check the signal BEFORE building the race: an already-aborted signal
+   * must win even when `p` is already fulfilled. `Promise.race` settles from
+   * already-resolved members in array order, so a fulfilled `p` (index 0) would
+   * otherwise beat the synchronously-rejected abort racer (index 1) and let an
+   * aborted caller proceed into its own persistence + budget accounting before
+   * the next abort check runs (round 15 #1).
    */
   private raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) return p;
+    if (signal.aborted) return Promise.reject(abortError("operation aborted"));
     let onAbort: (() => void) | undefined;
     const racer = new Promise<never>((_resolve, reject) => {
-      if (signal.aborted) {
-        reject(abortError("operation aborted"));
-        return;
-      }
       onAbort = () => reject(abortError("operation aborted"));
       signal.addEventListener("abort", onAbort, { once: true });
     });
@@ -2956,7 +2960,17 @@ export class EngramAccessService {
             // Reject at admission instead; the existing flight continues for its
             // other live consumers (round 10 #1).
             throwIfAborted(request.abortSignal);
-            const consumed = await this.consumeFlight(existing, request, true, race);
+            // `cancelOnAbort=true` (not the race=false default): a keyed
+            // existing-join follower is non-racing (it awaits the shared flight
+            // to completion), but its abort must still be COUNTED in the flight's
+            // live refcount while the flight is only QUEUED. Otherwise, at
+            // recallMaxConcurrentPerPrincipal=1, if the leader disconnects
+            // (live 2 -> 1) and this follower then disconnects, live would stay 1
+            // and the flight would execute + reserve + persist with no caller
+            // connected. Counting drops live to 0, and attachFlightAbort's
+            // committed guard (!persisted || !committed) cancels the queued flight
+            // while leaving a committed keyed flight to persist (round 15 #2).
+            const consumed = await this.consumeFlight(existing, request, true, race, true);
             capturedReservation = consumed.reservation;
             // A KEYED follower that coalesced onto the leader's flight must
             // inherit the leader's persistence outcome before reporting success.
