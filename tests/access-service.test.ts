@@ -4308,7 +4308,11 @@ test("a post-retrieval failure releases the reserved cross-namespace budget (iss
           query: "hello",
           sessionKey: "agent:project-x:chat",
           namespace: "shared",
-          tagMatch: "bogus",
+          // Deliberately out-of-domain value to force parseTagMatch to reject
+          // during response assembly (a post-retrieval failure). Cast via the
+          // branch's `as unknown as` idiom so the runtime still receives it
+          // without weakening the production `tagMatch: "any" | "all"` type.
+          tagMatch: "bogus" as unknown as "any" | "all",
         }),
     );
     assert.equal(recallCalls, 1, "the pipeline ran (reserve happened) before assembly failed");
