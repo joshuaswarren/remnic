@@ -28,8 +28,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
+      # Trusted-code checkout (review finding on #2003 round 4, P1): the
+      # evaluator scripts run from the PR's BASE revision, so an over-budget
+      # PR cannot neuter scripts/pr-scope-budget.mjs or effective-diff.mjs in
+      # the same head. PR data (files/labels) comes from the API; budget
+      # config comes from the base ref via getContent.
+      - name: Checkout base revision
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      # Bootstrap-only: the PR that INTRODUCES the evaluator has no scripts
+      # on base yet. Pull exactly the two script files from the PR head with
+      # a loud notice. Once the scripts exist on main this step is a no-op,
+      # and base copies always win.
+      - name: Bootstrap evaluator scripts when absent on base
+        if: hashFiles('scripts/pr-scope-budget.mjs') == ''
+        run: |
+          echo "::notice title=scope-budget bootstrap::evaluator scripts absent on base ref — using PR head copies (bootstrap PR only)"
+          git fetch --quiet --depth=1 origin "$HEAD_SHA"
+          git checkout FETCH_HEAD -- scripts/pr-scope-budget.mjs scripts/effective-diff.mjs scripts/pr-scope-budget.json
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -53,9 +73,13 @@ jobs:
             // core files — fail-safe for a limiter is to FAIL loudly
             // (review finding on #2003 round 3).
             const reportedChangedFiles = context.payload.pull_request.changed_files;
-            if (typeof reportedChangedFiles === 'number' && reportedChangedFiles !== files.length) {
+            const listComplete =
+              typeof reportedChangedFiles === 'number'
+                ? reportedChangedFiles === files.length
+                : files.length < 3000; // no usable count: anything at the cap may be truncated
+            if (!listComplete) {
               core.setFailed(
-                `PR file list is incomplete (${files.length} fetched, API reports ${reportedChangedFiles}) — the scope budget cannot be measured. Split the PR below GitHub's 3,000-file listing cap.`,
+                `PR file list may be incomplete (${files.length} fetched, API reports ${reportedChangedFiles ?? 'unknown'}) — the scope budget cannot be measured. Split the PR below GitHub's 3,000-file listing cap.`,
               );
               return;
             }
