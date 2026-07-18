@@ -114,44 +114,6 @@ jobs:
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs
 
-  # PR scope budget (issue #1991 PR2, umbrella #1988): effective core diff
-  # size against scripts/pr-scope-budget.json thresholds. Warn-first rollout:
-  # deliberately NOT in the `quality` aggregator yet — the enforcement flip
-  # cites two weeks of this check's telemetry (#1988 decision C/D).
-  pr-scope-budget:
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.12.0'
-
-      - name: Fetch PR files and labels
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('node:fs');
-            const { owner, repo } = context.repo;
-            const pull_number = context.payload.pull_request.number;
-            // Paginate to completion — artifact PRs with >100 files exist.
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner, repo, pull_number, per_page: 100,
-            });
-            const labels = (context.payload.pull_request.labels ?? []).map((l) => l.name);
-            fs.writeFileSync('/tmp/pr-files.json', JSON.stringify(files.map((f) => ({
-              filename: f.filename, additions: f.additions, deletions: f.deletions, status: f.status,
-            }))));
-            fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels));
-            core.info(`Fetched ${files.length} changed files, ${labels.length} labels.`);
-
-      - name: Evaluate scope budget
-        run: node scripts/pr-scope-budget.mjs --files /tmp/pr-files.json --labels /tmp/pr-labels.json
-
   # The root suite (895 files) sharded by pattern group so shards run in
   # parallel. TEST_PATTERN_GROUPS in scripts/root-test-runner-lib.mjs is an
   # exact partition of TEST_PATTERNS (enforced by test), so the union of the

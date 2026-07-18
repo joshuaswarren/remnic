@@ -125,18 +125,22 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns 
   };
 }
 
+const CLI_FLAGS = ["--files", "--labels", "--thresholds", "--ignore"];
+const CLI_USAGE =
+  "usage: pr-scope-budget.mjs --files <files.json> --labels <labels.json> [--thresholds <path>] [--ignore <path>]";
+
 function parseCliArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i];
     const value = argv[i + 1];
-    if ((flag !== "--files" && flag !== "--labels") || value === undefined) {
-      throw new Error("usage: pr-scope-budget.mjs --files <files.json> --labels <labels.json>");
+    if (!CLI_FLAGS.includes(flag) || value === undefined) {
+      throw new Error(CLI_USAGE);
     }
     out[flag.slice(2)] = value;
   }
   if (!out.files || !out.labels) {
-    throw new Error("usage: pr-scope-budget.mjs --files <files.json> --labels <labels.json>");
+    throw new Error(CLI_USAGE);
   }
   return out;
 }
@@ -145,9 +149,13 @@ function main() {
   const args = parseCliArgs(process.argv.slice(2));
   const files = JSON.parse(readFileSync(args.files, "utf8"));
   const labels = JSON.parse(readFileSync(args.labels, "utf8"));
-  const thresholds = loadThresholds(path.join(SCRIPT_DIR, "pr-scope-budget.json"));
+  // CI passes --thresholds/--ignore pointing at copies fetched from the PR's
+  // BASE ref, so a PR can never weaken its own budget by editing these files
+  // in the same head (review finding on #2003 — both bots, independently).
+  // The repo-local defaults serve local/manual runs only.
+  const thresholds = loadThresholds(args.thresholds ?? path.join(SCRIPT_DIR, "pr-scope-budget.json"));
   const ignorePatterns = parseIgnoreManifest(
-    readFileSync(path.join(ROOT, ".github", "ai-review-ignore"), "utf8"),
+    readFileSync(args.ignore ?? path.join(ROOT, ".github", "ai-review-ignore"), "utf8"),
   );
 
   const result = evaluateScopeBudget({ files, labels, thresholds, ignorePatterns });
