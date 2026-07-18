@@ -655,3 +655,29 @@ test("marker-reserved tag assembly survives the cap end to end (round 10)", () =
   assert.ok(env.tags.includes("chunked"), "reserved marker must survive composition");
   assert.deepEqual([...env.salvageNotes], [], "reserved assembly must not need salvage");
 });
+
+test("structural fallback rejects prototype-inherited accessors (round 13)", () => {
+  const real = composeMemoryEnvelope(minimalInput({ tags: ["stable"] }), CTX);
+  const clone = JSON.parse(JSON.stringify(real)) as Record<string, unknown>;
+  delete clone.tags;
+  let reads = 0;
+  const proto = Object.defineProperty({}, "tags", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads <= 6
+        ? Object.freeze(["stable"])
+        : Object.freeze(Array.from({ length: 51 }, (_, i) => `t${i}`));
+    },
+  });
+  const shifty = Object.create(proto) as Record<string, unknown>;
+  for (const [k, v] of Object.entries(clone)) {
+    (shifty as Record<string, unknown>)[k] = typeof v === "object" && v !== null ? Object.freeze(v) : v;
+  }
+  Object.freeze(shifty);
+  assert.equal(
+    isSealedMemoryEnvelope(shifty),
+    false,
+    "prototype-inherited getter lookalike must be rejected",
+  );
+});

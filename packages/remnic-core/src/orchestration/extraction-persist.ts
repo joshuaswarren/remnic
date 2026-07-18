@@ -1565,6 +1565,9 @@ export class ExtractionPersistCoordinator {
       ) {
         continue;
       }
+      // Normalize extractor whitespace first (round 5): legacy writeMemory
+      // accepted " fact " — trim instead of skipping a valid category.
+      (fact as any).category = (fact as any).category.trim();
       // #2014/#2017 review round: an unrecognized non-empty category from
       // the extractor is a per-CANDIDATE defect. The composer keeps category
       // fatal even in salvage mode (identity field), so filter here — one

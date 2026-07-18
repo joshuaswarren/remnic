@@ -490,6 +490,16 @@ const SEALED_ENVELOPES = new WeakSet<object>();
  */
 function hasOnlyFrozenDataProperties(value: object): boolean {
   if (!Object.isFrozen(value)) return false;
+  // Inherited accessors are as dangerous as own ones (round 5): a frozen
+  // object can inherit a `tags` getter from a custom prototype. Composer
+  // envelopes are plain object literals and plain arrays — require exactly
+  // those prototypes so prototype-supplied getters cannot serve fields.
+  const proto = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (proto !== Array.prototype) return false;
+  } else if (proto !== Object.prototype && proto !== null) {
+    return false;
+  }
   for (const key of Reflect.ownKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined) {
