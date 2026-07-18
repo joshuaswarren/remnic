@@ -61,16 +61,39 @@ jobs:
             // Thresholds + ignore manifest from the BASE ref: a PR can never
             // weaken its own budget by editing them in the same head. Changes
             // to either file take effect only after merge.
+            //
+            // Bootstrap exception (review finding on #2003 round 2): when a
+            // file does not exist on the base ref yet — the PR introducing
+            // this very check, or a repo without an ignore manifest — fall
+            // back to the checked-out HEAD copy (or an empty manifest). The
+            // fallback only widens what a PR can do while the config is not
+            // yet on main; once merged, base-ref copies take precedence.
             const baseRef = context.payload.pull_request.base.sha;
-            async function fetchBaseFile(repoPath, outPath) {
-              const payload = await github.rest.repos.getContent({
-                owner, repo, path: repoPath, ref: baseRef,
-              });
+            async function fetchBaseFile(repoPath, outPath, fallbackPath, emptyFallback) {
+              let payload;
+              try {
+                payload = await github.rest.repos.getContent({
+                  owner, repo, path: repoPath, ref: baseRef,
+                });
+              } catch (error) {
+                if (error?.status !== 404) throw error;
+                if (fallbackPath && fs.existsSync(fallbackPath)) {
+                  core.info(`${repoPath} not on base ref — using checked-out copy (bootstrap).`);
+                  fs.copyFileSync(fallbackPath, outPath);
+                  return;
+                }
+                if (emptyFallback !== undefined) {
+                  core.info(`${repoPath} not on base ref and no local copy — using empty fallback.`);
+                  fs.writeFileSync(outPath, emptyFallback);
+                  return;
+                }
+                throw error;
+              }
               const text = Buffer.from(payload.data.content ?? '', payload.data.encoding ?? 'base64').toString('utf8');
               fs.writeFileSync(outPath, text);
             }
-            await fetchBaseFile('scripts/pr-scope-budget.json', '/tmp/budget-thresholds.json');
-            await fetchBaseFile('.github/ai-review-ignore', '/tmp/budget-ignore');
+            await fetchBaseFile('scripts/pr-scope-budget.json', '/tmp/budget-thresholds.json', 'scripts/pr-scope-budget.json');
+            await fetchBaseFile('.github/ai-review-ignore', '/tmp/budget-ignore', '.github/ai-review-ignore', '');
             core.info(`Fetched ${files.length} changed files, ${labels.length} labels, base-ref config @ ${baseRef.slice(0, 7)}.`);
 
       - name: Evaluate scope budget
