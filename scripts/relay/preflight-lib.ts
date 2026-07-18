@@ -130,6 +130,7 @@ async function probeChroot(
         RELAY_CODEX_HOME: codexHome,
         RELAY_OUTPUT_DIR: output,
         RELAY_CODEX_BIN: codexBinary,
+        RELAY_WORKSPACE_READ_ONLY: "1",
         REMNIC_RELAY_MCP_TOKEN: "preflight-token-not-a-live-secret",
       },
     },

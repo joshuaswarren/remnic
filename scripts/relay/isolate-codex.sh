@@ -9,6 +9,7 @@ required=(
   RELAY_CODEX_HOME
   RELAY_OUTPUT_DIR
   RELAY_CODEX_BIN
+  RELAY_WORKSPACE_READ_ONLY
   REMNIC_RELAY_MCP_TOKEN
 )
 for name in "${required[@]}"; do
@@ -17,6 +18,11 @@ for name in "${required[@]}"; do
     exit 70
   fi
 done
+
+if [[ "${RELAY_WORKSPACE_READ_ONLY}" != "0" && "${RELAY_WORKSPACE_READ_ONLY}" != "1" ]]; then
+  echo "relay isolation: RELAY_WORKSPACE_READ_ONLY must be 0 or 1" >&2
+  exit 70
+fi
 
 for name in RELAY_ROOTFS RELAY_WORKSPACE RELAY_CODEX_HOME RELAY_OUTPUT_DIR RELAY_CODEX_BIN; do
   value="${!name}"
@@ -91,6 +97,14 @@ mount --bind "${RELAY_CODEX_BIN}" "${RELAY_ROOTFS}/opt/codex/codex"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/codex"
 
 mount --bind "${RELAY_WORKSPACE}" "${RELAY_ROOTFS}/workspace"
+if [[ "${RELAY_WORKSPACE_READ_ONLY}" == "1" ]]; then
+  mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/workspace"
+  if touch "${RELAY_ROOTFS}/workspace/.relay-write-probe" 2>/dev/null; then
+    rm -f "${RELAY_ROOTFS}/workspace/.relay-write-probe"
+    echo "relay isolation: read-only workspace mount remained writable" >&2
+    exit 70
+  fi
+fi
 mount --bind "${RELAY_CODEX_HOME}" "${RELAY_ROOTFS}/codex-home"
 mount --bind "${RELAY_OUTPUT_DIR}" "${RELAY_ROOTFS}/output"
 

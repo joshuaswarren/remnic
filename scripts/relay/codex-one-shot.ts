@@ -62,7 +62,6 @@ export function buildRelayCodexArgs(role: RelayRole, mcpUrl: string): string[] {
   if (!/^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(mcpUrl)) {
     throw new Error("Relay MCP URL must be a loopback HTTP /mcp endpoint");
   }
-  const sandbox = role === "stale-builder" || role === "cold-builder" ? "workspace-write" : "read-only";
   return [
     "exec",
     "--strict-config",
@@ -96,8 +95,7 @@ export function buildRelayCodexArgs(role: RelayRole, mcpUrl: string): string[] {
     "mcp_servers.relay.tool_timeout_sec=30",
     "--ephemeral",
     "--skip-git-repo-check",
-    "--sandbox",
-    sandbox,
+    "--dangerously-bypass-approvals-and-sandbox",
     "--cd",
     "/workspace",
     "--json",
@@ -175,6 +173,8 @@ async function spawnIsolated(
         RELAY_CODEX_HOME: codexHome,
         RELAY_OUTPUT_DIR: outputDir,
         RELAY_CODEX_BIN: options.codexBinary,
+        RELAY_WORKSPACE_READ_ONLY:
+          options.role === "scout" || options.role === "resolver" ? "1" : "0",
         REMNIC_RELAY_MCP_TOKEN: options.mcpToken,
       },
       stdio: ["pipe", "pipe", "pipe"],

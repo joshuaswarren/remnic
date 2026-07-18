@@ -166,7 +166,8 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
   const args = buildRelayCodexArgs("cold-builder", "http://127.0.0.1:43210/mcp");
   assert.deepEqual(args.slice(0, 4), ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules"]);
   assert.ok(args.includes("gpt-5.6-terra"));
-  assert.ok(args.includes("workspace-write"));
+  assert.ok(args.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.equal(args.includes("workspace-write"), false);
   assert.ok(args.includes("--ephemeral"));
   assert.ok(args.includes("--output-schema"));
   assert.ok(args.includes('mcp_servers.relay.enabled_tools=["remnic.recall"]'));
