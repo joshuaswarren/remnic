@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeMemoryPromote } from "../src/memory-promote.js";
@@ -55,6 +56,7 @@ test("memory promotion looks up legacy IDs longer than the filename grammar", as
 
 test("memory promotion preserves provenance tags before source tags", async () => {
   let promotedTags: readonly string[] | undefined;
+  let promotedAttributes: Readonly<Record<string, string>> | undefined;
   const sourceMemory = {
     content: "Synthetic source memory",
     frontmatter: {
@@ -67,8 +69,12 @@ test("memory promotion preserves provenance tags before source tags", async () =
     getMemoryById: async () => sourceMemory,
   };
   const destinationStorage = {
-    writeSealedMemory: async (envelope: { tags: readonly string[] }) => {
+    writeSealedMemory: async (envelope: {
+      tags: readonly string[];
+      rawStructuredAttributes?: Readonly<Record<string, string>>;
+    }) => {
       promotedTags = envelope.tags;
+      promotedAttributes = envelope.rawStructuredAttributes;
       return { id: "promoted-1", tombstoneBlocked: false };
     },
   };
@@ -97,4 +103,55 @@ test("memory promotion preserves provenance tags before source tags", async () =
   assert.equal(promotedTags?.length, 50);
   assert.equal(promotedTags?.includes("source-46"), true);
   assert.equal(promotedTags?.includes("source-47"), false);
+  assert.equal(promotedAttributes?.promotedFromMemoryId, "fact-42");
+});
+
+test("memory promotion preserves origin for long legacy IDs", async () => {
+  const memoryId = `legacy:${"x".repeat(300)}`;
+  const memoryIdHash = createHash("sha256").update(memoryId).digest("hex");
+  let promotedTags: readonly string[] | undefined;
+  let promotedAttributes: Readonly<Record<string, string>> | undefined;
+  const sourceStorage = {
+    getMemoryById: async () => ({
+      content: "Synthetic legacy memory",
+      frontmatter: { category: "fact", confidence: 0.8 },
+    }),
+  };
+  const destinationStorage = {
+    writeSealedMemory: async (envelope: {
+      tags: readonly string[];
+      rawStructuredAttributes?: Readonly<Record<string, string>>;
+    }) => {
+      promotedTags = envelope.tags;
+      promotedAttributes = envelope.rawStructuredAttributes;
+      return { id: "promoted-long", tombstoneBlocked: false };
+    },
+  };
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      memoryDir: "/tmp/remnic-memory-promote-test",
+      queryAwareIndexingEnabled: false,
+    },
+    getStorage: async (namespace: string) =>
+      namespace === "default" ? sourceStorage : destinationStorage,
+  };
+
+  const result = await executeMemoryPromote(orchestrator as never, {
+    memoryId,
+  });
+
+  assert.equal(result, `Promoted default:${memoryId} → shared:promoted-long`);
+  assert.equal(
+    promotedTags?.includes(`promotedFromHash:${memoryIdHash}`),
+    true,
+  );
+  assert.equal(
+    promotedTags?.some((tag) => tag.includes(memoryId)),
+    false,
+  );
+  assert.equal(promotedAttributes?.promotedFromNamespace, "default");
+  assert.equal(promotedAttributes?.promotedFromMemoryId, memoryId);
+  assert.equal(promotedAttributes?.promotedFromMemoryIdHash, memoryIdHash);
 });

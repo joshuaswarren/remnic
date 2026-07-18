@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
-import { TAG_LIMITS } from "@remnic/core/write-envelope";
+import {
+  STRUCTURED_ATTRIBUTE_LIMITS,
+  TAG_LIMITS,
+} from "@remnic/core/write-envelope";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
@@ -9,6 +13,30 @@ import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
  * Returns the user-facing result message.
  */
+
+function buildPromotionOrigin(
+  srcNamespace: string,
+  memoryId: string,
+): {
+  tag: string;
+  structuredAttributes: Record<string, string>;
+} {
+  const memoryIdHash = createHash("sha256").update(memoryId).digest("hex");
+  const fullTag = `promotedFrom:${srcNamespace}:${memoryId}`;
+  return {
+    tag:
+      fullTag.length <= TAG_LIMITS.maxTagLength
+        ? fullTag
+        : `promotedFromHash:${memoryIdHash}`,
+    structuredAttributes: {
+      promotedFromNamespace: srcNamespace,
+      promotedFromMemoryIdHash: memoryIdHash,
+      ...(memoryId.length <= STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength
+        ? { promotedFromMemoryId: memoryId }
+        : {}),
+    },
+  };
+}
 
 export async function executeMemoryPromote(
   orchestrator: Orchestrator,
@@ -51,6 +79,8 @@ export async function executeMemoryPromote(
   }
 
   const dst = await orchestrator.getStorage(dstNs);
+  const promotionOrigin = buildPromotionOrigin(srcNs, memoryId);
+
   // Sealed-envelope write (issue #1989 PR4): a promotion REPLAYS a stored
   // row — legacy data may predate current limits, so salvage.
   const promoteEnvelope = composeSalvagedEnvelope(
@@ -62,7 +92,7 @@ export async function executeMemoryPromote(
       tags: (() => {
         const promotionTags = [
           "promoted",
-          `promotedFrom:${srcNs}:${memoryId}`,
+          promotionOrigin.tag,
           ...(note ? [`note:${note}`] : []),
         ];
         const sourceTags = mem.frontmatter.tags ?? [];
@@ -71,6 +101,7 @@ export async function executeMemoryPromote(
           TAG_LIMITS.maxTags,
         );
       })(),
+      structuredAttributes: promotionOrigin.structuredAttributes,
       entityRef: mem.frontmatter.entityRef,
     },
     { source: "promote" },
