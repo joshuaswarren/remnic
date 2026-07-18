@@ -4,11 +4,11 @@ import { lstat, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
-  RelayMissionStore,
-  relayMissionReceiptDigest,
   type RelayEvidenceRef,
   type RelayMissionPayload,
   type RelayMissionSnapshot,
+  RelayMissionStore,
+  relayMissionReceiptDigest,
 } from "@remnic/core";
 
 import {
@@ -21,35 +21,44 @@ import {
   RELAY_QUERY,
   RELAY_REPLACEMENT_DECISION_ID,
   RELAY_STALE_DECISION_ID,
-  RelayBuilderOutputSchema,
-  RelayCodexCallSummarySchema,
-  RelayResolverOutputSchema,
-  RelayScoutOutputSchema,
-  RelayTestResultSchema,
   type RelayBuilderOutput,
+  RelayBuilderOutputSchema,
   type RelayCodexCallResult,
   type RelayCodexCallSummary,
+  RelayCodexCallSummarySchema,
   type RelayResolverOutput,
+  RelayResolverOutputSchema,
   type RelayRole,
   type RelayScoutOutput,
+  RelayScoutOutputSchema,
   type RelayTestResult,
+  RelayTestResultSchema,
 } from "./contracts.js";
 import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import {
+  type FixtureDigest,
+  type RelayRunDirectories,
   assertTreeContainsNoSymlinks,
   copyFixtureTree,
   digestFixtureTree,
-  type FixtureDigest,
-  type RelayRunDirectories,
 } from "./isolation.js";
 import type { RelayCorrectionResult, RelayRemnicHarness } from "./remnic-harness.js";
+import {
+  RELAY_CANONICAL_CHECKOUT_DECISION,
+  assertRelayCheckoutDecision,
+  assertRelaySourceLocators,
+  normalizeRelaySourceLocator,
+} from "./source-grounding.js";
 
 const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 20_000;
-const CORRECT_DECISION =
-  "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.";
 const STALE_DECISION = "Mint a new checkout token for every request and every retry.";
 const BUILDER_CHANGED_FILE = "src/token-policy.mjs";
+const PUBLIC_CONTRACT_TEST_NAMES = ["the first checkout request obtains a token"] as const;
+const HIDDEN_CONTRACT_TEST_NAMES = [
+  "ordinary retries reuse the checkout-session token",
+  "expiry mints one replacement that later retries reuse",
+] as const;
 
 export interface RelayCodexExecutor {
   execute(role: RelayRole, workspace: string): Promise<RelayCodexCallResult<unknown>>;
@@ -111,54 +120,19 @@ function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function normalizeRelativePath(value: string): string {
-  const withoutLocator = value.trim().replace(/:\d+(?:-\d+)?$/, "");
-  const normalized = withoutLocator.replace(/^\.\//, "").split(path.sep).join("/");
-  if (!normalized || path.posix.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../")) {
-    throw new Error(`Relay evidence locator must be repository-relative: ${value}`);
-  }
-  return normalized;
-}
-
-function hasCorrectDecisionSemantics(value: string): boolean {
-  const normalized = value.toLowerCase();
-  const sessionLifecycle =
-    /session/.test(normalized) ||
-    (/(?:first|initial) (?:checkout )?request/.test(normalized) &&
-      /(?:ordinary )?retr(?:y|ies)/.test(normalized) &&
-      /(?:current|unexpired|valid) (?:checkout )?token/.test(normalized));
-  return (
-    /reus(?:e|es|ing)/.test(normalized) &&
-    sessionLifecycle &&
-    /expir(?:y|ed|es|ation)/.test(normalized) &&
-    /(one|exactly 1|single)/.test(normalized) &&
-    /(mint|replacement|refresh)/.test(normalized)
-  );
-}
-
 async function validateSourceGrounding(workspace: string, locators: string[], decision: string): Promise<void> {
-  if (!hasCorrectDecisionSemantics(decision)) {
-    throw new Error("Relay source-grounded decision omitted reuse, session, expiry, or one replacement");
-  }
-  const normalized = new Set<string>();
-  for (const locator of locators) {
-    const relative = normalizeRelativePath(locator);
+  assertRelayCheckoutDecision(decision, "source-grounded");
+  const normalized = assertRelaySourceLocators(locators, "live source");
+  for (const relative of normalized) {
     const candidate = path.resolve(workspace, relative);
     const relation = path.relative(workspace, candidate);
     if (relation === ".." || relation.startsWith(`..${path.sep}`)) {
-      throw new Error(`Relay source locator escaped the synthetic workspace: ${locator}`);
+      throw new Error(`Relay source locator escaped the synthetic workspace: ${relative}`);
     }
     const info = await lstat(candidate);
     if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`Relay source locator must resolve to a real fixture file: ${locator}`);
+      throw new Error(`Relay source locator must resolve to a real fixture file: ${relative}`);
     }
-    normalized.add(relative);
-  }
-  if (!normalized.has("CONTRACT.md")) {
-    throw new Error("Relay source grounding must cite the authoritative CONTRACT.md");
-  }
-  if (!["src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"].some((item) => normalized.has(item))) {
-    throw new Error("Relay source grounding must cite executable reference code or its contract test");
   }
 }
 
@@ -214,14 +188,54 @@ function testEnvironment(workspace: string, runId: string): NodeJS.ProcessEnv {
   };
 }
 
-async function verifyPublicContract(workspace: string, runId: string): Promise<void> {
-  const result = await runProcess(process.execPath, ["--test", "test/public.test.mjs"], {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function nodeTestSummaryCount(output: string, label: string, context: string): number {
+  const matches = [...output.matchAll(new RegExp(`^# ${label} (\\d+)\\s*$`, "gm"))];
+  if (matches.length !== 1) {
+    throw new Error(`Relay ${context} contract test did not emit one trusted ${label} summary`);
+  }
+  return Number(matches[0]?.[1]);
+}
+
+function assertExpectedNodeTestResults(
+  result: ProcessResult,
+  expectedNames: readonly string[],
+  expectedStatus: "passed" | "failed",
+  context: string
+): void {
+  const output = `${result.stdout}\n${result.stderr}`;
+  for (const name of expectedNames) {
+    const resultLine = new RegExp(`^(?:not )?ok\\s+\\d+\\s+-\\s+${escapeRegExp(name)}\\s*$`, "m");
+    if (!resultLine.test(output)) {
+      throw new Error(`Relay ${context} contract test did not execute expected assertion: ${name}`);
+    }
+  }
+  const tests = nodeTestSummaryCount(output, "tests", context);
+  const passed = nodeTestSummaryCount(output, "pass", context);
+  const failed = nodeTestSummaryCount(output, "fail", context);
+  const cancelled = nodeTestSummaryCount(output, "cancelled", context);
+  const skipped = nodeTestSummaryCount(output, "skipped", context);
+  const todo = nodeTestSummaryCount(output, "todo", context);
+  if (tests !== expectedNames.length || passed + failed !== tests || cancelled !== 0 || skipped !== 0 || todo !== 0) {
+    throw new Error(`Relay ${context} contract test emitted an incomplete assertion receipt`);
+  }
+  if (expectedStatus === "passed" && (result.exitCode !== 0 || passed !== tests || failed !== 0)) {
+    throw new Error(`Relay ${context} Builder failed the expected contract assertions`);
+  }
+  if (expectedStatus === "failed" && (result.exitCode === 0 || failed < 1)) {
+    throw new Error(`Relay ${context} stale Builder did not fail an expected contract assertion`);
+  }
+}
+
+export async function runRelayPublicContractTest(workspace: string, runId: string): Promise<void> {
+  const result = await runProcess(process.execPath, ["--test", "--test-reporter=tap", "test/public.test.mjs"], {
     cwd: workspace,
     env: testEnvironment(workspace, runId),
   });
-  if (result.exitCode !== 0) {
-    throw new Error(`Relay ${runId} Builder failed the public fixture test`);
-  }
+  assertExpectedNodeTestResults(result, PUBLIC_CONTRACT_TEST_NAMES, "passed", `${runId} public`);
 }
 
 export async function runRelayHiddenContractTest(
@@ -230,18 +244,19 @@ export async function runRelayHiddenContractTest(
   phase: "before-correction" | "after-correction"
 ): Promise<RelayTestResult> {
   const hiddenTest = path.join(fixtureRoot, "hidden", "token-policy.hidden.test.mjs");
-  const result = await runProcess(process.execPath, ["--test", hiddenTest], {
+  const result = await runProcess(process.execPath, ["--test", "--test-reporter=tap", hiddenTest], {
     cwd: workspace,
     env: testEnvironment(workspace, phase),
   });
   const combined = `${result.stdout}\n${result.stderr}`;
   const passed = result.exitCode === 0;
   if (phase === "before-correction") {
+    assertExpectedNodeTestResults(result, HIDDEN_CONTRACT_TEST_NAMES, "failed", phase);
     if (passed || !/retry minted a second token|ordinary retry must not mint again/.test(combined)) {
       throw new Error("Relay stale implementation did not fail for the intended hidden retry invariant");
     }
-  } else if (!passed) {
-    throw new Error("Relay corrected cold implementation did not pass the hidden token contract");
+  } else {
+    assertExpectedNodeTestResults(result, HIDDEN_CONTRACT_TEST_NAMES, "passed", phase);
   }
   return RelayTestResultSchema.parse({
     phase,
@@ -280,14 +295,14 @@ async function validateBuilderWorkspace(
   if (JSON.stringify(changed) !== JSON.stringify([BUILDER_CHANGED_FILE])) {
     throw new Error(`Relay ${runId} Builder changed files outside ${BUILDER_CHANGED_FILE}: ${changed.join(", ")}`);
   }
-  const reported = [...new Set(output.files_changed.map(normalizeRelativePath))].sort();
+  const reported = [...new Set(output.files_changed.map(normalizeRelaySourceLocator))].sort();
   if (JSON.stringify(reported) !== JSON.stringify([BUILDER_CHANGED_FILE])) {
     throw new Error(`Relay ${runId} Builder reported an unexpected mutation set`);
   }
   if (!output.tests_run.some((item) => /npm\s+test/i.test(item))) {
     throw new Error(`Relay ${runId} Builder did not report running npm test`);
   }
-  await verifyPublicContract(workspace, runId);
+  await runRelayPublicContractTest(workspace, runId);
 }
 
 function validateRecallOutput(output: RelayBuilderOutput, expectedMemoryId: string, runId: string): void {
@@ -474,7 +489,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
     sessionId: "session-scout",
     beliefId: "belief-refresh-after-expiry",
     decisionId: RELAY_REPLACEMENT_DECISION_ID,
-    statement: CORRECT_DECISION,
+    statement: RELAY_CANONICAL_CHECKOUT_DECISION,
     confidence: scoutOutput.confidence,
     evidence: [sourceEvidence(), callEvidence("scout")],
   });
@@ -547,7 +562,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
     conflictId: RELAY_CONFLICT_ID,
     proposedDecisionId: RELAY_REPLACEMENT_DECISION_ID,
     supersedesDecisionIds: [RELAY_STALE_DECISION_ID],
-    statement: CORRECT_DECISION,
+    statement: RELAY_CANONICAL_CHECKOUT_DECISION,
     rationale: resolverOutput.rationale,
     proposedBy: "agent-resolver",
     evidence: [sourceEvidence(), testEvidence(), callEvidence("resolver")],

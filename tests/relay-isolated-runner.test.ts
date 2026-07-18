@@ -2,17 +2,14 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { calculateCodexBudgetUnits } from "@remnic/bench";
 
-import {
-  RELAY_DISABLED_CODEX_FEATURES,
-  buildRelayCodexArgs,
-} from "../scripts/relay/codex-one-shot.js";
+import { RELAY_DISABLED_CODEX_FEATURES, buildRelayCodexArgs } from "../scripts/relay/codex-one-shot.js";
 import {
   RELAY_AGENT_PRINCIPAL,
   RELAY_CREDIT_BUDGET_UNITS,
@@ -26,10 +23,7 @@ import {
   type RelayCodexCallResult,
   type RelayRole,
 } from "../scripts/relay/contracts.js";
-import {
-  assertRelayWireOutputSchema,
-  verifyRelayFixtureManifest,
-} from "../scripts/relay/fixture-manifest.js";
+import { assertRelayWireOutputSchema, verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
 import {
   assertTreeContainsNoSymlinks,
   cleanupRelayRun,
@@ -37,16 +31,18 @@ import {
   prepareRelayRunDirectories,
 } from "../scripts/relay/isolation.js";
 import {
+  type RelayCodexExecutor,
+  runRelayHiddenContractTest,
+  runRelayMission,
+  runRelayPublicContractTest,
+} from "../scripts/relay/mission-runner.js";
+import {
   RELAY_ISOLATED_MCP_URL,
   RELAY_NETWORK_PROXY_PORT,
   RELAY_UNSHARE_NAMESPACE_ARGS,
   isRelayNetworkTargetAllowed,
   startRelayNetworkGateway,
 } from "../scripts/relay/network-gateway.js";
-import {
-  runRelayMission,
-  type RelayCodexExecutor,
-} from "../scripts/relay/mission-runner.js";
 import { resolveRelayAuthSourcePath } from "../scripts/relay/preflight-lib.js";
 import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/remnic-harness.js";
 
@@ -74,7 +70,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
 
   constructor(
     private readonly harness: Awaited<ReturnType<typeof startRelayRemnicHarness>>,
-    private readonly failAt?: RelayRole,
+    private readonly failAt?: RelayRole
   ) {}
 
   async execute(role: RelayRole, workspace: string): Promise<RelayCodexCallResult<unknown>> {
@@ -137,7 +133,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
       path.join(workspace, "src", "token-policy.mjs"),
       corrected
         ? "export function selectCheckoutToken({ currentToken, tokenExpired, mintToken }) { return currentToken && tokenExpired !== true ? currentToken : mintToken(); }\n"
-        : "export function selectCheckoutToken({ mintToken }) { return mintToken(); }\n",
+        : "export function selectCheckoutToken({ mintToken }) { return mintToken(); }\n"
     );
     return {
       summary: mockSummary(role, 1),
@@ -170,11 +166,17 @@ test("Relay fixes model, call count, and conservative 2,473-unit budget without 
       outputTokens: 100,
       reasoningOutputTokens: 50,
     }),
-    0.1,
+    0.1
   );
   assert.throws(
-    () => calculateCodexBudgetUnits("gpt-5.6", { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 }),
-    /No Codex credit rate/,
+    () =>
+      calculateCodexBudgetUnits("gpt-5.6", {
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: 1,
+        reasoningOutputTokens: 0,
+      }),
+    /No Codex credit rate/
   );
 });
 
@@ -201,8 +203,14 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
     assert.ok(featureIndex > 0, `missing disabled Codex feature ${feature}`);
     assert.equal(args[featureIndex - 1], "--disable");
   }
-  assert.equal(args.some((arg) => arg.toLowerCase().includes("sol")), false);
-  assert.equal(args.some((arg) => arg.includes(os.homedir())), false);
+  assert.equal(
+    args.some((arg) => arg.toLowerCase().includes("sol")),
+    false
+  );
+  assert.equal(
+    args.some((arg) => arg.includes(os.homedir())),
+    false
+  );
   assert.throws(() => buildRelayCodexArgs("scout", "https://example.com/mcp"), /loopback/);
 });
 
@@ -282,13 +290,10 @@ test("Relay network gateway tunnels only the exact run-scoped MCP target", async
 });
 
 test("Relay preflight expands only a conventional tilde auth path", () => {
-  assert.equal(
-    resolveRelayAuthSourcePath("~/.codex/auth.json"),
-    path.join(os.homedir(), ".codex", "auth.json"),
-  );
+  assert.equal(resolveRelayAuthSourcePath("~/.codex/auth.json"), path.join(os.homedir(), ".codex", "auth.json"));
   assert.equal(
     resolveRelayAuthSourcePath("~another-user/.codex/auth.json"),
-    path.resolve("~another-user/.codex/auth.json"),
+    path.resolve("~another-user/.codex/auth.json")
   );
 });
 
@@ -325,7 +330,7 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
         uniqueItems: true,
         items: { type: "string" },
       }),
-    /unsupported keyword uniqueItems/,
+    /unsupported keyword uniqueItems/
   );
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-fixture-behavior-"));
   const staleWorkspace = path.join(root, "stale");
@@ -337,11 +342,11 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
     await copyFixtureTree(path.join(fixtures, "downstream"), correctedWorkspace);
     await writeFile(
       path.join(staleWorkspace, "src", "token-policy.mjs"),
-      "export function selectCheckoutToken({ mintToken }) { return mintToken(); }\n",
+      "export function selectCheckoutToken({ mintToken }) { return mintToken(); }\n"
     );
     await writeFile(
       path.join(correctedWorkspace, "src", "token-policy.mjs"),
-      "export function selectCheckoutToken({ currentToken, tokenExpired, mintToken }) { return currentToken && tokenExpired !== true ? currentToken : mintToken(); }\n",
+      "export function selectCheckoutToken({ currentToken, tokenExpired, mintToken }) { return currentToken && tokenExpired !== true ? currentToken : mintToken(); }\n"
     );
     const hiddenTest = path.join(fixtures, "hidden", "token-policy.hidden.test.mjs");
     const run = (workspace: string, id: string) =>
@@ -366,6 +371,29 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
   }
 });
 
+test("Builder module initialization cannot short-circuit public or hidden contract assertions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "relay-process-exit-"));
+  const workspace = path.join(root, "workspace");
+  await mkdir(workspace);
+  try {
+    await copyFixtureTree(path.join(fixtures, "downstream"), workspace);
+    await writeFile(
+      path.join(workspace, "src", "token-policy.mjs"),
+      "process.exit(0);\nexport function selectCheckoutToken() { return 'forged-pass'; }\n"
+    );
+    await assert.rejects(
+      runRelayPublicContractTest(workspace, "process-exit"),
+      /did not execute expected assertion|incomplete assertion receipt/
+    );
+    await assert.rejects(
+      runRelayHiddenContractTest(fixtures, workspace, "after-correction"),
+      /did not execute expected assertion|incomplete assertion receipt/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("isolated Remnic token lists only recall and the real Correction Contract retires stale memory", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "relay-remnic-harness-"));
   const harness = await startRelayRemnicHarness(memoryDir);
@@ -381,7 +409,7 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
         confidence: 0.99,
       },
       staleMemoryId,
-      RELAY_OPERATOR_PRINCIPAL,
+      RELAY_OPERATOR_PRINCIPAL
     );
     assert.equal(result.outcome.status, "applied");
     assert.equal(result.staleMemoryStatus, "superseded");
@@ -414,7 +442,10 @@ test("the bounded mission runner produces a complete 16-event cold-start recover
     assert.deepEqual(executor.roles, ["scout", "stale-builder", "resolver", "cold-builder"]);
     assert.equal(result.calls.length, 4);
     assert.equal(new Set(result.calls.map((call) => call.summary.threadId)).size, 4);
-    assert.deepEqual(result.tests.map((item) => item.status), ["failed", "passed"]);
+    assert.deepEqual(
+      result.tests.map((item) => item.status),
+      ["failed", "passed"]
+    );
     assert.equal(result.mission.events.length, 16);
     assert.equal(result.mission.receipt.complete, true);
     assert.equal(result.mission.receipt.coldStartVerified, true);
@@ -441,7 +472,7 @@ test("approval and executor failures stop before unauthorized or downstream Code
         executor: unapprovedExecutor,
         approval: { phrase: "yes", operatorPrincipal: RELAY_OPERATOR_PRINCIPAL },
       }),
-      /exact --approve-correction APPROVE/,
+      /exact --approve-correction APPROVE/
     );
     assert.deepEqual(unapprovedExecutor.roles, []);
   } finally {
@@ -461,7 +492,7 @@ test("approval and executor failures stop before unauthorized or downstream Code
         executor: cancelledExecutor,
         approval: { phrase: "APPROVE", operatorPrincipal: RELAY_OPERATOR_PRINCIPAL },
       }),
-      /intentional resolver cancellation/,
+      /intentional resolver cancellation/
     );
     assert.deepEqual(cancelledExecutor.roles, ["scout", "stale-builder", "resolver"]);
   } finally {

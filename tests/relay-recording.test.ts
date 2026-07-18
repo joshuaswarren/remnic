@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
 import {
   RELAY_DEMO_MISSION_ID,
   RELAY_DEMO_NAMESPACE,
@@ -13,7 +14,6 @@ import {
   reduceRelayMission,
   relayMissionReceiptDigest,
 } from "@remnic/core";
-import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
 
 import {
   RELAY_CREDIT_BUDGET_UNITS,
@@ -483,6 +483,30 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
         metadata.threadIds[0] = randomUUID();
       },
       /declared thread IDs/
+    );
+    await assertResealedJsonTamperRejected<{ output: { decision: string } }>(
+      recordingDir,
+      "calls/scout.json",
+      (scout) => {
+        scout.output.decision = "Mint a new checkout token for every request and every retry.";
+      },
+      /Scout decision/
+    );
+    await assertResealedJsonTamperRejected<{ output: { replacement_decision: string } }>(
+      recordingDir,
+      "calls/resolver.json",
+      (resolver) => {
+        resolver.output.replacement_decision = "Keep per-request rotation as the active policy.";
+      },
+      /Resolver decision/
+    );
+    await assertResealedJsonTamperRejected<{ output: { source_locators: string[] } }>(
+      recordingDir,
+      "calls/resolver.json",
+      (resolver) => {
+        resolver.output.source_locators = ["CONTRACT.md", "package.json"];
+      },
+      /non-authoritative fixture path/
     );
     await assertResealedJsonSetTamperRejected(
       recordingDir,

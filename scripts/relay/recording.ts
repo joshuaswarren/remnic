@@ -2,14 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
 import {
+  type RelayEvidenceRef,
+  type RelayMissionEvent,
   RelayMissionEventSchema,
   reduceRelayMission,
   relayMissionReceiptDigest,
-  type RelayEvidenceRef,
-  type RelayMissionEvent,
 } from "@remnic/core";
-import type { CodexCreditReceipt, CodexCreditReceiptScope } from "@remnic/bench";
 import { z } from "zod";
 
 import {
@@ -24,22 +24,23 @@ import {
   RELAY_NAMESPACE,
   RELAY_OPERATOR_PRINCIPAL,
   RELAY_PLANNED_SPEND_CEILING_UNITS,
-  RELAY_REPLACEMENT_DECISION_ID,
   RELAY_REASONING_EFFORT,
+  RELAY_REPLACEMENT_DECISION_ID,
   RELAY_STALE_DECISION_ID,
   RelayBuilderOutputSchema,
   RelayCodexCallSummarySchema,
+  type RelayPreflightReceipt,
   RelayPreflightReceiptSchema,
   RelayResolverOutputSchema,
+  type RelayRole,
   RelayRoleSchema,
   RelayScoutOutputSchema,
   RelayTestResultSchema,
-  type RelayPreflightReceipt,
-  type RelayRole,
 } from "./contracts.js";
-import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
+import { type RelayFixtureManifest, verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import { assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "./mission-runner.js";
+import { assertRelayCheckoutDecision, assertRelaySourceLocators } from "./source-grounding.js";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const finiteNonnegative = z.number().finite().nonnegative();
@@ -336,6 +337,7 @@ interface RelayRecordingBindings {
   staleMemory: RelayMemoryArtifact;
   replacementMemory: RelayMemoryArtifact;
   missionReceipt: RelayMissionReceiptArtifact;
+  fixtureManifest: RelayFixtureManifest;
 }
 
 function payloadsOfKind<TKind extends RelayPayloadKind>(
@@ -389,7 +391,17 @@ function assertRecordingLocators(events: RelayMissionEvent[]): void {
 }
 
 function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
-  const { events, tests, calls, approval, correction, staleMemory, replacementMemory, missionReceipt } = bindings;
+  const {
+    events,
+    tests,
+    calls,
+    approval,
+    correction,
+    staleMemory,
+    replacementMemory,
+    missionReceipt,
+    fixtureManifest,
+  } = bindings;
   assertRecordingLocators(events);
 
   if (events.some((event) => event.authenticatedPrincipal !== approval.operatorPrincipal)) {
@@ -414,6 +426,29 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
   const staleOutput = RelayBuilderOutputSchema.parse(staleCall.output);
   const resolverOutput = RelayResolverOutputSchema.parse(resolverCall.output);
   const coldOutput = RelayBuilderOutputSchema.parse(coldCall.output);
+  const fixturePaths = new Set(fixtureManifest.files.map((item) => item.path));
+  const bindSourceOutput = (decision: string, locators: string[], context: "Scout" | "Resolver") => {
+    const contractKey = assertRelayCheckoutDecision(decision, context);
+    const normalizedLocators = assertRelaySourceLocators(locators, context);
+    for (const locator of normalizedLocators) {
+      if (!fixturePaths.has(`upstream/${locator}`)) {
+        throw new Error(
+          `Relay recording ${context} locator is not present in the committed fixture contract: ${locator}`
+        );
+      }
+    }
+    return contractKey;
+  };
+  const scoutContractKey = bindSourceOutput(scoutOutput.decision, scoutOutput.source_locators, "Scout");
+  const resolverContractKey = bindSourceOutput(
+    resolverOutput.replacement_decision,
+    resolverOutput.source_locators,
+    "Resolver"
+  );
+  const replacementContractKey = assertRelayCheckoutDecision(replacementMemory.statement, "replacement memory");
+  if (scoutContractKey !== replacementContractKey || resolverContractKey !== replacementContractKey) {
+    throw new Error("Relay recording source-agent decisions do not resolve to the sealed replacement decision");
+  }
   if (
     staleOutput.recall_memory_id !== staleMemory.memoryId ||
     coldOutput.recall_memory_id !== replacementMemory.memoryId
@@ -647,6 +682,12 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
   const temporary = path.join(parent, `.${path.basename(target)}.tmp-${randomBytes(6).toString("hex")}`);
   await mkdir(temporary, { mode: 0o700 });
   try {
+    const committedFixtureManifest = await verifyRelayFixtureManifest(
+      path.join(path.resolve(options.repoRoot), "fixtures", "remnic-relay")
+    );
+    if (options.missionRun.fixtureManifestSha256 !== committedFixtureManifest.rootSha256) {
+      throw new Error("Relay mission fixture evidence does not match the committed synthetic fixture manifest");
+    }
     const creditReceipt = sanitizeCreditReceipt(options.creditReceipt, options.runId);
     const metadata = RelayRecordingMetadataSchema.parse({
       schemaVersion: 1,
@@ -728,6 +769,7 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
       staleMemory,
       replacementMemory,
       missionReceipt,
+      fixtureManifest: committedFixtureManifest,
     });
     const artifacts: Array<[string, unknown]> = [
       ["recording.json", metadata],
@@ -831,6 +873,7 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
     staleMemory,
     replacementMemory,
     missionReceipt,
+    fixtureManifest: committedFixtureManifest,
   });
   if (!mission.receipt.complete || receiptDigest !== metadata.missionReceiptSha256) {
     throw new Error("Relay recording events do not reduce to the sealed mission receipt");
