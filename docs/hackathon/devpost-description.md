@@ -1,7 +1,8 @@
 # Devpost submission text (OpenAI Build Week 2026)
 
 Status: DRAFT. Do not paste this into Devpost yet. First, check each claim
-against the shipped code. Add the Codex `/feedback` session ID and video URL.
+against the shipped code. Enter the private Codex `/feedback` session ID in its
+dedicated Devpost field and add the video URL.
 The paid GPT-5.6 proof named here is now public. Each clean receipt binds to a
 private result and manifest. LongMemEval also has a clean public artifact.
 `HACKATHON.md` tracks the last operator gates. This file must pass voice-lint
@@ -57,9 +58,9 @@ anyone can check again.
 Codex sessions built the new Build Week work. We added GPT-5.6 as an opt-in
 judge through the OpenAI Responses API and Codex CLI. The contest runs use the
 CLI because the event grant pays in Codex credits, not API credits. The Codex
-`/feedback` session ID is still operator input. It must be in the form before
-submission. We mark the line between prior work and new work, commit by commit,
-in
+`/feedback` upload was completed on 2026-07-18. Its private session ID must be
+entered in the form before submission. We mark the line between prior work and
+new work, commit by commit, in
 [HACKATHON.md](https://github.com/joshuaswarren/remnic/blob/main/HACKATHON.md).
 
 Codex first studied our adapter seam. It then built the generic MCP memory

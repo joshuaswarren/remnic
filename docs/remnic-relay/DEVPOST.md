@@ -219,5 +219,9 @@ without the stale belief).
 ## User-owned fields still required
 
 - public YouTube URL for the final under-three-minute video with audio;
-- the real Codex `/feedback` session ID from the primary build thread;
+- private `/feedback` thread identifier entered in its dedicated Devpost field;
 - entrant/team details and final Devpost submission action.
+
+Completed operator evidence: `/feedback` was uploaded on 2026-07-18 for the
+primary build thread. Its identifier is retained in the private operator
+handoff for the final submission.
