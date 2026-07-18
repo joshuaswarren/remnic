@@ -98,6 +98,27 @@ export interface BudgetDecision {
   reservation?: BudgetReservation;
 }
 
+/**
+ * Response-safe projection of a soft-limit warning: a {@link BudgetDecision}
+ * WITHOUT the server-only `reservation` rollback token (which carries the
+ * principal id). This is what may be surfaced on HTTP/MCP recall responses and
+ * persisted in idempotency-cache entries, so it must never carry internal quota
+ * state (issue #1906 review round 10 #2).
+ */
+export type BudgetWarning = Omit<BudgetDecision, "reservation">;
+
+/**
+ * Project a decision to its response-safe {@link BudgetWarning}, stripping the
+ * internal `reservation` token. Returns `undefined` unless the decision is a
+ * soft-limit warning (`warn-over-soft`) — so callers can assign the result to
+ * `budgetWarning` directly.
+ */
+export function toBudgetWarning(decision: BudgetDecision): BudgetWarning | undefined {
+  if (decision.reason !== "warn-over-soft") return undefined;
+  const { reservation: _reservation, ...warning } = decision;
+  return warning;
+}
+
 interface PrincipalBucket {
   /** Cross-namespace reads in the active window, each tagged with a unique id
    *  so a specific reservation can be released without disturbing others. */

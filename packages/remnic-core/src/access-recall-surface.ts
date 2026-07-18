@@ -17,7 +17,7 @@ import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
 import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
-import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget } from "./cross-namespace-budget.js";
+import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBudgetWarning } from "./cross-namespace-budget.js";
 import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
@@ -1158,7 +1158,7 @@ export class AccessRecallSurface {
         disclosure,
         budgetsApplied: snapshot?.budgetsApplied,
         auditAnomalies,
-        budgetWarning: budgetDecision.reason === "warn-over-soft" ? budgetDecision : undefined,
+        budgetWarning: toBudgetWarning(budgetDecision),
         latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),
         debug,
       },

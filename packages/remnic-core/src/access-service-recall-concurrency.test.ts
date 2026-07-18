@@ -1219,3 +1219,123 @@ test("a keyed leader whose signal is already aborted at admission rejects withou
   assert.equal(pipelineRuns, 0, "no pipeline ran for a caller that left before admission");
   assert.equal(h.liveBudget(), 0, "no cross-namespace budget event was reserved");
 });
+
+test("a keyed caller aborted at admission does NOT join a live coalesced flight — records no budget (round 10 #1)", async () => {
+  const pipelineGate = deferred<void>();
+  let recordCount = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      await pipelineGate.promise;
+      return stubResponse([]);
+    },
+    onBudgetRecord: () => {
+      recordCount += 1;
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+    createAndStartFlight: (
+      normalizedRequest: EngramAccessRecallRequest,
+      flightKey: string,
+      principalKey: string,
+      keyed: boolean,
+    ) => unknown;
+    consumeFlight: (
+      flight: unknown,
+      request: EngramAccessRecallRequest,
+      recordBudget: boolean,
+      race: boolean,
+    ) => Promise<{ response: EngramAccessRecallResponse; reservation: unknown }>;
+    leadRecallFlight: (
+      request: EngramAccessRecallRequest,
+      normalizedRequest: EngramAccessRecallRequest,
+      requestFingerprint: unknown,
+      flightKey: string,
+      principalKey: string,
+    ) => Promise<EngramAccessRecallResponse>;
+  };
+  // A keyed leader on a cache MISS runs execute() (the harness has no real store).
+  host.handleIdempotentRead = async (options) => options.execute();
+
+  const flightKey = "principal\u0000same";
+  const req = { query: "same", idempotencyKey: "k" } as EngramAccessRecallRequest;
+  // A LIVE coalesced flight kept registered by a real consumer.
+  const flight = host.createAndStartFlight(req, flightKey, "principal", true);
+  const liveConsumer = host.consumeFlight(flight, req, false, false);
+
+  // A keyed caller whose signal is ALREADY aborted reaches leadRecallFlight and
+  // finds the existing flight. It must reject at admission WITHOUT joining — a
+  // keyed join is non-racing (race=false), so it would record its OWN budget
+  // event (and run a keyed put) before the late abort check.
+  const controller = new AbortController();
+  controller.abort();
+  const abortedReq = {
+    query: "same",
+    idempotencyKey: "k",
+    abortSignal: controller.signal,
+  } as EngramAccessRecallRequest;
+  const aborted = host.leadRecallFlight(abortedReq, abortedReq, {}, flightKey, "principal");
+  pipelineGate.resolve();
+  await assert.rejects(aborted, (error: Error) => error.name === "AbortError");
+
+  const consumed = await liveConsumer;
+  assert.ok(consumed.response, "the live flight still completed for its other consumer");
+  // Exactly ONE budget event: the shared pipeline's reserve. The aborted caller
+  // joined nothing (with the bug it records a SECOND, keyed event that survives).
+  assert.equal(recordCount, 1, "the aborted caller recorded no budget of its own");
+  assert.equal(h.liveBudget(), 1, "only the shared pipeline's reservation is live");
+});
+
+test("a response's budgetWarning never carries the internal reservation token / principal id (round 10 #2)", async () => {
+  let count = 0;
+  const release = deferred<void>();
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      await release.promise;
+      return stubResponse([]);
+    },
+    // soft=1: count 1 => under soft (no warning), count 2 => over soft (warning).
+    // The reservation carries a distinctive principal id that must NOT leak.
+    budgetRecord: () => {
+      count += 1;
+      const reason = count > 1 ? "warn-over-soft" : "allowed-under-soft";
+      return {
+        allowed: true,
+        reason,
+        count,
+        limit: { hardLimit: 10, softLimit: 1, windowMs: 60_000 },
+        reservation: { principal: "tenant-secret-42", id: count },
+      };
+    },
+  });
+
+  const leader = service.recall({ query: "same" });
+  const follower = service.recall({ query: "same" });
+  await Promise.resolve();
+  release.resolve();
+  const [, followerResp] = await Promise.all([leader, follower]);
+
+  assert.ok(followerResp.budgetWarning, "follower (count 2) carries its own soft-limit warning");
+  assert.equal(
+    (followerResp.budgetWarning as { reservation?: unknown }).reservation,
+    undefined,
+    "the server-only reservation rollback token must not ride along on the response",
+  );
+  const serialized = JSON.stringify(followerResp.budgetWarning);
+  assert.ok(
+    !serialized.includes("tenant-secret-42"),
+    "the principal id must not leak into the serialized warning",
+  );
+  assert.ok(
+    !serialized.includes("reservation"),
+    "no reservation field in the serialized warning",
+  );
+});

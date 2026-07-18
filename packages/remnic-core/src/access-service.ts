@@ -79,7 +79,7 @@ import {
   type ExplicitCaptureInput,
   type ValidExplicitCapture,
 } from "./explicit-capture.js";
-import { CrossNamespaceBudget, type BudgetDecision, type BudgetReservation } from "./cross-namespace-budget.js";
+import { CrossNamespaceBudget, type BudgetDecision, type BudgetReservation, type BudgetWarning, toBudgetWarning } from "./cross-namespace-budget.js";
 import { log } from "./logger.js";
 import {
   buildQualityScore,
@@ -516,7 +516,7 @@ export interface EngramAccessRecallResponse {
   disclosure: RecallDisclosure;
   budgetsApplied?: LastRecallSnapshot["budgetsApplied"];
   auditAnomalies?: AnomalyDetectorResult;
-  budgetWarning?: BudgetDecision;
+  budgetWarning?: BudgetWarning;
   latencyMs?: number;
   debug?: {
     snapshot?: LastRecallSnapshot;
@@ -2699,8 +2699,9 @@ export class EngramAccessService {
           // The clone carries the LEADER's budgetWarning; replace it with THIS
           // coalesced caller's OWN soft-limit decision so the caller whose event
           // actually crossed the soft limit sees its own warning (round 4 #2).
-          response.budgetWarning =
-            ownDecision.reason === "warn-over-soft" ? ownDecision : undefined;
+          // `toBudgetWarning` strips the server-only `reservation` token so the
+          // principal id never reaches the response / cache (round 10 #2).
+          response.budgetWarning = toBudgetWarning(ownDecision);
         }
         return { response, reservation };
       } catch (err) {
@@ -2919,7 +2920,13 @@ export class EngramAccessService {
           const existing = this.recallInFlight.get(flightKey);
           if (existing && !existing.controller.signal.aborted) {
             // A LIVE identical flight registered between our fast-path miss and
-            // the idempotency guard — join it and record our own event.
+            // the idempotency guard — join it and record our own event. But a
+            // caller that already disconnected must NOT join: a keyed join is
+            // non-racing (race=false), so it would record its own cross-namespace
+            // budget event and run idempotency.put before the late abort check.
+            // Reject at admission instead; the existing flight continues for its
+            // other live consumers (round 10 #1).
+            throwIfAborted(request.abortSignal);
             const consumed = await this.consumeFlight(existing, request, true, race);
             capturedReservation = consumed.reservation;
             return consumed.response;
@@ -3300,6 +3307,11 @@ export class EngramAccessService {
     // Skip a flight already cancelled (all its callers aborted) — it will
     // reject with AbortError; lead a fresh flight instead (round 3 #2).
     if (existing && !existing.controller.signal.aborted) {
+      // A caller that already disconnected must NOT join a live flight: joining
+      // records its own cross-namespace budget event (and, keyed, runs an
+      // idempotency.put) before the late abort check. Reject at admission; the
+      // existing flight continues for its other live consumers (round 10 #1).
+      throwIfAborted(request.abortSignal);
       return this.followRecallFlight(existing, request);
     }
     // We are the leader: leadRecallFlight registers the flight synchronously in
