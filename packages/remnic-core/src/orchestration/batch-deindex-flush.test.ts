@@ -101,9 +101,21 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
         staleDecayThreshold: 0,
         archiveDecayThreshold: 0,
       }),
-      // Succeeds for mem-a, throws for mem-b — the later iteration — after mem-b
-      // is already archived on disk but before its batch push.
-      async removeContentHashForMemory(_storage, memory): Promise<void> {
+      // Throws for mem-b — the later iteration — after mem-b is already archived
+      // AND queued for de-index, but before its content-hash cleanup completes.
+      // Asserts the production call passes the target storage instance and the
+      // fact-archival context.
+      async removeContentHashForMemory(targetStorage, memory, context): Promise<void> {
+        assert.equal(
+          targetStorage,
+          storage,
+          "removeContentHashForMemory must receive the target storage instance",
+        );
+        assert.equal(
+          context,
+          "fact-archival",
+          "removeContentHashForMemory must receive the fact-archival context",
+        );
         if (memory.frontmatter.id === "mem-b") throw boom;
       },
       async saveContentHashIndexes(): Promise<void> {},
@@ -119,13 +131,15 @@ test("#1911B fact-archival flushes prior de-index entries when a later iteration
     // Both were archived on disk before the failure.
     assert.deepEqual(archived, ["mem-a", "mem-b"]);
 
-    // The regression: mem-a's de-index entry was collected before mem-b threw.
-    // The finally-path flush must have removed mem-a's bucket from the temporal
-    // index even though the loop aborted. mem-b never reached the batch (its
-    // failure was before the push), so its bucket legitimately remains.
+    // Both facts were archived on disk AND queued for de-index — the queue push
+    // now precedes the throwing content-hash cleanup — so the finally-path flush
+    // must remove BOTH date buckets even though a later iteration threw. This
+    // fails on either ordering regression: move the flush out of `finally` and
+    // nothing is de-indexed (mem-a fails); move the queue push back after the
+    // throwing cleanup and mem-b is never queued (mem-b fails).
     const afterDates = await temporalDates(memoryDir);
     assert.equal(afterDates["2020-01-01"], undefined, "mem-a must be de-indexed via the finally flush");
-    assert.deepEqual(afterDates["2020-02-02"], [memB.path], "mem-b was never queued for de-index");
+    assert.equal(afterDates["2020-02-02"], undefined, "mem-b must be de-indexed even though later cleanup threw");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -339,14 +339,10 @@ export class LifecyclePolicyCoordinator {
         // All criteria met — archive
         const result = await storage.archiveMemory(memory);
         if (result) {
-          // Remove from the same storage-scoped content-hash index since it is
-          // no longer in hot search.
-          await this.deps.removeContentHashForMemory(
-            storage,
-            memory,
-            "fact-archival",
-          );
-          await this.deps.embeddingFallback.removeFromIndex(memory.frontmatter.id);
+          // Queue de-indexing immediately after a successful archive, before
+          // the secondary content-hash / embedding cleanup can throw. A fact
+          // archived on disk must always be de-indexed; the finally-flush then
+          // removes every queued fact even if a later step throws.
           if (
             resolveIndexingCapabilities(this.config).queryAwareIndexing &&
             memory.path &&
@@ -358,6 +354,14 @@ export class LifecyclePolicyCoordinator {
               tags: memory.frontmatter.tags ?? [],
             });
           }
+          // Remove from the same storage-scoped content-hash index since it is
+          // no longer in hot search.
+          await this.deps.removeContentHashForMemory(
+            storage,
+            memory,
+            "fact-archival",
+          );
+          await this.deps.embeddingFallback.removeFromIndex(memory.frontmatter.id);
           archivedCount++;
         }
       }
