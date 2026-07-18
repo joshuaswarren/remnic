@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -431,5 +431,54 @@ test("file-size ratchet: changed-file scoping suppresses failures for files the 
     });
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /missing file/);
+  });
+});
+
+test("file-size ratchet: symlinked src roots are rejected, not traversed (round 2)", () => {
+  withFixture((fixture) => {
+    // A package whose src is a symlink pointing outside the fixture root.
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-outside-"));
+    try {
+      writeFileSync(path.join(outside, "huge.ts"), "pad\n".repeat(2000));
+      symlinkSync(outside, path.join(evilPkg, "src"), "dir");
+
+      assert.equal(runRatchets(["--update"], fixture).status, 0);
+      const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+      const grandfathered = Object.keys(baseline.metrics.fileSizeGrandfather);
+      assert.equal(grandfathered.some((f) => f.includes("evil-pkg")), false,
+        `symlinked root was traversed: ${grandfathered}`);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("file-size ratchet: scoped --update prints out-of-scope ceiling raises loudly (round 2)", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // Simulate merge-skew growth, then refresh with a scope that does NOT
+    // include the grown file.
+    appendFileSync(bigPath, "pad\n".repeat(20));
+    const scopePath = path.join(fixture.root, "changed.txt");
+    writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+    const update = spawnSync(process.execPath, [SCRIPT, "--update"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(update.status, 0, update.stderr);
+    assert.match(update.stdout, /ceiling raised \(out-of-scope growth inherited from main\): packages\/remnic-core\/src\/legacy-big\.ts 1401 -> 1421/);
+    // And the raise is real: baseline now carries the new ceiling.
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"], 1421);
   });
 });

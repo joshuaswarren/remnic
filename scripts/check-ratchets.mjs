@@ -49,7 +49,7 @@
  * configuration.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -109,19 +109,26 @@ const NEW_FILE_SIZE_CAP_LOC = 1200;
 
 /** Roots scanned by the file-size ratchet (repo-relative). */
 function sizeCapScanRoots() {
+  // Symlinked roots are REJECTED, not followed: statSync follows links, so a
+  // committed `packages/<pkg>/src` (or root `src`) symlink could point the
+  // scan outside the checkout (review finding on PR #2000, P1). lstat first.
+  const isRealDirectory = (candidate) =>
+    existsSync(candidate) &&
+    !lstatSync(candidate).isSymbolicLink() &&
+    statSync(candidate).isDirectory();
   const roots = [];
   const packagesDir = path.join(ROOT, "packages");
   if (existsSync(packagesDir)) {
     for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const src = path.join(packagesDir, entry.name, "src");
-      if (existsSync(src) && statSync(src).isDirectory()) {
+      if (isRealDirectory(src)) {
         roots.push(src);
       }
     }
   }
   const rootSrc = path.join(ROOT, "src");
-  if (existsSync(rootSrc) && statSync(rootSrc).isDirectory()) {
+  if (isRealDirectory(rootSrc)) {
     roots.push(rootSrc);
   }
   return roots.sort();
@@ -479,6 +486,22 @@ function main() {
             `cannot write baseline: ${parts.join("; ")}. ` +
               `Shrink the file(s) to ${NEW_FILE_SIZE_CAP_LOC} lines or extract sibling modules first — --update never raises or adds a ceiling.`,
           );
+        }
+        // Out-of-scope raises are permitted (that growth was judged on the
+        // PRs that landed it on main) but NEVER silent: each one is printed
+        // so the baseline diff review sees exactly what moved and why
+        // (review finding on PR #2000 round 2).
+        for (const [file, lines] of Object.entries(metrics.oversizeByFile).sort(([a], [b]) => a.localeCompare(b))) {
+          const ceiling = previousCeilings[file];
+          if (ceiling !== undefined && lines > ceiling && !inScope(file)) {
+            console.log(
+              `[ratchet]   ceiling raised (out-of-scope growth inherited from main): ${file} ${ceiling} -> ${lines}`,
+            );
+          } else if (ceiling === undefined && !inScope(file)) {
+            console.log(
+              `[ratchet]   grandfathered (out-of-scope, new on main): ${file} (${lines})`,
+            );
+          }
         }
       }
     }
