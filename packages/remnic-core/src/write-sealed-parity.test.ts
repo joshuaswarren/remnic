@@ -171,7 +171,7 @@ test("writeSealedMemory rejects forged envelopes", async () => {
     await assert.rejects(
       // @ts-expect-error — deliberately unbranded
       () => storage.writeSealedMemory(forged),
-      /minted by composeMemoryEnvelope/,
+      /not a valid sealed memory envelope/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

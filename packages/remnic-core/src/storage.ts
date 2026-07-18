@@ -4214,7 +4214,9 @@ export class StorageManager {
     extras: SealedWriteExtras = {},
   ): Promise<MemoryWriteResult> {
     if (!isSealedMemoryEnvelope(envelope)) {
-      throw new Error("writeSealedMemory: envelope must be minted by composeMemoryEnvelope");
+      throw new Error(
+        "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)",
+      );
     }
     const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
     return this.writeMemory(category, content, options as WriteMemoryOptions);

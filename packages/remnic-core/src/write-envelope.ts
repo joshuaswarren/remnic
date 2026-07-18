@@ -118,7 +118,7 @@ const MEMORY_CATEGORY_TABLE: Record<MemoryCategory, true> = {
 
 const MEMORY_CATEGORY_NAMES = Object.keys(MEMORY_CATEGORY_TABLE).sort();
 
-function isMemoryCategory(value: string): value is MemoryCategory {
+export function isMemoryCategory(value: string): value is MemoryCategory {
   return Object.prototype.hasOwnProperty.call(MEMORY_CATEGORY_TABLE, value);
 }
 
@@ -483,14 +483,20 @@ const SEALED_ENVELOPES = new WeakSet<object>();
 /**
  * Runtime check (belt) — the compile-time brand is the real fence.
  *
- * Fast path: WeakSet membership (same module graph). Fallback: structural
- * validation — Node resolves `@remnic/core` through `dist/` for built
+ * Fast path: WeakSet membership (same module graph). Fallback: RE-COMPOSITION
+ * EQUIVALENCE — Node resolves `@remnic/core` through `dist/` for built
  * consumers and `src/` for tsx-loaded tests, and each graph gets its OWN
  * WeakSet, so identity alone would reject genuinely-sealed envelopes that
- * crossed a build boundary. The structural arm verifies the frozen shape
- * AND that `persistedBody` reproduces from (content, rawStructuredAttributes)
- * via the shared assembler — a forger who satisfies all of that has simply
- * re-implemented the composer's contract correctly.
+ * crossed a build boundary. The structural arm re-runs the STRICT composer
+ * on the candidate's own inputs and demands every envelope field reproduce
+ * exactly (#2014 round 2: shape-only validation admitted lookalikes with 51
+ * tags or out-of-range confidence, bypassing the sealed-input contract). A
+ * value that survives has, by construction, passed every composer invariant.
+ *
+ * `salvageNotes` is deliberately NOT compared: a legitimately salvage-minted
+ * envelope carries notes while the strict re-composition of its (already
+ * clean) surviving fields yields none. Notes are advisory provenance, not
+ * identity — every load-bearing field is still verified.
  */
 export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnvelope {
   if (typeof value !== "object" || value === null) return false;
@@ -514,10 +520,56 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
   if (attrs !== undefined && (attrs === null || typeof attrs !== "object" || Array.isArray(attrs))) {
     return false;
   }
-  // The load-bearing structural fact: persistedBody must reproduce through
-  // the shared assembler from the envelope's own inputs.
-  const reproduced = assemblePersistedBody(v.content, attrs ? { ...attrs } : undefined);
-  return reproduced.text === v.persistedBody;
+  let rebuilt: SealedMemoryEnvelope;
+  try {
+    rebuilt = composeMemoryEnvelope(
+      {
+        content: v.content,
+        category: v.category,
+        ...(v.tags.length > 0 ? { tags: [...(v.tags as string[])] } : {}),
+        ...(attrs !== undefined ? { structuredAttributes: { ...attrs } } : {}),
+        ...(v.entityRef !== undefined ? { entityRef: v.entityRef } : {}),
+        ...(v.confidence !== undefined ? { confidence: v.confidence } : {}),
+        ...(v.ttl !== undefined ? { ttl: v.ttl } : {}),
+        ...(v.validAt !== undefined ? { validAt: v.validAt } : {}),
+        ...(v.sourceConnector !== undefined ? { sourceConnector: v.sourceConnector } : {}),
+        ...(v.sourceReason !== undefined ? { sourceReason: v.sourceReason } : {}),
+      },
+      { source: v.source, now: () => new Date(v.composedAt as string) },
+    );
+  } catch {
+    // Strict re-composition rejected an input — the candidate carries a
+    // value the composer would never have minted.
+    return false;
+  }
+  const sameArray = (a: readonly string[], b: readonly string[]): boolean =>
+    a.length === b.length && a.every((entry, i) => entry === b[i]);
+  const sameMap = (
+    a: Readonly<Record<string, string>> | undefined,
+    b: Readonly<Record<string, string>> | undefined,
+  ): boolean => {
+    if (a === undefined || b === undefined) return a === b;
+    const ak = Object.keys(a);
+    const bk = Object.keys(b);
+    return ak.length === bk.length && ak.every((k) => Object.hasOwn(b, k) && a[k] === b[k]);
+  };
+  return (
+    rebuilt.content === v.content &&
+    rebuilt.persistedBody === v.persistedBody &&
+    rebuilt.category === v.category &&
+    rebuilt.source === v.source &&
+    rebuilt.composedAt === v.composedAt &&
+    rebuilt.confidence === v.confidence &&
+    rebuilt.entityRef === v.entityRef &&
+    rebuilt.ttl === v.ttl &&
+    rebuilt.validAt === v.validAt &&
+    rebuilt.sourceConnector === v.sourceConnector &&
+    rebuilt.sourceReason === v.sourceReason &&
+    sameArray(rebuilt.tags, v.tags as string[]) &&
+    sameArray(rebuilt.sanitizeViolations, v.sanitizeViolations as string[]) &&
+    sameMap(rebuilt.structuredAttributes, v.structuredAttributes) &&
+    sameMap(rebuilt.rawStructuredAttributes, attrs)
+  );
 }
 
 /**
