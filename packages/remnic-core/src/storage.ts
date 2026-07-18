@@ -1200,6 +1200,44 @@ export class ContentHashIndex {
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
   }
 
+  /**
+   * Persist the index by UNIONing the current on-disk hashes into this set
+   * before writing (issue #1909 review round 6). Safe only where writes are
+   * append-only within the batch (extraction persist / deferred flush): a
+   * concurrent writer's appended hashes are preserved instead of being clobbered
+   * by a blind whole-file overwrite, and a stale in-memory snapshot can never
+   * drop another run's durable fact. NEVER use on a removal path — a union would
+   * resurrect the removed hash. Always writes (no dirty short-circuit) so the
+   * union lands even when this instance itself added nothing this run.
+   */
+  async saveMergingWithDisk(): Promise<void> {
+    try {
+      const raw = await readMaybeEncryptedFile(
+        this.filePath,
+        this.secureStoreKeyProvider(),
+        this.memoryDir
+      );
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length > 0) this.hashes.add(trimmed);
+      }
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      // ENOENT → no on-disk index yet; write our set as-is.
+    }
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeMaybeEncryptedFile(
+      this.filePath,
+      [...this.hashes].join("\n") + "\n",
+      this.secureStoreWriteKeyProvider(),
+      {},
+      this.memoryDir
+    );
+    this.dirty = false;
+    log.debug(`content-hash index: merge-saved ${this.hashes.size} hashes`);
+  }
+
   /** Remove a hash from the index (used when archiving/deleting). */
   remove(content: string): void {
     const hash = ContentHashIndex.computeHash(content);
@@ -3724,6 +3762,30 @@ export class StorageManager {
         });
     }
     return this.factHashIndexLoadPromise;
+  }
+
+  /**
+   * Flush the storage-owned fact-hash index by union-merging with the on-disk
+   * file (issue #1909 review round 6). Called at the end of a deferred-batch
+   * persist run so a deferred write's hash reaches disk EVEN IF the orchestrator
+   * dedup registration (addContentHashDedup) threw — writeMemory already added
+   * the hash to this instance's index, so it is durable independent of that
+   * fragile chain. Union-merge keeps it safe under concurrent writers. No-op
+   * (returns true) when no fact-hash index was materialized this run. Returns
+   * false on failure so the caller can leave the ready marker absent and let a
+   * restart rebuild from the corpus.
+   */
+  async flushDeferredFactHashIndexMergingWithDisk(): Promise<boolean> {
+    if (!this.factHashIndex) return true;
+    try {
+      await this.factHashIndex.saveMergingWithDisk();
+      return true;
+    } catch (err) {
+      log.warn(
+        `storage.flushDeferredFactHashIndexMergingWithDisk failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
   }
 
   private async ensureFactHashIndexAuthoritative(): Promise<void> {

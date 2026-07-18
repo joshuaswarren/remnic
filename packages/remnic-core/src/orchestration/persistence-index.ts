@@ -270,7 +270,9 @@ export class PersistenceIndexCoordinator {
       indexes.add(index);
     }
     for (const index of indexes) {
-      await index.save();
+      // Union-merge with on-disk (issue #1909 review round 6) so two interleaved
+      // persist runs cannot clobber each other's appended hashes.
+      await index.saveMergingWithDisk();
     }
   }
 

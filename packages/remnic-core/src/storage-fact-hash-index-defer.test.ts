@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,5 +216,30 @@ test("#1909: restoring the ready marker re-establishes trust after a successful 
     // invalidate on an already-absent marker reports false (nothing to restore).
     await storage.invalidateFactHashIndexReadyMarkerOnDisk();
     assert.equal(await storage.invalidateFactHashIndexReadyMarkerOnDisk(), false);
+  });
+});
+
+test("#1909: saveMergingWithDisk unions with a concurrent writer instead of clobbering", async () => {
+  // Review round 6 finding 2: two independent index instances (two processes)
+  // that both snapshot an empty file must not clobber each other on save.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const a = new ContentHashIndex(stateDir);
+    const b = new ContentHashIndex(stateDir);
+    await a.load();
+    await b.load();
+    a.add("interleaved fact A");
+    b.add("interleaved fact B");
+
+    // Interleave the saves: a blind whole-file overwrite by B would drop A's
+    // hash; the union-merge preserves both regardless of order.
+    await a.saveMergingWithDisk();
+    await b.saveMergingWithDisk();
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("interleaved fact A"), "A's hash preserved after B's concurrent save");
+    assert.ok(fresh.has("interleaved fact B"), "B's hash preserved");
   });
 });

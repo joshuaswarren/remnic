@@ -49,6 +49,10 @@ interface OrchestratorTestSurface {
   ) => Promise<string[]>;
   getStorage: (namespace: string) => Promise<StorageManager>;
   contentHashIndex: ContentHashIndex | null;
+  // Private on the real instance; reached through the unknown-cast surface for
+  // the #1909 defer-durability tests (registration failure + concurrent runs).
+  addContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<void>;
+  hasContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,4 +1162,79 @@ test("#1909: deferred persist run restores the ready marker and dedups the fact 
   // complete index.
   const restarted = new StorageManager(memoryDir);
   assert.equal(await restarted.hasFactContentHash(body), true);
+});
+test("#1909: a deferred fact stays durable when addContentHashDedup throws", async () => {
+  // Review round 6 finding 1: the deferred write's durability must not depend on
+  // the orchestrator dedup registration succeeding. writeMemory already added the
+  // hash to the storage-owned index; the end-of-run storage-index flush must put
+  // it on disk even though addContentHashDedup threw (caught+logged).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-regfail-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  assert.equal(await storage.hasFactContentHash("warm"), false); // warm + create marker
+
+  // Force the orchestrator dedup registration to throw for every fact this run.
+  orchestrator.addContentHashDedup = async () => {
+    throw new Error("simulated registration failure");
+  };
+
+  const body = "The queue drains oldest-first under sustained backpressure.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written despite the registration failure");
+
+  // Restart trusts the marker (restored) and finds the hash on disk — no
+  // duplicate re-creation — because the storage-owned index flush persisted it.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(
+    await restarted.hasFactContentHash(body),
+    true,
+    "the deferred hash reached disk independent of addContentHashDedup",
+  );
+});
+
+test("#1909: two interleaved persist runs both land on disk (merge, no clobber)", async () => {
+  // Review round 6 finding 2: two orchestrators that snapshot an empty index
+  // before either saves must not clobber each other — the merge-save unions.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-interleave-"));
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+  const orchA = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const orchB = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storageA = await orchA.getStorage("default");
+  const storageB = await orchB.getStorage("default");
+  await storageA.ensureDirectories();
+
+  // Force BOTH orchestrator indexes to load an empty snapshot up front (the race:
+  // each holds a pre-write view of the shared on-disk index).
+  await orchA.hasContentHashDedup(storageA, "noop-a");
+  await orchB.hasContentHashDedup(storageB, "noop-b");
+
+  await orchA.persistExtraction(factResult("alpha interleaved fact"), storageA, null);
+  await orchB.persistExtraction(factResult("beta interleaved fact"), storageB, null);
+
+  // A blind overwrite by B (stale empty snapshot) would drop alpha; the merge
+  // union preserves both.
+  const fresh = new StorageManager(memoryDir);
+  assert.equal(await fresh.hasFactContentHash("alpha interleaved fact"), true, "A's fact survived");
+  assert.equal(await fresh.hasFactContentHash("beta interleaved fact"), true, "B's fact survived");
 });

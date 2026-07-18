@@ -2923,17 +2923,27 @@ export class ExtractionPersistCoordinator {
       touchBaseNonFactNamespace();
     }
 
-    // Save any content-hash indexes touched during the batch.
+    // Save any content-hash indexes touched during the batch (union-merge with
+    // on-disk — issue #1909 review round 6 — so concurrent runs don't clobber).
     let batchIndexSaveOk = true;
     await this.deps.saveContentHashIndexes().catch((err) => {
       batchIndexSaveOk = false;
       log.warn(`content-hash index save failed: ${err}`);
     });
-    // #1909 (review round 4): the deferred hashes are now durable in the on-disk
-    // index, so restore each target storage's fact-hashes.ready marker (only for
-    // storages whose marker we removed). On a failed batch save, leave the marker
-    // absent — a fresh instance rebuilds from the corpus (fail-open) rather than
-    // trusting an index that may be missing this run's hashes.
+    // #1909 (review round 6): also union-flush each deferred target's OWN
+    // fact-hash index. writeMemory already added the deferred hash to that index,
+    // so this makes durability independent of addContentHashDedup (which is
+    // caught+logged and could have thrown, leaving the orchestrator index — and
+    // thus the batch save — missing the hash). A storage whose flush fails is
+    // dropped from the marker-restore set so a restart rebuilds from the corpus.
+    for (const target of readyMarkerHandled) {
+      const flushed = await target.flushDeferredFactHashIndexMergingWithDisk();
+      if (!flushed) readyMarkerToRestore.delete(target);
+    }
+    // #1909 (review round 4): restore each removed ready marker only for storages
+    // whose deferred hashes are now durably on disk. On a failed batch/flush,
+    // leave the marker absent — a fresh instance rebuilds from the corpus
+    // (fail-open) rather than trusting an index missing this run's hashes.
     if (batchIndexSaveOk) {
       for (const target of readyMarkerToRestore) {
         await target.restoreFactHashIndexReadyMarkerOnDisk().catch((err) =>
