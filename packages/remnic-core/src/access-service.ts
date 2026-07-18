@@ -2617,6 +2617,7 @@ export class EngramAccessService {
       // A caller that ran the pipeline inherits its reservation token; a
       // coalesced caller records its OWN cross-namespace event below.
       let reservation = recordBudget ? undefined : result.reservation;
+      let ownDecision: BudgetDecision | undefined;
       if (recordBudget && result.budgetRecordPrincipal) {
         const decision = this.budget.record(result.budgetRecordPrincipal);
         if (!decision.allowed) {
@@ -2625,9 +2626,18 @@ export class EngramAccessService {
           );
         }
         reservation = decision.reservation;
+        ownDecision = decision;
       }
       try {
-        return { response: structuredClone(result.response), reservation };
+        const response = structuredClone(result.response);
+        if (ownDecision) {
+          // The clone carries the LEADER's budgetWarning; replace it with THIS
+          // coalesced caller's OWN soft-limit decision so the caller whose event
+          // actually crossed the soft limit sees its own warning (round 4 #2).
+          response.budgetWarning =
+            ownDecision.reason === "warn-over-soft" ? ownDecision : undefined;
+        }
+        return { response, reservation };
       } catch (err) {
         // Clone threw on a successful pipeline — release the admission entry
         // rather than leak it (round 3 #1).
@@ -2656,27 +2666,39 @@ export class EngramAccessService {
     requestFingerprint: unknown,
     queueWaitMs: number,
   ): Promise<EngramAccessRecallResponse> {
-    const response = await this.handleIdempotentRead({
-      operation: "recall",
-      idempotencyKey: request.idempotencyKey,
-      requestFingerprint,
-      execute: async () => {
-        // Create + await the pipeline inside the closure so its rejection is
-        // observed immediately (no unhandled-rejection window across the
-        // idempotency-lock await). The caller's own signal drives this
-        // non-coalesced pipeline.
-        const exec = this.executeRecall({ ...normalizedRequest, queueWaitMs });
-        const result = await this.raceAbort(exec, request.abortSignal);
-        try {
-          return structuredClone(result.response);
-        } catch (err) {
-          // Clone threw on a successful pipeline — release the reservation
-          // (round 3 #1).
-          this.budget.release(result.reservation);
-          throw err;
-        }
-      },
-    });
+    let capturedReservation: BudgetReservation | undefined;
+    let response: EngramAccessRecallResponse;
+    try {
+      response = await this.handleIdempotentRead({
+        operation: "recall",
+        idempotencyKey: request.idempotencyKey,
+        requestFingerprint,
+        execute: async () => {
+          // Create + await the pipeline inside the closure so its rejection is
+          // observed immediately (no unhandled-rejection window across the
+          // idempotency-lock await). The caller's own signal drives this
+          // non-coalesced pipeline.
+          const exec = this.executeRecall({ ...normalizedRequest, queueWaitMs });
+          const result = await this.raceAbort(exec, request.abortSignal);
+          let cloned: EngramAccessRecallResponse;
+          try {
+            cloned = structuredClone(result.response);
+          } catch (err) {
+            // Clone threw on a successful pipeline — release now (round 3 #1);
+            // leave capturedReservation unset so the outer catch is a no-op.
+            this.budget.release(result.reservation);
+            throw err;
+          }
+          // Clone succeeded — the outer catch owns rollback if a later step
+          // (idempotency put) fails (round 4 #1).
+          capturedReservation = result.reservation;
+          return cloned;
+        },
+      });
+    } catch (err) {
+      if (capturedReservation) this.budget.release(capturedReservation);
+      throw err;
+    }
     throwIfAborted(request.abortSignal);
     return response;
   }

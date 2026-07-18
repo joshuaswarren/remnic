@@ -56,8 +56,9 @@ function readResults(response: EngramAccessRecallResponse): unknown[] {
 
 type BudgetDecision = {
   allowed: boolean;
+  reason?: string;
   count?: number;
-  limit?: { hardLimit: number; windowMs: number };
+  limit?: { hardLimit: number; windowMs: number; softLimit?: number };
   reservation?: BudgetReservation;
 };
 
@@ -808,4 +809,70 @@ test("an idempotency put failure after the leader reserves releases the reservat
     /idempotency put failed/,
   );
   assert.equal(h.liveBudget(), 0, "the leader's reservation was released on put failure");
+});
+
+test("an idempotency put failure after a direct-path reserve releases the reservation (round 4 #1)", async () => {
+  const h = makeService({
+    limit: 0,
+    singleFlight: false, // direct path (runRecallDirect)
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  // Simulate handleIdempotentRead's store put failing AFTER execute() (and thus
+  // the reserve) succeeded.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    await options.execute();
+    throw new Error("idempotency put failed");
+  };
+
+  await assert.rejects(
+    h.service.recall({ query: "same", idempotencyKey: "put-fail-direct" }),
+    /idempotency put failed/,
+  );
+  assert.equal(h.liveBudget(), 0, "the direct-path reservation was released on put failure");
+});
+
+test("a coalesced follower's response carries its OWN soft-limit warning, not the leader's (round 4 #2)", async () => {
+  let count = 0;
+  const release = deferred<void>();
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      await release.promise;
+      return stubResponse([]);
+    },
+    // soft=1: count 1 => under soft (no warning), count 2 => over soft (warning).
+    budgetRecord: () => {
+      count += 1;
+      const reason = count > 1 ? "warn-over-soft" : "allowed-under-soft";
+      return {
+        allowed: true,
+        reason,
+        count,
+        limit: { hardLimit: 10, softLimit: 1, windowMs: 60_000 },
+        reservation: { principal: "principal", id: count },
+      };
+    },
+  });
+
+  const leader = service.recall({ query: "same" });
+  const follower = service.recall({ query: "same" });
+  await Promise.resolve();
+  release.resolve();
+  const [leaderResp, followerResp] = await Promise.all([leader, follower]);
+
+  // Leader reserved count 1 (under soft) — its stub response has no warning.
+  assert.equal(leaderResp.budgetWarning, undefined, "leader (count 1) carries no warning");
+  // Follower recorded count 2 (over soft) — it must see ITS OWN warning, not the
+  // leader's absent one.
+  assert.ok(followerResp.budgetWarning, "follower (count 2) carries its own warning");
+  assert.equal(followerResp.budgetWarning?.reason, "warn-over-soft");
+  assert.equal(followerResp.budgetWarning?.count, 2);
 });
