@@ -58,6 +58,15 @@ const MAX_BUFFER_ENTRY_COUNT = 200;
 const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
 
 /**
+ * Node's maximum 32-bit `setTimeout` delay (2^31-1 ms, ~24.8 days). A larger
+ * value is overflow-clamped by Node to 1ms with a TimeoutOverflowWarning, so we
+ * clamp defensively at every timer arm (issue #1909 review round 5) even though
+ * parseConfig already caps `bufferSaveDebounceMs` — a directly-constructed config
+ * could still exceed it.
+ */
+const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+
+/**
  * Minimal data carried on the serialized telemetry write chain
  * (issue #563 PR 3).
  *
@@ -327,7 +336,7 @@ export class SmartBuffer {
    * re-armed. Runs inside the record mutation, so the inline save is awaited.
    */
   private async scheduleSave(): Promise<void> {
-    const ms = this.config.bufferSaveDebounceMs;
+    const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
     const now = Date.now();
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
@@ -393,7 +402,7 @@ export class SmartBuffer {
       // the flag here would drop the buffered turns permanently. Re-arm a
       // background retry when debounced; fail-open (never crash the caller).
       log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
-      const ms = this.config.bufferSaveDebounceMs;
+      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
       if (ms > 0 && !this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;

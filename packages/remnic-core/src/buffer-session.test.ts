@@ -745,3 +745,64 @@ test("debounce on: a failed flush keeps the save pending so a retry (or shutdown
   );
   assert.equal(internals.pendingSave, false, "pending is cleared only after the write succeeds");
 });
+
+test("debounce cap: parseConfig clamps oversized and rejects non-finite bufferSaveDebounceMs", () => {
+  // Issue #1909 review round 5: a value above Node's 32-bit setTimeout limit is
+  // overflow-clamped to 1ms (save-on-every-turn); parseConfig must cap it.
+  assert.equal(
+    parseConfig({ bufferSaveDebounceMs: 3_000_000_000 }).bufferSaveDebounceMs,
+    2_147_483_647,
+    "oversized value clamped to the 32-bit setTimeout limit",
+  );
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 2_147_483_647 }).bufferSaveDebounceMs, 2_147_483_647);
+  assert.equal(
+    parseConfig({ bufferSaveDebounceMs: Number.POSITIVE_INFINITY }).bufferSaveDebounceMs,
+    3_000,
+    "Infinity falls back to the default",
+  );
+  assert.equal(
+    parseConfig({ bufferSaveDebounceMs: Number.NaN }).bufferSaveDebounceMs,
+    3_000,
+    "NaN falls back to the default",
+  );
+  // Unchanged: 0 and normal values.
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0);
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 3000 }).bufferSaveDebounceMs, 3000);
+});
+
+test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", async () => {
+  // Deterministic (no real waiting): capture the delay the buffer passes to
+  // setTimeout. An unclamped value > 2^31-1 is overflow-clamped by Node to 1ms;
+  // the buffer-side Math.min prevents that even when a directly-constructed
+  // config bypassed parseConfig's cap.
+  const config = parseConfig({ triggerMode: "smart", bufferMaxTurns: 10_000 });
+  config.bufferSaveDebounceMs = 3_000_000_000;
+  const storage = new FakeStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    config,
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
+  const realSetTimeout = timerGlobal.setTimeout;
+  const armedDelays: number[] = [];
+  const fakeHandle = { unref() {}, ref() {} } as unknown as NodeJS.Timeout;
+  timerGlobal.setTimeout = ((_fn: (...a: unknown[]) => void, delay?: number) => {
+    if (typeof delay === "number") armedDelays.push(delay);
+    // Do not schedule the real callback — we only assert on the delay argument.
+    return fakeHandle;
+  }) as typeof setTimeout;
+  try {
+    await buffer.addTurn("thread-a", makeTurn("thread-a", "x")); // arms the debounced save
+  } finally {
+    timerGlobal.setTimeout = realSetTimeout;
+  }
+
+  assert.ok(armedDelays.length >= 1, "a debounced save timer was armed");
+  for (const delay of armedDelays) {
+    assert.ok(
+      delay <= 2_147_483_647,
+      `armed setTimeout delay ${delay} must be clamped to the 32-bit limit`,
+    );
+  }
+});

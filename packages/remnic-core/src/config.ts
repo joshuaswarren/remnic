@@ -1781,9 +1781,12 @@ export function parseConfig(
         ? Math.max(0, Math.floor(cfg.sessionObserverDebounceMs))
         : 120_000,
     bufferSaveDebounceMs:
-      typeof cfg.bufferSaveDebounceMs === "number"
-        ? Math.max(0, Math.floor(cfg.bufferSaveDebounceMs))
-        : 3_000, // 0 = save immediately every turn (legacy behavior)
+      typeof cfg.bufferSaveDebounceMs === "number" && Number.isFinite(cfg.bufferSaveDebounceMs)
+        ? // Cap at Node's 32-bit setTimeout limit (2^31-1 ms): a larger delay is
+          // overflow-clamped by Node to 1ms (TimeoutOverflowWarning), silently
+          // turning a long debounce into save-on-every-turn. 0 = save every turn.
+          Math.min(2_147_483_647, Math.max(0, Math.floor(cfg.bufferSaveDebounceMs)))
+        : 3_000,
     sessionObserverBands,
     injectQuestions: cfg.injectQuestions === true,
     commitmentDecayDays: parseIntegerAtLeast(
