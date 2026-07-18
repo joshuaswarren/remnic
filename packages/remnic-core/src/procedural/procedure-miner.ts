@@ -15,6 +15,7 @@ import {
 import { buildProcedurePersistBody, normalizeProcedureSteps, type ProcedureStep } from "./procedure-types.js";
 import { clusterByKey } from "./reinforcement-core.js";
 import { log } from "../logger.js";
+import { composeMemoryEnvelope } from "../write-envelope.js";
 
 /** Must match truncation on `procedure_cluster` structured attribute (dedupe + storage). */
 const PROCEDURE_CLUSTER_ATTR_MAX = 500;
@@ -231,20 +232,32 @@ export async function runProcedureMining(options: {
         return false;
       }
 
-      await options.storage.writeMemory("procedure", body, {
-        source: "procedure-miner",
-        status: promote ? "active" : "pending_review",
-        tags: ["procedure-miner", "causal-trajectory"],
-        structuredAttributes: {
-          procedure_cluster: key.slice(0, PROCEDURE_CLUSTER_ATTR_MAX),
-          procedure_cluster_hash: clusterHash,
-          trajectory_ids: group
-            .map((g) => g.trajectoryId)
-            .join(",")
-            .slice(0, 1900),
-          trajectory_count: String(group.length),
-          success_rate: rate.toFixed(4),
+      // Sealed-envelope write (issue #1989 PR4): mined from causal
+      // trajectories (machine data) — salvage; drops are warn-logged.
+      const procedureEnvelope = composeMemoryEnvelope(
+        {
+          content: body,
+          category: "procedure",
+          tags: ["procedure-miner", "causal-trajectory"],
+          structuredAttributes: {
+            procedure_cluster: key.slice(0, PROCEDURE_CLUSTER_ATTR_MAX),
+            procedure_cluster_hash: clusterHash,
+            trajectory_ids: group
+              .map((g) => g.trajectoryId)
+              .join(",")
+              .slice(0, 1900),
+            trajectory_count: String(group.length),
+            success_rate: rate.toFixed(4),
+          },
         },
+        { source: "procedure-miner" },
+        { salvage: true },
+      );
+      if (procedureEnvelope.salvageNotes.length > 0) {
+        log.warn(`procedure-miner write salvaged invalid fields: ${procedureEnvelope.salvageNotes.join("; ")}`);
+      }
+      await options.storage.writeSealedMemory(procedureEnvelope, {
+        status: promote ? "active" : "pending_review",
       });
       return true;
     });
