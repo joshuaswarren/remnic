@@ -131,21 +131,21 @@ test("buildActiveRecallPrompt varies by prompt style and optional sections", () 
   assert.match(prompt, /Prefer hard evidence/);
 });
 
-test("buildActiveRecallPrompt uses prompt override before style or custom instruction", () => {
+test("buildActiveRecallPrompt treats prompt override as a complete replacement", () => {
   const prompt = buildActiveRecallPrompt({
     config: baseConfig({
       customInstruction: "ignored custom instruction",
       promptOverride: "Use only the supplied evidence.",
+      promptAppend: "ignored append",
     }),
     queryBundle: "current: What happened?",
     recallContext: "The deploy was rolled back.",
-    graphContext: [],
-    causalContext: [],
-    daySummary: null,
-    recallExplain: null,
+    graphContext: ["entity edge"],
+    causalContext: ["causal link"],
+    daySummary: "Debugged worker drain all morning.",
+    recallExplain: "graph_mode",
   });
-  assert.match(prompt, /^Use only the supplied evidence\./);
-  assert.doesNotMatch(prompt, /ignored custom instruction/);
+  assert.equal(prompt, "Use only the supplied evidence.");
 });
 
 test("normalizeActiveRecallSummary collapses NONE variants and truncates codepoint-safe", () => {

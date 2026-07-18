@@ -264,10 +264,13 @@ export function buildActiveRecallPrompt(params: {
   daySummary: string | null;
   recallExplain: string | null;
 }): string {
+  const promptOverride = params.config.promptOverride?.trim();
+  if (promptOverride) {
+    return promptOverride;
+  }
+
   const sections = [
-    params.config.promptOverride?.trim() ||
-      params.config.customInstruction?.trim() ||
-      STYLE_INSTRUCTIONS[params.config.promptStyle],
+    params.config.customInstruction?.trim() || STYLE_INSTRUCTIONS[params.config.promptStyle],
     `Query bundle:\n${params.queryBundle}`,
     params.recallContext ? `Retrieved memory:\n${params.recallContext}` : null,
     params.graphContext.length > 0 ? `Entity graph:\n${params.graphContext.join("\n")}` : null,
