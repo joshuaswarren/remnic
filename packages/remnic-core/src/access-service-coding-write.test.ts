@@ -31,6 +31,24 @@ import {
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
 import type { CodingContext, PluginConfig } from "./types.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "./write-envelope.js";
+
+// Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
+// callers now write via `writeSealedMemory`. Test doubles keep stubbing
+// `writeMemory`; this decorator adds a sealed entry that delegates through
+// the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
+// cannot drift from the real envelope→options translation.
+function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
+  const decorated = stub as T & {
+    writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
+  };
+  decorated.writeSealedMemory = (envelope, extras = {}) => {
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return (stub.writeMemory as (c: unknown, b: unknown, o: unknown) => unknown)(category, content, options);
+  };
+  return decorated;
+}
+
 
 function makeOrchestratorStub(overrides: Partial<PluginConfig> = {}): Orchestrator {
   const orch = Object.create(Orchestrator.prototype) as Orchestrator;
@@ -336,11 +354,11 @@ function makeAttachOrchestrator() {
     },
     getStorage: async (ns?: string) => {
       getStorageCalls.push(ns);
-      return {
+      return withSealedWrite({
         readAllMemories: async () => [],
         writeMemory: async () => ({ id: "mem-1", tombstoneBlocked: false }),
         appendMemoryLifecycleEvents: async () => {},
-      };
+      });
     },
   } as unknown as Orchestrator;
   return { orch, contexts, getStorageCalls };
@@ -431,11 +449,11 @@ function makePersistOrchestrator() {
     },
     getStorage: async (ns?: string) => {
       getStorageCalls.push(ns);
-      return {
+      return withSealedWrite({
         readAllMemories: async () => [],
         writeMemory: async () => ({ id: "mem-1", tombstoneBlocked: false }),
         appendMemoryLifecycleEvents: async () => {},
-      };
+      });
     },
   } as unknown as Orchestrator;
   return { orch, getStorageCalls };

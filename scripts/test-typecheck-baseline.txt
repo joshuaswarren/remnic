@@ -378,7 +378,7 @@ tests/entity-contamination.test.ts(606,4): TS2352
 tests/entity-contamination.test.ts(627,4): TS2352
 tests/entity-retrieval.test.ts(307,7): TS2739
 tests/entity-retrieval.test.ts(308,7): TS2739
-tests/explicit-capture.test.ts(114,38): TS2345
+tests/explicit-capture.test.ts(132,38): TS2345
 tests/extraction-proactive.test.ts(506,23): TS7006
 tests/fallback-llm-builtin-provider.test.ts(43,7): TS2322
 tests/fallback-llm-builtin-provider.test.ts(58,7): TS2322
