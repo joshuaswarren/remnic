@@ -58,3 +58,37 @@ export function withReservedMarkerTag(sourceTags: string[], marker: string): str
   const capped = normalized.length > budget ? normalized.slice(0, budget) : normalized;
   return [...capped, marker];
 }
+
+/**
+ * Pure salvage-compose probe: reproduce the SURVIVING entityRef and raw
+ * attribute pairs a salvage write of these fields would persist
+ * (deterministic, side-effect-free). Returns null when strict envelope
+ * preconditions reject (such input never reached a salvage write either) —
+ * callers fail open to their raw fields.
+ */
+export function probeSalvageSurvivingFields(input: {
+  content: string;
+  category: MemoryWriteInput["category"];
+  structuredAttributes?: Record<string, string>;
+  entityRef?: string;
+}): { entityRef?: string; structuredAttributes?: Record<string, string> } | null {
+  try {
+    const probe = composeSalvagedExtractionEnvelope(
+      {
+        content: input.content,
+        category: input.category,
+        structuredAttributes: input.structuredAttributes,
+        entityRef: input.entityRef,
+      },
+      { source: "bitemporal-backfill-probe" },
+    );
+    return {
+      entityRef: probe.entityRef,
+      structuredAttributes: probe.rawStructuredAttributes
+        ? { ...probe.rawStructuredAttributes }
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
