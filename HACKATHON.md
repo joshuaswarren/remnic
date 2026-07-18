@@ -55,7 +55,7 @@ the convenience path for a reviewed checkout. When the checkout itself is the
 adversarial input, follow the [judge guide's out-of-band launcher
 procedure](docs/remnic-relay/JUDGE-GUIDE.md#clean-room-smoke) and cross-check
 launcher SHA-256
-`c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7`
+`3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d`
 against the pinned GitHub attestation on PR #2012 or issue #1969 before
 executing any checkout code.
 

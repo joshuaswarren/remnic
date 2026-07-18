@@ -31,10 +31,6 @@ const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
 const CHECKOUT_CONTINUITY_TARGET_PATTERN =
   /\bcheckout[- ](?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service|account|channel|workflow|processing)\b|\b(?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service)\b/;
-const DESTRUCTIVE_CHECKOUT_CONTINUITY_ACTION_PATTERN =
-  /\b(?:abort(?:s|ed|ing)?|blacklist(?:s|ed|ing)?|block(?:s|ed|ing)?|cancel(?:s|ed|ing|led|ling)?|clos(?:e|es|ed|ing)|deactivat(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|den(?:y|ies|ied|ying)|destroy(?:s|ed|ing)?|disabl(?:e|es|ed|ing)|discard(?:s|ed|ing)?|disconnect(?:s|ed|ing)?|drop(?:s|ped|ping)?|end(?:s|ed|ing)?|eras(?:e|es|ed|ing)|expir(?:e|es|ed|ing)|freez(?:e|es|ing)|halt(?:s|ed|ing)?|invalidat(?:e|es|ed|ing)|lock(?:s|ed|ing)?|nullif(?:y|ies|ied|ying)|purg(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|reset(?:s|ting)?|retir(?:e|es|ed|ing)|revok(?:e|es|ed|ing)|shut\s+down|stop(?:s|ped|ping)?|suspend(?:s|ed|ing)?|terminat(?:e|es|ed|ing)|turn(?:s|ed|ing)?\s+off|void(?:s|ed|ing)?|wipe(?:s|d|ing)?)\b/;
-const DESTRUCTIVE_CHECKOUT_CONTINUITY_STATE_PATTERN =
-  /\b(?:blacklisted|blocked|closed|deactivated|disabled|disconnected|inaccessible|inactive|invalid|locked|offline|revoked|suspended|terminated|unavailable|unusable)\b/;
 const OBJECTLESS_ROTATION_FILLER_PATTERN =
   /\b(?:a|an|the|then|we|system|agent|keep|keeps|keeping|continue|continues|continued|continuing|to|will|would|should|must|can|could|may|might|always|more|again|another|additional|extra|several|multiple|many|twice|two|2|batch|batches|anew|afresh|repeatedly|repetitively|continuously|indefinitely|endlessly)\b/g;
 const OBJECTLESS_ADDITIONAL_ROTATION_PATTERN =
@@ -85,6 +81,12 @@ const ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES = new Set([
   "never issue a second replacement after expiry",
   "do not refresh the checkout token again after expiry",
   "no additional checkout tokens are minted after expiry",
+]);
+const ALLOWED_NEGATED_CHECKOUT_CONTINUITY_CLAUSES = new Set([
+  "do not terminate the checkout session",
+  "do not disable checkout access",
+  "do not withdraw checkout access",
+  "never rescind checkout authorization",
 ]);
 const PER_REQUEST_ROTATION_PATTERN =
   /\b(?:(?:on|for|at|during|across)\s+)?(?:every|each|all)\s+(?:checkout\s+)?requests?\b|\bper[-\s]+(?:checkout\s+)?request\b/;
@@ -323,25 +325,19 @@ function isAllowedAffirmativeTokenLifecycleClause(clause) {
   );
 }
 
-function isAffirmativeDestructiveCheckoutContinuityClause(clause) {
-  return (
-    !hasReplacementPolicyNegation(clause) &&
-    CHECKOUT_CONTINUITY_TARGET_PATTERN.test(clause) &&
-    (DESTRUCTIVE_CHECKOUT_CONTINUITY_ACTION_PATTERN.test(clause) ||
-      DESTRUCTIVE_CHECKOUT_CONTINUITY_STATE_PATTERN.test(clause))
-  );
-}
-
-function hasUnrecognizedAffirmativeTokenMutationPolicy(value) {
+function hasUnrecognizedCheckoutLifecyclePolicy(value) {
   return decisionClauseGroups(value)
     .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
     .some((predicate) => {
-      if (isAffirmativeDestructiveCheckoutContinuityClause(predicate)) return true;
-      if (!hasTokenLifecycleTarget(predicate)) return false;
+      const hasTokenTarget = hasTokenLifecycleTarget(predicate);
+      const hasContinuityTarget = CHECKOUT_CONTINUITY_TARGET_PATTERN.test(predicate);
+      if (!hasTokenTarget && !hasContinuityTarget) return false;
       if (hasReplacementPolicyNegation(predicate)) {
-        return !ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES.has(predicate);
+        return hasTokenTarget
+          ? !ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES.has(predicate)
+          : !ALLOWED_NEGATED_CHECKOUT_CONTINUITY_CLAUSES.has(predicate);
       }
-      return !isAllowedAffirmativeTokenLifecycleClause(predicate);
+      return hasTokenTarget ? !isAllowedAffirmativeTokenLifecycleClause(predicate) : true;
     });
 }
 
@@ -406,7 +402,7 @@ export function relayCheckoutDecisionContractKey(value) {
   const contradictoryPreExpiryReplacement = hasAffirmativePreExpiryReplacementPolicy(value);
   const contradictoryAdditionalReplacement =
     hasAffirmativeAdditionalReplacementPolicy(value) || postExpiryReplacementSignalCount(value) > 1;
-  const unrecognizedAffirmativeTokenMutation = hasUnrecognizedAffirmativeTokenMutationPolicy(value);
+  const unrecognizedCheckoutLifecyclePolicy = hasUnrecognizedCheckoutLifecyclePolicy(value);
   const matches =
     sessionLifecycle &&
     positiveReuseLifecycle &&
@@ -415,7 +411,7 @@ export function relayCheckoutDecisionContractKey(value) {
     !contradictoryPerUseRotation &&
     !contradictoryPreExpiryReplacement &&
     !contradictoryAdditionalReplacement &&
-    !unrecognizedAffirmativeTokenMutation;
+    !unrecognizedCheckoutLifecyclePolicy;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 

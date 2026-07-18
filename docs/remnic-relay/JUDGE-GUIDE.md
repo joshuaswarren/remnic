@@ -91,7 +91,7 @@ out-of-band from checkout contents. Do not derive the expected value from the
 checkout being tested.
 
 ```bash
-RELAY_LAUNCHER_SHA256=c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7
+RELAY_LAUNCHER_SHA256=3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d
 relay_trust_dir="$(mktemp -d)"
 trap 'rm -r -- "$relay_trust_dir"' EXIT
 

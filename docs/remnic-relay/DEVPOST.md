@@ -192,7 +192,7 @@ and gallery there, or run these commands in a Linux environment.
    type APPROVE, and continue through cold-start recall to Outcome recovered.
 5. Terminal-only verification: node scripts/relay/judge-package.mjs verify
 6. Fresh temporary package: follow JUDGE-GUIDE.md's Clean-room smoke block.
-   Cross-check launcher SHA-256 c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7
+   Cross-check launcher SHA-256 3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d
    against the pinned PR #2012 or issue #1969 GitHub comment first.
 
 No credentials, model calls, datasets, build, dependency install, or external

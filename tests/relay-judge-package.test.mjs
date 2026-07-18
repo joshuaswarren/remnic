@@ -325,6 +325,14 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Take checkout authentication offline.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Shut down the checkout flow.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Turn off checkout processing.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Withdraw checkout access immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Rescind checkout authorization now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Relinquish checkout privileges.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Forfeit checkout permissions.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Cut off checkout access.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Quarantine the checkout session.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Restrict checkout access to nothing.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Strip checkout permissions.",
     "Reuse the checkout-session token while it is valid until we revoke it immediately. Mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid unless the token is invalidated immediately. Mint exactly one replacement after expiry.",
     "One checkout token is owned per checkout session until we revoke it. Reuse the checkout-session token while valid. Mint exactly one replacement after expiry.",
@@ -437,6 +445,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   assert.equal(
     relayCheckoutDecisionContractKey(
       "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Do not disable checkout access."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Do not withdraw checkout access. Never rescind checkout authorization."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );
@@ -750,10 +764,10 @@ descriptorPinnedTest("Relay judge package passes from a copied clean room with n
   assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
   assert.equal(receipt.executableVerification, "trusted-launcher-pinned-sha256");
   assert.deepEqual(receipt.trustedExecutableSha256, {
-    "scripts/relay/checkout-decision-contract.mjs": "a46b51d8d4b2322a52260cdf22b247e8f4e28fd79f9e88e06ab8dff92044f37e",
+    "scripts/relay/checkout-decision-contract.mjs": "d4c4f885ce569554693c195293ff98f8cfc2d5730d21ba87dba9b9cc18efa4a9",
     "scripts/relay/judge-package.mjs": "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e",
   });
-  assert.equal(receipt.launcherSha256, "c6e6df4f83064190e4be04ae2873e1604b597d0f67fa368afd38ae247e2f99b7");
+  assert.equal(receipt.launcherSha256, "3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
