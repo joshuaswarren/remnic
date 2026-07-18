@@ -1257,23 +1257,20 @@ export class Orchestrator {
   ): Promise<ContentHashIndex | null> {
     if (!resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) return null;
 
+    // Round 12: share the StorageManager's corpus-AUTHORITATIVE fact-hash index
+    // (rebuilt from the .md corpus on first use per process) instead of loading a
+    // separate, possibly-stale fact-hashes.txt. This makes the orchestrator's
+    // dedup layer and StorageManager.hasFactContentHash() one coherent source:
+    // after a crash before the deferred batch save, the restart rebuild includes
+    // the durable fact, so hasContentHashDedup() sees it and persistExtraction
+    // does not re-create it. We still cache the reference so saveContentHashIndexes
+    // persists exactly the shared instance.
+    const index = await targetStorage.getAuthoritativeFactHashIndex();
     if (targetStorage.dir === this.storage.dir) {
-      if (!this.contentHashIndex) {
-        this.contentHashIndex = this.storage.createContentHashIndex();
-        await this.contentHashIndex.load();
-      }
-      return this.contentHashIndex;
+      this.contentHashIndex = index;
+    } else {
+      this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
     }
-
-    const cached = this.contentHashIndexesByStorageDir.get(targetStorage.dir);
-    if (cached) return cached;
-
-    const index = targetStorage.createContentHashIndex();
-    await index.load();
-    this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
-    log.info(
-      `content-hash dedup: loaded ${index.size} hashes for storage ${targetStorage.dir}`,
-    );
     return index;
   }
 

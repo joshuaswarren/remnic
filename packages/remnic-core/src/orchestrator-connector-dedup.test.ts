@@ -1326,3 +1326,45 @@ test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE ca
     "buffer flush must run before the catalog-touch flush on shutdown",
   );
 });
+test("#1909 round 12: after a crash before the batch save, the orchestrator dedup sees the fact (corpus rebuild)", async () => {
+  // A deferred fact write persists the .md but not fact-hashes.txt; a crash
+  // before saveContentHashIndexes leaves only the .md durable. On restart the
+  // orchestrator's dedup index must be corpus-AUTHORITATIVE (round 12) — sharing
+  // StorageManager's rebuild — so hasContentHashDedup sees the fact and
+  // persistExtraction does NOT re-create it. Pre-round-12 it loaded a stale
+  // fact-hashes.txt (missing the fact) and would duplicate.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-orch-rebuild-"));
+  const body = "The deploy pipeline gates on a green smoke suite.";
+
+  // Phase 1 — crash window: deferred write, NO batch save / index flush.
+  {
+    const seed = new StorageManager(memoryDir);
+    await seed.ensureDirectories();
+    await seed.writeMemory("fact", body, { source: "extraction", deferHashIndexSave: true });
+    // CRASH: no saveContentHashIndexes → fact-hashes.txt never got the hash.
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the orchestrator dedup index rebuilds from the corpus.
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+
+  assert.equal(
+    await orchestrator.hasContentHashDedup(storage, body),
+    true,
+    "orchestrator dedup sees the crashed-but-durable fact via the corpus rebuild",
+  );
+  // And re-persisting the same fact is deduped (no duplicate .md created).
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 0, "the fact is deduped on re-extraction — not re-created");
+});

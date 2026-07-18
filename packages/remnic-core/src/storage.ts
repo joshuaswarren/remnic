@@ -3916,6 +3916,20 @@ export class StorageManager {
     return this.factHashIndexLoadPromise;
   }
 
+  /**
+   * Return the fact-hash index after ensuring it is authoritative — i.e. rebuilt
+   * from the durable fact corpus (issue #1909 review round 12). This is the ONE
+   * coherent dedup source: the orchestrator's dedup layer
+   * (contentHashIndexForStorage) shares THIS instance instead of loading a raw,
+   * possibly-stale fact-hashes.txt, so after a crash+restart the orchestrator's
+   * hasContentHashDedup sees the same corpus-rebuilt hashes StorageManager does
+   * and never re-creates a fact whose per-write flush was deferred and lost.
+   */
+  async getAuthoritativeFactHashIndex(): Promise<ContentHashIndex> {
+    await this.ensureFactHashIndexAuthoritative();
+    return this.getFactHashIndex();
+  }
+
   private async ensureFactHashIndexAuthoritative(): Promise<void> {
     if (this.factHashIndexAuthoritative === true) {
       return;

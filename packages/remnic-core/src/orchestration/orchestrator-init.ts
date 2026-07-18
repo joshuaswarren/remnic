@@ -174,12 +174,15 @@ export class OrchestratorInitCoordinator {
         promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(this.deps.config).promotionByOutcome,
       });
 
-      // Initialize content-hash dedup index
+      // Initialize the content-hash dedup index from the corpus-AUTHORITATIVE
+      // rebuild (issue #1909 review round 12) rather than a raw, possibly-stale
+      // fact-hashes.txt load — the orchestrator dedup layer and StorageManager
+      // share this one instance so a crash before a deferred batch save cannot
+      // leave the restart's dedup blind to a durable fact.
       if (resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication) {
-        this.deps.contentHashIndex = this.deps.storage.createContentHashIndex();
-        await this.deps.contentHashIndex.load();
+        this.deps.contentHashIndex = await this.deps.storage.getAuthoritativeFactHashIndex();
         log.info(
-          `content-hash dedup: loaded ${this.deps.contentHashIndex.size} hashes`,
+          `content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`,
         );
       }
       await this.deps.transcript.initialize();
