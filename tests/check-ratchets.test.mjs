@@ -13,13 +13,14 @@ const SCRIPT = path.join(
   "check-ratchets.mjs",
 );
 
-function runRatchets(args, fixture) {
+function runRatchets(args, fixture, extraEnv = {}) {
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf8",
     env: {
       ...process.env,
       REMNIC_RATCHET_ROOT: fixture.root,
       REMNIC_RATCHET_BASELINE: fixture.baseline,
+      ...extraEnv,
     },
   });
 }
@@ -746,5 +747,42 @@ test("file-size ratchet: --update refuses to write a baseline while symlink viol
     assert.equal(update.status, 1, "--update must fail while a symlinked source exists");
     assert.match(update.stderr, /sneaky\.ts/);
     assert.equal(readFileSync(fixture.baseline, "utf8"), before, "baseline must be untouched");
+  });
+});
+
+test("file-size ratchet: CR-only line terminators are counted (round 15)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "cr-only.ts"), Array.from({ length: 1300 }, (_, i) => `// line ${i}`).join("\r"));
+    const r = runRatchets([], fixture);
+    assert.equal(r.status, 1, "a 1,300-line CR-only file must fail the cap");
+    assert.match(r.stderr, /cr-only\.ts is 1300 lines/);
+  });
+});
+
+test("file-size ratchet: --update never creates a NEW ceiling, even out of scope; empty scope behaves unscoped (round 15)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    // New oversized file, scope file lists an unrelated path -> out of scope.
+    writeFileSync(path.join(fixture.src, "fresh-giant.ts"), "pad\n".repeat(1400));
+    const scopePath = path.join(fixture.root, "scope.txt");
+    writeFileSync(scopePath, "docs/README.md\n");
+    const scoped = runRatchets(["--update"], fixture, { REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath });
+    assert.equal(scoped.status, 1, "scoped --update must not adopt a new oversized file");
+    assert.match(scoped.stderr, /fresh-giant\.ts/);
+
+    // Empty scope: growth guards behave as if unscoped (raise rejected).
+    // legacy-big must predate the baseline (bootstrap adopts it), since a
+    // post-baseline oversized file is refused regardless of scope above.
+    rmSync(path.join(fixture.src, "fresh-giant.ts"));
+    rmSync(fixture.baseline);
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    writeFileSync(scopePath, "");
+    const empty = runRatchets(["--update"], fixture, { REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath });
+    assert.equal(empty.status, 1, "empty scope must not unlock ceiling raises");
+    assert.match(empty.stderr, /legacy-big\.ts \(1400 -> 1410\)/);
   });
 });

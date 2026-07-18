@@ -243,12 +243,13 @@ function toPosix(relPath) {
 }
 
 function countLines(filePath) {
-  // Do not count the empty segment after a trailing newline as a phantom
-  // line: a 1,200-line file ending with "\n" must count as 1,200, not
-  // 1,201 (round-8 finding). A final line WITHOUT a newline still counts.
+  // Physical lines under EVERY terminator TypeScript accepts — \r\n, lone
+  // \n, AND lone \r (round-15 finding: a CR-only 1,300-line file measured
+  // as one line). No phantom line for a trailing terminator (round-8
+  // finding); a final line WITHOUT a terminator still counts.
   const text = readFileSync(filePath, "utf8");
   if (text.length === 0) return 0;
-  const segments = text.split("\n");
+  const segments = text.split(/\r\n|\r|\n/);
   if (segments[segments.length - 1] === "") segments.pop();
   return segments.length;
 }
@@ -583,14 +584,22 @@ function main() {
         // the guard only blocks growth in files THIS change touched.
         // Growth that arrived via merges to main was judged on the PRs
         // that caused it and may be refreshed into the baseline.
+        // An EMPTY scope means "this change touched no source files" — it
+        // must behave like an UNSCOPED update (guards apply everywhere), not
+        // unlock every file as out-of-scope (round-15 finding). And a NEW
+        // ceiling can never be created by --update regardless of scope: only
+        // RAISES of pre-existing ceilings are absorbable as growth inherited
+        // from main; adopting a new oversized file always requires the
+        // documented hand-edit exception (round-15 finding).
         const changedScope = readChangedFileScope();
-        const inScope = (file) => changedScope === null || changedScope.has(file);
+        const scopedUpdate = changedScope !== null && changedScope.size > 0;
+        const inScope = (file) => !scopedUpdate || changedScope.has(file);
         const laundered = [];
         const newlyOversized = [];
         for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
           const ceiling = previousCeilings[file];
           if (ceiling === undefined) {
-            if (inScope(file)) newlyOversized.push(`${file} (${lines})`);
+            newlyOversized.push(`${file} (${lines})`);
           } else if (lines > ceiling) {
             if (inScope(file)) laundered.push(`${file} (${ceiling} -> ${lines})`);
           }
@@ -619,10 +628,6 @@ function main() {
           if (ceiling !== undefined && lines > ceiling && !inScope(file)) {
             console.log(
               `[ratchet]   ceiling raised (out-of-scope growth inherited from main): ${file} ${ceiling} -> ${lines}`,
-            );
-          } else if (ceiling === undefined && !inScope(file)) {
-            console.log(
-              `[ratchet]   grandfathered (out-of-scope, new on main): ${file} (${lines})`,
             );
           }
         }
