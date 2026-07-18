@@ -1,4 +1,6 @@
 export {
+  buildAccessWriteRequestFingerprint,
+  buildObserveRequestFingerprint,
   buildWriteIdempotencyPayload,
   composeMemoryEnvelope,
   FINGERPRINT_EXEMPT_FIELDS,
@@ -10,7 +12,10 @@ export {
   WRITE_FINGERPRINT_FIELDS,
 } from "@remnic/core/write-envelope";
 export type {
+  AccessWriteFingerprintParts,
+  ComposeEnvelopeOptions,
   FingerprintScope,
+  ObserveFingerprintParts,
   MemoryWriteInput,
   SealedMemoryEnvelope,
   WriteContext,

@@ -686,3 +686,115 @@ export function buildWriteIdempotencyPayload(
 
   return { v: 1, kind: "memory-write", fields, scope: scopeOut };
 }
+
+// ---------------------------------------------------------------------------
+// Access-surface request fingerprints (issue #1989 PR3)
+// ---------------------------------------------------------------------------
+//
+// The access surfaces (memory_store / suggestion_submit writes, their peek
+// twins, and observe) key their idempotency dedup on a hash of the RAW
+// request — computed BEFORE validation, and persisted indefinitely in
+// `AccessIdempotencyStore` (last-512 LRU, no time TTL). Those stored hashes
+// are load-bearing state: changing the payload shape would silently break
+// replay/conflict detection for every in-flight key. So these builders
+// REPRODUCE each surface's historical shape byte-for-byte (asserted by the
+// parity suite) instead of adopting the versioned envelope payload above —
+// a versioned migration of stored state is the explicit prerequisite for
+// unifying them (#1989 PR3 scope note).
+//
+// What centralizing buys even under byte-parity: one module now owns every
+// fingerprint shape, and the compile-time assertion below ties the write
+// shape to WRITE_FINGERPRINT_FIELDS — adding a fingerprint-relevant field
+// to MemoryWriteInput fails compilation here until the author decides how
+// the access surfaces represent it.
+
+/** The raw request fields the write surfaces fingerprint (legacy shape). */
+export interface AccessWriteFingerprintParts {
+  schemaVersion: number;
+  namespace: string;
+  content: string;
+  category?: string;
+  confidence?: number;
+  tags?: string[];
+  entityRef?: string;
+  ttl?: string;
+  sourceReason?: string;
+  sourceConnector?: string;
+}
+
+// Registry coupling: every fingerprint-relevant MemoryWriteInput field must
+// either appear in AccessWriteFingerprintParts or be named in this explicit
+// exemption list. `structuredAttributes` and `validAt` are exempt because
+// the access write requests cannot express them today (ExplicitCaptureInput
+// has no such fields) — the moment they become representable, this type
+// stops compiling and forces a fingerprint decision (+ versioned state
+// migration) instead of a silent dedup gap.
+type AccessSurfaceUnrepresentable = "structuredAttributes" | "validAt";
+type UncoveredAccessFingerprintField = Exclude<
+  Extract<RegistryField, keyof MemoryWriteInput>,
+  keyof AccessWriteFingerprintParts | AccessSurfaceUnrepresentable
+>;
+const assertAccessFingerprintCoversRegistry: UncoveredAccessFingerprintField extends never
+  ? true
+  : never = true;
+void assertAccessFingerprintCoversRegistry;
+
+/**
+ * Fingerprint payload for `memory_store` / `suggestion_submit` (write AND
+ * peek paths — both MUST call this so peek can never diverge from the
+ * write it predicts). Key set and values reproduce the historical inline
+ * literals exactly; `hashAccessIdempotencyPayload`'s stableStringify sorts
+ * keys and drops `undefined`, so optional absent fields hash identically
+ * to the old shape.
+ */
+export function buildAccessWriteRequestFingerprint(
+  parts: AccessWriteFingerprintParts,
+): Record<string, unknown> {
+  return {
+    schemaVersion: parts.schemaVersion,
+    content: parts.content,
+    category: parts.category,
+    confidence: parts.confidence,
+    namespace: parts.namespace,
+    tags: parts.tags,
+    entityRef: parts.entityRef,
+    ttl: parts.ttl,
+    sourceReason: parts.sourceReason,
+    sourceConnector: parts.sourceConnector,
+  };
+}
+
+/** The raw request fields the observe surface fingerprints (legacy shape). */
+export interface ObserveFingerprintParts {
+  sessionKey: string;
+  messages: unknown;
+  namespace?: string;
+  skipExtraction?: boolean;
+  authenticatedPrincipal?: string;
+  cwd?: string;
+  projectTag?: string;
+  /** Resolved coding context — `null` (not undefined) when absent, matching the historical literal. */
+  effectiveCodingContext: unknown;
+  sourceConnector?: string;
+}
+
+/**
+ * Fingerprint payload for `observe` — turn ingestion, not a memory write,
+ * so it fingerprints session/message identity rather than MemoryWriteInput
+ * fields. Shape reproduces the historical inline literal exactly.
+ */
+export function buildObserveRequestFingerprint(
+  parts: ObserveFingerprintParts,
+): Record<string, unknown> {
+  return {
+    sessionKey: parts.sessionKey,
+    messages: parts.messages,
+    namespace: parts.namespace,
+    skipExtraction: parts.skipExtraction,
+    authenticatedPrincipal: parts.authenticatedPrincipal,
+    cwd: parts.cwd,
+    projectTag: parts.projectTag,
+    effectiveCodingContext: parts.effectiveCodingContext,
+    sourceConnector: parts.sourceConnector,
+  };
+}
