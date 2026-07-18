@@ -1,0 +1,31 @@
+{
+  "summary": {
+    "role": "resolver",
+    "model": "gpt-5.6-terra",
+    "reasoningEffort": "medium",
+    "threadId": "019f7385-8152-7dc0-a009-e1396cf9f14f",
+    "promptSha256": "b67c4de3b2dec11ae620a6d3c180b1d51857cec87614ba3510a1574536752cd6",
+    "outputSha256": "c0a1a14fe34d220938a7b5a73494f0b0acfe82691f2d9e3e34cbb1b185792174",
+    "exitCode": 0,
+    "durationMs": 11402,
+    "usage": {
+      "inputTokens": 17836,
+      "cachedInputTokens": 0,
+      "outputTokens": 269,
+      "reasoningOutputTokens": 72
+    },
+    "recallToolCalls": 0,
+    "recallReceipt": null,
+    "status": "completed"
+  },
+  "output": {
+    "replacement_decision": "Reuse the existing checkout-session token on ordinary retries; mint exactly one replacement only after explicit expiry, then reuse that replacement on subsequent retries.",
+    "rationale": "The authoritative contract explicitly supersedes per-request rotation, and both the reference policy and contract tests enforce reuse while valid and a single mint after expiry.",
+    "source_locators": [
+      "CONTRACT.md",
+      "src/reference-token-policy.mjs",
+      "test/token-policy.contract.test.mjs"
+    ],
+    "confidence": 1
+  }
+}

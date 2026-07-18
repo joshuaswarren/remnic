@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "downstream/TASK.md",
+      "bytes": 398,
+      "sha256": "f63576294f8794f1cf0848fdec6303b35e08fb59273abe0039dbcfe3370f7712"
+    },
+    {
+      "path": "downstream/package.json",
+      "bytes": 173,
+      "sha256": "5ca7f825808a7c0bdb5758d1b476dbae56f7b066e29631675268ff25b0c97fa2"
+    },
+    {
+      "path": "downstream/src/token-policy.mjs",
+      "bytes": 128,
+      "sha256": "7f1faba9aaa6f063a294ba77f8015fd1f56159464ff905c2d3fa75309193b4b6"
+    },
+    {
+      "path": "downstream/test/public.test.mjs",
+      "bytes": 429,
+      "sha256": "44d1fcf85b77f1b3a360b903734e82ef7a513b5a7e5799799df903e2e33936a6"
+    },
+    {
+      "path": "hidden/token-policy.hidden.test.mjs",
+      "bytes": 1583,
+      "sha256": "575fa26742612a40a6a5c8a69dc81b8743036ff3781351a54c71e7b244eaa0d0"
+    },
+    {
+      "path": "prompts/cold-builder.md",
+      "bytes": 997,
+      "sha256": "dbedabf8c10f712d107e09d78758e754dec9388983aac04087dbbf1d978bd153"
+    },
+    {
+      "path": "prompts/resolver.md",
+      "bytes": 642,
+      "sha256": "b67c4de3b2dec11ae620a6d3c180b1d51857cec87614ba3510a1574536752cd6"
+    },
+    {
+      "path": "prompts/scout.md",
+      "bytes": 518,
+      "sha256": "8c7991e421a163598a7d3d7fe2e5c030979d235dcd8fc33dc028d1c8b0aeffaf"
+    },
+    {
+      "path": "prompts/stale-builder.md",
+      "bytes": 952,
+      "sha256": "9b2942bd053b66641c497f5b2f4c00fc1a4305955c43f8168614539d0fcc647b"
+    },
+    {
+      "path": "schemas/builder.json",
+      "bytes": 412,
+      "sha256": "7d13f6fd504044795dc5b684b601e90dda50985207a1b3de5285cbba28b01e71"
+    },
+    {
+      "path": "schemas/resolver.json",
+      "bytes": 384,
+      "sha256": "ca6812b85ca58d5d56264ab3b7bb4df90c64537185da480e6ae6f4d77cedaee1"
+    },
+    {
+      "path": "schemas/scout.json",
+      "bytes": 360,
+      "sha256": "330273b5d7804551055250d49dbc76459a7180590407fb21ed0c0b16910961fa"
+    },
+    {
+      "path": "upstream/CONTRACT.md",
+      "bytes": 535,
+      "sha256": "bf167f541611bae2948312a31e4a35ddf4b8b2aec9611f63cf256c68c18b3bc7"
+    },
+    {
+      "path": "upstream/src/reference-token-policy.mjs",
+      "bytes": 283,
+      "sha256": "d4affd4703673c526e46131fb360980c960fad33f4d4ab20300a97d3be65bc7a"
+    },
+    {
+      "path": "upstream/test/token-policy.contract.test.mjs",
+      "bytes": 978,
+      "sha256": "e292a22f6aef1395879b5786070a6d734fb339a8e5bd26409898477872b98837"
+    }
+  ],
+  "rootSha256": "19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec"
+}

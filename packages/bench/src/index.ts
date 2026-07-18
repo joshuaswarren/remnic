@@ -237,9 +237,16 @@ export { createCodexCliProvider } from "./providers/codex-cli.js";
 export {
   buildCodexCreditReceipt,
   calculateCodexBudgetUnits,
+  CodexCreditAccountingError,
+  CodexCreditDispatchError,
+  parseCodexJsonlUsage,
   reconcileCodexCreditLedger,
+  resolveCodexCreditBudgetConfig,
+  runWithinCodexCreditBudget,
 } from "./providers/codex-credit-budget.js";
 export type {
+  CodexCliNativeUsage,
+  CodexCreditBudgetConfig,
   CodexCreditReceipt,
   CodexCreditReceiptScope,
   CodexCreditReconciliationReceipt,

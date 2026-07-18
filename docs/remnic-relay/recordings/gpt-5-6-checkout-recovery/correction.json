@@ -1,0 +1,9 @@
+{
+  "planId": "corr-mrpvnu8q-tqdnln9o",
+  "correctionId": "correction-token-refresh",
+  "outcomeStatus": "applied",
+  "staleMemoryStatus": "superseded",
+  "staleMemoryId": "decision-1784349520714-jlsc",
+  "replacementMemoryId": "decision-1784349567966-pt7p",
+  "resolverBridgeRequests": 1
+}
