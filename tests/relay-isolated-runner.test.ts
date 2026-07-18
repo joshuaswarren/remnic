@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -20,6 +19,7 @@ import {
   RELAY_MODEL,
   RELAY_NAMESPACE,
   RELAY_OPERATOR_PRINCIPAL,
+  RELAY_QUARANTINED_ATTEMPT_UNITS,
   RELAY_QUERY,
   RELAY_RECALL_DISCLOSURE,
   RELAY_RECALL_MODE,
@@ -51,7 +51,7 @@ import {
   isRelayNetworkTargetAllowed,
   startRelayNetworkGateway,
 } from "../scripts/relay/network-gateway.js";
-import { resolveRelayAuthSourcePath } from "../scripts/relay/preflight-lib.js";
+import { resolveRelayAuthSourcePath, resolveRelayCreditLedgerPolicy } from "../scripts/relay/preflight-lib.js";
 import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/remnic-harness.js";
 import { assertRelaySourceLocators } from "../scripts/relay/source-grounding.js";
 
@@ -326,6 +326,25 @@ test("Relay preflight expands only a conventional tilde auth path", () => {
   );
 });
 
+test("Relay credit policy quarantines only the fixed rejected-alias ledger", () => {
+  const rejectedAliasLedgerPath = path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger.json");
+  assert.deepEqual(resolveRelayCreditLedgerPolicy(repoRoot), {
+    ledgerPath: rejectedAliasLedgerPath,
+    creditBudgetUnits: RELAY_CREDIT_BUDGET_UNITS,
+    quarantinedUncertainUnits: 0,
+  });
+  assert.deepEqual(resolveRelayCreditLedgerPolicy(repoRoot, rejectedAliasLedgerPath), {
+    ledgerPath: path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger-terra.json"),
+    creditBudgetUnits: RELAY_CREDIT_BUDGET_UNITS - RELAY_QUARANTINED_ATTEMPT_UNITS,
+    quarantinedUncertainUnits: RELAY_QUARANTINED_ATTEMPT_UNITS,
+    quarantinedLedgerPath: rejectedAliasLedgerPath,
+  });
+  assert.throws(
+    () => resolveRelayCreditLedgerPolicy(repoRoot, path.join(repoRoot, ".remnic", "relay", "other.json")),
+    /only permits quarantining its dedicated rejected-alias ledger/
+  );
+});
+
 test("Relay run roots reject non-empty and symlinked targets and clean only marked roots", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-root-safety-"));
   try {
@@ -393,24 +412,10 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
       path.join(correctedWorkspace, "src", "token-policy.mjs"),
       "export function selectCheckoutToken({ currentToken, tokenExpired, mintToken }) { return currentToken && tokenExpired !== true ? currentToken : mintToken(); }\n"
     );
-    const hiddenTest = path.join(fixtures, "hidden", "token-policy.hidden.test.mjs");
-    const run = (workspace: string, id: string) =>
-      spawnSync(process.execPath, ["--test", hiddenTest], {
-        encoding: "utf8",
-        // Do not inherit NODE_TEST_CONTEXT into the nested runner. Node treats
-        // that private marker as an already-managed child and can report a
-        // failing nested suite with a zero process status.
-        env: {
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-          REMNIC_RELAY_WORKSPACE: workspace,
-          REMNIC_RELAY_TEST_RUN: id,
-        },
-      });
-    const stale = run(staleWorkspace, "stale");
-    assert.notEqual(stale.status, 0);
-    assert.match(`${stale.stdout}\n${stale.stderr}`, /retry minted a second token|ordinary retry must not mint again/);
-    const corrected = run(correctedWorkspace, "corrected");
-    assert.equal(corrected.status, 0, `${corrected.stdout}\n${corrected.stderr}`);
+    const stale = await runRelayHiddenContractTest(fixtures, staleWorkspace, "before-correction");
+    assert.equal(stale.status, "failed");
+    const corrected = await runRelayHiddenContractTest(fixtures, correctedWorkspace, "after-correction");
+    assert.equal(corrected.status, "passed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -435,6 +440,41 @@ test("Builder module initialization cannot short-circuit public or hidden contra
       /did not execute expected assertion|incomplete assertion receipt/
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Builder contract tests cannot read host files or reach host networking", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "relay-contract-isolation-"));
+  const workspace = path.join(root, "workspace");
+  const sentinel = path.join(root, "host-only-sentinel.txt");
+  await mkdir(workspace);
+  await writeFile(sentinel, "production-like host data must remain unreachable\n");
+  let hostConnections = 0;
+  const server = net.createServer((socket) => {
+    hostConnections += 1;
+    socket.end("host-network-reached");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    await copyFixtureTree(path.join(fixtures, "downstream"), workspace);
+    await writeFile(
+      path.join(workspace, "src", "token-policy.mjs"),
+      `import { readFileSync } from "node:fs";\nimport net from "node:net";\nlet hostFileReadable = false;\ntry { readFileSync(${JSON.stringify(sentinel)}, "utf8"); hostFileReadable = true; } catch {}\nif (hostFileReadable) throw new Error("host file escaped into contract sandbox");\nconst hostNetworkReached = await new Promise((resolve) => {\n  const socket = net.createConnection({ host: "127.0.0.1", port: ${address.port} });\n  const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 250);\n  socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });\n  socket.once("error", () => { clearTimeout(timer); resolve(false); });\n});\nif (hostNetworkReached) throw new Error("host network escaped into contract sandbox");\nexport function selectCheckoutToken({ currentToken, tokenExpired, mintToken }) {\n  return currentToken && tokenExpired !== true ? currentToken : mintToken();\n}\n`
+    );
+    await runRelayPublicContractTest(workspace, "host-boundary");
+    assert.equal(hostConnections, 0);
+    assert.equal(await readFile(sentinel, "utf8"), "production-like host data must remain unreachable\n");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
 });

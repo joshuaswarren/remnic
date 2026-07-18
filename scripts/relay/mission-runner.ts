@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -46,6 +47,7 @@ import {
   copyFixtureTree,
   digestFixtureTree,
 } from "./isolation.js";
+import { RELAY_UNSHARE_NAMESPACE_ARGS } from "./network-gateway.js";
 import type { RelayCorrectionResult, RelayRemnicHarness } from "./remnic-harness.js";
 import {
   RELAY_CANONICAL_CHECKOUT_DECISION,
@@ -182,14 +184,63 @@ async function runProcess(
   });
 }
 
-function testEnvironment(workspace: string, runId: string): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
-    LANG: "C.UTF-8",
-    LC_ALL: "C.UTF-8",
-    REMNIC_RELAY_WORKSPACE: workspace,
-    REMNIC_RELAY_TEST_RUN: runId,
-  };
+async function resolveContractRuntimeBinary(label: string, candidates: string[]): Promise<string> {
+  for (const candidate of candidates) {
+    try {
+      const resolved = await realpath(candidate);
+      const info = await lstat(resolved);
+      if (info.isFile() && !info.isSymbolicLink()) return resolved;
+    } catch {
+      // Try the next fixed system location.
+    }
+  }
+  throw new Error(`Relay contract sandbox could not resolve ${label}`);
+}
+
+async function runIsolatedContractTest(
+  workspace: string,
+  kind: "public" | "hidden",
+  runId: string,
+  hiddenTest?: string
+): Promise<ProcessResult> {
+  await assertTreeContainsNoSymlinks(workspace);
+  if (kind === "hidden") {
+    if (!hiddenTest) throw new Error("Relay hidden contract sandbox requires a test file");
+    const hiddenInfo = await lstat(hiddenTest);
+    if (hiddenInfo.isSymbolicLink() || !hiddenInfo.isFile()) {
+      throw new Error("Relay hidden contract sandbox requires a regular non-symlink test file");
+    }
+  }
+  const isolationScript = path.resolve(import.meta.dirname, "isolate-contract-test.sh");
+  const isolationInfo = await lstat(isolationScript);
+  if (isolationInfo.isSymbolicLink() || !isolationInfo.isFile()) {
+    throw new Error("Relay contract isolation script must be a regular non-symlink file");
+  }
+  const [unshare, nodeBinary, setpriv] = await Promise.all([
+    resolveContractRuntimeBinary("unshare", ["/usr/bin/unshare", "/bin/unshare"]),
+    resolveContractRuntimeBinary("Node.js", [process.execPath]),
+    resolveContractRuntimeBinary("setpriv", ["/usr/bin/setpriv", "/bin/setpriv"]),
+  ]);
+  const rootfs = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-contract-rootfs-"));
+  try {
+    return await runProcess(unshare, [...RELAY_UNSHARE_NAMESPACE_ARGS, isolationScript], {
+      cwd: workspace,
+      env: {
+        PATH: "/usr/sbin:/usr/bin:/sbin:/bin",
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        RELAY_ROOTFS: rootfs,
+        RELAY_WORKSPACE: workspace,
+        RELAY_TEST_KIND: kind,
+        RELAY_TEST_RUN: runId,
+        RELAY_NODE_BIN: nodeBinary,
+        RELAY_SETPRIV_BIN: setpriv,
+        ...(hiddenTest ? { RELAY_HIDDEN_TEST: hiddenTest } : {}),
+      },
+    });
+  } finally {
+    await rm(rootfs, { recursive: true, force: true });
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -235,10 +286,7 @@ function assertExpectedNodeTestResults(
 }
 
 export async function runRelayPublicContractTest(workspace: string, runId: string): Promise<void> {
-  const result = await runProcess(process.execPath, ["--test", "--test-reporter=tap", "test/public.test.mjs"], {
-    cwd: workspace,
-    env: testEnvironment(workspace, runId),
-  });
+  const result = await runIsolatedContractTest(workspace, "public", runId);
   assertExpectedNodeTestResults(result, PUBLIC_CONTRACT_TEST_NAMES, "passed", `${runId} public`);
 }
 
@@ -248,10 +296,7 @@ export async function runRelayHiddenContractTest(
   phase: "before-correction" | "after-correction"
 ): Promise<RelayTestResult> {
   const hiddenTest = path.join(fixtureRoot, "hidden", "token-policy.hidden.test.mjs");
-  const result = await runProcess(process.execPath, ["--test", "--test-reporter=tap", hiddenTest], {
-    cwd: workspace,
-    env: testEnvironment(workspace, phase),
-  });
+  const result = await runIsolatedContractTest(workspace, "hidden", phase, hiddenTest);
   const combined = `${result.stdout}\n${result.stderr}`;
   const passed = result.exitCode === 0;
   if (phase === "before-correction") {

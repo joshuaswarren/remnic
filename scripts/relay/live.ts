@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildCodexCreditReceipt, type CodexCreditBudgetConfig } from "@remnic/bench";
+import { type CodexCreditBudgetConfig, buildCodexCreditReceipt } from "@remnic/bench";
 
 import { runRelayCodexOneShot } from "./codex-one-shot.js";
 import {
@@ -11,19 +11,13 @@ import {
   RELAY_CREDIT_BUDGET_UNITS,
   RELAY_CREDIT_RESERVE_UNITS,
   RELAY_OPERATOR_PRINCIPAL,
-  RELAY_QUARANTINED_ATTEMPT_UNITS,
   type RelayRole,
 } from "./contracts.js";
-import {
-  cleanupRelayRun,
-  pathExists,
-  prepareRelayRunDirectories,
-  type RelayRunDirectories,
-} from "./isolation.js";
-import { runRelayMission, type RelayCodexExecutor } from "./mission-runner.js";
-import { runRelayPreflight } from "./preflight-lib.js";
-import { startRelayRemnicHarness, type RelayRemnicHarness } from "./remnic-harness.js";
+import { type RelayRunDirectories, cleanupRelayRun, pathExists, prepareRelayRunDirectories } from "./isolation.js";
+import { type RelayCodexExecutor, runRelayMission } from "./mission-runner.js";
+import { resolveRelayCreditLedgerPolicy, runRelayPreflight } from "./preflight-lib.js";
 import { verifyRelayRecording, writeRelayRecording } from "./recording.js";
+import { type RelayRemnicHarness, startRelayRemnicHarness } from "./remnic-harness.js";
 
 const CODEX_ONE_SHOT_TIMEOUT_MS = 10 * 60 * 1_000;
 
@@ -52,7 +46,6 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") {
-      continue;
     } else if (arg === "--run-root") {
       runRoot = requiredValue(argv, index, arg);
       index += 1;
@@ -73,7 +66,7 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
     } else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
         "Usage: npm run relay:live -- --approve-correction APPROVE --operator relay-build-week-operator " +
-          "[--run-root <empty-path>] [--recording-dir <new-directory>] [--keep-artifacts]\n",
+          "[--run-root <empty-path>] [--recording-dir <new-directory>] [--keep-artifacts]\n"
       );
       process.exit(0);
     } else {
@@ -106,7 +99,7 @@ class LiveRelayExecutor implements RelayCodexExecutor {
     private readonly authSourcePath: string,
     private readonly harness: RelayRemnicHarness,
     private readonly budget: CodexCreditBudgetConfig,
-    private readonly signal: AbortSignal,
+    private readonly signal: AbortSignal
   ) {}
 
   async execute(role: RelayRole, workspace: string) {
@@ -133,15 +126,8 @@ async function main(): Promise<void> {
   if (await pathExists(options.recordingDir)) {
     throw new Error("Relay live recording already exists; refusing to spend credits on an overwrite");
   }
-  const defaultLedgerPath = path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger.json");
-  if (options.quarantinedLedgerPath && options.quarantinedLedgerPath !== defaultLedgerPath) {
-    throw new Error("Relay only permits quarantining its dedicated rejected-alias ledger");
-  }
-  const quarantinedUncertainUnits = options.quarantinedLedgerPath ? RELAY_QUARANTINED_ATTEMPT_UNITS : 0;
-  const creditBudgetUnits = RELAY_ACCOUNT_CREDIT_CAP_UNITS - quarantinedUncertainUnits;
-  const ledgerPath = options.quarantinedLedgerPath
-    ? path.join(repoRoot, ".remnic", "relay", "codex-credit-ledger-terra.json")
-    : defaultLedgerPath;
+  const ledgerPolicy = resolveRelayCreditLedgerPolicy(repoRoot, options.quarantinedLedgerPath);
+  const { creditBudgetUnits, ledgerPath, quarantinedLedgerPath, quarantinedUncertainUnits } = ledgerPolicy;
   const runId = `relay-build-week-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const directories = await prepareRelayRunDirectories(repoRoot, options.runRoot);
   const controller = new AbortController();
@@ -155,12 +141,12 @@ async function main(): Promise<void> {
       directories,
       ledgerPath,
       creditBudgetUnits,
-      ...(options.quarantinedLedgerPath ? { quarantinedLedgerPath: options.quarantinedLedgerPath } : {}),
+      ...(quarantinedLedgerPath ? { quarantinedLedgerPath } : {}),
     });
     await writeFile(
       path.join(directories.outputsDir, "live-checkpoint.json"),
       `${JSON.stringify({ schemaVersion: 1, runId, preflight: preflight.receipt }, null, 2)}\n`,
-      { mode: 0o600, flag: "wx" },
+      { mode: 0o600, flag: "wx" }
     );
     if (controller.signal.aborted) throw new Error("Relay live run was cancelled after preflight");
     harness = await startRelayRemnicHarness(directories.memoryDir);
@@ -178,7 +164,7 @@ async function main(): Promise<void> {
       preflight.authSourcePath,
       harness,
       budget,
-      controller.signal,
+      controller.signal
     );
     const missionRun = await runRelayMission({
       repoRoot,
@@ -220,8 +206,8 @@ async function main(): Promise<void> {
           productionDataRead: false,
         },
         null,
-        2,
-      )}\n`,
+        2
+      )}\n`
     );
   } finally {
     process.removeListener("SIGINT", cancel);

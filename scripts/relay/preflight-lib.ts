@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { buildCodexCreditReceipt } from "@remnic/bench";
 import { expandTildePath } from "@remnic/core";
 
+import { buildRelayCodexConfigArgs, buildRelayCodexSafetyArgs } from "./codex-one-shot.js";
 import {
   RELAY_ACCOUNT_CREDIT_CAP_UNITS,
   RELAY_CREDIT_BUDGET_UNITS,
@@ -18,19 +19,25 @@ import {
   RELAY_PLANNED_SPEND_CEILING_UNITS,
   RELAY_QUARANTINED_ATTEMPT_UNITS,
   RELAY_REASONING_EFFORT,
-  RelayPreflightReceiptSchema,
   type RelayPreflightReceipt,
+  RelayPreflightReceiptSchema,
 } from "./contracts.js";
-import { buildRelayCodexConfigArgs, buildRelayCodexSafetyArgs } from "./codex-one-shot.js";
 import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
-import { createRoleCodexHome, pathExists, resolveCodexBinary, type RelayRunDirectories } from "./isolation.js";
+import {
+  type RelayRunDirectories,
+  copyFixtureTree,
+  createRoleCodexHome,
+  pathExists,
+  resolveCodexBinary,
+} from "./isolation.js";
+import { runRelayPublicContractTest } from "./mission-runner.js";
 import {
   RELAY_ISOLATED_MCP_URL,
   RELAY_NETWORK_PROXY_PORT,
   RELAY_UNSHARE_NAMESPACE_ARGS,
   startRelayNetworkGateway,
 } from "./network-gateway.js";
-import { listRelayMcpTools, startRelayRemnicHarness, type RelayRemnicHarness } from "./remnic-harness.js";
+import { type RelayRemnicHarness, listRelayMcpTools, startRelayRemnicHarness } from "./remnic-harness.js";
 
 const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
 const APP_SERVER_PROBE_TIMEOUT_MS = 45_000;
@@ -44,7 +51,7 @@ interface ProcessResult {
 async function runProcess(
   executable: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number },
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number }
 ): Promise<ProcessResult> {
   return await new Promise<ProcessResult>((resolve, reject) => {
     const child = spawn(executable, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -104,7 +111,7 @@ async function probeChroot(
   repoRoot: string,
   directories: RelayRunDirectories,
   codexBinary: string,
-  authSourcePath: string,
+  authSourcePath: string
 ): Promise<string> {
   if ((await readdir(directories.rootfsDir)).length !== 0) {
     throw new Error("Relay rootfs mountpoint must be empty before preflight");
@@ -121,11 +128,7 @@ async function probeChroot(
   try {
     result = await runProcess(
       unshare,
-      [
-        ...RELAY_UNSHARE_NAMESPACE_ARGS,
-        path.join(repoRoot, "scripts", "relay", "isolate-codex.sh"),
-        "--version",
-      ],
+      [...RELAY_UNSHARE_NAMESPACE_ARGS, path.join(repoRoot, "scripts", "relay", "isolate-codex.sh"), "--version"],
       {
         cwd: repoRoot,
         timeoutMs: 20_000,
@@ -145,7 +148,7 @@ async function probeChroot(
           RELAY_NETWORK_MCP_TARGET_PORT: String(gateway.mcpTargetPort),
           REMNIC_RELAY_MCP_TOKEN: "preflight-token-not-a-live-secret",
         },
-      },
+      }
     );
   } finally {
     await gateway.stop();
@@ -170,7 +173,7 @@ async function probeIsolatedCodexToolSurface(
   directories: RelayRunDirectories,
   codexBinary: string,
   authSourcePath: string,
-  harness: RelayRemnicHarness,
+  harness: RelayRemnicHarness
 ): Promise<IsolatedCodexToolSurface> {
   if ((await readdir(directories.rootfsDir)).length !== 0) {
     throw new Error("Relay rootfs mountpoint must be empty before the Codex tool-surface probe");
@@ -260,7 +263,7 @@ async function probeIsolatedCodexToolSurface(
                 id: 2,
                 method: "mcpServerStatus/list",
                 params: { detail: "toolsAndAuthOnly" },
-              })}\n`,
+              })}\n`
             );
           } else if (message.id === 2) {
             reply = message;
@@ -292,7 +295,7 @@ async function probeIsolatedCodexToolSurface(
           params: {
             clientInfo: { name: "remnic_relay_preflight", title: "Remnic Relay preflight", version: "1.0.0" },
           },
-        })}\n`,
+        })}\n`
       );
     });
   } finally {
@@ -333,6 +336,36 @@ export interface RelayPreflightOptions {
   authSourcePath?: string;
   creditBudgetUnits?: number;
   quarantinedLedgerPath?: string;
+}
+
+export interface RelayCreditLedgerPolicy {
+  ledgerPath: string;
+  creditBudgetUnits: number;
+  quarantinedUncertainUnits: number;
+  quarantinedLedgerPath?: string;
+}
+
+export function resolveRelayCreditLedgerPolicy(
+  repoRoot: string,
+  quarantinedLedgerPath?: string
+): RelayCreditLedgerPolicy {
+  const rejectedAliasLedgerPath = path.join(path.resolve(repoRoot), ".remnic", "relay", "codex-credit-ledger.json");
+  if (quarantinedLedgerPath && path.resolve(quarantinedLedgerPath) !== rejectedAliasLedgerPath) {
+    throw new Error("Relay only permits quarantining its dedicated rejected-alias ledger");
+  }
+  if (!quarantinedLedgerPath) {
+    return {
+      ledgerPath: rejectedAliasLedgerPath,
+      creditBudgetUnits: RELAY_ACCOUNT_CREDIT_CAP_UNITS,
+      quarantinedUncertainUnits: 0,
+    };
+  }
+  return {
+    ledgerPath: path.join(path.resolve(repoRoot), ".remnic", "relay", "codex-credit-ledger-terra.json"),
+    creditBudgetUnits: RELAY_ACCOUNT_CREDIT_CAP_UNITS - RELAY_QUARANTINED_ATTEMPT_UNITS,
+    quarantinedUncertainUnits: RELAY_QUARANTINED_ATTEMPT_UNITS,
+    quarantinedLedgerPath: rejectedAliasLedgerPath,
+  };
 }
 
 async function verifyQuarantinedAliasLedger(ledgerPath: string): Promise<string> {
@@ -390,13 +423,13 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
     throw new Error("Relay effective credit budget does not account for quarantined uncertainty");
   }
   const plannedSpendCeilingUnits = budgetUnits - RELAY_CREDIT_RESERVE_UNITS;
-  if (
-    plannedSpendCeilingUnits <= 0 ||
-    RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL > plannedSpendCeilingUnits
-  ) {
+  if (plannedSpendCeilingUnits <= 0 || RELAY_MAX_LIVE_CALLS * RELAY_MAX_UNITS_PER_CALL > plannedSpendCeilingUnits) {
     throw new Error("Relay worst-case live calls exceed the planned spend ceiling");
   }
-  if (options.quarantinedLedgerPath && path.resolve(options.quarantinedLedgerPath) === path.resolve(options.ledgerPath)) {
+  if (
+    options.quarantinedLedgerPath &&
+    path.resolve(options.quarantinedLedgerPath) === path.resolve(options.ledgerPath)
+  ) {
     throw new Error("Relay active and quarantined credit ledgers must be distinct files");
   }
   const quarantinedLedgerSha256 = options.quarantinedLedgerPath
@@ -405,10 +438,10 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   const fixtureRoot = path.join(options.repoRoot, "fixtures", "remnic-relay");
   const fixtureManifest = await verifyRelayFixtureManifest(fixtureRoot);
   const codexBinary = await resolveCodexBinary(
-    options.codexBinaryPath ?? (await findOnPath("codex", process.env.PATH)),
+    options.codexBinaryPath ?? (await findOnPath("codex", process.env.PATH))
   );
   const authSourcePath = resolveRelayAuthSourcePath(
-    options.authSourcePath ?? process.env.REMNIC_RELAY_CODEX_AUTH ?? path.join(os.homedir(), ".codex", "auth.json"),
+    options.authSourcePath ?? process.env.REMNIC_RELAY_CODEX_AUTH ?? path.join(os.homedir(), ".codex", "auth.json")
   );
   if (path.basename(authSourcePath) !== "auth.json") {
     throw new Error("Relay Codex auth source must be an auth.json file");
@@ -441,9 +474,9 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
     : Array.isArray((catalog as { models?: unknown })?.models)
       ? (catalog as { models: unknown[] }).models
       : [];
-  const configuredModel = models.find(
-    (model) => (model as { slug?: unknown })?.slug === RELAY_MODEL,
-  ) as { default_reasoning_level?: unknown; supported_reasoning_levels?: Array<{ effort?: unknown }> } | undefined;
+  const configuredModel = models.find((model) => (model as { slug?: unknown })?.slug === RELAY_MODEL) as
+    | { default_reasoning_level?: unknown; supported_reasoning_levels?: Array<{ effort?: unknown }> }
+    | undefined;
   if (
     !configuredModel ||
     !configuredModel.supported_reasoning_levels?.some((level) => level.effort === RELAY_REASONING_EFFORT)
@@ -459,6 +492,14 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   }
   const isolatedVersion = await probeChroot(options.repoRoot, options.directories, codexBinary, authSourcePath);
   if (isolatedVersion !== codexVersion) throw new Error("Relay chroot executed a different Codex binary version");
+  const contractProbeWorkspace = path.join(options.directories.workspacesDir, "contract-sandbox-preflight");
+  await mkdir(contractProbeWorkspace, { mode: 0o700 });
+  await copyFixtureTree(path.join(fixtureRoot, "downstream"), contractProbeWorkspace);
+  await copyFile(
+    path.join(fixtureRoot, "upstream", "src", "reference-token-policy.mjs"),
+    path.join(contractProbeWorkspace, "src", "token-policy.mjs")
+  );
+  await runRelayPublicContractTest(contractProbeWorkspace, "preflight");
 
   let ledgerSpentUnits = 0;
   let ledgerRemainingPlannedUnits = plannedSpendCeilingUnits;
@@ -494,7 +535,7 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
       options.directories,
       codexBinary,
       authSourcePath,
-      harness,
+      harness
     );
   } finally {
     await harness?.stop().catch(() => undefined);
