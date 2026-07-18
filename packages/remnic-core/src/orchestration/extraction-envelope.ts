@@ -41,7 +41,14 @@ export function composeSalvagedExtractionEnvelope(
  * the marker, and warn when source tags are dropped to make room.
  */
 export function withReservedMarkerTag(sourceTags: string[], marker: string): string[] {
-  const normalized = normalizeTags(sourceTags) ?? [];
+  // Drop overlong tags BEFORE budgeting (round 3): normalizeTags only
+  // trims/dedupes, so a >256-char tag would consume a budget slot here and
+  // then be salvage-dropped at compose time — squeezing out a valid later
+  // tag for nothing.
+  const usable = sourceTags.filter(
+    (tag) => typeof tag !== "string" || tag.trim().length <= TAG_LIMITS.maxTagLength,
+  );
+  const normalized = normalizeTags(usable) ?? [];
   const budget = TAG_LIMITS.maxTags - 1;
   if (normalized.length > budget) {
     log.warn(
