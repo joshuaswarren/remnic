@@ -357,6 +357,28 @@ test("QmdClient keeps legacy --json for older QMD query subprocess output", asyn
   ]);
 });
 
+test("QmdClient clears the global QMD result caches on a successful refresh (#1904)", async () => {
+  // The centralized invalidation lives in QmdClient.runUpdateForCollection /
+  // runEmbedForCollection so every refresh path (direct update, namespace
+  // router, wearable/OpenClaw sync) invalidates the cached pre-refresh bundles
+  // without each caller having to remember. Defend that contract.
+  const { QmdClient } = await import("./qmd.js");
+  const { setCachedQmdSearch, getCachedQmdSearch } = await import("./memory-cache.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.runQmdCommand = async () => ({ stdout: "", stderr: "" });
+  setCachedQmdSearch("stale-bundle", [{ path: "facts/old.md" }]);
+  assert.notEqual(getCachedQmdSearch("stale-bundle"), null, "cache populated before refresh");
+  // updateCollectionStrict uses force=true, bypassing throttle/backoff gates so
+  // the refresh deterministically reaches the success point that clears caches.
+  await client.updateCollectionStrict("test");
+  assert.equal(
+    getCachedQmdSearch("stale-bundle"),
+    null,
+    "a successful refresh must clear the cached pre-refresh QMD bundle",
+  );
+});
+
 test("parseQmdExplain preserves qmd 2.5 nested RRF trace fields", () => {
   assert.deepEqual(
     parseQmdExplain({

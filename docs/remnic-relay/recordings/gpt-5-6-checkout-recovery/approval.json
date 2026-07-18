@@ -1,0 +1,5 @@
+{
+  "approved": true,
+  "operatorPrincipal": "relay-build-week-operator",
+  "gate": "--approve-correction APPROVE"
+}

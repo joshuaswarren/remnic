@@ -1,0 +1,7 @@
+{
+  "memoryId": "decision-1784349567966-pt7p",
+  "decisionId": "decision-refresh-after-expiry",
+  "status": "active",
+  "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
+  "synthetic": true
+}
