@@ -42,7 +42,7 @@ import {
   gatewayTaskChainOptions,
 } from "../fallback-llm.js";
 import { resolveIndexingCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
-import { deindexMemoriesBatchAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { runPeerProfileReasoner } from "../peers/index.js";
 import type { StorageManager } from "../index.js";
 import type { LocalLlmClient } from "../local-llm.js";

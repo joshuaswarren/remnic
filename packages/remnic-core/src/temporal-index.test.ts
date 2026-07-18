@@ -11,7 +11,6 @@ import {
   clearIndexes,
   deindexMemory as deindexMemorySync,
   deindexMemoryAsync as deindexMemory,
-  deindexMemoriesBatchAsync,
   indexMemoriesBatch,
   indexMemory as indexMemorySync,
   indexMemoryAsync as indexMemory,
@@ -25,6 +24,7 @@ import {
   setIndexWriteFailureForTest,
   setIndexWriteObserverForTest,
 } from "./temporal-index.js";
+import { deindexMemoriesBatchAsync } from "./temporal-index-batch.js";
 
 test("legacy temporal-index exports preserve synchronous return timing and booleans", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-sync-compat-"));

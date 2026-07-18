@@ -30,7 +30,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import { applyCommitmentLedgerLifecycle } from "../commitment-ledger.js";
 import { recordDreamsPhaseRun } from "../maintenance/dreams-ledger.js";
-import { deindexMemoriesBatchAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
   resolveConsolidationCapabilities,

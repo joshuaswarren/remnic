@@ -34,7 +34,7 @@ import {
   resolveCreationMemoryCapabilities,
 } from "../capabilities.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { deindexMemoriesBatchAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { extractTopics } from "../topics.js";
 import { log } from "../logger.js";
 import path from "node:path";
