@@ -307,6 +307,16 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. The session key becomes unusable immediately.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Clear the checkout credential now.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Nullify the access token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Terminate the checkout session immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Close the checkout session after its first request.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. End the session on an ordinary retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Cancel the checkout-session now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Abort the checkout session before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Destroy the session after token use.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Delete the checkout session.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Invalidate the session immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Force the checkout session to expire.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Reset the checkout session after every request.",
     "Reuse the checkout-session token while it is valid until we revoke it immediately. Mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid unless the token is invalidated immediately. Mint exactly one replacement after expiry.",
     "One checkout token is owned per checkout session until we revoke it. Reuse the checkout-session token while valid. Mint exactly one replacement after expiry.",
@@ -407,6 +417,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   assert.equal(
     relayCheckoutDecisionContractKey(
       "Reuse the checkout-session token while valid. Let the checkout token expire naturally. Mint exactly one replacement after expiry. Delete an obsolete audit record."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Do not terminate the checkout session."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );

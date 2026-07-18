@@ -160,17 +160,13 @@ async function openSourceRelative(rootHandle, rootMountId, relative) {
 }
 
 async function readOpenedSourceFile(handle, label) {
-  try {
-    const before = await handle.stat({ bigint: true });
-    invariant(before.isFile(), `${label} must be a non-symlink regular file`);
-    invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
-    const contents = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
-    return contents;
-  } finally {
-    await handle.close();
-  }
+  const before = await handle.stat({ bigint: true });
+  invariant(before.isFile(), `${label} must be a non-symlink regular file`);
+  invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
+  const contents = await handle.readFile();
+  const after = await handle.stat({ bigint: true });
+  invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
+  return contents;
 }
 
 async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, snapshot) {
@@ -181,15 +177,15 @@ async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, sna
     invariant(name !== "." && name !== ".." && !name.includes("/"), `${prefix} contains an invalid entry name`);
     const relative = `${prefix}/${name}`;
     const { handle, info } = await openSourceChildNoFollow(directoryHandle, name, relative, undefined, rootMountId);
-    if (info.isDirectory()) {
-      try {
+    try {
+      if (info.isDirectory()) {
         await snapshotSourceDirectory(handle, rootMountId, relative, snapshot);
-      } finally {
-        await handle.close();
+      } else {
+        invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
+        snapshot.set(relative, await readOpenedSourceFile(handle, relative));
       }
-    } else {
-      invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
-      snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+    } finally {
+      await handle.close();
     }
   }
   const after = await directoryHandle.stat({ bigint: true });
@@ -203,16 +199,16 @@ async function snapshotPackageSources(root, relatives) {
     const before = await rootHandle.stat({ bigint: true });
     for (const relative of relatives) {
       const handle = await openSourceRelative(rootHandle, mountId, relative);
-      const info = await handle.stat({ bigint: true });
-      if (info.isDirectory()) {
-        try {
+      try {
+        const info = await handle.stat({ bigint: true });
+        if (info.isDirectory()) {
           await snapshotSourceDirectory(handle, mountId, relative, snapshot);
-        } finally {
-          await handle.close();
+        } else {
+          invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
+          snapshot.set(relative, await readOpenedSourceFile(handle, relative));
         }
-      } else {
-        invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
-        snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+      } finally {
+        await handle.close();
       }
     }
     const after = await rootHandle.stat({ bigint: true });
