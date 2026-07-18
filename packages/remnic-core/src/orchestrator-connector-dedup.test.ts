@@ -1126,11 +1126,11 @@ test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fa
     "the fact hash was flushed immediately despite the batch saver being a no-op",
   );
 });
-test("#1909: deferred persist run restores the ready marker and dedups the fact after restart", async () => {
-  // Review round 4: with dedup ON the main-path write defers, so persistExtraction
-  // opens the crash window (removes fact-hashes.ready) and must restore it after
-  // the batch save. After a normal run the marker is present AND a fresh
-  // StorageManager (trusting the marker, no rebuild) still dedups the fact.
+test("#1909 marker pivot: deferred persist invalidates the ready marker (not restored) and a restart still dedups", async () => {
+  // Review round 9: with dedup ON the main-path fact write defers and
+  // persistExtraction INVALIDATES fact-hashes.ready — and never restores it. A
+  // restart therefore rebuilds authoritatively from the corpus and still dedups
+  // the fact (no reliance on trusting a possibly-stale on-disk index).
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-window-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -1145,7 +1145,7 @@ test("#1909: deferred persist run restores the ready marker and dedups the fact 
   const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
   const storage = await orchestrator.getStorage("default");
   await storage.ensureDirectories();
-  // Warm authoritative + create the marker so the run's guard has one to toggle.
+  // Warm authoritative + create the marker so the run's guard has one to remove.
   assert.equal(await storage.hasFactContentHash("warm"), false);
   const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
   assert.equal(existsSync(readyPath), true, ".ready present before the run");
@@ -1154,14 +1154,13 @@ test("#1909: deferred persist run restores the ready marker and dedups the fact 
   const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 1, "the fact is written");
 
-  // The marker was restored after the batch save.
-  assert.equal(existsSync(readyPath), true, ".ready restored after a successful deferred batch");
+  // The marker was invalidated by the deferred fact write and NOT restored.
+  assert.equal(existsSync(readyPath), false, ".ready invalidated and not restored (round 9 pivot)");
 
-  // A fresh instance trusts the marker (no rebuild) and still finds the hash —
-  // proving the batch save flushed the deferred write and the marker points at a
-  // complete index.
+  // A fresh instance rebuilds from the corpus (marker absent) and still dedups.
   const restarted = new StorageManager(memoryDir);
   assert.equal(await restarted.hasFactContentHash(body), true);
+  assert.equal(existsSync(readyPath), true, "the restart rebuild re-established the marker");
 });
 test("#1909: a deferred fact stays durable when addContentHashDedup throws", async () => {
   // Review round 6 finding 1: the deferred write's durability must not depend on
@@ -1237,4 +1236,39 @@ test("#1909: two interleaved persist runs both land on disk (merge, no clobber)"
   const fresh = new StorageManager(memoryDir);
   assert.equal(await fresh.hasFactContentHash("alpha interleaved fact"), true, "A's fact survived");
   assert.equal(await fresh.hasFactContentHash("beta interleaved fact"), true, "B's fact survived");
+});
+test("#1909 finding 5: a non-fact (preference) deferred write does NOT invalidate the fact-hash ready marker", async () => {
+  // Review round 9 finding 5: non-fact memories never touch the fact-hash index,
+  // so the deferred-window guard must not remove fact-hashes.ready for them —
+  // doing so would force needless corpus rebuilds on the next restart.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonfact-marker-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  // Warm authoritative + create the marker.
+  assert.equal(await storage.hasFactContentHash("warm"), false);
+  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
+  assert.equal(existsSync(readyPath), true, ".ready present before the run");
+
+  const preferenceResult: ExtractionResult = {
+    facts: [{ content: "prefers dark mode in the editor", category: "preference", tags: [], confidence: 0.9 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  };
+  await orchestrator.persistExtraction(preferenceResult, storage, null);
+
+  // The marker is untouched — the preference write never deferred a fact hash.
+  assert.equal(existsSync(readyPath), true, "non-fact write left the ready marker intact");
 });

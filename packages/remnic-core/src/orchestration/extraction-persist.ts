@@ -248,20 +248,28 @@ export class ExtractionPersistCoordinator {
     // (or re-enabling dedup) with fact-hashes.ready present would trust a stale
     // index. Defer only when the batch will actually cover the write.
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
-    // #1909 (review round 4): guard the deferred-batch crash window. While a
-    // deferred main-path write is outstanding, remove that target storage's
-    // fact-hashes.ready marker so a crash BEFORE the end-of-persist batch save
-    // forces a rebuild-from-corpus on restart instead of trusting a stale index;
-    // restore the marker after the batch save succeeds. One toggle per storage
-    // per run; a complete no-op when nothing defers (factDedup off).
-    const readyMarkerToRestore = new Set<StorageManager>();
+    // #1909 (review round 9 — marker design pivot): the fact-hashes.ready marker
+    // is INVALIDATED once, at the start of a deferred FACT-hash write, and is
+    // NEVER restored during a write run. A restart therefore always rebuilds the
+    // index authoritatively from the corpus (ensureFactHashIndexAuthoritative,
+    // the pre-existing fail-open path). This deletes the entire "marker trusted
+    // over a stale index" class of races (rebuild-during-window, publish-without
+    // -lock, snapshot-vs-additions) instead of chasing each edge. The one-time
+    // O(N) rebuild is amortized by the #1902 hot-memories cache. Finding 5: only
+    // fire for FACT writes — non-fact memories (procedures, etc.) never touch the
+    // fact-hash index, so removing the marker for them would force needless
+    // rebuilds. `deferHashIndexSave` on the write still gives the per-fact
+    // O(file) win; the end-of-run batch save persists the current index (used
+    // only until the next rebuild re-establishes the marker).
     const readyMarkerHandled = new Set<StorageManager>();
-    const guardDeferredFactHashWindow = async (target: StorageManager): Promise<void> => {
-      if (!factDedupEnabled) return;
+    const guardDeferredFactHashWindow = async (
+      target: StorageManager,
+      isFact: boolean,
+    ): Promise<void> => {
+      if (!factDedupEnabled || !isFact) return;
       if (readyMarkerHandled.has(target)) return;
       readyMarkerHandled.add(target);
-      const existed = await target.invalidateFactHashIndexReadyMarkerOnDisk();
-      if (existed) readyMarkerToRestore.add(target);
+      await target.invalidateFactHashIndexReadyMarkerOnDisk();
     };
 
   // Canonicalize stored content for dedup comparison: strip citations
@@ -2238,8 +2246,8 @@ export class ExtractionPersistCoordinator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          // #1909: open the deferred-batch crash window for this storage.
-          await guardDeferredFactHashWindow(targetStorage);
+          // #1909: invalidate the ready marker only for a deferred FACT write.
+          await guardDeferredFactHashWindow(targetStorage, writeCategory === "fact");
           const parentWriteEnvelope = composeSalvagedExtractionEnvelope(
             {
               content: citedChunkedContent,
@@ -2604,8 +2612,8 @@ export class ExtractionPersistCoordinator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      // #1909: open the deferred-batch crash window for this storage.
-      await guardDeferredFactHashWindow(targetStorage);
+      // #1909: invalidate the ready marker only for a deferred FACT write.
+      await guardDeferredFactHashWindow(targetStorage, writeCategory === "fact");
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
           content: citedFactContent,
@@ -2982,33 +2990,20 @@ export class ExtractionPersistCoordinator {
       touchBaseNonFactNamespace();
     }
 
-    // Save any content-hash indexes touched during the batch (union-merge with
-    // on-disk — issue #1909 review round 6 — so concurrent runs don't clobber).
-    let batchIndexSaveOk = true;
+    // Save any content-hash indexes touched during the batch via the removal-
+    // aware, lock-held reconciling save (issue #1909).
     await this.deps.saveContentHashIndexes().catch((err) => {
-      batchIndexSaveOk = false;
       log.warn(`content-hash index save failed: ${err}`);
     });
-    // #1909 (review round 6): also union-flush each deferred target's OWN
-    // fact-hash index. writeMemory already added the deferred hash to that index,
-    // so this makes durability independent of addContentHashDedup (which is
-    // caught+logged and could have thrown, leaving the orchestrator index — and
-    // thus the batch save — missing the hash). A storage whose flush fails is
-    // dropped from the marker-restore set so a restart rebuilds from the corpus.
+    // Also reconcile-flush each deferred target's OWN fact-hash index so the
+    // deferred hash reaches disk even if addContentHashDedup threw (round 6).
+    // NOTE (round 9 marker pivot): the fact-hashes.ready marker removed at the
+    // start of a deferred fact write is NEVER restored here — a restart rebuilds
+    // authoritatively from the corpus. This eliminates the whole "marker trusted
+    // over a stale index" race class; the flush below just keeps the on-disk
+    // index current for the window until the next rebuild re-establishes it.
     for (const target of readyMarkerHandled) {
-      const flushed = await target.flushDeferredFactHashIndexMergingWithDisk();
-      if (!flushed) readyMarkerToRestore.delete(target);
-    }
-    // #1909 (review round 4): restore each removed ready marker only for storages
-    // whose deferred hashes are now durably on disk. On a failed batch/flush,
-    // leave the marker absent — a fresh instance rebuilds from the corpus
-    // (fail-open) rather than trusting an index missing this run's hashes.
-    if (batchIndexSaveOk) {
-      for (const target of readyMarkerToRestore) {
-        await target.restoreFactHashIndexReadyMarkerOnDisk().catch((err) =>
-          log.warn(`fact-hash ready marker restore failed: ${err}`),
-        );
-      }
+      await target.flushDeferredFactHashIndexMergingWithDisk();
     }
 
     for (const {

@@ -1148,6 +1148,15 @@ export class ContentHashIndex {
    * appended hash (blind overwrite would). Consumed + cleared by every save.
    */
   private removed: Set<string> = new Set();
+  /**
+   * Hashes added by THIS instance since the last successful save (issue #1909
+   * review round 9 finding 3). Tracked separately from the loaded snapshot so a
+   * reconciling save publishes `(on-disk \ removed) ∪ added` — it re-applies only
+   * OUR additions, never the stale loaded entries. Without this, seeding the
+   * merge from `this.hashes` (loaded ∪ added) would resurrect a hash a peer
+   * removed on disk while this instance held a stale snapshot.
+   */
+  private added: Set<string> = new Set();
   private readonly filePath: string;
   private readonly secureStoreKeyProvider: () => Buffer | null;
   private readonly secureStoreWriteKeyProvider: () => Buffer | null;
@@ -1195,6 +1204,7 @@ export class ContentHashIndex {
     this.removed.delete(hash);
     if (!this.hashes.has(hash)) {
       this.hashes.add(hash);
+      this.added.add(hash); // OUR contribution — reconcile republishes only these
       this.dirty = true;
     }
   }
@@ -1209,7 +1219,8 @@ export class ContentHashIndex {
       this.hashes.clear();
     }
     // A full clear is always paired with a plain overwrite save() (rebuild);
-    // pending per-hash removals are subsumed by writing the empty/rebuilt set.
+    // pending per-hash add/remove deltas are subsumed by writing the rebuilt set.
+    this.added.clear();
     this.removed.clear();
     this.dirty = true;
   }
@@ -1225,9 +1236,9 @@ export class ContentHashIndex {
       {},
       this.memoryDir
     );
-    // The overwrite already excludes removed hashes (they were deleted from
-    // `hashes`); drop the pending-removal record so a later reconciling save
-    // does not re-apply stale removals.
+    // The overwrite publishes the full in-memory set; drop the pending
+    // add/remove deltas so a later reconciling save does not re-apply them.
+    this.added.clear();
     this.removed.clear();
     this.dirty = false;
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
@@ -1236,21 +1247,22 @@ export class ContentHashIndex {
   /**
    * Persist the index by RECONCILING with the latest on-disk state under a
    * cross-process lock (issue #1909). Used by the extraction-persist batch save
-   * for BOTH append and removal batches (review round 8 thread 3), so appends
-   * and removals to the same index serialize against each other:
-   *   final = (on-disk \ this.removed) ∪ this.hashes
-   * i.e. keep every concurrent/prior on-disk hash EXCEPT the ones we removed
-   * this run, then union our additions. This preserves a concurrent writer's
-   * appended hashes (a blind overwrite would drop them), never resurrects a
-   * removed hash (a plain union would), and never loses our additions.
+   * for BOTH append and removal batches, so appends and removals to the same
+   * index serialize against each other:
+   *   final = (on-disk \ this.removed) ∪ this.added
+   * Note it re-applies only OUR local additions (`added`), NOT the loaded
+   * snapshot (review round 9 finding 3): seeding from `this.hashes` would
+   * resurrect a hash a peer removed on disk while we held a stale snapshot. This
+   * preserves a concurrent writer's appended hashes (a blind overwrite would
+   * drop them), never resurrects a removed hash, and never loses our additions.
    *
    * Hardening:
    *  - Dirty short-circuit (round 7 finding 3): when this instance neither added
    *    nor removed anything this run, skip the O(file) read+rewrite entirely.
    *  - Cross-process lock (round 7 finding 2): serialize the read→reconcile→write
-   *    window on a per-file advisory lock so two concurrent runs cannot both read
-   *    the pre-change state and drop each other on the atomic replace (TOCTOU).
-   *    On acquisition timeout, fall back to a best-effort unlocked publish.
+   *    window on a per-file advisory lock. If the lock is NOT acquired (timeout),
+   *    do NOT publish (round 9 finding 2): leave `dirty` set so a later save
+   *    retries under the lock, never an unlocked write that could clobber a peer.
    */
   async saveMergingWithDisk(): Promise<void> {
     if (!this.dirty) return;
@@ -1258,7 +1270,7 @@ export class ContentHashIndex {
     // before acquiring it (the index dir may not exist on a first write).
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const publish = async (): Promise<void> => {
-      const merged = new Set<string>(this.hashes);
+      const merged = new Set<string>(this.added);
       try {
         const raw = await readMaybeEncryptedFile(
           this.filePath,
@@ -1273,7 +1285,7 @@ export class ContentHashIndex {
       } catch (err) {
         if (err instanceof SecureStoreLockedError) throw err;
         if (!isErrnoCode(err, "ENOENT")) throw err;
-        // ENOENT → no on-disk index yet; write our set as-is.
+        // ENOENT → no on-disk index yet; write our additions as-is.
       }
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await writeMaybeEncryptedFile(
@@ -1284,13 +1296,23 @@ export class ContentHashIndex {
         this.memoryDir
       );
       this.hashes = merged;
+      this.added.clear();
       this.removed.clear();
       this.dirty = false;
     };
     await withHeldFileLock(
       `${this.filePath}.lock`,
       { staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS },
-      () => publish(),
+      async (acquired) => {
+        if (!acquired) {
+          // Never publish unlocked (round 9 finding 2): keep dirty for retry.
+          log.warn(
+            `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained)`,
+          );
+          return;
+        }
+        await publish();
+      },
     );
     log.debug(`content-hash index: reconcile-saved ${this.hashes.size} hashes`);
   }
@@ -1300,7 +1322,8 @@ export class ContentHashIndex {
     const hash = ContentHashIndex.computeHash(content);
     // Record the removal (round 8 thread 3) even when the hash is not in our
     // in-memory set — a reconciling save must still drop it from the latest
-    // on-disk state. Always mark dirty so the save is not short-circuited.
+    // on-disk state. A removal supersedes a pending add. Always mark dirty.
+    this.added.delete(hash);
     this.removed.add(hash);
     this.hashes.delete(hash);
     this.dirty = true;
@@ -1314,6 +1337,7 @@ export class ContentHashIndex {
    * entry.
    */
   removeByHash(hash: string): void {
+    this.added.delete(hash);
     this.removed.add(hash);
     this.hashes.delete(hash);
     this.dirty = true;
@@ -1332,6 +1356,7 @@ export class ContentHashIndex {
     this.removed.delete(hash);
     if (!this.hashes.has(hash)) {
       this.hashes.add(hash);
+      this.added.add(hash);
       this.dirty = true;
     }
   }
@@ -3710,18 +3735,6 @@ export class StorageManager {
       if (isErrnoCode(err, "ENOENT")) return false;
       throw err;
     }
-  }
-
-  /**
-   * Re-establish the fact-hash "ready" marker after a deferred batch save has
-   * flushed the authoritative superset to disk (issue #1909 review round 4).
-   * Only call this for a storage whose marker was present before the window
-   * (see `invalidateFactHashIndexReadyMarkerOnDisk`) — its on-disk index was
-   * complete and the batch save only appended this run's hashes to it.
-   */
-  async restoreFactHashIndexReadyMarkerOnDisk(): Promise<void> {
-    await mkdir(path.dirname(this.factHashIndexReadyPath), { recursive: true });
-    await writeFile(this.factHashIndexReadyPath, "v1\n", "utf-8");
   }
 
   // ── Tombstone store access (issue #1579) ─────────────────────────────────

@@ -201,7 +201,9 @@ function parseIntegerInClosedRange(
   fallback: number,
   keyName: string,
 ): number {
-  if (value === undefined || value === null) return fallback;
+  // Only an absent key (undefined) falls back to the default; an explicit `null`
+  // is invalid input and proceeds to validation → throw (round 9 finding 1).
+  if (value === undefined) return fallback;
   const coerced = coerceNumber(value);
   if (
     coerced === undefined ||

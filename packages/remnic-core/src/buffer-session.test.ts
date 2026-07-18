@@ -764,6 +764,7 @@ test("parseConfig rejects invalid bufferSaveDebounceMs (round 8: throw, do not c
     "abc", // non-numeric string
     -0.0001,
     2_147_483_648, // one past max
+    null, // explicit null is invalid (only undefined defaults) — round 9 finding 1
   ];
   for (const value of cases) {
     assert.throws(
