@@ -386,10 +386,19 @@ test("write source participates in the fingerprint; scope values are trimmed", (
   );
 });
 
-test("JSON-decoded __proto__ attribute keys are handled as plain data", () => {
+test("prototype-machinery attribute keys are rejected outright", () => {
+  // stableStringify rebuilds objects with plain assignment, where an own
+  // "__proto__" property silently vanishes — so such keys can never
+  // round-trip through the fingerprint and must be rejected, not smuggled.
   const attrs = JSON.parse('{"__proto__": "spoof", "city": "Austin"}') as Record<string, string>;
-  const env = composeMemoryEnvelope(minimalInput({ structuredAttributes: attrs }), CTX);
-  assert.ok(Object.hasOwn(env.structuredAttributes ?? {}, "__proto__"));
-  assert.equal(Object.getPrototypeOf(env.structuredAttributes), Object.prototype);
-  assert.equal(env.structuredAttributes?.city, "Austin");
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: attrs }), CTX),
+    /reserved key "__proto__"/,
+  );
+  for (const key of ["constructor", "Prototype", " __proto__ "]) {
+    assert.throws(
+      () => composeMemoryEnvelope(minimalInput({ structuredAttributes: { [key]: "x" } }), CTX),
+      /reserved key/,
+    );
+  }
 });

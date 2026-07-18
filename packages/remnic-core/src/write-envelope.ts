@@ -213,8 +213,12 @@ function normalizeStructuredAttributes(
       `exceed the ${STRUCTURED_ATTRIBUTE_LIMITS.maxEntries}-entry limit (got ${entries.length})`,
     );
   }
-  // Null prototype: a JSON-decoded "__proto__"/"constructor" key must hit the
-  // duplicate/ownership checks like any other key (review finding on #1998).
+  // Keys that collide with Object.prototype machinery are REJECTED outright:
+  // `hashAccessIdempotencyPayload`'s stableStringify rebuilds objects with
+  // plain assignment, where a "__proto__" own property silently vanishes —
+  // so such a key can never round-trip through the fingerprint faithfully
+  // (review finding on #1998 round 3). Rejection beats smuggling (§1/§39).
+  const FORBIDDEN_ATTRIBUTE_KEYS = ["__proto__", "constructor", "prototype"];
   const out: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     // Canonicalize exactly like storage's normalizeAttributePairs
@@ -230,6 +234,12 @@ function normalizeStructuredAttributes(
       fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} must be a string (got ${typeof value}) — stringify numbers/booleans at the call site`);
     }
     const cleanValue = value.trim();
+    if (FORBIDDEN_ATTRIBUTE_KEYS.includes(cleanKey)) {
+      fail(
+        "structuredAttributes",
+        `contain the reserved key ${JSON.stringify(cleanKey)} — prototype-machinery names cannot round-trip through fingerprint serialization`,
+      );
+    }
     if (cleanValue.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) {
       fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength} characters`);
     }
