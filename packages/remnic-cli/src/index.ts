@@ -4844,6 +4844,31 @@ function cmdInit(): void {
   console.log("  npx --package @remnic/server remnic-server");
 }
 
+/**
+ * Resolve a bearer token for the local status/health probe (issue #2006).
+ * Precedence mirrors the daemon: operator token first (env
+ * `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN`, then config `server.authToken`
+ * via `oauthResolveOperatorToken()`), then any connector token from the
+ * local token store — the access server accepts connector tokens for
+ * health. Returns `undefined` for open daemons so the probe stays
+ * unauthenticated exactly as before.
+ */
+function resolveStatusProbeToken(): string | undefined {
+  const operatorToken = oauthResolveOperatorToken();
+  if (operatorToken) return operatorToken;
+  try {
+    const [first] = listTokens();
+    if (first && typeof first.token === "string" && first.token.length > 0) {
+      return first.token;
+    }
+  } catch {
+    // Token store missing/unreadable — fall through to the open probe.
+  }
+  return undefined;
+}
+
+export const __statusHealthTestHooks = { resolveStatusProbeToken };
+
 async function cmdStatus(json: boolean): Promise<void> {
   const { running, pid } = isServiceRunning();
   if (json) {
@@ -4857,14 +4882,22 @@ async function cmdStatus(json: boolean): Promise<void> {
   console.log(`Remnic server: running${pid ? ` (pid ${pid})` : ""}`);
 
   const port = inferPort();
+  const probeToken = resolveStatusProbeToken();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 3000);
   try {
     const response = await fetch(`http://127.0.0.1:${port}/engram/v1/health`, {
       signal: controller.signal,
+      ...(probeToken ? { headers: { Authorization: `Bearer ${probeToken}` } } : {}),
     });
     if (!response.ok) {
-      console.log(`Health: server responded with ${response.status} ${response.statusText}`);
+      const hint =
+        response.status === 401 && !probeToken
+          ? " (daemon requires auth and no local token was found — set REMNIC_AUTH_TOKEN, configure server.authToken, or run 'remnic token generate')"
+          : response.status === 401
+            ? " (local token rejected by the daemon)"
+            : "";
+      console.log(`Health: server responded with ${response.status} ${response.statusText}${hint}`);
     } else {
       const health = (await response.json()) as { status?: unknown };
       const status = typeof health.status === "string" ? health.status : "ok";
