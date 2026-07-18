@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -300,7 +300,7 @@ grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/self/status
     const fakeCodex = path.join(parent, "fake-codex.mjs");
     await writeFile(
       fakeCodex,
-      `#!/usr/bin/node
+      `#!/opt/codex/relay-node
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const expected = ${JSON.stringify(secret)};
@@ -321,6 +321,7 @@ process.stdout.write("RELAY_MODEL_SHELL_CREDENTIAL_BOUNDARY_OK\\n");
 `,
       { mode: 0o755 }
     );
+    const nodeBinary = await realpath(process.execPath);
     const gateway = await startRelayNetworkGateway({ outputDir, mcpUrl: "http://127.0.0.1:1/mcp" });
     try {
       const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
@@ -338,6 +339,7 @@ process.stdout.write("RELAY_MODEL_SHELL_CREDENTIAL_BOUNDARY_OK\\n");
               RELAY_CODEX_HOME: codexHome,
               RELAY_OUTPUT_DIR: outputDir,
               RELAY_CODEX_BIN: fakeCodex,
+              RELAY_NODE_BIN: nodeBinary,
               RELAY_WORKSPACE_READ_ONLY: "0",
               RELAY_NETWORK_PROXY_SCRIPT: path.join(repoRoot, "scripts", "relay", "network-proxy.mjs"),
               RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,

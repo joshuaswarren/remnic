@@ -122,6 +122,7 @@ async function probeChroot(
   await mkdir(output, { mode: 0o700 });
   const codexHome = await createRoleCodexHome(directories.codexHomesDir, "preflight", authSourcePath);
   const unshare = await findOnPath("unshare", process.env.PATH);
+  const nodeBinary = await realpath(process.execPath);
   const networkProxyScript = path.join(repoRoot, "scripts", "relay", "network-proxy.mjs");
   const gateway = await startRelayNetworkGateway({ outputDir: output, mcpUrl: "http://127.0.0.1:1/mcp" });
   let result: ProcessResult;
@@ -141,6 +142,7 @@ async function probeChroot(
           RELAY_CODEX_HOME: codexHome,
           RELAY_OUTPUT_DIR: output,
           RELAY_CODEX_BIN: codexBinary,
+          RELAY_NODE_BIN: nodeBinary,
           RELAY_WORKSPACE_READ_ONLY: "1",
           RELAY_NETWORK_PROXY_SCRIPT: networkProxyScript,
           RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
@@ -182,6 +184,7 @@ async function probeIsolatedCodexToolSurface(
   const workspace = path.join(directories.workspacesDir, "preflight-probe");
   const output = path.join(directories.outputsDir, "preflight-probe");
   const unshare = await findOnPath("unshare", process.env.PATH);
+  const nodeBinary = await realpath(process.execPath);
   const networkProxyScript = path.join(repoRoot, "scripts", "relay", "network-proxy.mjs");
   const gateway = await startRelayNetworkGateway({ outputDir: output, mcpUrl: harness.mcpUrl });
   const args = [
@@ -207,6 +210,7 @@ async function probeIsolatedCodexToolSurface(
           RELAY_CODEX_HOME: codexHome,
           RELAY_OUTPUT_DIR: output,
           RELAY_CODEX_BIN: codexBinary,
+          RELAY_NODE_BIN: nodeBinary,
           RELAY_WORKSPACE_READ_ONLY: "1",
           RELAY_NETWORK_PROXY_SCRIPT: networkProxyScript,
           RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
