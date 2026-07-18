@@ -2870,6 +2870,15 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
+    // Ollama thinking suppression dialect (issue #1996): reasoning_effort value
+    // for THINKING_SUPPRESSED_OPERATIONS on the ollama backend. Default "none"
+    // (think off). "" disables injection. Invalid values fall back to "none"
+    // rather than reaching Ollama, which 400s on unknown efforts.
+    localLlmReasoningEffort:
+      typeof cfg.localLlmReasoningEffort === "string" &&
+      ["", "none", "low", "medium", "high", "max"].includes(cfg.localLlmReasoningEffort)
+        ? cfg.localLlmReasoningEffort
+        : "none",
     // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
     extractionRetryEnabled: coerceBooleanLike(cfg.extractionRetryEnabled) ?? true,
     extractionRetryScheduleMs:

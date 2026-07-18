@@ -1595,6 +1595,12 @@ export interface PluginConfig {
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
   localLlm400CooldownMs: number;
+  /** Ollama-backend thinking suppression: `reasoning_effort` value injected on
+   *  `/v1/chat/completions` for THINKING_SUPPRESSED_OPERATIONS ("none" | "low" |
+   *  "medium" | "high" | "max"; "" disables injection). Ollama ignores
+   *  `chat_template_kwargs`, so this is the only think-off dialect it honors.
+   *  Issue #1996. */
+  localLlmReasoningEffort: string;
   // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
   /** Master gate. When false, restores pre-change behavior (extractor called on every triggered observe; no gate). */
   extractionRetryEnabled: boolean;
