@@ -128,11 +128,21 @@ function sizeCapScanRoots() {
   // check stays green. Each symlinked candidate is reported and fails the
   // metrics collection alongside in-root symlinked sources. statSync follows
   // links, so lstat first (round-3 finding).
-  const isSymlink = (candidate) => existsSync(candidate) && lstatSync(candidate).isSymbolicLink();
-  const isRealDirectory = (candidate) =>
-    existsSync(candidate) &&
-    !lstatSync(candidate).isSymbolicLink() &&
-    statSync(candidate).isDirectory();
+  // lstat FIRST, tolerating ENOENT (round-12 finding): existsSync FOLLOWS
+  // symlinks, so a DANGLING symlinked root returned false and was silently
+  // skipped — evading the stated all-symlinked-roots rejection.
+  const lstatOrNull = (candidate) => {
+    try {
+      return lstatSync(candidate);
+    } catch {
+      return null;
+    }
+  };
+  const isSymlink = (candidate) => lstatOrNull(candidate)?.isSymbolicLink() === true;
+  const isRealDirectory = (candidate) => {
+    const stats = lstatOrNull(candidate);
+    return stats !== null && !stats.isSymbolicLink() && statSync(candidate).isDirectory();
+  };
   const roots = [];
   const symlinkedRoots = [];
   const packagesDir = path.join(ROOT, "packages");

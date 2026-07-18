@@ -715,3 +715,16 @@ test("file-size ratchet: dist directories under a src root are measured (round 1
     assert.equal(runRatchets([], fixture).status, 0, "node_modules under src stays unmeasured");
   });
 });
+
+test("file-size ratchet: dangling symlinked scan roots are rejected, not skipped (round 12)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    // Dangling: target does not exist, existsSync() follows and says false.
+    symlinkSync(path.join(fixture.root, "no-such-target"), path.join(evilPkg, "src"), "dir");
+    const r = runRatchets([], fixture);
+    assert.equal(r.status, 1, "dangling symlinked src root must fail the check");
+    assert.match(r.stderr, /packages\/evil-pkg\/src/);
+  });
+});
