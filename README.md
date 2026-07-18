@@ -187,7 +187,7 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 
 **Glass-box tooling.** [Recall X-ray](docs/xray.md) shows which retrieval tier produced each result and why, the [daily briefing](docs/guides/daily-briefing.md) surfaces active entities and open commitments, and the [operator console](docs/console.md) gives live engine introspection with trace record and replay.
 
-**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) — Remnic's OpenAI Build Week 2026 entry ([submission ledger](HACKATHON.md)) — checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one, and runs offline in one command. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
+**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
 
 **More capabilities.** A few of the deeper features, each with its own guide:
 
@@ -197,49 +197,65 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 - [Shared context](docs/shared-context.md) — cross-agent shared intelligence for multi-agent teams.
 - [Coding-agent memory](docs/coding-agent.md) — repo conventions, review behavior, and ask-before rules for coding tools.
 
-## OpenAI Build Week: MemCorrect
+## OpenAI Build Week: Remnic Relay
 
-MemCorrect is Remnic's Developer Tools entry for OpenAI Build Week 2026. It
-benchmarks the memory system behind an AI agent through a generic MCP adapter,
-then writes a provenance-locked result and offline HTML report. The keyless
-test path takes about two minutes and needs no dataset, API key, or model call:
+**Remnic Relay is memory that can heal an agent team.** It exposes incompatible
+beliefs, binds a failing outcome to stale memory, requires a human-approved
+correction, retires the old decision, and proves a transcript-free cold agent
+used the replacement to turn the same hidden contract green.
 
-```bash
-npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
-remnic bench runs list
-remnic bench export <run-id> --format html --output ./memcorrect-report.html
-```
-
-That exact 9.6.34 registry install and run passed in a clean Linux x86_64
-prefix. The Node CLI also supports macOS; the submission does not claim a
-final macOS global-install receipt. On Windows, use WSL2; native Windows is not
-claimed. The MCP adapter supports stdio and Streamable HTTP.
-
-Codex accelerated three concrete in-window decisions: it shaped the generic
-MCP tool/argument mapping and backend safety checks, implemented the sealed
-structured-output judge and fail-closed provider semantics, and built the
-single-file report/provenance flow plus the isolated one-shot Codex CLI credit
-guard. GPT-5.6 is integrated as the opt-in Responses API judge under model id
-`gpt-5.6`. The separate ChatGPT-backed benchmark path uses
-`gpt-5.6-luna` for bulk work and `gpt-5.6-terra` for quality-critical judging;
-`gpt-5.6-sol` is outside the bounded plan. We do not claim a GPT-5.6 score
-until a successful artifact and manifest are committed.
-
-To exercise the optional API judge, provide your own key and add the judge
-flags to the same smoke command:
+Run the complete judge experience from a Linux checkout with procfs and Node
+22.12+—no dependency install, build, account, credential, dataset download,
+model call, or network access required. The pure-Node verifier performs
+component-by-component descriptor-pinned no-follow traversal, locks every
+opened input to the repository mount ID, and names that mode in its receipt.
+Linux x64 is independently clean-room verified; on hosts
+without those primitives it fails closed instead of substituting a weaker
+pathname verifier. The synthetic mission fixture is already committed under
+`fixtures/remnic-relay/` and verified in place:
 
 ```bash
-export OPENAI_API_KEY=...
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
+node scripts/relay/judge-package.mjs serve
 ```
 
-Remnic and the original benchmark package predate Build Week. The
-[submission evidence ledger](HACKATHON.md) draws the prior-work boundary
-commit by commit, while the [demo script](docs/hackathon/demo-script.md) and
-[Devpost draft](docs/hackathon/devpost-description.md) keep model and package
-claims tied to reproducible receipts.
+The committed Mission Control replay is bound to an isolated live mission:
+four distinct Codex one-shot threads ran `gpt-5.6-terra` as Scout, stale
+Builder, Resolver, and cold Builder. One human-approved correction changed the
+hidden contract from failed to passed in 84.829 seconds and used 5.8096 locally
+accounted Codex units. The run used synthetic fixtures and a fresh isolated
+Remnic store, never production data; Sol was disabled. Verify the hashes,
+causal chain, usage, UI binding, privacy receipt, and measured 165-second demo
+script with:
+
+```bash
+node scripts/relay/judge-package.mjs verify
+node scripts/verify-relay-judge-package.mjs
+```
+
+The attested path invokes Node directly, preventing npm pre/post lifecycle
+hooks from running before the clean-room safety receipt. For a checkout that
+may itself be modified, the [judge guide](docs/remnic-relay/JUDGE-GUIDE.md#clean-room-smoke)
+provides a no-install, out-of-band trust chain: SHA-256-check one staged
+launcher against the GitHub attestation, then let that trusted launcher pin
+both executable modules before either is spawned or imported.
+
+Codex collaborated throughout the in-window extension: it modeled and built
+the Relay event/API contract, designed Mission Control, implemented the Linux
+isolation and bounded MCP/network surfaces, converted review findings into
+adversarial tests, sealed the GPT-5.6 evidence, and built the no-install judge
+package. The user made the key product and safety calls: pivot to Relay, keep
+performance work separate, use only a cleared synthetic Remnic instance, use
+Codex CLI event credits instead of API billing, prefer Terra, prohibit Sol,
+cap the mission at four calls, and require human approval plus current-head
+PR-loop review.
+
+Remnic's core memory engine, adapters, benchmark framework, and general console
+predate Build Week. The [submission ledger](HACKATHON.md) separates that prior
+work from every new Relay phase with dated commits and PRs. See the exact
+[judge guide](docs/remnic-relay/JUDGE-GUIDE.md),
+[claim ledger](docs/remnic-relay/CLAIMS.md),
+[demo script](docs/remnic-relay/DEMO-SCRIPT.md), and
+[Devpost draft](docs/remnic-relay/DEVPOST.md).
 
 ## Privacy and your data
 
