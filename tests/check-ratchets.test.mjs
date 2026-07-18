@@ -366,3 +366,19 @@ test("file-size ratchet: a pruned (now-small) grandfathered file surfaces as an 
     assert.match(check.stdout, /now at\/under the 1200-line cap .* prune with --update/);
   });
 });
+
+test("file-size ratchet: --update refuses to grandfather files that became oversized after the baseline", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "sneaky-new-big.ts"), "pad\n".repeat(1300));
+
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1);
+    assert.match(update.stderr, /became oversized since the previous baseline and cannot be grandfathered/);
+    assert.match(update.stderr, /sneaky-new-big\.ts \(1301\)/);
+
+    // Shrinking the file unblocks the refresh.
+    writeFileSync(path.join(fixture.src, "sneaky-new-big.ts"), "export {};\n");
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+  });
+});

@@ -405,24 +405,45 @@ function main() {
           "If a god file was deliberately split or renamed, remove it from WATCHLIST in this script first, then rerun --update.",
       );
     }
-    // Issue #1995: --update may only LOWER a grandfathered ceiling. Growth
-    // cannot be laundered through a baseline refresh; a deliberate exception
-    // requires hand-editing the baseline JSON (loud in review).
+    // Issue #1995: --update may only LOWER a grandfathered ceiling, and may
+    // never grandfather a file that became oversized AFTER the previous
+    // baseline (review finding on PR #2000: refresh would silently adopt new
+    // >cap files). Growth and new-file adoption both require shrinking the
+    // file; a deliberate exception requires hand-editing the baseline JSON
+    // (loud in review). First generation (no baseline on disk) bootstraps
+    // the grandfather set as-is — that one-time adoption ships in the PR
+    // that introduces the baseline and is itself reviewed.
     if (existsSync(BASELINE_PATH)) {
       const previous = readBaseline();
-      const previousCeilings = previous.metrics.fileSizeGrandfather ?? {};
-      const laundered = [];
-      for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
-        const ceiling = previousCeilings[file];
-        if (ceiling !== undefined && lines > ceiling) {
-          laundered.push(`${file} (${ceiling} -> ${lines})`);
+      const previousCeilings = previous.metrics.fileSizeGrandfather;
+      // A legacy baseline (predating the metric) also bootstraps as-is: the
+      // migration --update runs in the PR that introduces the metric.
+      if (previousCeilings !== undefined) {
+        const laundered = [];
+        const newlyOversized = [];
+        for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
+          const ceiling = previousCeilings[file];
+          if (ceiling === undefined) {
+            newlyOversized.push(`${file} (${lines})`);
+          } else if (lines > ceiling) {
+            laundered.push(`${file} (${ceiling} -> ${lines})`);
+          }
         }
-      }
-      if (laundered.length > 0) {
-        fail(
-          `cannot write baseline: grandfathered file(s) grew past their ceiling: ${laundered.join(", ")}. ` +
-            "Shrink the file(s) first — --update never raises a ceiling.",
-        );
+        if (laundered.length > 0 || newlyOversized.length > 0) {
+          const parts = [];
+          if (laundered.length > 0) {
+            parts.push(`grandfathered file(s) grew past their ceiling: ${laundered.join(", ")}`);
+          }
+          if (newlyOversized.length > 0) {
+            parts.push(
+              `file(s) became oversized since the previous baseline and cannot be grandfathered: ${newlyOversized.join(", ")}`,
+            );
+          }
+          fail(
+            `cannot write baseline: ${parts.join("; ")}. ` +
+              `Shrink the file(s) to ${NEW_FILE_SIZE_CAP_LOC} lines or extract sibling modules first — --update never raises or adds a ceiling.`,
+          );
+        }
       }
     }
     writeBaseline(metrics, DEFAULT_OVERSIZE_THRESHOLD_LOC);
