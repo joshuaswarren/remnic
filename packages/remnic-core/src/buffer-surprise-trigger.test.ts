@@ -355,6 +355,7 @@ async function assertProbeRejectionHandled(
     bufferSurpriseThreshold: 0.35,
     bufferMaxTurns: 5,
     triggerMode: "smart",
+    bufferSaveDebounceMs: 0,
   });
   const buffer = new SmartBuffer(config, storage as any, probe);
 
@@ -476,6 +477,7 @@ test("flag on: probe that never resolves is timed out, turn is still saved", asy
     bufferSurpriseProbeTimeoutMs: 30,
     bufferMaxTurns: 5,
     triggerMode: "smart",
+    bufferSaveDebounceMs: 0,
   });
   const buffer = new SmartBuffer(config, storage as any, probe);
 
@@ -523,6 +525,7 @@ test("flag on: slow probe does not hold the buffer mutation queue", async () => 
     bufferSurpriseProbeTimeoutMs: 1000,
     bufferMaxTurns: 5,
     triggerMode: "smart",
+    bufferSaveDebounceMs: 0,
   });
   const buffer = new SmartBuffer(config, storage as any, probe);
 

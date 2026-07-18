@@ -97,7 +97,7 @@ test("SmartBuffer keeps dangerous keys isolated from safe-prefix lookalikes", as
 
 test("SmartBuffer serializes concurrent addTurn mutations", async () => {
   const storage = new DelayedBufferStorage();
-  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
 
   await Promise.all([
     buffer.addTurn("thread-a", makeTurn("thread-a", "alpha memory")),
@@ -270,7 +270,7 @@ test("SmartBuffer read-only accessors do not persist phantom entries for unknown
     lastExtractionAt: null,
     extractionCount: 0,
   });
-  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
 
   assert.deepEqual(buffer.getTurns("missing-thread"), []);
   assert.equal(buffer.getExtractionCount("missing-thread"), 0);
@@ -373,7 +373,7 @@ test("SmartBuffer prunes stale logical session buffers to a bounded entry set", 
       ...entries,
     },
   });
-  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
 
   await buffer.addTurn("active-thread", makeTurn("active-thread", "pending memory"));
 
@@ -522,7 +522,7 @@ test("SmartBuffer prefers pruning empty entries and bounds pending-turn buffers 
       ...entries,
     },
   });
-  const buffer = new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
 
   await buffer.addTurn("active-thread", makeTurn("active-thread", "pending memory"));
 
@@ -549,7 +549,7 @@ test("pruneEntries evicts oldest NON-empty session entries past the cap (#1908 r
     };
   }
   const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0, entries });
-  const buffer = new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
   await buffer.load();
   await buffer.addTurn("session-newest", makeTurn("session-newest", "new turn"));
 

@@ -302,19 +302,16 @@ export class SmartBuffer {
   }
 
   /**
-   * Schedule a coalesced, trailing-edge buffer save (issue #1909). With debounce
-   * off (`bufferSaveDebounceMs <= 0`) this saves immediately (fire-and-forget,
-   * enqueued after the current mutation) to reproduce save-every-turn. Callers
-   * that need a guaranteed durable write use `flushPendingSave()` instead.
+   * Schedule a coalesced, trailing-edge buffer save (issue #1909). Only used for
+   * the debounced (`bufferSaveDebounceMs > 0`) steady-state buffering path; the
+   * debounce-off and correctness-boundary paths save inline within the mutation
+   * (see `recordTurnUnlocked`). Marks a save pending and arms a single timer;
+   * repeated calls coalesce onto that timer's trailing edge.
    */
   private scheduleSave(): void {
-    const ms = this.config.bufferSaveDebounceMs;
-    if (!ms || ms <= 0) {
-      void this.flushPendingSave();
-      return;
-    }
     this.pendingSave = true;
     if (this.saveTimer) return; // trailing-edge coalesce: a timer is already armed
+    const ms = this.config.bufferSaveDebounceMs;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.flushPendingSave();
@@ -455,14 +452,16 @@ export class SmartBuffer {
     const turnCountInWindow = entry.turns.length;
 
     this.pruneEntries([bufferKey]);
-    if (decision === "keep_buffering") {
+    if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
       // trailing-edge timer (issue #1909) instead of rewriting per turn.
       this.scheduleSave();
     } else {
-      // Extraction-triggering turn: persist immediately so the buffer that just
-      // triggered extraction is durable. Cancel any armed debounce so it cannot
-      // fire a stale write afterward. saveUnlocked runs inside this mutation.
+      // Persist immediately within this mutation (awaited) when either:
+      //  - the turn triggered extraction (the buffer must be durable), or
+      //  - debounce is disabled (bufferSaveDebounceMs <= 0), which reproduces
+      //    the legacy save-every-turn behavior byte-for-byte.
+      // Cancel any armed debounce so it cannot fire a stale write afterward.
       this.cancelScheduledSave();
       await this.saveUnlocked();
     }
