@@ -752,6 +752,27 @@ function closeServer(server) {
   });
 }
 
+async function cacheVerifiedUiAssets(repoRoot, expectedRootSha256) {
+  const uiRoot = await guardedRepoPath(repoRoot, UI_RELATIVE, "directory");
+  const assets = new Map();
+  const digests = [];
+  for (const asset of [...EXPECTED_UI_FILES].sort()) {
+    const file = await guardedRepoPath(repoRoot, `${UI_RELATIVE}/${asset}`, "file");
+    const body = await readFile(file);
+    assets.set(asset, body);
+    digests.push({
+      path: path.relative(uiRoot, file).split(path.sep).join("/"),
+      bytes: body.byteLength,
+      sha256: sha256(body),
+    });
+  }
+  invariant(
+    sha256(JSON.stringify(digests)) === expectedRootSha256,
+    "the judge server asset snapshot changed after verification"
+  );
+  return assets;
+}
+
 export async function startRelayJudgeServer(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? DEFAULT_RELAY_REPO_ROOT);
   const host = "127.0.0.1";
@@ -761,7 +782,7 @@ export async function startRelayJudgeServer(options = {}) {
     "server port must be an integer from 0 through 65535"
   );
   const receipt = await verifyRelayJudgePackage(repoRoot);
-  const uiRoot = path.join(repoRoot, UI_RELATIVE);
+  const verifiedAssets = await cacheVerifiedUiAssets(repoRoot, receipt.uiSha256);
   const routes = new Map([
     ["/", "index.html"],
     ["/index.html", "index.html"],
@@ -790,11 +811,9 @@ export async function startRelayJudgeServer(options = {}) {
         response.end("Not found\n");
         return;
       }
-      const file = path.join(uiRoot, asset);
-      const info = await lstat(file);
-      invariant(info.isFile() && !info.isSymbolicLink(), `judge asset ${asset} must be a regular file`);
-      const body = await readFile(file);
-      response.writeHead(200, responseHeaders(CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream"));
+      const body = verifiedAssets.get(asset);
+      invariant(body, `judge asset ${asset} is missing from the verified snapshot`);
+      response.writeHead(200, responseHeaders(CONTENT_TYPES[path.extname(asset)] ?? "application/octet-stream"));
       response.end(request.method === "HEAD" ? undefined : body);
     } catch {
       response.writeHead(500, responseHeaders("text/plain; charset=utf-8"));

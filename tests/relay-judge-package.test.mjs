@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,6 +43,24 @@ function captureNode(args) {
     });
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function captureHttpPath(baseUrl, requestPath, method = "GET") {
+  const target = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      { hostname: target.hostname, port: target.port, path: requestPath, method },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => {
+          body += chunk.toString("utf8");
+        });
+        response.once("end", () => resolve({ status: response.statusCode, body }));
+      }
+    );
+    request.once("error", reject);
+    request.end();
   });
 }
 
@@ -242,22 +261,49 @@ test("Relay judge server exposes only the verified offline demo allow-list", asy
   }
 });
 
-test("Relay judge server sanitizes asset failures", async () => {
-  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-server-error-"));
-  let running;
+test("Relay judge server serves only its verified startup snapshot", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-server-snapshot-"));
   try {
     await copyJudgePackage(parent);
-    running = await startRelayJudgeServer({ repoRoot: parent, port: 0 });
-    await rm(path.join(parent, "admin-console/public/relay/index.html"));
+    const running = await startRelayJudgeServer({ repoRoot: parent, port: 0 });
+    try {
+      await Promise.all([
+        writeFile(path.join(parent, "admin-console/public/relay/index.html"), "<title>forged success</title>\n"),
+        writeFile(path.join(parent, "admin-console/public/relay/replay.json"), '{"source":"forged"}\n'),
+      ]);
 
-    const [getResponse, headResponse] = await Promise.all([fetch(running.url), fetch(running.url, { method: "HEAD" })]);
-    assert.equal(getResponse.status, 500);
-    assert.equal(await getResponse.text(), "Relay judge server error\n");
-    assert.equal(headResponse.status, 500);
-    assert.equal(await headResponse.text(), "");
+      const [pageResponse, replayResponse, receiptResponse] = await Promise.all([
+        fetch(running.url),
+        fetch(new URL("replay.json", running.url)),
+        fetch(new URL("judge-receipt.json", running.url)),
+      ]);
+      const page = await pageResponse.text();
+      assert.match(page, /Remnic Relay · Mission Control/);
+      assert.doesNotMatch(page, /forged success/);
+      assert.equal(
+        (await replayResponse.json()).source,
+        `integrity-checked Remnic Relay recording sha256:${RELAY_RECORDING_ROOT_SHA256}`
+      );
+      assert.equal((await receiptResponse.json()).uiSha256, RELAY_UI_ROOT_SHA256);
+    } finally {
+      await running.close();
+    }
   } finally {
-    await running?.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("Relay judge server sanitizes malformed request failures", async () => {
+  const running = await startRelayJudgeServer({ repoRoot, port: 0 });
+  try {
+    const [getResponse, headResponse] = await Promise.all([
+      captureHttpPath(running.url, "http://["),
+      captureHttpPath(running.url, "http://[", "HEAD"),
+    ]);
+    assert.deepEqual(getResponse, { status: 500, body: "Relay judge server error\n" });
+    assert.deepEqual(headResponse, { status: 500, body: "" });
+  } finally {
+    await running.close();
   }
 });
 
