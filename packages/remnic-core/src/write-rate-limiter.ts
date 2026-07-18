@@ -50,8 +50,16 @@ export class WriteRateLimiter {
   }
 
   private prune(slots: Slot[], now: number): void {
-    while (slots.length > 0 && now - (slots[0]?.recordedAt ?? 0) > this.windowMs) {
+    while (slots.length > 0 && now - (slots[0]?.recordedAt ?? 0) >= this.windowMs) {
       slots.shift();
+    }
+  }
+
+  /** Prune every bucket to the current window; drop buckets that go empty. */
+  private sweep(now: number): void {
+    for (const [key, slots] of this.buckets) {
+      this.prune(slots, now);
+      if (slots.length === 0) this.buckets.delete(key);
     }
   }
 
@@ -62,6 +70,7 @@ export class WriteRateLimiter {
 
   /** Total live reservations across all principals (test/introspection). */
   totalSlots(): number {
+    this.sweep(Date.now());
     let total = 0;
     for (const slots of this.buckets.values()) total += slots.length;
     return total;
@@ -69,15 +78,10 @@ export class WriteRateLimiter {
 
   /** True if a write may proceed for the principal. Logs (sampled) when not. */
   hasCapacity(principal?: string): boolean {
+    this.sweep(Date.now());
     const key = this.key(principal);
     const slots = this.buckets.get(key);
-    if (!slots) return true;
-    this.prune(slots, Date.now());
-    if (slots.length === 0) {
-      this.buckets.delete(key);
-      return true;
-    }
-    if (slots.length >= this.maxRequests) {
+    if (slots && slots.length >= this.maxRequests) {
       this.logRejected(key);
       return false;
     }
@@ -86,6 +90,7 @@ export class WriteRateLimiter {
 
   /** Record a committed write against the principal's rolling window. */
   record(principal?: string): void {
+    this.sweep(Date.now());
     const key = this.key(principal);
     const slots = this.buckets.get(key) ?? this.buckets.set(key, []).get(key)!;
     slots.push({ recordedAt: Date.now() });

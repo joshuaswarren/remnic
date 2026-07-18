@@ -73,3 +73,33 @@ test("WriteRateLimiter: buckets are isolated per principal (issue #2029)", () =>
   assert.equal(limiter.slotsFor("bob").length, 1);
   assert.equal(limiter.totalSlots(), 2, "each principal keeps its own window");
 });
+
+test("WriteRateLimiter: rolling-window end is exclusive (issue #2029 review)", () => {
+  const realNow = Date.now;
+  try {
+    let now = 1_000_000;
+    Date.now = () => now;
+    const limiter = new WriteRateLimiter(1, 1000);
+    limiter.record();
+    now += 1000; // exactly at recordedAt + windowMs
+    assert.equal(limiter.hasCapacity(), true, "a slot at the exact window end is expired");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("WriteRateLimiter: expired buckets from transient principals are swept globally (issue #2029 review)", () => {
+  const realNow = Date.now;
+  try {
+    let now = 1_000_000;
+    Date.now = () => now;
+    const limiter = new WriteRateLimiter(5, 1000);
+    limiter.record("ephemeral-1");
+    limiter.record("ephemeral-2");
+    assert.equal(limiter.totalSlots(), 2);
+    now += 1001; // both windows expire
+    assert.equal(limiter.totalSlots(), 0, "expired buckets are swept, not reported as live");
+  } finally {
+    Date.now = realNow;
+  }
+});

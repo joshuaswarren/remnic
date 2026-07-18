@@ -3878,7 +3878,11 @@ export class EngramAccessHttpServer {
   }
 
   private principalForRateLimit(req?: IncomingMessage): string | undefined {
-    return req ? this.resolveRequestPrincipal(req) : undefined;
+    if (!req) return undefined;
+    // Fall back to the authenticated connector identity when no principal is
+    // resolved, so per-connector bearer tokens are isolated from each other
+    // even without a principal header/server principal (issue #2029 review).
+    return this.resolveRequestPrincipal(req) ?? this.resolveConnector(req);
   }
 
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {
