@@ -268,11 +268,10 @@ test("#1909: concurrent (parallel) merge-saves serialize via the file lock — b
   });
 });
 
-test("#1909: removal batches use plain save (no union) so archived hashes do not resurrect", async () => {
-  // Review round 7 finding 1: saveContentHashIndexes is shared by extraction
-  // (append-only → merge) AND archival/consolidation (which REMOVE hashes). The
-  // removal path must use plain save(); a union-merge would read the pre-removal
-  // on-disk contents back in and resurrect the archived hash forever.
+test("#1909: removing a hash and reconcile-saving drops it from disk (no resurrection)", async () => {
+  // Review round 7/8: a removal must never resurrect. The reconciling save is
+  // removal-aware — it subtracts removed hashes from the latest on-disk state
+  // rather than blindly unioning the pre-removal contents back in.
   await withMemoryDir(async (dir) => {
     const stateDir = path.join(dir, "state");
     await mkdir(stateDir, { recursive: true });
@@ -284,9 +283,9 @@ test("#1909: removal batches use plain save (no union) so archived hashes do not
     await mid.load();
     assert.ok(mid.has("archived fact body"), "hash is on disk before archival");
 
-    // Archival: remove + plain save() (what saveContentHashIndexes(merge=false) does).
+    // Archival: remove + reconciling save (the production saveContentHashIndexes path).
     idx.remove("archived fact body");
-    await idx.save();
+    await idx.saveMergingWithDisk();
 
     const fresh = new ContentHashIndex(stateDir);
     await fresh.load();
@@ -295,6 +294,40 @@ test("#1909: removal batches use plain save (no union) so archived hashes do not
       false,
       "removed hash stays gone → re-extraction of that content is allowed",
     );
+  });
+});
+
+test("#1909: reconciling removal drops the removed hash AND preserves a concurrent append", async () => {
+  // Review round 8 thread 3: removal and append batches serialize under the same
+  // per-file lock and both reconcile with the latest on-disk state — so a removal
+  // neither resurrects its own hash nor clobbers a concurrent extraction's append.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const seed = new ContentHashIndex(stateDir);
+    await seed.load();
+    seed.add("to be archived");
+    await seed.save();
+
+    // Remover loads {archived} and marks it removed (not yet published).
+    const remover = new ContentHashIndex(stateDir);
+    await remover.load();
+    remover.remove("to be archived");
+
+    // Concurrent appender (another instance) adds a new hash and publishes first.
+    const appender = new ContentHashIndex(stateDir);
+    await appender.load();
+    appender.add("freshly appended");
+    await appender.saveMergingWithDisk();
+
+    // Remover reconciles against the now-updated disk: drops its removal, keeps
+    // the concurrent append.
+    await remover.saveMergingWithDisk();
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.equal(fresh.has("to be archived"), false, "removed hash dropped — no resurrection");
+    assert.ok(fresh.has("freshly appended"), "concurrent append preserved — no clobber");
   });
 });
 

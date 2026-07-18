@@ -822,8 +822,8 @@ export class Orchestrator {
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
         backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
           this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef, sourceConnector),
-        // Extraction is append-only within a run → union-merge (issue #1909).
-        saveContentHashIndexes: () => this.saveContentHashIndexes(true),
+        // Removal-aware reconciling save serializes append vs removal (issue #1909).
+        saveContentHashIndexes: () => this.saveContentHashIndexes(),
         artifactTypeForCategory: (category) => this.artifactTypeForCategory(category),
         loadRoutingRules: () => this.loadRoutingRules(),
         routeEngineOptions: () => this.routeEngineOptions(),
@@ -1330,8 +1330,8 @@ export class Orchestrator {
     );
   }
 
-  private async saveContentHashIndexes(merge = false): Promise<void> {
-    return this.persistenceIndexCoordinator.saveContentHashIndexes(merge);
+  private async saveContentHashIndexes(): Promise<void> {
+    return this.persistenceIndexCoordinator.saveContentHashIndexes();
   }
 
   constructor(config: PluginConfig) {

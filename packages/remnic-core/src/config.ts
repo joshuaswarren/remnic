@@ -188,6 +188,35 @@ function parseBoundedPositiveInteger(
   return Math.max(min, Math.min(max, parsed));
 }
 
+/**
+ * Validate a closed-range integer config knob, coercing CLI numeric strings
+ * first (issue #1909 review round 8). `undefined`/`null` → `fallback`. Anything
+ * provided must coerce to a FINITE INTEGER in `[min, max]`; otherwise THROW
+ * (AGENTS.md #1/#39: reject invalid user input, never silently floor/clamp).
+ */
+function parseIntegerInClosedRange(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return fallback;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < min ||
+    coerced > max
+  ) {
+    throw new Error(
+      `${keyName} must be an integer in [${min}, ${max}]; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
 function parseQmdSupportedVersion(value: unknown): string {
   if (value === undefined || value === null) return "2.5.3";
   if (typeof value !== "string") {
@@ -1780,13 +1809,16 @@ export function parseConfig(
       typeof cfg.sessionObserverDebounceMs === "number"
         ? Math.max(0, Math.floor(cfg.sessionObserverDebounceMs))
         : 120_000,
-    bufferSaveDebounceMs:
-      typeof cfg.bufferSaveDebounceMs === "number" && Number.isFinite(cfg.bufferSaveDebounceMs)
-        ? // Cap at Node's 32-bit setTimeout limit (2^31-1 ms): a larger delay is
-          // overflow-clamped by Node to 1ms (TimeoutOverflowWarning), silently
-          // turning a long debounce into save-on-every-turn. 0 = save every turn.
-          Math.min(2_147_483_647, Math.max(0, Math.floor(cfg.bufferSaveDebounceMs)))
-        : 3_000,
+    // Explicit validation (issue #1909 review round 8): reject invalid input
+    // rather than flooring/clamping. Must be an integer in [0, 2^31-1] (Node's
+    // setTimeout ceiling); 0 = save every turn; undefined → 3000.
+    bufferSaveDebounceMs: parseIntegerInClosedRange(
+      cfg.bufferSaveDebounceMs,
+      0,
+      2_147_483_647,
+      3_000,
+      "bufferSaveDebounceMs",
+    ),
     sessionObserverBands,
     injectQuestions: cfg.injectQuestions === true,
     commitmentDecayDays: parseIntegerAtLeast(

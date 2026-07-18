@@ -645,12 +645,17 @@ test("debounce off (bufferSaveDebounceMs: 0) reproduces save-every-turn", async 
   assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 4);
 });
 
-test("parseConfig defaults/clamps bufferSaveDebounceMs", () => {
-  assert.equal(parseConfig({}).bufferSaveDebounceMs, 3_000, "default is 3000ms");
-  assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0, "0 is preserved (compat)");
-  assert.equal(parseConfig({ bufferSaveDebounceMs: -50 }).bufferSaveDebounceMs, 0, "negatives clamp to 0");
-  assert.equal(parseConfig({ bufferSaveDebounceMs: 12.9 }).bufferSaveDebounceMs, 12, "floats floor");
+test("parseConfig validates bufferSaveDebounceMs (accepts valid, defaults undefined)", () => {
+  assert.equal(parseConfig({}).bufferSaveDebounceMs, 3_000, "undefined → default 3000ms");
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0, "0 = save every turn");
   assert.equal(parseConfig({ bufferSaveDebounceMs: 5_000 }).bufferSaveDebounceMs, 5_000);
+  assert.equal(
+    parseConfig({ bufferSaveDebounceMs: 2_147_483_647 }).bufferSaveDebounceMs,
+    2_147_483_647,
+    "max (32-bit setTimeout limit) accepted",
+  );
+  // CLI numeric strings coerce, then validate.
+  assert.equal(parseConfig({ bufferSaveDebounceMs: "5000" }).bufferSaveDebounceMs, 5_000, "numeric string coerces");
 });
 
 test("debounce on: each turn re-arms the trailing edge (save fires one window after the LAST turn)", async (t) => {
@@ -746,28 +751,32 @@ test("debounce on: a failed flush keeps the save pending so a retry (or shutdown
   assert.equal(internals.pendingSave, false, "pending is cleared only after the write succeeds");
 });
 
-test("debounce cap: parseConfig clamps oversized and rejects non-finite bufferSaveDebounceMs", () => {
-  // Issue #1909 review round 5: a value above Node's 32-bit setTimeout limit is
-  // overflow-clamped to 1ms (save-on-every-turn); parseConfig must cap it.
-  assert.equal(
-    parseConfig({ bufferSaveDebounceMs: 3_000_000_000 }).bufferSaveDebounceMs,
-    2_147_483_647,
-    "oversized value clamped to the 32-bit setTimeout limit",
-  );
-  assert.equal(parseConfig({ bufferSaveDebounceMs: 2_147_483_647 }).bufferSaveDebounceMs, 2_147_483_647);
-  assert.equal(
-    parseConfig({ bufferSaveDebounceMs: Number.POSITIVE_INFINITY }).bufferSaveDebounceMs,
-    3_000,
-    "Infinity falls back to the default",
-  );
-  assert.equal(
-    parseConfig({ bufferSaveDebounceMs: Number.NaN }).bufferSaveDebounceMs,
-    3_000,
-    "NaN falls back to the default",
-  );
-  // Unchanged: 0 and normal values.
+test("parseConfig rejects invalid bufferSaveDebounceMs (round 8: throw, do not clamp/floor)", () => {
+  // Review round 8: reject invalid user input explicitly instead of silently
+  // flooring fractions / clamping negatives to 0 / clamping oversized to the
+  // timer max (AGENTS.md #1/#39).
+  const cases: unknown[] = [
+    -1, // negative
+    0.5, // fraction
+    3_000_000_000, // above the 32-bit setTimeout limit
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    "abc", // non-numeric string
+    -0.0001,
+    2_147_483_648, // one past max
+  ];
+  for (const value of cases) {
+    assert.throws(
+      () => parseConfig({ bufferSaveDebounceMs: value }),
+      /bufferSaveDebounceMs must be an integer in \[0, 2147483647\]/,
+      `expected ${JSON.stringify(value)} to be rejected`,
+    );
+  }
+  // Boundary + coercion: valid inputs pass.
   assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0);
-  assert.equal(parseConfig({ bufferSaveDebounceMs: 3000 }).bufferSaveDebounceMs, 3000);
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 2_147_483_647 }).bufferSaveDebounceMs, 2_147_483_647);
+  assert.equal(parseConfig({ bufferSaveDebounceMs: "5000" }).bufferSaveDebounceMs, 5_000);
+  assert.equal(parseConfig({}).bufferSaveDebounceMs, 3_000, "undefined → default");
 });
 
 test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", async () => {

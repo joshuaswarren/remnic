@@ -1139,6 +1139,15 @@ const CONTENT_HASH_INDEX_LOCK_STALE_MS = 30_000;
 export class ContentHashIndex {
   private hashes: Set<string> = new Set();
   private dirty = false;
+  /**
+   * Hashes explicitly removed since the last successful save (issue #1909 review
+   * round 8 thread 3). Tracked separately so `saveMergingWithDisk` can be
+   * removal-AWARE: under the file lock it reads the latest on-disk set, DROPS
+   * these, then unions our additions — so a removal batch cannot resurrect a
+   * hash (union alone would) and cannot clobber a concurrent extraction's
+   * appended hash (blind overwrite would). Consumed + cleared by every save.
+   */
+  private removed: Set<string> = new Set();
   private readonly filePath: string;
   private readonly secureStoreKeyProvider: () => Buffer | null;
   private readonly secureStoreWriteKeyProvider: () => Buffer | null;
@@ -1182,6 +1191,8 @@ export class ContentHashIndex {
   /** Add content hash to the index. */
   add(content: string): void {
     const hash = ContentHashIndex.computeHash(content);
+    // A re-add supersedes a pending removal of the same hash (round 8 thread 3).
+    this.removed.delete(hash);
     if (!this.hashes.has(hash)) {
       this.hashes.add(hash);
       this.dirty = true;
@@ -1197,10 +1208,13 @@ export class ContentHashIndex {
     if (this.hashes.size > 0) {
       this.hashes.clear();
     }
+    // A full clear is always paired with a plain overwrite save() (rebuild);
+    // pending per-hash removals are subsumed by writing the empty/rebuilt set.
+    this.removed.clear();
     this.dirty = true;
   }
 
-  /** Persist index to disk if changed. */
+  /** Persist index to disk if changed (plain whole-file overwrite). */
   async save(): Promise<void> {
     if (!this.dirty) return;
     await mkdir(path.dirname(this.filePath), { recursive: true });
@@ -1211,27 +1225,32 @@ export class ContentHashIndex {
       {},
       this.memoryDir
     );
+    // The overwrite already excludes removed hashes (they were deleted from
+    // `hashes`); drop the pending-removal record so a later reconciling save
+    // does not re-apply stale removals.
+    this.removed.clear();
     this.dirty = false;
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
   }
 
   /**
-   * Persist the index by UNIONing the current on-disk hashes into this set
-   * before writing (issue #1909). Safe only where writes are append-only within
-   * the batch (extraction persist / deferred flush): a concurrent writer's
-   * appended hashes are preserved instead of being clobbered by a blind
-   * whole-file overwrite. NEVER use on a removal path — a union would resurrect
-   * the removed hash (review round 7 finding 1: removal batches use `save()`).
+   * Persist the index by RECONCILING with the latest on-disk state under a
+   * cross-process lock (issue #1909). Used by the extraction-persist batch save
+   * for BOTH append and removal batches (review round 8 thread 3), so appends
+   * and removals to the same index serialize against each other:
+   *   final = (on-disk \ this.removed) ∪ this.hashes
+   * i.e. keep every concurrent/prior on-disk hash EXCEPT the ones we removed
+   * this run, then union our additions. This preserves a concurrent writer's
+   * appended hashes (a blind overwrite would drop them), never resurrects a
+   * removed hash (a plain union would), and never loses our additions.
    *
-   * Round 7 hardening:
-   *  - Dirty short-circuit (finding 3): when this instance added nothing this
-   *    run, skip the O(file) read+rewrite entirely — a concurrent process's
-   *    additions are already durable on disk and we have nothing to publish.
-   *  - Cross-process lock (finding 2): serialize the read-union→write window on
-   *    a per-file advisory lock so two concurrent extractions cannot both read
-   *    {prior}, union their own hashes, and drop each other on the atomic
-   *    replace (TOCTOU). On acquisition timeout, fall back to a best-effort
-   *    unlocked publish rather than dropping the write.
+   * Hardening:
+   *  - Dirty short-circuit (round 7 finding 3): when this instance neither added
+   *    nor removed anything this run, skip the O(file) read+rewrite entirely.
+   *  - Cross-process lock (round 7 finding 2): serialize the read→reconcile→write
+   *    window on a per-file advisory lock so two concurrent runs cannot both read
+   *    the pre-change state and drop each other on the atomic replace (TOCTOU).
+   *    On acquisition timeout, fall back to a best-effort unlocked publish.
    */
   async saveMergingWithDisk(): Promise<void> {
     if (!this.dirty) return;
@@ -1239,6 +1258,7 @@ export class ContentHashIndex {
     // before acquiring it (the index dir may not exist on a first write).
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const publish = async (): Promise<void> => {
+      const merged = new Set<string>(this.hashes);
       try {
         const raw = await readMaybeEncryptedFile(
           this.filePath,
@@ -1247,7 +1267,8 @@ export class ContentHashIndex {
         );
         for (const line of raw.split("\n")) {
           const trimmed = line.trim();
-          if (trimmed.length > 0) this.hashes.add(trimmed);
+          // Keep prior/concurrent on-disk hashes EXCEPT the ones we removed.
+          if (trimmed.length > 0 && !this.removed.has(trimmed)) merged.add(trimmed);
         }
       } catch (err) {
         if (err instanceof SecureStoreLockedError) throw err;
@@ -1257,11 +1278,13 @@ export class ContentHashIndex {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await writeMaybeEncryptedFile(
         this.filePath,
-        [...this.hashes].join("\n") + "\n",
+        [...merged].join("\n") + "\n",
         this.secureStoreWriteKeyProvider(),
         {},
         this.memoryDir
       );
+      this.hashes = merged;
+      this.removed.clear();
       this.dirty = false;
     };
     await withHeldFileLock(
@@ -1269,15 +1292,18 @@ export class ContentHashIndex {
       { staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS },
       () => publish(),
     );
-    log.debug(`content-hash index: merge-saved ${this.hashes.size} hashes`);
+    log.debug(`content-hash index: reconcile-saved ${this.hashes.size} hashes`);
   }
 
   /** Remove a hash from the index (used when archiving/deleting). */
   remove(content: string): void {
     const hash = ContentHashIndex.computeHash(content);
-    if (this.hashes.delete(hash)) {
-      this.dirty = true;
-    }
+    // Record the removal (round 8 thread 3) even when the hash is not in our
+    // in-memory set — a reconciling save must still drop it from the latest
+    // on-disk state. Always mark dirty so the save is not short-circuited.
+    this.removed.add(hash);
+    this.hashes.delete(hash);
+    this.dirty = true;
   }
 
   /**
@@ -1288,9 +1314,9 @@ export class ContentHashIndex {
    * entry.
    */
   removeByHash(hash: string): void {
-    if (this.hashes.delete(hash)) {
-      this.dirty = true;
-    }
+    this.removed.add(hash);
+    this.hashes.delete(hash);
+    this.dirty = true;
   }
 
   /**
@@ -1303,6 +1329,7 @@ export class ContentHashIndex {
    * Not part of the public API — prefer `add(content)` for external callers.
    */
   addByHash(hash: string): void {
+    this.removed.delete(hash);
     if (!this.hashes.has(hash)) {
       this.hashes.add(hash);
       this.dirty = true;
@@ -3900,13 +3927,19 @@ export class StorageManager {
    * persist run so a deferred write's hash reaches disk EVEN IF the orchestrator
    * dedup registration (addContentHashDedup) threw — writeMemory already added
    * the hash to this instance's index, so it is durable independent of that
-   * fragile chain. Union-merge keeps it safe under concurrent writers. No-op
-   * (returns true) when no fact-hash index was materialized this run. Returns
-   * false on failure so the caller can leave the ready marker absent and let a
-   * restart rebuild from the corpus.
+   * fragile chain. Union-merge keeps it safe under concurrent writers.
+   *
+   * Returns `true` only when the on-disk index provably reflects this run's
+   * deferred writes (the index was loaded and merge-saved, or was clean). When
+   * the index was NEVER loaded (`factHashIndex === null`), returns `false`
+   * (review round 8 thread 2): the caller only invokes this for storages that
+   * received a guarded deferred write, so a null index means the write's
+   * getFactHashIndex()/add() failed and the hash reached NO index — restoring
+   * the ready marker would then trust a stale on-disk index. Returning false
+   * leaves the marker absent so a restart rebuilds from the corpus (fail-open).
    */
   async flushDeferredFactHashIndexMergingWithDisk(): Promise<boolean> {
-    if (!this.factHashIndex) return true;
+    if (!this.factHashIndex) return false;
     try {
       await this.factHashIndex.saveMergingWithDisk();
       return true;
@@ -5864,15 +5897,26 @@ export class StorageManager {
     // dropped events can be retried.
     await this.appendStorageSecureFile(this.behaviorSignalsPath, payload);
     // Durable now: fold the new keys into the set (in place, O(new keys) — keeps
-    // the per-append win) and refresh the identity so a subsequent same-process
-    // append reuses the set without a reload.
+    // the per-append win). Only cache the refreshed identity if the file grew by
+    // EXACTLY our payload — otherwise a foreign writer (another instance/process)
+    // interleaved and the file now holds rows whose keys are NOT in existingKeys;
+    // caching that identity would let a later same-instance append cache-hit an
+    // incomplete set and write duplicates (review round 8 thread 5). On any
+    // mismatch, invalidate so the next append reloads from disk.
     for (const key of pending) existingKeys.add(key);
     try {
       const st = await stat(this.behaviorSignalsPath);
-      this.behaviorSignalsKeyCache = {
-        identity: { size: st.size, mtimeMs: st.mtimeMs },
-        keys: existingKeys,
-      };
+      const expectedSize = (identity?.size ?? 0) + Buffer.byteLength(payload, "utf-8");
+      if (st.size === expectedSize) {
+        this.behaviorSignalsKeyCache = {
+          identity: { size: st.size, mtimeMs: st.mtimeMs },
+          keys: existingKeys,
+        };
+      } else {
+        // Foreign interleave (or encrypted whole-file rewrite): our key set may
+        // be missing peer rows — force a reload on the next append.
+        this.behaviorSignalsKeyCache = null;
+      }
     } catch {
       // Fail-open: force a reload on the next append.
       this.behaviorSignalsKeyCache = null;

@@ -554,9 +554,27 @@ export class SmartBuffer {
       //  - the turn triggered extraction (the buffer must be durable), or
       //  - debounce is disabled (bufferSaveDebounceMs <= 0), which reproduces
       //    the legacy save-every-turn behavior byte-for-byte.
-      // Cancel any armed debounce so it cannot fire a stale write afterward.
+      // Round 8 thread 4: attempt the write BEFORE clearing pending state, and
+      // mark a pending save first, so a failed inline write leaves pendingSave
+      // set (and a re-armed timer) for shutdown/timer retry instead of dropping
+      // the in-memory turns. Only cancel/clear AFTER the write succeeds.
+      this.pendingSave = true;
+      if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
+      try {
+        await this.saveUnlocked();
+      } catch (err) {
+        log.warn(`buffer.recordTurn: inline save failed, keeping it pending for retry: ${describeError(err)}`);
+        const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
+        if (ms > 0 && !this.saveTimer) {
+          this.saveTimer = setTimeout(() => {
+            this.saveTimer = null;
+            void this.flushPendingSave();
+          }, ms);
+          this.saveTimer.unref?.();
+        }
+        throw err; // propagate: match the extract-trigger durability guarantee
+      }
       this.cancelScheduledSave();
-      await this.saveUnlocked();
     }
     return {
       decision,
