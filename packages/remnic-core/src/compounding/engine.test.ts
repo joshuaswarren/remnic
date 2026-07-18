@@ -66,7 +66,7 @@ test("#1645: tombstone-blocked promotion is diverted, not reported as promoted",
       async readAllMemories() {
         return [];
       },
-      async writeMemory() {
+      async writeSealedMemory() {
         writeCallCount += 1;
         return { id: "blocked-promo-1", tombstoneBlocked: true, blockedBy: "tomb-1" };
       },

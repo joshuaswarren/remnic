@@ -1,4 +1,5 @@
 import test from "node:test";
+import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -54,13 +55,11 @@ test("procedure mining deduplicates by full cluster hash instead of truncated cl
         },
       }));
     },
-    async writeMemory(
-      _category: string,
-      _body: string,
-      options: { structuredAttributes?: Record<string, string> },
-    ) {
+    async writeSealedMemory(envelope: SealedMemoryEnvelope) {
       written.push({
-        structuredAttributes: options.structuredAttributes ?? {},
+        structuredAttributes: envelope.rawStructuredAttributes
+          ? { ...envelope.rawStructuredAttributes }
+          : {},
       });
       return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },
@@ -114,14 +113,12 @@ test("procedure mining serializes concurrent writes for the same cluster", async
         },
       }));
     },
-    async writeMemory(
-      _category: string,
-      _body: string,
-      options: { structuredAttributes?: Record<string, string> },
-    ) {
+    async writeSealedMemory(envelope: SealedMemoryEnvelope) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       written.push({
-        structuredAttributes: options.structuredAttributes ?? {},
+        structuredAttributes: envelope.rawStructuredAttributes
+          ? { ...envelope.rawStructuredAttributes }
+          : {},
       });
       return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },
