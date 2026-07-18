@@ -601,3 +601,16 @@ test("salvage keeps persisted body, attributes, and notes mutually consistent (r
   // dedup hashes and supersession keys must describe this exact form.
   assert.equal(env.persistedBody, "User prefers dark mode\n[Attributes: state: old]");
 });
+
+test("marker-reserved tag assembly survives the cap end to end (round 10)", () => {
+  // Simulates extraction-persist's withReservedMarkerTag contract: 60 source
+  // tags -> first 49 + marker, and salvage compose keeps all 50 including
+  // the trailing marker.
+  const sourceTags = Array.from({ length: 60 }, (_, i) => `src-${i}`);
+  const budget = TAG_LIMITS.maxTags - 1;
+  const assembled = [...sourceTags.slice(0, budget), "chunked"];
+  const env = composeMemoryEnvelope(minimalInput({ tags: assembled }), CTX, { salvage: true });
+  assert.equal(env.tags.length, TAG_LIMITS.maxTags);
+  assert.ok(env.tags.includes("chunked"), "reserved marker must survive composition");
+  assert.deepEqual([...env.salvageNotes], [], "reserved assembly must not need salvage");
+});

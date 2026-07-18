@@ -1,4 +1,4 @@
-import { composeMemoryEnvelope } from "./write-envelope.js";
+import { composeMemoryEnvelope, TAG_LIMITS } from "./write-envelope.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
@@ -367,12 +367,25 @@ export function validateExplicitCaptureInput(
   }
   const expiresAt = parseExplicitCaptureTtl(input.ttl);
 
+  // #2014 review round: enforce the composer's tag contract HERE so a capture
+  // that passes validation can never fail later at strict compose time
+  // (validated-then-thrown was a broken contract). Same limits as TAG_LIMITS.
+  const dedupedTags = Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean)));
+  if (dedupedTags.length > TAG_LIMITS.maxTags) {
+    throw new Error(`too many tags: ${dedupedTags.length} exceeds the ${TAG_LIMITS.maxTags}-tag limit`);
+  }
+  for (const tag of dedupedTags) {
+    if (tag.length > TAG_LIMITS.maxTagLength) {
+      throw new Error(`tag exceeds ${TAG_LIMITS.maxTagLength} characters: ${JSON.stringify(tag.slice(0, 40))}…`);
+    }
+  }
+
   return {
     content,
     category,
     confidence,
     namespace: asTrimmed(input.namespace),
-    tags: Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))),
+    tags: dedupedTags,
     entityRef: asTrimmed(input.entityRef),
     sourceReason: asTrimmed(input.sourceReason),
     sourceConnector: input.sourceConnector,

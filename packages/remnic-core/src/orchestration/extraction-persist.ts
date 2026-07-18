@@ -19,7 +19,8 @@
  * tests continue to work.
  */
 
-import { composeMemoryEnvelope } from "../write-envelope.js";
+import { composeMemoryEnvelope, isMemoryCategory, TAG_LIMITS } from "../write-envelope.js";
+import { normalizeTags } from "../recall-tag-filter.js";
 import path from "node:path";
 import {
   StorageManager,
@@ -270,6 +271,22 @@ export class ExtractionPersistCoordinator {
       return attachCitation(content, citationContext, citationTemplate);
     };
     const persistedIds: string[] = [];
+    // #2014/#2017 review round: system marker tags ("shared-promotion",
+    // "<target>-promotion", "chunked") must survive the 50-tag cap — the CLI
+    // and stats identify chunked parents/promotions through them. Normalize
+    // the source tags first (same trim/dedupe salvage would apply), reserve
+    // one slot for the marker, and warn when source tags are dropped.
+    const withReservedMarkerTag = (sourceTags: string[], marker: string): string[] => {
+      const normalized = normalizeTags(sourceTags) ?? [];
+      const budget = TAG_LIMITS.maxTags - 1;
+      if (normalized.length > budget) {
+        log.warn(
+          `extraction tags exceed ${budget}+marker cap; keeping the first ${budget} of ${normalized.length} and the ${JSON.stringify(marker)} marker`,
+        );
+      }
+      const capped = normalized.length > budget ? normalized.slice(0, budget) : normalized;
+      return [...capped, marker];
+    };
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
@@ -491,7 +508,7 @@ export class ExtractionPersistCoordinator {
               content: citedContent,
               category: options.category as MemoryCategory,
               confidence: options.confidence,
-              tags: [...options.tags, `${target.target}-promotion`],
+              tags: withReservedMarkerTag(options.tags, `${target.target}-promotion`),
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
               validAt: options.validAt,
@@ -720,7 +737,7 @@ export class ExtractionPersistCoordinator {
             content: citedContent,
             category: options.category as MemoryCategory,
             confidence: options.confidence,
-            tags: [...options.tags, "shared-promotion"],
+            tags: withReservedMarkerTag(options.tags, "shared-promotion"),
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
             validAt: options.validAt,
@@ -1553,6 +1570,16 @@ export class ExtractionPersistCoordinator {
       ) {
         continue;
       }
+      // #2014/#2017 review round: an unrecognized non-empty category from
+      // the extractor is a per-CANDIDATE defect. The composer keeps category
+      // fatal even in salvage mode (identity field), so filter here — one
+      // malformed model field must not abort the whole extraction batch.
+      if (!isMemoryCategory((fact as any).category)) {
+        log.warn(
+          `persistExtraction: skipping fact with unrecognized category ${JSON.stringify((fact as any).category)}`,
+        );
+        continue;
+      }
       (fact as any).tags = Array.isArray((fact as any).tags)
         ? (fact as any).tags.filter((t: any) => typeof t === "string")
         : [];
@@ -2195,7 +2222,7 @@ export class ExtractionPersistCoordinator {
               content: citedChunkedContent,
               category: writeCategory,
               confidence: fact.confidence,
-              tags: [...fact.tags, "chunked"],
+              tags: withReservedMarkerTag(fact.tags, "chunked"),
               entityRef: fact.entityRef,
               structuredAttributes: fact.structuredAttributes,
               validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,

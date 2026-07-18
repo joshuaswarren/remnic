@@ -118,7 +118,7 @@ const MEMORY_CATEGORY_TABLE: Record<MemoryCategory, true> = {
 
 const MEMORY_CATEGORY_NAMES = Object.keys(MEMORY_CATEGORY_TABLE).sort();
 
-function isMemoryCategory(value: string): value is MemoryCategory {
+export function isMemoryCategory(value: string): value is MemoryCategory {
   return Object.prototype.hasOwnProperty.call(MEMORY_CATEGORY_TABLE, value);
 }
 
