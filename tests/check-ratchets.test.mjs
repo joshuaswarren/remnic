@@ -61,7 +61,7 @@ test("--update writes a baseline the check then passes against", () => {
     assert.equal(baseline.version, 1);
     assert.equal(
       baseline.metrics.watchlistLoc["packages/remnic-core/src/orchestrator.ts"],
-      11,
+      10,
     );
     // widget.ts has 2 reads; widget.test.ts and config.ts are excluded.
     assert.equal(baseline.metrics.scatteredConfigFlagReads, 2);
@@ -80,7 +80,7 @@ test("watchlist file growth fails the check", () => {
 
     const check = runRatchets([], fixture);
     assert.equal(check.status, 1);
-    assert.match(check.stderr, /orchestrator\.ts grew from 11 to 13/);
+    assert.match(check.stderr, /orchestrator\.ts grew from 10 to 12/);
   });
 });
 
@@ -261,9 +261,9 @@ test("file-size ratchet: --update grandfathers >1200-line files across all src r
     const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
     assert.equal(
       baseline.metrics.fileSizeGrandfather["packages/other-pkg/src/legacy-big.ts"],
-      1501,
+      1500,
     );
-    assert.equal(baseline.metrics.fileSizeGrandfather["src/root-big.ts"], 1301);
+    assert.equal(baseline.metrics.fileSizeGrandfather["src/root-big.ts"], 1300);
     assert.equal(
       "packages/other-pkg/src/legacy-big.test.ts" in baseline.metrics.fileSizeGrandfather,
       false,
@@ -281,7 +281,7 @@ test("file-size ratchet: a NEW file over the cap fails naming the cap and the sa
 
     const check = runRatchets([], fixture);
     assert.equal(check.status, 1);
-    assert.match(check.stderr, /fresh-big\.ts is 1251 lines — new source files are capped at 1200 LOC/);
+    assert.match(check.stderr, /fresh-big\.ts is 1250 lines — new source files are capped at 1200 LOC/);
     assert.match(check.stderr, /sibling module/);
     assert.match(check.stderr, /Grandfathering new files is not available/);
   });
@@ -296,19 +296,19 @@ test("file-size ratchet: grandfathered growth past the ceiling fails; shrink is 
     appendFileSync(bigPath, "pad\n".repeat(10));
     const grown = runRatchets([], fixture);
     assert.equal(grown.status, 1);
-    assert.match(grown.stderr, /legacy-big\.ts grew from its grandfathered ceiling 1401 to 1411 lines/);
+    assert.match(grown.stderr, /legacy-big\.ts grew from its grandfathered ceiling 1400 to 1410 lines/);
 
     writeFileSync(bigPath, "pad\n".repeat(1350));
     const shrunk = runRatchets([], fixture);
     assert.equal(shrunk.status, 0, shrunk.stderr);
-    assert.match(shrunk.stdout, /file-size ceiling .*legacy-big\.ts: 1401 -> 1351 lines/);
+    assert.match(shrunk.stdout, /file-size ceiling .*legacy-big\.ts: 1400 -> 1350 lines/);
 
     // --update ratchets the ceiling down to the new measured size.
     assert.equal(runRatchets(["--update"], fixture).status, 0);
     const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
     assert.equal(
       baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"],
-      1351,
+      1350,
     );
   });
 });
@@ -375,7 +375,7 @@ test("file-size ratchet: --update refuses to grandfather files that became overs
     const update = runRatchets(["--update"], fixture);
     assert.equal(update.status, 1);
     assert.match(update.stderr, /became oversized since the previous baseline and cannot be grandfathered/);
-    assert.match(update.stderr, /sneaky-new-big\.ts \(1301\)/);
+    assert.match(update.stderr, /sneaky-new-big\.ts \(1300\)/);
 
     // Shrinking the file unblocks the refresh.
     writeFileSync(path.join(fixture.src, "sneaky-new-big.ts"), "export {};\n");
@@ -476,10 +476,10 @@ test("file-size ratchet: scoped --update prints out-of-scope ceiling raises loud
       },
     });
     assert.equal(update.status, 0, update.stderr);
-    assert.match(update.stdout, /ceiling raised \(out-of-scope growth inherited from main\): packages\/remnic-core\/src\/legacy-big\.ts 1401 -> 1421/);
+    assert.match(update.stdout, /ceiling raised \(out-of-scope growth inherited from main\): packages\/remnic-core\/src\/legacy-big\.ts 1400 -> 1420/);
     // And the raise is real: baseline now carries the new ceiling.
     const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
-    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"], 1421);
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"], 1420);
   });
 });
 
@@ -627,8 +627,41 @@ test("file-size ratchet: .tsx sources are counted; .test.tsx and .d.ts are not (
     writeFileSync(path.join(uiSrc, "types.d.ts"), "pad\n".repeat(1300));
     assert.equal(runRatchets(["--update"], fixture).status, 0);
     const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
-    assert.equal(baseline.metrics.fileSizeGrandfather["packages/ui-pkg/src/Big.tsx"], 1301);
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/ui-pkg/src/Big.tsx"], 1300);
     assert.equal("packages/ui-pkg/src/Big.test.tsx" in baseline.metrics.fileSizeGrandfather, false);
     assert.equal("packages/ui-pkg/src/types.d.ts" in baseline.metrics.fileSizeGrandfather, false);
+  });
+});
+
+test("file-size ratchet: trailing newline does not add a phantom line; final line without newline still counts (round 8)", () => {
+  withFixture((fixture) => {
+    const exact = Array.from({ length: 1200 }, (_, i) => `// line ${i}`).join("\n") + "\n";
+    writeFileSync(path.join(fixture.src, "exactly-max.ts"), exact);
+    const noEol = Array.from({ length: 1200 }, (_, i) => `// line ${i}`).join("\n");
+    writeFileSync(path.join(fixture.src, "no-eol-max.ts"), noEol);
+    assert.equal(runRatchets(["--update"], fixture).status, 0,
+      "1,200 physical lines must not fail the 1,200-line cap regardless of trailing newline");
+  });
+});
+
+test("file-size ratchet: .mts and .cts sources are counted; their test/declaration forms are not (round 8)", () => {
+  withFixture((fixture) => {
+    const big = Array.from({ length: 1300 }, (_, i) => `// line ${i}`).join("\n");
+    writeFileSync(path.join(fixture.src, "legacy-big.mts"), big);
+    writeFileSync(path.join(fixture.src, "legacy-big.cts"), big);
+    writeFileSync(path.join(fixture.src, "legacy-big.test.mts"), big);
+    writeFileSync(path.join(fixture.src, "types.d.mts"), big);
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.mts"], 1300);
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.cts"], 1300);
+    assert.equal("packages/remnic-core/src/legacy-big.test.mts" in baseline.metrics.fileSizeGrandfather, false);
+    assert.equal("packages/remnic-core/src/types.d.mts" in baseline.metrics.fileSizeGrandfather, false);
+
+    // Growth past the grandfathered ceiling fails, naming the .mts file.
+    writeFileSync(path.join(fixture.src, "legacy-big.mts"), big + "\n// grew\n// more\n");
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1, ".mts growth past its ceiling must fail");
+    assert.match(check.stderr, /legacy-big\.mts/);
   });
 });

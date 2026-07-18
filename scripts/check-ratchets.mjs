@@ -207,18 +207,30 @@ function toPosix(relPath) {
 }
 
 function countLines(filePath) {
-  return readFileSync(filePath, "utf8").split("\n").length;
+  // Do not count the empty segment after a trailing newline as a phantom
+  // line: a 1,200-line file ending with "\n" must count as 1,200, not
+  // 1,201 (round-8 finding). A final line WITHOUT a newline still counts.
+  const text = readFileSync(filePath, "utf8");
+  if (text.length === 0) return 0;
+  const segments = text.split("\n");
+  if (segments[segments.length - 1] === "") segments.pop();
+  return segments.length;
 }
 
 function isCountedSourceFile(name) {
-  // .tsx counts too (round-7 finding: bench-ui compiles JSX; a giant .tsx
-  // would otherwise evade the cap). Legacy #1529 metrics scan only
-  // remnic-core/src, which has no .tsx — their counts are unaffected.
+  // .ts/.tsx/.mts/.cts all compile under the packages' tsconfig "src"
+  // globs (round-7 + round-8 findings: bench-ui compiles JSX; TypeScript
+  // compiles .mts/.cts under the same include glob) — a giant .tsx, .mts,
+  // or .cts would otherwise evade the cap. Declarations (.d.*) and tests
+  // stay excluded. Legacy #1529 metrics scan only remnic-core/src, which
+  // has neither — their counts are unaffected.
+  const excluded = [
+    ".test.ts", ".test.tsx", ".test.mts", ".test.cts",
+    ".d.ts", ".d.mts", ".d.cts",
+  ];
   return (
-    (name.endsWith(".ts") || name.endsWith(".tsx")) &&
-    !name.endsWith(".test.ts") &&
-    !name.endsWith(".test.tsx") &&
-    !name.endsWith(".d.ts")
+    [".ts", ".tsx", ".mts", ".cts"].some((ext) => name.endsWith(ext)) &&
+    !excluded.some((ext) => name.endsWith(ext))
   );
 }
 
