@@ -1255,8 +1255,8 @@ test("review-queue fallback survives 49+ requested tags (salvage clamp, #2014)",
       category: "fact",
       tags: Array.from({ length: 55 }, (_, i) => `req-tag-${i}`),
     } as never,
-    "duplicate-suspected",
-    "tool",
+    "memory_store",
+    new Error("duplicate-suspected"),
   );
   assert.ok(result.id, "capture must queue instead of throwing");
   assert.equal(written.length, 1);
