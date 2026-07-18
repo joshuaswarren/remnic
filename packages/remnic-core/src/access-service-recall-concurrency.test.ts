@@ -894,6 +894,7 @@ test("a coalesced follower's response carries its OWN soft-limit warning, not th
 });
 
 test("single-flight off: a caller abort while the underlying pipeline still resolves does not leak budget (round 5 #2)", async () => {
+  const started = deferred<void>();
   const release = deferred<void>();
   const released = deferred<void>();
   const h = makeService({
@@ -902,6 +903,7 @@ test("single-flight off: a caller abort while the underlying pipeline still reso
     crossNamespace: true,
     // The pipeline resolves (with a reservation) even though the caller aborted.
     pipeline: async () => {
+      started.resolve();
       await release.promise;
       return stubResponse([]);
     },
@@ -910,6 +912,11 @@ test("single-flight off: a caller abort while the underlying pipeline still reso
 
   const controller = new AbortController();
   const p = h.service.recall({ query: "same", abortSignal: controller.signal });
+  // Let the pipeline actually START (reserve budget) before aborting: the
+  // post-slot-grant abort re-check (round 14 #2) short-circuits an abort that
+  // lands BEFORE execution, so this round-5 #2 orphan-release path is only
+  // reachable once the pipeline is in flight.
+  await started.promise;
   controller.abort();
   await assert.rejects(p, (error: Error) => error.name === "AbortError");
 
@@ -1562,4 +1569,271 @@ test("an unkeyed follower during a keyed leader's slow put succeeds WITHOUT awai
 
   putGate.resolve();
   await leader;
+});
+
+// ── round 14 review findings ────────────────────────────────────────────────
+
+test("a recall aborted after its concurrency slot is granted rejects before the pipeline runs and releases the slot (round 14 #2)", async () => {
+  // The queued waiter's abort listener is removed by `take()` the instant a slot
+  // is granted. If the signal fires in the microtask gap between the grant and
+  // the recall function running, withRecallConcurrency must re-check the signal
+  // and release the slot instead of starting work for a disconnected caller.
+  const h = makeService({
+    limit: 1,
+    singleFlight: false,
+    pipeline: async () => stubResponse([]),
+  });
+  const host = h.service as unknown as {
+    withRecallConcurrency: <T>(
+      principal: string,
+      signal: AbortSignal | undefined,
+      fn: (queueWaitMs: number) => Promise<T>,
+    ) => Promise<T>;
+  };
+
+  // Slot is free: acquireRecallSlot resolves synchronously, so the fn runs in a
+  // microtask. Aborting right after the call lands in exactly that gap — after
+  // the (synchronous) slot grant, before the fn continuation.
+  const controller = new AbortController();
+  let fnRan = false;
+  const pending = host.withRecallConcurrency("principal", controller.signal, async () => {
+    fnRan = true;
+    return "ok";
+  });
+  controller.abort();
+
+  await assert.rejects(pending, (error: Error) => error.name === "AbortError");
+  assert.equal(fnRan, false, "the recall function never ran after the post-grant abort");
+  assert.equal(
+    h.recallSemaphores.size,
+    0,
+    "the granted slot was released so the semaphore did not leak",
+  );
+});
+
+test("a queued keyed leader whose only caller aborts cancels before executing (round 14 #3)", async () => {
+  // A keyed single-flight leader queued behind the concurrency cap runs its
+  // pipeline on the FLIGHT controller with race=false, so its caller's abort was
+  // previously never observed: the flight would still execute + reserve + persist
+  // once a slot freed, even though its only caller had disconnected while queued.
+  const holderGate = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 1,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") await holderGate.promise;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => options.execute();
+
+  // Occupy the single slot with an unrelated (different-work) recall.
+  const holder = h.service.recall({ query: "holder" });
+  await flushMacrotasks();
+
+  // A keyed leader for DIFFERENT work registers its flight and queues for a slot.
+  const controller = new AbortController();
+  const leader = h.service.recall({
+    query: "keyed",
+    idempotencyKey: "k",
+    abortSignal: controller.signal,
+  });
+  await flushMacrotasks();
+  assert.equal(h.recallInFlight.size, 2, "both flights are registered while queued");
+
+  // The keyed leader's only caller disconnects while its flight is still queued.
+  controller.abort();
+  await assert.rejects(leader, (error: Error) => error.name === "AbortError");
+
+  // Free the slot; a still-alive queued flight would now execute + reserve.
+  holderGate.resolve();
+  await holder;
+  await flushMacrotasks();
+
+  assert.equal(pipelineRuns, 1, "only the holder ran — the cancelled queued keyed flight never executed");
+  assert.equal(h.liveBudget(), 1, "the cancelled queued keyed flight reserved no budget (only the holder's stands)");
+  assert.equal(h.recallInFlight.size, 0, "the cancelled keyed flight unregistered");
+  assert.equal(h.recallSemaphores.size, 0, "the semaphore did not leak");
+});
+
+test("a queued keyed flight with an additional live caller survives its leader's abort (round 14 #3)", async () => {
+  // Shared-flight semantics for ADDITIONAL callers: when a second caller has
+  // joined, one caller's abort must not cancel the shared pipeline.
+  const holderGate = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 1,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") await holderGate.promise;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => options.execute();
+
+  const holder = h.service.recall({ query: "holder" });
+  await flushMacrotasks();
+
+  // Leader (key-A) registers its keyed flight and queues behind the cap.
+  const leaderCtl = new AbortController();
+  const leader = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-A",
+    abortSignal: leaderCtl.signal,
+  });
+  await flushMacrotasks();
+  // A second keyed caller (same work, distinct key) joins the queued flight.
+  const follower = h.service.recall({ query: "same", idempotencyKey: "key-B" });
+  await flushMacrotasks();
+
+  // The leader disconnects; a keyed leader with race=false does NOT reject on
+  // its own abort — it stays committed and the follower keeps the flight alive.
+  leaderCtl.abort();
+
+  // Free the slot; the shared flight must still run once for the follower.
+  holderGate.resolve();
+  await holder;
+  const followerResp = await follower;
+  // The leader still rejects with AbortError, but only AFTER the shared pipeline
+  // completed and it persisted (round 5 #1 commit semantics preserved).
+  await assert.rejects(leader, (error: Error) => error.name === "AbortError");
+
+  assert.ok(followerResp, "the additional caller received the shared result");
+  assert.equal(
+    pipelineRuns,
+    2,
+    "holder + the one shared keyed pipeline — the leader's abort did not cancel it",
+  );
+});
+
+test("a keyed follower joining via the existing-join returns its own AbortError promptly when it disconnects during the leader's put (round 14 #4)", async () => {
+  // A keyed follower coalescing through leadRecallFlight's existing-join awaits
+  // the leader's `persisted` gate. That await must RACE the follower's own abort
+  // signal: a client that disconnects while the leader's put is pending must get
+  // AbortError promptly — not block until the put settles.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  let pipelineRuns = 0;
+  let leaderPersisted = false;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    if (options.idempotencyKey === "key-A") {
+      leaderExecuted.resolve();
+      await putGate.promise; // leader's slow put
+      leaderPersisted = true;
+    }
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise; // leader consumed + detached; flight in the put window
+
+  const followerCtl = new AbortController();
+  const follower = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-B",
+    abortSignal: followerCtl.signal,
+  });
+  await flushMacrotasks(); // follower consumed the shared result; parked on the persisted gate
+
+  // The follower's client disconnects while the leader's put is STILL pending.
+  followerCtl.abort();
+  await assert.rejects(
+    follower,
+    (error: Error) => error.name === "AbortError",
+    "the keyed follower rejected with its own AbortError before the leader's put settled",
+  );
+  assert.equal(leaderPersisted, false, "the leader's put was still pending when the follower rejected");
+
+  // The leader's persistence continues to completion despite the follower's abort.
+  putGate.resolve();
+  const leaderResp = await leader;
+  assert.ok(leaderResp, "the leader still completed and persisted");
+  assert.equal(leaderPersisted, true, "the leader's persistence continued after the follower aborted");
+  assert.equal(pipelineRuns, 1, "one shared pipeline for both callers");
+});
+
+test("a keyed follower aborting during the leader's put releases ONLY its own reservation, leaving the leader's intact (round 14 #1)", async () => {
+  // Companion to the promptness test: the abort must release exactly the
+  // follower's OWN cross-namespace reservation and never touch the leader's,
+  // whose event legitimately stands because it persisted.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([{ id: "m1" }]),
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    if (options.idempotencyKey === "key-A") {
+      leaderExecuted.resolve();
+      await putGate.promise;
+    }
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise;
+
+  const followerCtl = new AbortController();
+  const follower = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-B",
+    abortSignal: followerCtl.signal,
+  });
+  await flushMacrotasks();
+
+  // Leader's reservation + follower's own event are both live in the window.
+  assert.equal(h.liveBudget(), 2, "leader and follower each reserved their own event");
+
+  followerCtl.abort();
+  await assert.rejects(follower, (error: Error) => error.name === "AbortError");
+  assert.equal(
+    h.liveBudget(),
+    1,
+    "only the follower's reservation was released; the leader's stands",
+  );
+
+  putGate.resolve();
+  await leader;
+  assert.equal(h.liveBudget(), 1, "the leader's reservation remains after it persisted");
 });

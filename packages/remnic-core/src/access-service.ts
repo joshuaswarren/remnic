@@ -1343,6 +1343,13 @@ interface RecallFlight {
   promise: Promise<RecallExecResult>;
   controller: AbortController;
   live: number;
+  /** Set true the instant the shared pipeline acquires its concurrency slot and
+   *  begins executing. Before this, a KEYED flight whose only caller aborts must
+   *  cancel (nothing has committed); after it, a keyed flight must persist
+   *  regardless of caller disconnects (round 5 #1). Unkeyed flights ignore it —
+   *  they carry no `persisted` gate and cancel whenever every caller leaves
+   *  (round 14 #3). */
+  committed: boolean;
   /** Called when the flight goes idle (no attached callers remain). Used to
    *  unregister the flight from `recallInFlight` only AFTER its consumers have
    *  finished — never on raw pipeline settle — so an identical arrival while a
@@ -2560,6 +2567,13 @@ export class EngramAccessService {
     throwIfAborted(signal);
     const { release, waitedMs } = await this.acquireRecallSlot(key, limit, signal);
     try {
+      // The signal may have fired while queued: `take()` already removed the
+      // abort listener when granting this slot, so re-check before entering `fn`.
+      // Without this, a caller (or flight controller) that aborted just after
+      // admission would still start the recall pipeline and reserve/run work
+      // until a later rollback; the `finally` below releases the slot instead
+      // (round 14 #2).
+      throwIfAborted(signal);
       return await fn(waitedMs);
     } finally {
       release();
@@ -2592,11 +2606,12 @@ export class EngramAccessService {
   /**
    * Attach a caller to a single-flight recall (issue #1906 review). Increments
    * the flight refcount and (when `cancelOnAbort`) wires the caller's abort so
-   * the SHARED pipeline is cancelled ONLY when every attached caller has
-   * aborted. A committed caller (`cancelOnAbort=false`, e.g. an idempotency-keyed
-   * leader that must persist regardless of its own connection) still holds a
-   * refcount slot — keeping the flight alive — but never cancels it. Returns a
-   * `detach` to call when the caller settles.
+   * the SHARED pipeline is cancelled when every attached caller has aborted —
+   * EXCEPT a KEYED flight that has already committed to execution, which must
+   * persist regardless of caller disconnects (round 5 #1). A caller attached
+   * with `cancelOnAbort=false` still holds a refcount slot (keeping the flight
+   * alive) but never cancels it. Returns a `detach` to call when the caller
+   * settles.
    */
   private attachFlightAbort(
     flight: RecallFlight,
@@ -2610,7 +2625,11 @@ export class EngramAccessService {
       settled = true;
       flight.live -= 1;
       if (flight.live === 0) {
-        flight.controller.abort();
+        // A KEYED flight that already began executing must persist even though
+        // its last caller left (round 5 #1); cancel only a flight that has not
+        // committed (still queued for a slot) or has nothing to persist —
+        // unkeyed, no `persisted` gate (round 14 #3).
+        if (!flight.persisted || !flight.committed) flight.controller.abort();
         flight.onIdle?.();
       }
     };
@@ -2636,19 +2655,25 @@ export class EngramAccessService {
   /** Consume a shared recall flight for one caller (issue #1906 review). When
    *  `race` is true the caller leaves early on its own abort; when false (a
    *  committed idempotency-keyed leader) it awaits the flight to completion so
-   *  persistence survives its disconnect (round 5 #1). Records this caller's OWN
-   *  cross-namespace budget event (coalesced callers), clones the response
-   *  inside the rollback scope, and returns the reservation this caller owns so
-   *  an outer failure can release the exact entry. If the caller leaves before
-   *  observing the result, the pipeline reservation it owns is released once the
-   *  flight resolves so a cancelled recall never leaks quota (round 5 #2). */
+   *  persistence survives its disconnect (round 5 #1). `cancelOnAbort` (default
+   *  `race`) decides whether this caller's abort counts toward cancelling the
+   *  shared pipeline: a keyed leader awaits the flight (race=false) yet still
+   *  wires its abort so that, while the flight is only QUEUED and no other caller
+   *  is attached, its disconnect cancels the not-yet-committed pipeline (round
+   *  14 #3). Records this caller's OWN cross-namespace budget event (coalesced
+   *  callers), clones the response inside the rollback scope, and returns the
+   *  reservation this caller owns so an outer failure can release the exact
+   *  entry. If the caller leaves before observing the result, the pipeline
+   *  reservation it owns is released once the flight resolves so a cancelled
+   *  recall never leaks quota (round 5 #2). */
   private async consumeFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
     recordBudget: boolean,
     race: boolean,
+    cancelOnAbort: boolean = race,
   ): Promise<{ response: EngramAccessRecallResponse; reservation: BudgetReservation | undefined }> {
-    const detach = this.attachFlightAbort(flight, request.abortSignal, race);
+    const detach = this.attachFlightAbort(flight, request.abortSignal, cancelOnAbort);
     try {
       let result: RecallExecResult;
       try {
@@ -2851,6 +2876,7 @@ export class EngramAccessService {
       promise: flightPromise,
       controller,
       live: 0,
+      committed: false,
       onIdle: () => {
         const unregister = () => {
           if (this.recallInFlight.get(flightKey) === flight) {
@@ -2873,13 +2899,19 @@ export class EngramAccessService {
       ...(persisted ? { persisted } : {}),
     };
     this.recallInFlight.set(flightKey, flight);
-    this.withRecallConcurrency(principalKey, controller.signal, async (queueWaitMs) =>
-      this.executeRecall({
+    this.withRecallConcurrency(principalKey, controller.signal, async (queueWaitMs) => {
+      // A slot was granted and the abort re-check in withRecallConcurrency passed
+      // — the pipeline is now committing to execution. Past this point a keyed
+      // flight persists even if its callers disconnect (round 5 #1); before it,
+      // attachFlightAbort cancels a keyed flight whose only caller aborts while
+      // still queued (round 14 #3).
+      flight.committed = true;
+      return this.executeRecall({
         ...normalizedRequest,
         abortSignal: controller.signal,
         queueWaitMs,
-      }),
-    ).then(settleExec, failExec);
+      });
+    }).then(settleExec, failExec);
     return flight;
   }
 
@@ -2938,14 +2970,21 @@ export class EngramAccessService {
             // REJECTS (releasing this caller's reservation via the outer catch,
             // and skipping its own put) with the leader's exact error when the
             // put fails — identical to the leader's put-failure behavior (round
-            // 13 #1). This await is non-racing, mirroring the keyed leader's own
-            // commit: a keyed caller persists regardless of its own disconnect,
-            // and the final post-consume abort check still returns AbortError to
-            // a follower that left. Unkeyed joins (race=true) keep existing
-            // behavior: they consumed the shared result and never depend on
-            // another caller's persistence, so they never block on `persisted`.
+            // 13 #1). Race this persistence wait with the follower's OWN abort
+            // signal (round 14 #1/#4): a keyed follower whose HTTP/MCP client
+            // disconnects while the leader's put is still pending must receive
+            // its own AbortError PROMPTLY rather than block until the put settles
+            // (and, on put failure, get the store error instead of AbortError).
+            // The follower already detached from the flight inside consumeFlight
+            // (its non-racing await ran to the shared settle), so bailing here
+            // never decrements the leader's refcount or cancels its controller —
+            // the leader's persistence continues for the flight's other
+            // consumers. On abort the outer catch releases ONLY this follower's
+            // reservation. Unkeyed joins (race=true) keep existing behavior: they
+            // consumed the shared result and never depend on another caller's
+            // persistence, so they never block on `persisted`.
             if (keyed && existing.persisted) {
-              await existing.persisted.promise;
+              await this.raceAbort(existing.persisted.promise, request.abortSignal);
             }
             return consumed.response;
           }
@@ -2961,8 +3000,13 @@ export class EngramAccessService {
           const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey, keyed);
           ownedFlight = flight;
           // The leader's own budget event is reserved inside the pipeline, so it
-          // must NOT record again here.
-          const consumed = await this.consumeFlight(flight, request, false, race);
+          // must NOT record again here. `cancelOnAbort=true` even for a keyed
+          // leader (race=false): while the flight is only QUEUED for a slot and
+          // this is its sole caller, the leader's disconnect cancels the
+          // not-yet-committed pipeline (attachFlightAbort's committed guard keeps
+          // a post-commit keyed flight persisting, and any additional live caller
+          // keeps live > 0 so the shared flight survives) (round 14 #3).
+          const consumed = await this.consumeFlight(flight, request, false, race, true);
           capturedReservation = consumed.reservation;
           return consumed.response;
         },
