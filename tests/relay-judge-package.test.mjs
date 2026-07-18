@@ -10,6 +10,7 @@ import test from "node:test";
 import {
   assertRelayCheckoutDecision,
   relayCheckoutDecisionContractKey,
+  relayStaleCheckoutDecisionContractKey,
 } from "../scripts/relay/checkout-decision-contract.mjs";
 import {
   RELAY_RECORDING_ROOT_SHA256,
@@ -158,6 +159,44 @@ test("Relay judge decisions use the authoritative live source-grounding contract
       "Reuse the checkout-session token while valid and mint exactly one replacement after expiry."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey("Reuse the session token and mint exactly one replacement after expiry."),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "One checkout token is owned per checkout session: mint on the first request, reuse it for ordinary retries while valid, and after explicit expiry mint exactly one replacement that later retries reuse. Do not rotate tokens on every request."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Do not mint a new token on every retry. Reuse the checkout-session token while valid; mint exactly one replacement after expiry."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  for (const negatedOrMisordered of [
+    "Do not reuse the checkout-session token while it is valid; mint one replacement before expiry.",
+    "Reuse the checkout-session token while valid; do not mint exactly one replacement after expiry.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement before expiry.",
+  ]) {
+    assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
+  }
+
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey("Mint a new checkout token for every request and every ordinary retry."),
+    "checkout-token-per-request-and-retry-rotation"
+  );
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey("Do not mint a new checkout token every request and every ordinary retry."),
+    null
+  );
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey(
+      "Never reuse the checkout-session token; mint a new checkout token for every request and every ordinary retry."
+    ),
+    "checkout-token-per-request-and-retry-rotation"
   );
 });
 
