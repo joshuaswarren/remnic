@@ -828,6 +828,79 @@ test("auto-compaction shrinks an oversized ledger and writes a verbatim backup",
   }
 });
 
+test("auto-compaction preserves append-only lifecycle events with no frontmatter equivalent (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-preserve-"));
+  try {
+    await mkdir(path.join(memoryDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", "2026-03-08", "fact-1.md"),
+      `---
+id: fact-1
+category: fact
+created: 2026-03-08T00:00:00.000Z
+updated: 2026-03-08T01:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["alpha"]
+---
+
+alpha
+`,
+      "utf-8",
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly = {
+      eventId: "capture-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    // Oversized: junk pad rows the rebuild discards + one valid append-only
+    // event frontmatter cannot reconstruct and MUST survive compaction.
+    const pad = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    await writeFile(
+      ledgerPath,
+      pad.repeat(Math.ceil(4096 / pad.length)) + `${JSON.stringify(appendOnly)}\n`,
+      "utf-8",
+    );
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const rebuilt = (await readFile(ledgerPath, "utf-8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { eventId: string; eventType: string; legacy?: boolean });
+    const eventTypes = rebuilt.map((r) => r.eventType);
+    // Frontmatter-derived rows are reconstructed AND the append-only capture row
+    // is carried over (a bare rebuild dropped it silently before this fix).
+    assert.ok(eventTypes.includes("created"));
+    assert.ok(eventTypes.includes("updated"));
+    assert.ok(
+      rebuilt.some((r) => r.eventId === "capture-1" && r.eventType === "explicit_capture_accepted"),
+      "append-only capture event must survive background compaction",
+    );
+    // Junk padding rows are still discarded — compaction shrank the ledger.
+    assert.ok(!rebuilt.some((r) => r.legacy === true), "junk rows discarded");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("auto-compaction is disabled when memoryLifecycleLedgerCompactBytes is 0", async () => {
   const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
   try {

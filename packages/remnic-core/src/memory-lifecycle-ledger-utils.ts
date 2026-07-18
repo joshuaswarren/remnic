@@ -24,6 +24,22 @@ export const MEMORY_LIFECYCLE_EVENT_SORT_ORDER: Record<MemoryLifecycleEventType,
   archived: 10,
 };
 
+/**
+ * Deterministic sort rank for a lifecycle event type. The ledger readers admit
+ * any structurally valid row (permissive `eventType`, issue #1910), so an
+ * unknown/typoed type must still sort deterministically: it ranks AFTER every
+ * known type and keeps the comparator total. Without this fallback,
+ * `map[unknown] - map[known]` is `NaN`, an invalid comparator result.
+ */
+const UNKNOWN_LIFECYCLE_EVENT_SORT_RANK = Number.MAX_SAFE_INTEGER;
+
+export function lifecycleEventSortRank(eventType: string): number {
+  return (
+    MEMORY_LIFECYCLE_EVENT_SORT_ORDER[eventType as MemoryLifecycleEventType] ??
+    UNKNOWN_LIFECYCLE_EVENT_SORT_RANK
+  );
+}
+
 export function toMemoryPathRel(baseDir: string, filePath: string): string {
   if (!baseDir) return filePath.split(path.sep).join("/");
   return path.relative(baseDir, filePath).split(path.sep).join("/");
@@ -113,7 +129,7 @@ export function compareMemoryLifecycleEvents(
 ): number {
   if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
   if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
-  return MEMORY_LIFECYCLE_EVENT_SORT_ORDER[a.eventType] - MEMORY_LIFECYCLE_EVENT_SORT_ORDER[b.eventType];
+  return lifecycleEventSortRank(a.eventType) - lifecycleEventSortRank(b.eventType);
 }
 
 export function sortMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): MemoryLifecycleEvent[] {

@@ -10,6 +10,18 @@ import {
   sortMemoryLifecycleEvents,
 } from "../memory-lifecycle-ledger-utils.js";
 
+/**
+ * Event types `buildLifecycleEventsForMemory` reconstructs from frontmatter.
+ * Everything else in the ledger is append-only history with no frontmatter
+ * equivalent and must be carried over by a preserving rebuild (issue #1910).
+ */
+const FRONTMATTER_DERIVED_EVENT_TYPES: Record<string, true> = {
+  created: true,
+  updated: true,
+  superseded: true,
+  archived: true,
+};
+
 export interface RebuildMemoryLifecycleLedgerOptions {
   memoryDir: string;
   dryRun?: boolean;
@@ -23,6 +35,20 @@ export interface RebuildMemoryLifecycleLedgerOptions {
    * the ledger is written as plaintext — the CLI default.
    */
   storage?: StorageManager;
+  /**
+   * Preserve append-only lifecycle events that have no frontmatter equivalent
+   * (issue #1910). `buildLifecycleEventsForMemory` only reconstructs
+   * `created`/`updated`/`superseded`/`archived` from frontmatter, so a bare
+   * rebuild silently drops history like `explicit_capture_accepted`,
+   * `explicit_capture_queued`, `imported`, `promoted`, `merged`, `restored`,
+   * and `rejected`. When true, the existing ledger's non-reconstructable rows
+   * are read (via the same secure/permissive `readAllMemoryLifecycleEvents`
+   * path), merged with the rebuilt rows, deduplicated by `eventId`, and sorted
+   * canonically. Background auto-compaction sets this so it never loses events;
+   * the manual/CLI repair rebuild leaves it off (reconstruct purely from
+   * frontmatter).
+   */
+  preserveExistingEvents?: boolean;
 }
 
 export interface SkippedLifecycleBlankIdMemory {
@@ -43,6 +69,12 @@ export interface RebuildMemoryLifecycleLedgerResult {
   backupPath?: string;
   skippedBlankIdMemories: SkippedLifecycleBlankIdMemory[];
   skippedDuplicateEvents: SkippedDuplicateLifecycleEvent[];
+  /**
+   * Count of append-only rows carried over from the existing ledger because
+   * they have no frontmatter equivalent (only set when
+   * `preserveExistingEvents` is on; issue #1910).
+   */
+  preservedAppendOnlyRows?: number;
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
@@ -129,10 +161,36 @@ export async function rebuildMemoryLifecycleLedger(
     events.push(event);
   }
 
+  let finalEvents = events;
+  let preservedAppendOnlyRows: number | undefined;
+  if (options.preserveExistingEvents) {
+    // Carry over append-only history frontmatter cannot reconstruct (issue
+    // #1910). Read the existing ledger through the permissive readAll path,
+    // keep only rows whose eventType is NOT frontmatter-derived, then merge →
+    // canonical sort → dedup by eventId (collapsing duplicate appended rows,
+    // the point of compaction). Reused verbatim so encrypted-at-rest decrypts
+    // with the live key when `storage` carries the secure context.
+    let existing: MemoryLifecycleEvent[] = [];
+    try {
+      existing = await storage.readAllMemoryLifecycleEvents();
+    } catch (err) {
+      log.warn(`lifecycle ledger rebuild could not read existing events to preserve: ${err}`);
+    }
+    const preserved = existing.filter(
+      (event) => !FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType],
+    );
+    const mergedById = new Map<string, MemoryLifecycleEvent>();
+    for (const event of sortMemoryLifecycleEvents([...events, ...preserved])) {
+      if (!mergedById.has(event.eventId)) mergedById.set(event.eventId, event);
+    }
+    finalEvents = [...mergedById.values()];
+    preservedAppendOnlyRows = finalEvents.length - events.length;
+  }
+
   let backupPath: string | undefined;
   if (!dryRun) {
     const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
-    const payload = events.map((event) => JSON.stringify(event)).join("\n");
+    const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
     const content = payload.length > 0 ? `${payload}\n` : "";
     if (secureRewrite) {
       // Preserve encrypted-at-rest (issue #1910): back up the existing (possibly
@@ -150,10 +208,11 @@ export async function rebuildMemoryLifecycleLedger(
   return {
     dryRun,
     scannedMemories: allMemories.length,
-    rebuiltRows: events.length,
+    rebuiltRows: finalEvents.length,
     outputPath,
     backupPath,
     skippedBlankIdMemories,
     skippedDuplicateEvents,
+    preservedAppendOnlyRows,
   };
 }

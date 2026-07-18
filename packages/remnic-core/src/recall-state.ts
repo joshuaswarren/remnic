@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
@@ -441,6 +442,36 @@ export class LastRecallStore {
       throw err;
     }
     if (size < this.impressionsRotateBytes) return;
+    // Cross-process lock (issue #1910): two processes sharing memoryDir can both
+    // cross the threshold and interleave the archive-shift renames, stomping
+    // each other's `.1` and losing rows the old append-only path preserved. Hold
+    // a sibling lock around the rename sequence so only one process rotates at a
+    // time. The append in `appendImpressionSerialized` stays lock-free — O_APPEND
+    // is atomic across processes, so only rotation needs serializing and the hot
+    // path pays nothing until the file is actually at/over the threshold.
+    const lockPath = `${this.impressionsPath}.lock`;
+    await withHeldFileLock(lockPath, { staleMs: 30_000 }, async () => {
+      // Re-check under the lock: another process may have rotated between our
+      // stat and lock acquisition, leaving the active file small. Without this a
+      // queued waiter would rotate a second time and stomp the fresh `.1`.
+      let currentSize = 0;
+      try {
+        currentSize = (await stat(this.impressionsPath)).size;
+      } catch (err) {
+        if (isErrnoCode(err, "ENOENT")) return;
+        throw err;
+      }
+      if (currentSize < this.impressionsRotateBytes) return;
+      await this.shiftImpressionArchives();
+    });
+  }
+
+  /**
+   * Shift `.1..N` archives down one slot and move the active file to `.1`,
+   * dropping anything beyond `keep`. Callers invoke this only while holding the
+   * cross-process rotation lock (issue #1910).
+   */
+  private async shiftImpressionArchives(): Promise<void> {
     const keep = this.impressionsRotateKeep;
     // Drop the archive that would fall off the end, then shift down: .(keep-1)
     // -> .keep, ..., .1 -> .2, active -> .1.

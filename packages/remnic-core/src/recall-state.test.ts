@@ -350,6 +350,56 @@ test("LastRecallStore serializes concurrent impression writes without losing row
   }
 });
 
+test("LastRecallStore serializes rotation across processes sharing memoryDir (#1910)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-crossproc-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    // Two independent stores over the SAME memoryDir stand in for two processes.
+    // Each has its own in-process write chain, so only the on-disk rotation lock
+    // keeps their archive shifts from interleaving and stomping each other's
+    // `.1`. A large keep means nothing falls off the end, so every appended row
+    // must survive somewhere.
+    const makeStore = async () => {
+      const s = new LastRecallStore(dir, { impressionsRotateBytes: 200, impressionsRotateKeep: 100 });
+      await s.load();
+      return s;
+    };
+    const storeA = await makeStore();
+    const storeB = await makeStore();
+
+    const total = 40;
+    await Promise.all(
+      Array.from({ length: total }, (_, i) =>
+        (i % 2 === 0 ? storeA : storeB).record({
+          sessionKey: `s${i}`,
+          query: `q${i}`,
+          memoryIds: [`m${i}`],
+        }),
+      ),
+    );
+
+    const stateDir = path.dirname(impressionsPath);
+    const files = (await readdir(stateDir)).filter(
+      (f) => f.startsWith("recall_impressions.jsonl") && !f.endsWith(".lock"),
+    );
+    const keys = new Set<string>();
+    let lineCount = 0;
+    for (const f of files) {
+      const content = await readFile(path.join(stateDir, f), "utf8");
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
+        lineCount += 1;
+        const parsed = JSON.parse(line) as { sessionKey: string };
+        keys.add(parsed.sessionKey);
+      }
+    }
+    assert.equal(lineCount, total, "no impression rows lost to a cross-process rotation race");
+    assert.equal(keys.size, total, "every session key persisted exactly once across both processes");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("LastRecallStore preserves the current impression when rotation fails (#1910)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-rotate-fail-"));
   try {

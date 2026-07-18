@@ -4,15 +4,6 @@ import { createInterface } from "node:readline";
 
 import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
 import type { MemoryActionEvent, MemoryLifecycleEvent } from "../types.js";
-import { MEMORY_LIFECYCLE_EVENT_SORT_ORDER } from "../memory-lifecycle-ledger-utils.js";
-
-// Allow-list of lifecycle event types the ledger consumers actually handle
-// (issue #1910). Derived from the canonical sort-order table so a row carrying
-// an unknown/typoed eventType is rejected as malformed rather than silently
-// admitted with a type the downstream sort/render logic cannot place.
-const HANDLED_LIFECYCLE_EVENT_TYPES: ReadonlySet<string> = new Set(
-  Object.keys(MEMORY_LIFECYCLE_EVENT_SORT_ORDER),
-);
 
 /**
  * Whole-file decrypt ceiling for encrypted state files. V8's max string length
@@ -107,8 +98,13 @@ export async function readMemoryActionEventRowsFromLines(
 
 /**
  * Validate that a parsed row carries every required lifecycle-event field.
- * Shared by the tail reader and the per-memory reader so both apply the exact
- * same fail-open guard as `readAllMemoryLifecycleEvents`.
+ * Shared by the tail reader and the per-memory reader so both apply the EXACT
+ * same fail-open guard as `readAllLifecycleEventsFromLedger` (`eventType` is any
+ * string). Governance reads via `readMemoryLifecycleEvents(MAX_SAFE_INTEGER)`
+ * must be byte-for-byte identical to `readAllMemoryLifecycleEvents`, so this
+ * MUST NOT restrict `eventType` to a handled allow-list — an unknown type is
+ * still admitted here and sorted deterministically by `lifecycleEventSortRank`
+ * (issue #1910).
  */
 function isValidLifecycleEventRow(
   parsed: Partial<MemoryLifecycleEvent>,
@@ -117,7 +113,6 @@ function isValidLifecycleEventRow(
     typeof parsed.eventId === "string" &&
     typeof parsed.memoryId === "string" &&
     typeof parsed.eventType === "string" &&
-    HANDLED_LIFECYCLE_EVENT_TYPES.has(parsed.eventType) &&
     typeof parsed.timestamp === "string" &&
     typeof parsed.actor === "string" &&
     typeof parsed.ruleVersion === "string"

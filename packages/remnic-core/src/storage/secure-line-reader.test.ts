@@ -46,17 +46,22 @@ test("readMemoryLifecycleEventsFromLines skips malformed/blank rows fail-open an
   assert.deepEqual(await readMemoryLifecycleEventsFromLines(fromArray(rows), 0), []);
 });
 
-test("readMemoryLifecycleEventsFromLines rejects rows with an unhandled eventType (issue #1910)", async () => {
+test("readMemoryLifecycleEventsFromLines admits any structurally valid eventType (readAll parity, issue #1910)", async () => {
+  const unknown = { eventId: "bad", memoryId: "m", eventType: "exploded", timestamp: "2026-01-01T00:00:00.000Z", actor: "test", ruleVersion: "1" };
+  const empty = { eventId: "empty", memoryId: "m", eventType: "", timestamp: "2026-01-02T00:00:00.000Z", actor: "test", ruleVersion: "1" };
   const rows = [
-    // Structurally complete but eventType is not in the handled allow-list.
-    JSON.stringify({ eventId: "bad", memoryId: "m", eventType: "exploded", timestamp: "2026-01-01T00:00:00.000Z", actor: "test", ruleVersion: "1" }),
-    // eventType present but empty string — also unhandled.
-    JSON.stringify({ eventId: "empty", memoryId: "m", eventType: "", timestamp: "2026-01-02T00:00:00.000Z", actor: "test", ruleVersion: "1" }),
+    // Unknown/typoed and empty-string eventTypes are structurally valid, so the
+    // bounded governance read MUST keep them — it has to match readAll, which
+    // admits any string eventType. Only genuinely malformed rows are dropped.
+    JSON.stringify(unknown),
+    JSON.stringify(empty),
     JSON.stringify(event("keep", "m", "2026-01-03T00:00:00.000Z")),
   ];
-  assert.deepEqual(await readMemoryLifecycleEventsFromLines(fromArray(rows), 5), [
-    event("keep", "m", "2026-01-03T00:00:00.000Z"),
-  ]);
+  const kept = await readMemoryLifecycleEventsFromLines(fromArray(rows), 5);
+  assert.deepEqual(
+    kept.map((e) => e.eventId).sort(),
+    ["bad", "empty", "keep"],
+  );
 });
 
 test("readMemoryLifecycleEventsFromLines filters by memoryId when provided", async () => {

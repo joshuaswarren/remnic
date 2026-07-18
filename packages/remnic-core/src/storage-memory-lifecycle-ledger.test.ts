@@ -100,6 +100,35 @@ test("readMemoryLifecycleEvents(MAX_SAFE_INTEGER) equals readAllMemoryLifecycleE
   });
 });
 
+test("readMemoryLifecycleEvents(MAX_SAFE_INTEGER) admits unknown eventTypes exactly like readAll", async () => {
+  const known = lifecycleEvent("event-1", "memory-a", "2026-01-01T00:00:00.000Z");
+  // Structurally valid row whose eventType is NOT in the handled sort table.
+  // readAll admits any string eventType, so the bounded governance read must
+  // too — dropping it would silently diverge the projection-rebuild scan.
+  const unknown = {
+    eventId: "event-2",
+    memoryId: "memory-a",
+    eventType: "quantum_entangled",
+    timestamp: "2026-01-02T00:00:00.000Z",
+    actor: "test",
+    ruleVersion: "1",
+  };
+
+  await withLifecycleLedger([
+    JSON.stringify(known),
+    JSON.stringify(unknown),
+  ], async (storage) => {
+    const all = await storage.readAllMemoryLifecycleEvents();
+    const capped = await storage.readMemoryLifecycleEvents(Number.MAX_SAFE_INTEGER);
+    assert.equal(all.length, 2, "readAll keeps the unknown-but-valid row");
+    assert.deepEqual(capped, all, "governance read must not drop rows readAll admits");
+    assert.ok(
+      capped.map((event) => event.eventId).includes("event-2"),
+      "unknown eventType row survives the governance read",
+    );
+  });
+});
+
 test("readMemoryLifecycleEvents tail read never triggers a whole-file secure read on plaintext", async () => {
   const rows: string[] = [];
   for (let i = 0; i < 500; i += 1) {

@@ -684,10 +684,16 @@ export class MaintenanceScheduler {
         memoryDir: target.memoryDir,
         dryRun: false,
         storage: target.storage,
+        // Background compaction must not lose append-only history that
+        // frontmatter cannot reconstruct (issue #1910) — unlike the manual
+        // CLI repair rebuild, which reconstructs purely from frontmatter.
+        preserveExistingEvents: true,
       });
       log.info(
         `lifecycle ledger auto-compacted (${target.memoryDir}): ${size}B -> `
-        + `${result.rebuiltRows} rows, backup=${result.backupPath ?? "none"}`,
+        + `${result.rebuiltRows} rows `
+        + `(${result.preservedAppendOnlyRows ?? 0} append-only preserved), `
+        + `backup=${result.backupPath ?? "none"}`,
       );
       return "compacted";
     } catch (err) {
