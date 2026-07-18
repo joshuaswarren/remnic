@@ -5635,11 +5635,17 @@ export class StorageManager {
     }
 
     const nowIso = new Date().toISOString();
+    // Collect newly-seen keys in a SEPARATE set — never mutate `existingKeys`
+    // (which may alias the cached set) before the append is durable. A failed
+    // append must leave the cached dedup set matching what is actually on disk,
+    // otherwise a retry would cache-hit a poisoned set and silently drop the
+    // events forever (issue #1909 review: pre-durability aliasing).
+    const pending = new Set<string>();
     const deduped: BehaviorSignalEvent[] = [];
     for (const event of events) {
       const key = `${event.memoryId}:${event.signalHash}`;
-      if (existingKeys.has(key)) continue;
-      existingKeys.add(key);
+      if (existingKeys.has(key) || pending.has(key)) continue;
+      pending.add(key);
       deduped.push({
         ...event,
         timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
@@ -5647,15 +5653,20 @@ export class StorageManager {
     }
 
     if (deduped.length === 0) {
-      // Nothing appended — the file identity is unchanged, so cache the set we
-      // just built (or reused) so the next append is a hit (issue #1909).
+      // Nothing appended — the file identity is unchanged and `existingKeys` was
+      // not mutated, so caching it lets the next append hit (issue #1909).
       if (identity) this.behaviorSignalsKeyCache = { identity, keys: existingKeys };
       return 0;
     }
     const payload = deduped.map((event) => `${JSON.stringify(event)}\n`).join("");
+    // May throw (I/O error, SecureStoreLockedError). If it does, we fall through
+    // to the caller WITHOUT having touched `existingKeys` or the cache, so the
+    // dropped events can be retried.
     await this.appendStorageSecureFile(this.behaviorSignalsPath, payload);
-    // Append-only maintenance (issue #1909): refresh the cache with the post-append
-    // identity so a subsequent same-process append reuses the set without a reload.
+    // Durable now: fold the new keys into the set (in place, O(new keys) — keeps
+    // the per-append win) and refresh the identity so a subsequent same-process
+    // append reuses the set without a reload.
+    for (const key of pending) existingKeys.add(key);
     try {
       const st = await stat(this.behaviorSignalsPath);
       this.behaviorSignalsKeyCache = {

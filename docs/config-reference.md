@@ -71,7 +71,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
-| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json`; `0` = save every turn |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json` on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 

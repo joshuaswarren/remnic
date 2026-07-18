@@ -48,6 +48,16 @@ export interface BufferSurpriseProbe {
 const MAX_BUFFER_ENTRY_COUNT = 200;
 
 /**
+ * Upper bound on how long a debounced buffer save may be deferred under
+ * sustained activity (issue #1909). Each new turn re-arms the trailing-edge
+ * timer, so a steady stream of turns could otherwise push the save out
+ * indefinitely and widen the crash-loss window without bound. Once a pending
+ * save has been deferred this many debounce windows, the next scheduled save
+ * forces an inline flush instead of re-arming.
+ */
+const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
+
+/**
  * Minimal data carried on the serialized telemetry write chain
  * (issue #563 PR 3).
  *
@@ -122,6 +132,10 @@ export class SmartBuffer {
    */
   private saveTimer: NodeJS.Timeout | null = null;
   private pendingSave = false;
+  /** Wall-clock ms when the currently-pending save was first scheduled (issue
+   * #1909). Null when nothing is pending. Used to bound deferral under sustained
+   * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
+  private firstPendingAtMs: number | null = null;
 
   constructor(
     private readonly config: PluginConfig,
@@ -302,16 +316,29 @@ export class SmartBuffer {
   }
 
   /**
-   * Schedule a coalesced, trailing-edge buffer save (issue #1909). Only used for
-   * the debounced (`bufferSaveDebounceMs > 0`) steady-state buffering path; the
-   * debounce-off and correctness-boundary paths save inline within the mutation
-   * (see `recordTurnUnlocked`). Marks a save pending and arms a single timer;
-   * repeated calls coalesce onto that timer's trailing edge.
+   * Schedule a coalesced, TRUE trailing-edge buffer save (issue #1909). Only
+   * used for the debounced (`bufferSaveDebounceMs > 0`) steady-state buffering
+   * path; the debounce-off and correctness-boundary paths save inline within the
+   * mutation (see `recordTurnUnlocked`). Each call re-arms the timer from now so
+   * the write lands one full window after the LAST turn, not the first. To keep
+   * sustained activity from deferring the save without bound (which would widen
+   * the crash-loss window), once a pending save has been deferred
+   * BUFFER_SAVE_MAX_DEFER_MULTIPLIER windows it is flushed inline instead of
+   * re-armed. Runs inside the record mutation, so the inline save is awaited.
    */
-  private scheduleSave(): void {
-    this.pendingSave = true;
-    if (this.saveTimer) return; // trailing-edge coalesce: a timer is already armed
+  private async scheduleSave(): Promise<void> {
     const ms = this.config.bufferSaveDebounceMs;
+    const now = Date.now();
+    this.pendingSave = true;
+    if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
+    if (now - this.firstPendingAtMs >= ms * BUFFER_SAVE_MAX_DEFER_MULTIPLIER) {
+      // Staleness cap hit: persist now rather than deferring further.
+      this.cancelScheduledSave();
+      await this.saveUnlocked();
+      return;
+    }
+    // True trailing edge: drop any armed timer and re-arm from now.
+    clearTimeout(this.saveTimer ?? undefined);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.flushPendingSave();
@@ -326,13 +353,15 @@ export class SmartBuffer {
       this.saveTimer = null;
     }
     this.pendingSave = false;
+    this.firstPendingAtMs = null;
   }
 
   /**
    * Force any pending debounced save to land now (issue #1909). Idempotent and
-   * safe to call from outside a mutation (timer tick, shutdown/dispose). Do NOT
-   * `await` this from inside a mutation — it enqueues its own mutation and would
-   * deadlock the serializer.
+   * safe to call from outside a mutation (timer tick, shutdown/dispose, or the
+   * surprise-promotion path in `addTurnWithOutcome`). Do NOT `await` this from
+   * inside a mutation — it enqueues its own mutation and would deadlock the
+   * serializer.
    */
   async flushPendingSave(): Promise<void> {
     if (this.saveTimer) {
@@ -341,6 +370,7 @@ export class SmartBuffer {
     }
     if (!this.pendingSave) return;
     this.pendingSave = false;
+    this.firstPendingAtMs = null;
     await this.enqueueMutation(async () => this.saveUnlocked());
   }
 
@@ -389,6 +419,13 @@ export class SmartBuffer {
             decision = "extract_now";
             triggered = true;
             extractionTurns = currentTurns;
+            // Issue #1909 (review): the record mutation for a `keep_buffering`
+            // turn only SCHEDULED a debounced save. Surprise now promotes it to
+            // extract_now AFTER that mutation, so force the buffer durable before
+            // the caller runs extraction — otherwise state/buffer.json lags the
+            // extracted turns by up to the debounce window on a crash. Safe to
+            // await here: we are outside the record mutation (deadlock-free).
+            await this.flushPendingSave();
           } else {
             log.debug(
               `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} ignored because buffer changed before probe resolved`,
@@ -455,7 +492,7 @@ export class SmartBuffer {
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
       // trailing-edge timer (issue #1909) instead of rewriting per turn.
-      this.scheduleSave();
+      await this.scheduleSave();
     } else {
       // Persist immediately within this mutation (awaited) when either:
       //  - the turn triggered extraction (the buffer must be durable), or

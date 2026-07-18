@@ -558,9 +558,12 @@ export class ExtractionPersistCoordinator {
               ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
               ...(options.provenance ? { provenance: options.provenance } : {}),
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
-              // #1909: skip the per-fact index flush; the orchestrator batch
-              // save (saveContentHashIndexes) at the end of persist is authoritative.
-              deferHashIndexSave: true,
+              // #1909: promotion writes keep the immediate, crash-safe index save.
+              // They do NOT register with the orchestrator batch (no
+              // addContentHashDedup call), so deferring here would drop the
+              // promoted hash on restart (fact-hashes.ready present) and re-create
+              // the promoted fact. The defer optimization stays on the main-path
+              // fact writes whose hashes the batch save demonstrably covers.
             },
           );
           const promotedId = targetPromotion.id;
@@ -953,8 +956,6 @@ export class ExtractionPersistCoordinator {
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
             ...(options.provenance ? { provenance: options.provenance } : {}),
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
-            // #1909: defer the per-fact index flush to the batch save.
-            deferHashIndexSave: true,
           },
         );
         const promotedId = sharedPromotion.id;
