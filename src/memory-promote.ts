@@ -1,6 +1,7 @@
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
-import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite.js";
+import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
+import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
 
 /**
@@ -8,8 +9,6 @@ import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
  * Returns the user-facing result message.
  */
-/** Namespace names: bounded, path-safe (no separators/traversal). */
-const SAFE_NAMESPACE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
 export async function executeMemoryPromote(
@@ -24,11 +23,14 @@ export async function executeMemoryPromote(
   if (typeof memoryId !== "string" || !SAFE_MEMORY_ID_RE.test(memoryId)) {
     return `Invalid memoryId: ${JSON.stringify(memoryId)} — expected a filename-safe id like fact-123.`;
   }
+  // Namespace validation reuses the SAME contract as core routing
+  // (isSafeRouteNamespace), so every namespace core accepts is accepted
+  // here too — `_team`, `.team`, `-team` are valid (round-3 finding).
   for (const [name, value] of [
     ["fromNamespace", fromNamespace],
     ["toNamespace", toNamespace],
   ] as const) {
-    if (value !== undefined && !SAFE_NAMESPACE_RE.test(value)) {
+    if (value !== undefined && !isSafeRouteNamespace(value)) {
       return `Invalid ${name}: ${JSON.stringify(value)} — expected a path-safe namespace name.`;
     }
   }
