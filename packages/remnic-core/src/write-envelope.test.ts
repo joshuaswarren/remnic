@@ -558,3 +558,46 @@ test("strict envelopes carry empty salvageNotes", () => {
   const env = composeMemoryEnvelope(minimalInput(), CTX);
   assert.deepEqual([...env.salvageNotes], []);
 });
+
+test("structural fallback rejects frozen lookalikes that violate composer invariants (round 9)", () => {
+  const real = composeMemoryEnvelope(minimalInput(), CTX);
+  const clone = JSON.parse(JSON.stringify(real)) as Record<string, unknown>;
+
+  // 51 tags — a shape-valid forgery that must NOT pass the seal check.
+  const overTagged = Object.freeze({
+    ...clone,
+    tags: Array.from({ length: 51 }, (_, i) => `t${i}`),
+  });
+  assert.equal(isSealedMemoryEnvelope(overTagged), false, "51-tag lookalike must be rejected");
+
+  // Out-of-range confidence.
+  const badConfidence = Object.freeze({ ...clone, confidence: 1.7 });
+  assert.equal(isSealedMemoryEnvelope(badConfidence), false, "confidence 1.7 must be rejected");
+
+  // Untrimmed optional string the composer would never emit.
+  const untrimmed = Object.freeze({ ...clone, entityRef: "  padded  " });
+  assert.equal(isSealedMemoryEnvelope(untrimmed), false, "untrimmed entityRef must be rejected");
+
+  // Garbage composedAt.
+  const badComposedAt = Object.freeze({ ...clone, composedAt: "not-a-timestamp" });
+  assert.equal(isSealedMemoryEnvelope(badComposedAt), false, "invalid composedAt must be rejected");
+
+  // The unmodified faithful clone still passes (cross-graph acceptance).
+  assert.equal(isSealedMemoryEnvelope(Object.freeze({ ...clone })), true, "faithful clone must pass");
+});
+
+test("salvage keeps persisted body, attributes, and notes mutually consistent (round 9)", () => {
+  // Duplicate canonical key: "State" and "state" collide after trim+lowercase.
+  const env = composeMemoryEnvelope(
+    minimalInput({ structuredAttributes: { State: "old", state: "new" } }),
+    CTX,
+    { salvage: true },
+  );
+  // First entry survives; the duplicate is dropped WITH a note.
+  assert.deepEqual(env.structuredAttributes, { state: "old" });
+  assert.deepEqual(env.rawStructuredAttributes, { State: "old" });
+  assert.ok(env.salvageNotes.some((n) => n.includes("duplicate key")), env.salvageNotes.join(" | "));
+  // The persisted body carries ONLY the surviving attribute — downstream
+  // dedup hashes and supersession keys must describe this exact form.
+  assert.equal(env.persistedBody, "User prefers dark mode\n[Attributes: state: old]");
+});

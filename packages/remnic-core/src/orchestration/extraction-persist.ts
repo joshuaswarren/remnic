@@ -477,17 +477,42 @@ export class ExtractionPersistCoordinator {
           : options.content;
       const citedContent = applyInlineCitation(rawContent);
       const sanitizedBase = sanitizeMemoryContent(rawContent);
-      const dedupContent =
-        options.category === "fact" &&
-        options.structuredAttributes &&
-        Object.keys(options.structuredAttributes).length > 0
-          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(options.structuredAttributes)}]`
-          : sanitizedBase.text;
       for (const target of targets) {
         if (!target.namespace) continue;
         try {
           const targetStorage = await this.deps.getStorageRouter().storageFor(target.namespace);
           if (targetStorage.dir === options.sourceStorage.dir) continue;
+          // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may
+          // drop or clamp attributes, and the dedup hash, contentHashSource,
+          // and supersession keys below must all describe the SURVIVING
+          // fields that writeSealedMemory actually persists.
+          const targetPromotionEnvelope = composeMemoryEnvelope(
+            {
+              content: citedContent,
+              category: options.category as MemoryCategory,
+              confidence: options.confidence,
+              tags: [...options.tags, `${target.target}-promotion`],
+              entityRef: options.entityRef,
+              structuredAttributes: options.structuredAttributes,
+              validAt: options.validAt,
+              ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+            },
+            { source: `${options.source}-${target.target}-promotion` },
+            // Machine-generated input: salvage invalid optional fields instead
+            // of aborting the whole extraction batch (#2014; rule 34 — drops
+            // are recorded on salvageNotes and logged here).
+            { salvage: true },
+          );
+          if (targetPromotionEnvelope.salvageNotes.length > 0) {
+            log.warn(`extraction write salvaged invalid fields: ${targetPromotionEnvelope.salvageNotes.join("; ")}`);
+          }
+          const targetSurvivingAttrs = targetPromotionEnvelope.rawStructuredAttributes;
+          const dedupContent =
+            options.category === "fact" &&
+            targetSurvivingAttrs &&
+            Object.keys(targetSurvivingAttrs).length > 0
+              ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs({ ...targetSurvivingAttrs })}]`
+              : sanitizedBase.text;
           if (
             options.category === "fact" &&
             (await targetStorage.hasFactContentHash(dedupContent))
@@ -536,28 +561,7 @@ export class ExtractionPersistCoordinator {
             }
           }
           // Sealed-envelope write (issue #1989 PR2): cross-cutting fields ride
-          // the composed envelope; per-write extras stay explicit.
-          const targetPromotionEnvelope = composeMemoryEnvelope(
-            {
-              content: citedContent,
-              category: options.category as MemoryCategory,
-              confidence: options.confidence,
-              tags: [...options.tags, `${target.target}-promotion`],
-              entityRef: options.entityRef,
-              structuredAttributes: options.structuredAttributes,
-              validAt: options.validAt,
-              ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
-            },
-            { source: `${options.source}-${target.target}-promotion` },
-          
-            // Machine-generated input: salvage invalid optional fields instead of
-            // aborting the whole extraction batch (#2014 review round; rule 34 —
-            // drops are recorded on salvageNotes and logged below).
-            { salvage: true },
-);
-          if (targetPromotionEnvelope.salvageNotes.length > 0) {
-            log.warn(`extraction write salvaged invalid fields: ${targetPromotionEnvelope.salvageNotes.join("; ")}`);
-          }
+          // the composed envelope (built above, before the dedup gate).
           const targetPromotion = await targetStorage.writeSealedMemory(targetPromotionEnvelope, {
             importance: options.importance,
             lineage: [options.sourceMemoryId],
@@ -581,16 +585,16 @@ export class ExtractionPersistCoordinator {
             !targetPromotion.tombstoneBlocked &&
             lifecycleCaps.temporalSupersession &&
             options.category === "fact" &&
-            options.entityRef &&
-            options.structuredAttributes &&
-            Object.keys(options.structuredAttributes).length > 0
+            targetPromotionEnvelope.entityRef &&
+            targetSurvivingAttrs &&
+            Object.keys(targetSurvivingAttrs).length > 0
           ) {
             try {
               await applyTemporalSupersession({
                 storage: targetStorage,
                 newMemoryId: promotedId,
-                entityRef: options.entityRef,
-                structuredAttributes: options.structuredAttributes,
+                entityRef: targetPromotionEnvelope.entityRef,
+                structuredAttributes: { ...targetSurvivingAttrs },
                 createdAt: supersessionOrderingAt(options.validAt),
                 enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
               });
@@ -707,11 +711,36 @@ export class ExtractionPersistCoordinator {
             : options.content;
         const citedContent = applyInlineCitation(rawContent);
         const sanitizedBase = sanitizeMemoryContent(rawContent);
+        // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may drop
+        // or clamp attributes, and the dedup hash, contentHashSource, and
+        // supersession keys below must all describe the SURVIVING fields that
+        // writeSealedMemory actually persists — never the raw extractor map.
+        const sharedPromotionEnvelope = composeMemoryEnvelope(
+          {
+            content: citedContent,
+            category: options.category as MemoryCategory,
+            confidence: options.confidence,
+            tags: [...options.tags, "shared-promotion"],
+            entityRef: options.entityRef,
+            structuredAttributes: options.structuredAttributes,
+            validAt: options.validAt,
+            ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+          },
+          { source: `${options.source}-shared-promotion` },
+          // Machine-generated input: salvage invalid optional fields instead of
+          // aborting the whole extraction batch (#2014; rule 34 — drops are
+          // recorded on salvageNotes and logged here).
+          { salvage: true },
+        );
+        if (sharedPromotionEnvelope.salvageNotes.length > 0) {
+          log.warn(`extraction write salvaged invalid fields: ${sharedPromotionEnvelope.salvageNotes.join("; ")}`);
+        }
+        const sharedSurvivingAttrs = sharedPromotionEnvelope.rawStructuredAttributes;
         const dedupContent =
           options.category === "fact" &&
-          options.structuredAttributes &&
-          Object.keys(options.structuredAttributes).length > 0
-            ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(options.structuredAttributes)}]`
+          sharedSurvivingAttrs &&
+          Object.keys(sharedSurvivingAttrs).length > 0
+            ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs({ ...sharedSurvivingAttrs })}]`
             : sanitizedBase.text;
         if (
           options.category === "fact" &&
@@ -781,9 +810,9 @@ export class ExtractionPersistCoordinator {
           // step — if the lookup fails we skip silently (same as the normal path).
           if (
             lifecycleCaps.temporalSupersession &&
-            options.entityRef &&
-            options.structuredAttributes &&
-            Object.keys(options.structuredAttributes).length > 0
+            sharedPromotionEnvelope.entityRef &&
+            sharedSurvivingAttrs &&
+            Object.keys(sharedSurvivingAttrs).length > 0
           ) {
             // PR #402 round-7 (Fix #2 / Codex P1 PRRT_kwDORJXyws56VALC):
             // Track whether matchingFact lookup completed before the try block
@@ -809,7 +838,7 @@ export class ExtractionPersistCoordinator {
               // supersession to that entity's record and corrupt its
               // `supersededBy` links.  Only consider facts whose normalized
               // `entityRef` matches the incoming entity.
-              const incomingEntityNorm = normalizeSupersessionKey(options.entityRef);
+              const incomingEntityNorm = normalizeSupersessionKey(sharedPromotionEnvelope.entityRef);
               hashDedupMatchingFact = allShared.find((m) => {
                 if (m.frontmatter.category !== "fact") return false;
                 if ((m.frontmatter.status ?? "active") !== "active") return false;
@@ -853,8 +882,8 @@ export class ExtractionPersistCoordinator {
                 const hashDedupSupersession = await applyTemporalSupersession({
                   storage: sharedStorage,
                   newMemoryId: hashDedupMatchingFact.frontmatter.id,
-                  entityRef: options.entityRef,
-                  structuredAttributes: options.structuredAttributes,
+                  entityRef: sharedPromotionEnvelope.entityRef,
+                  structuredAttributes: { ...sharedSurvivingAttrs },
                   createdAt: supersessionOrderingAt(options.validAt),
                   enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
                   useCallerTimestamp: true,
@@ -938,27 +967,6 @@ export class ExtractionPersistCoordinator {
             // No same-connector active shared fact — fall through to write.
           }
         }
-        const sharedPromotionEnvelope = composeMemoryEnvelope(
-          {
-            content: citedContent,
-            category: options.category as MemoryCategory,
-            confidence: options.confidence,
-            tags: [...options.tags, "shared-promotion"],
-            entityRef: options.entityRef,
-            structuredAttributes: options.structuredAttributes,
-            validAt: options.validAt,
-            ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
-          },
-          { source: `${options.source}-shared-promotion` },
-        
-          // Machine-generated input: salvage invalid optional fields instead of
-          // aborting the whole extraction batch (#2014 review round; rule 34 —
-          // drops are recorded on salvageNotes and logged below).
-          { salvage: true },
-);
-        if (sharedPromotionEnvelope.salvageNotes.length > 0) {
-          log.warn(`extraction write salvaged invalid fields: ${sharedPromotionEnvelope.salvageNotes.join("; ")}`);
-        }
         const sharedPromotion = await sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
           importance: options.importance,
           lineage: [options.sourceMemoryId],
@@ -988,16 +996,16 @@ export class ExtractionPersistCoordinator {
         if (
           !sharedPromotion.tombstoneBlocked &&
           lifecycleCaps.temporalSupersession &&
-          options.entityRef &&
-          options.structuredAttributes &&
-          Object.keys(options.structuredAttributes).length > 0
+          sharedPromotionEnvelope.entityRef &&
+          sharedSurvivingAttrs &&
+          Object.keys(sharedSurvivingAttrs).length > 0
         ) {
           try {
             await applyTemporalSupersession({
               storage: sharedStorage,
               newMemoryId: promotedId,
-              entityRef: options.entityRef,
-              structuredAttributes: options.structuredAttributes,
+              entityRef: sharedPromotionEnvelope.entityRef,
+              structuredAttributes: { ...sharedSurvivingAttrs },
               createdAt: supersessionOrderingAt(options.validAt),
               enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
             });
@@ -2338,15 +2346,15 @@ export class ExtractionPersistCoordinator {
           // must NOT retire older active memories.
           if (!postWriteGuard) {
             try {
-              const supersessionEntityRef =
-                typeof (fact as any).entityRef === "string"
-                  ? ((fact as any).entityRef as string)
-                  : undefined;
+              // #2014 round 2: same envelope-surviving key rule as the
+              // non-chunked path.
               await applyTemporalSupersession({
                 storage: targetStorage,
                 newMemoryId: parentId,
-                entityRef: supersessionEntityRef,
-                structuredAttributes: fact.structuredAttributes,
+                entityRef: parentWriteEnvelope.entityRef,
+                structuredAttributes: parentWriteEnvelope.rawStructuredAttributes
+                  ? { ...parentWriteEnvelope.rawStructuredAttributes }
+                  : undefined,
                 createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
                 // #1578 r3: an extracted end-only bound (validFrom absent) is
                 // historical, not a new authoritative state — never let it
@@ -2614,15 +2622,16 @@ export class ExtractionPersistCoordinator {
       // the review queue must NOT retire older active memories.
       if (!postWriteGuard) {
         try {
-          const supersessionEntityRef =
-            typeof (fact as any).entityRef === "string"
-              ? ((fact as any).entityRef as string)
-              : undefined;
+          // #2014 round 2: key supersession on the envelope's SURVIVING
+          // fields — salvage may have dropped attributes that must not
+          // retire older facts the persisted copy does not actually contest.
           await applyTemporalSupersession({
             storage: targetStorage,
             newMemoryId: memoryId,
-            entityRef: supersessionEntityRef,
-            structuredAttributes: fact.structuredAttributes,
+            entityRef: factWriteEnvelope.entityRef,
+            structuredAttributes: factWriteEnvelope.rawStructuredAttributes
+              ? { ...factWriteEnvelope.rawStructuredAttributes }
+              : undefined,
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
             enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
