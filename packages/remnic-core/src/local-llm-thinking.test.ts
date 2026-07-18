@@ -18,6 +18,7 @@ function createConfig(): PluginConfig {
     localLlm400TripThreshold: 3,
     localLlm400CooldownMs: 60_000,
     debug: false,
+    localLlmReasoningEffort: "none",
     slowLogEnabled: false,
     slowLogThresholdMs: 1_000,
   } as unknown as PluginConfig;
@@ -255,7 +256,7 @@ test("disableThinking fails open for generic backend — no kwarg sent (#548 Cod
   );
 });
 
-test("disableThinking fails open for ollama backend — no kwarg sent", async () => {
+test("ollama backend: suppression injects reasoning_effort, never chat_template_kwargs (#1996)", async () => {
   const client = new LocalLlmClient(createConfig());
   primeClient(client, { thinking: true, detected: "ollama" });
   const { restore, bodies } = captureFetchBodies();
@@ -265,6 +266,59 @@ test("disableThinking fails open for ollama backend — no kwarg sent", async ()
     restore();
   }
   assert.equal("chat_template_kwargs" in (bodies[0] ?? {}), false);
+  assert.equal(bodies[0]?.reasoning_effort, "none");
+});
+
+test("ollama backend: non-suppressed operation gets no reasoning_effort (#1996)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "ollama" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "consolidation");
+  } finally {
+    restore();
+  }
+  assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
+});
+
+test("ollama backend: empty localLlmReasoningEffort disables injection (#1996)", async () => {
+  const config = { ...createConfig(), localLlmReasoningEffort: "" } as PluginConfig;
+  const client = new LocalLlmClient(config);
+  primeClient(client, { thinking: true, detected: "ollama" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client);
+  } finally {
+    restore();
+  }
+  assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
+  assert.equal("chat_template_kwargs" in (bodies[0] ?? {}), false);
+});
+
+test("ollama backend: configured effort value is passed through (#1996)", async () => {
+  const config = { ...createConfig(), localLlmReasoningEffort: "low" } as PluginConfig;
+  const client = new LocalLlmClient(config);
+  primeClient(client, { thinking: true, detected: "ollama" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client);
+  } finally {
+    restore();
+  }
+  assert.equal(bodies[0]?.reasoning_effort, "low");
+});
+
+test("lmstudio backend never receives reasoning_effort (#1996)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client);
+  } finally {
+    restore();
+  }
+  assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
 });
 
 test("disableThinking fails open when backend is undetected (null)", async () => {
