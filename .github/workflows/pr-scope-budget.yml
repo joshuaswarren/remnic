@@ -48,8 +48,20 @@ jobs:
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number, per_page: 100,
             });
+            // GitHub truncates listFiles at 3,000 files even when paginated.
+            // A budget check scoring a truncated list could pass on omitted
+            // core files — fail-safe for a limiter is to FAIL loudly
+            // (review finding on #2003 round 3).
+            const reportedChangedFiles = context.payload.pull_request.changed_files;
+            if (typeof reportedChangedFiles === 'number' && reportedChangedFiles !== files.length) {
+              core.setFailed(
+                `PR file list is incomplete (${files.length} fetched, API reports ${reportedChangedFiles}) — the scope budget cannot be measured. Split the PR below GitHub's 3,000-file listing cap.`,
+              );
+              return;
+            }
             fs.writeFileSync('/tmp/pr-files.json', JSON.stringify(files.map((f) => ({
               filename: f.filename, additions: f.additions, deletions: f.deletions, status: f.status,
+              previous_filename: f.previous_filename,
             }))));
 
             // Labels fetched FRESH (payload labels are stale on synchronize).

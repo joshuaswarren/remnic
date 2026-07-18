@@ -131,3 +131,22 @@ test("every core prefix is a real repo directory shape", () => {
     assert.ok(!prefix.startsWith("/"), `${prefix} must be repo-relative`);
   }
 });
+
+test("renames out of core paths still count against the budget (round 3)", () => {
+  const patterns = parseIgnoreManifest("gen/\n");
+  const result = evaluateScopeBudget({
+    files: [
+      // Core file renamed into an ignored artifact dir: counts.
+      { filename: "gen/parked.json", previous_filename: "packages/remnic-core/src/old.ts", additions: 900, deletions: 900 },
+      // Core file renamed into a non-core docs path: counts.
+      { filename: "docs/moved.md", previous_filename: "src/tools.ts", additions: 0, deletions: 100 },
+      // Pure artifact shuffle: does not count.
+      { filename: "gen/b.json", previous_filename: "gen/a.json", additions: 5000, deletions: 0 },
+    ],
+    labels: [],
+    thresholds: { warnLines: 1500, failLines: 4000 },
+    ignorePatterns: patterns,
+  });
+  assert.equal(result.coreLines, 1900);
+  assert.equal(result.verdict, "warn");
+});

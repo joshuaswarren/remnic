@@ -78,13 +78,23 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns 
 
   let coreLines = 0;
   const coreFiles = [];
+  const countsAgainstBudget = (candidate) =>
+    typeof candidate === "string" &&
+    candidate.length > 0 &&
+    !isIgnoredPath(candidate, ignorePatterns) &&
+    CORE_PATH_PREFIXES.some((prefix) => candidate.startsWith(prefix));
   for (const file of files) {
     const filename = file?.filename;
     if (typeof filename !== "string" || filename.length === 0) {
       throw new Error(`evaluateScopeBudget: file entry has no filename: ${JSON.stringify(file)}`);
     }
-    if (isIgnoredPath(filename, ignorePatterns)) continue;
-    if (!CORE_PATH_PREFIXES.some((prefix) => filename.startsWith(prefix))) continue;
+    // Renames: count when EITHER side is a non-ignored core path — a core
+    // file renamed into a non-core or ignored destination still changed core
+    // (review finding on #2003 round 3; mirrors splitEffectiveDiff's rule).
+    const previous = typeof file?.previous_filename === "string" ? file.previous_filename : null;
+    if (!countsAgainstBudget(filename) && !(previous !== null && countsAgainstBudget(previous))) {
+      continue;
+    }
     const additions = Number.isInteger(file.additions) ? file.additions : 0;
     const deletions = Number.isInteger(file.deletions) ? file.deletions : 0;
     coreLines += additions + deletions;
