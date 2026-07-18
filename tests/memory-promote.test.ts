@@ -57,12 +57,14 @@ test("memory promotion looks up legacy IDs longer than the filename grammar", as
 test("memory promotion preserves provenance tags before source tags", async () => {
   let promotedTags: readonly string[] | undefined;
   let promotedAttributes: Readonly<Record<string, string>> | undefined;
+  let promotedContent: string | undefined;
   const sourceMemory = {
-    content: "Synthetic source memory",
+    content: "Synthetic source memory\n[Attributes: locationCity=Austin]",
     frontmatter: {
       category: "fact",
       confidence: 0.8,
       tags: Array.from({ length: 50 }, (_, index) => `source-${index}`),
+      structuredAttributes: { locationCity: "Austin" },
     },
   };
   const sourceStorage = {
@@ -70,9 +72,11 @@ test("memory promotion preserves provenance tags before source tags", async () =
   };
   const destinationStorage = {
     writeSealedMemory: async (envelope: {
+      content: string;
       tags: readonly string[];
       rawStructuredAttributes?: Readonly<Record<string, string>>;
     }) => {
+      promotedContent = envelope.content;
       promotedTags = envelope.tags;
       promotedAttributes = envelope.rawStructuredAttributes;
       return { id: "promoted-1", tombstoneBlocked: false };
@@ -93,6 +97,7 @@ test("memory promotion preserves provenance tags before source tags", async () =
     memoryId: "fact-42",
     note: "reviewed",
   });
+  assert.equal(promotedContent, "Synthetic source memory");
 
   assert.equal(result, "Promoted default:fact-42 → shared:promoted-1");
   assert.deepEqual(promotedTags?.slice(0, 3), [

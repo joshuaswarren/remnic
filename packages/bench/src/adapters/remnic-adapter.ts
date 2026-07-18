@@ -25,6 +25,7 @@ import {
   buildExplicitCueRecallSection,
   buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
+  composeMemoryEnvelope,
   EngramAccessService,
   expandTildePath,
   normalizeTurnExpansionEnd,
@@ -1342,30 +1343,45 @@ async function withBenchCoreMemorySource(
   sessionId: string,
   task: () => Promise<void>,
 ): Promise<void> {
-  type BenchWriteMemory = Orchestrator["storage"]["writeMemory"];
-  const storage = orchestrator.storage as unknown as { writeMemory: BenchWriteMemory };
-  const originalWriteMemory = storage.writeMemory;
-  const writeMemory = originalWriteMemory.bind(orchestrator.storage);
+  type BenchSealedWrite = Orchestrator["storage"]["writeSealedMemory"];
+  const storage = orchestrator.storage as unknown as {
+    writeSealedMemory: BenchSealedWrite;
+  };
+  const originalWriteSealedMemory = storage.writeSealedMemory;
   const source = benchCoreMemorySource(sessionId);
 
-  storage.writeMemory = async (
-    ...args: Parameters<BenchWriteMemory>
-  ): ReturnType<BenchWriteMemory> => {
-    const [category, content, options] = args;
-    const requestedSource = options?.source;
-    return writeMemory(category, content, {
-      ...(options ?? {}),
-      source:
-        !requestedSource || requestedSource === "extraction"
-          ? source
-          : requestedSource,
-    });
+  storage.writeSealedMemory = async (envelope, extras) => {
+    const requestedSource = envelope.source;
+    const sourcedEnvelope = composeMemoryEnvelope(
+      {
+        content: envelope.content,
+        category: envelope.category,
+        tags: [...envelope.tags],
+        structuredAttributes: envelope.rawStructuredAttributes
+          ? { ...envelope.rawStructuredAttributes }
+          : undefined,
+        entityRef: envelope.entityRef,
+        confidence: envelope.confidence,
+        ttl: envelope.ttl,
+        validAt: envelope.validAt,
+        sourceConnector: envelope.sourceConnector,
+        sourceReason: envelope.sourceReason,
+      },
+      {
+        source:
+          !requestedSource || requestedSource === "extraction"
+            ? source
+            : requestedSource,
+        now: () => new Date(envelope.composedAt),
+      },
+    );
+    return originalWriteSealedMemory(sourcedEnvelope, extras);
   };
 
   try {
     await task();
   } finally {
-    storage.writeMemory = originalWriteMemory;
+    storage.writeSealedMemory = originalWriteSealedMemory;
   }
 }
 

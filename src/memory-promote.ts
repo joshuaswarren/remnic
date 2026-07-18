@@ -5,6 +5,7 @@ import {
   STRUCTURED_ATTRIBUTE_LIMITS,
   TAG_LIMITS,
 } from "@remnic/core/write-envelope";
+import { stripAttributesSuffix } from "@remnic/core/storage";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
@@ -86,7 +87,7 @@ export async function executeMemoryPromote(
   const promoteEnvelope = composeSalvagedEnvelope(
     "promote",
     {
-      content: mem.content,
+      content: stripAttributesSuffix(mem.content),
       category: mem.frontmatter.category,
       confidence: mem.frontmatter.confidence,
       tags: (() => {
