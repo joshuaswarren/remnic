@@ -3,27 +3,27 @@
     "role": "resolver",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72cd-ef56-72f3-92e8-4eef8bcdc8e4",
+    "threadId": "019f72e9-fae9-73f2-acc3-0f0c61862a9f",
     "promptSha256": "8a1e0b3042ae90ccab4f4b4931aa7c30806d62852febe15d23f8b8fafe3e5eb7",
-    "outputSha256": "f41c11e658b8c7dc661965017f3bbdbf99df007beca1130dce83b5a5d14c3033",
+    "outputSha256": "a035dc41e911bb2157cca62792138f293b713418af896f7a242d7b997ef7c731",
     "exitCode": 0,
-    "durationMs": 15335,
+    "durationMs": 29209,
     "usage": {
-      "inputTokens": 38972,
+      "inputTokens": 37953,
       "cachedInputTokens": 26880,
-      "outputTokens": 538,
-      "reasoningOutputTokens": 64
+      "outputTokens": 492,
+      "reasoningOutputTokens": 67
     },
     "recallToolCalls": 0,
     "status": "completed"
   },
   "output": {
-    "replacement_decision": "Use one checkout token per session: mint on the first request, reuse it for ordinary retries while valid, and mint exactly one replacement only after explicit expiry.",
-    "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+    "replacement_decision": "Own one checkout token per session: mint on the first request, reuse it for ordinary retries while valid, and mint exactly one replacement only after explicit expiry.",
+    "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
     "source_locators": [
-      "CONTRACT.md:3-12",
-      "src/reference-token-policy.mjs:1-8",
-      "test/token-policy.contract.test.mjs:6-28"
+      "CONTRACT.md",
+      "src/reference-token-policy.mjs",
+      "test/token-policy.contract.test.mjs"
     ],
     "confidence": 0.99
   }

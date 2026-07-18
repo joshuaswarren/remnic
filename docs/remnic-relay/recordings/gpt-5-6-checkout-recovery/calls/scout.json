@@ -3,27 +3,27 @@
     "role": "scout",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72cc-ff2b-75b0-ae50-42705ec5b121",
+    "threadId": "019f72e9-541e-71b2-9bb0-32b406ad20a5",
     "promptSha256": "dc958c535786ae607756f01347abc572c34df1e518f3c39e985ce7f17ef808e2",
-    "outputSha256": "d5aab450d79bd9f92366710bf92387d8de0d766cb617d42198df0d5a07360991",
+    "outputSha256": "1535f089e56b03a5d3912090718bbdd0dbe0f3f283f99aaeae4c7424aeb705ec",
     "exitCode": 0,
-    "durationMs": 14380,
+    "durationMs": 13158,
     "usage": {
-      "inputTokens": 37628,
-      "cachedInputTokens": 26368,
-      "outputTokens": 520,
-      "reasoningOutputTokens": 66
+      "inputTokens": 28527,
+      "cachedInputTokens": 17408,
+      "outputTokens": 484,
+      "reasoningOutputTokens": 88
     },
     "recallToolCalls": 0,
     "status": "completed"
   },
   "output": {
-    "decision": "Checkout owns one token per session: mint on the first request; reuse it for ordinary retries while valid; after explicit expiry mint exactly one replacement, then reuse that replacement. Do not rotate tokens on ordinary retries.",
-    "rationale": "`CONTRACT.md` is explicitly marked \"accepted and authoritative.\" Its lifecycle is implemented by returning `currentToken` unless it is absent or `tokenExpired === true`, in which case a token is minted. The contract tests verify one mint across a valid retry and one replacement mint after expiry followed by reuse.",
+    "decision": "One checkout-session token is minted on the first request and reused for ordinary retries while valid; after explicit expiry, the next request mints exactly one replacement, then retries reuse that replacement. Rotating a token on every request is unsupported because it breaks idempotency.",
+    "rationale": "CONTRACT.md is marked “accepted and authoritative.” The reference implementation returns the current token unless expiry is explicitly true, otherwise minting one; contract tests assert reuse on retry and exactly one replacement after expiry.",
     "source_locators": [
-      "CONTRACT.md",
-      "src/reference-token-policy.mjs",
-      "test/token-policy.contract.test.mjs"
+      "CONTRACT.md:1-10",
+      "src/reference-token-policy.mjs:1-8",
+      "test/token-policy.contract.test.mjs:6-31"
     ],
     "confidence": 1
   }

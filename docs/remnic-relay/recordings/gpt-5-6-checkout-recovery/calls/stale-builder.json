@@ -3,25 +3,25 @@
     "role": "stale-builder",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72cd-36a1-7b30-95b3-4d42f25758be",
+    "threadId": "019f72e9-87cc-7a81-8a76-aee56d690a3a",
     "promptSha256": "ea9dd89593c31c5ef256f966dbea67716d45d41fddf8f4b431f254d1662ac20d",
-    "outputSha256": "35c68df365bea0c463abc328d077ff00dee9f9c89c3e1bfd678c80d2a2e81c1b",
+    "outputSha256": "2e9a44c3bd84383634d62e9fd6ee1036a4a94c2bf4f10f6a697b3234def5b983",
     "exitCode": 0,
-    "durationMs": 46873,
+    "durationMs": 29246,
     "usage": {
-      "inputTokens": 82885,
-      "cachedInputTokens": 69376,
-      "outputTokens": 1135,
-      "reasoningOutputTokens": 398
+      "inputTokens": 82238,
+      "cachedInputTokens": 68352,
+      "outputTokens": 998,
+      "reasoningOutputTokens": 180
     },
     "recallToolCalls": 1,
     "status": "completed"
   },
   "output": {
-    "summary": "Implemented checkout token selection and verified tests pass.",
-    "recall_memory_id": "decision-1784337464423-j5fd",
-    "recall_provenance": "Remnic recall in namespace relay-build-week returned the active shared checkout-token lifecycle decision.",
-    "decision_applied": "Mint a new checkout token for every request and every retry; never reuse the current token.",
+    "summary": "Implemented checkout token selection to mint a fresh token on every call.",
+    "recall_memory_id": "decision-1784339321285-433k",
+    "recall_provenance": "Configured Remnic recall in namespace relay-build-week returned the active shared decision for the requested query.",
+    "decision_applied": "Mint a new checkout token for every request and every retry.",
     "files_changed": [
       "src/token-policy.mjs"
     ],

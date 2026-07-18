@@ -3,18 +3,18 @@
     "phase": "before-correction",
     "status": "failed",
     "exitCode": 1,
-    "durationMs": 88,
+    "durationMs": 92,
     "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
     "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-    "outputSha256": "41578836bc6a7348a594e57f3858e9cb02abd8300ef4b701e4c8fddd0165edba"
+    "outputSha256": "a8295a93757acb74900f90db2ad9c62417af59d10ee8f7bd6c13128a7fe6ed3d"
   },
   {
     "phase": "after-correction",
     "status": "passed",
     "exitCode": 0,
-    "durationMs": 82,
+    "durationMs": 91,
     "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
     "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
-    "outputSha256": "be74d8b7921edb64c9fe4a1fc86c8a99c1346bb2a8e3bd10c70563797eeeaf04"
+    "outputSha256": "fad48e9dc85237aea296c26ed299c1e96b1854ef57e0f38a4286c6e67f720930"
   }
 ]

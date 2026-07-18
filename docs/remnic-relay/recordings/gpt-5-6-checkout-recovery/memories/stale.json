@@ -1,5 +1,5 @@
 {
-  "memoryId": "decision-1784337464423-j5fd",
+  "memoryId": "decision-1784339321285-433k",
   "decisionId": "decision-new-token-every-request",
   "status": "superseded",
   "statement": "Mint a new checkout token for every request and every retry.",

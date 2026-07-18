@@ -1,32 +1,32 @@
 {
   "schemaVersion": 2,
-  "ledgerSha256": "708dedbc959cad4d462b2dac5c162e92733c42a6271d25e50d6446e7ecdf3531",
+  "ledgerSha256": "f8482febf10d4b1c89d060c22ea990f4594ef1bbfd3d1f77420b5cb3df319607",
   "budgetUnits": 2173,
   "reserveUnits": 473,
   "plannedSpendCeilingUnits": 1700,
-  "totalSpentUnits": 21.4800875,
-  "remainingBudgetUnits": 2151.5199125,
+  "totalSpentUnits": 26.5027625,
+  "remainingBudgetUnits": 2146.4972375,
   "blocked": false,
   "run": {
-    "inputTokens": 244466,
-    "cachedInputTokens": 193536,
-    "outputTokens": 3406,
-    "reasoningOutputTokens": 921,
+    "inputTokens": 232716,
+    "cachedInputTokens": 191488,
+    "outputTokens": 3331,
+    "reasoningOutputTokens": 995,
     "calls": 4,
-    "budgetUnits": 5.669975,
+    "budgetUnits": 5.022675,
     "accountBalanceResolutionCount": 0,
     "conservativeResolutionChargeUnits": 0,
     "models": [
       {
-        "inputTokens": 244466,
-        "cachedInputTokens": 193536,
-        "outputTokens": 3406,
-        "reasoningOutputTokens": 921,
+        "inputTokens": 232716,
+        "cachedInputTokens": 191488,
+        "outputTokens": 3331,
+        "reasoningOutputTokens": 995,
         "model": "gpt-5.6-terra",
         "calls": 4,
-        "budgetUnits": 5.669975
+        "budgetUnits": 5.022675
       }
     ],
-    "id": "relay-build-week-1784337461581-e3ea1867"
+    "id": "relay-build-week-1784339318553-a489b209"
   }
 }

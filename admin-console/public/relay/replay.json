@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
-  "source": "integrity-checked Remnic Relay recording sha256:f6044bc5205e573e7f48fe1ca24be24abb80637181b7cffb9218538aed0599e6",
-  "generatedAt": "2026-07-18T01:19:39.456Z",
+  "source": "integrity-checked Remnic Relay recording sha256:c8badcb3edd028e604ae48c3104aa340e35caa310f2fcb113f25c65418976bd9",
+  "generatedAt": "2026-07-18T01:50:29.567Z",
   "missionId": "checkout-token-recovery",
   "namespace": "relay-build-week",
   "initialFrameId": "conflict",
@@ -21,7 +21,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [],
@@ -50,12 +50,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -91,7 +91,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -105,7 +105,7 @@
             ],
             "outputs": [],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:44.442Z"
+            "lastSeenAt": "2026-07-18T01:48:41.299Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -117,7 +117,7 @@
             ],
             "outputs": [],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:44.448Z"
+            "lastSeenAt": "2026-07-18T01:48:41.302Z"
           }
         ],
         "decisions": [],
@@ -145,12 +145,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -170,12 +170,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -197,12 +197,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -214,9 +214,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -240,7 +240,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -256,7 +256,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -276,7 +276,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -290,7 +290,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -303,7 +303,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -327,13 +327,13 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z"
+            "firstObservedAt": "2026-07-18T01:49:23.835Z"
           },
           {
             "decisionId": "decision-refresh-after-expiry",
@@ -361,7 +361,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [],
@@ -391,12 +391,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -416,12 +416,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -443,12 +443,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -460,9 +460,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -470,12 +470,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -503,12 +503,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -538,12 +538,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -564,12 +564,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -582,9 +582,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -615,7 +615,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -631,7 +631,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -651,7 +651,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -665,7 +665,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -678,7 +678,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -702,13 +702,13 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z"
+            "firstObservedAt": "2026-07-18T01:49:23.835Z"
           },
           {
             "decisionId": "decision-refresh-after-expiry",
@@ -736,7 +736,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -752,7 +752,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "open",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -804,12 +804,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -829,12 +829,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -856,12 +856,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -873,9 +873,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -883,12 +883,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -916,12 +916,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -951,12 +951,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -977,12 +977,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -995,9 +995,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -1012,12 +1012,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -1074,7 +1074,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -1090,7 +1090,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -1110,7 +1110,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -1124,7 +1124,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -1137,7 +1137,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -1161,13 +1161,13 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z"
+            "firstObservedAt": "2026-07-18T01:49:23.835Z"
           },
           {
             "decisionId": "decision-refresh-after-expiry",
@@ -1195,7 +1195,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -1211,7 +1211,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "open",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -1245,8 +1245,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -1289,12 +1289,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -1314,12 +1314,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -1341,12 +1341,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -1358,9 +1358,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -1368,12 +1368,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -1401,12 +1401,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -1436,12 +1436,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -1462,12 +1462,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -1480,9 +1480,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -1497,12 +1497,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -1543,12 +1543,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -1557,7 +1557,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -1594,7 +1594,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -1610,7 +1610,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -1630,7 +1630,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -1644,7 +1644,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -1657,7 +1657,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -1681,13 +1681,13 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z"
+            "firstObservedAt": "2026-07-18T01:49:23.835Z"
           },
           {
             "decisionId": "decision-refresh-after-expiry",
@@ -1715,7 +1715,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -1731,7 +1731,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "proposed",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -1767,10 +1767,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "proposed",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -1803,8 +1803,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -1850,12 +1850,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -1875,12 +1875,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -1902,12 +1902,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -1919,9 +1919,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -1929,12 +1929,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -1962,12 +1962,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -1997,12 +1997,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -2023,12 +2023,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -2041,9 +2041,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -2058,12 +2058,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -2104,12 +2104,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -2118,7 +2118,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -2139,12 +2139,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -2155,7 +2155,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -2200,7 +2200,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -2216,7 +2216,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -2236,7 +2236,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -2250,7 +2250,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -2263,7 +2263,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -2287,13 +2287,13 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z"
+            "firstObservedAt": "2026-07-18T01:49:23.835Z"
           },
           {
             "decisionId": "decision-refresh-after-expiry",
@@ -2321,7 +2321,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -2337,7 +2337,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "proposed",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -2373,10 +2373,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "approved",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -2407,7 +2407,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -2424,8 +2424,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -2470,12 +2470,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -2495,12 +2495,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -2522,12 +2522,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -2539,9 +2539,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -2549,12 +2549,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -2582,12 +2582,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -2617,12 +2617,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -2643,12 +2643,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -2661,9 +2661,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -2678,12 +2678,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -2724,12 +2724,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -2738,7 +2738,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -2759,12 +2759,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -2775,7 +2775,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -2804,12 +2804,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -2849,7 +2849,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -2865,7 +2865,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -2885,7 +2885,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -2899,7 +2899,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -2912,7 +2912,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -2936,6 +2936,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -2943,14 +2950,14 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z",
-            "supersededAt": "2026-07-18T01:19:01.350Z",
+            "firstObservedAt": "2026-07-18T01:49:23.835Z",
+            "supersededAt": "2026-07-18T01:49:53.232Z",
             "supersededBy": "decision-refresh-after-expiry",
             "correctionId": "correction-token-refresh"
           },
@@ -2974,6 +2981,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -2987,7 +3001,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -3003,7 +3017,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "resolved",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -3039,10 +3053,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "applied",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -3056,6 +3070,13 @@
                 "id": "approval-relay-build-week-operator",
                 "label": "Explicit human CLI approval gate",
                 "locator": "recording://approval.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
                 "capture": "at_action"
               },
               {
@@ -3080,7 +3101,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -3088,7 +3109,7 @@
             },
             "approvalNote": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
             "approvalPrincipal": "relay-build-week-operator",
-            "appliedAt": "2026-07-18T01:19:01.350Z"
+            "appliedAt": "2026-07-18T01:49:53.232Z"
           }
         ],
         "tests": [
@@ -3098,8 +3119,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -3145,12 +3166,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -3170,12 +3191,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -3197,12 +3218,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -3214,9 +3235,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -3224,12 +3245,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -3257,12 +3278,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -3292,12 +3313,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -3318,12 +3339,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -3336,9 +3357,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -3353,12 +3374,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -3399,12 +3420,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -3413,7 +3434,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -3434,12 +3455,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -3450,7 +3471,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -3479,12 +3500,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -3508,12 +3529,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-1da148ee-db84-4aa0-a51a-92e1299c77f5",
+            "eventId": "relay-2dcab940-2f08-448f-9b18-ae8aeb41bd45",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.353Z",
-            "occurredAt": "2026-07-18T01:19:01.350Z",
+            "recordedAt": "2026-07-18T01:49:53.234Z",
+            "occurredAt": "2026-07-18T01:49:53.232Z",
             "idempotencyKey": "live-012",
             "payload": {
               "kind": "decision_superseded",
@@ -3525,6 +3546,13 @@
                   "kind": "correction",
                   "id": "correction-token-refresh",
                   "label": "Applied Remnic Correction Contract supersession",
+                  "locator": "recording://correction.json",
+                  "capture": "at_action"
+                },
+                {
+                  "kind": "correction",
+                  "id": "corr-mrpplrc5-jor0t2h4",
+                  "label": "Remnic correction plan receipt",
                   "locator": "recording://correction.json",
                   "capture": "at_action"
                 }
@@ -3549,7 +3577,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -3559,18 +3587,18 @@
             "role": "Codex agent",
             "status": "working",
             "sessionIds": [
-              "session-019f72ce-2b8f-7f91-873c-03482a8bc345"
+              "session-019f72ea-6d55-74f3-93ac-c3994ad24f01"
             ],
             "outputs": [],
             "recalls": [
               {
                 "recallReceiptId": "recall-cold-builder",
-                "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+                "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
                 "decisionId": "decision-refresh-after-expiry",
                 "query": "checkout token retry policy decision",
                 "capturedAtAction": true,
                 "coldStart": true,
-                "occurredAt": "2026-07-18T01:19:39.345Z",
+                "occurredAt": "2026-07-18T01:50:29.449Z",
                 "evidence": [
                   {
                     "kind": "recall_audit",
@@ -3581,15 +3609,15 @@
                   },
                   {
                     "kind": "memory",
-                    "id": "decision-1784337541317-rihe",
+                    "id": "decision-1784339393196-f3vl",
                     "label": "Active replacement Remnic decision",
-                    "locator": "recording://memories/decision-1784337541317-rihe.json",
+                    "locator": "recording://memories/replacement.json",
                     "capture": "at_action"
                   }
                 ]
               }
             ],
-            "lastSeenAt": "2026-07-18T01:19:39.345Z"
+            "lastSeenAt": "2026-07-18T01:50:29.449Z"
           },
           {
             "agentId": "agent-scout",
@@ -3603,7 +3631,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -3623,7 +3651,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -3637,7 +3665,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -3650,7 +3678,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -3674,6 +3702,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -3681,14 +3716,14 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z",
-            "supersededAt": "2026-07-18T01:19:01.350Z",
+            "firstObservedAt": "2026-07-18T01:49:23.835Z",
+            "supersededAt": "2026-07-18T01:49:53.232Z",
             "supersededBy": "decision-refresh-after-expiry",
             "correctionId": "correction-token-refresh"
           },
@@ -3713,6 +3748,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -3726,7 +3768,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -3742,7 +3784,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "resolved",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -3778,10 +3820,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "applied",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -3795,6 +3837,13 @@
                 "id": "approval-relay-build-week-operator",
                 "label": "Explicit human CLI approval gate",
                 "locator": "recording://approval.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
                 "capture": "at_action"
               },
               {
@@ -3819,7 +3868,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -3827,7 +3876,7 @@
             },
             "approvalNote": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
             "approvalPrincipal": "relay-build-week-operator",
-            "appliedAt": "2026-07-18T01:19:01.350Z"
+            "appliedAt": "2026-07-18T01:49:53.232Z"
           }
         ],
         "tests": [
@@ -3837,8 +3886,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -3884,12 +3933,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -3909,12 +3958,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -3936,12 +3985,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -3953,9 +4002,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -3963,12 +4012,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -3996,12 +4045,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -4031,12 +4080,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -4057,12 +4106,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -4075,9 +4124,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -4092,12 +4141,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -4138,12 +4187,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -4152,7 +4201,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -4173,12 +4222,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -4189,7 +4238,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -4218,12 +4267,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -4247,12 +4296,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-1da148ee-db84-4aa0-a51a-92e1299c77f5",
+            "eventId": "relay-2dcab940-2f08-448f-9b18-ae8aeb41bd45",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.353Z",
-            "occurredAt": "2026-07-18T01:19:01.350Z",
+            "recordedAt": "2026-07-18T01:49:53.234Z",
+            "occurredAt": "2026-07-18T01:49:53.232Z",
             "idempotencyKey": "live-012",
             "payload": {
               "kind": "decision_superseded",
@@ -4266,23 +4315,30 @@
                   "label": "Applied Remnic Correction Contract supersession",
                   "locator": "recording://correction.json",
                   "capture": "at_action"
+                },
+                {
+                  "kind": "correction",
+                  "id": "corr-mrpplrc5-jor0t2h4",
+                  "label": "Remnic correction plan receipt",
+                  "locator": "recording://correction.json",
+                  "capture": "at_action"
                 }
               ]
             }
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f7366986-d628-4247-9ec3-d26493bfc7a7",
+            "eventId": "relay-839bf085-10ba-40d1-9ed0-48a0a80405a4",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.348Z",
-            "occurredAt": "2026-07-18T01:19:39.345Z",
+            "recordedAt": "2026-07-18T01:50:29.452Z",
+            "occurredAt": "2026-07-18T01:50:29.449Z",
             "idempotencyKey": "live-013",
             "payload": {
               "kind": "recall_observed",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "recallReceiptId": "recall-cold-builder",
               "decisionId": "decision-refresh-after-expiry",
               "query": "checkout token retry policy decision",
@@ -4297,9 +4353,9 @@
                 },
                 {
                   "kind": "memory",
-                  "id": "decision-1784337541317-rihe",
+                  "id": "decision-1784339393196-f3vl",
                   "label": "Active replacement Remnic decision",
-                  "locator": "recording://memories/decision-1784337541317-rihe.json",
+                  "locator": "recording://memories/replacement.json",
                   "capture": "at_action"
                 }
               ]
@@ -4323,7 +4379,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -4333,18 +4389,18 @@
             "role": "Codex agent",
             "status": "working",
             "sessionIds": [
-              "session-019f72ce-2b8f-7f91-873c-03482a8bc345"
+              "session-019f72ea-6d55-74f3-93ac-c3994ad24f01"
             ],
             "outputs": [],
             "recalls": [
               {
                 "recallReceiptId": "recall-cold-builder",
-                "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+                "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
                 "decisionId": "decision-refresh-after-expiry",
                 "query": "checkout token retry policy decision",
                 "capturedAtAction": true,
                 "coldStart": true,
-                "occurredAt": "2026-07-18T01:19:39.345Z",
+                "occurredAt": "2026-07-18T01:50:29.449Z",
                 "evidence": [
                   {
                     "kind": "recall_audit",
@@ -4355,15 +4411,15 @@
                   },
                   {
                     "kind": "memory",
-                    "id": "decision-1784337541317-rihe",
+                    "id": "decision-1784339393196-f3vl",
                     "label": "Active replacement Remnic decision",
-                    "locator": "recording://memories/decision-1784337541317-rihe.json",
+                    "locator": "recording://memories/replacement.json",
                     "capture": "at_action"
                   }
                 ]
               }
             ],
-            "lastSeenAt": "2026-07-18T01:19:39.351Z"
+            "lastSeenAt": "2026-07-18T01:50:29.453Z"
           },
           {
             "agentId": "agent-scout",
@@ -4377,7 +4433,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -4397,7 +4453,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -4411,7 +4467,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -4424,7 +4480,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -4448,6 +4504,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -4455,14 +4518,14 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z",
-            "supersededAt": "2026-07-18T01:19:01.350Z",
+            "firstObservedAt": "2026-07-18T01:49:23.835Z",
+            "supersededAt": "2026-07-18T01:49:53.232Z",
             "supersededBy": "decision-refresh-after-expiry",
             "correctionId": "correction-token-refresh"
           },
@@ -4487,6 +4550,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -4500,7 +4570,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -4516,7 +4586,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "resolved",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -4552,10 +4622,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "propagated",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -4569,6 +4639,13 @@
                 "id": "approval-relay-build-week-operator",
                 "label": "Explicit human CLI approval gate",
                 "locator": "recording://approval.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
                 "capture": "at_action"
               },
               {
@@ -4600,7 +4677,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -4608,8 +4685,8 @@
             },
             "approvalNote": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
             "approvalPrincipal": "relay-build-week-operator",
-            "appliedAt": "2026-07-18T01:19:01.350Z",
-            "propagatedAt": "2026-07-18T01:19:39.351Z"
+            "appliedAt": "2026-07-18T01:49:53.232Z",
+            "propagatedAt": "2026-07-18T01:50:29.453Z"
           }
         ],
         "tests": [
@@ -4619,8 +4696,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -4643,11 +4720,11 @@
           {
             "correctionId": "correction-token-refresh",
             "agentId": "agent-cold-builder",
-            "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+            "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
             "decisionId": "decision-refresh-after-expiry",
             "recallReceiptId": "recall-cold-builder",
             "staleDecisionAbsent": true,
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "evidence": [
               {
                 "kind": "recall_audit",
@@ -4690,12 +4767,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -4715,12 +4792,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -4742,12 +4819,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -4759,9 +4836,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -4769,12 +4846,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -4802,12 +4879,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -4837,12 +4914,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -4863,12 +4940,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -4881,9 +4958,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -4898,12 +4975,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -4944,12 +5021,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -4958,7 +5035,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -4979,12 +5056,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -4995,7 +5072,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -5024,12 +5101,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -5053,12 +5130,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-1da148ee-db84-4aa0-a51a-92e1299c77f5",
+            "eventId": "relay-2dcab940-2f08-448f-9b18-ae8aeb41bd45",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.353Z",
-            "occurredAt": "2026-07-18T01:19:01.350Z",
+            "recordedAt": "2026-07-18T01:49:53.234Z",
+            "occurredAt": "2026-07-18T01:49:53.232Z",
             "idempotencyKey": "live-012",
             "payload": {
               "kind": "decision_superseded",
@@ -5072,23 +5149,30 @@
                   "label": "Applied Remnic Correction Contract supersession",
                   "locator": "recording://correction.json",
                   "capture": "at_action"
+                },
+                {
+                  "kind": "correction",
+                  "id": "corr-mrpplrc5-jor0t2h4",
+                  "label": "Remnic correction plan receipt",
+                  "locator": "recording://correction.json",
+                  "capture": "at_action"
                 }
               ]
             }
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f7366986-d628-4247-9ec3-d26493bfc7a7",
+            "eventId": "relay-839bf085-10ba-40d1-9ed0-48a0a80405a4",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.348Z",
-            "occurredAt": "2026-07-18T01:19:39.345Z",
+            "recordedAt": "2026-07-18T01:50:29.452Z",
+            "occurredAt": "2026-07-18T01:50:29.449Z",
             "idempotencyKey": "live-013",
             "payload": {
               "kind": "recall_observed",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "recallReceiptId": "recall-cold-builder",
               "decisionId": "decision-refresh-after-expiry",
               "query": "checkout token retry policy decision",
@@ -5103,9 +5187,9 @@
                 },
                 {
                   "kind": "memory",
-                  "id": "decision-1784337541317-rihe",
+                  "id": "decision-1784339393196-f3vl",
                   "label": "Active replacement Remnic decision",
-                  "locator": "recording://memories/decision-1784337541317-rihe.json",
+                  "locator": "recording://memories/replacement.json",
                   "capture": "at_action"
                 }
               ]
@@ -5113,17 +5197,17 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-37b0fa61-1c13-4320-bb09-e148a7a11061",
+            "eventId": "relay-41fbb5f6-1401-4266-a08a-536c2fff7216",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.353Z",
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "recordedAt": "2026-07-18T01:50:29.456Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "idempotencyKey": "live-014",
             "payload": {
               "kind": "propagation_verified",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "correctionId": "correction-token-refresh",
               "decisionId": "decision-refresh-after-expiry",
               "recallReceiptId": "recall-cold-builder",
@@ -5164,7 +5248,7 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
+          "startedAt": "2026-07-18T01:48:41.293Z",
           "completedAt": null
         },
         "agents": [
@@ -5174,18 +5258,18 @@
             "role": "Codex agent",
             "status": "working",
             "sessionIds": [
-              "session-019f72ce-2b8f-7f91-873c-03482a8bc345"
+              "session-019f72ea-6d55-74f3-93ac-c3994ad24f01"
             ],
             "outputs": [],
             "recalls": [
               {
                 "recallReceiptId": "recall-cold-builder",
-                "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+                "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
                 "decisionId": "decision-refresh-after-expiry",
                 "query": "checkout token retry policy decision",
                 "capturedAtAction": true,
                 "coldStart": true,
-                "occurredAt": "2026-07-18T01:19:39.345Z",
+                "occurredAt": "2026-07-18T01:50:29.449Z",
                 "evidence": [
                   {
                     "kind": "recall_audit",
@@ -5196,15 +5280,15 @@
                   },
                   {
                     "kind": "memory",
-                    "id": "decision-1784337541317-rihe",
+                    "id": "decision-1784339393196-f3vl",
                     "label": "Active replacement Remnic decision",
-                    "locator": "recording://memories/decision-1784337541317-rihe.json",
+                    "locator": "recording://memories/replacement.json",
                     "capture": "at_action"
                   }
                 ]
               }
             ],
-            "lastSeenAt": "2026-07-18T01:19:39.351Z"
+            "lastSeenAt": "2026-07-18T01:50:29.453Z"
           },
           {
             "agentId": "agent-scout",
@@ -5218,7 +5302,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -5238,7 +5322,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -5252,7 +5336,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -5265,7 +5349,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -5289,6 +5373,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -5296,14 +5387,14 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z",
-            "supersededAt": "2026-07-18T01:19:01.350Z",
+            "firstObservedAt": "2026-07-18T01:49:23.835Z",
+            "supersededAt": "2026-07-18T01:49:53.232Z",
             "supersededBy": "decision-refresh-after-expiry",
             "correctionId": "correction-token-refresh"
           },
@@ -5328,6 +5419,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -5341,7 +5439,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -5357,7 +5455,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "resolved",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -5393,10 +5491,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "propagated",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -5410,6 +5508,13 @@
                 "id": "approval-relay-build-week-operator",
                 "label": "Explicit human CLI approval gate",
                 "locator": "recording://approval.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
                 "capture": "at_action"
               },
               {
@@ -5441,7 +5546,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -5449,8 +5554,8 @@
             },
             "approvalNote": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
             "approvalPrincipal": "relay-build-week-operator",
-            "appliedAt": "2026-07-18T01:19:01.350Z",
-            "propagatedAt": "2026-07-18T01:19:39.351Z"
+            "appliedAt": "2026-07-18T01:49:53.232Z",
+            "propagatedAt": "2026-07-18T01:50:29.453Z"
           }
         ],
         "tests": [
@@ -5460,8 +5565,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -5486,8 +5591,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "passed",
             "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
-            "durationMs": 82,
-            "occurredAt": "2026-07-18T01:19:39.438Z",
+            "durationMs": 91,
+            "occurredAt": "2026-07-18T01:50:29.549Z",
             "evidence": [
               {
                 "kind": "test",
@@ -5517,11 +5622,11 @@
           {
             "correctionId": "correction-token-refresh",
             "agentId": "agent-cold-builder",
-            "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+            "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
             "decisionId": "decision-refresh-after-expiry",
             "recallReceiptId": "recall-cold-builder",
             "staleDecisionAbsent": true,
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "evidence": [
               {
                 "kind": "recall_audit",
@@ -5564,12 +5669,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -5589,12 +5694,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -5616,12 +5721,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -5633,9 +5738,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -5643,12 +5748,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -5676,12 +5781,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -5711,12 +5816,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -5737,12 +5842,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -5755,9 +5860,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -5772,12 +5877,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -5818,12 +5923,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -5832,7 +5937,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -5853,12 +5958,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -5869,7 +5974,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -5898,12 +6003,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -5927,12 +6032,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-1da148ee-db84-4aa0-a51a-92e1299c77f5",
+            "eventId": "relay-2dcab940-2f08-448f-9b18-ae8aeb41bd45",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.353Z",
-            "occurredAt": "2026-07-18T01:19:01.350Z",
+            "recordedAt": "2026-07-18T01:49:53.234Z",
+            "occurredAt": "2026-07-18T01:49:53.232Z",
             "idempotencyKey": "live-012",
             "payload": {
               "kind": "decision_superseded",
@@ -5946,23 +6051,30 @@
                   "label": "Applied Remnic Correction Contract supersession",
                   "locator": "recording://correction.json",
                   "capture": "at_action"
+                },
+                {
+                  "kind": "correction",
+                  "id": "corr-mrpplrc5-jor0t2h4",
+                  "label": "Remnic correction plan receipt",
+                  "locator": "recording://correction.json",
+                  "capture": "at_action"
                 }
               ]
             }
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f7366986-d628-4247-9ec3-d26493bfc7a7",
+            "eventId": "relay-839bf085-10ba-40d1-9ed0-48a0a80405a4",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.348Z",
-            "occurredAt": "2026-07-18T01:19:39.345Z",
+            "recordedAt": "2026-07-18T01:50:29.452Z",
+            "occurredAt": "2026-07-18T01:50:29.449Z",
             "idempotencyKey": "live-013",
             "payload": {
               "kind": "recall_observed",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "recallReceiptId": "recall-cold-builder",
               "decisionId": "decision-refresh-after-expiry",
               "query": "checkout token retry policy decision",
@@ -5977,9 +6089,9 @@
                 },
                 {
                   "kind": "memory",
-                  "id": "decision-1784337541317-rihe",
+                  "id": "decision-1784339393196-f3vl",
                   "label": "Active replacement Remnic decision",
-                  "locator": "recording://memories/decision-1784337541317-rihe.json",
+                  "locator": "recording://memories/replacement.json",
                   "capture": "at_action"
                 }
               ]
@@ -5987,17 +6099,17 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-37b0fa61-1c13-4320-bb09-e148a7a11061",
+            "eventId": "relay-41fbb5f6-1401-4266-a08a-536c2fff7216",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.353Z",
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "recordedAt": "2026-07-18T01:50:29.456Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "idempotencyKey": "live-014",
             "payload": {
               "kind": "propagation_verified",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "correctionId": "correction-token-refresh",
               "decisionId": "decision-refresh-after-expiry",
               "recallReceiptId": "recall-cold-builder",
@@ -6022,12 +6134,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-b1f431fd-7d9d-45ec-baf4-5ec026431635",
+            "eventId": "relay-99a019af-db3e-44fc-a6de-db6d4ee33879",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.441Z",
-            "occurredAt": "2026-07-18T01:19:39.438Z",
+            "recordedAt": "2026-07-18T01:50:29.552Z",
+            "occurredAt": "2026-07-18T01:50:29.549Z",
             "idempotencyKey": "live-015",
             "payload": {
               "kind": "test_result",
@@ -6037,7 +6149,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "passed",
               "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
-              "durationMs": 82,
+              "durationMs": 91,
               "evidence": [
                 {
                   "kind": "test",
@@ -6081,8 +6193,8 @@
           "title": "The checkout token split",
           "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
           "runMode": "live",
-          "startedAt": "2026-07-18T01:17:44.434Z",
-          "completedAt": "2026-07-18T01:19:39.444Z"
+          "startedAt": "2026-07-18T01:48:41.293Z",
+          "completedAt": "2026-07-18T01:50:29.556Z"
         },
         "agents": [
           {
@@ -6091,18 +6203,18 @@
             "role": "Codex agent",
             "status": "working",
             "sessionIds": [
-              "session-019f72ce-2b8f-7f91-873c-03482a8bc345"
+              "session-019f72ea-6d55-74f3-93ac-c3994ad24f01"
             ],
             "outputs": [],
             "recalls": [
               {
                 "recallReceiptId": "recall-cold-builder",
-                "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+                "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
                 "decisionId": "decision-refresh-after-expiry",
                 "query": "checkout token retry policy decision",
                 "capturedAtAction": true,
                 "coldStart": true,
-                "occurredAt": "2026-07-18T01:19:39.345Z",
+                "occurredAt": "2026-07-18T01:50:29.449Z",
                 "evidence": [
                   {
                     "kind": "recall_audit",
@@ -6113,15 +6225,15 @@
                   },
                   {
                     "kind": "memory",
-                    "id": "decision-1784337541317-rihe",
+                    "id": "decision-1784339393196-f3vl",
                     "label": "Active replacement Remnic decision",
-                    "locator": "recording://memories/decision-1784337541317-rihe.json",
+                    "locator": "recording://memories/replacement.json",
                     "capture": "at_action"
                   }
                 ]
               }
             ],
-            "lastSeenAt": "2026-07-18T01:19:39.351Z"
+            "lastSeenAt": "2026-07-18T01:50:29.453Z"
           },
           {
             "agentId": "agent-scout",
@@ -6135,7 +6247,7 @@
               {
                 "outputId": "output-scout",
                 "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
-                "occurredAt": "2026-07-18T01:17:58.846Z",
+                "occurredAt": "2026-07-18T01:48:54.474Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -6155,7 +6267,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:17:58.850Z"
+            "lastSeenAt": "2026-07-18T01:48:54.480Z"
           },
           {
             "agentId": "agent-stale-builder",
@@ -6169,7 +6281,7 @@
               {
                 "outputId": "output-stale-builder",
                 "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
-                "occurredAt": "2026-07-18T01:18:45.832Z",
+                "occurredAt": "2026-07-18T01:49:23.830Z",
                 "evidence": [
                   {
                     "kind": "agent_output",
@@ -6182,7 +6294,7 @@
               }
             ],
             "recalls": [],
-            "lastSeenAt": "2026-07-18T01:18:45.838Z"
+            "lastSeenAt": "2026-07-18T01:49:23.835Z"
           }
         ],
         "decisions": [
@@ -6206,6 +6318,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -6213,14 +6332,14 @@
               },
               {
                 "kind": "memory",
-                "id": "decision-1784337464423-j5fd",
+                "id": "decision-1784339321285-433k",
                 "label": "Active stale Remnic decision recalled at action time",
-                "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                "locator": "recording://memories/stale.json",
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:18:45.838Z",
-            "supersededAt": "2026-07-18T01:19:01.350Z",
+            "firstObservedAt": "2026-07-18T01:49:23.835Z",
+            "supersededAt": "2026-07-18T01:49:53.232Z",
             "supersededBy": "decision-refresh-after-expiry",
             "correctionId": "correction-token-refresh"
           },
@@ -6245,6 +6364,13 @@
               },
               {
                 "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
                 "id": "correction-token-refresh",
                 "label": "Applied Remnic Correction Contract supersession",
                 "locator": "recording://correction.json",
@@ -6258,7 +6384,7 @@
                 "capture": "at_action"
               }
             ],
-            "firstObservedAt": "2026-07-18T01:17:58.850Z"
+            "firstObservedAt": "2026-07-18T01:48:54.480Z"
           }
         ],
         "conflicts": [
@@ -6274,7 +6400,7 @@
             ],
             "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
             "status": "resolved",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "evidence": [
               {
                 "kind": "source",
@@ -6310,10 +6436,10 @@
               "decision-new-token-every-request"
             ],
             "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-            "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+            "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
             "proposedBy": "agent-resolver",
             "status": "propagated",
-            "proposedAt": "2026-07-18T01:19:01.287Z",
+            "proposedAt": "2026-07-18T01:49:53.161Z",
             "evidence": [
               {
                 "kind": "agent_output",
@@ -6327,6 +6453,13 @@
                 "id": "approval-relay-build-week-operator",
                 "label": "Explicit human CLI approval gate",
                 "locator": "recording://approval.json",
+                "capture": "at_action"
+              },
+              {
+                "kind": "correction",
+                "id": "corr-mrpplrc5-jor0t2h4",
+                "label": "Remnic correction plan receipt",
+                "locator": "recording://correction.json",
                 "capture": "at_action"
               },
               {
@@ -6358,7 +6491,7 @@
                 "capture": "at_action"
               }
             ],
-            "approvedAt": "2026-07-18T01:19:01.290Z",
+            "approvedAt": "2026-07-18T01:49:53.165Z",
             "approvedBy": {
               "kind": "human",
               "id": "relay-build-week-operator",
@@ -6366,8 +6499,8 @@
             },
             "approvalNote": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
             "approvalPrincipal": "relay-build-week-operator",
-            "appliedAt": "2026-07-18T01:19:01.350Z",
-            "propagatedAt": "2026-07-18T01:19:39.351Z"
+            "appliedAt": "2026-07-18T01:49:53.232Z",
+            "propagatedAt": "2026-07-18T01:50:29.453Z"
           }
         ],
         "tests": [
@@ -6377,8 +6510,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "failed",
             "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-            "durationMs": 88,
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "durationMs": 92,
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "evidence": [
               {
                 "kind": "test",
@@ -6403,8 +6536,8 @@
             "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
             "status": "passed",
             "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
-            "durationMs": 82,
-            "occurredAt": "2026-07-18T01:19:39.438Z",
+            "durationMs": 91,
+            "occurredAt": "2026-07-18T01:50:29.549Z",
             "evidence": [
               {
                 "kind": "test",
@@ -6434,11 +6567,11 @@
           {
             "correctionId": "correction-token-refresh",
             "agentId": "agent-cold-builder",
-            "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+            "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
             "decisionId": "decision-refresh-after-expiry",
             "recallReceiptId": "recall-cold-builder",
             "staleDecisionAbsent": true,
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "evidence": [
               {
                 "kind": "recall_audit",
@@ -6460,7 +6593,7 @@
         "outcome": {
           "result": "recovered",
           "summary": "One human-approved correction reached a fresh GPT-5.6 thread and changed a hidden contract from fail to pass.",
-          "occurredAt": "2026-07-18T01:19:39.444Z",
+          "occurredAt": "2026-07-18T01:50:29.556Z",
           "evidence": [
             {
               "kind": "test",
@@ -6501,12 +6634,12 @@
         "events": [
           {
             "schemaVersion": "1",
-            "eventId": "relay-16c2ad32-30e2-4f2d-9be8-6157640681f8",
+            "eventId": "relay-00f702ea-2c80-46d6-bdc9-95ee08330bd2",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.439Z",
-            "occurredAt": "2026-07-18T01:17:44.434Z",
+            "recordedAt": "2026-07-18T01:48:41.296Z",
+            "occurredAt": "2026-07-18T01:48:41.293Z",
             "idempotencyKey": "live-001",
             "payload": {
               "kind": "mission_started",
@@ -6526,12 +6659,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-08c120a4-7a3b-480b-b0bf-77d0ca414eed",
+            "eventId": "relay-aace74ec-10f8-4f93-b2c4-5af460dad31f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.444Z",
-            "occurredAt": "2026-07-18T01:17:44.442Z",
+            "recordedAt": "2026-07-18T01:48:41.301Z",
+            "occurredAt": "2026-07-18T01:48:41.299Z",
             "idempotencyKey": "live-002",
             "payload": {
               "kind": "agent_status",
@@ -6553,12 +6686,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44d91f58-cc12-4227-a2d6-3580d65bba1d",
+            "eventId": "relay-7c6418f3-c7f0-4f5e-932e-cbddf9ddfa9f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:44.450Z",
-            "occurredAt": "2026-07-18T01:17:44.448Z",
+            "recordedAt": "2026-07-18T01:48:41.304Z",
+            "occurredAt": "2026-07-18T01:48:41.302Z",
             "idempotencyKey": "live-003",
             "payload": {
               "kind": "agent_status",
@@ -6570,9 +6703,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision available to Builder A",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 }
               ]
@@ -6580,12 +6713,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-a72bf6ec-eb73-4d5d-9d1f-57ba2311a7df",
+            "eventId": "relay-c43aca41-4d67-495e-b205-199f6d47c697",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.849Z",
-            "occurredAt": "2026-07-18T01:17:58.846Z",
+            "recordedAt": "2026-07-18T01:48:54.478Z",
+            "occurredAt": "2026-07-18T01:48:54.474Z",
             "idempotencyKey": "live-004",
             "payload": {
               "kind": "agent_output",
@@ -6613,12 +6746,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-d05a19fc-6cd4-4c21-84fe-4aaeb2bbd6cb",
+            "eventId": "relay-fe23dd36-485b-4ac4-923e-630a91c46fff",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:17:58.852Z",
-            "occurredAt": "2026-07-18T01:17:58.850Z",
+            "recordedAt": "2026-07-18T01:48:54.482Z",
+            "occurredAt": "2026-07-18T01:48:54.480Z",
             "idempotencyKey": "live-005",
             "payload": {
               "kind": "belief_observed",
@@ -6648,12 +6781,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-9e744f07-ed40-44be-825c-168468051664",
+            "eventId": "relay-7cac62b3-8e24-4e3e-9020-30954193999f",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.835Z",
-            "occurredAt": "2026-07-18T01:18:45.832Z",
+            "recordedAt": "2026-07-18T01:49:23.833Z",
+            "occurredAt": "2026-07-18T01:49:23.830Z",
             "idempotencyKey": "live-006",
             "payload": {
               "kind": "agent_output",
@@ -6674,12 +6807,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-e3f8ace1-4bda-4c2f-85b0-132f9d9c5da6",
+            "eventId": "relay-8bf262d0-b1d2-4d3f-a60e-83649b5369e6",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.840Z",
-            "occurredAt": "2026-07-18T01:18:45.838Z",
+            "recordedAt": "2026-07-18T01:49:23.837Z",
+            "occurredAt": "2026-07-18T01:49:23.835Z",
             "idempotencyKey": "live-007",
             "payload": {
               "kind": "belief_observed",
@@ -6692,9 +6825,9 @@
               "evidence": [
                 {
                   "kind": "memory",
-                  "id": "decision-1784337464423-j5fd",
+                  "id": "decision-1784339321285-433k",
                   "label": "Active stale Remnic decision recalled at action time",
-                  "locator": "recording://memories/decision-1784337464423-j5fd.json",
+                  "locator": "recording://memories/stale.json",
                   "capture": "at_action"
                 },
                 {
@@ -6709,12 +6842,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-926f0c07-e597-404f-9c98-78c9ed8272cf",
+            "eventId": "relay-2281b811-1a03-4ae1-90aa-cd45a3859827",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.844Z",
-            "occurredAt": "2026-07-18T01:18:45.842Z",
+            "recordedAt": "2026-07-18T01:49:23.841Z",
+            "occurredAt": "2026-07-18T01:49:23.839Z",
             "idempotencyKey": "live-008",
             "payload": {
               "kind": "conflict_detected",
@@ -6755,12 +6888,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-ea334d7e-1ce5-4eb8-a28b-51e245a1ef43",
+            "eventId": "relay-10483eca-04d0-4a8c-ae36-3264ea01107e",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:18:45.939Z",
-            "occurredAt": "2026-07-18T01:18:45.935Z",
+            "recordedAt": "2026-07-18T01:49:23.938Z",
+            "occurredAt": "2026-07-18T01:49:23.935Z",
             "idempotencyKey": "live-009",
             "payload": {
               "kind": "test_result",
@@ -6769,7 +6902,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "failed",
               "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
-              "durationMs": 88,
+              "durationMs": 92,
               "evidence": [
                 {
                   "kind": "test",
@@ -6790,12 +6923,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f480fb6a-7bd7-4c24-81f9-4054a7d3ea14",
+            "eventId": "relay-7f35fca8-01ed-474e-8c33-aa4bd497ebcd",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.289Z",
-            "occurredAt": "2026-07-18T01:19:01.287Z",
+            "recordedAt": "2026-07-18T01:49:53.163Z",
+            "occurredAt": "2026-07-18T01:49:53.161Z",
             "idempotencyKey": "live-010",
             "payload": {
               "kind": "correction_proposed",
@@ -6806,7 +6939,7 @@
                 "decision-new-token-every-request"
               ],
               "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
-              "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
+              "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
               "proposedBy": "agent-resolver",
               "evidence": [
                 {
@@ -6835,12 +6968,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-44faaf4b-c9b0-4135-9c4b-2169c98a09bc",
+            "eventId": "relay-b4e1c005-c226-4005-a087-b568535fe467",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.292Z",
-            "occurredAt": "2026-07-18T01:19:01.290Z",
+            "recordedAt": "2026-07-18T01:49:53.167Z",
+            "occurredAt": "2026-07-18T01:49:53.165Z",
             "idempotencyKey": "live-011",
             "payload": {
               "kind": "correction_approved",
@@ -6864,12 +6997,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-1da148ee-db84-4aa0-a51a-92e1299c77f5",
+            "eventId": "relay-2dcab940-2f08-448f-9b18-ae8aeb41bd45",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:01.353Z",
-            "occurredAt": "2026-07-18T01:19:01.350Z",
+            "recordedAt": "2026-07-18T01:49:53.234Z",
+            "occurredAt": "2026-07-18T01:49:53.232Z",
             "idempotencyKey": "live-012",
             "payload": {
               "kind": "decision_superseded",
@@ -6883,23 +7016,30 @@
                   "label": "Applied Remnic Correction Contract supersession",
                   "locator": "recording://correction.json",
                   "capture": "at_action"
+                },
+                {
+                  "kind": "correction",
+                  "id": "corr-mrpplrc5-jor0t2h4",
+                  "label": "Remnic correction plan receipt",
+                  "locator": "recording://correction.json",
+                  "capture": "at_action"
                 }
               ]
             }
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-f7366986-d628-4247-9ec3-d26493bfc7a7",
+            "eventId": "relay-839bf085-10ba-40d1-9ed0-48a0a80405a4",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.348Z",
-            "occurredAt": "2026-07-18T01:19:39.345Z",
+            "recordedAt": "2026-07-18T01:50:29.452Z",
+            "occurredAt": "2026-07-18T01:50:29.449Z",
             "idempotencyKey": "live-013",
             "payload": {
               "kind": "recall_observed",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "recallReceiptId": "recall-cold-builder",
               "decisionId": "decision-refresh-after-expiry",
               "query": "checkout token retry policy decision",
@@ -6914,9 +7054,9 @@
                 },
                 {
                   "kind": "memory",
-                  "id": "decision-1784337541317-rihe",
+                  "id": "decision-1784339393196-f3vl",
                   "label": "Active replacement Remnic decision",
-                  "locator": "recording://memories/decision-1784337541317-rihe.json",
+                  "locator": "recording://memories/replacement.json",
                   "capture": "at_action"
                 }
               ]
@@ -6924,17 +7064,17 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-37b0fa61-1c13-4320-bb09-e148a7a11061",
+            "eventId": "relay-41fbb5f6-1401-4266-a08a-536c2fff7216",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.353Z",
-            "occurredAt": "2026-07-18T01:19:39.351Z",
+            "recordedAt": "2026-07-18T01:50:29.456Z",
+            "occurredAt": "2026-07-18T01:50:29.453Z",
             "idempotencyKey": "live-014",
             "payload": {
               "kind": "propagation_verified",
               "agentId": "agent-cold-builder",
-              "sessionId": "session-019f72ce-2b8f-7f91-873c-03482a8bc345",
+              "sessionId": "session-019f72ea-6d55-74f3-93ac-c3994ad24f01",
               "correctionId": "correction-token-refresh",
               "decisionId": "decision-refresh-after-expiry",
               "recallReceiptId": "recall-cold-builder",
@@ -6959,12 +7099,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-b1f431fd-7d9d-45ec-baf4-5ec026431635",
+            "eventId": "relay-99a019af-db3e-44fc-a6de-db6d4ee33879",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.441Z",
-            "occurredAt": "2026-07-18T01:19:39.438Z",
+            "recordedAt": "2026-07-18T01:50:29.552Z",
+            "occurredAt": "2026-07-18T01:50:29.549Z",
             "idempotencyKey": "live-015",
             "payload": {
               "kind": "test_result",
@@ -6974,7 +7114,7 @@
               "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
               "status": "passed",
               "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
-              "durationMs": 82,
+              "durationMs": 91,
               "evidence": [
                 {
                   "kind": "test",
@@ -7002,12 +7142,12 @@
           },
           {
             "schemaVersion": "1",
-            "eventId": "relay-3083d6d9-ab3d-41cd-af53-612e5cdcd127",
+            "eventId": "relay-ccb709f0-a49a-46c2-8976-418837ae4109",
             "missionId": "checkout-token-recovery",
             "namespace": "relay-build-week",
             "authenticatedPrincipal": "relay-build-week-operator",
-            "recordedAt": "2026-07-18T01:19:39.446Z",
-            "occurredAt": "2026-07-18T01:19:39.444Z",
+            "recordedAt": "2026-07-18T01:50:29.559Z",
+            "occurredAt": "2026-07-18T01:50:29.556Z",
             "idempotencyKey": "live-016",
             "payload": {
               "kind": "mission_completed",

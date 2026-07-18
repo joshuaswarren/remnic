@@ -3,25 +3,25 @@
     "role": "cold-builder",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72ce-2b8f-7f91-873c-03482a8bc345",
+    "threadId": "019f72ea-6d55-74f3-93ac-c3994ad24f01",
     "promptSha256": "ea9dd89593c31c5ef256f966dbea67716d45d41fddf8f4b431f254d1662ac20d",
-    "outputSha256": "f4145064702702bdc7f855be016f3c7e7d499a72974ad4343f1b4b1484d677e2",
+    "outputSha256": "88f998c5cf63e91ce38fe770b10c0999684d8a25d2155f5a8b79474aa796790d",
     "exitCode": 0,
-    "durationMs": 37901,
+    "durationMs": 36115,
     "usage": {
-      "inputTokens": 84981,
-      "cachedInputTokens": 70912,
-      "outputTokens": 1213,
-      "reasoningOutputTokens": 393
+      "inputTokens": 83998,
+      "cachedInputTokens": 78848,
+      "outputTokens": 1357,
+      "reasoningOutputTokens": 660
     },
     "recallToolCalls": 1,
     "status": "completed"
   },
   "output": {
-    "summary": "Implemented the checkout token retry policy and verified it.",
-    "recall_memory_id": "decision-1784337541317-rihe",
-    "recall_provenance": "Remnic recall, namespace relay-build-week; active checkout-token lifecycle decision.",
-    "decision_applied": "Mint initially, reuse for non-expired retries, and mint a replacement only on explicit expiry.",
+    "summary": "Implemented checkout token selection per the active shared decision: mint initially, reuse while valid, replace only after explicit expiry.",
+    "recall_memory_id": "decision-1784339393196-f3vl",
+    "recall_provenance": "Remnic recall in namespace relay-build-week; active shared checkout-token lifecycle decision.",
+    "decision_applied": "Own one checkout token per session: mint on the first request, reuse it for ordinary retries while valid, and mint exactly one replacement only after explicit expiry.",
     "files_changed": [
       "src/token-policy.mjs"
     ],
