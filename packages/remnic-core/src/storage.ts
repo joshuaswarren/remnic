@@ -153,6 +153,7 @@ import {
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
 import {
+  compareMemoryLifecycleEvents,
   inferMemoryStatus,
   isArchivedMemoryPath,
   sortMemoryLifecycleEvents,
@@ -5541,6 +5542,19 @@ export class StorageManager {
     return events.length;
   }
 
+  /**
+   * Rewrite the lifecycle ledger through the secure writer (issue #1910). Used
+   * by auto-compaction so a secure-store deployment's ledger is re-encrypted
+   * with the active key instead of being rewritten as plaintext. When the store
+   * is unlocked `writeStorageSecureFile` encrypts atomically; when it is
+   * required-but-locked it throws `SecureStoreLockedError` so compaction fails
+   * loudly (and stays eligible to retry) rather than leaking plaintext.
+   */
+  async writeMemoryLifecycleLedgerContent(content: string): Promise<void> {
+    await this.ensureDirectories();
+    await this.writeStorageSecureFile(this.memoryLifecycleLedgerPath, content);
+  }
+
   async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]): Promise<number> {
     return this.memoryReadStore.appendBufferSurpriseEvents(events);
   }
@@ -6685,6 +6699,7 @@ export class StorageManager {
         ),
         cappedLimit,
         memoryId,
+        compareMemoryLifecycleEvents,
       );
       return sortMemoryLifecycleEvents(tail);
     } catch (err) {

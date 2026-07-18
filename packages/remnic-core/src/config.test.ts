@@ -2254,3 +2254,51 @@ test("parseConfig namespace-catalog touch-path knobs: defaults, 0-accepting nume
     /namespacesCatalogTouchStateWrites must be a boolean-like value/,
   );
 });
+
+test("parseConfig bounded-state knobs coerce CLI/overlay strings and preserve 0-disable (#1910)", () =>
+  withIsolatedConnectorsDir(false, () => {
+    // Defaults when absent.
+    const defaults = parseConfig({});
+    assert.equal(defaults.memoryLifecycleLedgerCompactBytes, 64 * 1024 * 1024);
+    assert.equal(defaults.memoryLifecycleLedgerCompactMinIntervalMs, 6 * 60 * 60 * 1000);
+    assert.equal(defaults.recallImpressionsRotateBytes, 32 * 1024 * 1024);
+    assert.equal(defaults.recallImpressionsRotateKeep, 5);
+
+    // String forms (CLI `--config x=…` arrives as strings, Gotcha #28) parse.
+    const strings = parseConfig({
+      memoryLifecycleLedgerCompactBytes: "2048",
+      memoryLifecycleLedgerCompactMinIntervalMs: "120000",
+      recallImpressionsRotateBytes: "4096",
+      recallImpressionsRotateKeep: "3",
+    });
+    assert.equal(strings.memoryLifecycleLedgerCompactBytes, 2048);
+    assert.equal(strings.memoryLifecycleLedgerCompactMinIntervalMs, 120000);
+    assert.equal(strings.recallImpressionsRotateBytes, 4096);
+    assert.equal(strings.recallImpressionsRotateKeep, 3);
+
+    // The documented `"0"` disable stays effective on the byte thresholds
+    // instead of silently falling back to the default.
+    const disabled = parseConfig({
+      memoryLifecycleLedgerCompactBytes: "0",
+      recallImpressionsRotateBytes: "0",
+    });
+    assert.equal(disabled.memoryLifecycleLedgerCompactBytes, 0);
+    assert.equal(disabled.recallImpressionsRotateBytes, 0);
+
+    // Clamps hold for numeric and string inputs: min-interval floors at 60s,
+    // keep floors at 1, and negatives clamp to the floor.
+    const clamped = parseConfig({
+      memoryLifecycleLedgerCompactMinIntervalMs: "1000",
+      recallImpressionsRotateKeep: "0",
+      memoryLifecycleLedgerCompactBytes: -5,
+    });
+    assert.equal(clamped.memoryLifecycleLedgerCompactMinIntervalMs, 60_000);
+    assert.equal(clamped.recallImpressionsRotateKeep, 1);
+    assert.equal(clamped.memoryLifecycleLedgerCompactBytes, 0);
+
+    // A present-but-garbage value falls back to the default (coerceNumber warns).
+    assert.equal(
+      parseConfig({ memoryLifecycleLedgerCompactBytes: "abc" }).memoryLifecycleLedgerCompactBytes,
+      64 * 1024 * 1024,
+    );
+  }));

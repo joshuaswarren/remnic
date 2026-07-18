@@ -141,6 +141,38 @@ test("getMemoryTimeline fallback streams per-memory rows and warns", async () =>
   });
 });
 
+test("getMemoryTimeline fallback keeps the newest-by-timestamp events when an older row is appended last", async () => {
+  const target = "memory-target";
+  // Target rows appended in this order; the LAST-appended row carries the
+  // OLDEST timestamp (a late backfill). The old append-tail-then-sort kept the
+  // last N appended rows — so it would drop t2 (00:02, newer) and surface the
+  // stale t5 (00:00). The canonical top-N must instead return the N newest by
+  // timestamp, matching the pre-bounding filter→sort→slice semantics.
+  const rows = [
+    JSON.stringify(lifecycleEvent("other-a", "memory-other-a", "2026-01-01T00:05:00.000Z")),
+    JSON.stringify(lifecycleEvent("t1", target, "2026-01-01T00:01:00.000Z")),
+    JSON.stringify(lifecycleEvent("t2", target, "2026-01-01T00:02:00.000Z")),
+    JSON.stringify(lifecycleEvent("other-b", "memory-other-b", "2026-01-01T00:06:00.000Z")),
+    JSON.stringify(lifecycleEvent("t3", target, "2026-01-01T00:03:00.000Z")),
+    JSON.stringify(lifecycleEvent("t4", target, "2026-01-01T00:04:00.000Z")),
+    // Late-appended backfill with an older timestamp than t2/t3/t4.
+    JSON.stringify(lifecycleEvent("t5", target, "2026-01-01T00:00:00.000Z")),
+  ];
+  await withLifecycleLedger(rows, async (storage) => {
+    const all = await storage.readAllMemoryLifecycleEvents();
+    const expected = all.filter((e) => e.memoryId === target).slice(-3);
+    const timeline = await storage.getMemoryTimeline(target, 3);
+    // Newest three by timestamp: t2 (00:02), t3 (00:03), t4 (00:04). The stale
+    // last-appended t5 (00:00) is excluded.
+    assert.deepEqual(
+      timeline.map((e) => e.eventId),
+      ["t2", "t3", "t4"],
+    );
+    assert.deepEqual(timeline, expected);
+    assert.ok(timeline.every((e) => e.memoryId === target));
+  });
+});
+
 test("readAllMemoryLifecycleEvents keeps the authenticated encrypted-file fallback", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-encrypted-"));
   const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");

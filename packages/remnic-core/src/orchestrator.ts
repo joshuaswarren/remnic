@@ -1427,6 +1427,11 @@ export class Orchestrator {
       getQmd: () => this.qmd,
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
+      // Issue #1910: thread the live secure-store context so lifecycle-ledger
+      // auto-compaction rebuilds encrypted ledgers with the active key, and
+      // reaches per-namespace ledgers via the router's secure-aware storages.
+      getStorage: () => this.storage,
+      storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();

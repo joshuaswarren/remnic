@@ -304,6 +304,25 @@ function parseIntegerAtLeast(
   return coerced;
 }
 
+/**
+ * Issue #1910 — bounded-state numeric knobs. Coerce a number OR a CLI/overlay
+ * string (Gotcha #28: `--config x=0` arrives as `"0"`) once, then clamp to
+ * `min` and floor to an integer. Never throws — a present-but-garbage value
+ * falls back to the default (coerceNumber already warns), matching the
+ * clamp-not-throw style of the surrounding maintenance knobs. `0` survives when
+ * `min` is 0, so the documented disable stays effective on every surface.
+ */
+function clampNumberAtLeastOrDefault(
+  value: unknown,
+  fallback: number,
+  min: number,
+  label?: string,
+): number {
+  const coerced = coerceNumber(value, label);
+  if (coerced === undefined) return fallback;
+  return Math.max(min, Math.floor(coerced));
+}
+
 function parseOptionalIntegerAtLeast(
   value: unknown,
   min: number,
@@ -3581,29 +3600,34 @@ export function parseConfig(
       Number.isFinite(cfg.graphEdgeDecayVisibilityThreshold)
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
-    // Issue #1910 — bounded JSONL state files. `0` disables (never coerced to a
-    // default); byte thresholds floor at 0, the min-interval floors at 60s, and
+    // Issue #1910 — bounded JSONL state files. Numeric knobs accept CLI/overlay
+    // string forms (Gotcha #28) via coerceNumber. `0` disables (never coerced to
+    // a default): byte thresholds floor at 0, the min-interval floors at 60s, and
     // the keep count floors at 1 so rotation always retains at least one archive.
-    memoryLifecycleLedgerCompactBytes:
-      typeof cfg.memoryLifecycleLedgerCompactBytes === "number" &&
-      Number.isFinite(cfg.memoryLifecycleLedgerCompactBytes)
-        ? Math.max(0, Math.floor(cfg.memoryLifecycleLedgerCompactBytes))
-        : 64 * 1024 * 1024,
-    memoryLifecycleLedgerCompactMinIntervalMs:
-      typeof cfg.memoryLifecycleLedgerCompactMinIntervalMs === "number" &&
-      Number.isFinite(cfg.memoryLifecycleLedgerCompactMinIntervalMs)
-        ? Math.max(60_000, Math.floor(cfg.memoryLifecycleLedgerCompactMinIntervalMs))
-        : 6 * 60 * 60 * 1000,
-    recallImpressionsRotateBytes:
-      typeof cfg.recallImpressionsRotateBytes === "number" &&
-      Number.isFinite(cfg.recallImpressionsRotateBytes)
-        ? Math.max(0, Math.floor(cfg.recallImpressionsRotateBytes))
-        : 32 * 1024 * 1024,
-    recallImpressionsRotateKeep:
-      typeof cfg.recallImpressionsRotateKeep === "number" &&
-      Number.isFinite(cfg.recallImpressionsRotateKeep)
-        ? Math.max(1, Math.floor(cfg.recallImpressionsRotateKeep))
-        : 5,
+    memoryLifecycleLedgerCompactBytes: clampNumberAtLeastOrDefault(
+      cfg.memoryLifecycleLedgerCompactBytes,
+      64 * 1024 * 1024,
+      0,
+      "memoryLifecycleLedgerCompactBytes",
+    ),
+    memoryLifecycleLedgerCompactMinIntervalMs: clampNumberAtLeastOrDefault(
+      cfg.memoryLifecycleLedgerCompactMinIntervalMs,
+      6 * 60 * 60 * 1000,
+      60_000,
+      "memoryLifecycleLedgerCompactMinIntervalMs",
+    ),
+    recallImpressionsRotateBytes: clampNumberAtLeastOrDefault(
+      cfg.recallImpressionsRotateBytes,
+      32 * 1024 * 1024,
+      0,
+      "recallImpressionsRotateBytes",
+    ),
+    recallImpressionsRotateKeep: clampNumberAtLeastOrDefault(
+      cfg.recallImpressionsRotateKeep,
+      5,
+      1,
+      "recallImpressionsRotateKeep",
+    ),
     // Issue #681 PR 3/3 — confidence-aware traversal & PageRank refinement.
     // Floor clamps to [0, 1] so misconfigured input cannot accept negative
     // confidences or reject every edge. Iterations floors at 0 so a

@@ -107,10 +107,15 @@ export function buildLifecycleEventsForMemory(memory: MemoryFile): MemoryLifecyc
   return events;
 }
 
+export function compareMemoryLifecycleEvents(
+  a: MemoryLifecycleEvent,
+  b: MemoryLifecycleEvent,
+): number {
+  if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
+  if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
+  return MEMORY_LIFECYCLE_EVENT_SORT_ORDER[a.eventType] - MEMORY_LIFECYCLE_EVENT_SORT_ORDER[b.eventType];
+}
+
 export function sortMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): MemoryLifecycleEvent[] {
-  return [...events].sort((a, b) => {
-    if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
-    if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
-    return MEMORY_LIFECYCLE_EVENT_SORT_ORDER[a.eventType] - MEMORY_LIFECYCLE_EVENT_SORT_ORDER[b.eventType];
-  });
+  return [...events].sort(compareMemoryLifecycleEvents);
 }

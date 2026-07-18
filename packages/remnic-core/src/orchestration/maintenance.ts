@@ -27,11 +27,12 @@ import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
 import type { SearchBackend } from "../search/port.js";
+import type { StorageManager } from "../storage.js";
 import {
   NamespaceSearchRouter,
   type NamespaceUpdateResult,
 } from "../namespaces/search.js";
-import type { NamespaceCatalog } from "../namespaces/catalog.js";
+import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
 import {
   planNamespaceMaintenance,
   runNamespaceMaintenanceBatchPlan,
@@ -70,6 +71,21 @@ export interface MaintenanceSchedulerDeps {
   getQmd: () => SearchBackend;
   namespaceSearchRouter: NamespaceSearchRouter;
   namespaceCatalog: NamespaceCatalog;
+  /**
+   * Root storage (secure-store configured). Threaded so lifecycle-ledger
+   * auto-compaction (#1910) rebuilds through the live secure context: encrypted
+   * memories stay decryptable and the rewritten ledger stays encrypted at rest.
+   * Omitted in focused tests, where compaction falls back to a fresh plaintext
+   * StorageManager (the CLI-equivalent path).
+   */
+  getStorage?: () => StorageManager;
+  /**
+   * Resolve a namespace's (secure-store aware) storage. Threaded so
+   * auto-compaction also bounds per-namespace lifecycle ledgers under
+   * `memoryDir/namespaces/<token>/state/`, not just the root state path
+   * (#1910). Consulted only when namespaces are enabled.
+   */
+  storageForNamespace?: (namespace: string) => Promise<StorageManager>;
 }
 
 /**
@@ -552,8 +568,15 @@ export class MaintenanceScheduler {
 
   /**
    * Size-gated, throttled, single-flighted auto-compaction of the lifecycle
-   * ledger (issue #1910). Delegates to the existing `rebuildMemoryLifecycleLedger`
-   * so the archive-then-atomic-write discipline is reused verbatim. `0` disables.
+   * ledger (issue #1910). Compacts the root ledger AND every namespace ledger
+   * (`memoryDir/namespaces/<token>/state/`) when namespaces are enabled, each
+   * through the existing `rebuildMemoryLifecycleLedger` so the
+   * archive-then-atomic-write discipline is reused verbatim. `0` disables.
+   *
+   * The min-interval throttle timestamp advances ONLY after real, fully
+   * successful compaction work (Cursor Medium): a failed target leaves the
+   * throttle un-advanced so it stays eligible on the next maintenance pass,
+   * while `lifecycleCompactionInFlight` still prevents overlapping runs.
    */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
     const threshold = this.deps.config.memoryLifecycleLedgerCompactBytes;
@@ -566,33 +589,105 @@ export class MaintenanceScheduler {
     ) {
       return;
     }
-    const ledgerPath = path.join(
-      this.deps.config.memoryDir,
-      "state",
-      "memory-lifecycle-ledger.jsonl",
-    );
+    this.lifecycleCompactionInFlight = true;
+    try {
+      let compacted = 0;
+      let failed = 0;
+      for (const target of await this.resolveLifecycleCompactionTargets()) {
+        const outcome = await this.compactLifecycleLedgerTarget(target, threshold);
+        if (outcome === "compacted") compacted += 1;
+        else if (outcome === "failed") failed += 1;
+      }
+      // Arm the throttle only when at least one ledger was actually compacted and
+      // nothing failed. A below-threshold no-op (compacted === 0) or any failure
+      // leaves the throttle where it was so the next pass retries.
+      if (compacted > 0 && failed === 0) {
+        this.lastLifecycleCompactionAtMs = now;
+      }
+    } finally {
+      this.lifecycleCompactionInFlight = false;
+    }
+  }
+
+  /**
+   * Enumerate the lifecycle ledgers to consider for compaction: the root
+   * (through the secure-configured root storage when available) plus every
+   * cataloged namespace ledger when namespaces are enabled. Deduplicated by
+   * resolved storage dir so a namespace that collapses onto the root is not
+   * compacted twice. Namespace resolution failures are non-fatal.
+   */
+  private async resolveLifecycleCompactionTargets(): Promise<
+    Array<{ memoryDir: string; storage?: StorageManager }>
+  > {
+    const targets: Array<{ memoryDir: string; storage?: StorageManager }> = [];
+    const seen = new Set<string>();
+    const addTarget = (memoryDir: string, storage?: StorageManager): void => {
+      const key = path.resolve(memoryDir);
+      if (seen.has(key)) return;
+      seen.add(key);
+      targets.push({ memoryDir, storage });
+    };
+
+    const rootStorage = this.deps.getStorage?.();
+    addTarget(rootStorage ? rootStorage.dir : this.deps.config.memoryDir, rootStorage);
+
+    const resolveNamespaceStorage = this.deps.storageForNamespace;
+    if (resolveNamespaceStorage && this.deps.namespaceCatalog?.enabled) {
+      let records: NamespaceRecord[] = [];
+      try {
+        records = await this.deps.namespaceCatalog.listNamespaces();
+      } catch (err) {
+        log.debug(`lifecycle compaction: namespace enumeration failed (non-fatal): ${err}`);
+      }
+      for (const record of records) {
+        const namespace = record.namespace.trim();
+        if (!namespace) continue;
+        try {
+          const storage = await resolveNamespaceStorage(namespace);
+          addTarget(storage.dir, storage);
+        } catch (err) {
+          log.debug(
+            `lifecycle compaction: storage resolve failed for namespace ${namespace} (non-fatal): ${err}`,
+          );
+        }
+      }
+    }
+    return targets;
+  }
+
+  /**
+   * Compact one lifecycle ledger when it is at/over `threshold`. Returns
+   * `"skipped"` (absent or below threshold), `"compacted"` (rewritten), or
+   * `"failed"` (rebuild threw — kept non-fatal and eligible to retry).
+   */
+  private async compactLifecycleLedgerTarget(
+    target: { memoryDir: string; storage?: StorageManager },
+    threshold: number,
+  ): Promise<"skipped" | "compacted" | "failed"> {
+    const ledgerPath = path.join(target.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     let size = 0;
     try {
       size = (await stat(ledgerPath)).size;
     } catch {
-      return; // ENOENT etc. — nothing to compact yet.
+      return "skipped"; // ENOENT etc. — nothing to compact yet.
     }
-    if (size < threshold) return;
-    this.lifecycleCompactionInFlight = true;
-    this.lastLifecycleCompactionAtMs = now;
+    if (size < threshold) return "skipped";
     try {
       const result = await rebuildMemoryLifecycleLedger({
-        memoryDir: this.deps.config.memoryDir,
+        memoryDir: target.memoryDir,
         dryRun: false,
+        storage: target.storage,
       });
       log.info(
-        `lifecycle ledger auto-compacted: ${size}B -> ${result.rebuiltRows} rows, `
-        + `backup=${result.backupPath ?? "none"}`,
+        `lifecycle ledger auto-compacted (${target.memoryDir}): ${size}B -> `
+        + `${result.rebuiltRows} rows, backup=${result.backupPath ?? "none"}`,
       );
+      return "compacted";
     } catch (err) {
-      log.warn(`lifecycle ledger auto-compaction failed (non-fatal): ${err}`);
-    } finally {
-      this.lifecycleCompactionInFlight = false;
+      log.warn(
+        `lifecycle ledger auto-compaction failed (non-fatal) for ${target.memoryDir}: ${err}`,
+      );
+      return "failed";
     }
   }
 

@@ -4,7 +4,7 @@ import { StorageManager } from "../storage.js";
 import { log } from "../logger.js";
 import type { MemoryLifecycleEvent } from "../types.js";
 import { toBackupStamp } from "./backup-stamp.js";
-import { writeFileAtomically } from "./atomic-file.js";
+import { copyExistingFileToBackup, writeFileAtomically } from "./atomic-file.js";
 import {
   buildLifecycleEventsForMemory,
   sortMemoryLifecycleEvents,
@@ -14,6 +14,15 @@ export interface RebuildMemoryLifecycleLedgerOptions {
   memoryDir: string;
   dryRun?: boolean;
   now?: Date;
+  /**
+   * Active storage context (issue #1910). When provided, memories are read
+   * through it (so encrypted-at-rest memories in a secure-store deployment are
+   * decrypted with the live key) and the rebuilt ledger is rewritten through
+   * its secure writer (so it stays encrypted at rest). Its `dir` MUST equal
+   * `memoryDir`. When omitted, a fresh plaintext `StorageManager` is used and
+   * the ledger is written as plaintext — the CLI default.
+   */
+  storage?: StorageManager;
 }
 
 export interface SkippedLifecycleBlankIdMemory {
@@ -71,7 +80,8 @@ export async function rebuildMemoryLifecycleLedger(
   const dryRun = options.dryRun !== false;
   const now = options.now ?? new Date();
   const outputPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
-  const storage = new StorageManager(options.memoryDir);
+  const storage = options.storage ?? new StorageManager(options.memoryDir);
+  const secureRewrite = options.storage !== undefined;
   const tiers = [
     await storage.readAllMemories(),
     await storage.readAllColdMemories(),
@@ -121,13 +131,20 @@ export async function rebuildMemoryLifecycleLedger(
 
   let backupPath: string | undefined;
   if (!dryRun) {
-    backupPath = await backupExistingLedger(options.memoryDir, outputPath, now);
+    const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
     const payload = events.map((event) => JSON.stringify(event)).join("\n");
-    backupPath = await writeFileAtomically(
-      outputPath,
-      payload.length > 0 ? `${payload}\n` : "",
-      backupPath,
-    );
+    const content = payload.length > 0 ? `${payload}\n` : "";
+    if (secureRewrite) {
+      // Preserve encrypted-at-rest (issue #1910): back up the existing (possibly
+      // encrypted) ledger bytes verbatim, then rewrite through the secure writer
+      // so the new ledger is encrypted with the active key.
+      backupPath = desiredBackup
+        ? await copyExistingFileToBackup(outputPath, desiredBackup)
+        : undefined;
+      await storage.writeMemoryLifecycleLedgerContent(content);
+    } else {
+      backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
+    }
   }
 
   return {

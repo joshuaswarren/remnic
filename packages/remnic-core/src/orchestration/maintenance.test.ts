@@ -27,9 +27,11 @@ import type {
   NamespaceSearchRouter,
   NamespaceUpdateResult,
 } from "../namespaces/search.js";
-import type { NamespaceCatalog } from "../namespaces/catalog.js";
+import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
 import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
+import { StorageManager } from "../storage.js";
+import { isEncryptedFile } from "../secure-store/secure-fs.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
  *  contract — only the fields the scheduler/planner read are populated. */
@@ -899,5 +901,162 @@ test("auto-compaction is a no-op when the ledger is below the threshold", async 
     assert.equal(await readFile(ledgerPath, "utf-8"), before, "under threshold: ledger untouched");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+/** Scheduler wired with a live secure-store-configured root storage (issue
+ *  #1910, Cursor Medium / Codex P2). */
+function buildCompactionSchedulerWithStorage(
+  config: PluginConfig,
+  getStorage: () => StorageManager,
+  storageForNamespace?: (namespace: string) => Promise<StorageManager>,
+  namespaceCatalog?: NamespaceCatalog,
+): CompactableScheduler {
+  return new MaintenanceScheduler({
+    config,
+    getQmd: () => stubQmd(),
+    namespaceSearchRouter: {} as unknown as NamespaceSearchRouter,
+    namespaceCatalog: (namespaceCatalog ?? ({} as unknown as NamespaceCatalog)),
+    getStorage,
+    storageForNamespace,
+  }) as unknown as CompactableScheduler;
+}
+
+test("auto-compaction leaves the throttle un-advanced after a failed run so it retries next pass", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const beforeSize = (await stat(ledgerPath)).size;
+    // A required-but-locked secure store makes the rewrite throw
+    // SecureStoreLockedError, so the first compaction fails.
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      // Failed run must NOT shrink the ledger and must NOT arm the throttle.
+      assert.equal((await stat(ledgerPath)).size, beforeSize, "failed run leaves ledger intact");
+
+      // Unlock the store, then call again INSIDE the min-interval window. If the
+      // failed run had armed the throttle this second call would be skipped and
+      // the ledger would stay oversized. Because it did not, the ledger compacts.
+      storage.setSecureStoreKey(Buffer.alloc(32, 9));
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.ok(
+        (await stat(ledgerPath)).size < beforeSize,
+        "still-eligible retry compacts once the failure clears",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction rewrites the ledger encrypted at rest under a secure store", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const before = await readFile(ledgerPath, "utf-8");
+    const beforeSize = before.length;
+    const key = Buffer.alloc(32, 5);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    // The rewritten ledger is encrypted at rest and smaller than the plaintext
+    // original, and decrypts back to the rebuilt events via the same key.
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "compacted ledger must be encrypted");
+    assert.ok((await stat(ledgerPath)).size < beforeSize);
+    const rebuilt = await storage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+    // The backup is the verbatim original plaintext ledger.
+    const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
+    const stamps = await readdir(archiveRoot);
+    assert.equal(stamps.length, 1);
+    assert.equal(
+      await readFile(
+        path.join(archiveRoot, stamps[0]!, "state", "memory-lifecycle-ledger.jsonl"),
+        "utf-8",
+      ),
+      before,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction bounds per-namespace ledgers, not just the root state path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-"));
+  try {
+    // Root ledger stays absent (nothing to compact); a namespace under
+    // memoryDir/namespaces/<token>/ carries the oversized ledger.
+    const token = namespaceIdentityToken("project-alpha");
+    const nsDir = path.join(root, "namespaces", token);
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-ns.md"),
+      `---\nid: fact-ns\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const line = '{"legacy":true,"pad":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}\n';
+    await writeFile(nsLedger, line.repeat(Math.ceil(4096 / line.length)), "utf-8");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    const catalog = {
+      enabled: true,
+      listNamespaces: async (): Promise<NamespaceRecord[]> =>
+        [{ namespace: "project-alpha", storageDir: nsDir } as unknown as NamespaceRecord],
+    } as unknown as NamespaceCatalog;
+    const nsStorages = new Map<string, StorageManager>();
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root),
+      async (namespace) => {
+        let sm = nsStorages.get(namespace);
+        if (!sm) {
+          sm = new StorageManager(nsDir);
+          nsStorages.set(namespace, sm);
+        }
+        return sm;
+      },
+      catalog,
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    assert.ok((await stat(nsLedger)).size < beforeSize, "namespace ledger must be compacted");
+    const rebuilt = (await readFile(nsLedger, "utf-8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(rebuilt.map((r) => r.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
