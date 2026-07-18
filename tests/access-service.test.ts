@@ -4480,3 +4480,164 @@ test("two concurrent identical keyed recalls coalesce to a single pipeline (#190
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a keyed caller joining a live flight still hits the idempotency guard: key reuse raises a conflict, not a silent join (#1906 r12 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-conflict-"));
+  let recallCalls = 0;
+  let releaseFlight: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const flightEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      // The keyless "new-payload" flight (call #2) gates so it stays live while
+      // the reused-key request arrives.
+      if (recallCalls === 2) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseFlight = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const base = { sessionKey: "agent:project-x:chat", namespace: "shared" };
+  try {
+    // 1. Key "B" is first used for one payload — stored under B.
+    await service.recall({ ...base, query: "old-payload", idempotencyKey: "B" });
+    assert.equal(recallCalls, 1);
+
+    // 2. A DIFFERENT, keyless recall for "new-payload" is in flight (gated).
+    const flight = service.recall({ ...base, query: "new-payload" });
+    await flightEntered;
+
+    // 3. Key "B" is REUSED for the "new-payload" request while that flight is
+    //    live. It shares the flight key (idempotencyKey is not in it), so the old
+    //    fast-path would have silently JOINED and succeeded. It must instead enter
+    //    the idempotency guard and raise a reuse CONFLICT (B was stored for a
+    //    different payload).
+    await assert.rejects(
+      service.recall({ ...base, query: "new-payload", idempotencyKey: "B" }),
+      (error: Error) => /idempotencyKey reuse conflict/.test(error.message),
+    );
+
+    releaseFlight?.();
+    const flightResp = await flight;
+    assert.equal(flightResp.context, "ctx");
+    assert.equal(recallCalls, 2, "the conflicting request ran no pipeline");
+  } finally {
+    releaseFlight?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a keyed retry of a cached key during a live flight replays from the store with zero new pipeline or budget (#1906 r12 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-replay-"));
+  let recallCalls = 0;
+  let releaseFlight: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const flightEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      // The keyless flight (call #2) gates so the cached-key retry arrives while
+      // it is live.
+      if (recallCalls === 2) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseFlight = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const base = { sessionKey: "agent:project-x:chat", namespace: "shared" };
+  try {
+    // 1. Cache key "A" for the "hello" payload (budget count -> 1).
+    await service.recall({ ...base, query: "hello", idempotencyKey: "A" });
+    assert.equal(recallCalls, 1);
+
+    // 2. An identical keyless flight for "hello" is live (budget count -> 2).
+    const flight = service.recall({ ...base, query: "hello" });
+    await flightEntered;
+
+    // 3. A retry of the cached key "A" arrives while that flight is live. The old
+    //    fast-path would JOIN the flight and record a NEW budget event. It must
+    //    instead REPLAY from the store: zero new pipeline, zero new budget.
+    const replay = await service.recall({ ...base, query: "hello", idempotencyKey: "A" });
+    assert.equal(replay.context, "ctx");
+    assert.equal(recallCalls, 2, "the cached-key retry ran no pipeline");
+
+    releaseFlight?.();
+    await flight;
+
+    // A fresh distinct cross-namespace recall now sees count=3 (call #1 + the
+    // flight + this fresh one). If the retry had joined and recorded, it would be 4.
+    const fresh = await service.recall({ ...base, query: "different" });
+    assert.equal(recallCalls, 3);
+    assert.equal(fresh.budgetWarning?.count, 3, "the cached-key retry recorded zero budget");
+  } finally {
+    releaseFlight?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

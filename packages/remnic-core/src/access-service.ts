@@ -1350,9 +1350,11 @@ interface RecallFlight {
   onIdle?: () => void;
   /** For KEYED flights only: settles when the leader's idempotency persistence
    *  (idempotency.put) completes — resolves on success, rejects with the put
-   *  error on failure. Fast-path keyed followers await this before reporting
-   *  success so a retry of the key never re-executes after a follower already
-   *  saw success while the put was still pending or had failed (round 7 #1). */
+   *  error on failure. The leader's consumeFlight detaches BEFORE its put runs,
+   *  so `onIdle` awaits this gate before unregistering the flight — keeping it
+   *  discoverable through the persistence window so an identical arrival during a
+   *  slow put still coalesces instead of starting a second pipeline (round 12 #2,
+   *  originally the round-7 #1 follower gate). */
   persisted?: {
     promise: Promise<void>;
     resolve: () => void;
@@ -2715,42 +2717,23 @@ export class EngramAccessService {
     }
   }
 
-  /** Follower path (issue #1906 review): join an already-registered flight
-   *  WITHOUT taking a concurrency slot. Mirrors the leaders' post-consume
-   *  guards: a caller that disconnected after its reservation was recorded but
-   *  before delivery releases it rather than leaking quota (round 8 #1). For a
-   *  KEYED flight the follower does not report success until the leader's
-   *  idempotency persistence settles (round 7 #1) — that wait is raced against
-   *  the caller's own abort so a disconnect during the leader's put returns
-   *  AbortError while the flight still completes and persists for others
-   *  (round 8 #2). On persistence failure it behaves identically to the leader
-   *  (release + reject). */
+  /** UNKEYED follower path (issue #1906 review): join an already-registered
+   *  flight WITHOUT taking a concurrency slot. Only unkeyed callers reach here —
+   *  keyed callers enter the idempotency guard first (round 12 #1) and coalesce
+   *  via leadRecallFlight's existing-join instead. Mirrors the leaders' final
+   *  post-consume abort guard: a caller that disconnected after its per-caller
+   *  reservation was recorded but before delivery releases it rather than leaking
+   *  quota (round 8 #1). */
   private async followRecallFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
   ): Promise<EngramAccessRecallResponse> {
     const consumed = await this.consumeFlight(flight, request, true, true);
-    if (request.idempotencyKey?.trim() && flight.persisted) {
-      try {
-        // Race the persistence gate with THIS caller's abort: a disconnect here
-        // rejects the follower (releasing its reservation) while the leader's put
-        // still completes for other consumers (round 8 #2). A persistence failure
-        // rejects identically (round 7 #1).
-        await this.raceAbort(flight.persisted.promise, request.abortSignal);
-      } catch (err) {
-        this.budget.release(consumed.reservation);
-        throw err;
-      }
-    } else {
-      // Unkeyed: a caller that aborted after its per-caller reservation was
-      // recorded but before delivery releases it (round 8 #1), matching the
-      // final-abort guard in leadRecallFlight / runRecallDirect.
-      try {
-        throwIfAborted(request.abortSignal);
-      } catch (err) {
-        this.budget.release(consumed.reservation);
-        throw err;
-      }
+    try {
+      throwIfAborted(request.abortSignal);
+    } catch (err) {
+      this.budget.release(consumed.reservation);
+      throw err;
     }
     return consumed.response;
   }
@@ -2869,8 +2852,22 @@ export class EngramAccessService {
       controller,
       live: 0,
       onIdle: () => {
-        if (this.recallInFlight.get(flightKey) === flight) {
-          this.recallInFlight.delete(flightKey);
+        const unregister = () => {
+          if (this.recallInFlight.get(flightKey) === flight) {
+            this.recallInFlight.delete(flightKey);
+          }
+        };
+        // A KEYED leader's consumeFlight detaches (live -> 0) BEFORE
+        // handleIdempotentRead runs idempotency.put, so unregistering on detach
+        // would drop the flight DURING the persistence window — an identical
+        // arrival then finds no flight and starts a second pipeline + reserve.
+        // Keep the flight discoverable until `persisted` settles so arrivals
+        // during a slow put still coalesce onto the one pipeline (round 12 #2).
+        // Unkeyed flights have no put: unregister immediately.
+        if (persisted) {
+          persisted.promise.then(unregister, unregister);
+        } else {
+          unregister();
         }
       },
       ...(persisted ? { persisted } : {}),
@@ -3299,29 +3296,36 @@ export class EngramAccessService {
     // idempotency-store slot; it never changes the computed result. Excluding it
     // lets identical recalls that arrive with DISTINCT per-request idempotency
     // keys (a common transport-retry pattern) coalesce onto ONE pipeline + slot
-    // instead of each key spawning its own (round 11). Contract: the leader
-    // persists under ITS key via handleIdempotentRead; a coalesced follower that
-    // carried a DIFFERENT key shares the leader's result but gets NO idempotent-
-    // replay entry of its own. A same-key retry still replays from the store
-    // (its requestFingerprint — below — is unchanged and still carries the key).
+    // instead of each key spawning its own (round 11). Contract: EVERY keyed
+    // caller enters the idempotency guard first (round 12 #1) and persists the
+    // shared result under ITS OWN key, so a same-key retry always replays from
+    // the store; distinct keys on identical work still coalesce onto one pipeline.
     const { idempotencyKey: _flightKeyOmitIdemKey, ...flightFingerprint } = requestFingerprint;
     const flightKey = `${principalKey}\u0000${hashAccessIdempotencyPayload({
       operation: "recall",
       request: flightFingerprint,
     })}`;
-    // Follower fast-path (#1906 review #2): join an in-flight identical recall
-    // WITHOUT acquiring a concurrency slot. Because the leader registers its
-    // flight synchronously (below, before any await), every later identical
+    // UNKEYED follower fast-path (#1906 review #2): join an in-flight identical
+    // recall WITHOUT acquiring a concurrency slot. Because the leader registers
+    // its flight synchronously (below, before any await), every later identical
     // arrival coalesces here — even when the concurrency cap is below the number
     // of concurrent callers. Followers never wait for, or consume, a slot.
+    //
+    // KEYED callers must NOT take this fast-path: they enter the idempotency
+    // guard FIRST (leadRecallFlight -> handleIdempotentRead) so a stored response
+    // REPLAYS and a reused key with a different payload raises a CONFLICT, instead
+    // of silently joining the flight and skipping the store check (round 12 #1).
+    // On a store MISS a keyed caller still coalesces onto a live flight via
+    // leadRecallFlight's existing-join, then persists under its own key.
+    const keyed = !!request.idempotencyKey?.trim();
     const existing = this.recallInFlight.get(flightKey);
     // Skip a flight already cancelled (all its callers aborted) — it will
     // reject with AbortError; lead a fresh flight instead (round 3 #2).
-    if (existing && !existing.controller.signal.aborted) {
+    if (!keyed && existing && !existing.controller.signal.aborted) {
       // A caller that already disconnected must NOT join a live flight: joining
-      // records its own cross-namespace budget event (and, keyed, runs an
-      // idempotency.put) before the late abort check. Reject at admission; the
-      // existing flight continues for its other live consumers (round 10 #1).
+      // records its own cross-namespace budget event before the late abort check.
+      // Reject at admission; the existing flight continues for its other live
+      // consumers (round 10 #1).
       throwIfAborted(request.abortSignal);
       return this.followRecallFlight(existing, request);
     }
