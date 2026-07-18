@@ -12,6 +12,84 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 - **Sharp retrieval.** Hybrid search (BM25 + vector + reranking) over rebuildable indexes, with graph recall, memory-worth scoring, and per-result provenance you can inspect.
 - **MIT licensed.** Free, open, and built to be forked.
 
+<!-- BEGIN OPENAI BUILD WEEK 2026 HIGHLIGHT — temporary submission section -->
+## OpenAI Build Week 2026: Remnic Relay
+
+**Correct once. Every agent learns.**
+
+Remnic is shared memory for AI agents. **Remnic Relay** is the human-governed
+correction loop we built for OpenAI Build Week: it exposes the stale belief
+behind an agent failure, shows where that belief came from, puts the proposed
+replacement behind human approval, and proves a brand-new agent learned the
+approved correction from Remnic.
+
+The demonstration follows an online-payment failure. One Codex agent reads the
+current rule while another confidently applies an older retry rule. Relay opens
+an evidence X-Ray connecting the recalled memory to the failing test, presents
+a before-and-after memory diff for approval, preserves the old belief as
+superseded, and then starts a fresh agent with no handoff. The mission is only
+complete when that agent recalls the replacement and turns the same payment
+test green.
+
+### What we built during Build Week
+
+- a versioned contract for conflicts, evidence, corrections, lineage, and
+  fresh-agent verification;
+- a human-gated correction engine with append-only supersession;
+- Mission Control views for conflict inspection, evidence X-Ray, approval,
+  propagation, and the final mission receipt;
+- an isolated four-role Codex mission runner using only a cleared synthetic
+  Remnic instance; and
+- a dependency-free judge package that binds the recorded agent run, product
+  UI, synthetic fixture, and verification receipt into one reproducible story.
+
+### How Codex and GPT-5.6 were used
+
+Codex collaborated across the new extension: contract modeling, correction
+engine, Mission Control, isolated runner, adversarial tests, evidence sealing,
+and judge packaging. GPT-5.6 also powers the demonstrated product workflow
+itself through four isolated Codex roles: Scout reads the accepted rule, a
+Builder acts on stale memory, a correction agent proposes the replacement, and
+a fresh Builder proves the approved memory propagated without an agent
+handoff. Agents propose; a human approves; the test proves the result.
+
+### Install, supported platforms, and testing
+
+The fastest judge path uses the committed synthetic mission and requires no
+dependency install, model call, account, or credential:
+
+```bash
+git clone https://github.com/joshuaswarren/remnic.git
+cd remnic
+node scripts/relay/judge-package.mjs serve
+```
+
+Open the printed loopback URL, compare the current and stale beliefs, open the
+X-Ray, review and approve the proposed correction, and follow the fresh agent
+through the passing payment test. Verify the same evidence from the terminal:
+
+```bash
+node scripts/relay/judge-package.mjs verify
+node scripts/verify-relay-judge-package.mjs
+```
+
+- **Judge package:** Linux with procfs and Node.js 22.12 or newer; Linux x64 is
+  independently clean-room verified.
+- **Mission Control:** Chrome/Chromium 151 verified at desktop and mobile
+  sizes, including keyboard-only and reduced-motion flows.
+- **Live isolated mission runner:** Linux x64 with Codex CLI 0.144.4 or newer
+  and the repository development dependencies. This is not required for the
+  judge experience.
+- **macOS and Windows:** use the submission video/gallery or run the verifier
+  in a supported Linux environment. The executable verifier fails closed where
+  equivalent filesystem-safety primitives are unavailable.
+
+Remnic's core memory engine, integrations, and benchmark framework predate
+Build Week. The [submission ledger](HACKATHON.md) separates that foundation
+from the new Relay work. See the [judge guide](docs/remnic-relay/JUDGE-GUIDE.md)
+and [claim ledger](docs/remnic-relay/CLAIMS.md) for the complete evidence.
+<!-- END OPENAI BUILD WEEK 2026 HIGHLIGHT -->
+
 ## Why Remnic
 
 Most agents do not fail because they lack another prompt. They fail because they do not understand the user, the project, the boundaries, or what "good" means in context. Every session starts from zero: the agent forgets your name, your projects, the decisions you already made, and the bugs you already debugged. You re-explain the same context over and over, and the agent still repeats the same mistakes.
@@ -196,66 +274,6 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 - [Pattern reinforcement](docs/pattern-reinforcement.md) — cross-session pattern detection with a recall boost for reinforced primitives.
 - [Shared context](docs/shared-context.md) — cross-agent shared intelligence for multi-agent teams.
 - [Coding-agent memory](docs/coding-agent.md) — repo conventions, review behavior, and ask-before rules for coding tools.
-
-## OpenAI Build Week: Remnic Relay
-
-**Remnic Relay is memory that can heal an agent team.** It exposes incompatible
-beliefs, binds a failing outcome to stale memory, requires a human-approved
-correction, retires the old decision, and proves a transcript-free cold agent
-used the replacement to turn the same hidden contract green.
-
-Run the complete judge experience from a Linux checkout with procfs and Node
-22.12+—no dependency install, build, account, credential, dataset download,
-model call, or network access required. The pure-Node verifier performs
-component-by-component descriptor-pinned no-follow traversal, locks every
-opened input to the repository mount ID, and names that mode in its receipt.
-Linux x64 is independently clean-room verified; on hosts
-without those primitives it fails closed instead of substituting a weaker
-pathname verifier. The synthetic mission fixture is already committed under
-`fixtures/remnic-relay/` and verified in place:
-
-```bash
-node scripts/relay/judge-package.mjs serve
-```
-
-The committed Mission Control replay is bound to an isolated live mission:
-four distinct Codex one-shot threads ran `gpt-5.6-terra` as Scout, stale
-Builder, Resolver, and cold Builder. One human-approved correction changed the
-hidden contract from failed to passed in 84.829 seconds and used 5.8096 locally
-accounted Codex units. The run used synthetic fixtures and a fresh isolated
-Remnic store, never production data; Sol was disabled. Verify the hashes,
-causal chain, usage, UI binding, privacy receipt, and measured 165-second demo
-script with:
-
-```bash
-node scripts/relay/judge-package.mjs verify
-node scripts/verify-relay-judge-package.mjs
-```
-
-The attested path invokes Node directly, preventing npm pre/post lifecycle
-hooks from running before the clean-room safety receipt. For a checkout that
-may itself be modified, the [judge guide](docs/remnic-relay/JUDGE-GUIDE.md#clean-room-smoke)
-provides a no-install, out-of-band trust chain: SHA-256-check one staged
-launcher against the GitHub attestation, then let that trusted launcher pin
-both executable modules before either is spawned or imported.
-
-Codex collaborated throughout the in-window extension: it modeled and built
-the Relay event/API contract, designed Mission Control, implemented the Linux
-isolation and bounded MCP/network surfaces, converted review findings into
-adversarial tests, sealed the GPT-5.6 evidence, and built the no-install judge
-package. The user made the key product and safety calls: pivot to Relay, keep
-performance work separate, use only a cleared synthetic Remnic instance, use
-Codex CLI event credits instead of API billing, prefer Terra, prohibit Sol,
-cap the mission at four calls, and require human approval plus current-head
-PR-loop review.
-
-Remnic's core memory engine, adapters, benchmark framework, and general console
-predate Build Week. The [submission ledger](HACKATHON.md) separates that prior
-work from every new Relay phase with dated commits and PRs. See the exact
-[judge guide](docs/remnic-relay/JUDGE-GUIDE.md),
-[claim ledger](docs/remnic-relay/CLAIMS.md),
-[demo script](docs/remnic-relay/DEMO-SCRIPT.md), and
-[Devpost draft](docs/remnic-relay/DEVPOST.md).
 
 ## Privacy and your data
 
