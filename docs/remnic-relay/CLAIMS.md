@@ -5,7 +5,7 @@ what it would merely like to imply. Product copy, screenshots, narration, and
 Devpost text should use the claim column or a narrower paraphrase.
 
 Canonical evidence root:
-`e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e`.
+`69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be`.
 Run `npm run relay:judge` to re-evaluate the mappings below.
 
 ## Product and technical claims
@@ -51,7 +51,7 @@ evaluate only the new Relay extension:
 | Pre-existing | Remnic core memory storage, retrieval, governance, host adapters, benchmark framework, and general admin console; history before 2026-07-13. |
 | New: Relay evidence contract/API | Issue #1966, PR #1970, merge `98e83cc1` on 2026-07-17; versioned events, reducer, append-only store, receipt, access/HTTP surface. |
 | New: Mission Control | Issue #1967, PR #1972, merge `34f1f1bb` on 2026-07-17; dedicated conflict/lineage/approval/cold-start product surface and browser audit. |
-| New: isolated live mission | Issue #1968, PR #1999 and its dated commits beginning `386aa5f3` on 2026-07-17; bounded Codex CLI runner, synthetic harness, isolation, live GPT-5.6 recording, replay binding. |
+| New: isolated live mission | Issue #1968, PR #1999, merge `a236ad07` on 2026-07-18, with dated commits beginning `386aa5f3` on 2026-07-17; bounded Codex CLI runner, synthetic harness, isolation, live GPT-5.6 recording, replay binding. |
 | New: judge package | Issue #1969; dependency-free verifier/server, clean-room smoke, claims ledger, demo script, Devpost copy, and refreshed captures. Final PR/merge is added before submission. |
 
 The required Codex `/feedback` session ID is intentionally left to the user,

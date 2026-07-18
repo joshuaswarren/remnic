@@ -25,7 +25,7 @@ pnpm relay:replay
 The replay:
 
 - is bound to recording root
-  `e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e`;
+  `69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be`;
 - packages a real four-call `gpt-5.6-terra` mission over synthetic fixtures;
 - makes no model or external call and spends no credit during playback;
 - reads no production Remnic or Codex data;
@@ -37,9 +37,10 @@ The replay:
 
 `tests/relay-mission-control.test.ts` regenerates the entire replay in memory
 and compares it to the committed JSON. `npm run relay:judge` also verifies the
-recording/fixture manifests, semantic causal chain, output hashes, credit
-accounting, independently derived mission receipt, and the exact five-file UI
-root `e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4`.
+recording/fixture manifests, semantic causal chain, ordered hidden-test output
+hashes, credit accounting, independently derived mission receipt, and the exact
+five-file UI root
+`55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b`.
 A hand-edited or stale frame fails closed.
 
 ## Authenticated live mode

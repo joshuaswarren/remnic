@@ -48,7 +48,7 @@ npm run relay:judge:clean-room
 ```
 
 The expected canonical root is
-`e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e`.
+`69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be`.
 Full instructions and troubleshooting are in
 [the judge guide](docs/remnic-relay/JUDGE-GUIDE.md).
 
@@ -102,10 +102,10 @@ Issue [#1967](https://github.com/joshuaswarren/remnic/issues/1967), PR
 ### 3. Isolated bounded GPT-5.6 mission runner
 
 Issue [#1968](https://github.com/joshuaswarren/remnic/issues/1968), PR
-[#1999](https://github.com/joshuaswarren/remnic/pull/1999), with dated work
-beginning at
-[`386aa5f3`](https://github.com/joshuaswarren/remnic/commit/386aa5f3) on
-2026-07-17.
+[#1999](https://github.com/joshuaswarren/remnic/pull/1999), merged as
+[`a236ad07`](https://github.com/joshuaswarren/remnic/commit/a236ad07) on
+2026-07-18, with dated work beginning at
+[`386aa5f3`](https://github.com/joshuaswarren/remnic/commit/386aa5f3).
 
 - four fixed one-shot roles and four distinct Codex threads;
 - `gpt-5.6-terra`, medium reasoning, no Sol, no resume, and a four-call maximum;
@@ -148,7 +148,7 @@ The canonical run was generated on 2026-07-18 with Codex CLI 0.144.4:
 | Test transition | failed → passed |
 | Mission event wall time | 84.829 seconds |
 | Locally accounted run cost | 5.8096 Codex units |
-| Recording root | `e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e` |
+| Recording root | `69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be` |
 | Mission receipt | `ef04b66dadcb31af5312cce5a820662ae7169e6cece33e16e39a7abba3433013` |
 | Synthetic fixture root | `19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec` |
 | Production data read | `false` |
@@ -212,6 +212,40 @@ committed fixture and recording contain synthetic checkout-token policy text,
 not production memories, personal data, or raw public benchmark datasets.
 Auth, prompts, transcripts, raw JSONL, and private ledgers are excluded from the
 recording manifest.
+
+### Optional legacy benchmark path — not part of Relay
+
+Relay does not require another benchmark run, and this command was not used to
+produce its submission evidence. The repository keeps one guarded Build Week
+benchmark recipe here solely for reproducibility of the separate pre-existing
+evaluation path. Do not run it for Relay. A future operator must first stage
+LongMemEval under `./bench-datasets/longmemeval`, inspect a one-item smoke
+ledger, and replace `<LEDGER_DERIVED_LIMIT>` with the positive bound derived
+from that ledger; leaving the placeholder intact fails before dispatch.
+
+```bash
+export BUILD_WEEK_RUN_ROOT="$HOME/.remnic/bench/build-week-2026"
+export BUILD_WEEK_RESULTS_DIR="$BUILD_WEEK_RUN_ROOT/results"
+umask 077
+mkdir -p "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+chmod 700 "$BUILD_WEEK_RUN_ROOT" "$BUILD_WEEK_RESULTS_DIR"
+
+export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
+export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"
+
+remnic bench run longmemeval \
+  --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --dataset-dir ./bench-datasets/longmemeval \
+  --results-dir "$BUILD_WEEK_RESULTS_DIR" \
+  --drain-timeout 600000 \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
+```
 
 ## Supported judge environment
 

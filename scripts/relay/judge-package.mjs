@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_RELAY_REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
-export const RELAY_RECORDING_ROOT_SHA256 = "e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e";
-export const RELAY_UI_ROOT_SHA256 = "e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4";
+export const RELAY_RECORDING_ROOT_SHA256 = "69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be";
+export const RELAY_UI_ROOT_SHA256 = "55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b";
 
 const RECORDING_RELATIVE = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
 const FIXTURE_RELATIVE = "fixtures/remnic-relay";
@@ -493,6 +493,15 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     tests[1]?.phase === "after-correction" && tests[1]?.status === "passed" && tests[1]?.exitCode === 0,
     "after-correction test does not prove recovery"
   );
+  const testOutputSha256 = tests.map((result) => result?.outputSha256);
+  invariant(
+    testOutputSha256.every((digest) => typeof digest === "string" && SHA256_PATTERN.test(digest)),
+    "hidden-contract test output digests are invalid"
+  );
+  invariant(
+    sameJson(metadata.testOutputSha256, testOutputSha256),
+    "recording metadata is not bound to the ordered hidden-contract test output digests"
+  );
 
   invariant(events.length === EXPECTED_EVENT_KINDS.length, "the mission must contain exactly 16 causal events");
   invariant(
@@ -678,6 +687,7 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     missionDurationMs: completedAt - startedAt,
     creditUnitsSpent: run.budgetUnits,
     testTransition: ["failed", "passed"],
+    testOutputSha256,
     humanApproved: true,
     coldStartVerified: true,
     productionDataRead: false,

@@ -95,6 +95,10 @@ test("dependency-free Relay judge verifier binds the canonical live mission", as
   assert.equal(receipt.calls, 4);
   assert.equal(receipt.distinctThreads, 4);
   assert.deepEqual(receipt.testTransition, ["failed", "passed"]);
+  assert.deepEqual(receipt.testOutputSha256, [
+    "50a4180e06746bb790535ae07b72e16b211e6ba986947d175863064913d6ca1a",
+    "37d2becb5a1c3c127b20df40566c52fc42c68dd3a036819da6b40c48a0af2164",
+  ]);
   assert.equal(receipt.humanApproved, true);
   assert.equal(receipt.coldStartVerified, true);
   assert.equal(receipt.runtimeDependencies, 0);

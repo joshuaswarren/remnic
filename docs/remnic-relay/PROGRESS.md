@@ -9,7 +9,7 @@ Last updated: 2026-07-18
 - [x] Work isolated in dedicated Relay branches/worktrees.
 - [x] Phase 1: mission contract and receipt API (#1966, PR #1970).
 - [x] Phase 2: Mission Control UI (#1967, PR #1972).
-- [ ] Phase 3: isolated Codex runner and replay (#1968, PR #1999 in PR loop).
+- [x] Phase 3: isolated Codex runner and replay (#1968, PR #1999).
 - [ ] Phase 4: hardening, evidence, and submission package (#1969).
 
 ## Phase 1 — merged
@@ -36,7 +36,7 @@ Last updated: 2026-07-18
 - [x] Current-head PR loop clean and manually merged.
 - [x] `origin/main` verified at merge `34f1f1bb`.
 
-## Phase 3 — implementation and canonical run complete
+## Phase 3 — merged
 
 - [x] Four fixed one-shot roles using `gpt-5.6-terra`, medium reasoning.
 - [x] Four-call cap, Sol prohibition, reserve, planned ceiling, and local credit
@@ -50,11 +50,11 @@ Last updated: 2026-07-18
 - [x] Structured Codex event proof, distinct threads, prompt/output hashes,
   recall receipts, correction lineage, and fail→pass contract results.
 - [x] Canonical live run: 84.829 seconds, four calls, 5.8096 locally accounted
-  units, root `e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e`.
+  units, root `69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be`.
 - [x] Recording sanitizer and UI replay bound to the sealed root.
 - [x] Focused Relay tests and repository quick preflight.
-- [ ] PR #1999 reports current-head merge-ready after required CI and AI review.
-- [ ] PR #1999 manually merged and `origin/main` verified.
+- [x] PR #1999 reported current-head merge-ready after required CI and AI review.
+- [x] PR #1999 manually merged and `origin/main` verified at `a236ad07`.
 
 ## Phase 4 — in progress
 

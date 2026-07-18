@@ -23,7 +23,7 @@ npm run relay:demo
 Expected terminal output begins with:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e ui=e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4 model=gpt-5.6-terra calls=4
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4
 Remnic Relay Mission Control: http://127.0.0.1:4173/
 Verified offline replay · zero credentials · zero external calls · Ctrl+C to stop
 ```
@@ -51,13 +51,15 @@ npm run relay:judge
 Expected output:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e ui=e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4 model=gpt-5.6-terra calls=4 transition=failed->passed externalCalls=0 productionDataRead=false
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed externalCalls=0 productionDataRead=false
 ```
 
 The dependency-free verifier does not merely trust the final JSON. It:
 
 - rehashes the exact recording and synthetic fixture trees;
 - pins the canonical recording root and mission receipt;
+- pins the ordered before/after hidden-test output digests recorded by the
+  mission, so a resealed but substituted test transcript fails closed;
 - binds four distinct Codex threads to four committed prompt hashes and four
   retained structured-output hashes;
 - verifies stale recall, human approval, supersession, replacement recall,
@@ -81,7 +83,7 @@ npm run relay:judge:clean-room
 Expected output on the verified platform:
 
 ```text
-RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e ui=e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4 dependencies=0 externalCalls=0 productionDataRead=false sensitiveFiles=39
+RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
 This command copies only the package manifest, five static UI files, sealed
@@ -103,7 +105,7 @@ an unlisted path, and removes the temporary package.
 | Human control | explicit `APPROVE` correction gate |
 | Cold-start proof | replacement recalled in `relay:builder-cold:transcript-free` |
 | Locally accounted run cost | 5.8096 Codex units |
-| Recording root | `e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e` |
+| Recording root | `69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be` |
 | Mission receipt | `ef04b66dadcb31af5312cce5a820662ae7169e6cece33e16e39a7abba3433013` |
 | Fixture root | `19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec` |
 | Privacy | synthetic fixtures only; production data read `false` |
