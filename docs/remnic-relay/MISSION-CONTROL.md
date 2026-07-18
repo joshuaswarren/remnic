@@ -12,30 +12,35 @@ It is a dedicated product surface at `/remnic/ui/relay/` (with the legacy
 card, lineage state, event, and receipt field is derived from a version 1
 `RelayMissionSnapshot`.
 
-## Safe default: deterministic replay
+## Safe default: sealed live replay
 
 Mission Control opens in replay mode at the first detected disagreement. The
-committed replay is regenerated from `@remnic/core`'s canonical synthetic
-fixture and reducer:
+committed frames are deterministically regenerated from the integrity-checked
+isolated GPT-5.6 recording and the `@remnic/core` reducer:
 
 ```bash
-NODE_OPTIONS=--conditions=remnic-source \
-  pnpm exec tsx scripts/generate-relay-ui-replay.ts
+pnpm relay:replay
 ```
 
 The replay:
 
-- uses no model calls or Codex credits;
+- is bound to recording root
+  `e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e`;
+- packages a real four-call `gpt-5.6-terra` mission over synthetic fixtures;
+- makes no model or external call and spends no credit during playback;
 - reads no production Remnic or Codex data;
 - contains 12 monotonically advancing reducer snapshots over 16 events;
 - pauses before the approval event and requires the operator to type
   `APPROVE`;
-- labels fixture evidence as **Deterministic replay fixture**;
+- preserves at-action model, memory, source, approval, and test evidence;
 - never claims that replay approval is a live write.
 
 `tests/relay-mission-control.test.ts` regenerates the entire replay in memory
-and compares it to the committed JSON. A hand-edited or stale frame fails the
-test.
+and compares it to the committed JSON. `npm run relay:judge` also verifies the
+recording/fixture manifests, semantic causal chain, output hashes, credit
+accounting, independently derived mission receipt, and the exact five-file UI
+root `e202cc6463501b5089b82b090d86c7d566969ba3e09451a441831fe5c0b5e0b4`.
+A hand-edited or stale frame fails closed.
 
 ## Authenticated live mode
 
@@ -117,7 +122,7 @@ nested paths fall through to the normal authenticated 404 boundary.
 
 ## Verification evidence
 
-Browser verification on 2026-07-17 used Chrome 151 at the design targets. The
+Browser verification on 2026-07-18 used Chrome 151 at the design targets. The
 repository-mandated Rodney binary was not installed in this Linux environment,
 so the installed `agent-browser` Chromium runner performed the equivalent
 viewport, keyboard, dialog, network-failure, and media-emulation checks.
@@ -130,7 +135,8 @@ Measured results:
   reported as `1e-06s`;
 - keyboard-only conflict → failure → human gate flow: passed;
 - typed approval remains disabled before `APPROVE`, enabled afterward: passed;
-- forced Relay API abort: labeled `OFFLINE FALLBACK` and replay remained usable;
+- unavailable Relay API response: labeled `OFFLINE FALLBACK` and replay
+  remained usable;
 - browser page-error log: empty across conflict, approval, recovered, X-ray,
   narrow, and offline states.
 
@@ -138,6 +144,8 @@ Hero captures:
 
 - [conflict, desktop](screenshots/mission-control-conflict-desktop.png)
 - [human gate, desktop](screenshots/mission-control-human-gate-desktop.png)
+- [cold-start handoff, desktop](screenshots/mission-control-cold-start-desktop.png)
+- [propagation verified, desktop](screenshots/mission-control-propagation-desktop.png)
 - [recovered receipt, desktop](screenshots/mission-control-recovered-desktop.png)
 - [evidence X-ray, desktop](screenshots/mission-control-evidence-xray-desktop.png)
 - [conflict, narrow](screenshots/mission-control-conflict-narrow.png)
