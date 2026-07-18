@@ -122,9 +122,14 @@ function normalizeRelativePath(value: string): string {
 
 function hasCorrectDecisionSemantics(value: string): boolean {
   const normalized = value.toLowerCase();
+  const sessionLifecycle =
+    /session/.test(normalized) ||
+    (/(?:first|initial) (?:checkout )?request/.test(normalized) &&
+      /(?:ordinary )?retr(?:y|ies)/.test(normalized) &&
+      /(?:current|unexpired|valid) (?:checkout )?token/.test(normalized));
   return (
     /reus(?:e|es|ing)/.test(normalized) &&
-    /session/.test(normalized) &&
+    sessionLifecycle &&
     /expir(?:y|ed|es|ation)/.test(normalized) &&
     /(one|exactly 1|single)/.test(normalized) &&
     /(mint|replacement|refresh)/.test(normalized)

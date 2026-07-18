@@ -409,5 +409,9 @@ export async function runRelayCodexOneShot<T>(
     status: "completed",
   });
   await chmod(finalPath, 0o600);
+  await writeFile(path.join(outputDir, "call-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, {
+    mode: 0o600,
+    flag: "wx",
+  });
   return { summary, output, stdout: capture.stdout, stderr: capture.stderr };
 }
