@@ -2,7 +2,7 @@
 name: remnic-no-cross-package-src-imports
 description: "Never import another workspace package via a relative ../<pkg>/src/ path; use the @remnic/* package name"
 condition:
-  - '(from\s+|import\s*\(\s*|require\(\s*|import\s+)["''](\.\./)+(belief-ledger|bench|bench-ui|coding-graph|connector-[a-z-]+|export-weclone|hermes-provider|import-[a-z-]+|plugin-[a-z-]+|remnic-cli|remnic-core|remnic-server|shim-openclaw-engram)/src/'
+  - '(from\s+|import\s*\(\s*|require\(\s*|import\s+)["''](\.\./)+(belief-ledger|bench|bench-ui|coding-graph|connector-[a-z0-9-]+|export-weclone|hermes-provider|import-[a-z0-9-]+|plugin-[a-z0-9-]+|remnic-cli|remnic-core|remnic-server|shim-openclaw-engram)/src/'
 globs:
   - "**/*.ts"
   - "**/*.tsx"

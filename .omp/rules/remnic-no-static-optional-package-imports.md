@@ -2,20 +2,25 @@
 name: remnic-no-static-optional-package-imports
 description: "Base packages must not statically value-import optional companion packages (bench, export/import-*, connector-*, coding-graph)"
 condition:
-  - 'import\s+(?!type\b)[^;]{0,300}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
-  - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
-  - '(import\s+|require\(\s*)["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
+  - 'import\s+(?!type\b)(?!\{)[A-Za-z_$*][^;]{0,300}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
+  - 'import\s+(?!type\b)[^;{]{0,120}?\{([^}]*,)?\s*(?!type\s)[A-Za-z_$][\w$]*\s*(as\s+[\w$]+\s*)?[,}][^;]{0,200}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
+  - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
+  - '(import\s+|require\(\s*)["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
 globs:
   - "**/packages/remnic-cli/**"
   - "**/packages/remnic-core/**"
   - "**/packages/remnic-server/**"
   - "**/packages/plugin-*/**"
   - "**/packages/shim-*/**"
+  - "src/**"
+  - "**/remnic*/src/**"
 ---
 
 You are adding a runtime import of an optional companion package
 (`@remnic/bench`, `@remnic/export-weclone`, `@remnic/import-*`,
-`@remnic/connector-*`, `@remnic/coding-graph`) into a base package.
+`@remnic/connector-*`, `@remnic/coding-graph`) into an install surface
+(a base package, or the repo-root `src/` compatibility wiring that is
+built and published as the OpenClaw extension).
 These are optional peer dependencies — a static import, a side-effect
 import, or a literal-specifier dynamic import (awaited or not: `void
 import(...)`, `import(...).then(...)`) lets the bundler resolve them
@@ -34,6 +39,9 @@ helpers instead:
 Pattern: `await import("@remnic/" + "bench")` wrapped in a loader that
 throws a user-facing install hint on `MODULE_NOT_FOUND`.
 
-Type-only imports (`import type { X } from "@remnic/bench"` or
-`typeof import("@remnic/bench")`) are erased at compile time and are
-fine — this rule intentionally does not match them.
+Type-only imports are erased at compile time and are fine — this rule
+intentionally does not match `import type { X } from "@remnic/bench"`,
+all-type inline specifiers (`import { type A, type B } from ...`), or
+`typeof import("@remnic/bench")` type positions. A mixed list like
+`import { type A, B } from ...` still imports `B` at runtime and is
+correctly caught.
