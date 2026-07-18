@@ -22,9 +22,15 @@ import {
   RELAY_MODEL,
   RELAY_OPERATOR_PRINCIPAL,
   RELAY_PLANNED_SPEND_CEILING_UNITS,
+  RELAY_RECALL_DISCLOSURE,
+  RELAY_RECALL_MODE,
+  RELAY_RECALL_TAGS,
+  RELAY_RECALL_TAG_MATCH,
+  RELAY_RECALL_TOP_K,
   type RelayCodexCallSummary,
   type RelayPreflightReceipt,
   type RelayRole,
+  relayBuilderSessionKey,
 } from "../scripts/relay/contracts.js";
 import { verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
 import { digestFixtureTree } from "../scripts/relay/isolation.js";
@@ -51,12 +57,28 @@ function callSummary(role: RelayRole): RelayCodexCallSummary {
         ? {
             query: "checkout token retry policy decision",
             namespace: "relay-build-week",
+            sessionKey: relayBuilderSessionKey(role),
+            mode: RELAY_RECALL_MODE,
+            topK: RELAY_RECALL_TOP_K,
+            disclosure: RELAY_RECALL_DISCLOSURE,
+            tags: [...RELAY_RECALL_TAGS],
+            tagMatch: RELAY_RECALL_TAG_MATCH,
+            count: 1,
+            plannerMode: RELAY_RECALL_MODE,
             memoryIds: ["memory-stale-token-policy"],
           }
         : role === "cold-builder"
           ? {
               query: "checkout token retry policy decision",
               namespace: "relay-build-week",
+              sessionKey: relayBuilderSessionKey(role),
+              mode: RELAY_RECALL_MODE,
+              topK: RELAY_RECALL_TOP_K,
+              disclosure: RELAY_RECALL_DISCLOSURE,
+              tags: [...RELAY_RECALL_TAGS],
+              tagMatch: RELAY_RECALL_TAG_MATCH,
+              count: 1,
+              plannerMode: RELAY_RECALL_MODE,
               memoryIds: ["memory-replacement-token-policy"],
             }
           : null,

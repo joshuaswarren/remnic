@@ -12,6 +12,7 @@ import { calculateCodexBudgetUnits } from "@remnic/bench";
 import { RELAY_DISABLED_CODEX_FEATURES, buildRelayCodexArgs } from "../scripts/relay/codex-one-shot.js";
 import {
   RELAY_AGENT_PRINCIPAL,
+  RELAY_COLD_PROBE_SESSION_KEY,
   RELAY_CREDIT_BUDGET_UNITS,
   RELAY_CREDIT_RESERVE_UNITS,
   RELAY_MAX_LIVE_CALLS,
@@ -20,8 +21,15 @@ import {
   RELAY_NAMESPACE,
   RELAY_OPERATOR_PRINCIPAL,
   RELAY_QUERY,
+  RELAY_RECALL_DISCLOSURE,
+  RELAY_RECALL_MODE,
+  RELAY_RECALL_TAGS,
+  RELAY_RECALL_TAG_MATCH,
+  RELAY_RECALL_TOP_K,
+  RELAY_STALE_PROBE_SESSION_KEY,
   type RelayCodexCallResult,
   type RelayRole,
+  relayBuilderSessionKey,
 } from "../scripts/relay/contracts.js";
 import { assertRelayWireOutputSchema, verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
 import {
@@ -51,6 +59,7 @@ const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtures = path.join(repoRoot, "fixtures", "remnic-relay");
 
 function mockSummary(role: RelayRole, recallToolCalls: number, recallMemoryId?: string) {
+  const builderRole = role === "stale-builder" || role === "cold-builder" ? role : null;
   return {
     role,
     model: RELAY_MODEL,
@@ -62,9 +71,22 @@ function mockSummary(role: RelayRole, recallToolCalls: number, recallMemoryId?: 
     durationMs: 25,
     usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1 },
     recallToolCalls,
-    recallReceipt: recallMemoryId
-      ? { query: RELAY_QUERY, namespace: RELAY_NAMESPACE, memoryIds: [recallMemoryId] as [string] }
-      : null,
+    recallReceipt:
+      recallMemoryId && builderRole
+        ? {
+            query: RELAY_QUERY,
+            namespace: RELAY_NAMESPACE,
+            sessionKey: relayBuilderSessionKey(builderRole),
+            mode: RELAY_RECALL_MODE,
+            topK: RELAY_RECALL_TOP_K,
+            disclosure: RELAY_RECALL_DISCLOSURE,
+            tags: [...RELAY_RECALL_TAGS] as ["remnic-relay", "checkout", "token-policy"],
+            tagMatch: RELAY_RECALL_TAG_MATCH,
+            count: 1 as const,
+            plannerMode: RELAY_RECALL_MODE,
+            memoryIds: [recallMemoryId] as [string],
+          }
+        : null,
     status: "completed" as const,
   };
 }
@@ -112,10 +134,13 @@ class MockRelayExecutor implements RelayCodexExecutor {
     const recalled = await this.harness.service.recall({
       query: RELAY_QUERY,
       namespace: RELAY_NAMESPACE,
-      sessionKey: `mock:${role}:${randomUUID()}`,
+      sessionKey: relayBuilderSessionKey(role),
       authenticatedPrincipal: RELAY_AGENT_PRINCIPAL,
-      disclosure: "section",
-      topK: 5,
+      mode: RELAY_RECALL_MODE,
+      disclosure: RELAY_RECALL_DISCLOSURE,
+      topK: RELAY_RECALL_TOP_K,
+      tags: [...RELAY_RECALL_TAGS],
+      tagMatch: RELAY_RECALL_TAG_MATCH,
     });
     const storage = await this.harness.orchestrator.getStorage(RELAY_NAMESPACE);
     let activeMemoryId: string | undefined;
@@ -420,6 +445,9 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
   try {
     assert.deepEqual(await listRelayMcpTools(harness.mcpUrl, harness.mcpToken), ["remnic.recall"]);
     const staleMemoryId = await harness.seedStaleDecision();
+    const staleProof = await harness.proveMcpRecall(staleMemoryId, RELAY_STALE_PROBE_SESSION_KEY);
+    assert.deepEqual(staleProof.memoryIds, [staleMemoryId]);
+    assert.equal(staleProof.sessionKey, RELAY_STALE_PROBE_SESSION_KEY);
     const result = await harness.applyResolverCorrection(
       {
         replacement_decision:
@@ -438,6 +466,9 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
     assert.equal(result.recall.memoryIds.includes(staleMemoryId), false);
     assert.equal(result.recall.namespace, RELAY_NAMESPACE);
     assert.ok(result.recall.context.includes("checkout"));
+    const coldProof = await harness.proveMcpRecall(result.replacementMemoryId, RELAY_COLD_PROBE_SESSION_KEY);
+    assert.deepEqual(coldProof.memoryIds, [result.replacementMemoryId]);
+    assert.equal(coldProof.sessionKey, RELAY_COLD_PROBE_SESSION_KEY);
     assert.equal(RELAY_AGENT_PRINCIPAL, "relay-codex-agent");
   } finally {
     await harness.stop();

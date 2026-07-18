@@ -12,6 +12,7 @@ import {
 } from "@remnic/core";
 
 import {
+  RELAY_COLD_PROBE_SESSION_KEY,
   RELAY_CONFLICT_ID,
   RELAY_CORRECTION_ID,
   RELAY_MAX_LIVE_CALLS,
@@ -21,8 +22,10 @@ import {
   RELAY_QUERY,
   RELAY_REPLACEMENT_DECISION_ID,
   RELAY_STALE_DECISION_ID,
+  RELAY_STALE_PROBE_SESSION_KEY,
   type RelayBuilderOutput,
   RelayBuilderOutputSchema,
+  type RelayBuilderRole,
   type RelayCodexCallResult,
   type RelayCodexCallSummary,
   RelayCodexCallSummarySchema,
@@ -33,6 +36,7 @@ import {
   RelayScoutOutputSchema,
   type RelayTestResult,
   RelayTestResultSchema,
+  relayBuilderSessionKey,
 } from "./contracts.js";
 import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import {
@@ -438,6 +442,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
     prepareWorkspace(options.directories.workspacesDir, "cold-builder", path.join(fixtureRoot, "downstream")),
   ]);
   const staleMemoryId = await options.harness.seedStaleDecision();
+  await options.harness.proveMcpRecall(staleMemoryId, RELAY_STALE_PROBE_SESSION_KEY);
   const calls: Array<SanitizedRelayCall> = [];
   const threadIds = new Set<string>();
   const execute = async (role: RelayRole, workspace: string): Promise<RelayCodexCallResult<unknown>> => {
@@ -446,6 +451,12 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
     const result = await options.executor.execute(role, workspace);
     const summary = RelayCodexCallSummarySchema.parse(result.summary);
     if (summary.role !== role) throw new Error(`Relay executor returned ${summary.role} for ${role}`);
+    if (
+      (role === "stale-builder" || role === "cold-builder") &&
+      summary.recallReceipt?.sessionKey !== relayBuilderSessionKey(role as RelayBuilderRole)
+    ) {
+      throw new Error(`Relay ${role} receipt did not prove its distinct transcript-free session key`);
+    }
     if (threadIds.has(summary.threadId)) throw new Error("Relay one-shots must use distinct fresh Codex threads");
     threadIds.add(summary.threadId);
     return result;
@@ -632,6 +643,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
     ],
   });
 
+  await options.harness.proveMcpRecall(correction.replacementMemoryId, RELAY_COLD_PROBE_SESSION_KEY);
   const coldRaw = await execute("cold-builder", coldWorkspace);
   const coldOutput = RelayBuilderOutputSchema.parse(coldRaw.output);
   validateRecallOutput(coldOutput, coldRaw.summary, correction.replacementMemoryId, "cold");

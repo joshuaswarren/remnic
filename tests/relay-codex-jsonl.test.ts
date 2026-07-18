@@ -7,7 +7,16 @@ import {
   parseRelayRecallReceipts,
   parseThreadId,
 } from "../scripts/relay/codex-one-shot.js";
-import { RELAY_NAMESPACE, RELAY_QUERY } from "../scripts/relay/contracts.js";
+import {
+  RELAY_NAMESPACE,
+  RELAY_QUERY,
+  RELAY_RECALL_DISCLOSURE,
+  RELAY_RECALL_MODE,
+  RELAY_RECALL_TAGS,
+  RELAY_RECALL_TAG_MATCH,
+  RELAY_RECALL_TOP_K,
+  RELAY_STALE_BUILDER_SESSION_KEY,
+} from "../scripts/relay/contracts.js";
 
 test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
   const jsonl = [
@@ -24,12 +33,26 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
         server: "relay",
         tool: "remnic.recall",
         status: "completed",
-        arguments: { query: RELAY_QUERY, namespace: RELAY_NAMESPACE },
+        arguments: {
+          query: RELAY_QUERY,
+          namespace: RELAY_NAMESPACE,
+          sessionKey: RELAY_STALE_BUILDER_SESSION_KEY,
+          mode: RELAY_RECALL_MODE,
+          topK: RELAY_RECALL_TOP_K,
+          disclosure: RELAY_RECALL_DISCLOSURE,
+          tags: RELAY_RECALL_TAGS,
+          tagMatch: RELAY_RECALL_TAG_MATCH,
+        },
         result: {
           structured_content: {
             query: RELAY_QUERY,
             namespace: RELAY_NAMESPACE,
+            sessionKey: RELAY_STALE_BUILDER_SESSION_KEY,
+            count: 1,
+            plannerMode: RELAY_RECALL_MODE,
+            disclosure: RELAY_RECALL_DISCLOSURE,
             memoryIds: ["memory-active"],
+            results: [{ id: "memory-active", status: "active", category: "decision" }],
             context: "synthetic",
           },
         },
@@ -45,8 +68,20 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
 
   assert.equal(parseThreadId(jsonl), "019f62b9-3200-7df1-99fb-cbb35fc28573");
   assert.equal(countRecallToolCalls(jsonl), 1);
-  assert.deepEqual(parseRelayRecallReceipts(jsonl), [
-    { query: RELAY_QUERY, namespace: RELAY_NAMESPACE, memoryIds: ["memory-active"] },
+  assert.deepEqual(parseRelayRecallReceipts(jsonl, RELAY_STALE_BUILDER_SESSION_KEY), [
+    {
+      query: RELAY_QUERY,
+      namespace: RELAY_NAMESPACE,
+      sessionKey: RELAY_STALE_BUILDER_SESSION_KEY,
+      mode: RELAY_RECALL_MODE,
+      topK: RELAY_RECALL_TOP_K,
+      disclosure: RELAY_RECALL_DISCLOSURE,
+      tags: RELAY_RECALL_TAGS,
+      tagMatch: RELAY_RECALL_TAG_MATCH,
+      count: 1,
+      plannerMode: RELAY_RECALL_MODE,
+      memoryIds: ["memory-active"],
+    },
   ]);
 });
 
@@ -59,10 +94,52 @@ test("Codex JSONL recall proof rejects missing structured MCP evidence", () => {
       server: "relay",
       tool: "remnic.recall",
       status: "completed",
-      arguments: { query: RELAY_QUERY, namespace: RELAY_NAMESPACE },
+      arguments: {
+        query: RELAY_QUERY,
+        namespace: RELAY_NAMESPACE,
+        sessionKey: RELAY_STALE_BUILDER_SESSION_KEY,
+        mode: RELAY_RECALL_MODE,
+        topK: RELAY_RECALL_TOP_K,
+        disclosure: RELAY_RECALL_DISCLOSURE,
+        tags: RELAY_RECALL_TAGS,
+        tagMatch: RELAY_RECALL_TAG_MATCH,
+      },
     },
   });
-  assert.throws(() => parseRelayRecallReceipts(jsonl), /omitted structured MCP result evidence/);
+  assert.throws(
+    () => parseRelayRecallReceipts(jsonl, RELAY_STALE_BUILDER_SESSION_KEY),
+    /omitted structured MCP result evidence/
+  );
+});
+
+test("Codex JSONL recall proof rejects a missing transcript-free session key before trusting ids", () => {
+  const jsonl = JSON.stringify({
+    type: "item.completed",
+    item: {
+      id: "item-1",
+      type: "mcp_tool_call",
+      server: "relay",
+      tool: "remnic.recall",
+      status: "completed",
+      arguments: {
+        query: RELAY_QUERY,
+        namespace: RELAY_NAMESPACE,
+        mode: RELAY_RECALL_MODE,
+        topK: RELAY_RECALL_TOP_K,
+        disclosure: RELAY_RECALL_DISCLOSURE,
+      },
+      result: {
+        structured_content: {
+          query: RELAY_QUERY,
+          namespace: RELAY_NAMESPACE,
+          count: 0,
+          memoryIds: [],
+          results: [],
+        },
+      },
+    },
+  });
+  assert.throws(() => parseRelayRecallReceipts(jsonl, RELAY_STALE_BUILDER_SESSION_KEY), /fixed argument surface/);
 });
 
 test("Codex failure diagnostics retain classifications and hashes without raw output", () => {

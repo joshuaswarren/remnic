@@ -16,8 +16,14 @@ import {
   RELAY_NAMESPACE,
   RELAY_QUERY,
   RELAY_REASONING_EFFORT,
+  RELAY_RECALL_DISCLOSURE,
+  RELAY_RECALL_MODE,
+  RELAY_RECALL_TAGS,
+  RELAY_RECALL_TAG_MATCH,
+  RELAY_RECALL_TOP_K,
   RelayBuilderModelOutputSchema,
   RelayBuilderOutputSchema,
+  type RelayBuilderRole,
   type RelayCodexCallResult,
   RelayCodexCallSummarySchema,
   type RelayRecallReceipt,
@@ -26,6 +32,7 @@ import {
   type RelayRole,
   RelayScoutOutputSchema,
   promptFilenameForRole,
+  relayBuilderSessionKey,
   schemaFilenameForRole,
   schemaForRole,
 } from "./contracts.js";
@@ -255,7 +262,10 @@ export function countRecallToolCalls(jsonl: string): number {
   return completedIds.size + anonymous;
 }
 
-export function parseRelayRecallReceipts(jsonl: string): RelayRecallReceipt[] {
+export function parseRelayRecallReceipts(
+  jsonl: string,
+  expectedSessionKey?: ReturnType<typeof relayBuilderSessionKey>
+): RelayRecallReceipt[] {
   const receipts: RelayRecallReceipt[] = [];
   const completedIds = new Set<string>();
   for (const line of jsonl.split(/\r?\n/)) {
@@ -290,19 +300,75 @@ export function parseRelayRecallReceipts(jsonl: string): RelayRecallReceipt[] {
       throw new RelayCodexRunError("Relay completed recall omitted structured arguments");
     }
     const argumentsObject = args as Record<string, unknown>;
-    if (argumentsObject.query !== RELAY_QUERY || argumentsObject.namespace !== RELAY_NAMESPACE) {
-      throw new RelayCodexRunError("Relay completed recall escaped the fixed query or namespace");
+    if (!expectedSessionKey) {
+      throw new RelayCodexRunError("Relay non-Builder role completed an unexpected recall");
+    }
+    const expectedArgumentNames = [
+      "disclosure",
+      "mode",
+      "namespace",
+      "query",
+      "sessionKey",
+      "tagMatch",
+      "tags",
+      "topK",
+    ];
+    if (JSON.stringify(Object.keys(argumentsObject).sort()) !== JSON.stringify(expectedArgumentNames)) {
+      throw new RelayCodexRunError("Relay completed recall escaped the fixed argument surface");
+    }
+    if (
+      argumentsObject.query !== RELAY_QUERY ||
+      argumentsObject.namespace !== RELAY_NAMESPACE ||
+      argumentsObject.sessionKey !== expectedSessionKey ||
+      argumentsObject.mode !== RELAY_RECALL_MODE ||
+      argumentsObject.topK !== RELAY_RECALL_TOP_K ||
+      argumentsObject.disclosure !== RELAY_RECALL_DISCLOSURE ||
+      JSON.stringify(argumentsObject.tags) !== JSON.stringify(RELAY_RECALL_TAGS) ||
+      argumentsObject.tagMatch !== RELAY_RECALL_TAG_MATCH
+    ) {
+      throw new RelayCodexRunError("Relay completed recall escaped the fixed retrieval contract");
     }
     const structured = event.item.result?.structured_content ?? event.item.result?.structuredContent;
     if (!structured || typeof structured !== "object" || Array.isArray(structured)) {
       throw new RelayCodexRunError("Relay completed recall omitted structured MCP result evidence");
     }
     const result = structured as Record<string, unknown>;
+    const memoryIds = result.memoryIds;
+    const results = result.results;
+    if (
+      result.query !== RELAY_QUERY ||
+      result.namespace !== RELAY_NAMESPACE ||
+      result.sessionKey !== expectedSessionKey ||
+      result.count !== 1 ||
+      result.plannerMode !== RELAY_RECALL_MODE ||
+      result.disclosure !== RELAY_RECALL_DISCLOSURE ||
+      !Array.isArray(memoryIds) ||
+      memoryIds.length !== 1 ||
+      typeof memoryIds[0] !== "string" ||
+      !Array.isArray(results) ||
+      results.length !== 1 ||
+      !results[0] ||
+      typeof results[0] !== "object" ||
+      Array.isArray(results[0]) ||
+      (results[0] as Record<string, unknown>).id !== memoryIds[0] ||
+      (results[0] as Record<string, unknown>).status !== "active" ||
+      (results[0] as Record<string, unknown>).category !== "decision"
+    ) {
+      throw new RelayCodexRunError("Relay completed recall did not prove one active decision result");
+    }
     receipts.push(
       RelayRecallReceiptSchema.parse({
         query: result.query,
         namespace: result.namespace,
-        memoryIds: result.memoryIds,
+        sessionKey: result.sessionKey,
+        mode: argumentsObject.mode,
+        topK: argumentsObject.topK,
+        disclosure: result.disclosure,
+        tags: argumentsObject.tags,
+        tagMatch: argumentsObject.tagMatch,
+        count: result.count,
+        plannerMode: result.plannerMode,
+        memoryIds,
       })
     );
   }
@@ -488,11 +554,12 @@ export async function runRelayCodexOneShot(
   const usage = parseCodexJsonlUsage(capture.stdout);
   if (!usage) throw new RelayCodexRunError(`Relay ${options.role} one-shot usage disappeared after accounting`);
   const recallToolCalls = countRecallToolCalls(capture.stdout);
-  const recallReceipts = parseRelayRecallReceipts(capture.stdout);
+  const isBuilder = options.role === "stale-builder" || options.role === "cold-builder";
+  const expectedSessionKey = isBuilder ? relayBuilderSessionKey(options.role as RelayBuilderRole) : undefined;
+  const recallReceipts = parseRelayRecallReceipts(capture.stdout, expectedSessionKey);
   if (recallReceipts.length !== recallToolCalls) {
     throw new RelayCodexRunError(`Relay ${options.role} recall count lacks a complete structured receipt`);
   }
-  const isBuilder = options.role === "stale-builder" || options.role === "cold-builder";
   if ((isBuilder && recallReceipts.length !== 1) || (!isBuilder && recallReceipts.length !== 0)) {
     throw new RelayCodexRunError(`Relay ${options.role} violated its fixed recall contract`);
   }

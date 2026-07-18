@@ -18,9 +18,24 @@ export const RELAY_REPLACEMENT_DECISION_ID = "decision-refresh-after-expiry" as 
 export const RELAY_CORRECTION_ID = "correction-token-refresh" as const;
 export const RELAY_CONFLICT_ID = "conflict-token-lifecycle" as const;
 export const RELAY_QUERY = "checkout token retry policy decision" as const;
+export const RELAY_RECALL_MODE = "full" as const;
+export const RELAY_RECALL_TOP_K = 5 as const;
+export const RELAY_RECALL_DISCLOSURE = "section" as const;
+export const RELAY_RECALL_TAGS = ["remnic-relay", "checkout", "token-policy"] as const;
+export const RELAY_RECALL_TAG_MATCH = "all" as const;
+export const RELAY_STALE_BUILDER_SESSION_KEY = "relay:builder-a:transcript-free" as const;
+export const RELAY_COLD_BUILDER_SESSION_KEY = "relay:builder-cold:transcript-free" as const;
+export const RELAY_STALE_PROBE_SESSION_KEY = "relay:probe-stale:transcript-free" as const;
+export const RELAY_COLD_PROBE_SESSION_KEY = "relay:probe-cold:transcript-free" as const;
 
 export const RelayRoleSchema = z.enum(["scout", "stale-builder", "resolver", "cold-builder"]);
 export type RelayRole = z.infer<typeof RelayRoleSchema>;
+export type RelayBuilderRole = Extract<RelayRole, "stale-builder" | "cold-builder">;
+export type RelayProbeSessionKey = typeof RELAY_STALE_PROBE_SESSION_KEY | typeof RELAY_COLD_PROBE_SESSION_KEY;
+
+export function relayBuilderSessionKey(role: RelayBuilderRole) {
+  return role === "stale-builder" ? RELAY_STALE_BUILDER_SESSION_KEY : RELAY_COLD_BUILDER_SESSION_KEY;
+}
 
 const boundedText = z.string().trim().min(1).max(2_000);
 const sourceLocators = z.array(z.string().trim().min(1).max(300)).min(1).max(32);
@@ -65,6 +80,14 @@ export const RelayRecallReceiptSchema = z
   .object({
     query: z.literal(RELAY_QUERY),
     namespace: z.literal(RELAY_NAMESPACE),
+    sessionKey: z.enum([RELAY_STALE_BUILDER_SESSION_KEY, RELAY_COLD_BUILDER_SESSION_KEY]),
+    mode: z.literal(RELAY_RECALL_MODE),
+    topK: z.literal(RELAY_RECALL_TOP_K),
+    disclosure: z.literal(RELAY_RECALL_DISCLOSURE),
+    tags: z.tuple([z.literal(RELAY_RECALL_TAGS[0]), z.literal(RELAY_RECALL_TAGS[1]), z.literal(RELAY_RECALL_TAGS[2])]),
+    tagMatch: z.literal(RELAY_RECALL_TAG_MATCH),
+    count: z.literal(1),
+    plannerMode: z.literal(RELAY_RECALL_MODE),
     memoryIds: z.tuple([z.string().trim().min(1).max(256)]),
   })
   .strict();
@@ -214,5 +237,5 @@ export function schemaFilenameForRole(role: RelayRole): string {
 export function promptFilenameForRole(role: RelayRole): string {
   if (role === "scout") return "scout.md";
   if (role === "resolver") return "resolver.md";
-  return "builder.md";
+  return role === "stale-builder" ? "stale-builder.md" : "cold-builder.md";
 }

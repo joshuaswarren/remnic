@@ -29,6 +29,7 @@ import {
   RELAY_REPLACEMENT_DECISION_ID,
   RELAY_STALE_DECISION_ID,
   RelayBuilderOutputSchema,
+  type RelayBuilderRole,
   RelayCodexCallSummarySchema,
   type RelayPreflightReceipt,
   RelayPreflightReceiptSchema,
@@ -37,6 +38,7 @@ import {
   RelayRoleSchema,
   RelayScoutOutputSchema,
   RelayTestResultSchema,
+  relayBuilderSessionKey,
 } from "./contracts.js";
 import { type RelayFixtureManifest, verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import { assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
@@ -450,13 +452,18 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
   if (scoutContractKey !== replacementContractKey || resolverContractKey !== replacementContractKey) {
     throw new Error("Relay recording source-agent decisions do not resolve to the sealed replacement decision");
   }
-  const recallReceiptMatches = (call: SanitizedRelayCall, expectedMemoryId: string): boolean => {
+  const recallReceiptMatches = (
+    call: SanitizedRelayCall,
+    expectedMemoryId: string,
+    role: RelayBuilderRole
+  ): boolean => {
     const receipt = call.summary.recallReceipt;
     return (
       call.summary.recallToolCalls === 1 &&
       receipt !== null &&
       receipt.query === RELAY_QUERY &&
       receipt.namespace === RELAY_NAMESPACE &&
+      receipt.sessionKey === relayBuilderSessionKey(role) &&
       JSON.stringify(receipt.memoryIds) === JSON.stringify([expectedMemoryId])
     );
   };
@@ -465,8 +472,8 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
     scoutCall.summary.recallReceipt !== null ||
     resolverCall.summary.recallToolCalls !== 0 ||
     resolverCall.summary.recallReceipt !== null ||
-    !recallReceiptMatches(staleCall, staleMemory.memoryId) ||
-    !recallReceiptMatches(coldCall, replacementMemory.memoryId)
+    !recallReceiptMatches(staleCall, staleMemory.memoryId, "stale-builder") ||
+    !recallReceiptMatches(coldCall, replacementMemory.memoryId, "cold-builder")
   ) {
     throw new Error("Relay recording Codex MCP receipts are not bound to the sealed memory transition");
   }
