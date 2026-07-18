@@ -2954,6 +2954,16 @@
       "types": "./dist/work/types.d.ts",
       "remnic-source": "./src/work/types.ts",
       "import": "./dist/work/types.js"
+    },
+    "./write-envelope": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
+    },
+    "./write-envelope.js": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
     }
   },
   "files": [
