@@ -123,6 +123,20 @@ support, this preflight performs **zero inference calls**:
 pnpm relay:preflight
 ```
 
+That plain command is for a fresh checkout. The canonical Build Week workspace
+also retains the private, blocked ledger from an earlier rejected generic
+`gpt-5.6` alias attempt. Its reviewed zero-call command explicitly quarantines
+that ledger and reduces the usable budget by 300 conservative units:
+
+```bash
+pnpm relay:preflight -- \
+  --quarantine-uncertain-alias-ledger .remnic/relay/codex-credit-ledger.json
+```
+
+The private `.remnic/` ledgers are intentionally not part of the judge package
+or repository. Their sanitized adjustment and final run totals are committed as
+`budget-adjustment.json` and `credit-receipt.json` evidence instead.
+
 It fails closed unless it can report the exact model (`gpt-5.6-terra`), medium
 reasoning, maximum four calls, credit cap/reserve policy, isolated memory root,
 loopback-only Remnic MCP with only `remnic.recall`, network namespace, chroot,
