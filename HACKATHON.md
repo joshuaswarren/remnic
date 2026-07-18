@@ -32,8 +32,9 @@ isolated live mission—not a hand-edited success animation.
 ## Judge it without rebuilding
 
 Prerequisite: Node.js 22.12 or newer with npm. No dependency install, account,
-credential, dataset, build, model call, or network access is needed after the
-repository is available.
+credential, dataset download, build, model call, or network access is needed
+after the repository is available. The purpose-built synthetic mission fixture
+is already staged in `fixtures/remnic-relay/` and integrity-checked in place.
 
 ```bash
 npm run relay:demo

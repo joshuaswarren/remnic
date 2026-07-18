@@ -205,8 +205,9 @@ correction, retires the old decision, and proves a transcript-free cold agent
 used the replacement to turn the same hidden contract green.
 
 Run the complete judge experience from this checkout with Node 22.12+—no
-dependency install, build, account, credential, dataset, model call, or network
-access required:
+dependency install, build, account, credential, dataset download, model call,
+or network access required. The synthetic mission fixture is already committed
+under `fixtures/remnic-relay/` and verified in place:
 
 ```bash
 npm run relay:demo
