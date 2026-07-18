@@ -49,8 +49,11 @@ export function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Rec
   if (adminConsolePublicDir) overrides.adminConsolePublicDir = adminConsolePublicDir;
   if (adminConsolePrefillToken) overrides.adminConsolePrefillToken = adminConsolePrefillToken;
   if (readinessOverride !== undefined) overrides.readinessOverride = readinessOverride;
-  if (writeRateLimitMaxRequests) overrides.writeRateLimitMaxRequests = writeRateLimitMaxRequests;
-  if (writeRateLimitWindowMs) overrides.writeRateLimitWindowMs = writeRateLimitWindowMs;
+  // Use `!== undefined` (not truthiness) so an explicitly-set empty/invalid
+  // value still reaches parseServerConfig and is rejected, rather than being
+  // silently dropped so file config wins (issue #2029 review).
+  if (writeRateLimitMaxRequests !== undefined) overrides.writeRateLimitMaxRequests = writeRateLimitMaxRequests;
+  if (writeRateLimitWindowMs !== undefined) overrides.writeRateLimitWindowMs = writeRateLimitWindowMs;
 
   if (process.env.OPENAI_API_KEY) remnic.openaiApiKey = process.env.OPENAI_API_KEY;
   const memoryDir = readCompatEnv("REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR");

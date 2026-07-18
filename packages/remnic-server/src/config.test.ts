@@ -260,7 +260,7 @@ test("parseServerConfig write rate limit keys: optional, string-coerced, invalid
   }
 });
 
-test("envOverrides surfaces write rate limit env vars, REMNIC_ over ENGRAM_ (issue #2029)", () => {
+test("envOverrides write rate limit env: precedence, legacy fallback, invalid rejected (issue #2029)", () => {
   const keys = [
     "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
     "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
@@ -268,19 +268,38 @@ test("envOverrides surfaces write rate limit env vars, REMNIC_ over ENGRAM_ (iss
     "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
   ];
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
-  try {
+  const clear = () => {
     for (const k of keys) delete process.env[k];
+  };
+  try {
+    // REMNIC_ wins over a conflicting ENGRAM_ value, for both fields.
+    clear();
     process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS = "1800";
+    process.env.ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS = "99";
     process.env.REMNIC_WRITE_RATE_LIMIT_WINDOW_MS = "30000";
-    // env arrives as strings; parseServerConfig coerces + validates them.
-    const parsed = parseServerConfig(envOverrides());
+    process.env.ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS = "1";
+    let parsed = parseServerConfig(envOverrides());
     assert.equal(parsed.writeRateLimitMaxRequests, 1800);
     assert.equal(parsed.writeRateLimitWindowMs, 30000);
 
-    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset.
-    delete process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS;
+    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset — both fields.
+    clear();
     process.env.ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS = "42";
-    assert.equal(parseServerConfig(envOverrides()).writeRateLimitMaxRequests, 42);
+    process.env.ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS = "45000";
+    parsed = parseServerConfig(envOverrides());
+    assert.equal(parsed.writeRateLimitMaxRequests, 42);
+    assert.equal(parsed.writeRateLimitWindowMs, 45000);
+
+    // Invalid env values reach validation and are rejected, not silently dropped.
+    for (const bad of ["0", "", "abc", "1.5"]) {
+      clear();
+      process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS = bad;
+      assert.throws(
+        () => parseServerConfig(envOverrides()),
+        /server\.writeRateLimitMaxRequests: expected a positive integer/,
+        `max=${JSON.stringify(bad)} must be rejected`,
+      );
+    }
   } finally {
     for (const k of keys) {
       if (saved[k] === undefined) delete process.env[k];
