@@ -118,7 +118,12 @@ test("unparseable construct: a dynamic Object.keys loop over the parser input su
   try {
     const result = fixture.run();
     assert.ok(
-      result.violations.some((v) => v.kind === "unparseable-construct"),
+      result.violations.some(
+        (v) =>
+          v.kind === "unparseable-construct" &&
+          /^parser\.ts:\d+$/.test(v.key) &&
+          v.detail.length > 0,
+      ),
       JSON.stringify(result.violations),
     );
   } finally {

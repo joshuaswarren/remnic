@@ -211,9 +211,15 @@ export function runContractCheck(options: {
     for (const schemaPath of schema.flat.paths) knownTopLevel.add(schemaPath.split(".")[0]);
   }
   for (const docKey of docsKeys) {
-    if (!docKey.includes(".")) continue; // single identifiers are too noisy — dotted paths only
+    if (!docKey.includes(".")) continue;
     if (!knownTopLevel.has(docKey.split(".")[0])) continue;
-    if (!parsedPrefixes.has(docKey) && !schemas.some((schema) => schema.flat.paths.has(docKey))) {
+    // An opaque schema block (additionalProperties, no listed children) absorbs
+    // any deeper documented path the same way it absorbs parsed ones — don't
+    // flag a documented-nonexistent under a legitimately-open block (review).
+    if (
+      !parsedPrefixes.has(docKey) &&
+      !schemas.some((schema) => coveredBySchema(docKey, schema.flat))
+    ) {
       violations.push({
         kind: "documented-nonexistent",
         key: docKey,
@@ -266,10 +272,30 @@ export function runContractCheck(options: {
     })
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key));
 
-  // Grandfather manifest (decision C): fails if it grows; stale entries fail.
-  const grandfathered: GrandfatherEntry[] = fs.existsSync(grandfatherPath)
-    ? (JSON.parse(fs.readFileSync(grandfatherPath, "utf8")) as GrandfatherEntry[])
+  // Grandfather manifest (decision C). Entries are VALIDATED at load time:
+  // shape + a non-empty tracking issue, so a malformed entry (or one with a
+  // missing issue) is a load failure, not a silent suppression (review).
+  const rawGrandfathered: unknown = fs.existsSync(grandfatherPath)
+    ? JSON.parse(fs.readFileSync(grandfatherPath, "utf8"))
     : [];
+  if (!Array.isArray(rawGrandfathered)) {
+    throw new Error(`${grandfatherPath}: grandfather manifest must be a JSON array`);
+  }
+  const grandfathered: GrandfatherEntry[] = rawGrandfathered.map((entry, index) => {
+    const candidate = entry as Partial<GrandfatherEntry>;
+    if (
+      !candidate ||
+      typeof candidate.kind !== "string" ||
+      typeof candidate.key !== "string" ||
+      typeof candidate.issue !== "string" ||
+      candidate.issue.trim().length === 0
+    ) {
+      throw new Error(
+        `${grandfatherPath}[${index}]: grandfather entry must carry { kind, key, issue } with a non-empty tracking issue`,
+      );
+    }
+    return candidate as GrandfatherEntry;
+  });
   const grandfatherIndex = new Set(grandfathered.map((entry) => `${entry.kind}:${entry.key}`));
   const activeViolations = uniqueViolations.filter(
     (violation) => !grandfatherIndex.has(`${violation.kind}:${violation.key}`),
