@@ -40,23 +40,30 @@ conditions without new evidence; each baseline below is the receipt.
   surface (the actual leak) is semantic; `access-http.ts` legitimately
   echoes input-validation messages. Reviewers keep catching the real
   cases; a rule cannot.
-- **`coerce*(...) ?? <default>`** — this IS the config-parser idiom
-  (`config.ts` uses `coerceBooleanLike(cfg.x) ?? <default>` for nearly
-  every flag). The recurring bug — an explicitly-set-but-unrecognized
-  value silently becoming the default, worst as fail-open `?? true` —
-  is about which default and whether unrecognized input should warn,
-  not about the syntax. Fix belongs in the coercion helpers, not a
-  per-callsite rule.
+- **`coerce*(...) ?? <default>`** — co-occurs with the standard config
+  fallback pattern (`config.ts` parses nearly every flag as
+  `coerceBooleanLike(cfg.x) ?? <default>`), so a per-callsite condition
+  would flag valid coercion everywhere. The recurring bug — an
+  explicitly-set-but-unrecognized value silently becoming the default,
+  worst as fail-open `?? true` — is about which default and whether
+  unrecognized input should warn; the fix belongs in the coercion
+  helpers, not a stream rule.
 - **Inline `NODE_OPTIONS=` / `VAR=value cmd` in npm scripts**
-  (Windows-hostile) — 20 existing scripts use the
-  `NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source"`
-  convention for POSIX-only dev/test scripts.
-- **`../packages/<pkg>/src/` imports** — 361 ratchet-managed
-  occurrences (`directStorageImports`); see the note in
+  (Windows-hostile) — 20 existing dev/test scripts use this convention
+  deliberately; no viable rule exists without first rewriting every
+  script.
+- **`../packages/<pkg>/src/` imports** — used ~360 times across the
+  existing tree (tests, scripts, and the root `src/` compatibility
+  wiring; grep receipt in PR #2010 review threads), so a hard interrupt
+  would fire on routine edits. The narrower slice of core files
+  importing `storage.ts` directly is separately ratchet-managed as
+  `directStorageImports`. See the note in
   `remnic-no-cross-package-src-imports.md`.
 
-The dominant review clusters of 2026-06-20..07-04 (namespace/ACL
-scoping, flush-plan lifecycle races, catalog-touch ordering) are
-semantic, single-subsystem invariants with no textual signature —
+The dominant review clusters in the 2026-06-20..07-04 subset (605
+findings across 40 PRs; the full derivation corpus spans four weeks) —
+namespace/ACL scoping, flush-plan lifecycle races, catalog-touch
+ordering — are semantic, single-subsystem invariants with no textual
+signature;
 that class is governed by the scenario-matrix workflow in `AGENTS.md`,
 not by stream rules.
