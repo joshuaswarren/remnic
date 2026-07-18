@@ -150,6 +150,7 @@ export interface RecallInternalDeps {
     namespaces: string[],
     caps: CapabilitySet,
     label: string,
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
@@ -4340,14 +4341,35 @@ export class RecallInternalCoordinator {
       // EVERY recall path via applyTrustScoreToBranch so the gate is consistent
       // (rule 41 parity). Fail-open on lookup errors so recall never breaks.
       {
-        const trustOutcome = await this.deps.applyTrustScoreToBranch(
-          memoryResults,
-          recallNamespaces,
-          caps,
-          "hot-qmd",
+        // Deadline-bound the trust stage (issue #1905): a slow corpus scan must
+        // not outrun the shared enrichment-assembly budget (the source of the
+        // 17s qmdPost outliers). On timeout/abort/error the fallback returns
+        // the inputs unchanged — the stage is already documented fail-open.
+        // Pass the frontmatter already loaded by the safety filter so the stage
+        // does O(candidates) work instead of a full-corpus scan.
+        const trustT0 = Date.now();
+        const trustOutcome = await awaitAssemblyStep(
+          "trustStage",
+          () =>
+            this.deps.applyTrustScoreToBranch(
+              memoryResults,
+              recallNamespaces,
+              caps,
+              "hot-qmd",
+              qmdBoostInput.memoryByPath,
+            ),
+          { results: memoryResults, trustByPath: recallTrustByPath },
         );
         memoryResults = trustOutcome.results;
         recallTrustByPath = trustOutcome.trustByPath;
+        recordRecallSectionMetric({
+          section: "trustStage",
+          priority: "enrichment",
+          durationMs: Date.now() - trustT0,
+          deadlineMs: enrichmentSectionDeadlineMs,
+          source: "fresh",
+          success: true,
+        });
       }
 
       // Synapse-inspired confidence gate: check scores BEFORE slicing so
@@ -4524,14 +4546,32 @@ export class RecallInternalCoordinator {
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
-          const trustOutcome = await this.deps.applyTrustScoreToBranch(
-            scoped,
-            recallNamespaces,
-            caps,
-            "embedding-fallback",
+          // Deadline-bound (issue #1905). This branch has no preloaded
+          // frontmatter map (boost ran without one), so pass undefined and let
+          // the stage's corpus/direct-read fallback cover it — identical lookup
+          // semantics (rule 41 parity).
+          const trustT0 = Date.now();
+          const trustOutcome = await awaitAssemblyStep(
+            "trustStage",
+            () =>
+              this.deps.applyTrustScoreToBranch(
+                scoped,
+                recallNamespaces,
+                caps,
+                "embedding-fallback",
+              ),
+            { results: scoped, trustByPath: recallTrustByPath },
           );
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
+          recordRecallSectionMetric({
+            section: "trustStage",
+            priority: "enrichment",
+            durationMs: Date.now() - trustT0,
+            deadlineMs: enrichmentSectionDeadlineMs,
+            source: "fresh",
+            success: true,
+          });
         }
         if (scoped.length > 0) {
           if (shouldPersistGraphSnapshot) {
@@ -4703,14 +4743,29 @@ export class RecallInternalCoordinator {
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
-          const trustOutcome = await this.deps.applyTrustScoreToBranch(
-            scoped,
-            recallNamespaces,
-            caps,
-            "embedding-fallback",
+          // Deadline-bound (issue #1905); no preloaded map on this branch.
+          const trustT0 = Date.now();
+          const trustOutcome = await awaitAssemblyStep(
+            "trustStage",
+            () =>
+              this.deps.applyTrustScoreToBranch(
+                scoped,
+                recallNamespaces,
+                caps,
+                "embedding-fallback",
+              ),
+            { results: scoped, trustByPath: recallTrustByPath },
           );
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
+          recordRecallSectionMetric({
+            section: "trustStage",
+            priority: "enrichment",
+            durationMs: Date.now() - trustT0,
+            deadlineMs: enrichmentSectionDeadlineMs,
+            source: "fresh",
+            success: true,
+          });
         }
       if (scoped.length > 0) {
         if (shouldPersistGraphSnapshot) {
@@ -4902,14 +4957,36 @@ export class RecallInternalCoordinator {
             // Issue #1577 — apply TrustScore on the recent-scan path so the
             // feature gate is consistent across ALL recall paths (rule 41).
             {
-              const trustOutcome = await this.deps.applyTrustScoreToBranch(
-                recent,
-                recallNamespaces,
-                caps,
-                "recent-scan",
+              // Deadline-bound (issue #1905). The recent-scan branch already
+              // loaded every candidate's MemoryFile (queryAwareScopedMemories),
+              // so hand that frontmatter to the stage as the preloaded map —
+              // the trust/memory-worth lookup then does zero corpus scans.
+              const trustT0 = Date.now();
+              const recentPreloaded = new Map<string, MemoryFile>(
+                queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
+              );
+              const trustOutcome = await awaitAssemblyStep(
+                "trustStage",
+                () =>
+                  this.deps.applyTrustScoreToBranch(
+                    recent,
+                    recallNamespaces,
+                    caps,
+                    "recent-scan",
+                    recentPreloaded,
+                  ),
+                { results: recent, trustByPath: recallTrustByPath },
               );
               recent = trustOutcome.results;
               recallTrustByPath = trustOutcome.trustByPath;
+              recordRecallSectionMetric({
+                section: "trustStage",
+                priority: "enrichment",
+                durationMs: Date.now() - trustT0,
+                deadlineMs: enrichmentSectionDeadlineMs,
+                source: "fresh",
+                success: true,
+              });
             }
 
             if (recent.length > 0) {

@@ -49,17 +49,22 @@ export class RecallRerankCoordinator {
     recallNamespaces: readonly string[],
   ) => Promise<MemoryFile | null>;
 
+  // Per-namespace corpus-fallback caches (issue #1905). Keyed on the shared
+  // cross-process memory-corpus version rather than a wall-clock TTL: the old
+  // 30s TTL was SHORTER than recall p50 (~30.5s) so every steady-state recall
+  // was a guaranteed miss + full-corpus scan. The corpus version bumps on every
+  // memory mutation (StorageManager.getMemoryCorpusVersion / patchHotMemoriesCache),
+  // including mw_success/mw_fail counter writes, so a version match means the
+  // derived map is still current and can be served; a mismatch re-derives.
   private readonly memoryWorthCounterCache = new Map<
     string,
-    { at: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
+    { version: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
   >();
-  private static readonly MEMORY_WORTH_CACHE_TTL_MS = 30_000;
 
   private readonly trustSignalCache = new Map<
     string,
-    { at: number; signals: ReadonlyMap<string, TrustSignals> }
+    { version: number; signals: ReadonlyMap<string, TrustSignals> }
   >();
-  private static readonly TRUST_SIGNAL_CACHE_TTL_MS = 30_000;
 
   constructor(options: {
     getConfig: () => PluginConfig;
@@ -78,66 +83,80 @@ export class RecallRerankCoordinator {
   async applyMemoryWorthRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    // Candidate frontmatter already loaded on the hot recall path (issue
+    // #1905). Additive + last so the positional call shape stays
+    // backward-compatible. When present, counters are seeded from it directly
+    // and the O(corpus) `readAllMemories` scan is skipped for warm candidates.
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<QmdSearchResult[]> {
-    // Build the counter lookup. We union frontmatter counters across every
-    // namespace the recall spans — the recall path itself already
-    // aggregates candidates from multiple namespaces, so we must do the
-    // same when looking up counters. Per-namespace results are cached with
-    // a short TTL so interactive recall doesn't trigger a full
-    // `readAllMemories` scan per query (addresses codex P2 on PR 4).
+    const config = this.getConfig();
     const counters = new Map<string, MemoryWorthCounters>();
-    const seenNamespaces = new Set<string>();
-    const nowMs = Date.now();
 
-    // Evict all expired entries on every call so long-running processes
-    // touching a high-cardinality namespace set (coding/project overlays,
-    // per-branch) don't grow the cache unboundedly. Without this, an entry
-    // for a namespace that's never looked up again would pin its full
-    // counter map forever.
-    for (const [key, entry] of this.memoryWorthCounterCache) {
-      if (nowMs - entry.at >= RecallRerankCoordinator.MEMORY_WORTH_CACHE_TTL_MS) {
-        this.memoryWorthCounterCache.delete(key);
-      }
-    }
-
-    for (const ns of namespaces) {
-      if (seenNamespaces.has(ns)) continue;
-      seenNamespaces.add(ns);
-      try {
-        const cached = this.memoryWorthCounterCache.get(ns);
-        let nsMap: ReadonlyMap<string, MemoryWorthCounters> | undefined;
-        if (
-          cached &&
-          nowMs - cached.at < RecallRerankCoordinator.MEMORY_WORTH_CACHE_TTL_MS
-        ) {
-          nsMap = cached.counters;
-        } else {
-          const storage = await this.getStorage(ns);
-          const memories = await storage.readAllMemories();
-          nsMap = buildMemoryWorthCounterMap(memories);
-          this.memoryWorthCounterCache.set(ns, { at: nowMs, counters: nsMap });
-        }
-        for (const [path, c] of nsMap) counters.set(path, c);
-      } catch (err) {
-        log.debug("memory-worth: failed to read namespace, skipping", {
-          namespace: ns,
-          error: (err as Error).message,
+    // O(candidates) fast path (issue #1905): seed counters directly from
+    // frontmatter already loaded on the hot path. The
+    // `mw_success === undefined && mw_fail === undefined` guard matches
+    // `buildMemoryWorthCounterMap` exactly so a candidate with no counters is a
+    // neutral prior, identical to the corpus scan.
+    if (preloadedFrontmatter) {
+      for (const r of results) {
+        const mem = preloadedFrontmatter.get(r.path);
+        if (!mem) continue;
+        const fm = mem.frontmatter;
+        if (fm.mw_success === undefined && fm.mw_fail === undefined) continue;
+        counters.set(r.path, {
+          mw_success: fm.mw_success,
+          mw_fail: fm.mw_fail,
+          lastAccessed: fm.lastAccessed,
         });
       }
     }
 
-    // For candidates whose path didn't show up in any hot-tier namespace
-    // scan (typical of cold-tier / archive fallback), try a direct
-    // per-path read. Without this, cold-tier candidates always stay at
-    // multiplier 1.0 even when they have outcome history. Errors are
-    // swallowed so a single unreadable archive entry can't break the
-    // whole recall.
+    // Corpus-level fallback (config-gated): candidates still missing from the
+    // preloaded map probe a per-namespace counter map. The map is cached and
+    // invalidated by the shared cross-process corpus version (not a wall-clock
+    // TTL), so it actually hits in steady state. Only the candidate rows are
+    // copied out — never the whole ~99K-entry map (issue #1905).
+    if (config.recallTrustStageCorpusFallbackEnabled) {
+      const seenNamespaces = new Set<string>();
+      for (const ns of namespaces) {
+        if (seenNamespaces.has(ns)) continue;
+        seenNamespaces.add(ns);
+        if (results.every((r) => counters.has(r.path))) break;
+        try {
+          const storage = await this.getStorage(ns);
+          const version = storage.getMemoryCorpusVersion();
+          const cached = this.memoryWorthCounterCache.get(ns);
+          let nsMap: ReadonlyMap<string, MemoryWorthCounters>;
+          if (cached && cached.version === version) {
+            nsMap = cached.counters;
+          } else {
+            const memories = await storage.readAllMemories();
+            nsMap = buildMemoryWorthCounterMap(memories);
+            this.memoryWorthCounterCache.set(ns, { version, counters: nsMap });
+          }
+          for (const r of results) {
+            if (counters.has(r.path)) continue;
+            const c = nsMap.get(r.path);
+            if (c) counters.set(r.path, c);
+          }
+        } catch (err) {
+          log.debug("memory-worth: failed to read namespace, skipping", {
+            namespace: ns,
+            error: (err as Error).message,
+          });
+        }
+      }
+    }
+
+    // For candidates still absent (cold-tier / archive, or corpus fallback
+    // disabled), try a direct per-path read. Bounded-parallel (≤16) to match
+    // loadSearchResultMemoryMap's batch size (issue #1905). Errors are swallowed
+    // so a single unreadable archive entry can't break the whole recall.
     const missing = results.filter((r) => !counters.has(r.path));
     if (missing.length > 0) {
       // Use the first-seen namespace's storage as the reader — all
-      // StorageManagers share the same on-disk format, and
-      // `readMemoryByPath` takes an absolute path so the baseDir doesn't
-      // have to match.
+      // StorageManagers share the same on-disk format, and readMemoryByPath
+      // takes an absolute path so the baseDir doesn't have to match.
       let reader: StorageManager | null = null;
       for (const ns of namespaces) {
         try {
@@ -148,23 +167,29 @@ export class RecallRerankCoordinator {
         }
       }
       if (reader) {
-        for (const r of missing) {
-          try {
-            const memory = await this.readQmdResultMemory(r.path, reader, namespaces);
-            if (!memory) continue;
-            const fm = memory.frontmatter;
-            if (fm.mw_success === undefined && fm.mw_fail === undefined) continue;
-            counters.set(r.path, {
-              mw_success: fm.mw_success,
-              mw_fail: fm.mw_fail,
-              lastAccessed: fm.lastAccessed,
-            });
-          } catch (err) {
-            log.debug("memory-worth: direct path lookup failed", {
-              path: r.path,
-              error: (err as Error).message,
-            });
-          }
+        const readerNn = reader;
+        const BATCH = 16;
+        for (let off = 0; off < missing.length; off += BATCH) {
+          await Promise.all(
+            missing.slice(off, off + BATCH).map(async (r) => {
+              try {
+                const memory = await this.readQmdResultMemory(r.path, readerNn, namespaces);
+                if (!memory) return;
+                const fm = memory.frontmatter;
+                if (fm.mw_success === undefined && fm.mw_fail === undefined) return;
+                counters.set(r.path, {
+                  mw_success: fm.mw_success,
+                  mw_fail: fm.mw_fail,
+                  lastAccessed: fm.lastAccessed,
+                });
+              } catch (err) {
+                log.debug("memory-worth: direct path lookup failed", {
+                  path: r.path,
+                  error: (err as Error).message,
+                });
+              }
+            }),
+          );
         }
       }
     }
@@ -188,7 +213,6 @@ export class RecallRerankCoordinator {
       // we never hit zero; descending so earlier items rank higher.
       score: results.length - i,
     }));
-    const config = this.getConfig();
     const filtered = applyMemoryWorthFilter(rankedInputs, {
       counters,
       now: new Date(),
@@ -229,6 +253,10 @@ export class RecallRerankCoordinator {
   async applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    // Candidate frontmatter already loaded on the hot recall path (issue
+    // #1905); additive + last for positional back-compat. Seeds signals
+    // directly so warm candidates skip the O(corpus) namespace scan.
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
@@ -263,12 +291,18 @@ export class RecallRerankCoordinator {
           const memory = await this.readQmdResultMemory(path, fallbackReader, namespaces);
           return memory ? memory.frontmatter : null;
         },
+        // Corpus version bumps on every memory mutation (including mw counter
+        // writes) — keys the per-namespace signal cache so it invalidates on
+        // the next write instead of a wall-clock TTL (issue #1905).
+        getNamespaceVersion: async (ns) => (await this.getStorage(ns)).getMemoryCorpusVersion(),
       },
-      { cache: this.trustSignalCache, ttlMs: RecallRerankCoordinator.TRUST_SIGNAL_CACHE_TTL_MS },
+      { cache: this.trustSignalCache },
       now,
       {
         recencyHalfLifeDays: halfLifeDays,
         logDebug: (message, context) => log.debug(message, context),
+        preloadedFrontmatter,
+        corpusFallbackEnabled: config.recallTrustStageCorpusFallbackEnabled,
       },
     );
     if (signals.size === 0) {
@@ -307,13 +341,19 @@ export class RecallRerankCoordinator {
     namespaces: string[],
     caps: CapabilitySet,
     label: string,
+    // Candidate frontmatter already loaded on this branch's hot path (issue
+    // #1905); additive + last. Threaded to the active stage so it does
+    // O(candidates) work instead of a full-corpus scan. `undefined` on
+    // branches without a safety-filter map → falls back to corpus/direct-read
+    // (identical lookup result, rule 41 parity).
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
     if (caps.recallTrustScore && results.length > 0) {
       try {
-        return await this.applyTrustScoreRerank(results, namespaces);
+        return await this.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter);
       } catch (err) {
         log.debug(`trust-score stage (${label}) failed open`, {
           error: (err as Error).message,
@@ -321,7 +361,7 @@ export class RecallRerankCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        const filtered = await this.applyMemoryWorthRerank(results, namespaces);
+        const filtered = await this.applyMemoryWorthRerank(results, namespaces, preloadedFrontmatter);
         return { results: filtered, trustByPath: null };
       } catch (err) {
         log.debug(`memory-worth filter (${label}) failed open`, {

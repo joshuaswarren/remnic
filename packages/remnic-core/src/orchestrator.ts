@@ -3433,18 +3433,20 @@ export class Orchestrator {
   private async applyMemoryWorthRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<QmdSearchResult[]> {
-    return this.recallRerankCoordinator.applyMemoryWorthRerank(results, namespaces);
+    return this.recallRerankCoordinator.applyMemoryWorthRerank(results, namespaces, preloadedFrontmatter);
   }
 
   private async applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
-    return this.recallRerankCoordinator.applyTrustScoreRerank(results, namespaces);
+    return this.recallRerankCoordinator.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter);
   }
 
   private async applyTrustScoreToBranch(
@@ -3452,11 +3454,12 @@ export class Orchestrator {
     namespaces: string[],
     caps: CapabilitySet,
     label: string,
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
-    return this.recallRerankCoordinator.applyTrustScoreToBranch(results, namespaces, caps, label);
+    return this.recallRerankCoordinator.applyTrustScoreToBranch(results, namespaces, caps, label, preloadedFrontmatter);
   }
 
   private diversifyAndLimitRecallResults(

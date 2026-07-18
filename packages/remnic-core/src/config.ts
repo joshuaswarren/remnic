@@ -2126,6 +2126,15 @@ export function parseConfig(
     // opt out with recallMemoryWorthFilterEnabled=false.
     recallMemoryWorthFilterEnabled:
       coerceBool(cfg.recallMemoryWorthFilterEnabled) ?? true,
+    // Trust/Memory-Worth recall stage corpus-level fallback (issue #1905).
+    // Default true: when a candidate is missing from the frontmatter already
+    // loaded on the hot recall path, the stage may fall back to a per-namespace
+    // corpus counter/signal map (version-keyed, so it hits in steady state).
+    // Set false to disable that O(corpus) fallback entirely — the stage then
+    // uses only the preloaded frontmatter plus a bounded-parallel per-candidate
+    // direct read (fully O(candidates)). coerceBool handles "false"/"0" forms.
+    recallTrustStageCorpusFallbackEnabled:
+      coerceBool(cfg.recallTrustStageCorpusFallbackEnabled) ?? true,
     // Hot-memories result cache (issue #1902). Default on: readAllMemories()
     // serves from the version-keyed in-process corpus cache. coerceBool
     // handles "false"/"0" string forms; set false to force disk scans.

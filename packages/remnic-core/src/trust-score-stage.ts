@@ -307,20 +307,33 @@ export interface TrustScoreRerankDeps {
   ): Promise<ReadonlyArray<{ path: string; frontmatter: TrustFrontmatterProjection }>>;
   /** Read one memory's frontmatter by path (cold-tier direct fallback). */
   readMemoryFrontmatter(path: string): Promise<TrustFrontmatterProjection | null>;
-}
-
-/** Per-namespace signal cache the host owns and the builder mutates. */
-export interface TrustScoreSignalCache {
-  cache: Map<string, { at: number; signals: ReadonlyMap<string, TrustSignals> }>;
-  ttlMs: number;
+  /**
+   * Current cross-process corpus version for a namespace (issue #1905). Used
+   * to key the per-namespace corpus-fallback cache so it invalidates on the
+   * next memory mutation instead of on a wall-clock timer that is shorter than
+   * recall latency (which produced a permanent steady-state miss).
+   */
+  getNamespaceVersion(namespace: string): Promise<number>;
 }
 
 /**
- * Build the `path → TrustSignals` map for recall candidates using a
- * per-namespace cache plus a direct-path fallback for cold-tier candidates
- * absent from the hot scan. Extracted from the orchestrator (issue #1577) so
- * the god file carries only thin wiring — the scoring itself is
- * {@link applyTrustScoreStage}.
+ * Per-namespace signal cache the host owns and the builder mutates. Keyed on
+ * the shared corpus version (issue #1905): an entry is valid iff its `version`
+ * still equals the namespace's current corpus version.
+ */
+export interface TrustScoreSignalCache {
+  cache: Map<string, { version: number; signals: ReadonlyMap<string, TrustSignals> }>;
+}
+
+/**
+ * Build the `path → TrustSignals` map for recall candidates.
+ *
+ * O(candidates) inversion (issue #1905): when the host passes
+ * `preloadedFrontmatter` (frontmatter already loaded on the hot recall path),
+ * candidate signals are seeded directly from it — no corpus scan. Only
+ * candidates still missing fall back to the corpus-level per-namespace map
+ * (config-gated, version-keyed so it actually hits in steady state) and then
+ * to a bounded-parallel direct per-path read.
  *
  * Fail-open: a single unreadable namespace or memory is logged and skipped so
  * a storage hiccup never breaks recall (mirrors `memory-worth-filter.ts`).
@@ -334,62 +347,102 @@ export async function buildTrustSignalsForRerank(
   options: {
     recencyHalfLifeDays?: number;
     logDebug?: (message: string, context: Record<string, unknown>) => void;
+    /**
+     * Candidate frontmatter already loaded on the hot recall path (issue
+     * #1905). When present, candidate signals are seeded from it before any
+     * corpus scan, so the common warm-candidate recall does zero
+     * `readNamespaceMemories` calls. Structural — a `MemoryFile` map satisfies
+     * `{ frontmatter: TrustFrontmatterProjection }` without importing it.
+     */
+    preloadedFrontmatter?: ReadonlyMap<string, { frontmatter: TrustFrontmatterProjection }>;
+    /**
+     * When false, skip the corpus-level `readNamespaceMemories` fallback
+     * entirely (candidates-first + direct-read only). Defaults to true so the
+     * corpus path stays reachable. See `recallTrustStageCorpusFallbackEnabled`.
+     */
+    corpusFallbackEnabled?: boolean;
   } = {},
 ): Promise<Map<string, TrustSignals>> {
-  const nowMs = now.getTime();
   const logDebug = options.logDebug ?? (() => {});
   const signals = new Map<string, TrustSignals>();
+  const corpusFallbackEnabled = options.corpusFallbackEnabled ?? true;
+  const halfLife = { recencyHalfLifeDays: options.recencyHalfLifeDays };
 
-  // Evict expired cache entries (mirrors the worth-cache discipline).
-  for (const [key, entry] of signalCache.cache) {
-    if (nowMs - entry.at >= signalCache.ttlMs) signalCache.cache.delete(key);
-  }
-
-  // Per-namespace hot scan with cache.
-  const seenNamespaces = new Set<string>();
-  for (const ns of namespaces) {
-    if (seenNamespaces.has(ns)) continue;
-    seenNamespaces.add(ns);
-    try {
-      const cached = signalCache.cache.get(ns);
-      let nsMap: ReadonlyMap<string, TrustSignals> | undefined;
-      if (cached && nowMs - cached.at < signalCache.ttlMs) {
-        nsMap = cached.signals;
-      } else {
-        const memories = await deps.readNamespaceMemories(ns);
-        nsMap = buildTrustSignalMap(memories, now, {
-          recencyHalfLifeDays: options.recencyHalfLifeDays,
-        });
-        signalCache.cache.set(ns, { at: nowMs, signals: nsMap });
-      }
-      for (const [path, s] of nsMap) signals.set(path, s);
-    } catch (err) {
-      logDebug("trust-score: failed to read namespace, skipping", {
-        namespace: ns,
-        error: (err as Error).message,
-      });
+  // O(candidates) fast path: seed signals from candidate frontmatter already
+  // loaded on the hot recall path. Reuses the exact `buildTrustSignalMap`
+  // computation so a candidate's signals equal what a corpus scan produced.
+  if (options.preloadedFrontmatter) {
+    const preloaded: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
+    for (const path of candidatePaths) {
+      const mem = options.preloadedFrontmatter.get(path);
+      if (mem) preloaded.push({ path, frontmatter: mem.frontmatter });
+    }
+    if (preloaded.length > 0) {
+      const seeded = buildTrustSignalMap(preloaded, now, halfLife);
+      for (const [path, s] of seeded) signals.set(path, s);
     }
   }
 
-  // Direct per-path fallback for cold-tier candidates absent from the hot scan.
-  const missing = candidatePaths.filter((p) => !signals.has(p));
-  if (missing.length > 0) {
-    const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
-    for (const path of missing) {
+  // Corpus-level fallback (config-gated): candidates still missing probe a
+  // per-namespace signal map, cached and invalidated by the shared
+  // cross-process corpus version. Only candidate rows are copied out — never
+  // the whole map (issue #1905, no per-recall full-map union).
+  if (corpusFallbackEnabled) {
+    const seenNamespaces = new Set<string>();
+    for (const ns of namespaces) {
+      if (seenNamespaces.has(ns)) continue;
+      seenNamespaces.add(ns);
+      if (candidatePaths.every((p) => signals.has(p))) break;
       try {
-        const frontmatter = await deps.readMemoryFrontmatter(path);
-        if (frontmatter) fallbackMemories.push({ path, frontmatter });
+        const version = await deps.getNamespaceVersion(ns);
+        const cached = signalCache.cache.get(ns);
+        let nsMap: ReadonlyMap<string, TrustSignals>;
+        if (cached && cached.version === version) {
+          nsMap = cached.signals;
+        } else {
+          const memories = await deps.readNamespaceMemories(ns);
+          nsMap = buildTrustSignalMap(memories, now, halfLife);
+          signalCache.cache.set(ns, { version, signals: nsMap });
+        }
+        for (const p of candidatePaths) {
+          if (signals.has(p)) continue;
+          const s = nsMap.get(p);
+          if (s) signals.set(p, s);
+        }
       } catch (err) {
-        logDebug("trust-score: direct path lookup failed", {
-          path,
+        logDebug("trust-score: failed to read namespace, skipping", {
+          namespace: ns,
           error: (err as Error).message,
         });
       }
     }
+  }
+
+  // Direct per-path fallback for candidates still absent (cold-tier / archive).
+  // Bounded-parallel (≤16) to match loadSearchResultMemoryMap's batch size.
+  const missing = candidatePaths.filter((p) => !signals.has(p));
+  if (missing.length > 0) {
+    const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
+    const BATCH = 16;
+    for (let off = 0; off < missing.length; off += BATCH) {
+      const batch = await Promise.all(
+        missing.slice(off, off + BATCH).map(async (path) => {
+          try {
+            const frontmatter = await deps.readMemoryFrontmatter(path);
+            return frontmatter ? { path, frontmatter } : null;
+          } catch (err) {
+            logDebug("trust-score: direct path lookup failed", {
+              path,
+              error: (err as Error).message,
+            });
+            return null;
+          }
+        }),
+      );
+      for (const item of batch) if (item) fallbackMemories.push(item);
+    }
     if (fallbackMemories.length > 0) {
-      const fallbackSignals = buildTrustSignalMap(fallbackMemories, now, {
-        recencyHalfLifeDays: options.recencyHalfLifeDays,
-      });
+      const fallbackSignals = buildTrustSignalMap(fallbackMemories, now, halfLife);
       for (const [path, s] of fallbackSignals) signals.set(path, s);
     }
   }

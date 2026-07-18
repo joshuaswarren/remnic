@@ -56,10 +56,12 @@ export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<QmdSearchResult[]>;
   applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
@@ -1131,7 +1133,7 @@ export class RecallSearchPipelineCoordinator {
     // Fail-open on lookup errors.
     if (caps.recallTrustScore && results.length > 0) {
       try {
-        const trustOutcome = await this.deps.applyTrustScoreRerank(results, options.recallNamespaces);
+        const trustOutcome = await this.deps.applyTrustScoreRerank(results, options.recallNamespaces, boostInput.memoryByPath);
         results = trustOutcome.results;
         if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
       } catch (err) {
@@ -1141,7 +1143,7 @@ export class RecallSearchPipelineCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        results = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces);
+        results = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces, boostInput.memoryByPath);
       } catch (err) {
         log.debug("memory-worth filter (cold) failed open", {
           error: (err as Error).message,
