@@ -23,6 +23,9 @@ import {
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const recordingRelative = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
+const trustedLauncherSha256 = "4f48e7c77f22cc733517984f8a7399e5ac426778092750bb002d715b57b112ac";
+const trustedDecisionContractSha256 = "ecfaa379e168656bb985e3c93f537816f2a1bf17bbefdf15e43d50a709ab82e7";
+const trustedJudgePackageSha256 = "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e";
 
 function descriptorPinnedTest(name, fn) {
   return test(
@@ -190,6 +193,50 @@ test("Relay judge-facing instructions bypass npm lifecycle hooks", async () => {
   }
 });
 
+descriptorPinnedTest("documented Relay trust bootstrap rejects launcher symlinks before staging", async (t) => {
+  const guide = await readFile(path.join(repoRoot, "docs/remnic-relay/JUDGE-GUIDE.md"), "utf8");
+  const match = guide.match(
+    /node -e '\n(?<source>[\s\S]*?)\n' scripts\/verify-relay-judge-package\.mjs \"\$relay_trust_dir\/launcher\.mjs\" \"\$RELAY_LAUNCHER_SHA256\"/
+  );
+  assert.ok(match?.groups?.source, "judge guide must expose the exact out-of-band bootstrap source");
+
+  for (const scenario of ["launcher", "scripts-directory"]) {
+    await t.test(scenario, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-bootstrap-untrusted-root-"));
+      const outside = await mkdtemp(path.join(os.tmpdir(), "relay-bootstrap-host-private-"));
+      const staged = path.join(parent, "staged-launcher.mjs");
+      try {
+        const outsideScripts = path.join(outside, "scripts");
+        await mkdir(outsideScripts);
+        await writeFile(
+          path.join(outsideScripts, "verify-relay-judge-package.mjs"),
+          await readFile(path.join(repoRoot, "scripts/verify-relay-judge-package.mjs"))
+        );
+        if (scenario === "launcher") {
+          await mkdir(path.join(parent, "scripts"));
+          await symlink(
+            path.join(outsideScripts, "verify-relay-judge-package.mjs"),
+            path.join(parent, "scripts/verify-relay-judge-package.mjs")
+          );
+        } else {
+          await symlink(outsideScripts, path.join(parent, "scripts"));
+        }
+
+        const result = await captureNode(
+          ["-e", match.groups.source, "scripts/verify-relay-judge-package.mjs", staged, trustedLauncherSha256],
+          { cwd: parent }
+        );
+        assert.notEqual(result.code, 0, result.stdout);
+        assert.match(result.stderr, /ELOOP|ENOTDIR|symbolic link/i);
+        await assert.rejects(lstat(staged), { code: "ENOENT" });
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 descriptorPinnedTest("Relay judge CLI expands a conventional tilde checkout root", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "relay-judge-home-"));
   try {
@@ -333,6 +380,10 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Quarantine the checkout session.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Restrict checkout access to nothing.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Strip checkout permissions.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Stop accepting checkout requests immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Block checkout requests on every retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Cease all checkout operations.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Pause checkout request processing.",
     "Reuse the checkout-session token while it is valid until we revoke it immediately. Mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid unless the token is invalidated immediately. Mint exactly one replacement after expiry.",
     "One checkout token is owned per checkout session until we revoke it. Reuse the checkout-session token while valid. Mint exactly one replacement after expiry.",
@@ -764,10 +815,10 @@ descriptorPinnedTest("Relay judge package passes from a copied clean room with n
   assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
   assert.equal(receipt.executableVerification, "trusted-launcher-pinned-sha256");
   assert.deepEqual(receipt.trustedExecutableSha256, {
-    "scripts/relay/checkout-decision-contract.mjs": "d4c4f885ce569554693c195293ff98f8cfc2d5730d21ba87dba9b9cc18efa4a9",
-    "scripts/relay/judge-package.mjs": "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e",
+    "scripts/relay/checkout-decision-contract.mjs": trustedDecisionContractSha256,
+    "scripts/relay/judge-package.mjs": trustedJudgePackageSha256,
   });
-  assert.equal(receipt.launcherSha256, "3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d");
+  assert.equal(receipt.launcherSha256, trustedLauncherSha256);
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);

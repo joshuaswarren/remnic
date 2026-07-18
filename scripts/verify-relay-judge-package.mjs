@@ -18,7 +18,7 @@ const packagePaths = [
   "scripts/relay/judge-package.mjs",
 ];
 const trustedExecutableSha256 = new Map([
-  ["scripts/relay/checkout-decision-contract.mjs", "d4c4f885ce569554693c195293ff98f8cfc2d5730d21ba87dba9b9cc18efa4a9"],
+  ["scripts/relay/checkout-decision-contract.mjs", "ecfaa379e168656bb985e3c93f537816f2a1bf17bbefdf15e43d50a709ab82e7"],
   ["scripts/relay/judge-package.mjs", "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e"],
 ]);
 const executableVerificationMode = "trusted-launcher-pinned-sha256";

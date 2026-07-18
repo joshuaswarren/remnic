@@ -85,13 +85,14 @@ The dependency-free verifier does not merely trust the final JSON. It:
 For an ordinary checkout already trusted to match the reviewed commit, the
 short command is `node scripts/verify-relay-judge-package.mjs`. For the
 stronger case where the checkout itself may be modified, use this trust-root
-procedure instead. First compare `RELAY_LAUNCHER_SHA256` with the pinned
-GitHub comment on PR #2012 or issue #1969; that comment is deliberately
-out-of-band from checkout contents. Do not derive the expected value from the
-checkout being tested.
+procedure instead. Obtain both this exact bootstrap block and
+`RELAY_LAUNCHER_SHA256` from the pinned GitHub comment on PR #2012 or issue
+#1969; that comment is deliberately out-of-band from checkout contents. The
+copy below must match that trusted source. Do not derive either the bootstrap
+or expected value solely from the checkout being tested.
 
 ```bash
-RELAY_LAUNCHER_SHA256=3e60245710955021b7b781f9ac2dffeceaa9ae1c3b3f3b61273128ca3299078d
+RELAY_LAUNCHER_SHA256=4f48e7c77f22cc733517984f8a7399e5ac426778092750bb002d715b57b112ac
 relay_trust_dir="$(mktemp -d)"
 trap 'rm -r -- "$relay_trust_dir"' EXIT
 
@@ -99,7 +100,62 @@ node -e '
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const [source, target, expected] = process.argv.slice(1);
-const bytes = fs.readFileSync(source);
+const fail = (message) => {
+  throw new Error(`Relay launcher staging failed: ${message}`);
+};
+for (const name of ["O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK"]) {
+  if (typeof fs.constants[name] !== "number") fail(`Linux ${name} support is required`);
+}
+if (!source || source.startsWith("/") || source.includes("\\")) fail("source must be a relative POSIX path");
+if (!/^[a-f0-9]{64}$/.test(expected)) fail("expected SHA-256 is invalid");
+const segments = source.split("/");
+if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+  fail("source must stay inside the checkout");
+}
+const mountId = (fd) => {
+  const info = fs.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8");
+  const matches = [...info.matchAll(/^mnt_id:\s+([1-9]\d*)\s*$/gm)];
+  if (matches.length !== 1) fail("each descriptor must expose one Linux mount ID");
+  return matches[0][1];
+};
+const sameOpenedNode = (before, after) =>
+  before.dev === after.dev &&
+  before.ino === after.ino &&
+  before.mode === after.mode &&
+  before.nlink === after.nlink &&
+  before.size === after.size &&
+  before.mtimeNs === after.mtimeNs &&
+  before.ctimeNs === after.ctimeNs;
+const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
+let fd = fs.openSync(".", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+let bytes;
+try {
+  const rootMountId = mountId(fd);
+  for (const [index, segment] of segments.entries()) {
+    const final = index === segments.length - 1;
+    const next = fs.openSync(
+      `/proc/self/fd/${fd}/${segment}`,
+      flags | (final ? 0 : fs.constants.O_DIRECTORY)
+    );
+    try {
+      const info = fs.fstatSync(next, { bigint: true });
+      if (mountId(next) !== rootMountId) fail("launcher path crosses a mount boundary");
+      if (final ? !info.isFile() : !info.isDirectory()) fail("launcher path has the wrong filesystem type");
+    } catch (error) {
+      fs.closeSync(next);
+      throw error;
+    }
+    fs.closeSync(fd);
+    fd = next;
+  }
+  const before = fs.fstatSync(fd, { bigint: true });
+  if (!before.isFile() || before.nlink !== 1n) fail("launcher must be one non-hard-linked regular file");
+  bytes = fs.readFileSync(fd);
+  const after = fs.fstatSync(fd, { bigint: true });
+  if (!sameOpenedNode(before, after)) fail("launcher changed while its bytes were read");
+} finally {
+  fs.closeSync(fd);
+}
 const actual = crypto.createHash("sha256").update(bytes).digest("hex");
 if (actual !== expected) {
   process.stderr.write(`Relay launcher digest mismatch: ${actual}\n`);
@@ -117,15 +173,22 @@ Expected output on the verified platform:
 RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked executables=trusted-launcher-pinned-sha256 externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
-The inline Node bootstrap reads the candidate launcher once, hashes those exact
-bytes, and writes the same bytes into a new private temporary directory. That
-avoids a check-then-copy race. The externally anchored launcher then snapshots
-the package manifest, five static UI files, sealed recording, synthetic
-fixtures, demo script, decision contract, and verifier through mount-locked
-no-follow descriptors. Before it executes checkout code, it requires the
-decision contract and verifier to match two SHA-256 values pinned inside the
-trusted launcher. A regression replaces each executable with code that would
-write a host marker and proves the marker is never created.
+The inline Node bootstrap opens every candidate-launcher path component through
+Linux no-follow descriptors rooted at the current checkout, locks them to one
+mount ID, rejects hard links and non-regular files, reads the opened file once,
+checks that it did not change, hashes those exact bytes, and writes the same
+bytes into a new private temporary directory. That prevents symlink, mount,
+hard-link, and check-then-copy escapes before the trust root exists. Tests use
+an exact-digest launcher outside the checkout behind both final-file and parent
+symlinks, proving neither can be staged.
+
+The externally anchored launcher then snapshots the package manifest, five
+static UI files, sealed recording, synthetic fixtures, demo script, decision
+contract, and verifier through mount-locked no-follow descriptors. Before it
+executes checkout code, it requires the decision contract and verifier to match
+two SHA-256 values pinned inside the trusted launcher. A regression replaces
+each executable with code that would write a host marker and proves the marker
+is never created.
 
 The launcher also rejects symlinks, hard links, mount crossings, and concurrent
 source changes before any verified byte is copied to a new temporary

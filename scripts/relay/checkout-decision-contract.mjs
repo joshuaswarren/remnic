@@ -29,8 +29,10 @@ const ANAPHORIC_TOKEN_OBJECT_PATTERN =
   /\b(?:(?:(?:a|the)\s+)?(?:new|fresh|replacement|additional|second|next)\s+one|another(?:\s+one)?|one(?:\s+more)?|anew|(?:it|this|that)(?:\s+one)?|(?:something|anything)\s+(?:new|fresh|different|separate|distinct|alternate)|(?:(?:a|the)\s+)?(?:new|fresh|different|distinct|alternate|separate|replacement|another)\s+(?:value|object|item|thing|secret|identifier|id|handle))\b(?=\s*(?:$|\b(?:on|for|during|across|after|before|prior|ahead|while|when|per|at|each|every)\b))/;
 const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
+// Treat every checkout-qualified predicate as lifecycle policy so new nouns
+// such as "checkout requests" cannot reopen the closed-world grammar.
 const CHECKOUT_CONTINUITY_TARGET_PATTERN =
-  /\bcheckout[- ](?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service|account|channel|workflow|processing)\b|\b(?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service)\b/;
+  /\bcheckout\b|\b(?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service)\b/;
 const OBJECTLESS_ROTATION_FILLER_PATTERN =
   /\b(?:a|an|the|then|we|system|agent|keep|keeps|keeping|continue|continues|continued|continuing|to|will|would|should|must|can|could|may|might|always|more|again|another|additional|extra|several|multiple|many|twice|two|2|batch|batches|anew|afresh|repeatedly|repetitively|continuously|indefinitely|endlessly)\b/g;
 const OBJECTLESS_ADDITIONAL_ROTATION_PATTERN =
