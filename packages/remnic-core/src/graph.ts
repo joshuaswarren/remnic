@@ -511,6 +511,43 @@ export class GraphIndex {
   }
 
   /**
+   * Re-stat every graph file whose identity the cache just committed and return
+   * false if any has moved since (issue #1904, Codex). Closes the validation→
+   * in-place-push TOCTOU window: a peer process (concurrent CLI / daemon /
+   * decay job) can append between edgeFilesUnchangedExceptOurAppends()'s final
+   * stat and the allEdges.push(...). Without this re-check the cache would be
+   * accepted with identity predating the peer write and miss the peer edge for
+   * the TTL. A residual infinitesimal window (peer writes during this re-stat)
+   * remains and is TTL-bounded.
+   */
+  private async edgeCacheIdentityUnchangedSinceCommit(): Promise<boolean> {
+    if (!this.edgeCache) return false;
+    for (const type of Object.keys(this.edgeCache.meta) as GraphType[]) {
+      const committed = this.edgeCache.meta[type];
+      if (!committed) continue;
+      let cur: GraphFileMeta;
+      try {
+        const st = await stat(graphFilePath(this.memoryDir, type));
+        cur = { size: st.size, mtimeMs: st.mtimeMs, ino: Number(st.ino) };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+          cur = { size: 0, mtimeMs: 0, ino: 0 };
+        } else {
+          return false;
+        }
+      }
+      if (
+        cur.size !== committed.size ||
+        cur.mtimeMs !== committed.mtimeMs ||
+        cur.ino !== committed.ino
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Called after a memory is written to disk.
    *
    * @param memoryPath - relative path from memoryDir (e.g. "facts/2026-02-22/abc.md")
@@ -625,7 +662,19 @@ export class GraphIndex {
         // cross-process coherence. Any stat error fails open to a full reload.
         try {
           if (await this.edgeFilesUnchangedExceptOurAppends(appended)) {
-            if (appended.length > 0) this.edgeCache.allEdges.push(...appended);
+            if (appended.length > 0) {
+              this.edgeCache.allEdges.push(...appended);
+              // Close the validation→push TOCTOU window (#1904, Codex): a peer
+              // process can append between the validation stat above and this
+              // in-place push. Re-verify every committed identity; if any file
+              // moved, the cache would miss the peer edge for the TTL, so null
+              // it and let the next traversal reload. (Skipped when this call
+              // pushed nothing — no new window was opened, and the validation
+              // already confirmed no peer wrote.)
+              if (this.edgeCache && !(await this.edgeCacheIdentityUnchangedSinceCommit())) {
+                this.edgeCache = null;
+              }
+            }
           } else {
             this.edgeCache = null;
           }
