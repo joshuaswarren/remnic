@@ -26,6 +26,10 @@ import {
   type RelayRole,
 } from "../scripts/relay/contracts.js";
 import {
+  assertRelayWireOutputSchema,
+  verifyRelayFixtureManifest,
+} from "../scripts/relay/fixture-manifest.js";
+import {
   assertTreeContainsNoSymlinks,
   cleanupRelayRun,
   copyFixtureTree,
@@ -218,6 +222,16 @@ test("Relay run roots reject non-empty and symlinked targets and clean only mark
 
 test("synthetic fixture copies contain no symlinks and hidden contract flips stale to corrected behavior", async () => {
   await assertTreeContainsNoSymlinks(fixtures);
+  await verifyRelayFixtureManifest(fixtures);
+  assert.throws(
+    () =>
+      assertRelayWireOutputSchema({
+        type: "array",
+        uniqueItems: true,
+        items: { type: "string" },
+      }),
+    /unsupported keyword uniqueItems/,
+  );
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-fixture-behavior-"));
   const staleWorkspace = path.join(root, "stale");
   const correctedWorkspace = path.join(root, "corrected");

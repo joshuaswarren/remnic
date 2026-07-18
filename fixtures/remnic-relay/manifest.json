@@ -43,18 +43,18 @@
     },
     {
       "path": "schemas/builder.json",
-      "bytes": 955,
-      "sha256": "00eb8e75d1d04238ea48d47ba550ba4584515b88410702ae8d135af1622a3cc7"
+      "bytes": 574,
+      "sha256": "334ea6efd7ab956a93d98880fcbb3ca551386dc2a1919ae6186cfcdf9eecef53"
     },
     {
       "path": "schemas/resolver.json",
-      "bytes": 646,
-      "sha256": "4bb664551d1e60fd294800e773a58e41ea12bd9097ebbae41963d7e9765196a8"
+      "bytes": 384,
+      "sha256": "ca6812b85ca58d5d56264ab3b7bb4df90c64537185da480e6ae6f4d77cedaee1"
     },
     {
       "path": "schemas/scout.json",
-      "bytes": 622,
-      "sha256": "5dbf5ca4ea1244f5bdf5b43187c32403074745155db8610e60fdbbe48b14cca7"
+      "bytes": 360,
+      "sha256": "330273b5d7804551055250d49dbc76459a7180590407fb21ed0c0b16910961fa"
     },
     {
       "path": "upstream/CONTRACT.md",
@@ -72,5 +72,5 @@
       "sha256": "e292a22f6aef1395879b5786070a6d734fb339a8e5bd26409898477872b98837"
     }
   ],
-  "rootSha256": "da33966c56147453fcdc4ced8c1c8576288cce4e2a68016f7b47c3c4f9d3d668"
+  "rootSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e"
 }

@@ -22,8 +22,51 @@ export const RelayFixtureManifestSchema = z
   .strict();
 export type RelayFixtureManifest = z.infer<typeof RelayFixtureManifestSchema>;
 
+const RELAY_WIRE_SCHEMA_KEYWORDS = new Set([
+  "additionalProperties",
+  "description",
+  "enum",
+  "items",
+  "properties",
+  "required",
+  "type",
+]);
+
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function assertRelayWireOutputSchema(schema: unknown, locator = "schema"): void {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new Error(`Relay wire output ${locator} must be a JSON Schema object`);
+  }
+  const candidate = schema as Record<string, unknown>;
+  for (const keyword of Object.keys(candidate)) {
+    if (!RELAY_WIRE_SCHEMA_KEYWORDS.has(keyword)) {
+      throw new Error(`Relay wire output ${locator} uses unsupported keyword ${keyword}`);
+    }
+  }
+  if (candidate.type === "object") {
+    if (candidate.additionalProperties !== false) {
+      throw new Error(`Relay wire output ${locator} object must reject additional properties`);
+    }
+    if (!candidate.properties || typeof candidate.properties !== "object" || Array.isArray(candidate.properties)) {
+      throw new Error(`Relay wire output ${locator} object must declare properties`);
+    }
+    const properties = candidate.properties as Record<string, unknown>;
+    const propertyNames = Object.keys(properties).sort();
+    const required = Array.isArray(candidate.required) ? [...candidate.required].sort() : [];
+    if (JSON.stringify(required) !== JSON.stringify(propertyNames)) {
+      throw new Error(`Relay wire output ${locator} must require every declared property`);
+    }
+    for (const [name, property] of Object.entries(properties)) {
+      assertRelayWireOutputSchema(property, `${locator}.properties.${name}`);
+    }
+  } else if (candidate.type === "array") {
+    assertRelayWireOutputSchema(candidate.items, `${locator}.items`);
+  } else if (!["string", "number", "integer", "boolean"].includes(String(candidate.type))) {
+    throw new Error(`Relay wire output ${locator} uses unsupported type ${String(candidate.type)}`);
+  }
 }
 
 export async function buildRelayFixtureManifest(fixtureRoot: string): Promise<RelayFixtureManifest> {
@@ -41,6 +84,10 @@ export async function verifyRelayFixtureManifest(fixtureRoot: string): Promise<R
   const actual = await buildRelayFixtureManifest(fixtureRoot);
   if (JSON.stringify(committed) !== JSON.stringify(actual)) {
     throw new Error("Relay fixture integrity manifest does not match the committed synthetic inputs");
+  }
+  for (const name of ["builder", "resolver", "scout"]) {
+    const schema = JSON.parse(await readFile(path.join(fixtureRoot, "schemas", `${name}.json`), "utf8"));
+    assertRelayWireOutputSchema(schema, `${name}.json`);
   }
   return committed;
 }
