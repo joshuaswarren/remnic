@@ -4844,6 +4844,34 @@ function cmdInit(): void {
   console.log("  npx --package @remnic/server remnic-server");
 }
 
+/**
+ * Resolve a bearer token for the local status/health probe (issue #2006).
+ * Precedence mirrors the daemon: operator token first (env
+ * `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN`, then config `server.authToken`
+ * via `oauthResolveOperatorToken()`), then any connector token from the
+ * local token store — the access server accepts connector tokens for
+ * health. Returns `undefined` for open daemons so the probe stays
+ * unauthenticated exactly as before.
+ */
+function resolveStatusProbeToken(): string | undefined {
+  const operatorToken = oauthResolveOperatorToken();
+  if (operatorToken) return operatorToken;
+  try {
+    // Connector tokens authorize health EXCEPT chatgpt-minted ones, which
+    // the access server pins to /mcp only (tokenPathPolicy). Skip those so
+    // a ChatGPT entry at the head of the store doesn't produce a misleading
+    // 401 when an ordinary connector token would authenticate health.
+    const usable = listTokens().find(
+      (t) => t.connector !== "chatgpt" && typeof t.token === "string" && t.token.length > 0,
+    );
+    if (usable) return usable.token;
+  } catch {
+    // Token store missing/unreadable — fall through to the open probe.
+  }
+}
+
+export const __statusHealthTestHooks = { resolveStatusProbeToken };
+
 async function cmdStatus(json: boolean): Promise<void> {
   const { running, pid } = isServiceRunning();
   if (json) {
@@ -4857,14 +4885,22 @@ async function cmdStatus(json: boolean): Promise<void> {
   console.log(`Remnic server: running${pid ? ` (pid ${pid})` : ""}`);
 
   const port = inferPort();
+  const probeToken = resolveStatusProbeToken();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 3000);
   try {
     const response = await fetch(`http://127.0.0.1:${port}/engram/v1/health`, {
       signal: controller.signal,
+      ...(probeToken ? { headers: { Authorization: `Bearer ${probeToken}` } } : {}),
     });
     if (!response.ok) {
-      console.log(`Health: server responded with ${response.status} ${response.statusText}`);
+      const hint =
+        response.status === 401 && !probeToken
+          ? " (daemon requires auth and no local token was found — set REMNIC_AUTH_TOKEN, configure server.authToken, or run 'remnic token generate')"
+          : response.status === 401
+            ? " (local token rejected by the daemon)"
+            : "";
+      console.log(`Health: server responded with ${response.status} ${response.statusText}${hint}`);
     } else {
       const health = (await response.json()) as { status?: unknown };
       const status = typeof health.status === "string" ? health.status : "ok";
@@ -4990,7 +5026,15 @@ function oauthResolveOperatorToken(): string | undefined {
     const server = raw.server;
     if (server && typeof server === "object" && "authToken" in server) {
       const candidate = (server as Record<string, unknown>).authToken;
-      if (typeof candidate === "string" && candidate.length > 0) {
+      // A config created by `remnic init` may still hold the literal
+      // `${REMNIC_AUTH_TOKEN}` placeholder; treat that as unresolved so
+      // callers fall through to other sources (env, token store) rather
+      // than sending the placeholder as a real bearer token.
+      if (
+        typeof candidate === "string" &&
+        candidate.length > 0 &&
+        !candidate.includes("${")
+      ) {
         return candidate;
       }
     }

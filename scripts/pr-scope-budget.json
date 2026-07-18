@@ -1,0 +1,5 @@
+{
+  "note": "PR scope budget thresholds (issue #1991 PR2, umbrella #1988). Changed lines counted against core package paths only, artifact paths (.github/ai-review-ignore) excluded. warn is advisory; fail blocks unless a maintainer applies the scope-budget-exempt label. Tightening decisions cite two weeks of check telemetry per #1988 decision C.",
+  "warnLines": 1500,
+  "failLines": 4000
+}

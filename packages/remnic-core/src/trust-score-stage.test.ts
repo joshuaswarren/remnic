@@ -348,3 +348,124 @@ test("adapter: no half-life → no decay (raw counters)", () => {
   // Without decay, 5/1 success-heavy → confidence ~6 (raw count).
   assert.ok(worth!.confidence >= 5, "no half-life → raw confidence (no decay)");
 });
+
+test("signal cache: an aged entry re-derives even when the corpus version matches (#1905, Codex)", async () => {
+  // Trust signals bake wall-clock time into their values (ageDays,
+  // computeMemoryWorth(..., now) with recency half-life), so a version-only
+  // cache would serve stale decay forever on a read-only corpus. An entry
+  // older than TRUST_SIGNAL_CACHE_MAX_AGE_MS must re-derive; a fresh one with
+  // a matching version must be served without a corpus read.
+  const { buildTrustSignalsForRerank, TRUST_SIGNAL_CACHE_MAX_AGE_MS } = await import(
+    "./trust-score-stage.js"
+  );
+  const now = new Date("2026-07-01T12:00:00.000Z");
+  let corpusReads = 0;
+  const deps = {
+    readNamespaceMemories: async () => {
+      corpusReads += 1;
+      return [
+        { path: "a.md", frontmatter: { mw_success: 3, mw_fail: 0, lastAccessed: "2026-06-30" } },
+      ];
+    },
+    readMemoryFrontmatter: async () => null,
+    getNamespaceVersion: async () => 7,
+  };
+  const staleSignals = buildTrustSignalMap(
+    [{ path: "a.md", frontmatter: { mw_success: 3, mw_fail: 0, lastAccessed: "2026-06-30" } }],
+    new Date(now.getTime() - TRUST_SIGNAL_CACHE_MAX_AGE_MS - 1),
+    {},
+  );
+  const cache = {
+    cache: new Map([
+      [
+        "default",
+        {
+          version: 7,
+          cachedAt: now.getTime() - TRUST_SIGNAL_CACHE_MAX_AGE_MS - 1,
+          signals: staleSignals,
+        },
+      ],
+    ]),
+  };
+
+  await buildTrustSignalsForRerank(["a.md"], ["default"], deps, cache, now, {});
+  assert.equal(corpusReads, 1, "aged entry (version match) must re-derive from the corpus");
+
+  corpusReads = 0;
+  await buildTrustSignalsForRerank(["a.md"], ["default"], deps, cache, now, {});
+  assert.equal(corpusReads, 0, "fresh entry with matching version must serve from cache");
+});
+
+test("preloaded-but-neutral candidates skip the corpus and direct-read fallbacks (#1905, Cursor/Codex)", async () => {
+  // buildTrustSignalMap deliberately OMITS neutral memories (no trust fields),
+  // so a preloaded candidate can be examined yet absent from `signals`. It must
+  // be treated as EXAMINED — not missing — or every uninstrumented hot
+  // candidate re-triggers the namespace-wide corpus scan and a direct re-read,
+  // defeating the O(candidates) fast path.
+  const { buildTrustSignalsForRerank } = await import("./trust-score-stage.js");
+  const now = new Date("2026-07-01T12:00:00.000Z");
+  let corpusReads = 0;
+  let directReads = 0;
+  const deps = {
+    readNamespaceMemories: async () => {
+      corpusReads += 1;
+      return [];
+    },
+    readMemoryFrontmatter: async () => {
+      directReads += 1;
+      return null;
+    },
+    getNamespaceVersion: async () => 1,
+  };
+  const cache = { cache: new Map() };
+  // Neutral frontmatter: no mw_* / trust fields at all.
+  const preloadedFrontmatter = new Map([
+    ["a.md", { frontmatter: {} }],
+    ["b.md", { frontmatter: {} }],
+  ]);
+
+  const signals = await buildTrustSignalsForRerank(
+    ["a.md", "b.md"],
+    ["default"],
+    deps,
+    cache,
+    now,
+    { preloadedFrontmatter },
+  );
+
+  assert.equal(corpusReads, 0, "neutral preloaded candidates must not trigger a corpus scan");
+  assert.equal(directReads, 0, "neutral preloaded candidates must not trigger direct reads");
+  assert.equal(signals.size, 0, "neutral candidates stay absent (multiplier 1.0 downstream)");
+});
+
+test("cooperative abort stops the corpus and direct-read fallbacks at loop boundaries (#1905, Codex)", async () => {
+  const { buildTrustSignalsForRerank } = await import("./trust-score-stage.js");
+  const now = new Date("2026-07-01T12:00:00.000Z");
+  let corpusReads = 0;
+  let directReads = 0;
+  const deps = {
+    readNamespaceMemories: async () => {
+      corpusReads += 1;
+      return [];
+    },
+    readMemoryFrontmatter: async () => {
+      directReads += 1;
+      return null;
+    },
+    getNamespaceVersion: async () => 1,
+  };
+  const controller = new AbortController();
+  controller.abort(); // the recall deadline already won the race
+
+  await buildTrustSignalsForRerank(
+    ["a.md"],
+    ["ns1", "ns2"],
+    deps,
+    { cache: new Map() },
+    now,
+    { abortSignal: controller.signal },
+  );
+
+  assert.equal(corpusReads, 0, "an aborted signal must stop namespace scans before they start");
+  assert.equal(directReads, 0, "an aborted signal must stop direct-read batches before they start");
+});
