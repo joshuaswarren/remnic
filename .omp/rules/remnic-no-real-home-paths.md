@@ -2,7 +2,7 @@
 name: remnic-no-real-home-paths
 description: "Never commit a real user home directory path; this is a public repo — use ~, $HOME, os.homedir(), tmpdir, or a generic persona"
 condition:
-  - '/(home|Users)/(?!(user|users|alex|alice|bob|carol|dave|app|dev|op|person|private|someone|test|tester|testuser|example|runner|ci|demo|sample|foo|bar|you|yourname|username|me|jdoe|janedoe|johndoe|somebody|placeholder|nobody|admin|guest|qa)[/"''\\])[a-z][a-z0-9._-]+/'
+  - '/(home|Users)/(?!(user|users|alex|alice|bob|carol|dave|app|dev|op|person|private|someone|test|tester|testuser|example|runner|ci|demo|sample|foo|bar|you|yourname|username|me|jdoe|janedoe|johndoe|somebody|placeholder|nobody|admin|guest|qa|node|root|ubuntu|debian|fedora|alpine|coder|vscode|devcontainer|pptruser|jovyan|appuser|deploy|worker|www-data|git|docker|github|actions)[/"''\\])[a-z][a-z0-9._-]+/'
   - '/(home|Users)/(?!(User|Users|Alice|Bob|Test|Example|Admin|Guest|Foo|Bar|Demo|Sample|Shared|Public|Default|JaneDoe|JohnDoe|Runner)[/"''\\])[A-Z][A-Za-z0-9._-]+/'
   - '(?i)[a-z]:[\\/]{1,2}users[\\/]{1,2}(?!(user|users|alex|alice|bob|carol|dave|app|dev|op|person|private|someone|somebody|test|tester|testuser|example|runner|ci|demo|sample|foo|bar|you|yourname|username|me|jdoe|janedoe|johndoe|placeholder|nobody|admin|administrator|guest|qa|public|default|defaultuser|all)[\\/"''])[a-z][a-z0-9._-]+[\\/]'
 ---
