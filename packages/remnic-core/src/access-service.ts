@@ -2476,7 +2476,7 @@ export class EngramAccessService {
     key: string,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<() => void> {
+  ): Promise<{ release: () => void; waitedMs: number }> {
     const cap = Number.isFinite(limit) && limit > 0 ? limit : Infinity;
     const sem = this.recallSemaphores.get(key) ?? { active: 0, waiters: [] };
     this.recallSemaphores.set(key, sem);
@@ -2492,14 +2492,19 @@ export class EngramAccessService {
       }
     };
     if (sem.active < cap) {
+      // Slot free — acquired immediately, NO queue wait. (Measuring wall-clock
+      // here would count event-loop scheduling jitter under load and wrongly
+      // report a positive queueWaitMs for an uncontended recall.)
       sem.active++;
-      return Promise.resolve(release);
+      return Promise.resolve({ release, waitedMs: 0 });
     }
-    return new Promise<() => void>((resolve, reject) => {
+    // Contended — measure the real time spent blocked for a slot.
+    const startedWaiting = Date.now();
+    return new Promise<{ release: () => void; waitedMs: number }>((resolve, reject) => {
       const waiter = {
         take: () => {
           signal?.removeEventListener("abort", waiter.drop);
-          resolve(release);
+          resolve({ release, waitedMs: Date.now() - startedWaiting });
         },
         drop: () => {
           const i = sem.waiters.indexOf(waiter);
@@ -2521,9 +2526,10 @@ export class EngramAccessService {
 
   /**
    * Runs `fn` under a per-principal recall slot, passing the measured queue
-   * wait (ms) so it can be folded additively into recall-timings. Replaces
-   * the former width-1 `withBudgetLock` FIFO serialization (issue #1906):
-   * budget accounting stays correct because peek/record are synchronous
+   * wait (ms) — 0 for an uncontended acquire, the real blocked time when the
+   * cap was reached — so it can be folded additively into recall-timings.
+   * Replaces the former width-1 `withBudgetLock` FIFO serialization (issue
+   * #1906): budget accounting stays correct because peek/record are synchronous
    * (see cross-namespace-budget.ts). Release always runs in `finally`.
    */
   private async withRecallConcurrency<T>(
@@ -2534,11 +2540,9 @@ export class EngramAccessService {
     const key = principal || "__anonymous__";
     const limit = this.orchestrator.config.recallMaxConcurrentPerPrincipal;
     throwIfAborted(signal);
-    const startedWaiting = Date.now();
-    const release = await this.acquireRecallSlot(key, limit, signal);
-    const queueWaitMs = Date.now() - startedWaiting;
+    const { release, waitedMs } = await this.acquireRecallSlot(key, limit, signal);
     try {
-      return await fn(queueWaitMs);
+      return await fn(waitedMs);
     } finally {
       release();
     }
