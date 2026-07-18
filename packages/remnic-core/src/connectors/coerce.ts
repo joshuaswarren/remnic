@@ -5,12 +5,27 @@
  * connectors/index.ts can import them without creating a circular dependency.
  */
 
-import { log } from "../logger.js";
+import { isLoggerInitialized, log } from "../logger.js";
 
 const BOOL_TOKENS: Record<string, boolean> = {
   true: true, "1": true, yes: true, on: true,
   false: false, "0": false, no: false, off: false,
 };
+
+/**
+ * Surface a "present but unrecognized config value" diagnostic. Routes through
+ * the installed logger when a host has called `initLogger`, and otherwise falls
+ * back to `console.warn` so the standalone `@remnic/core` path (documented to
+ * call `parseConfig()` without a logger) does not silently discard the warning
+ * and re-introduce the fail-open default this whole change exists to prevent.
+ */
+export function warnUnrecognizedConfig(message: string): void {
+  if (isLoggerInitialized()) {
+    log.warn(message);
+  } else {
+    console.warn(`remnic: ${message}`);
+  }
+}
 
 /**
  * Generic boolean coercion: converts string representations of booleans
@@ -38,7 +53,7 @@ export function coerceBool(value: unknown, label?: string): boolean | undefined 
     const v = value.trim().toLowerCase();
     if (v === "") return undefined;
     if (Object.hasOwn(BOOL_TOKENS, v)) return BOOL_TOKENS[v];
-    log.warn(
+    warnUnrecognizedConfig(
       `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
         `expected true|false|1|0|yes|no|on|off — using default`,
     );
@@ -77,14 +92,19 @@ export function coerceInstallExtension(value: unknown): boolean | undefined {
  */
 export function coerceNumber(value: unknown, label?: string): number | undefined {
   if (typeof value === "number") {
-    return Number.isFinite(value) ? value : undefined;
+    if (Number.isFinite(value)) return value;
+    warnUnrecognizedConfig(
+      `ignoring non-finite numeric value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected a finite number — using default`,
+    );
+    return undefined;
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed.length === 0) return undefined;
     const n = Number(trimmed);
     if (Number.isFinite(n)) return n;
-    log.warn(
+    warnUnrecognizedConfig(
       `ignoring unrecognized numeric value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
         `expected a finite number — using default`,
     );

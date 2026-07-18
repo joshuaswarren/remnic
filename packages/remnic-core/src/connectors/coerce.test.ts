@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { coerceBool, coerceNumber } from "./coerce.js";
-import { initLogger } from "../logger.js";
+import { initLogger, resetLogger } from "../logger.js";
 
 let warnings: string[];
 
@@ -85,19 +85,47 @@ test("coerceNumber accepts finite numbers and numeric strings without warning", 
   assert.deepEqual(warnings, []);
 });
 
-test("coerceNumber returns undefined silently for absent or non-finite number inputs", () => {
+test("coerceNumber returns undefined silently for absent inputs", () => {
   assert.equal(coerceNumber(undefined), undefined);
   assert.equal(coerceNumber(null), undefined);
   assert.equal(coerceNumber(""), undefined);
+  assert.equal(coerceNumber("   "), undefined);
+  assert.deepEqual(warnings, [], "absent numeric inputs do not warn");
+});
+
+test("coerceNumber warns on present non-finite number inputs and returns undefined", () => {
   assert.equal(coerceNumber(Number.NaN), undefined);
   assert.equal(coerceNumber(Number.POSITIVE_INFINITY), undefined);
-  assert.deepEqual(warnings, [], "absent / non-finite numeric inputs do not warn");
+  assert.equal(coerceNumber(Number.NEGATIVE_INFINITY, "ttlMs"), undefined);
+  assert.equal(warnings.length, 3);
+  assert.match(warnings[0], /non-finite numeric value/);
+  assert.match(warnings[2], /for ttlMs/);
 });
 
 test("coerceNumber warns on a present-but-unparseable string and returns undefined", () => {
   assert.equal(coerceNumber("abc"), undefined);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /unrecognized numeric value "abc"/);
+  assert.equal(coerceNumber("NaN"), undefined);
+  assert.equal(coerceNumber("Infinity"), undefined);
   assert.equal(coerceNumber("12px", "maxResults"), undefined);
-  assert.match(warnings[1], /for maxResults/);
+  assert.equal(warnings.length, 4);
+  assert.match(warnings[0], /unrecognized numeric value "abc"/);
+  assert.match(warnings[3], /for maxResults/);
+});
+
+test("warns via console when no logger backend is installed (standalone-core path)", () => {
+  resetLogger();
+  const originalWarn = console.warn;
+  const captured: string[] = [];
+  console.warn = (msg?: unknown) => {
+    captured.push(String(msg));
+  };
+  try {
+    assert.equal(coerceBool("disabled"), undefined);
+    assert.equal(coerceNumber("abc"), undefined);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(captured.length, 2);
+  assert.match(captured[0], /^remnic: ignoring unrecognized boolean value "disabled"/);
+  assert.match(captured[1], /^remnic: ignoring unrecognized numeric value "abc"/);
 });

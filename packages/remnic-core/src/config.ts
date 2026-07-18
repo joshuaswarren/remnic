@@ -35,7 +35,7 @@ import { expandTildePath } from "./utils/path.js";
 // boolean-coercion logic that connectors/index.ts already exports. The helper
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
-import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { coerceBool, coerceInstallExtension, coerceNumber, warnUnrecognizedConfig } from "./connectors/coerce.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   resolveEmitLegacyTools,
@@ -358,6 +358,10 @@ function coerceBooleanLike(value: unknown, label?: string): boolean | undefined 
   if (typeof value === "number") {
     if (value === 1) return true;
     if (value === 0) return false;
+    warnUnrecognizedConfig(
+      `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected true|false|1|0|yes|no|on|off — using default`,
+    );
     return undefined;
   }
   return coerceBool(value, label);
