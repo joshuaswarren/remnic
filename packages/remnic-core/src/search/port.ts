@@ -120,6 +120,17 @@ export interface SearchBackend {
   // ── Maintenance ──
   update(execution?: SearchExecutionOptions): Promise<void>;
   /**
+   * Wall-clock ms of the most recent SUCCESSFUL index refresh, or null when the
+   * backend has never run one. Ordinary update() is fail-open: it returns
+   * silently (without throwing or advancing this timestamp) when the backend is
+   * unavailable or the call is suppressed by a min-interval / failure backoff.
+   * Callers that must know whether update() actually indexed — so they can
+   * invalidate dependent caches only on a real refresh — snapshot this before
+   * the call and treat the backend as refreshed iff the value advanced. Optional
+   * because not every backend tracks it; absent means "assume refreshed".
+   */
+  readonly lastUpdateRanAtMs?: number | null;
+  /**
    * Optional strict refresh used by callers that must know whether the backend
    * was actually refreshed before writing success markers. Ordinary update
    * calls remain fail-open for migration/maintenance resilience.
