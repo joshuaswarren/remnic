@@ -652,3 +652,49 @@ test("parseConfig defaults/clamps bufferSaveDebounceMs", () => {
   assert.equal(parseConfig({ bufferSaveDebounceMs: 12.9 }).bufferSaveDebounceMs, 12, "floats floor");
   assert.equal(parseConfig({ bufferSaveDebounceMs: 5_000 }).bufferSaveDebounceMs, 5_000);
 });
+
+test("debounce on: each turn re-arms the trailing edge (save fires one window after the LAST turn)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const storage = new FakeStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 100, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "turn 0")); // schedules save at t=100
+  t.mock.timers.tick(90); // t=90, before the first window closes
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "turn 1")); // re-arms to t=190
+  t.mock.timers.tick(90); // t=180 — the ORIGINAL 100ms deadline is past
+  await settle();
+  assert.equal(storage.saveCount, 0, "re-arm pushed the deadline; no save at the original window");
+
+  t.mock.timers.tick(20); // t=200 — 110ms after the last turn (past the re-armed 190)
+  await settle();
+  assert.equal(storage.saveCount, 1, "the save fires one window after the LAST turn (true trailing edge)");
+  assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 2);
+});
+
+test("debounce on: sustained activity forces an inline save at the 5x staleness cap", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const storage = new FakeStorage(emptyBufferState());
+  // Window 100ms → cap at 5x = 500ms of continuously-deferred pending state.
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 100, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  // Add a turn every 80ms (< window) so the trailing-edge timer never fires —
+  // each turn re-arms it. The pending save is deferred continuously.
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "turn 0")); // firstPendingAt = 0
+  for (let elapsed = 80; elapsed <= 480; elapsed += 80) {
+    t.mock.timers.tick(80);
+    await buffer.addTurn("thread-a", makeTurn("thread-a", `turn @${elapsed}`));
+    assert.equal(storage.saveCount, 0, `still deferred at t=${elapsed} (< 5x window)`);
+  }
+
+  // Next turn crosses t=560 (>= 500ms cap): scheduleSave forces an inline save.
+  t.mock.timers.tick(80); // t=560
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "turn @560"));
+  assert.equal(storage.saveCount, 1, "the 5x staleness cap forced an inline save mid-activity");
+});

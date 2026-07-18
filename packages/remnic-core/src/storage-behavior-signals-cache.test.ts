@@ -158,3 +158,54 @@ test("SecureStoreLockedError propagates when reading an encrypted ledger while l
     );
   });
 });
+
+test("a failed append leaves the dedup cache clean so a retry persists the events", async () => {
+  // Issue #1909 review finding 4 (HIGH data-loss): on a cache hit the dedup set
+  // must NOT be mutated before the append is durable. Otherwise a failed append
+  // (unchanged size/mtime) leaves the next call cache-hitting a poisoned set and
+  // silently dropping the events forever.
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    // Seed a row so the in-memory dedup cache is populated (exercise the hit path).
+    await storage.appendBehaviorSignals([signal("m0", "h0")]);
+    const owner = cacheOf(storage);
+    const cachedKeys = owner.behaviorSignalsKeyCache?.keys;
+    assert.ok(cachedKeys, "cache seeded");
+    const sizeBefore = cachedKeys.size;
+
+    // Force the next underlying secure append to fail.
+    const appendOwner = storage as unknown as {
+      appendStorageSecureFile: (filePath: string, content: string) => Promise<void>;
+    };
+    const realAppend = appendOwner.appendStorageSecureFile.bind(storage);
+    let failNext = true;
+    appendOwner.appendStorageSecureFile = async (filePath: string, content: string) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("simulated disk full");
+      }
+      return realAppend(filePath, content);
+    };
+
+    await assert.rejects(
+      () => storage.appendBehaviorSignals([signal("m1", "h1")]),
+      /simulated disk full/,
+    );
+    assert.equal(
+      owner.behaviorSignalsKeyCache?.keys.has("m1:h1"),
+      false,
+      "the failed append must not add its key to the cached dedup set",
+    );
+    assert.equal(
+      owner.behaviorSignalsKeyCache?.keys.size,
+      sizeBefore,
+      "cache size is unchanged after the failed append",
+    );
+
+    // The retry (append now succeeds) persists the previously-dropped event.
+    const n = await storage.appendBehaviorSignals([signal("m1", "h1")]);
+    assert.equal(n, 1, "the retry is NOT deduped away — the event is persisted");
+    const rows = await readRows(path.join(dir, "state", "behavior-signals.jsonl"));
+    assert.equal(rows.length, 2, "both distinct signals are on disk after the retry");
+  });
+});

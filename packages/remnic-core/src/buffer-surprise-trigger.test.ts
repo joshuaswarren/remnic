@@ -22,6 +22,7 @@ import type { BufferState, BufferTurn } from "./types.js";
 
 class FakeStorage {
   public saved: BufferState | null = null;
+  public saveCount = 0;
 
   constructor(private readonly initial: BufferState) {}
 
@@ -30,6 +31,7 @@ class FakeStorage {
   }
 
   async saveBuffer(state: BufferState): Promise<void> {
+    this.saveCount += 1;
     this.saved = structuredClone(state);
   }
 }
@@ -751,5 +753,40 @@ test("flag on: stale snapshot clears do not mark live turns as freshly extracted
     buffer.getExtractionCount("sess-1"),
     1,
     "a skipped stale-snapshot clear must not advance extraction metadata",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1909 (review finding 1) — surprise promotion forces a durable flush
+// ---------------------------------------------------------------------------
+
+test("debounce on: surprise-promoted extract_now flushes the buffer before extraction", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  const probe = fixedScoreProbe(0.99); // promotes keep_buffering -> extract_now
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    // High turn cap so the built-in trigger keeps buffering; only the surprise
+    // probe promotes. Large debounce so a scheduled save would NOT have landed.
+    bufferMaxTurns: 100,
+    triggerMode: "smart",
+    bufferSaveDebounceMs: 10_000,
+  });
+  const buffer = new SmartBuffer(
+    config,
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+    probe,
+  );
+
+  const outcome = await buffer.addTurnWithOutcome("sess-1", makeTurn("sess-1", "novel turn"));
+  assert.equal(outcome.decision, "extract_now", "surprise promotes the turn");
+  assert.ok(
+    storage.saveCount >= 1,
+    "the buffer was flushed to disk before extraction ran (not left on the debounce timer)",
+  );
+  assert.equal(
+    storage.saved?.entries?.["sess-1"]?.turns.length,
+    1,
+    "the persisted buffer contains the turn that triggered extraction",
   );
 });

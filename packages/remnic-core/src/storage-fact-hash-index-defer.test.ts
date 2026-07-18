@@ -90,6 +90,30 @@ test("direct writeMemory('fact') without the flag persists the hash immediately"
   });
 });
 
+test("promotion-style immediate write survives restart even with fact-hashes.ready present", async () => {
+  // Issue #1909 review finding 2: promotion writes (profile/shared) do NOT
+  // register with the orchestrator's batch save (no addContentHashDedup), so
+  // they must keep their immediate per-fact index save. If they deferred, the
+  // hash would be absent from fact-hashes.txt and — with fact-hashes.ready
+  // present — a restart would trust the on-disk index (no rebuild) and MISS the
+  // hash, re-creating the promoted fact on the next extraction.
+  await withMemoryDir(async (dir) => {
+    // Warm the index authoritative and create the .ready marker (empty backfill).
+    const warm = new StorageManager(dir);
+    assert.equal(await warm.hasFactContentHash("nothing yet"), false);
+    // Promotion-style write: no deferHashIndexSave → immediate index flush.
+    await warm.writeMemory("fact", "promoted profile fact", { source: "extraction" });
+
+    // A fresh session with .ready present trusts the on-disk index (no rebuild).
+    const restarted = new StorageManager(dir);
+    assert.equal(
+      await restarted.hasFactContentHash("promoted profile fact"),
+      true,
+      "the promoted hash is on disk and found after restart — no duplicate re-creation",
+    );
+  });
+});
+
 test("durability: deferred writes with NO batch save are rebuildable from on-disk facts (fail-open)", async () => {
   await withMemoryDir(async (dir) => {
     // Simulate a crash mid-extraction: facts written with deferHashIndexSave but
