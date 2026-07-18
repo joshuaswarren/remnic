@@ -474,6 +474,31 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   if (new Set(callThreadIds).size !== RELAY_MAX_LIVE_CALLS) {
     throw new Error("Relay recording does not prove four transcript-free Codex threads");
   }
+  const coldCall = calls.find((call) => call.summary.role === "cold-builder");
+  if (!coldCall) throw new Error("Relay recording omitted the cold Builder call artifact");
+  const expectedColdSessionId = `session-${coldCall.summary.threadId}`;
+  const recallEvents = events.filter((event) => event.payload.kind === "recall_observed");
+  const propagationEvents = events.filter((event) => event.payload.kind === "propagation_verified");
+  if (recallEvents.length !== 1 || propagationEvents.length !== 1) {
+    throw new Error("Relay recording must contain exactly one cold recall and propagation event");
+  }
+  const recallEvent = recallEvents[0];
+  const propagationEvent = propagationEvents[0];
+  if (!recallEvent || !propagationEvent) {
+    throw new Error("Relay recording omitted its cold recall or propagation event");
+  }
+  const recallPayload = recallEvent.payload;
+  const propagationPayload = propagationEvent.payload;
+  if (
+    recallPayload.kind !== "recall_observed" ||
+    propagationPayload.kind !== "propagation_verified" ||
+    recallPayload.agentId !== "agent-cold-builder" ||
+    propagationPayload.agentId !== "agent-cold-builder" ||
+    recallPayload.sessionId !== expectedColdSessionId ||
+    propagationPayload.sessionId !== expectedColdSessionId
+  ) {
+    throw new Error("Relay recording cold evidence is not bound to the cold Builder thread");
+  }
   if (JSON.stringify(tests.map((item) => item.status)) !== JSON.stringify(metadata.testTransition)) {
     throw new Error("Relay recording test evidence does not prove fail-before/pass-after");
   }

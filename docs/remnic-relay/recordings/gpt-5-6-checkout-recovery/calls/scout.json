@@ -3,27 +3,27 @@
     "role": "scout",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72a6-d1a0-79f1-a89b-adb81021064f",
+    "threadId": "019f72cc-ff2b-75b0-ae50-42705ec5b121",
     "promptSha256": "dc958c535786ae607756f01347abc572c34df1e518f3c39e985ce7f17ef808e2",
-    "outputSha256": "d915341918568dec71befab4fb2b07e4e4c309b93228437839ee2ba33bc80691",
+    "outputSha256": "d5aab450d79bd9f92366710bf92387d8de0d766cb617d42198df0d5a07360991",
     "exitCode": 0,
-    "durationMs": 13641,
+    "durationMs": 14380,
     "usage": {
-      "inputTokens": 38258,
-      "cachedInputTokens": 26880,
-      "outputTokens": 517,
-      "reasoningOutputTokens": 50
+      "inputTokens": 37628,
+      "cachedInputTokens": 26368,
+      "outputTokens": 520,
+      "reasoningOutputTokens": 66
     },
     "recallToolCalls": 0,
     "status": "completed"
   },
   "output": {
-    "decision": "One checkout session owns one token: mint on the first request; reuse it for ordinary retries while valid; after explicit expiry, mint exactly one replacement and reuse that replacement for subsequent retries. Ordinary-retry rotation is unsupported.",
-    "rationale": "`CONTRACT.md` is explicitly “accepted and authoritative.” The executable policy returns the current token unless expiry is explicitly true, otherwise mints; contract tests assert one mint across valid retries and one replacement mint after expiry.",
+    "decision": "Checkout owns one token per session: mint on the first request; reuse it for ordinary retries while valid; after explicit expiry mint exactly one replacement, then reuse that replacement. Do not rotate tokens on ordinary retries.",
+    "rationale": "`CONTRACT.md` is explicitly marked \"accepted and authoritative.\" Its lifecycle is implemented by returning `currentToken` unless it is absent or `tokenExpired === true`, in which case a token is minted. The contract tests verify one mint across a valid retry and one replacement mint after expiry followed by reuse.",
     "source_locators": [
-      "CONTRACT.md:3-12",
-      "src/reference-token-policy.mjs:1-9",
-      "test/token-policy.contract.test.mjs:6-28"
+      "CONTRACT.md",
+      "src/reference-token-policy.mjs",
+      "test/token-policy.contract.test.mjs"
     ],
     "confidence": 1
   }

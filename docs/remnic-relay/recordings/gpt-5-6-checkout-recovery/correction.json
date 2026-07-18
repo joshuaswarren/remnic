@@ -1,9 +1,9 @@
 {
-  "planId": "corr-mrpmzy13-vtbjzr7a",
+  "planId": "corr-mrpoi2f3-1z81r0fs",
   "correctionId": "correction-token-refresh",
   "outcomeStatus": "applied",
   "staleMemoryStatus": "superseded",
-  "staleMemoryId": "decision-1784334962608-vhi3",
-  "replacementMemoryId": "decision-1784335016203-pa1f",
+  "staleMemoryId": "decision-1784337464423-j5fd",
+  "replacementMemoryId": "decision-1784337541317-rihe",
   "resolverBridgeRequests": 1
 }

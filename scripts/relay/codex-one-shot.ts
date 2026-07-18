@@ -22,6 +22,13 @@ import {
   schemaForRole,
 } from "./contracts.js";
 import { createRoleCodexHome, type RelayRunDirectories } from "./isolation.js";
+import {
+  RELAY_ISOLATED_MCP_URL,
+  RELAY_NETWORK_PROXY_PORT,
+  RELAY_UNSHARE_NAMESPACE_ARGS,
+  startRelayNetworkGateway,
+  type RelayNetworkGateway,
+} from "./network-gateway.js";
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
@@ -243,17 +250,14 @@ async function spawnIsolated(
   codexHome: string,
   outputDir: string,
   prompt: string,
+  gateway: RelayNetworkGateway,
 ): Promise<SpawnCapture> {
   const isolationScript = path.join(options.repoRoot, "scripts", "relay", "isolate-codex.sh");
+  const networkProxyScript = path.join(options.repoRoot, "scripts", "relay", "network-proxy.mjs");
   const args = [
-    "--user",
-    "--map-root-user",
-    "--mount",
-    "--pid",
-    "--fork",
-    "--kill-child=SIGKILL",
+    ...RELAY_UNSHARE_NAMESPACE_ARGS,
     isolationScript,
-    ...buildRelayCodexArgs(options.role, options.mcpUrl),
+    ...buildRelayCodexArgs(options.role, RELAY_ISOLATED_MCP_URL),
   ];
   const startedAt = Date.now();
   return await new Promise<SpawnCapture>((resolve, reject) => {
@@ -270,6 +274,10 @@ async function spawnIsolated(
         RELAY_CODEX_BIN: options.codexBinary,
         RELAY_WORKSPACE_READ_ONLY:
           options.role === "scout" || options.role === "resolver" ? "1" : "0",
+        RELAY_NETWORK_PROXY_SCRIPT: networkProxyScript,
+        RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
+        RELAY_NETWORK_PROXY_PORT: String(RELAY_NETWORK_PROXY_PORT),
+        RELAY_NETWORK_MCP_TARGET_PORT: String(gateway.mcpTargetPort),
         REMNIC_RELAY_MCP_TOKEN: options.mcpToken,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -353,24 +361,30 @@ export async function runRelayCodexOneShot(
   await mkdir(outputDir, { mode: 0o700 });
   await writeFile(path.join(outputDir, "schema.json"), schemaContents, { mode: 0o600, flag: "wx" });
   const codexHome = await createRoleCodexHome(options.directories.codexHomesDir, options.role, options.authSourcePath);
+  const gateway = await startRelayNetworkGateway({ outputDir, mcpUrl: options.mcpUrl });
 
-  const capture = await runWithinCodexCreditBudget({
-    config: options.budget,
-    model: RELAY_MODEL,
-    run: async () => {
-      const result = await spawnIsolated(options, codexHome, outputDir, prompt);
-      if (!result.spawned) throw new CodexCreditDispatchError("isolated Codex process never dispatched");
-      const usage = parseCodexJsonlUsage(result.stdout);
-      if (!usage) {
-        const diagnostic = await writeFailureDiagnostic(outputDir, options.role, result);
-        const classification = diagnostic.errorClasses.length > 0 ? diagnostic.errorClasses.join(",") : "unclassified";
-        throw new CodexCreditAccountingError(
-          `Codex completion did not emit a complete turn.completed usage record (diagnostic: ${classification})`,
-        );
-      }
-      return { value: result, usage };
-    },
-  });
+  let capture: SpawnCapture;
+  try {
+    capture = await runWithinCodexCreditBudget({
+      config: options.budget,
+      model: RELAY_MODEL,
+      run: async () => {
+        const result = await spawnIsolated(options, codexHome, outputDir, prompt, gateway);
+        if (!result.spawned) throw new CodexCreditDispatchError("isolated Codex process never dispatched");
+        const usage = parseCodexJsonlUsage(result.stdout);
+        if (!usage) {
+          const diagnostic = await writeFailureDiagnostic(outputDir, options.role, result);
+          const classification = diagnostic.errorClasses.length > 0 ? diagnostic.errorClasses.join(",") : "unclassified";
+          throw new CodexCreditAccountingError(
+            `Codex completion did not emit a complete turn.completed usage record (diagnostic: ${classification})`,
+          );
+        }
+        return { value: result, usage };
+      },
+    });
+  } finally {
+    await gateway.stop().catch(() => undefined);
+  }
 
   const exitCode = capture.exitCode ?? (capture.signal ? 128 : -1);
   if (exitCode !== 0) {

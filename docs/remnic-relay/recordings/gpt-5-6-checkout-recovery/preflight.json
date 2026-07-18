@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-07-18T00:36:02.556Z",
+  "checkedAt": "2026-07-18T01:17:44.345Z",
   "status": "passed",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
@@ -13,8 +13,8 @@
   "reserveUnits": 473,
   "plannedSpendCeilingUnits": 1700,
   "worstCasePlannedSpendUnits": 1200,
-  "ledgerSpentUnits": 11.329925,
-  "ledgerRemainingPlannedUnits": 1688.670075,
+  "ledgerSpentUnits": 15.8101125,
+  "ledgerRemainingPlannedUnits": 1684.1898875,
   "codexVersion": "codex-cli 0.144.4",
   "authMethod": "ChatGPT",
   "codexToolSurface": {
@@ -30,7 +30,9 @@
   "isolation": {
     "userNamespace": true,
     "mountNamespace": true,
-    "chroot": true
+    "networkNamespace": true,
+    "chroot": true,
+    "egressPolicy": "openai-and-relay-only"
   },
   "remnic": {
     "loopbackOnly": true,

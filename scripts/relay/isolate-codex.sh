@@ -10,6 +10,10 @@ required=(
   RELAY_OUTPUT_DIR
   RELAY_CODEX_BIN
   RELAY_WORKSPACE_READ_ONLY
+  RELAY_NETWORK_PROXY_SCRIPT
+  RELAY_NETWORK_GATEWAY_SOCKET
+  RELAY_NETWORK_PROXY_PORT
+  RELAY_NETWORK_MCP_TARGET_PORT
   REMNIC_RELAY_MCP_TOKEN
 )
 for name in "${required[@]}"; do
@@ -24,10 +28,18 @@ if [[ "${RELAY_WORKSPACE_READ_ONLY}" != "0" && "${RELAY_WORKSPACE_READ_ONLY}" !=
   exit 70
 fi
 
-for name in RELAY_ROOTFS RELAY_WORKSPACE RELAY_CODEX_HOME RELAY_OUTPUT_DIR RELAY_CODEX_BIN; do
+for name in RELAY_ROOTFS RELAY_WORKSPACE RELAY_CODEX_HOME RELAY_OUTPUT_DIR RELAY_CODEX_BIN RELAY_NETWORK_PROXY_SCRIPT RELAY_NETWORK_GATEWAY_SOCKET; do
   value="${!name}"
   if [[ "${value}" != /* || "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
     echo "relay isolation: ${name} must be a safe absolute path" >&2
+    exit 70
+  fi
+done
+
+for name in RELAY_NETWORK_PROXY_PORT RELAY_NETWORK_MCP_TARGET_PORT; do
+  value="${!name}"
+  if [[ ! "${value}" =~ ^[0-9]+$ || "${value}" -lt 1 || "${value}" -gt 65535 ]]; then
+    echo "relay isolation: ${name} must be an integer TCP port" >&2
     exit 70
   fi
 done
@@ -46,10 +58,24 @@ if [[ ! -f "${RELAY_CODEX_BIN}" || -L "${RELAY_CODEX_BIN}" ]]; then
   echo "relay isolation: Codex binary must be a regular non-symlink file" >&2
   exit 70
 fi
+if [[ ! -f "${RELAY_NETWORK_PROXY_SCRIPT}" || -L "${RELAY_NETWORK_PROXY_SCRIPT}" ]]; then
+  echo "relay isolation: network proxy must be a regular non-symlink file" >&2
+  exit 70
+fi
+if [[ "${RELAY_NETWORK_GATEWAY_SOCKET}" != "${RELAY_OUTPUT_DIR}/network-gateway.sock" || ! -S "${RELAY_NETWORK_GATEWAY_SOCKET}" || -L "${RELAY_NETWORK_GATEWAY_SOCKET}" ]]; then
+  echo "relay isolation: network gateway must be the run-scoped output socket" >&2
+  exit 70
+fi
 
 mount --make-rprivate /
 mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "${RELAY_ROOTFS}"
+network_proxy_pid=""
 cleanup() {
+  if [[ -n "${network_proxy_pid}" ]]; then
+    kill "${network_proxy_pid}" 2>/dev/null || true
+    wait "${network_proxy_pid}" 2>/dev/null || true
+  fi
+  rm -f "${RELAY_OUTPUT_DIR}/network-proxy.ready"
   umount -R "${RELAY_ROOTFS}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -95,6 +121,9 @@ mount -t proc -o nosuid,nodev,noexec proc "${RELAY_ROOTFS}/proc"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/codex"
 mount --bind "${RELAY_CODEX_BIN}" "${RELAY_ROOTFS}/opt/codex/codex"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/codex"
+install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
+mount --bind "${RELAY_NETWORK_PROXY_SCRIPT}" "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
+mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 
 mount --bind "${RELAY_WORKSPACE}" "${RELAY_ROOTFS}/workspace"
 if [[ "${RELAY_WORKSPACE_READ_ONLY}" == "1" ]]; then
@@ -108,7 +137,36 @@ fi
 mount --bind "${RELAY_CODEX_HOME}" "${RELAY_ROOTFS}/codex-home"
 mount --bind "${RELAY_OUTPUT_DIR}" "${RELAY_ROOTFS}/output"
 
-exec /usr/sbin/chroot "${RELAY_ROOTFS}" /usr/bin/env -i \
+/usr/bin/ip link set lo up
+/usr/sbin/chroot "${RELAY_ROOTFS}" /usr/bin/env -i \
+  HOME=/tmp \
+  TMPDIR=/tmp \
+  PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  /usr/bin/node /opt/codex/relay-network-proxy.mjs \
+    --gateway /output/network-gateway.sock \
+    --listen-port "${RELAY_NETWORK_PROXY_PORT}" \
+    --mcp-target-port "${RELAY_NETWORK_MCP_TARGET_PORT}" &
+network_proxy_pid=$!
+
+for ((attempt = 0; attempt < 100; attempt += 1)); do
+  if [[ -f "${RELAY_OUTPUT_DIR}/network-proxy.ready" ]]; then
+    break
+  fi
+  if ! kill -0 "${network_proxy_pid}" 2>/dev/null; then
+    echo "relay isolation: network proxy exited before readiness" >&2
+    exit 70
+  fi
+  sleep 0.05
+done
+if [[ ! -f "${RELAY_OUTPUT_DIR}/network-proxy.ready" ]]; then
+  echo "relay isolation: network proxy did not become ready" >&2
+  exit 70
+fi
+
+set +e
+/usr/sbin/chroot "${RELAY_ROOTFS}" /usr/bin/env -i \
   HOME=/codex-home \
   CODEX_HOME=/codex-home \
   TMPDIR=/tmp \
@@ -116,5 +174,16 @@ exec /usr/sbin/chroot "${RELAY_ROOTFS}" /usr/bin/env -i \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+  HTTP_PROXY="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  HTTPS_PROXY="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  ALL_PROXY="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  http_proxy="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  https_proxy="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  all_proxy="http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}" \
+  NO_PROXY=127.0.0.1,localhost \
+  no_proxy=127.0.0.1,localhost \
   REMNIC_RELAY_MCP_TOKEN="${REMNIC_RELAY_MCP_TOKEN}" \
   /opt/codex/codex "$@"
+status=$?
+set -e
+exit "${status}"

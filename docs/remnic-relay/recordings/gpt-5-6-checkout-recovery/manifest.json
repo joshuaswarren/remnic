@@ -13,69 +13,69 @@
     },
     {
       "path": "calls/cold-builder.json",
-      "bytes": 1178,
-      "sha256": "fd34769875c5a2eab97b05b6e965a749668dd999896ef34a6308122c5bd0fd8a"
+      "bytes": 1078,
+      "sha256": "6aa8c1baea5541f6f98332bd576761f5fe3b38c89b6692b605bf40a7b95347df"
     },
     {
       "path": "calls/resolver.json",
-      "bytes": 1357,
-      "sha256": "7cae710da766465f44c776d940a3bf185bae67625f6df00c833771e064d33f12"
+      "bytes": 1253,
+      "sha256": "526247164c8a2e6a09141a33cdea59188f100b5d2adcd848477ee1e016f918ac"
     },
     {
       "path": "calls/scout.json",
-      "bytes": 1311,
-      "sha256": "61b236305548c3d2ea3b7ac34cf555450f5b89b41d00befe879ea9926bdd9df4"
+      "bytes": 1343,
+      "sha256": "7d42e53adac93e5b9e53b282cb41e15b3c2a141c22712b751bfe25e5d438300f"
     },
     {
       "path": "calls/stale-builder.json",
-      "bytes": 1045,
-      "sha256": "79e3bc2a042ac123e93ce70d52587a0aea3227c20da7d05660c5a4997389b3ba"
+      "bytes": 1098,
+      "sha256": "460c0459d1f1fb70309763f2841c0dbe8a1ce37017073be0c18b9ae2bb66849b"
     },
     {
       "path": "correction.json",
       "bytes": 291,
-      "sha256": "d241a247a05a6ee8b31063e38cb534831483fd82c5c5d1c86d442f30828b80db"
+      "sha256": "034cf2c7d8cf0703e2635e3d49d669d60f154f36c60a03b7704ec86e9d7b045c"
     },
     {
       "path": "credit-receipt.json",
-      "bytes": 866,
-      "sha256": "7ceb56a0b52bcdd107af9f0fbcd3f98ede3c9f6081664b091acc2256f51b0c07"
+      "bytes": 864,
+      "sha256": "04514e11c0d73aed19144f2ed0e2e537f47739dae788d1e0d0cb2d4f68580164"
     },
     {
       "path": "events.json",
-      "bytes": 19083,
-      "sha256": "321dd8e784103b4fb900584d18483fdd2aafbfc581dd89d124da7e54b1ee1ac4"
+      "bytes": 19024,
+      "sha256": "a6cad5457f74087d856aa064723dc9c120186c5339654b4dc9637f0d38617d0a"
     },
     {
       "path": "memories/replacement.json",
       "bytes": 261,
-      "sha256": "84ae57afa8f62cc3c706a943369d5a0e51b85b76bc6c930655f19b661ed66a6e"
+      "sha256": "d523f953fae76cfde9f275f4a93ad0cd6e7692f3e41ac04cf172bef7dcdae523"
     },
     {
       "path": "memories/stale.json",
       "bytes": 226,
-      "sha256": "9821e067a4d2e2d9fec5f384ee7d5f93de2c7bf84a4a92a0ffc1f09ad3b0dce7"
+      "sha256": "9d43124c336c691e539dcdd8fd6ca95d2ba846f0a4a8308e0e55b852f7496fe6"
     },
     {
       "path": "mission-receipt.json",
       "bytes": 370,
-      "sha256": "8dfdafe35f0db4e2de721a39914a657b86cfeb43c6c0d4698dafac20ba1a37a1"
+      "sha256": "5ccab706a0a107ce7931d6d25e24e0015f19d6b94f27a8d5ccfd6e4130b36db8"
     },
     {
       "path": "preflight.json",
-      "bytes": 1205,
-      "sha256": "95b2ecd10218432cf70627b48aa8bdd79dd015bf2aaae545631e0189251c64ed"
+      "bytes": 1282,
+      "sha256": "32fde5c623bb030da3382bc78b6196424acfa57a0d364ab97b9ea1444155feef"
     },
     {
       "path": "recording.json",
-      "bytes": 1206,
-      "sha256": "7f838f420702ad7ce29c7b5878083d1af7d2736248d7c73e40ee2c0b2f1df0cd"
+      "bytes": 1205,
+      "sha256": "6215fac52121bb38c924809eae14a6b9fe4d5a1f13f993afdcba79b246018068"
     },
     {
       "path": "tests.json",
       "bytes": 789,
-      "sha256": "799497368a5fdca48d81eb8a7140dfeceb512a7c6a612a82d3287b187bc81b86"
+      "sha256": "aa724d539c39d271d3c9038b67f67c497c0a5c9c88ac9e8cb065e649022d6ee2"
     }
   ],
-  "rootSha256": "306f85add678bb54cfd0de26bd7e0ef5894b316470207e998621a9b5202fcfd1"
+  "rootSha256": "f6044bc5205e573e7f48fe1ca24be24abb80637181b7cffb9218538aed0599e6"
 }

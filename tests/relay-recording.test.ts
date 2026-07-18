@@ -136,6 +136,10 @@ async function resealRecordingManifest(recordingDir: string): Promise<void> {
 
 test("Relay recording is sanitized, run-scoped, and integrity checked", async () => {
   const fixtureManifest = await verifyRelayFixtureManifest(fixtureRoot);
+  const calls = fixtureCalls();
+  const coldCall = calls.find((call) => call.summary.role === "cold-builder");
+  assert.ok(coldCall);
+  const coldThreadId = coldCall.summary.threadId;
   const events = createRelayMissionFixture().map((input, index) =>
     RelayMissionEventSchema.parse({
       schemaVersion: "1",
@@ -148,6 +152,12 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       payload: {
         ...input.payload,
+        ...(input.payload.kind === "recall_observed" || input.payload.kind === "propagation_verified"
+          ? {
+              agentId: "agent-cold-builder",
+              sessionId: `session-${coldThreadId}`,
+            }
+          : {}),
         ...(input.payload.kind === "mission_started" ? { runMode: "live" as const } : {}),
         ...(input.payload.kind === "correction_approved"
           ? {
@@ -196,7 +206,13 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
       mcpTools: ["relay.remnic.recall"],
     },
     fixtureManifestSha256: fixtureManifest.rootSha256,
-    isolation: { userNamespace: true, mountNamespace: true, chroot: true },
+    isolation: {
+      userNamespace: true,
+      mountNamespace: true,
+      networkNamespace: true,
+      chroot: true,
+      egressPolicy: "openai-and-relay-only",
+    },
     remnic: {
       loopbackOnly: true,
       namespace: "relay-build-week",
@@ -223,7 +239,7 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     fixtureManifestSha256: fixtureManifest.rootSha256,
     mission,
     missionReceiptSha256,
-    calls: fixtureCalls(),
+    calls,
     tests: [
       {
         phase: "before-correction",
@@ -283,6 +299,20 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), /declared thread IDs/);
 
     await writeFile(metadataPath, originalMetadata);
+    await resealRecordingManifest(recordingDir);
+    await verifyRelayRecording(recordingDir, repoRoot);
+
+    const eventsPath = path.join(recordingDir, "events.json");
+    const originalEvents = await readFile(eventsPath, "utf8");
+    const tamperedEvents = JSON.parse(originalEvents) as Array<{ payload: { kind: string; sessionId?: string } }>;
+    const coldRecall = tamperedEvents.find((event) => event.payload.kind === "recall_observed");
+    assert.ok(coldRecall);
+    coldRecall.payload.sessionId = `session-${randomUUID()}`;
+    await writeFile(eventsPath, `${JSON.stringify(tamperedEvents, null, 2)}\n`);
+    await resealRecordingManifest(recordingDir);
+    await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), /cold Builder thread/);
+
+    await writeFile(eventsPath, originalEvents);
     await resealRecordingManifest(recordingDir);
     await verifyRelayRecording(recordingDir, repoRoot);
 

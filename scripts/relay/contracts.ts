@@ -136,7 +136,15 @@ export const RelayPreflightReceiptSchema = z
       })
       .strict(),
     fixtureManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
-    isolation: z.object({ userNamespace: z.literal(true), mountNamespace: z.literal(true), chroot: z.literal(true) }),
+    isolation: z
+      .object({
+        userNamespace: z.literal(true),
+        mountNamespace: z.literal(true),
+        networkNamespace: z.literal(true),
+        chroot: z.literal(true),
+        egressPolicy: z.literal("openai-and-relay-only"),
+      })
+      .strict(),
     remnic: z
       .object({
         loopbackOnly: z.literal(true),

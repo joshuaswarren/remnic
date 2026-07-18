@@ -3,28 +3,27 @@
     "role": "resolver",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72a7-7293-7e40-8b9d-02dd313980e0",
+    "threadId": "019f72cd-ef56-72f3-92e8-4eef8bcdc8e4",
     "promptSha256": "8a1e0b3042ae90ccab4f4b4931aa7c30806d62852febe15d23f8b8fafe3e5eb7",
-    "outputSha256": "e40beeae9f2fa9b5be51187a598da7f3b097ea003be2719959605d05bd705ebd",
+    "outputSha256": "f41c11e658b8c7dc661965017f3bbdbf99df007beca1130dce83b5a5d14c3033",
     "exitCode": 0,
-    "durationMs": 12517,
+    "durationMs": 15335,
     "usage": {
-      "inputTokens": 28049,
-      "cachedInputTokens": 17408,
-      "outputTokens": 465,
-      "reasoningOutputTokens": 87
+      "inputTokens": 38972,
+      "cachedInputTokens": 26880,
+      "outputTokens": 538,
+      "reasoningOutputTokens": 64
     },
     "recallToolCalls": 0,
     "status": "completed"
   },
   "output": {
-    "replacement_decision": "Reuse the existing checkout-session token on ordinary retries; mint exactly one replacement only after explicit expiry, then reuse that replacement for subsequent retries.",
-    "rationale": "`CONTRACT.md` declares this accepted, authoritative lifecycle and explicitly supersedes per-request token rotation. The executable reference returns `currentToken` whenever it exists and `tokenExpired !== true`, minting only otherwise; its contract tests verify both retry reuse and one replacement mint after expiry.",
+    "replacement_decision": "Use one checkout token per session: mint on the first request, reuse it for ordinary retries while valid, and mint exactly one replacement only after explicit expiry.",
+    "rationale": "`CONTRACT.md` marks this lifecycle authoritative and explicitly rejects rotating a token on every request. The executable policy returns the existing token unless `tokenExpired === true`; the contract test verifies a retry preserves the token and mint count.",
     "source_locators": [
-      "CONTRACT.md:1",
-      "src/reference-token-policy.mjs:1",
-      "test/token-policy.contract.test.mjs:6",
-      "test/token-policy.contract.test.mjs:16"
+      "CONTRACT.md:3-12",
+      "src/reference-token-policy.mjs:1-8",
+      "test/token-policy.contract.test.mjs:6-28"
     ],
     "confidence": 0.99
   }

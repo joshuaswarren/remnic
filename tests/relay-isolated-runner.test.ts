@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 
@@ -35,6 +36,13 @@ import {
   copyFixtureTree,
   prepareRelayRunDirectories,
 } from "../scripts/relay/isolation.js";
+import {
+  RELAY_ISOLATED_MCP_URL,
+  RELAY_NETWORK_PROXY_PORT,
+  RELAY_UNSHARE_NAMESPACE_ARGS,
+  isRelayNetworkTargetAllowed,
+  startRelayNetworkGateway,
+} from "../scripts/relay/network-gateway.js";
 import {
   runRelayMission,
   type RelayCodexExecutor,
@@ -171,7 +179,7 @@ test("Relay fixes model, call count, and conservative 2,473-unit budget without 
 });
 
 test("Codex one-shot arguments ignore user state and expose only loopback Remnic recall", () => {
-  const args = buildRelayCodexArgs("cold-builder", "http://127.0.0.1:43210/mcp");
+  const args = buildRelayCodexArgs("cold-builder", RELAY_ISOLATED_MCP_URL);
   assert.deepEqual(args.slice(0, 4), ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules"]);
   assert.ok(args.includes("gpt-5.6-terra"));
   assert.ok(args.includes("--dangerously-bypass-approvals-and-sandbox"));
@@ -196,6 +204,81 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
   assert.equal(args.some((arg) => arg.toLowerCase().includes("sol")), false);
   assert.equal(args.some((arg) => arg.includes(os.homedir())), false);
   assert.throws(() => buildRelayCodexArgs("scout", "https://example.com/mcp"), /loopback/);
+});
+
+test("Relay gives every Codex call a network namespace with allow-listed egress only", () => {
+  assert.ok(RELAY_UNSHARE_NAMESPACE_ARGS.includes("--net"));
+  assert.equal(RELAY_ISOLATED_MCP_URL, `http://127.0.0.1:${RELAY_NETWORK_PROXY_PORT}/mcp`);
+  assert.equal(isRelayNetworkTargetAllowed("127.0.0.1", 54_321, 54_321), true);
+  assert.equal(isRelayNetworkTargetAllowed("127.0.0.1", 54_322, 54_321), false);
+  assert.equal(isRelayNetworkTargetAllowed("api.openai.com", 443, 54_321), true);
+  assert.equal(isRelayNetworkTargetAllowed("chatgpt.com", 443, 54_321), true);
+  assert.equal(isRelayNetworkTargetAllowed("chat.openai.com", 443, 54_321), true);
+  assert.equal(isRelayNetworkTargetAllowed("openai.com.example.org", 443, 54_321), false);
+  assert.equal(isRelayNetworkTargetAllowed("example.org", 443, 54_321), false);
+  assert.equal(isRelayNetworkTargetAllowed("8.8.8.8", 443, 54_321), false);
+  assert.equal(isRelayNetworkTargetAllowed("api.openai.com", 80, 54_321), false);
+});
+
+test("Relay network gateway tunnels only the exact run-scoped MCP target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "relay-network-gateway-"));
+  const upstream = net.createServer((socket) => socket.pipe(socket));
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", () => {
+      upstream.off("error", reject);
+      resolve();
+    });
+  });
+  const address = upstream.address();
+  assert.ok(address && typeof address === "object");
+  const gateway = await startRelayNetworkGateway({
+    outputDir: root,
+    mcpUrl: `http://127.0.0.1:${address.port}/mcp`,
+  });
+  try {
+    const echoed = await new Promise<string>((resolve, reject) => {
+      const socket = net.createConnection(gateway.socketPath);
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Relay gateway allow probe timed out"));
+      }, 2_000);
+      let acknowledged = false;
+      socket.once("connect", () => {
+        socket.write(`${JSON.stringify({ host: "127.0.0.1", port: address.port })}\n`);
+      });
+      socket.on("data", (chunk) => {
+        if (!acknowledged) {
+          assert.equal(chunk[0], 1);
+          acknowledged = true;
+          socket.write("relay-gateway-probe");
+          return;
+        }
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(chunk.toString("utf8"));
+      });
+      socket.once("error", reject);
+    });
+    assert.equal(echoed, "relay-gateway-probe");
+
+    const denied = await new Promise<number | undefined>((resolve, reject) => {
+      const socket = net.createConnection(gateway.socketPath);
+      socket.once("connect", () => {
+        socket.write(`${JSON.stringify({ host: "127.0.0.1", port: address.port + 1 })}\n`);
+      });
+      socket.once("data", (chunk) => {
+        socket.destroy();
+        resolve(chunk[0]);
+      });
+      socket.once("error", reject);
+    });
+    assert.equal(denied, 0);
+  } finally {
+    await gateway.stop();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Relay preflight expands only a conventional tilde auth path", () => {
