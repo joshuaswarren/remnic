@@ -16,7 +16,7 @@ import {
 import { type RelayRunDirectories, cleanupRelayRun, pathExists, prepareRelayRunDirectories } from "./isolation.js";
 import { type RelayCodexExecutor, runRelayMission } from "./mission-runner.js";
 import { resolveRelayCreditLedgerPolicy, runRelayPreflight } from "./preflight-lib.js";
-import { verifyRelayRecording, writeRelayRecording } from "./recording.js";
+import { assertRelayRecordingDestination, verifyRelayRecording, writeRelayRecording } from "./recording.js";
 import { type RelayRemnicHarness, startRelayRemnicHarness } from "./remnic-harness.js";
 
 const CODEX_ONE_SHOT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -83,14 +83,6 @@ function parseArgs(argv: string[], repoRoot: string): CliOptions {
   };
 }
 
-function assertRecordingDestination(repoRoot: string, recordingDir: string): void {
-  const parent = path.join(repoRoot, "docs", "remnic-relay", "recordings");
-  const relation = path.relative(parent, recordingDir);
-  if (!relation || relation === ".." || relation.startsWith(`..${path.sep}`)) {
-    throw new Error("Relay live recording must be a named child of docs/remnic-relay/recordings");
-  }
-}
-
 class LiveRelayExecutor implements RelayCodexExecutor {
   constructor(
     private readonly repoRoot: string,
@@ -122,7 +114,7 @@ class LiveRelayExecutor implements RelayCodexExecutor {
 async function main(): Promise<void> {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   const options = parseArgs(process.argv.slice(2), repoRoot);
-  assertRecordingDestination(repoRoot, options.recordingDir);
+  await assertRelayRecordingDestination(repoRoot, options.recordingDir);
   if (await pathExists(options.recordingDir)) {
     throw new Error("Relay live recording already exists; refusing to spend credits on an overwrite");
   }

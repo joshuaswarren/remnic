@@ -43,7 +43,7 @@ import {
   relayModelOutputSha256,
 } from "./contracts.js";
 import { type RelayFixtureManifest, verifyRelayFixtureManifest } from "./fixture-manifest.js";
-import { assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
+import { assertNoSymlinkAncestors, assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "./mission-runner.js";
 import {
   assertRelayCheckoutDecision,
@@ -116,6 +116,7 @@ const RelayRecordingMetadataSchema = z
     ]),
     threadIds: z.array(z.string().uuid()).length(RELAY_MAX_LIVE_CALLS),
     testTransition: z.tuple([z.literal("failed"), z.literal("passed")]),
+    testOutputSha256: z.tuple([sha256Schema, sha256Schema]),
     creditUnitsSpentByRun: finiteNonnegative,
     evidence: z
       .object({
@@ -237,6 +238,16 @@ export interface VerifiedRelayRecording {
   preflight: RelayPreflightReceipt;
   creditReceipt: RelaySanitizedCreditReceipt;
   calls: SanitizedRelayCall[];
+}
+
+export async function assertRelayRecordingDestination(repoRoot: string, recordingDir: string): Promise<void> {
+  const allowedParent = path.join(path.resolve(repoRoot), "docs", "remnic-relay", "recordings");
+  const target = path.resolve(recordingDir);
+  const relation = path.relative(allowedParent, target);
+  if (!relation || relation === ".." || relation.startsWith(`..${path.sep}`)) {
+    throw new Error("Relay live recording must be a named child of docs/remnic-relay/recordings");
+  }
+  await assertNoSymlinkAncestors(target);
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -767,6 +778,7 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
 
 export async function writeRelayRecording(options: WriteRelayRecordingOptions): Promise<string> {
   const target = path.resolve(options.recordingDir);
+  await assertNoSymlinkAncestors(target);
   if (await pathExists(target))
     throw new Error("Relay recording destination already exists; refusing to overwrite evidence");
   const parent = path.dirname(target);
@@ -803,6 +815,7 @@ export async function writeRelayRecording(options: WriteRelayRecordingOptions): 
       callOrder: options.missionRun.calls.map((call) => call.summary.role),
       threadIds: options.missionRun.calls.map((call) => call.summary.threadId),
       testTransition: options.missionRun.tests.map((item) => item.status),
+      testOutputSha256: options.missionRun.tests.map((item) => item.outputSha256),
       creditUnitsSpentByRun: creditReceipt.run.budgetUnits,
       evidence: {
         syntheticFixturesOnly: true,
@@ -961,6 +974,9 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   }
   if (JSON.stringify(tests.map((item) => item.status)) !== JSON.stringify(metadata.testTransition)) {
     throw new Error("Relay recording test evidence does not prove fail-before/pass-after");
+  }
+  if (JSON.stringify(tests.map((item) => item.outputSha256)) !== JSON.stringify(metadata.testOutputSha256)) {
+    throw new Error("Relay recording test artifacts do not match the declared test output digests");
   }
   const { mission, receiptDigest } = assertRelayRecordingBindings({
     events,

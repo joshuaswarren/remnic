@@ -45,7 +45,7 @@ export async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function assertNoSymlinkAncestors(targetPath: string): Promise<void> {
+export async function assertNoSymlinkAncestors(targetPath: string): Promise<void> {
   const resolved = path.resolve(targetPath);
   const parsed = path.parse(resolved);
   let cursor = parsed.root;
@@ -75,7 +75,7 @@ export function allowedRelayRunParents(repoRoot: string): string[] {
 
 export async function prepareRelayRunDirectories(
   repoRoot: string,
-  requestedRoot?: string,
+  requestedRoot?: string
 ): Promise<RelayRunDirectories> {
   const allowedParents = allowedRelayRunParents(repoRoot);
   let root: string;
@@ -177,7 +177,7 @@ export async function digestFixtureTree(root: string, excludeRelativePaths: stri
     const current = pending.pop();
     if (!current) continue;
     const entries = (await readdir(current, { withFileTypes: true })).sort((left, right) =>
-      left.name.localeCompare(right.name),
+      left.name.localeCompare(right.name)
     );
     for (const entry of entries) {
       const entryPath = path.join(current, entry.name);
@@ -190,7 +190,11 @@ export async function digestFixtureTree(root: string, excludeRelativePaths: stri
     const relative = path.relative(root, filePath).split(path.sep).join("/");
     if (excluded.has(relative)) continue;
     const contents = await readFile(filePath);
-    digests.push({ path: relative, bytes: contents.byteLength, sha256: createHash("sha256").update(contents).digest("hex") });
+    digests.push({
+      path: relative,
+      bytes: contents.byteLength,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    });
   }
   return digests;
 }
@@ -198,7 +202,7 @@ export async function digestFixtureTree(root: string, excludeRelativePaths: stri
 export async function createRoleCodexHome(
   codexHomesDir: string,
   role: string,
-  authSourcePath: string,
+  authSourcePath: string
 ): Promise<string> {
   const authInfo = await lstat(authSourcePath);
   if (authInfo.isSymbolicLink() || !authInfo.isFile()) {

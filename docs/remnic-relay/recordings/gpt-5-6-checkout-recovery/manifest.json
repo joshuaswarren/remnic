@@ -68,8 +68,8 @@
     },
     {
       "path": "recording.json",
-      "bytes": 1203,
-      "sha256": "40d2b0f393f2a231e3c0da44a86a38b12f088733441d39fcb6ef3d087c3f30d1"
+      "bytes": 1343,
+      "sha256": "a66e13ac291694f80c359a1ac20bd1e168fb15de8449cbe0b9e9124b9c852020"
     },
     {
       "path": "tests.json",
@@ -77,5 +77,5 @@
       "sha256": "d713c43fb7c6ab40f97983502416a55c0798dde5c6eb465e253278ed9e2ce110"
     }
   ],
-  "rootSha256": "e5dc82d98118120171e2a4a9c7a5e87de966e86c8ee7cfa59e30e4545be16a6e"
+  "rootSha256": "69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be"
 }

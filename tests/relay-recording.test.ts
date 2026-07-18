@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,7 +36,11 @@ import {
 import { verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
 import { digestFixtureTree } from "../scripts/relay/isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "../scripts/relay/mission-runner.js";
-import { verifyRelayRecording, writeRelayRecording } from "../scripts/relay/recording.js";
+import {
+  assertRelayRecordingDestination,
+  verifyRelayRecording,
+  writeRelayRecording,
+} from "../scripts/relay/recording.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtureRoot = path.join(repoRoot, "fixtures", "remnic-relay");
@@ -526,6 +530,23 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     const callFile = await readFile(path.join(recordingDir, "calls", "cold-builder.json"), "utf8");
     assert.doesNotMatch(callFile, /stdout|stderr|REMNIC_RELAY_MCP_TOKEN|\/home\//);
 
+    const realRedirectParent = path.join(parent, "real-redirect-parent");
+    const linkedRedirectParent = path.join(parent, "linked-redirect-parent");
+    await mkdir(realRedirectParent);
+    await symlink(realRedirectParent, linkedRedirectParent, "dir");
+    await assert.rejects(
+      writeRelayRecording({
+        recordingDir: path.join(linkedRedirectParent, "redirected-recording"),
+        repoRoot,
+        generatedAt: "2026-07-17T20:02:00.000Z",
+        preflight,
+        creditReceipt,
+        runId,
+        missionRun,
+      }),
+      /traverses a symlink/
+    );
+
     await assertResealedJsonTamperRejected<{ threadIds: string[] }>(
       recordingDir,
       "recording.json",
@@ -736,6 +757,14 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
       },
       /after-correction artifact does not match/
     );
+    await assertResealedJsonTamperRejected<Array<{ outputSha256: string }>>(
+      recordingDir,
+      "tests.json",
+      (testResults) => {
+        testResults[1].outputSha256 = "f".repeat(64);
+      },
+      /declared test output digests/
+    );
     await assertResealedJsonTamperRejected<Array<{ payload: { evidence: Array<{ locator?: string }> } }>>(
       recordingDir,
       "events.json",
@@ -753,5 +782,26 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), /integrity manifest/);
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("Relay recording destinations reject symlinked repository ancestors", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "relay-recording-path-test-"));
+  const fakeRepoRoot = path.join(root, "repo");
+  const outsideRelayRoot = path.join(root, "outside-relay");
+  try {
+    await mkdir(path.join(fakeRepoRoot, "docs"), { recursive: true });
+    await mkdir(path.join(outsideRelayRoot, "recordings"), { recursive: true });
+    await symlink(outsideRelayRoot, path.join(fakeRepoRoot, "docs", "remnic-relay"), "dir");
+
+    await assert.rejects(
+      assertRelayRecordingDestination(
+        fakeRepoRoot,
+        path.join(fakeRepoRoot, "docs", "remnic-relay", "recordings", "redirected")
+      ),
+      /traverses a symlink/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

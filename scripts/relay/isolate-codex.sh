@@ -9,6 +9,7 @@ required=(
   RELAY_CODEX_HOME
   RELAY_OUTPUT_DIR
   RELAY_CODEX_BIN
+  RELAY_NODE_BIN
   RELAY_WORKSPACE_READ_ONLY
   RELAY_NETWORK_PROXY_SCRIPT
   RELAY_NETWORK_GATEWAY_SOCKET
@@ -28,7 +29,7 @@ if [[ "${RELAY_WORKSPACE_READ_ONLY}" != "0" && "${RELAY_WORKSPACE_READ_ONLY}" !=
   exit 70
 fi
 
-for name in RELAY_ROOTFS RELAY_WORKSPACE RELAY_CODEX_HOME RELAY_OUTPUT_DIR RELAY_CODEX_BIN RELAY_NETWORK_PROXY_SCRIPT RELAY_NETWORK_GATEWAY_SOCKET; do
+for name in RELAY_ROOTFS RELAY_WORKSPACE RELAY_CODEX_HOME RELAY_OUTPUT_DIR RELAY_CODEX_BIN RELAY_NODE_BIN RELAY_NETWORK_PROXY_SCRIPT RELAY_NETWORK_GATEWAY_SOCKET; do
   value="${!name}"
   if [[ "${value}" != /* || "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
     echo "relay isolation: ${name} must be a safe absolute path" >&2
@@ -56,6 +57,10 @@ for directory in "${RELAY_WORKSPACE}" "${RELAY_CODEX_HOME}" "${RELAY_OUTPUT_DIR}
 done
 if [[ ! -f "${RELAY_CODEX_BIN}" || -L "${RELAY_CODEX_BIN}" ]]; then
   echo "relay isolation: Codex binary must be a regular non-symlink file" >&2
+  exit 70
+fi
+if [[ ! -f "${RELAY_NODE_BIN}" || -L "${RELAY_NODE_BIN}" || ! -x "${RELAY_NODE_BIN}" ]]; then
+  echo "relay isolation: Node binary must be an executable regular non-symlink file" >&2
   exit 70
 fi
 if [[ ! -f "${RELAY_NETWORK_PROXY_SCRIPT}" || -L "${RELAY_NETWORK_PROXY_SCRIPT}" ]]; then
@@ -130,10 +135,18 @@ mount -t proc -o nosuid,nodev,noexec proc "${RELAY_ROOTFS}/proc"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/codex"
 mount --bind "${RELAY_CODEX_BIN}" "${RELAY_ROOTFS}/opt/codex/codex"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/codex"
+install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-node"
+mount --bind "${RELAY_NODE_BIN}" "${RELAY_ROOTFS}/opt/codex/relay-node"
+mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-node"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount --bind "${RELAY_NETWORK_PROXY_SCRIPT}" "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
+# Relay disables Codex unified_exec, so the model-visible shell_command tool can
+# only submit a script to Codex's already-selected /bin/bash or /bin/sh. Those
+# entrypoints are replaced by relay-shell-guard below. If model-authored script
+# text names this interpreter directly, that invocation therefore occurs only
+# after the guard has entered its masked mount/PID namespace and dropped caps.
 mount --bind /usr/bin/bash "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-shell-guard"
@@ -167,7 +180,7 @@ mount --bind "${RELAY_OUTPUT_DIR}" "${RELAY_ROOTFS}/output"
   PATH=/usr/bin:/bin \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
-  /usr/bin/node /opt/codex/relay-network-proxy.mjs \
+  /opt/codex/relay-node /opt/codex/relay-network-proxy.mjs \
     --gateway /output/network-gateway.sock \
     --listen-port "${RELAY_NETWORK_PROXY_PORT}" \
     --mcp-target-port "${RELAY_NETWORK_MCP_TARGET_PORT}" &

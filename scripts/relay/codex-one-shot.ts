@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -386,6 +386,7 @@ async function spawnIsolated(
 ): Promise<SpawnCapture> {
   const isolationScript = path.join(options.repoRoot, "scripts", "relay", "isolate-codex.sh");
   const networkProxyScript = path.join(options.repoRoot, "scripts", "relay", "network-proxy.mjs");
+  const nodeBinary = await realpath(process.execPath);
   const args = [
     ...RELAY_UNSHARE_NAMESPACE_ARGS,
     isolationScript,
@@ -404,6 +405,7 @@ async function spawnIsolated(
         RELAY_CODEX_HOME: codexHome,
         RELAY_OUTPUT_DIR: outputDir,
         RELAY_CODEX_BIN: options.codexBinary,
+        RELAY_NODE_BIN: nodeBinary,
         RELAY_WORKSPACE_READ_ONLY: options.role === "scout" || options.role === "resolver" ? "1" : "0",
         RELAY_NETWORK_PROXY_SCRIPT: networkProxyScript,
         RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
