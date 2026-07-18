@@ -3,27 +3,28 @@
     "role": "scout",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72e9-541e-71b2-9bb0-32b406ad20a5",
-    "promptSha256": "dc958c535786ae607756f01347abc572c34df1e518f3c39e985ce7f17ef808e2",
-    "outputSha256": "1535f089e56b03a5d3912090718bbdd0dbe0f3f283f99aaeae4c7424aeb705ec",
+    "threadId": "019f7328-9240-7e50-875a-c45086e3620d",
+    "promptSha256": "8c7991e421a163598a7d3d7fe2e5c030979d235dcd8fc33dc028d1c8b0aeffaf",
+    "outputSha256": "a08a5c2b0304ff0a3b69b72400a91d48776ce96df4eda586c97a0c50900a5de5",
     "exitCode": 0,
-    "durationMs": 13158,
+    "durationMs": 11120,
     "usage": {
-      "inputTokens": 28527,
-      "cachedInputTokens": 17408,
-      "outputTokens": 484,
-      "reasoningOutputTokens": 88
+      "inputTokens": 18603,
+      "cachedInputTokens": 15872,
+      "outputTokens": 309,
+      "reasoningOutputTokens": 36
     },
     "recallToolCalls": 0,
+    "recallReceipt": null,
     "status": "completed"
   },
   "output": {
-    "decision": "One checkout-session token is minted on the first request and reused for ordinary retries while valid; after explicit expiry, the next request mints exactly one replacement, then retries reuse that replacement. Rotating a token on every request is unsupported because it breaks idempotency.",
-    "rationale": "CONTRACT.md is marked “accepted and authoritative.” The reference implementation returns the current token unless expiry is explicitly true, otherwise minting one; contract tests assert reuse on retry and exactly one replacement after expiry.",
+    "decision": "The checkout service must mint one token for a checkout session on its first request, reuse that token for ordinary retries while it is valid, and after explicit expiry mint exactly one replacement token that later retries reuse. Rotating tokens on every request is unsupported because it breaks idempotency.",
+    "rationale": "The authoritative contract explicitly defines this lifecycle; the reference policy returns the current token unless expiry is exactly true, and the contract tests verify one mint for an initial request plus retry and one mint for an expiry replacement plus retry.",
     "source_locators": [
-      "CONTRACT.md:1-10",
-      "src/reference-token-policy.mjs:1-8",
-      "test/token-policy.contract.test.mjs:6-31"
+      "CONTRACT.md",
+      "src/reference-token-policy.mjs",
+      "test/token-policy.contract.test.mjs"
     ],
     "confidence": 1
   }

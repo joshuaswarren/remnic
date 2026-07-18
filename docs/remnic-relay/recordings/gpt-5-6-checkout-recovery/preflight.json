@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-07-18T01:48:41.232Z",
+  "checkedAt": "2026-07-18T02:57:45.816Z",
   "status": "passed",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
@@ -13,8 +13,8 @@
   "reserveUnits": 473,
   "plannedSpendCeilingUnits": 1700,
   "worstCasePlannedSpendUnits": 1200,
-  "ledgerSpentUnits": 21.4800875,
-  "ledgerRemainingPlannedUnits": 1678.5199125,
+  "ledgerSpentUnits": 36.568425,
+  "ledgerRemainingPlannedUnits": 1663.431575,
   "codexVersion": "codex-cli 0.144.4",
   "authMethod": "ChatGPT",
   "codexToolSurface": {
@@ -26,7 +26,7 @@
       "relay.remnic.recall"
     ]
   },
-  "fixtureManifestSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e",
+  "fixtureManifestSha256": "19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec",
   "isolation": {
     "userNamespace": true,
     "mountNamespace": true,

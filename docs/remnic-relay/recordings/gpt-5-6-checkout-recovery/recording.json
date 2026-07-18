@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-18T01:50:29.567Z",
+  "generatedAt": "2026-07-18T02:59:29.211Z",
   "missionId": "checkout-token-recovery",
   "namespace": "relay-build-week",
   "runMode": "live",
@@ -10,8 +10,8 @@
   "quarantinedUncertainUnits": 300,
   "quarantinedLedgerSha256": "2c5436ca2724170434782ae5755c731f4f22fca80953312a382b0f5b8318f929",
   "effectiveBudgetUnits": 2173,
-  "fixtureManifestSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e",
-  "missionReceiptSha256": "3bdc5f23b08d67680c16b2a29c37ecc98aa99b9b93889947068358497e4a490f",
+  "fixtureManifestSha256": "19d7d6dd86e6ea98ab49b65512392d09e69cd535cbd3224ca077f0d69f0fa6ec",
+  "missionReceiptSha256": "2d49f0a13babc12ca1dececfd54208c6f83d73c434c4b2554f9f7491b0e8f77c",
   "callOrder": [
     "scout",
     "stale-builder",
@@ -19,16 +19,16 @@
     "cold-builder"
   ],
   "threadIds": [
-    "019f72e9-541e-71b2-9bb0-32b406ad20a5",
-    "019f72e9-87cc-7a81-8a76-aee56d690a3a",
-    "019f72e9-fae9-73f2-acc3-0f0c61862a9f",
-    "019f72ea-6d55-74f3-93ac-c3994ad24f01"
+    "019f7328-9240-7e50-875a-c45086e3620d",
+    "019f7328-bdfc-71a3-8dc9-31f860269744",
+    "019f7329-2420-7e41-9469-955926b4c0cf",
+    "019f7329-4dcf-7db3-90ad-52991d121c49"
   ],
   "testTransition": [
     "failed",
     "passed"
   ],
-  "creditUnitsSpentByRun": 5.022675,
+  "creditUnitsSpentByRun": 4.481825,
   "evidence": {
     "syntheticFixturesOnly": true,
     "productionDataRead": false,

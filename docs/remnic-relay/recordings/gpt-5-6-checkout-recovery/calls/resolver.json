@@ -3,23 +3,24 @@
     "role": "resolver",
     "model": "gpt-5.6-terra",
     "reasoningEffort": "medium",
-    "threadId": "019f72e9-fae9-73f2-acc3-0f0c61862a9f",
-    "promptSha256": "8a1e0b3042ae90ccab4f4b4931aa7c30806d62852febe15d23f8b8fafe3e5eb7",
-    "outputSha256": "a035dc41e911bb2157cca62792138f293b713418af896f7a242d7b997ef7c731",
+    "threadId": "019f7329-2420-7e41-9469-955926b4c0cf",
+    "promptSha256": "b67c4de3b2dec11ae620a6d3c180b1d51857cec87614ba3510a1574536752cd6",
+    "outputSha256": "67ae0781a5713cd32d83499bf4836001104670501b0fdabfe7fa16ed9425b8fd",
     "exitCode": 0,
-    "durationMs": 29209,
+    "durationMs": 10642,
     "usage": {
-      "inputTokens": 37953,
-      "cachedInputTokens": 26880,
-      "outputTokens": 492,
-      "reasoningOutputTokens": 67
+      "inputTokens": 18654,
+      "cachedInputTokens": 0,
+      "outputTokens": 295,
+      "reasoningOutputTokens": 78
     },
     "recallToolCalls": 0,
+    "recallReceipt": null,
     "status": "completed"
   },
   "output": {
-    "replacement_decision": "Own one checkout token per session: mint on the first request, reuse it for ordinary retries while valid, and mint exactly one replacement only after explicit expiry.",
-    "rationale": "CONTRACT.md explicitly supersedes per-request rotation. The executable policy returns the current token unless tokenExpired is true, and the contract tests verify one mint across a retry and one replacement mint after expiry.",
+    "replacement_decision": "Reuse the existing checkout-session token on ordinary retries; mint a token only when none exists or when the current token is explicitly expired, then reuse that replacement token.",
+    "rationale": "The accepted checkout contract explicitly supersedes per-request rotation. The reference policy returns a current token unless tokenExpired is true, and the contract tests require one mint for initial use or expiry replacement with subsequent retries reusing it.",
     "source_locators": [
       "CONTRACT.md",
       "src/reference-token-policy.mjs",
