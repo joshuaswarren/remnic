@@ -24,6 +24,19 @@ import {
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const recordingRelative = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
 
+function descriptorPinnedTest(name, fn) {
+  return test(
+    name,
+    {
+      skip:
+        process.platform === "linux"
+          ? false
+          : "requires Linux procfs and descriptor no-follow verification",
+    },
+    fn
+  );
+}
+
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -111,7 +124,7 @@ async function resealRecording(recordingRoot) {
   );
 }
 
-test("dependency-free Relay judge verifier binds the canonical live mission", async () => {
+descriptorPinnedTest("dependency-free Relay judge verifier binds the canonical live mission", async () => {
   const receipt = await verifyRelayJudgePackage(repoRoot);
   assert.equal(receipt.status, "verified");
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
@@ -136,7 +149,7 @@ test("dependency-free Relay judge verifier binds the canonical live mission", as
   assert.ok(receipt.demo.estimatedTotalSeconds < 180);
 });
 
-test("Relay judge verifier uses descriptor-pinned no-follow traversal", async () => {
+descriptorPinnedTest("Relay judge verifier uses descriptor-pinned no-follow traversal", async () => {
   const receipt = await verifyRelayJudgePackage(repoRoot);
   assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
@@ -145,7 +158,7 @@ test("Relay judge verifier uses descriptor-pinned no-follow traversal", async ()
   assert.equal(receipt.productionDataRead, false);
 });
 
-test("Relay judge CLI expands a conventional tilde checkout root", async () => {
+descriptorPinnedTest("Relay judge CLI expands a conventional tilde checkout root", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "relay-judge-home-"));
   try {
     const checkout = path.join(home, "relay-tilde-checkout");
@@ -220,6 +233,7 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   );
   for (const negatedOrMisordered of [
     "Do not reuse the checkout-session token while it is valid; mint one replacement before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Do not reuse the replacement after expiry.",
     "Reuse the checkout-session token while valid; do not mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement before expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint exactly one replacement before expiry.",
@@ -387,7 +401,7 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   );
 });
 
-test("Relay judge verifier rejects a hand-edited Mission Control frame", async () => {
+descriptorPinnedTest("Relay judge verifier rejects a hand-edited Mission Control frame", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-ui-tamper-"));
   try {
     await copyJudgePackage(parent);
@@ -401,7 +415,7 @@ test("Relay judge verifier rejects a hand-edited Mission Control frame", async (
   }
 });
 
-test("Relay judge verifier scans copied judge text for host-private material", async (t) => {
+descriptorPinnedTest("Relay judge verifier scans copied judge text for host-private material", async (t) => {
   for (const privatePath of [
     "/home/operator/production-memory",
     "/root/production-memory",
@@ -425,7 +439,7 @@ test("Relay judge verifier scans copied judge text for host-private material", a
   }
 });
 
-test("Relay judge verifier rejects symlinked standalone text inputs", async (t) => {
+descriptorPinnedTest("Relay judge verifier rejects symlinked standalone text inputs", async (t) => {
   for (const relative of ["docs/remnic-relay/DEMO-SCRIPT.md", "package.json"]) {
     await t.test(relative, async () => {
       const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-symlink-root-"));
@@ -446,7 +460,7 @@ test("Relay judge verifier rejects symlinked standalone text inputs", async (t) 
   }
 });
 
-test("Relay judge descriptor traversal rejects a symlinked parent", async () => {
+descriptorPinnedTest("Relay judge descriptor traversal rejects a symlinked parent", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-read-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-outside-"));
   try {
@@ -470,7 +484,7 @@ test("Relay judge descriptor traversal rejects a symlinked parent", async () => 
   }
 });
 
-test("Relay judge descriptor traversal rejects a symlinked checkout ancestor", async () => {
+descriptorPinnedTest("Relay judge descriptor traversal rejects a symlinked checkout ancestor", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-root-parent-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-root-outside-"));
   try {
@@ -489,7 +503,7 @@ test("Relay judge descriptor traversal rejects a symlinked checkout ancestor", a
   }
 });
 
-test("Relay judge descriptor reader rejects hard-linked outside files", async () => {
+descriptorPinnedTest("Relay judge descriptor reader rejects hard-linked outside files", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-read-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-outside-"));
   try {
@@ -509,7 +523,7 @@ test("Relay judge descriptor reader rejects hard-linked outside files", async ()
   }
 });
 
-test("Relay judge verifier rejects symlinked manifests before parsing", async (t) => {
+descriptorPinnedTest("Relay judge verifier rejects symlinked manifests before parsing", async (t) => {
   for (const relative of [`${recordingRelative}/manifest.json`, "fixtures/remnic-relay/manifest.json"]) {
     await t.test(relative, async () => {
       const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-manifest-root-"));
@@ -530,7 +544,7 @@ test("Relay judge verifier rejects symlinked manifests before parsing", async (t
   }
 });
 
-test("Relay judge server exposes only the verified offline demo allow-list", async () => {
+descriptorPinnedTest("Relay judge server exposes only the verified offline demo allow-list", async () => {
   const running = await startRelayJudgeServer({ repoRoot, port: 0 });
   try {
     const [page, replay, receipt, missing, post] = await Promise.all([
@@ -558,7 +572,7 @@ test("Relay judge server exposes only the verified offline demo allow-list", asy
   }
 });
 
-test("Relay judge server serves only its verified startup snapshot", async () => {
+descriptorPinnedTest("Relay judge server serves only its verified startup snapshot", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-server-snapshot-"));
   try {
     await copyJudgePackage(parent);
@@ -590,7 +604,7 @@ test("Relay judge server serves only its verified startup snapshot", async () =>
   }
 });
 
-test("Relay judge server sanitizes malformed request failures", async () => {
+descriptorPinnedTest("Relay judge server sanitizes malformed request failures", async () => {
   const running = await startRelayJudgeServer({ repoRoot, port: 0 });
   try {
     const [getResponse, headResponse] = await Promise.all([
@@ -604,7 +618,7 @@ test("Relay judge server sanitizes malformed request failures", async () => {
   }
 });
 
-test("Relay judge verifier rejects a coordinated reseal of the cold Builder decision", async () => {
+descriptorPinnedTest("Relay judge verifier rejects a coordinated reseal of the cold Builder decision", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-tamper-"));
   try {
     await copyJudgePackage(parent);
@@ -628,7 +642,7 @@ test("Relay judge verifier rejects a coordinated reseal of the cold Builder deci
   }
 });
 
-test("Relay judge package passes from a copied clean room with no node_modules", async () => {
+descriptorPinnedTest("Relay judge package passes from a copied clean room with no node_modules", async () => {
   const result = await captureNode(["scripts/verify-relay-judge-package.mjs", "--json"]);
   assert.equal(result.code, 0, result.stderr);
   const receipt = JSON.parse(result.stdout.trim());
@@ -642,7 +656,7 @@ test("Relay judge package passes from a copied clean room with no node_modules",
   assert.ok(receipt.sensitiveFilesScanned > 20);
 });
 
-test("Relay clean-room verifier never executes npm lifecycle hooks", async (t) => {
+descriptorPinnedTest("Relay clean-room verifier never executes npm lifecycle hooks", async (t) => {
   for (const hookName of ["prerelay:judge", "postrelay:judge"]) {
     await t.test(hookName, async () => {
       const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-lifecycle-hook-"));
