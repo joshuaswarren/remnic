@@ -35,16 +35,6 @@
     "issue": "#1990"
   },
   {
-    "kind": "dead-schema",
-    "key": "recallBudgetChars",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "recallPipeline",
-    "issue": "#1990"
-  },
-  {
     "kind": "missing-schema",
     "key": "gatewayConfig",
     "issue": "#1990"
@@ -171,6 +161,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "agentAccessHttp.authToken.source",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "agentAccessHttp.principal",
     "issue": "#1990"
   },
@@ -192,6 +187,11 @@
   {
     "kind": "undocumented-key",
     "key": "briefing.defaultWindow",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.enabled",
     "issue": "#1990"
   },
   {
@@ -261,7 +261,17 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "chat.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "chat.maxToolCallsPerTurn",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "chat.model",
     "issue": "#1990"
   },
   {
@@ -381,6 +391,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "codexCompat.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "codexCompat.fingerprintDedup",
     "issue": "#1990"
   },
@@ -451,7 +466,32 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "codingKnowledge.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "codingKnowledge.lsp",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.lsp.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.lsp.maxRequestsPerRun",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.lsp.servers",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.lsp.timeoutMs",
     "issue": "#1990"
   },
   {
@@ -491,6 +531,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "connectors.github.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "connectors.github.includeDiscussions",
     "issue": "#1990"
   },
@@ -526,6 +571,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "connectors.gmail.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "connectors.gmail.pollIntervalMs",
     "issue": "#1990"
   },
@@ -551,6 +601,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "connectors.googleDrive.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "connectors.googleDrive.folderIds",
     "issue": "#1990"
   },
@@ -567,6 +622,11 @@
   {
     "kind": "undocumented-key",
     "key": "connectors.notion.databaseIds",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.notion.enabled",
     "issue": "#1990"
   },
   {
@@ -596,6 +656,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "contradictionScan.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "contradictionScan.maxPairsPerRun",
     "issue": "#1990"
   },
@@ -612,6 +677,11 @@
   {
     "kind": "undocumented-key",
     "key": "correction.applyRequiresConfirm",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correction.enabled",
     "issue": "#1990"
   },
   {
@@ -701,6 +771,11 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "dreaming.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "dreaming.injectRecentCount",
     "issue": "#1990"
   },
@@ -756,6 +831,21 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "dreams.phases.deepSleep.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.deepSleep.versioningEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.deepSleep.versioningMaxPerPage",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "dreams.phases.lightSleep",
     "issue": "#1990"
   },
@@ -767,6 +857,11 @@
   {
     "kind": "undocumented-key",
     "key": "dreams.phases.lightSleep.cadenceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.enabled",
     "issue": "#1990"
   },
   {
@@ -792,6 +887,11 @@
   {
     "kind": "undocumented-key",
     "key": "dreams.phases.rem.cadenceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.enabled",
     "issue": "#1990"
   },
   {
@@ -977,6 +1077,11 @@
   {
     "kind": "undocumented-key",
     "key": "heartbeat.detectionMode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.enabled",
     "issue": "#1990"
   },
   {
@@ -1247,6 +1352,11 @@
   {
     "kind": "undocumented-key",
     "key": "provenance",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "provenance.enabled",
     "issue": "#1990"
   },
   {
@@ -1626,7 +1736,27 @@
   },
   {
     "kind": "undocumented-key",
+    "key": "wearables.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
     "key": "wearables.fusion",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.fusion.enabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.fusion.proximityGapMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.fusion.windowToleranceMs",
     "issue": "#1990"
   },
   {
@@ -1652,6 +1782,11 @@
   {
     "kind": "undocumented-key",
     "key": "wearables.timezone",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/coding/coding-knowledge-config.ts:164",
     "issue": "#1990"
   },
   {
@@ -1696,6 +1831,11 @@
   },
   {
     "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:384",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:3887",
     "issue": "#1990"
   },
@@ -1716,7 +1856,22 @@
   },
   {
     "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:398",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:399",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:4555",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/entity-schema.ts:91",
     "issue": "#1990"
   },
   {

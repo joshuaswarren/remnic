@@ -103,10 +103,7 @@ test("real extraction covers the #1923 class: parser-only keys are visible", () 
   const { keys } = extractReal();
   // codingKnowledge.lsp is the exact key reviewers caught missing on #1923 —
   // the extractor must see it in parser code.
-  assert.ok(
-    keys.some((k) => k.startsWith("codingKnowledge.")),
-    "codingKnowledge block keys must extract",
-  );
+  assert.ok(keys.includes("codingKnowledge.lsp"), "codingKnowledge.lsp - the exact #1923 key - must extract");
   assert.ok(keys.some((k) => k.startsWith("wearables.")), "delegated module parser keys must extract");
   assert.ok(keys.length > 500, `expected a substantial key surface, got ${keys.length}`);
 });

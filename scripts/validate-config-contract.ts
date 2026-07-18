@@ -331,7 +331,27 @@ function main() {
   // v2 (issue #1990): parser-derived key paths vs manifests/docs, gated by
   // the grandfather manifest (decision C — the manifest may only shrink;
   // stale entries are failures, not comfort).
-  const contract = runContractCheck({ repoRoot });
+  //
+  // Fixture repos (the validator's own test harness) carry neither package
+  // manifest — skip v2 with a NOTICE there. A repo with exactly ONE manifest
+  // is drift, not a fixture: fail loudly rather than skip.
+  const v2ManifestPaths = [
+    path.join(repoRoot, "packages", "plugin-openclaw", "openclaw.plugin.json"),
+    path.join(repoRoot, "packages", "shim-openclaw-engram", "openclaw.plugin.json"),
+  ];
+  const presentManifests = v2ManifestPaths.filter((manifestPath) => fs.existsSync(manifestPath));
+  if (presentManifests.length === 1) {
+    failures.push({
+      message: `v2 manifest set is inconsistent: found ${presentManifests[0]} but not its sibling — both package manifests must exist`,
+    });
+  }
+  const contract =
+    presentManifests.length === 2
+      ? runContractCheck({ repoRoot })
+      : { violations: [], staleGrandfatherEntries: [], grandfatheredActive: 0 };
+  if (presentManifests.length === 0) {
+    console.log("Config contract v2 SKIPPED: package manifests absent (fixture repo)");
+  }
   for (const violation of contract.violations) {
     failures.push({
       message: `[v2:${violation.kind}] ${violation.key} — ${violation.detail} (grandfather via scripts/config-contract/grandfathered.json with a tracking issue, or fix the drift)`,

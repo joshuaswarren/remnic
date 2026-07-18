@@ -167,7 +167,9 @@ export function runContractCheck(options: {
 
   // B. Dead schema: a schema path whose top segment has no parsed counterpart
   //    at any depth (a structured schema deeper than parser reads is fine —
-  //    the parser may hand the block to an opaque consumer).
+  //    the parser may hand the block to an opaque consumer). EVERY manifest
+  //    participates (review finding: a key added to only one manifest must
+  //    not pass because the primary happened to be clean).
   const parsedPrefixes = new Set<string>();
   for (const key of parsedKeys) {
     const segments = key.split(".");
@@ -175,15 +177,17 @@ export function runContractCheck(options: {
       parsedPrefixes.add(segments.slice(0, i).join("."));
     }
   }
-  const primarySchema = schemas[0];
-  for (const schemaPath of primarySchema.flat.paths) {
-    const topSegment = schemaPath.split(".")[0];
-    if (!parsedPrefixes.has(topSegment)) {
-      violations.push({
-        kind: "dead-schema",
-        key: topSegment,
-        detail: "schema key has no corresponding parsed key (validator-implementation drift, §40)",
-      });
+  for (const schema of schemas) {
+    const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
+    for (const schemaPath of schema.flat.paths) {
+      const topSegment = schemaPath.split(".")[0];
+      if (!parsedPrefixes.has(topSegment)) {
+        violations.push({
+          kind: "dead-schema",
+          key: topSegment,
+          detail: `schema key in ${manifestRel} has no corresponding parsed key (validator-implementation drift, §40)`,
+        });
+      }
     }
   }
 
@@ -209,12 +213,18 @@ export function runContractCheck(options: {
   const docsKeyList = [...docsKeys];
   for (const key of parsedKeys) {
     const leaf = key.split(".").pop() as string;
-    // Documented when: mentioned by full path, by leaf name (block tables
-    // list leaves), or implied by a documented DEEPER path (documenting
-    // `codingKnowledge.enabled` documents the `codingKnowledge` block).
+    const topSegment = key.split(".")[0];
+    // Documented when: mentioned by full path; implied by a documented
+    // DEEPER path (documenting `codingKnowledge.enabled` documents the
+    // `codingKnowledge` block); or — for nested keys only — by leaf name
+    // WHEN the docs also mention the key's top-level block (review
+    // finding: a generic \`enabled\` cell must not document every
+    // *.enabled key across unrelated blocks).
+    const leafDocumented =
+      docsLeaves.has(leaf) && (key === topSegment || docsKeys.has(topSegment));
     const documented =
       docsKeys.has(key) ||
-      docsLeaves.has(leaf) ||
+      leafDocumented ||
       docsKeyList.some((docKey) => docKey.startsWith(`${key}.`));
     if (!documented) {
       violations.push({

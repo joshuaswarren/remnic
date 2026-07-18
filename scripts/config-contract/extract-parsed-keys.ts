@@ -31,6 +31,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { pathToFileURL } from "node:url";
 
 export interface UnparseableConstruct {
   file: string;
@@ -43,6 +44,13 @@ export interface ExtractedConfigKeys {
   keys: string[];
   /** Constructs the walker could not derive keys from — loud, not silent. */
   unparseable: UnparseableConstruct[];
+  /**
+   * Paths dropped by the JS value-member filter (`x.trim` when `x` is also
+   * recorded). Surfaced — not silently deleted — so a genuine config key
+   * that happens to be named like a value member is reviewable in the
+   * snapshot rather than invisible (review finding on #1990).
+   */
+  ambiguousValueMembers: string[];
 }
 
 /** Helper names that wrap the raw input without changing its shape. */
@@ -52,14 +60,6 @@ const SHAPE_PRESERVING_WRAPPERS = new Set([
   "toRecord",
 ]);
 
-/**
- * Identifier names whose call results are NOT config-key reads even when the
- * raw alias is an argument (validation/coercion helpers receive the VALUE of
- * a key, and the key itself was already recorded by the property access).
- */
-function isRecordLike(node: ts.Expression): node is ts.Identifier {
-  return ts.isIdentifier(node);
-}
 
 interface AliasInfo {
   /** Path prefix segments from the parser input to this alias ("" = root). */
@@ -80,6 +80,7 @@ function extractParserKeys(
   repoRoot: string,
   out: { keys: Set<string>; unparseable: UnparseableConstruct[] },
   prefix: string[] = [],
+  recursion: { program: ts.Program; depth: number; seen: Set<string> } | null = null,
 ): void {
   if (!fn.body) return;
   const param = fn.parameters[0];
@@ -157,7 +158,7 @@ function extractParserKeys(
       }
       break;
     }
-    if (isRecordLike(current)) {
+    if (ts.isIdentifier(current)) {
       const info = aliases.get(current.text);
       if (info) return { info, segments };
     }
@@ -256,6 +257,38 @@ function extractParserKeys(
       }
     }
 
+    // Helper delegation: `helperFn(alias.sub, …)` — the helper reads keys
+    // of the sub-block, so recurse into its body with the sub-path prefix
+    // (depth- and cycle-guarded). This covers nested block helpers
+    // (`parseFusionSettings(raw.fusion)`), non-parse-named readers
+    // (`buildRecallPipelineConfig(cfg)`), and helper chains
+    // (`readLspField` → `parseLspConfig`) — review findings on #1990.
+    if (recursion && recursion.depth < 6 && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const helperName = node.expression.text;
+      for (let argIndex = 0; argIndex < node.arguments.length; argIndex++) {
+        const resolved = resolveAliasChain(node.arguments[argIndex]);
+        if (!resolved) continue;
+        const argPrefix = [...prefix, ...resolved.info.prefix, ...resolved.segments];
+        const recursionKey = `${helperName}@${argIndex}@${argPrefix.join(".")}`;
+        if (recursion.seen.has(recursionKey)) continue;
+        recursion.seen.add(recursionKey);
+        const helper = findFunctionForCall(recursion.program, helperName, argIndex);
+        if (helper) {
+          extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, argPrefix, {
+            program: recursion.program,
+            depth: recursion.depth + 1,
+            seen: recursion.seen,
+          });
+        }
+        // Reading the sub-block to hand it over is itself a key read.
+        if (resolved.segments.length > 0) {
+          out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
+        }
+      }
+      // Fall through: forEachChild below still records direct accesses in
+      // other arguments (handled by the property-access branch).
+    }
+
     // Dynamic iteration over the raw input: Object.keys(raw) / for..in raw
     if (
       ts.isCallExpression(node) &&
@@ -328,11 +361,30 @@ function extractZodObjectKeys(
       ts.isObjectLiteralExpression(node.arguments[0])
     ) {
       walkSchemaObject(node.arguments[0], prefix);
-      // continue walking — a body may hold several schemas
+      // walkSchemaObject handled every NESTED z.object at its correct
+      // depth — do not descend, or nested keys would re-record at the
+      // outer prefix (review finding).
+      return;
     }
     ts.forEachChild(node, visit);
   };
   visit(body);
+}
+
+/**
+ * Locate a callable for helper recursion. Only functions whose parameter at
+ * the argument position exists participate — a call forwarding an alias to
+ * a validation helper's MESSAGE argument must not recurse.
+ */
+function findFunctionForCall(
+  program: ts.Program,
+  name: string,
+  argIndex: number,
+): { fn: ts.FunctionDeclaration; sourceFile: ts.SourceFile } | null {
+  const found = findFunction(program, name);
+  if (!found) return null;
+  if (found.fn.parameters.length <= argIndex) return null;
+  return found;
 }
 
 function findFunction(
@@ -396,9 +448,10 @@ export function extractParsedKeyPaths(options: {
   }
 
   const out = { keys: new Set<string>(), unparseable: [] as UnparseableConstruct[] };
+  const recursion = { program, depth: 0, seen: new Set<string>() };
 
   // 1) Walk the entry parser body itself (direct cfg.* reads land at root).
-  extractParserKeys(entry.fn, entry.sourceFile, repoRoot, out, []);
+  extractParserKeys(entry.fn, entry.sourceFile, repoRoot, out, [], recursion);
 
   // 2) Delegations from the return object literal.
   const returns: ts.ReturnStatement[] = [];
@@ -421,7 +474,7 @@ export function extractParsedKeyPaths(options: {
         if (delegated) {
           const helper = findFunction(program, delegated.helperName);
           if (helper) {
-            extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments);
+            extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments, recursion);
           } else {
             const pos = entry.sourceFile.getLineAndCharacterOfPosition(prop.getStart(entry.sourceFile));
             out.unparseable.push({
@@ -436,7 +489,16 @@ export function extractParsedKeyPaths(options: {
         if (delegated) {
           const helper = findFunction(program, delegated.helperName);
           if (helper) {
-            extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments);
+            extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments, recursion);
+          } else {
+            // Same loudness as the property-assignment branch (review
+            // finding: spread-only delegations failed quietly).
+            const pos = entry.sourceFile.getLineAndCharacterOfPosition(prop.getStart(entry.sourceFile));
+            out.unparseable.push({
+              file: relPath(repoRoot, entry.sourceFile.fileName),
+              line: pos.line + 1,
+              reason: `delegated parser ${delegated.helperName} not found in program`,
+            });
           }
         }
       }
@@ -461,7 +523,7 @@ export function extractParsedKeyPaths(options: {
           if (segments !== null) {
             const helper = findFunction(program, node.expression.text);
             if (helper) {
-              extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, segments);
+              extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, segments, recursion);
             }
           }
         }
@@ -483,6 +545,7 @@ export function extractParsedKeyPaths(options: {
     "length", "toString", "startsWith", "endsWith", "replace", "concat",
     "keys", "values", "entries", "hasOwnProperty",
   ]);
+  const ambiguousValueMembers: string[] = [];
   for (const key of [...out.keys]) {
     const segments = key.split(".");
     if (segments.length < 2) continue;
@@ -490,8 +553,10 @@ export function extractParsedKeyPaths(options: {
     const parent = segments.slice(0, -1).join(".");
     if (JS_VALUE_MEMBERS.has(tail) && out.keys.has(parent)) {
       out.keys.delete(key);
+      ambiguousValueMembers.push(key);
     }
   }
+  ambiguousValueMembers.sort();
 
   // De-duplicate unparseable entries (same file:line:reason) and sort both.
   const seen = new Set<string>();
@@ -504,7 +569,7 @@ export function extractParsedKeyPaths(options: {
     })
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.reason.localeCompare(b.reason));
 
-  return { keys: [...out.keys].sort(), unparseable };
+  return { keys: [...out.keys].sort(), unparseable, ambiguousValueMembers };
 }
 
 /** Match `parseXxx(cfg.block…)` / `parseXxx(cfg)` initializers. */
@@ -520,24 +585,45 @@ function delegatedParserCall(
   if (!/^parse[A-Z]/.test(current.expression.text)) return null;
   const arg = current.arguments[0];
   if (!arg) return null;
-  // cfg → root; cfg.block → ["block"]; cfg.block.sub → ["block","sub"]
+  // cfg → root; cfg.block → ["block"]; cfg.block.sub → ["block","sub"];
+  // `cfg.block ?? {}` and `(cfg.block as Rec)` unwrap first (review finding).
   const segments: string[] = [];
-  let a: ts.Expression = arg;
+  let a: ts.Expression = unwrapArgument(arg);
   while (ts.isPropertyAccessExpression(a)) {
     segments.unshift(a.name.text);
-    a = a.expression;
+    a = unwrapArgument(a.expression);
   }
   if (!ts.isIdentifier(a)) return null;
   return { helperName: current.expression.text, argSegments: segments };
 }
 
+/** Unwrap parens, casts, non-null, and `?? {}`/`|| {}` fallbacks. */
+function unwrapArgument(arg: ts.Expression): ts.Expression {
+  let current: ts.Expression = arg;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isNonNullExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(current) &&
+      (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        current.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    ) {
+      current = current.left;
+      continue;
+    }
+    return current;
+  }
+}
+
 /** Segments of an argument rooted at one of the entry input names. */
 function rootedArgumentSegments(arg: ts.Expression, rootNames: Set<string>): string[] | null {
   const segments: string[] = [];
-  let a: ts.Expression = arg;
+  let a: ts.Expression = unwrapArgument(arg);
   while (ts.isPropertyAccessExpression(a)) {
     segments.unshift(a.name.text);
-    a = a.expression;
+    a = unwrapArgument(a.expression);
   }
   if (ts.isIdentifier(a) && rootNames.has(a.text)) return segments;
   return null;
@@ -548,7 +634,9 @@ function rootedArgumentSegments(arg: ts.Expression, rootNames: Set<string>): str
 // ---------------------------------------------------------------------------
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+  // pathToFileURL normalizes drive letters and separators on every
+  // platform — `URL.pathname` comparison broke on Windows (review finding).
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 
 if (invokedDirectly) {
   const repoRoot = process.cwd();
