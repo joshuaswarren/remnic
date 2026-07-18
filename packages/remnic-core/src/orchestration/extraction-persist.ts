@@ -549,7 +549,15 @@ export class ExtractionPersistCoordinator {
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
             },
             { source: `${options.source}-${target.target}-promotion` },
-          );
+          
+            // Machine-generated input: salvage invalid optional fields instead of
+            // aborting the whole extraction batch (#2014 review round; rule 34 —
+            // drops are recorded on salvageNotes and logged below).
+            { salvage: true },
+);
+          if (targetPromotionEnvelope.salvageNotes.length > 0) {
+            log.warn(`extraction write salvaged invalid fields: ${targetPromotionEnvelope.salvageNotes.join("; ")}`);
+          }
           const targetPromotion = await targetStorage.writeSealedMemory(targetPromotionEnvelope, {
             importance: options.importance,
             lineage: [options.sourceMemoryId],
@@ -942,7 +950,15 @@ export class ExtractionPersistCoordinator {
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
           },
           { source: `${options.source}-shared-promotion` },
-        );
+        
+          // Machine-generated input: salvage invalid optional fields instead of
+          // aborting the whole extraction batch (#2014 review round; rule 34 —
+          // drops are recorded on salvageNotes and logged below).
+          { salvage: true },
+);
+        if (sharedPromotionEnvelope.salvageNotes.length > 0) {
+          log.warn(`extraction write salvaged invalid fields: ${sharedPromotionEnvelope.salvageNotes.join("; ")}`);
+        }
         const sharedPromotion = await sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
           importance: options.importance,
           lineage: [options.sourceMemoryId],
@@ -2178,7 +2194,15 @@ export class ExtractionPersistCoordinator {
               ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
             },
             { source: extractionWriteSource },
-          );
+          
+            // Machine-generated input: salvage invalid optional fields instead of
+            // aborting the whole extraction batch (#2014 review round; rule 34 —
+            // drops are recorded on salvageNotes and logged below).
+            { salvage: true },
+);
+          if (parentWriteEnvelope.salvageNotes.length > 0) {
+            log.warn(`extraction write salvaged invalid fields: ${parentWriteEnvelope.salvageNotes.join("; ")}`);
+          }
           const parentWrite = await targetStorage.writeSealedMemory(parentWriteEnvelope, {
             importance,
             supersedes,
@@ -2536,7 +2560,15 @@ export class ExtractionPersistCoordinator {
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
         },
         { source: extractionWriteSource },
-      );
+      
+        // Machine-generated input: salvage invalid optional fields instead of
+        // aborting the whole extraction batch (#2014 review round; rule 34 —
+        // drops are recorded on salvageNotes and logged below).
+        { salvage: true },
+);
+      if (factWriteEnvelope.salvageNotes.length > 0) {
+        log.warn(`extraction write salvaged invalid fields: ${factWriteEnvelope.salvageNotes.join("; ")}`);
+      }
       const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
         importance,
         supersedes,

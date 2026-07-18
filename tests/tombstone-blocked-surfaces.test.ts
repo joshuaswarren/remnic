@@ -3,6 +3,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { registerTools } from "../src/tools.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+
+// Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
+// callers now write via `writeSealedMemory`. Test doubles keep stubbing
+// `writeMemory`; this decorator adds a sealed entry that delegates through
+// the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
+// cannot drift from the real envelope→options translation.
+function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
+  const decorated = stub as T & {
+    writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
+  };
+  decorated.writeSealedMemory = (envelope, extras = {}) => {
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return (stub.writeMemory as (c: unknown, b: unknown, o: unknown) => unknown)(category, content, options);
+  };
+  return decorated;
+}
+
 
 /**
  * Issue #1645 — extend the tombstone-blocked guard to the remaining post-write
@@ -90,10 +108,10 @@ test("#1645 TWB/Yhu: memory_promote surfaces a tombstone-blocked promotion as qu
       content: "retired content that matches a tombstone",
     }),
   };
-  const dstStorage = {
+  const dstStorage = withSealedWrite({
     writeMemory: async () => ({ id: "fact-blocked-1", tombstoneBlocked: true, blockedBy: "tomb-7" }),
     getMemoryById: async () => null,
-  };
+  });
   const orchestrator = {
     config: {
       namespacesEnabled: true,
@@ -143,7 +161,7 @@ test("#1645 Yhp: memory_action_apply reports a tombstone-blocked write as queued
       defaultNamespace: "default",
       sharedNamespace: "shared",
     },
-    getStorage: async () => storage,
+    getStorage: async () => withSealedWrite(storage),
     previewMemoryActionEvent: (event: { action: string }) => ({
       action: event.action,
       namespace: "default",
@@ -206,7 +224,7 @@ test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for
       queryAwareIndexingEnabled: true,
       memoryDir: "/nonexistent-dir-for-store-test",
     },
-    getStorage: async () => ({
+    getStorage: async () => withSealedWrite({
       readAllMemories: async () => [],
       // Destination tombstone blocks the explicit capture (pending_review).
       writeMemory: async (_category: string, content: string) => ({
@@ -263,7 +281,7 @@ test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result"
     appendMemoryLifecycleEvents: async () => 1,
   };
   const result = await persistExplicitCapture(
-    { getStorage: async () => storage } as never,
+    { getStorage: async () => withSealedWrite(storage) } as never,
     validateExplicitCaptureInput({ content: "retired content", category: "fact" }),
     "memory_store",
   );

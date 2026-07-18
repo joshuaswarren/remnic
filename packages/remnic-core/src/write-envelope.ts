@@ -154,6 +154,12 @@ export interface SealedMemoryEnvelope {
   readonly persistedBody: string;
   /** Injection patterns matched during body assembly (empty = clean). */
   readonly sanitizeViolations: readonly string[];
+  /**
+   * Salvage-mode hygiene notes (empty in strict mode): each dropped/clamped
+   * invalid optional field is recorded here — visible, never silent
+   * (repo rule 34). Callers persisting machine-generated input log these.
+   */
+  readonly salvageNotes: readonly string[];
   readonly category: MemoryCategory;
   readonly tags: readonly string[];
   /**
@@ -186,6 +192,44 @@ function fail(field: string, message: string): never {
 }
 
 /**
+ * Compose-time input hygiene mode (issue #1989 PR2, review round on #2014).
+ *
+ * - `strict` (default): every invalid field throws — correct for OPERATOR
+ *   and API input (explicit capture, memory_store), where a bad value is a
+ *   caller bug that must surface.
+ * - `salvage`: for MACHINE-GENERATED input (LLM extraction, wearable
+ *   ingestion). One malformed fact from an extractor must not abort a whole
+ *   persistence batch that legacy `writeMemory` would have accepted.
+ *   Invalid tags/attributes/optional fields are DROPPED with a note pushed
+ *   to `envelope.salvageNotes` — visible, never silent (repo rule 34);
+ *   callers log the notes. Content, category, ctx.source, and validAt stay
+ *   FATAL in both modes (legacy writeMemory also throws on bad validAt, and
+ *   a write without valid content/category cannot proceed).
+ */
+export interface ComposeEnvelopeOptions {
+  salvage?: boolean;
+}
+
+/** Internal reporter: throws in strict mode, records a note in salvage. */
+interface Hygiene {
+  salvage: boolean;
+  notes: string[];
+  flag(field: string, message: string): void;
+}
+
+function makeHygiene(salvage: boolean): Hygiene {
+  const notes: string[] = [];
+  return {
+    salvage,
+    notes,
+    flag(field: string, message: string): void {
+      if (!salvage) fail(field, message);
+      notes.push(`${field} ${message}`);
+    },
+  };
+}
+
+/**
  * Validate and CANONICALIZE `validAt` via the repo's shared flexible ISO
  * parser (`utils/iso-timestamp.ts`) — the same family durable writes use, so
  * the envelope can never accept a value storage would reject or reinterpret
@@ -210,27 +254,36 @@ function validateIsoTimestamp(field: string, value: string): string {
   return new Date(epochMs).toISOString();
 }
 
-function normalizeEnvelopeTags(raw: string[] | undefined): readonly string[] {
+function normalizeEnvelopeTags(raw: string[] | undefined, hygiene: Hygiene): readonly string[] {
   if (raw === undefined) return Object.freeze([]);
-  if (!Array.isArray(raw)) fail("tags", "must be an array of strings");
+  if (!Array.isArray(raw)) {
+    hygiene.flag("tags", "must be an array of strings — dropped");
+    return Object.freeze([]);
+  }
+  const usable: string[] = [];
   for (const tag of raw) {
     if (typeof tag !== "string") {
-      fail("tags", `entries must be strings (got ${typeof tag})`);
+      hygiene.flag("tags", `entries must be strings (got ${typeof tag})`);
+      continue;
     }
     if (tag.trim().length > TAG_LIMITS.maxTagLength) {
-      fail("tags", `entry exceeds ${TAG_LIMITS.maxTagLength} characters: ${JSON.stringify(tag.slice(0, 40))}…`);
+      hygiene.flag("tags", `entry exceeds ${TAG_LIMITS.maxTagLength} characters: ${JSON.stringify(tag.slice(0, 40))}…`);
+      continue;
     }
+    usable.push(tag);
   }
-  const normalized = normalizeTags(raw) ?? [];
+  let normalized = normalizeTags(usable) ?? [];
   if (normalized.length > TAG_LIMITS.maxTags) {
-    fail("tags", `exceed the ${TAG_LIMITS.maxTags}-tag limit (got ${normalized.length})`);
+    hygiene.flag("tags", `exceed the ${TAG_LIMITS.maxTags}-tag limit (got ${normalized.length}) — keeping the first ${TAG_LIMITS.maxTags}`);
+    normalized = normalized.slice(0, TAG_LIMITS.maxTags);
   }
   return Object.freeze(normalized);
 }
 
 function normalizeStructuredAttributes(
   raw: Record<string, string> | undefined,
-): Readonly<Record<string, string>> | undefined {
+  hygiene: Hygiene,
+): { canonical: Readonly<Record<string, string>>; raw: Readonly<Record<string, string>> } | undefined {
   if (raw === undefined) return undefined;
   if (
     raw === null ||
@@ -240,16 +293,18 @@ function normalizeStructuredAttributes(
   ) {
     // Map/Date/class instances have empty Object.entries() and would
     // silently normalize to "no attributes" (review finding on #1998
-    // round 5) — reject anything that is not a plain object.
-    fail("structuredAttributes", "must be a plain object of string values (Map, Date, and class instances are rejected)");
+    // round 5) — never a plain pass-through.
+    hygiene.flag("structuredAttributes", "must be a plain object of string values (Map, Date, and class instances are rejected) — dropped");
+    return undefined;
   }
-  const entries = Object.entries(raw);
+  let entries = Object.entries(raw);
   if (entries.length === 0) return undefined;
   if (entries.length > STRUCTURED_ATTRIBUTE_LIMITS.maxEntries) {
-    fail(
+    hygiene.flag(
       "structuredAttributes",
-      `exceed the ${STRUCTURED_ATTRIBUTE_LIMITS.maxEntries}-entry limit (got ${entries.length})`,
+      `exceed the ${STRUCTURED_ATTRIBUTE_LIMITS.maxEntries}-entry limit (got ${entries.length}) — keeping the first ${STRUCTURED_ATTRIBUTE_LIMITS.maxEntries} in insertion order`,
     );
+    entries = entries.slice(0, STRUCTURED_ATTRIBUTE_LIMITS.maxEntries);
   }
   // Keys that collide with Object.prototype machinery are REJECTED outright:
   // `hashAccessIdempotencyPayload`'s stableStringify rebuilds objects with
@@ -258,58 +313,89 @@ function normalizeStructuredAttributes(
   // (review finding on #1998 round 3). Rejection beats smuggling (§1/§39).
   const FORBIDDEN_ATTRIBUTE_KEYS = ["__proto__", "constructor", "prototype"];
   const out: Record<string, string> = Object.create(null);
+  const survivingOriginal: Array<[string, string]> = [];
   for (const [key, value] of entries) {
     // Canonicalize exactly like storage's normalizeAttributePairs
     // (storage.ts:1277): keys trim+lowercase, values trim — so the
     // fingerprint and the persisted searchable form can never diverge
     // (review finding on #1998; AGENTS.md §13 hash-consistency).
     const cleanKey = key.trim().toLowerCase();
-    if (cleanKey.length === 0) fail("structuredAttributes", "contain an empty key");
+    if (cleanKey.length === 0) {
+      hygiene.flag("structuredAttributes", "contain an empty key");
+      continue;
+    }
     if (cleanKey.length > STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength) {
-      fail("structuredAttributes", `key exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength} characters: ${JSON.stringify(cleanKey.slice(0, 40))}…`);
+      hygiene.flag("structuredAttributes", `key exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength} characters: ${JSON.stringify(cleanKey.slice(0, 40))}…`);
+      continue;
     }
     if (typeof value !== "string") {
-      fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} must be a string (got ${typeof value}) — stringify numbers/booleans at the call site`);
+      hygiene.flag("structuredAttributes", `value for ${JSON.stringify(cleanKey)} must be a string (got ${typeof value}) — stringify numbers/booleans at the call site`);
+      continue;
     }
     const cleanValue = value.trim();
     if (FORBIDDEN_ATTRIBUTE_KEYS.includes(cleanKey)) {
-      fail(
+      hygiene.flag(
         "structuredAttributes",
         `contain the reserved key ${JSON.stringify(cleanKey)} — prototype-machinery names cannot round-trip through fingerprint serialization`,
       );
+      continue;
     }
     if (cleanValue.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) {
-      fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength} characters`);
+      hygiene.flag("structuredAttributes", `value for ${JSON.stringify(cleanKey)} exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength} characters`);
+      continue;
     }
     if (Object.hasOwn(out, cleanKey)) {
-      fail("structuredAttributes", `contain duplicate key after canonicalization (trim + lowercase): ${JSON.stringify(cleanKey)}`);
+      hygiene.flag("structuredAttributes", `contain duplicate key after canonicalization (trim + lowercase): ${JSON.stringify(cleanKey)}`);
+      continue;
     }
     out[cleanKey] = cleanValue;
+    survivingOriginal.push([key, value]);
   }
+  if (Object.keys(out).length === 0) return undefined;
   // Copy onto a normal object so downstream JSON/stableStringify behavior is
-  // unchanged; keys are already validated.
-  return Object.freeze({ ...out });
+  // unchanged; keys are already validated. The RAW map carries only the
+  // SURVIVING original pairs — dropped entries must not reach frontmatter.
+  return {
+    canonical: Object.freeze({ ...out }),
+    raw: Object.freeze(Object.fromEntries(survivingOriginal)),
+  };
 }
 
-function normalizeOptionalString(field: string, value: string | undefined): string | undefined {
+function normalizeOptionalString(
+  field: string,
+  value: string | undefined,
+  hygiene: Hygiene,
+): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string") fail(field, `must be a string (got ${typeof value})`);
+  if (typeof value !== "string") {
+    hygiene.flag(field, `must be a string (got ${typeof value}) — dropped`);
+    return undefined;
+  }
   const trimmed = value.trim();
-  if (trimmed.length === 0) fail(field, "must be non-empty when provided");
+  if (trimmed.length === 0) {
+    hygiene.flag(field, "must be non-empty when provided — dropped");
+    return undefined;
+  }
   return trimmed;
 }
 
 /**
  * Compose (normalize + validate + seal) a memory-write envelope.
  *
- * Throws on invalid input — never silently defaults (AGENTS.md §1/§39).
+ * Strict mode (default) throws on any invalid input — never silently
+ * defaults (AGENTS.md §1/§39). Salvage mode (`{ salvage: true }`, for
+ * machine-generated input like LLM extraction) drops invalid OPTIONAL
+ * fields with notes on `envelope.salvageNotes` instead of aborting the
+ * batch; content/category/source/validAt stay fatal in both modes.
  */
 export function composeMemoryEnvelope(
   input: MemoryWriteInput,
   ctx: WriteContext,
+  opts: ComposeEnvelopeOptions = {},
 ): SealedMemoryEnvelope {
   if (input === null || typeof input !== "object") fail("input", "must be an object");
   if (ctx === null || typeof ctx !== "object") fail("ctx", "must be an object");
+  const hygiene = makeHygiene(opts.salvage === true);
 
   if (typeof input.content !== "string" || input.content.trim().length === 0) {
     fail("content", "must be a non-empty string");
@@ -326,15 +412,24 @@ export function composeMemoryEnvelope(
 
   let confidence: number | undefined;
   if (input.confidence !== undefined) {
-    if (typeof input.confidence !== "number" || !Number.isFinite(input.confidence)) {
-      fail("confidence", "must be a finite number");
+    if (
+      typeof input.confidence !== "number" ||
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1
+    ) {
+      hygiene.flag(
+        "confidence",
+        `must be a finite number within [0, 1] (got ${String(input.confidence)}) — dropped (storage defaults apply)`,
+      );
+    } else {
+      confidence = input.confidence;
     }
-    if (input.confidence < 0 || input.confidence > 1) {
-      fail("confidence", `must be within [0, 1] (got ${input.confidence})`);
-    }
-    confidence = input.confidence;
   }
 
+  // validAt stays FATAL in salvage too: legacy writeMemory throws on an
+  // invalid validAt (normalizeMemoryWriteTimestamp), so salvage-dropping it
+  // would CHANGE behavior rather than preserve it.
   const validAt =
     input.validAt === undefined ? undefined : validateIsoTimestamp("validAt", input.validAt);
 
@@ -343,13 +438,7 @@ export function composeMemoryEnvelope(
     fail("ctx.now", "must return a valid Date");
   }
 
-  const structuredAttributes = normalizeStructuredAttributes(input.structuredAttributes);
-  // The raw map is validated by the same routine (it throws before returning
-  // the canonical form), then byte-preserved for frontmatter parity.
-  const rawStructuredAttributes =
-    structuredAttributes === undefined
-      ? undefined
-      : Object.freeze({ ...(input.structuredAttributes as Record<string, string>) });
+  const attributes = normalizeStructuredAttributes(input.structuredAttributes, hygiene);
   // Assemble the EXACT persisted form (attribute suffix + combined sanitize)
   // with the same helper writeMemory uses — fingerprints hash this form, so
   // envelope and storage cannot diverge (§13; #1998 round-8 thread resolved
@@ -358,7 +447,7 @@ export function composeMemoryEnvelope(
   // maps yield the same suffix — asserted by the parity suite.
   const assembled = assemblePersistedBody(
     input.content,
-    rawStructuredAttributes ? { ...rawStructuredAttributes } : undefined,
+    attributes ? { ...attributes.raw } : undefined,
   );
   if (assembled.text.trim().length === 0) {
     fail("content", "is empty after sanitization");
@@ -369,23 +458,19 @@ export function composeMemoryEnvelope(
     persistedBody: assembled.text,
     sanitizeViolations: Object.freeze([...assembled.violations]),
     category: input.category,
-    tags: normalizeEnvelopeTags(input.tags),
-    structuredAttributes,
-    rawStructuredAttributes,
-    entityRef: normalizeOptionalString("entityRef", input.entityRef),
+    tags: normalizeEnvelopeTags(input.tags, hygiene),
+    structuredAttributes: attributes?.canonical,
+    rawStructuredAttributes: attributes?.raw,
+    entityRef: normalizeOptionalString("entityRef", input.entityRef, hygiene),
     confidence,
-    ttl: normalizeOptionalString("ttl", input.ttl),
+    ttl: normalizeOptionalString("ttl", input.ttl, hygiene),
     validAt,
-    sourceConnector: normalizeOptionalString("sourceConnector", input.sourceConnector),
-    sourceReason: normalizeOptionalString("sourceReason", input.sourceReason),
+    sourceConnector: normalizeOptionalString("sourceConnector", input.sourceConnector, hygiene),
+    sourceReason: normalizeOptionalString("sourceReason", input.sourceReason, hygiene),
     source: ctx.source.trim(),
     composedAt: now.toISOString(),
+    salvageNotes: Object.freeze([...hygiene.notes]),
   };
-  // Runtime seal: membership in a module-private WeakSet. Unlike a symbol
-  // property — even a non-enumerable one — WeakSet membership cannot be
-  // recovered by reflection (Object.getOwnPropertySymbols) and re-applied
-  // to a forged object, cannot be transferred by spread/assign/JSON, and
-  // costs nothing at GC time (review finding on #1998 round 5).
   const envelope = Object.freeze(body) as unknown as SealedMemoryEnvelope;
   SEALED_ENVELOPES.add(envelope);
   return envelope;
@@ -395,9 +480,77 @@ export function composeMemoryEnvelope(
 // at the type level (compile-time fence); this WeakSet is the runtime fence.
 const SEALED_ENVELOPES = new WeakSet<object>();
 
-/** Runtime check (belt) — true only for composer-minted envelopes. */
+/**
+ * Runtime check (belt) — the compile-time brand is the real fence.
+ *
+ * Fast path: WeakSet membership (same module graph). Fallback: structural
+ * validation — Node resolves `@remnic/core` through `dist/` for built
+ * consumers and `src/` for tsx-loaded tests, and each graph gets its OWN
+ * WeakSet, so identity alone would reject genuinely-sealed envelopes that
+ * crossed a build boundary. The structural arm verifies the frozen shape
+ * AND that `persistedBody` reproduces from (content, rawStructuredAttributes)
+ * via the shared assembler — a forger who satisfies all of that has simply
+ * re-implemented the composer's contract correctly.
+ */
 export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnvelope {
-  return typeof value === "object" && value !== null && SEALED_ENVELOPES.has(value);
+  if (typeof value !== "object" || value === null) return false;
+  if (SEALED_ENVELOPES.has(value)) return true;
+  if (!Object.isFrozen(value)) return false;
+  const v = value as Partial<SealedMemoryEnvelope>;
+  if (
+    typeof v.content !== "string" ||
+    typeof v.persistedBody !== "string" ||
+    typeof v.source !== "string" ||
+    typeof v.composedAt !== "string" ||
+    typeof v.category !== "string" ||
+    !isMemoryCategory(v.category) ||
+    !Array.isArray(v.tags) ||
+    !Array.isArray(v.sanitizeViolations) ||
+    !Array.isArray(v.salvageNotes)
+  ) {
+    return false;
+  }
+  const attrs = v.rawStructuredAttributes;
+  if (attrs !== undefined && (attrs === null || typeof attrs !== "object" || Array.isArray(attrs))) {
+    return false;
+  }
+  // The load-bearing structural fact: persistedBody must reproduce through
+  // the shared assembler from the envelope's own inputs.
+  const reproduced = assemblePersistedBody(v.content, attrs ? { ...attrs } : undefined);
+  return reproduced.text === v.persistedBody;
+}
+
+/**
+ * The ONE mapping from a sealed envelope (+ extras) to the legacy
+ * `writeMemory(category, content, options)` argument shape. Used by
+ * `StorageManager.writeSealedMemory` AND by test doubles that stub storage —
+ * so mock fidelity (AGENTS.md §21) cannot drift from production.
+ */
+export function sealedWriteToLegacyArgs(
+  envelope: SealedMemoryEnvelope,
+  extras: Record<string, unknown> = {},
+): { category: MemoryCategory; content: string; options: Record<string, unknown> } {
+  return {
+    category: envelope.category,
+    content: envelope.content,
+    options: {
+      ...extras,
+      confidence: envelope.confidence,
+      tags: envelope.tags.length > 0 ? [...envelope.tags] : undefined,
+      entityRef: envelope.entityRef,
+      source: envelope.source,
+      expiresAt: envelope.ttl,
+      validAt: envelope.validAt,
+      // RAW map for frontmatter byte-parity with the legacy path; the body
+      // suffix canonicalizes identically from either form.
+      structuredAttributes: envelope.rawStructuredAttributes
+        ? { ...envelope.rawStructuredAttributes }
+        : undefined,
+      ...(envelope.sourceConnector !== undefined
+        ? { sourceConnector: envelope.sourceConnector }
+        : {}),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

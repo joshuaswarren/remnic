@@ -499,3 +499,62 @@ test("persistedBody is the assembled+sanitized form; fingerprints hash it (PR2)"
   assert.equal(clean.persistedBody, "User prefers dark mode");
   assert.deepEqual([...clean.sanitizeViolations], []);
 });
+
+// ---------------------------------------------------------------------------
+// Salvage mode (#2014 review round): machine-generated input must not abort
+// a persistence batch; drops are visible on salvageNotes, never silent.
+// ---------------------------------------------------------------------------
+
+test("salvage mode drops invalid optional fields with notes; strict mode still throws", () => {
+  const messyTags = Array.from({ length: 60 }, (_, i) => `t${i}`);
+  messyTags.push("x".repeat(300));
+  messyTags.push(42 as unknown as string);
+  const input = minimalInput({
+    tags: messyTags,
+    structuredAttributes: {
+      good: "keeps",
+      bad: 7 as unknown as string,
+      ["k".repeat(200)]: "dropped-key",
+    },
+    entityRef: "",
+    confidence: 1.7,
+    sourceConnector: "   ",
+  });
+
+  // Strict: first violation throws (batch-fatal for operator input).
+  assert.throws(() => composeMemoryEnvelope(input, CTX), /composeMemoryEnvelope/);
+
+  // Salvage: envelope composes; every drop is recorded.
+  const env = composeMemoryEnvelope(input, CTX, { salvage: true });
+  assert.equal(env.tags.length, TAG_LIMITS.maxTags);
+  assert.deepEqual(env.structuredAttributes, { good: "keeps" });
+  assert.deepEqual(env.rawStructuredAttributes, { good: "keeps" });
+  assert.equal(env.entityRef, undefined);
+  assert.equal(env.confidence, undefined);
+  assert.equal(env.sourceConnector, undefined);
+  assert.ok(env.salvageNotes.length >= 5, `expected notes for every drop, got: ${env.salvageNotes.join(" | ")}`);
+  // persistedBody assembled from SURVIVING attributes only.
+  assert.equal(env.persistedBody, "User prefers dark mode\n[Attributes: good: keeps]");
+  // Structural seal check accepts a salvaged envelope.
+  assert.equal(isSealedMemoryEnvelope(env), true);
+});
+
+test("salvage mode keeps content/category/source/validAt fatal (legacy parity)", () => {
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ content: "  " }), CTX, { salvage: true }),
+    /content/,
+  );
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ validAt: "not-a-date" }), CTX, { salvage: true }),
+    /validAt/,
+  );
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ category: "vibe" as MemoryWriteInput["category"] }), CTX, { salvage: true }),
+    /category/,
+  );
+});
+
+test("strict envelopes carry empty salvageNotes", () => {
+  const env = composeMemoryEnvelope(minimalInput(), CTX);
+  assert.deepEqual([...env.salvageNotes], []);
+});
