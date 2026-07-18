@@ -39,6 +39,7 @@ import {
   runRelayMission,
   type RelayCodexExecutor,
 } from "../scripts/relay/mission-runner.js";
+import { resolveRelayAuthSourcePath } from "../scripts/relay/preflight-lib.js";
 import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/remnic-harness.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -195,6 +196,17 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
   assert.equal(args.some((arg) => arg.toLowerCase().includes("sol")), false);
   assert.equal(args.some((arg) => arg.includes(os.homedir())), false);
   assert.throws(() => buildRelayCodexArgs("scout", "https://example.com/mcp"), /loopback/);
+});
+
+test("Relay preflight expands only a conventional tilde auth path", () => {
+  assert.equal(
+    resolveRelayAuthSourcePath("~/.codex/auth.json"),
+    path.join(os.homedir(), ".codex", "auth.json"),
+  );
+  assert.equal(
+    resolveRelayAuthSourcePath("~another-user/.codex/auth.json"),
+    path.resolve("~another-user/.codex/auth.json"),
+  );
 });
 
 test("Relay run roots reject non-empty and symlinked targets and clean only marked roots", async () => {

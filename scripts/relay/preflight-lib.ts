@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { buildCodexCreditReceipt } from "@remnic/bench";
+import { expandTildePath } from "@remnic/core";
 
 import {
   RELAY_ACCOUNT_CREDIT_CAP_UNITS,
@@ -357,6 +358,10 @@ export interface RelayPreflightResult {
   authSourcePath: string;
 }
 
+export function resolveRelayAuthSourcePath(input: string): string {
+  return path.resolve(expandTildePath(input));
+}
+
 export async function runRelayPreflight(options: RelayPreflightOptions): Promise<RelayPreflightResult> {
   if (!RELAY_MODEL.startsWith("gpt-5.6-") || RELAY_MODEL.toLowerCase().includes("sol")) {
     throw new Error("Relay live model policy requires a catalogued non-Sol GPT-5.6 variant");
@@ -384,7 +389,7 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   const codexBinary = await resolveCodexBinary(
     options.codexBinaryPath ?? (await findOnPath("codex", process.env.PATH)),
   );
-  const authSourcePath = path.resolve(
+  const authSourcePath = resolveRelayAuthSourcePath(
     options.authSourcePath ?? process.env.REMNIC_RELAY_CODEX_AUTH ?? path.join(os.homedir(), ".codex", "auth.json"),
   );
   if (path.basename(authSourcePath) !== "auth.json") {

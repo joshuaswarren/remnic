@@ -467,7 +467,11 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   if (JSON.stringify(calls.map((call) => call.summary.role)) !== JSON.stringify(metadata.callOrder)) {
     throw new Error("Relay recording call artifacts do not match the declared call order");
   }
-  if (new Set(metadata.threadIds).size !== RELAY_MAX_LIVE_CALLS) {
+  const callThreadIds = calls.map((call) => call.summary.threadId);
+  if (JSON.stringify(callThreadIds) !== JSON.stringify(metadata.threadIds)) {
+    throw new Error("Relay recording call artifacts do not match the declared thread IDs");
+  }
+  if (new Set(callThreadIds).size !== RELAY_MAX_LIVE_CALLS) {
     throw new Error("Relay recording does not prove four transcript-free Codex threads");
   }
   if (JSON.stringify(tests.map((item) => item.status)) !== JSON.stringify(metadata.testTransition)) {

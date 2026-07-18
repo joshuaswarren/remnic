@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,7 @@ import {
   type RelayRole,
 } from "../scripts/relay/contracts.js";
 import { verifyRelayFixtureManifest } from "../scripts/relay/fixture-manifest.js";
+import { digestFixtureTree } from "../scripts/relay/isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "../scripts/relay/mission-runner.js";
 import { verifyRelayRecording, writeRelayRecording } from "../scripts/relay/recording.js";
 
@@ -115,6 +116,22 @@ function creditScope(): CodexCreditReceiptScope {
       },
     ],
   };
+}
+
+async function resealRecordingManifest(recordingDir: string): Promise<void> {
+  const files = await digestFixtureTree(recordingDir, ["manifest.json"]);
+  await writeFile(
+    path.join(recordingDir, "manifest.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        files,
+        rootSha256: createHash("sha256").update(JSON.stringify(files)).digest("hex"),
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 test("Relay recording is sanitized, run-scoped, and integrity checked", async () => {
@@ -256,6 +273,18 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     assert.equal(verified.creditReceipt.run.calls, 4);
     const callFile = await readFile(path.join(recordingDir, "calls", "cold-builder.json"), "utf8");
     assert.doesNotMatch(callFile, /stdout|stderr|REMNIC_RELAY_MCP_TOKEN|\/home\//);
+
+    const metadataPath = path.join(recordingDir, "recording.json");
+    const originalMetadata = await readFile(metadataPath, "utf8");
+    const tamperedMetadata = JSON.parse(originalMetadata) as { threadIds: string[] };
+    tamperedMetadata.threadIds[0] = randomUUID();
+    await writeFile(metadataPath, `${JSON.stringify(tamperedMetadata, null, 2)}\n`);
+    await resealRecordingManifest(recordingDir);
+    await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), /declared thread IDs/);
+
+    await writeFile(metadataPath, originalMetadata);
+    await resealRecordingManifest(recordingDir);
+    await verifyRelayRecording(recordingDir, repoRoot);
 
     await writeFile(path.join(recordingDir, "approval.json"), "{}\n");
     await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), /integrity manifest/);
