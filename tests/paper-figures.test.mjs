@@ -355,11 +355,24 @@ test("Figure 2: with no committed memcorrect artifact, every adapter bar is DATA
 // ─── 4. Determinism ───────────────────────────────────────────────────────
 
 test("generation is byte-identical across runs (deterministic)", () => {
-  const out1 = mkdtempSync(join(tmpdir(), "fig-run1-"));
-  const out2 = mkdtempSync(join(tmpdir(), "fig-run2-"));
+  // Use hermetic copies of only the git-tracked artifacts so the test is
+  // isolated from UNTRACKED leftovers in the gitignored results dir.
+  const tmpResults = mkdtempSync(join(tmpdir(), "fig-det-results-"));
+  const out1 = mkdtempSync(join(tmpdir(), "fig-det-out1-"));
+  const out2 = mkdtempSync(join(tmpdir(), "fig-det-out2-"));
   try {
-    runGenerator({ REMNIC_FIGURES_OUT_DIR: out1 });
-    runGenerator({ REMNIC_FIGURES_OUT_DIR: out2 });
+    assert.ok(
+      copyTrackedResults(tmpResults).length > 0,
+      "git-tracked artifacts must exist to regenerate from",
+    );
+    runGenerator({
+      REMNIC_FIGURES_RESULTS_DIR: tmpResults,
+      REMNIC_FIGURES_OUT_DIR: out1,
+    });
+    runGenerator({
+      REMNIC_FIGURES_RESULTS_DIR: tmpResults,
+      REMNIC_FIGURES_OUT_DIR: out2,
+    });
     for (const f of [
       "fig1-locomo-longmemeval.svg",
       "fig2-memcorrect-metrics.svg",
@@ -370,6 +383,7 @@ test("generation is byte-identical across runs (deterministic)", () => {
       assert.equal(a, b, `${f} must be byte-identical across runs`);
     }
   } finally {
+    rmSync(tmpResults, { recursive: true, force: true });
     rmSync(out1, { recursive: true, force: true });
     rmSync(out2, { recursive: true, force: true });
   }

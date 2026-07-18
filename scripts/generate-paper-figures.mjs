@@ -162,7 +162,11 @@ function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
       if (systemName === undefined) return true;
       return sn === systemName;
     })
-    .sort((a, b) => String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt)));
+    .sort((a, b) => {
+      const timeDiff = String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt));
+      if (timeDiff !== 0) return timeDiff;
+      return a.name.localeCompare(b.name);
+    });
   return candidates[0] ?? null;
 }
 
