@@ -155,6 +155,32 @@ async function assertResealedJsonTamperRejected<T>(
   await verifyRelayRecording(recordingDir, repoRoot);
 }
 
+async function assertResealedJsonSetTamperRejected(
+  recordingDir: string,
+  mutations: Array<{ relativePath: string; mutate: (value: Record<string, unknown>) => void }>,
+  expected: RegExp
+): Promise<void> {
+  const originals = new Map<string, string>();
+  try {
+    for (const mutation of mutations) {
+      const artifactPath = path.join(recordingDir, mutation.relativePath);
+      const original = await readFile(artifactPath, "utf8");
+      originals.set(mutation.relativePath, original);
+      const tampered = JSON.parse(original) as Record<string, unknown>;
+      mutation.mutate(tampered);
+      await writeFile(artifactPath, `${JSON.stringify(tampered, null, 2)}\n`);
+    }
+    await resealRecordingManifest(recordingDir);
+    await assert.rejects(verifyRelayRecording(recordingDir, repoRoot), expected);
+  } finally {
+    for (const [relativePath, original] of originals) {
+      await writeFile(path.join(recordingDir, relativePath), original);
+    }
+    await resealRecordingManifest(recordingDir);
+  }
+  await verifyRelayRecording(recordingDir, repoRoot);
+}
+
 test("Relay recording is sanitized, run-scoped, and integrity checked", async () => {
   const fixtureManifest = await verifyRelayFixtureManifest(fixtureRoot);
   const calls = fixtureCalls();
@@ -457,6 +483,32 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
         metadata.threadIds[0] = randomUUID();
       },
       /declared thread IDs/
+    );
+    await assertResealedJsonSetTamperRejected(
+      recordingDir,
+      ["recording.json", "preflight.json"].map((relativePath) => ({
+        relativePath,
+        mutate: (artifact: Record<string, unknown>) => {
+          artifact.fixtureManifestSha256 = "f".repeat(64);
+        },
+      })),
+      /committed synthetic fixture manifest/
+    );
+    await assertResealedJsonTamperRejected<{
+      quarantinedUncertainUnits: number;
+      quarantinedLedgerSha256: string | null;
+      budgetUnits: number;
+      plannedSpendCeilingUnits: number;
+    }>(
+      recordingDir,
+      "preflight.json",
+      (tamperedPreflight) => {
+        tamperedPreflight.quarantinedUncertainUnits = 300;
+        tamperedPreflight.quarantinedLedgerSha256 = "a".repeat(64);
+        tamperedPreflight.budgetUnits = 2_173;
+        tamperedPreflight.plannedSpendCeilingUnits = 1_700;
+      },
+      /preflight budget evidence/
     );
     await assertResealedJsonTamperRejected<Array<{ payload: { kind: string; sessionId?: string } }>>(
       recordingDir,

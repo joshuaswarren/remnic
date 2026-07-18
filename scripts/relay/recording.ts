@@ -37,6 +37,7 @@ import {
   type RelayPreflightReceipt,
   type RelayRole,
 } from "./contracts.js";
+import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import { assertTreeContainsNoSymlinks, digestFixtureTree, pathExists } from "./isolation.js";
 import type { RelayMissionRunResult, SanitizedRelayCall } from "./mission-runner.js";
 
@@ -804,6 +805,9 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
   const staleMemory = RelayMemoryArtifactSchema.parse(await readJson(root, "memories/stale.json"));
   const replacementMemory = RelayMemoryArtifactSchema.parse(await readJson(root, "memories/replacement.json"));
   const missionReceipt = RelayMissionReceiptArtifactSchema.parse(await readJson(root, "mission-receipt.json"));
+  const committedFixtureManifest = await verifyRelayFixtureManifest(
+    path.join(path.resolve(repoRoot), "fixtures", "remnic-relay")
+  );
 
   if (JSON.stringify(calls.map((call) => call.summary.role)) !== JSON.stringify(metadata.callOrder)) {
     throw new Error("Relay recording call artifacts do not match the declared call order");
@@ -838,15 +842,30 @@ export async function verifyRelayRecording(recordingDir: string, repoRoot: strin
     throw new Error("Relay recording credit evidence does not match its metadata");
   }
   if (
-    creditReceipt.budgetUnits !== metadata.effectiveBudgetUnits ||
-    creditReceipt.budgetUnits !== budgetAdjustment.effectiveBudgetUnits ||
+    preflight.accountCreditCapUnits !== metadata.accountCreditCapUnits ||
+    preflight.accountCreditCapUnits !== budgetAdjustment.accountCreditCapUnits ||
+    preflight.quarantinedUncertainUnits !== metadata.quarantinedUncertainUnits ||
+    preflight.quarantinedUncertainUnits !== budgetAdjustment.quarantinedUncertainUnits ||
+    preflight.quarantinedLedgerSha256 !== metadata.quarantinedLedgerSha256 ||
+    preflight.quarantinedLedgerSha256 !== budgetAdjustment.quarantinedLedgerSha256 ||
+    preflight.budgetUnits !== metadata.effectiveBudgetUnits ||
+    preflight.budgetUnits !== budgetAdjustment.effectiveBudgetUnits ||
+    preflight.budgetUnits !== creditReceipt.budgetUnits ||
+    preflight.reserveUnits !== budgetAdjustment.reserveUnits ||
+    preflight.reserveUnits !== creditReceipt.reserveUnits ||
+    preflight.plannedSpendCeilingUnits !== budgetAdjustment.plannedSpendCeilingUnits ||
+    preflight.plannedSpendCeilingUnits !== creditReceipt.plannedSpendCeilingUnits ||
     metadata.accountCreditCapUnits - metadata.quarantinedUncertainUnits !== metadata.effectiveBudgetUnits ||
-    metadata.quarantinedLedgerSha256 !== budgetAdjustment.quarantinedLedgerSha256
+    budgetAdjustment.accountCreditCapUnits - budgetAdjustment.quarantinedUncertainUnits !==
+      budgetAdjustment.effectiveBudgetUnits
   ) {
-    throw new Error("Relay recording budget adjustment does not match the effective credit ledger");
+    throw new Error("Relay recording preflight budget evidence does not match the effective credit ledger");
   }
-  if (preflight.fixtureManifestSha256 !== metadata.fixtureManifestSha256) {
-    throw new Error("Relay recording preflight and mission used different synthetic fixtures");
+  if (
+    preflight.fixtureManifestSha256 !== committedFixtureManifest.rootSha256 ||
+    metadata.fixtureManifestSha256 !== committedFixtureManifest.rootSha256
+  ) {
+    throw new Error("Relay recording fixture evidence does not match the committed synthetic fixture manifest");
   }
   scanSensitive(
     {
