@@ -71,6 +71,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json`; `0` = save every turn |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
@@ -1142,6 +1143,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `triggerMode` | `smart` | `smart` |
 | `bufferMaxTurns` | `5` | `5` |
 | `bufferMaxMinutes` | `15` | `15` |
+| `bufferSaveDebounceMs` | `3000` | `3000` |
 | `consolidateEveryN` | `3` | `3` |
 | `highSignalPatterns` | `[]` | `[]` |
 | `maxMemoryTokens` | `2000` | `2000` |
