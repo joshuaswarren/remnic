@@ -2,10 +2,10 @@
 name: remnic-no-static-optional-package-imports
 description: "Base packages must not statically value-import optional companion packages (bench, export/import-*, connector-*, coding-graph)"
 condition:
-  - 'import\s+(?!type\b)(?!\{)[A-Za-z_$*][^;]{0,300}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
-  - 'import\s+(?!type\b)[^;{]{0,120}?\{([^}]*,)?\s*(?!type\s)[A-Za-z_$][\w$]*\s*(as\s+[\w$]+\s*)?[,}][^;]{0,200}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
-  - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
-  - '(import\s+|require\(\s*)["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)["'']'
+  - 'import\s+(?!type\b)(?!\{)[A-Za-z_$*][^;]{0,300}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)(/[^"'']*)?["'']'
+  - 'import\s+(?!type\b)[^;{]{0,120}?\{([^}]*,)?\s*(?!type\s)[A-Za-z_$][\w$]*\s*(as\s+[\w$]+\s*)?[,}][^;]{0,200}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)(/[^"'']*)?["'']'
+  - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)(/[^"'']*)?["'']'
+  - '(import\s+|require\(\s*)["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph)(/[^"'']*)?["'']'
 globs:
   - "**/packages/remnic-cli/**"
   - "**/packages/remnic-core/**"
