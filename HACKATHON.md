@@ -31,7 +31,7 @@ isolated live mission—not a hand-edited success animation.
 
 ## Judge it without rebuilding
 
-Prerequisite: Linux with procfs plus Node.js 22.12 or newer with npm. No
+Prerequisite: Linux with procfs plus Node.js 22.12 or newer. No
 dependency install, account, credential, dataset download, build, model call,
 or network access is needed after the repository is available. The verifier
 deliberately fails closed on platforms that cannot provide descriptor-pinned
@@ -39,15 +39,18 @@ no-follow traversal. The purpose-built synthetic mission fixture is already
 staged in `fixtures/remnic-relay/` and integrity-checked in place.
 
 ```bash
-npm run relay:demo
+node scripts/relay/judge-package.mjs serve
 ```
 
 Terminal-only and clean-room checks:
 
 ```bash
-npm run relay:judge
-npm run relay:judge:clean-room
+node scripts/relay/judge-package.mjs verify
+node scripts/verify-relay-judge-package.mjs
 ```
+
+These judge-facing commands invoke Node directly so package-manager lifecycle
+hooks cannot run before the safety receipt is produced.
 
 The expected canonical root is
 `69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be`.
@@ -255,7 +258,7 @@ remnic bench run longmemeval \
 
 | Path | Support statement |
 | --- | --- |
-| Offline replay/verifier | Linux with procfs and Node 22.12+ built-ins only; component-by-component descriptor-pinned no-follow traversal; Linux x64 independently verified on Node 22.23.1 |
+| Offline replay/verifier | Linux with procfs and Node 22.12+ built-ins only; component-by-component descriptor-pinned no-follow traversal locked to the repository mount ID, including same-device bind-mount rejection; Linux x64 independently verified on Node 22.23.1 |
 | Live runner | Linux x64 with user/mount/PID/network namespaces, chroot, Codex CLI 0.144.4-compatible behavior, and installed development dependencies |
 | Browser | Chrome/Chromium 151 verified at 1440 × 900 and 390 × 844, keyboard-only and reduced-motion flows included |
 | Windows/macOS | No executable verification claim; use the public submission video/gallery or a Linux environment. The verifier fails closed instead of reading evidence through pathname-only fallbacks |

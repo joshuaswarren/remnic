@@ -11,20 +11,20 @@ Prerequisites:
 
 - a checkout of this public MIT-licensed repository;
 - Linux with procfs and descriptor no-follow filesystem flags;
-- Node.js 22.12 or newer with npm;
+- Node.js 22.12 or newer;
 - a desktop browser.
 
 No install, build, account, credential, dataset download, model call, or
 network access is required after the repository is available.
 
 ```bash
-npm run relay:demo
+node scripts/relay/judge-package.mjs serve
 ```
 
 Expected terminal output begins with:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 filesystem=descriptor-pinned-nofollow
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 filesystem=descriptor-pinned-nofollow-mount-locked
 Remnic Relay Mission Control: http://127.0.0.1:4173/
 Verified offline replay · zero credentials · zero external calls · Ctrl+C to stop
 ```
@@ -46,13 +46,13 @@ local playback only; it is never presented as a new live write.
 ## Verify the evidence without opening a browser
 
 ```bash
-npm run relay:judge
+node scripts/relay/judge-package.mjs verify
 ```
 
 Expected output:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed filesystem=descriptor-pinned-nofollow externalCalls=0 productionDataRead=false
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false
 ```
 
 The dependency-free verifier does not merely trust the final JSON. It:
@@ -72,7 +72,9 @@ The dependency-free verifier does not merely trust the final JSON. It:
   root and verifies the browser replay against the final sealed event trace;
 - captures one immutable input snapshot before verification or serving using
   component-by-component descriptor-pinned no-follow reads, with symlink and
-  hard-link rejection plus file-handle identity checks around every read;
+  hard-link rejection, file-handle identity checks around every read, and a
+  Linux descriptor mount-ID lock that rejects nested or same-device bind
+  mounts before reading their contents;
 - scans all 39 copied recording, fixture, UI, demo, and package-manifest text
   files for secret-like and host-private material; and
 - measures the demo narration at 326 words: 135 seconds at 145 words per
@@ -81,21 +83,23 @@ The dependency-free verifier does not merely trust the final JSON. It:
 ## Clean-room smoke
 
 ```bash
-npm run relay:judge:clean-room
+node scripts/verify-relay-judge-package.mjs
 ```
 
 Expected output on the verified platform:
 
 ```text
-RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow externalCalls=0 productionDataRead=false sensitiveFiles=39
+RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
-This command copies only the package manifest, five static UI files, sealed
+This direct Node command copies only the package manifest, five static UI files, sealed
 recording, synthetic fixtures, demo script, and verifier into a new temporary
 directory. It asserts that no symlink or `node_modules` directory exists, runs
-the exact npm verifier with isolated home/temp variables and empty `NODE_PATH`,
+the exact dependency-free Node verifier with isolated home/temp variables and empty `NODE_PATH`,
 serves the UI on ephemeral loopback, fetches the page/replay/receipt, rejects
-an unlisted path, and removes the temporary package.
+an unlisted path, and removes the temporary package. Invoking Node directly is
+part of the trust boundary: npm pre/post lifecycle hooks cannot run before the
+clean-room receipt.
 
 ## What the recording proves
 
@@ -153,8 +157,8 @@ reproducible competition evidence.
 ## Supported environment
 
 - Offline judge package: Linux with procfs and Node.js 22.12+ using Node
-  built-ins only. It uses `descriptor-pinned-nofollow` and includes that mode
-  in every receipt. Linux x64 is independently clean-room verified on Node
+  built-ins only. It uses `descriptor-pinned-nofollow-mount-locked` and includes
+  that mode in every receipt. Linux x64 is independently clean-room verified on Node
   22.23.1. macOS and Windows are intentionally unsupported for executable
   verification because Node does not expose equivalent parent-component
   no-follow traversal there; use the public video/gallery or a Linux
@@ -170,7 +174,7 @@ reproducible competition evidence.
 - `requires Linux with procfs`: move the checkout to a Linux environment. Do
   not bypass the gate; no pathname-only fallback is treated as equivalent
   evidence.
-- Port 4173 busy: run `npm run relay:demo -- --port 4180`.
+- Port 4173 busy: run `node scripts/relay/judge-package.mjs serve --port 4180`.
 - Integrity or semantic verification failure: do not bypass it. Restore the
   committed files and rerun; a changed byte or causal claim is intentionally a
   hard failure.

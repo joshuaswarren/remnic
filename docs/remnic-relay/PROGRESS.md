@@ -59,10 +59,12 @@ Last updated: 2026-07-18
 ## Phase 4 — in progress
 
 - [x] Dependency-free semantic evidence verifier and loopback allow-list server.
-- [x] Exact no-install commands: `relay:demo`, `relay:judge`, and
-  `relay:judge:clean-room`.
+- [x] Exact no-install direct-Node commands for demo, terminal verification,
+  and clean-room verification; no npm lifecycle hooks precede attestation.
 - [x] Clean-room copy has no symlink or `node_modules`, uses isolated env, and
   fetches the UI/replay/receipt locally.
+- [x] Every opened evidence descriptor is locked to the pinned repository
+  mount ID, rejecting nested and same-device bind mounts before content reads.
 - [x] Coordinated-reseal rejection and secret/private-path scan.
 - [x] Measured narration: 326 words, estimated 165 seconds including action
   allowance.

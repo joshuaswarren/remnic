@@ -1,9 +1,9 @@
 # Remnic Relay demo script
 
 Target: **2:50 maximum**, including 30 seconds of interaction/transition
-allowance. The narration measurement is enforced by `npm run relay:judge` at
-145 words per minute. Record at 1440 × 900 with browser zoom at 100%, pointer
-visible, and no background music.
+allowance. The narration measurement is enforced by
+`node scripts/relay/judge-package.mjs verify` at 145 words per minute. Record at
+1440 × 900 with browser zoom at 100%, pointer visible, and no background music.
 
 ## Shot list
 

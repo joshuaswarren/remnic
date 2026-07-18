@@ -72,23 +72,25 @@ and evidence before claims.
 On Linux with procfs, Node.js 22.12+, and this repository checkout:
 
 ```bash
-npm run relay:demo
+node scripts/relay/judge-package.mjs serve
 ```
 
 That command first verifies the evidence and then serves Mission Control on
 loopback. It needs no install, build, account, key, dataset download, model
 call, or network access. The verifier uses component-by-component,
 descriptor-pinned no-follow reads and reports that mode in its receipt. It
-fails closed on platforms without those primitives rather than claim
+also locks every input descriptor to the repository mount ID, rejecting nested
+and same-device bind mounts before content reads. It fails closed on platforms without those primitives rather than claim
 pathname-only tamper resistance. For terminal-only proof:
 
 ```bash
-npm run relay:judge
-npm run relay:judge:clean-room
+node scripts/relay/judge-package.mjs verify
+node scripts/verify-relay-judge-package.mjs
 ```
 
-The clean-room smoke copies only the judge package into a new temporary root,
-proves there is no `node_modules` or symlink, runs the exact npm verifier with
+The direct Node commands bypass npm pre/post lifecycle hooks. The clean-room
+smoke copies only the judge package into a new temporary root,
+proves there is no `node_modules` or symlink, runs the exact Node verifier with
 an isolated environment, serves/fetches the replay locally, checks the route
 allow-list, and cleans up.
 
@@ -173,22 +175,22 @@ same correction and receipt contract.
 ## Testing instructions field
 
 ```text
-Prerequisite: Linux with procfs, Node.js 22.12+, and npm. Linux x64 is
+Prerequisite: Linux with procfs and Node.js 22.12+. Linux x64 is
 independently verified on Node 22.23.1. The verifier fails closed on
 macOS/Windows rather than use a pathname-only fallback; use the public video
 and gallery there, or run these commands in a Linux environment.
 
 1. Clone/open the repository; do not install dependencies.
-2. Run: npm run relay:demo
+2. Run: node scripts/relay/judge-package.mjs serve
 3. Open the printed http://127.0.0.1:4173/ URL.
 4. Compare Scout and Builder, press E for evidence, advance to the human gate,
    type APPROVE, and continue through cold-start recall to Outcome recovered.
-5. Terminal-only verification: npm run relay:judge
-6. Fresh temporary package: npm run relay:judge:clean-room
+5. Terminal-only verification: node scripts/relay/judge-package.mjs verify
+6. Fresh temporary package: node scripts/verify-relay-judge-package.mjs
 
 No credentials, model calls, datasets, build, dependency install, or external
 network calls are required. If port 4173 is busy, run:
-npm run relay:demo -- --port 4180
+node scripts/relay/judge-package.mjs serve --port 4180
 ```
 
 ## Suggested gallery order and captions

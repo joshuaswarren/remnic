@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, readFile, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -84,7 +84,7 @@ const EXPECTED_UI_FILES = ["index.html", "relay-model.js", "relay.css", "relay.j
 const SERVER_ERROR_BODY = "Relay judge server error\n";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DESCRIPTOR_PINNED_MODE = "descriptor-pinned-nofollow";
+const DESCRIPTOR_PINNED_MODE = "descriptor-pinned-nofollow-mount-locked";
 
 function invariant(condition, message) {
   if (!condition) throw new Error(`Relay judge verification failed: ${message}`);
@@ -148,6 +148,20 @@ function descriptorChildPath(handle, segment) {
   return `/proc/self/fd/${handle.fd}/${segment}`;
 }
 
+async function descriptorMountId(handle, label) {
+  let descriptorInfo;
+  try {
+    descriptorInfo = await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8");
+  } catch (error) {
+    throw new Error(`Relay judge verification failed: ${label} must expose a Linux descriptor mount ID`, {
+      cause: error,
+    });
+  }
+  const match = descriptorInfo.match(/^mnt_id:\s+([1-9]\d*)\s*$/m);
+  invariant(match, `${label} must expose exactly one Linux descriptor mount ID`);
+  return match[1];
+}
+
 function descriptorTraversalSupported() {
   return (
     process.platform === "linux" &&
@@ -163,8 +177,12 @@ async function openPinnedRepoRoot(repoRoot) {
     "the Relay judge verifier requires Linux with procfs and descriptor no-follow flags"
   );
   try {
+    const [descriptorDirectory, descriptorInfoDirectory] = await Promise.all([
+      lstat("/proc/self/fd"),
+      lstat("/proc/self/fdinfo"),
+    ]);
     invariant(
-      (await lstat("/proc/self/fd")).isDirectory(),
+      descriptorDirectory.isDirectory() && descriptorInfoDirectory.isDirectory(),
       "the Relay judge verifier requires Linux with procfs and descriptor no-follow flags"
     );
   } catch (error) {
@@ -189,14 +207,14 @@ async function openPinnedRepoRoot(repoRoot) {
       await previous.close();
     }
     invariant((await current.stat()).isDirectory(), "the repository root must be a real directory");
-    return current;
+    return { handle: current, mountId: await descriptorMountId(current, "the repository root") };
   } catch (error) {
     await current.close();
     throw error;
   }
 }
 
-async function openChildNoFollow(parentHandle, segment, label, expectedType) {
+async function openChildNoFollow(parentHandle, segment, label, expectedType, expectedMountId) {
   const directoryFlag = expectedType === "directory" ? fsConstants.O_DIRECTORY : 0;
   let handle;
   try {
@@ -224,6 +242,12 @@ async function openChildNoFollow(parentHandle, segment, label, expectedType) {
           ? info.isFile()
           : info.isDirectory() || info.isFile();
     invariant(valid, `${label} has the wrong filesystem type`);
+    if (expectedMountId !== undefined) {
+      invariant(
+        (await descriptorMountId(handle, label)) === expectedMountId,
+        `${label} crosses a filesystem mount boundary; nested and bind-mounted inputs are forbidden`
+      );
+    }
     return { handle, info };
   } catch (error) {
     await handle.close();
@@ -231,14 +255,20 @@ async function openChildNoFollow(parentHandle, segment, label, expectedType) {
   }
 }
 
-async function openRepoRelativeFromRoot(rootHandle, relative, expectedType) {
+async function openRepoRelativeFromRoot(rootHandle, rootMountId, relative, expectedType) {
   const segments = relayPathSegments(relative);
   let current = rootHandle;
   let ownsCurrent = false;
   try {
     for (const [index, segment] of segments.entries()) {
       const isTarget = index === segments.length - 1;
-      const opened = await openChildNoFollow(current, segment, relative, isTarget ? expectedType : "directory");
+      const opened = await openChildNoFollow(
+        current,
+        segment,
+        relative,
+        isTarget ? expectedType : "directory",
+        rootMountId
+      );
       if (ownsCurrent) await current.close();
       current = opened.handle;
       ownsCurrent = true;
@@ -264,20 +294,24 @@ async function readOpenedRegularFile(handle, label, encoding) {
   }
 }
 
-async function readRepoFileFromRoot(rootHandle, relative, encoding) {
-  return readOpenedRegularFile(await openRepoRelativeFromRoot(rootHandle, relative, "file"), relative, encoding);
+async function readRepoFileFromRoot(rootHandle, rootMountId, relative, encoding) {
+  return readOpenedRegularFile(
+    await openRepoRelativeFromRoot(rootHandle, rootMountId, relative, "file"),
+    relative,
+    encoding
+  );
 }
 
 export async function readRegularRepoFileNoFollow(repoRoot, relative, encoding) {
-  const rootHandle = await openPinnedRepoRoot(repoRoot);
+  const { handle: rootHandle, mountId } = await openPinnedRepoRoot(repoRoot);
   try {
-    return await readRepoFileFromRoot(rootHandle, relative, encoding);
+    return await readRepoFileFromRoot(rootHandle, mountId, relative, encoding);
   } finally {
     await rootHandle.close();
   }
 }
 
-async function snapshotDirectory(directoryHandle, treeLabel, prefix = "", snapshot = new Map()) {
+async function snapshotDirectory(directoryHandle, rootMountId, treeLabel, prefix = "", snapshot = new Map()) {
   const before = await directoryHandle.stat({ bigint: true });
   invariant(before.isDirectory(), `${treeLabel} must be a real directory`);
   const names = (await readdir(`/proc/self/fd/${directoryHandle.fd}`)).sort((left, right) => left.localeCompare(right));
@@ -285,10 +319,10 @@ async function snapshotDirectory(directoryHandle, treeLabel, prefix = "", snapsh
     invariant(name !== "." && name !== ".." && !name.includes("/"), `${treeLabel} contains an invalid entry name`);
     const relative = prefix ? `${prefix}/${name}` : name;
     const label = `${treeLabel}/${relative}`;
-    const { handle, info } = await openChildNoFollow(directoryHandle, name, label);
+    const { handle, info } = await openChildNoFollow(directoryHandle, name, label, undefined, rootMountId);
     if (info.isDirectory()) {
       try {
-        await snapshotDirectory(handle, treeLabel, relative, snapshot);
+        await snapshotDirectory(handle, rootMountId, treeLabel, relative, snapshot);
       } finally {
         await handle.close();
       }
@@ -301,25 +335,25 @@ async function snapshotDirectory(directoryHandle, treeLabel, prefix = "", snapsh
   return snapshot;
 }
 
-async function snapshotRepoTree(rootHandle, relative) {
-  const directoryHandle = await openRepoRelativeFromRoot(rootHandle, relative, "directory");
+async function snapshotRepoTree(rootHandle, rootMountId, relative) {
+  const directoryHandle = await openRepoRelativeFromRoot(rootHandle, rootMountId, relative, "directory");
   try {
-    return await snapshotDirectory(directoryHandle, relative);
+    return await snapshotDirectory(directoryHandle, rootMountId, relative);
   } finally {
     await directoryHandle.close();
   }
 }
 
 async function snapshotJudgeInputs(repoRoot) {
-  const rootHandle = await openPinnedRepoRoot(repoRoot);
+  const { handle: rootHandle, mountId } = await openPinnedRepoRoot(repoRoot);
   try {
     const before = await rootHandle.stat({ bigint: true });
     const [recording, fixture, ui, demoScript, packageManifest] = await Promise.all([
-      snapshotRepoTree(rootHandle, RECORDING_RELATIVE),
-      snapshotRepoTree(rootHandle, FIXTURE_RELATIVE),
-      snapshotRepoTree(rootHandle, UI_RELATIVE),
-      readRepoFileFromRoot(rootHandle, DEMO_SCRIPT_RELATIVE, "utf8"),
-      readRepoFileFromRoot(rootHandle, "package.json", "utf8"),
+      snapshotRepoTree(rootHandle, mountId, RECORDING_RELATIVE),
+      snapshotRepoTree(rootHandle, mountId, FIXTURE_RELATIVE),
+      snapshotRepoTree(rootHandle, mountId, UI_RELATIVE),
+      readRepoFileFromRoot(rootHandle, mountId, DEMO_SCRIPT_RELATIVE, "utf8"),
+      readRepoFileFromRoot(rootHandle, mountId, "package.json", "utf8"),
     ]);
     const after = await rootHandle.stat({ bigint: true });
     invariant(sameOpenedNode(before, after), "the repository root changed while the judge snapshot was captured");

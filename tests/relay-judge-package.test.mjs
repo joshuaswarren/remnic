@@ -28,10 +28,7 @@ function descriptorPinnedTest(name, fn) {
   return test(
     name,
     {
-      skip:
-        process.platform === "linux"
-          ? false
-          : "requires Linux procfs and descriptor no-follow verification",
+      skip: process.platform === "linux" ? false : "requires Linux procfs and descriptor no-follow verification",
     },
     fn
   );
@@ -141,7 +138,7 @@ descriptorPinnedTest("dependency-free Relay judge verifier binds the canonical l
   assert.equal(receipt.humanApproved, true);
   assert.equal(receipt.coldStartVerified, true);
   assert.equal(receipt.runtimeDependencies, 0);
-  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
@@ -149,13 +146,36 @@ descriptorPinnedTest("dependency-free Relay judge verifier binds the canonical l
   assert.ok(receipt.demo.estimatedTotalSeconds < 180);
 });
 
-descriptorPinnedTest("Relay judge verifier uses descriptor-pinned no-follow traversal", async () => {
+descriptorPinnedTest("Relay judge verifier uses descriptor-pinned no-follow mount-locked traversal", async () => {
   const receipt = await verifyRelayJudgePackage(repoRoot);
-  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
   assert.equal(receipt.uiSha256, RELAY_UI_ROOT_SHA256);
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
+});
+
+descriptorPinnedTest("Relay judge verifier rejects a nested mount before reading its contents", async () => {
+  await assert.rejects(
+    () => readRegularRepoFileNoFollow("/", "proc/version", "utf8"),
+    /proc\/version crosses a filesystem mount boundary; nested and bind-mounted inputs are forbidden/
+  );
+});
+
+test("Relay judge-facing instructions bypass npm lifecycle hooks", async () => {
+  for (const relative of [
+    "HACKATHON.md",
+    "README.md",
+    "docs/remnic-relay/CLAIMS.md",
+    "docs/remnic-relay/DEMO-SCRIPT.md",
+    "docs/remnic-relay/JUDGE-GUIDE.md",
+    "docs/remnic-relay/DEVPOST.md",
+    "docs/remnic-relay/MISSION-CONTROL.md",
+  ]) {
+    const contents = await readFile(path.join(repoRoot, relative), "utf8");
+    assert.doesNotMatch(contents, /npm\s+run\s+relay:(?:demo|judge)/, relative);
+    assert.match(contents, /node scripts\/(?:relay\/judge-package|verify-relay-judge-package)\.mjs/, relative);
+  }
 });
 
 descriptorPinnedTest("Relay judge CLI expands a conventional tilde checkout root", async () => {
@@ -413,9 +433,7 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     null
   );
   assert.equal(
-    relayStaleCheckoutDecisionContractKey(
-      "Avoid issuing a fresh checkout token, for each request or ordinary retry."
-    ),
+    relayStaleCheckoutDecisionContractKey("Avoid issuing a fresh checkout token, for each request or ordinary retry."),
     null
   );
   assert.equal(
@@ -687,14 +705,19 @@ descriptorPinnedTest("Relay judge package passes from a copied clean room with n
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
   assert.equal(receipt.uiSha256, RELAY_UI_ROOT_SHA256);
   assert.equal(receipt.nodeModulesPresent, false);
-  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow-mount-locked");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
 });
 
-descriptorPinnedTest("Relay clean-room verifier never executes npm lifecycle hooks", async (t) => {
-  for (const hookName of ["prerelay:judge", "postrelay:judge"]) {
+descriptorPinnedTest("Relay direct clean-room launcher never executes npm lifecycle hooks", async (t) => {
+  for (const hookName of [
+    "prerelay:judge",
+    "postrelay:judge",
+    "prerelay:judge:clean-room",
+    "postrelay:judge:clean-room",
+  ]) {
     await t.test(hookName, async () => {
       const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-lifecycle-hook-"));
       try {

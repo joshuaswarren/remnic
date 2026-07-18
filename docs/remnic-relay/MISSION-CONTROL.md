@@ -36,7 +36,8 @@ The replay:
 - never claims that replay approval is a live write.
 
 `tests/relay-mission-control.test.ts` regenerates the entire replay in memory
-and compares it to the committed JSON. `npm run relay:judge` also verifies the
+and compares it to the committed JSON. Running
+`node scripts/relay/judge-package.mjs verify` also verifies the
 recording/fixture manifests, semantic causal chain, ordered hidden-test output
 hashes, credit accounting, independently derived mission receipt, and the exact
 five-file UI root
