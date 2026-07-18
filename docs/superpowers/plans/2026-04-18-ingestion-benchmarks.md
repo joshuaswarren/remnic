@@ -151,7 +151,7 @@ export const CONDITIONAL_FRONTMATTER: Record<string, { field: string; requiredWh
 
 - [ ] **Step 2: Verify the file compiles**
 
-Run: `cd /Users/joshuawarren/src/remnic && npx tsc --noEmit packages/bench/src/ingestion-types.ts --target ES2022 --module ESNext --moduleResolution bundler --strict`
+Run: `cd ~/src/remnic && npx tsc --noEmit packages/bench/src/ingestion-types.ts --target ES2022 --module ESNext --moduleResolution bundler --strict`
 
 Expected: no errors
 
@@ -201,7 +201,7 @@ to:
 
 - [ ] **Step 3: Verify types compile**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npx tsc --noEmit`
+Run: `cd ~/src/remnic/packages/bench && npx tsc --noEmit`
 
 Expected: no errors
 
@@ -245,7 +245,7 @@ In `packages/bench/tsconfig.json`, add `"src/ingestion-types.ts"` to the `includ
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build, `dist/ingestion-types.js` and `dist/ingestion-types.d.ts` produced
 
@@ -307,7 +307,7 @@ In `packages/bench/tsconfig.json`, add `"src/fixtures/**/*.ts"` to the `include`
 
 - [ ] **Step 4: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build
 
@@ -546,7 +546,7 @@ export const emailFixture: FixtureGenerator = {
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build
 
@@ -756,7 +756,7 @@ Add `"src/ingestion-scorer.ts"` to `packages/bench/tsconfig.json` include array.
 
 - [ ] **Step 4: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build
 
@@ -930,7 +930,7 @@ Add `"src/benchmarks/remnic/**/*.ts"` to `packages/bench/tsconfig.json` include 
 
 - [ ] **Step 4: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build
 
@@ -1100,7 +1100,7 @@ Add to `REGISTERED_BENCHMARKS`:
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd /Users/joshuawarren/src/remnic/packages/bench && npm run build`
+Run: `cd ~/src/remnic/packages/bench && npm run build`
 
 Expected: clean build
 
@@ -1325,7 +1325,7 @@ Add to `REGISTERED_BENCHMARKS`:
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/benchmarks/remnic/ingestion-citation-accuracy/runner.ts packages/bench/src/registry.ts
 git commit -m "bench: add citation accuracy benchmark for ingestion tier
 
@@ -1496,7 +1496,7 @@ Add to `REGISTERED_BENCHMARKS`:
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.ts packages/bench/src/registry.ts
 git commit -m "bench: add schema completeness benchmark for ingestion tier
 
@@ -1664,7 +1664,7 @@ Add to `REGISTERED_BENCHMARKS`:
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/benchmarks/remnic/ingestion-setup-friction/runner.ts packages/bench/src/registry.ts
 git commit -m "bench: add setup friction benchmark for ingestion tier
 
@@ -1866,7 +1866,7 @@ export const projectFolderFixture: FixtureGenerator = {
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/fixtures/inbox/project-folder.ts packages/bench/src/fixtures/inbox/project-folder-gold.ts
 git commit -m "bench: add project folder fixture generator
 
@@ -2031,7 +2031,7 @@ export const calendarFixture: FixtureGenerator = {
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/fixtures/inbox/calendar.ts packages/bench/src/fixtures/inbox/calendar-gold.ts
 git commit -m "bench: add calendar fixture generator
 
@@ -2235,7 +2235,7 @@ export const chatFixture: FixtureGenerator = {
 - [ ] **Step 3: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/fixtures/inbox/chat.ts packages/bench/src/fixtures/inbox/chat-gold.ts
 git commit -m "bench: add chat transcript fixture generator
 
@@ -2262,7 +2262,7 @@ export { chatFixture } from "./fixtures/inbox/chat.js";
 - [ ] **Step 2: Verify build and commit**
 
 ```bash
-cd /Users/joshuawarren/src/remnic/packages/bench && npm run build
+cd ~/src/remnic/packages/bench && npm run build
 git add packages/bench/src/index.ts
 git commit -m "bench: export all inbox fixtures from package index"
 ```

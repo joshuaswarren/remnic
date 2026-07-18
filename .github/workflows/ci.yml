@@ -108,6 +108,33 @@ jobs:
       - name: Review pattern check
         run: bash scripts/check-review-patterns.sh
 
+      # Merge-skew scoping (issue #1995): on PRs, per-file ceiling failures
+      # only fire for files THIS PR changed — a PR must not fail because an
+      # unrelated merge grew a grandfathered file on main after this PR's
+      # baseline was committed. Pushes to main evaluate everything.
+      - name: Compute PR changed files for ratchet scoping
+        if: github.event_name == 'pull_request'
+        run: |
+          # Merge base (three-dot), not two-tree: a queued run's merge commit can
+          # predate BASE_REF advancing, and a two-tree diff would then pull
+          # base-branch-only changes into this PR's scope (round-9 finding).
+          # A depth-1 fetch of an ADVANCED base has no common ancestor with the
+          # depth-1 merge-commit checkout, and the three-dot diff dies with
+          # "no merge base" (round-10 finding) - unshallow both sides first.
+          # --unshallow fails on an already-complete repo; fall back to a plain
+          # fetch in that case.
+          git fetch --quiet --unshallow origin "$BASE_REF" 2>/dev/null \
+            || git fetch --quiet origin "$BASE_REF"
+          if ! git merge-base FETCH_HEAD HEAD >/dev/null 2>&1; then
+            echo "::error::no merge base between $BASE_REF and HEAD after full fetch - cannot scope the ratchet safely"
+            exit 1
+          fi
+          git -c core.quotePath=off diff --name-only -z FETCH_HEAD...HEAD > /tmp/ratchet-changed-files.txt
+          echo "changed files: $(tr -cd "\0" < /tmp/ratchet-changed-files.txt | wc -c)"
+          echo "REMNIC_RATCHET_CHANGED_FILES_PATH=/tmp/ratchet-changed-files.txt" >> "$GITHUB_ENV"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+
       - name: Structural ratchets
         run: node scripts/check-ratchets.mjs
 

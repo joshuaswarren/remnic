@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,13 +13,14 @@ const SCRIPT = path.join(
   "check-ratchets.mjs",
 );
 
-function runRatchets(args, fixture) {
+function runRatchets(args, fixture, extraEnv = {}) {
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf8",
     env: {
       ...process.env,
       REMNIC_RATCHET_ROOT: fixture.root,
       REMNIC_RATCHET_BASELINE: fixture.baseline,
+      ...extraEnv,
     },
   });
 }
@@ -61,7 +62,7 @@ test("--update writes a baseline the check then passes against", () => {
     assert.equal(baseline.version, 1);
     assert.equal(
       baseline.metrics.watchlistLoc["packages/remnic-core/src/orchestrator.ts"],
-      11,
+      10,
     );
     // widget.ts has 2 reads; widget.test.ts and config.ts are excluded.
     assert.equal(baseline.metrics.scatteredConfigFlagReads, 2);
@@ -80,7 +81,7 @@ test("watchlist file growth fails the check", () => {
 
     const check = runRatchets([], fixture);
     assert.equal(check.status, 1);
-    assert.match(check.stderr, /orchestrator\.ts grew from 11 to 13/);
+    assert.match(check.stderr, /orchestrator\.ts grew from 10 to 12/);
   });
 });
 
@@ -238,5 +239,550 @@ test("unknown arguments are rejected with usage", () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /unknown argument/);
     assert.match(result.stderr, /--update/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File-size ratchet (issue #1995, umbrella #1988)
+// ---------------------------------------------------------------------------
+
+test("file-size ratchet: --update grandfathers >1200-line files across all src roots", () => {
+  withFixture((fixture) => {
+    const otherSrc = path.join(fixture.root, "packages", "other-pkg", "src");
+    mkdirSync(otherSrc, { recursive: true });
+    writeFileSync(path.join(otherSrc, "legacy-big.ts"), "pad\n".repeat(1500));
+    const rootSrc = path.join(fixture.root, "src");
+    mkdirSync(rootSrc, { recursive: true });
+    writeFileSync(path.join(rootSrc, "root-big.ts"), "pad\n".repeat(1300));
+    // Test files and small files never enter the map.
+    writeFileSync(path.join(otherSrc, "legacy-big.test.ts"), "pad\n".repeat(1500));
+    writeFileSync(path.join(otherSrc, "small.ts"), "export {};\n");
+
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/other-pkg/src/legacy-big.ts"],
+      1500,
+    );
+    assert.equal(baseline.metrics.fileSizeGrandfather["src/root-big.ts"], 1300);
+    assert.equal(
+      "packages/other-pkg/src/legacy-big.test.ts" in baseline.metrics.fileSizeGrandfather,
+      false,
+    );
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 0, check.stderr);
+  });
+});
+
+test("file-size ratchet: a NEW file over the cap fails naming the cap and the sanctioned moves", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "fresh-big.ts"), "pad\n".repeat(1250));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /fresh-big\.ts is 1250 lines — new source files are capped at 1200 LOC/);
+    assert.match(check.stderr, /sibling module/);
+    assert.match(check.stderr, /Grandfathering new files is not available/);
+  });
+});
+
+test("file-size ratchet: grandfathered growth past the ceiling fails; shrink is an improvement", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    const grown = runRatchets([], fixture);
+    assert.equal(grown.status, 1);
+    assert.match(grown.stderr, /legacy-big\.ts grew from its grandfathered ceiling 1400 to 1410 lines/);
+
+    writeFileSync(bigPath, "pad\n".repeat(1350));
+    const shrunk = runRatchets([], fixture);
+    assert.equal(shrunk.status, 0, shrunk.stderr);
+    assert.match(shrunk.stdout, /file-size ceiling .*legacy-big\.ts: 1400 -> 1350 lines/);
+
+    // --update ratchets the ceiling down to the new measured size.
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"],
+      1350,
+    );
+  });
+});
+
+test("file-size ratchet: --update refuses to raise a grandfathered ceiling", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    appendFileSync(bigPath, "pad\n".repeat(50));
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1);
+    assert.match(update.stderr, /grew past their ceiling/);
+    assert.match(update.stderr, /--update never raises or adds a ceiling/);
+  });
+});
+
+test("file-size ratchet: a legacy baseline without the metric fails with a regenerate hint", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    delete baseline.metrics.fileSizeGrandfather;
+    writeFileSync(fixture.baseline, JSON.stringify(baseline, null, 2));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /predates the file-size ratchet/);
+    assert.match(check.stderr, /--update/);
+  });
+});
+
+test("file-size ratchet: hand-added entries at or under the cap are rejected at parse", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/small-headroom.ts"] = 900;
+    writeFileSync(fixture.baseline, JSON.stringify(baseline, null, 2));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /must be an integer above 1200/);
+  });
+});
+
+test("file-size ratchet: a pruned (now-small) grandfathered file surfaces as an improvement", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    writeFileSync(bigPath, "export {};\n");
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stdout, /now at\/under the 1200-line cap .* prune with --update/);
+  });
+});
+
+test("file-size ratchet: --update refuses to grandfather files that became oversized after the baseline", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "sneaky-new-big.ts"), "pad\n".repeat(1300));
+
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1);
+    assert.match(update.stderr, /became oversized since the previous baseline and cannot be grandfathered/);
+    assert.match(update.stderr, /sneaky-new-big\.ts \(1300\)/);
+
+    // Shrinking the file unblocks the refresh.
+    writeFileSync(path.join(fixture.src, "sneaky-new-big.ts"), "export {};\n");
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+  });
+});
+
+test("file-size ratchet: changed-file scoping suppresses failures for files the PR did not touch", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // Simulate merge-skew: the file grew on main, but THIS PR changed only
+    // an unrelated file.
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    const scopePath = path.join(fixture.root, "changed.txt");
+    writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+    const scoped = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(scoped.status, 0, scoped.stderr);
+
+    // Same growth, but the PR touched the file: fails.
+    writeFileSync(scopePath, "packages/remnic-core/src/legacy-big.ts\n");
+    const inScope = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(inScope.status, 1);
+    assert.match(inScope.stderr, /legacy-big\.ts grew from its grandfathered ceiling/);
+
+    // A configured-but-missing scope file is a loud wiring error.
+    const missing = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: path.join(fixture.root, "nope.txt"),
+      },
+    });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /missing file/);
+  });
+});
+
+test("file-size ratchet: symlinked src roots are rejected, not traversed (round 2)", () => {
+  withFixture((fixture) => {
+    // A package whose src is a symlink pointing outside the fixture root.
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-outside-"));
+    try {
+      writeFileSync(path.join(outside, "huge.ts"), "pad\n".repeat(2000));
+      symlinkSync(outside, path.join(evilPkg, "src"), "dir");
+
+      // Round 14: --update refuses to mint a baseline while the symlinked
+      // root exists; the violation is reported, never traversed.
+      const update = runRatchets(["--update"], fixture);
+      assert.equal(update.status, 1, "--update must fail on a symlinked src root");
+      assert.match(update.stderr, /evil-pkg\/src/);
+      assert.doesNotMatch(update.stderr, /huge\.ts/, "symlinked root must not be traversed");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("file-size ratchet: scoped --update prints out-of-scope ceiling raises loudly (round 2)", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // Simulate merge-skew growth, then refresh with a scope that does NOT
+    // include the grown file.
+    appendFileSync(bigPath, "pad\n".repeat(20));
+    const scopePath = path.join(fixture.root, "changed.txt");
+    writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+    const update = spawnSync(process.execPath, [SCRIPT, "--update"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(update.status, 0, update.stderr);
+    assert.match(update.stdout, /ceiling raised \(out-of-scope growth inherited from main\): packages\/remnic-core\/src\/legacy-big\.ts 1400 -> 1420/);
+    // And the raise is real: baseline now carries the new ceiling.
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"], 1420);
+  });
+});
+
+test("file-size ratchet: a symlinked packages discovery root is skipped entirely (round 3)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    // Replace the whole packages dir with a symlink to an outside tree
+    // containing an oversized file: the scan must not follow it.
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-outside-"));
+    try {
+      mkdirSync(path.join(outside, "sneaky", "src"), { recursive: true });
+      writeFileSync(path.join(outside, "sneaky", "src", "big.ts"), "pad\n".repeat(2000));
+      const packagesDir = path.join(fixture.root, "packages");
+      const realPackages = path.join(fixture.root, "packages-real");
+      renameSync(packagesDir, realPackages);
+      symlinkSync(outside, packagesDir, "dir");
+      try {
+        // Round 14: the symlink gate fires first — the symlinked packages
+        // root itself is the reported violation, and crucially there is NO
+        // grandfather adoption from behind the symlink.
+        const update = runRatchets(["--update"], fixture);
+        assert.equal(update.status, 1);
+        assert.match(update.stderr, /symlinked source entries present: packages/);
+        assert.doesNotMatch(update.stderr, /sneaky/);
+      } finally {
+        rmSync(packagesDir, { force: true });
+        renameSync(realPackages, packagesDir);
+      }
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("file-size ratchet: scope file accepts NUL-separated entries with unusual names (round 3)", () => {
+  withFixture((fixture) => {
+    const oddName = "läggy big file.ts";
+    const oddPath = path.join(fixture.src, oddName);
+    writeFileSync(oddPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(oddPath, "pad\n".repeat(5));
+
+    const scopePath = path.join(fixture.root, "changed.bin");
+    writeFileSync(scopePath, `packages/remnic-core/src/${oddName}\u0000other.ts\u0000`);
+    const inScope = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(inScope.status, 1);
+    assert.match(inScope.stderr, /grew from its grandfathered ceiling/);
+  });
+});
+
+test("file-size ratchet: scope entries with leading/trailing spaces are preserved byte-exact (round 4)", () => {
+  withFixture((fixture) => {
+    const spacedName = " spaced-big.ts";
+    writeFileSync(path.join(fixture.src, spacedName), "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(path.join(fixture.src, spacedName), "pad\n".repeat(5));
+
+    // Scope names the file with its real leading space: the failure fires.
+    const scopePath = path.join(fixture.root, "changed.bin");
+    writeFileSync(scopePath, `packages/remnic-core/src/${spacedName}\u0000`);
+    const run = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /grew from its grandfathered ceiling/);
+  });
+});
+
+test("file-size ratchet: NUL-present scope files never split on newlines; backslashes are content (round 5)", () => {
+  withFixture((fixture) => {
+    const wildName = "back\\slash big.ts";
+    writeFileSync(path.join(fixture.src, wildName), "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(path.join(fixture.src, wildName), "pad\n".repeat(5));
+
+    const scopePath = path.join(fixture.root, "changed.bin");
+    // NUL-separated entry whose name contains a literal backslash: must
+    // match without any backslash rewriting, and the trailing empty entry
+    // after the final NUL is dropped.
+    writeFileSync(scopePath, `packages/remnic-core/src/${wildName}\u0000`);
+    const run = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /grew from its grandfathered ceiling/);
+  });
+});
+
+test("file-size ratchet: symlinked source files inside scan roots fail the check (round 6)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-out-"));
+    try {
+      writeFileSync(path.join(outside, "real-huge.ts"), "pad\n".repeat(5000));
+      symlinkSync(path.join(outside, "real-huge.ts"), path.join(fixture.src, "giant.ts"), "file");
+
+      const check = runRatchets([], fixture);
+      assert.equal(check.status, 1);
+      assert.match(check.stderr, /giant\.ts is a symlink inside a file-size scan root/);
+
+      // Out-of-scope symlinks don't fail this PR's run (merge-skew parity).
+      const scopePath = path.join(fixture.root, "changed.txt");
+      writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+      const scoped = spawnSync(process.execPath, [SCRIPT], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          REMNIC_RATCHET_ROOT: fixture.root,
+          REMNIC_RATCHET_BASELINE: fixture.baseline,
+          REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+        },
+      });
+      assert.equal(scoped.status, 0, scoped.stderr);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("file-size ratchet: .tsx sources are counted; .test.tsx and .d.ts are not (round 7)", () => {
+  withFixture((fixture) => {
+    const uiSrc = path.join(fixture.root, "packages", "ui-pkg", "src");
+    mkdirSync(uiSrc, { recursive: true });
+    writeFileSync(path.join(uiSrc, "Big.tsx"), "pad\n".repeat(1300));
+    writeFileSync(path.join(uiSrc, "Big.test.tsx"), "pad\n".repeat(1300));
+    writeFileSync(path.join(uiSrc, "types.d.ts"), "pad\n".repeat(1300));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/ui-pkg/src/Big.tsx"], 1300);
+    assert.equal("packages/ui-pkg/src/Big.test.tsx" in baseline.metrics.fileSizeGrandfather, false);
+    assert.equal("packages/ui-pkg/src/types.d.ts" in baseline.metrics.fileSizeGrandfather, false);
+  });
+});
+
+test("file-size ratchet: trailing newline does not add a phantom line; final line without newline still counts (round 8)", () => {
+  withFixture((fixture) => {
+    const exact = Array.from({ length: 1200 }, (_, i) => `// line ${i}`).join("\n") + "\n";
+    writeFileSync(path.join(fixture.src, "exactly-max.ts"), exact);
+    const noEol = Array.from({ length: 1200 }, (_, i) => `// line ${i}`).join("\n");
+    writeFileSync(path.join(fixture.src, "no-eol-max.ts"), noEol);
+    assert.equal(runRatchets(["--update"], fixture).status, 0,
+      "1,200 physical lines must not fail the 1,200-line cap regardless of trailing newline");
+  });
+});
+
+test("file-size ratchet: .mts and .cts sources are counted; their test/declaration forms are not (round 8)", () => {
+  withFixture((fixture) => {
+    const big = Array.from({ length: 1300 }, (_, i) => `// line ${i}`).join("\n");
+    writeFileSync(path.join(fixture.src, "legacy-big.mts"), big);
+    writeFileSync(path.join(fixture.src, "legacy-big.cts"), big);
+    writeFileSync(path.join(fixture.src, "legacy-big.test.mts"), big);
+    writeFileSync(path.join(fixture.src, "types.d.mts"), big);
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.mts"], 1300);
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.cts"], 1300);
+    assert.equal("packages/remnic-core/src/legacy-big.test.mts" in baseline.metrics.fileSizeGrandfather, false);
+    assert.equal("packages/remnic-core/src/types.d.mts" in baseline.metrics.fileSizeGrandfather, false);
+
+    // Growth past the grandfathered ceiling fails, naming the .mts file.
+    writeFileSync(path.join(fixture.src, "legacy-big.mts"), big + "\n// grew\n// more\n");
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1, ".mts growth past its ceiling must fail");
+    assert.match(check.stderr, /legacy-big\.mts/);
+  });
+});
+
+test("file-size ratchet: symlinked scan roots fail loudly instead of evading the scan (round 9)", () => {
+  withFixture((fixture) => {
+    // Baseline first, from a clean tree.
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // A symlinked package src root: packages/evil-pkg/src -> elsewhere.
+    const outside = path.join(fixture.root, "outside-tree");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, "huge.ts"), "pad\n".repeat(2000));
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    symlinkSync(outside, path.join(evilPkg, "src"), "dir");
+    const srcLinked = runRatchets([], fixture);
+    assert.equal(srcLinked.status, 1, "symlinked pkg src root must fail the check");
+    assert.match(srcLinked.stderr, /packages\/evil-pkg\/src/);
+    rmSync(evilPkg, { recursive: true, force: true });
+
+    // A symlinked package ENTRY: packages/evil-link -> elsewhere.
+    symlinkSync(outside, path.join(fixture.root, "packages", "evil-link"), "dir");
+    const entryLinked = runRatchets([], fixture);
+    assert.equal(entryLinked.status, 1, "symlinked package entry must fail the check");
+    assert.match(entryLinked.stderr, /packages\/evil-link/);
+    rmSync(path.join(fixture.root, "packages", "evil-link"), { force: true });
+
+    // Clean tree passes again.
+    assert.equal(runRatchets([], fixture).status, 0);
+  });
+});
+
+test("file-size ratchet: dist directories under a src root are measured (round 11)", () => {
+  withFixture((fixture) => {
+    const distDir = path.join(fixture.src, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(path.join(distDir, "large.ts"), "pad\n".repeat(1300));
+    const r = runRatchets(["--update"], fixture);
+    assert.equal(r.status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/dist/large.ts"],
+      1300,
+      "src/dist sources must be measured, not skipped",
+    );
+    // node_modules under src IS measured (round 13): an explicit relative
+    // import compiles such a file despite tsconfig's default exclude.
+    const nmDir = path.join(fixture.src, "node_modules", "dep");
+    mkdirSync(nmDir, { recursive: true });
+    writeFileSync(path.join(nmDir, "big.ts"), "pad\n".repeat(1300));
+    const nmCheck = runRatchets([], fixture);
+    assert.equal(nmCheck.status, 1, "oversized src/node_modules source must fail the cap");
+    assert.match(nmCheck.stderr, /node_modules\/dep\/big\.ts/);
+  });
+});
+
+test("file-size ratchet: dangling symlinked scan roots are rejected, not skipped (round 12)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    // Dangling: target does not exist, existsSync() follows and says false.
+    symlinkSync(path.join(fixture.root, "no-such-target"), path.join(evilPkg, "src"), "dir");
+    const r = runRatchets([], fixture);
+    assert.equal(r.status, 1, "dangling symlinked src root must fail the check");
+    assert.match(r.stderr, /packages\/evil-pkg\/src/);
+  });
+});
+
+test("file-size ratchet: --update refuses to write a baseline while symlink violations exist (round 14)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const outside = path.join(fixture.root, "outside-tree");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, "big.ts"), "pad\n".repeat(2000));
+    symlinkSync(path.join(outside, "big.ts"), path.join(fixture.src, "sneaky.ts"), "file");
+    const before = readFileSync(fixture.baseline, "utf8");
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1, "--update must fail while a symlinked source exists");
+    assert.match(update.stderr, /sneaky\.ts/);
+    assert.equal(readFileSync(fixture.baseline, "utf8"), before, "baseline must be untouched");
+  });
+});
+
+test("file-size ratchet: CR-only line terminators are counted (round 15)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "cr-only.ts"), Array.from({ length: 1300 }, (_, i) => `// line ${i}`).join("\r"));
+    const r = runRatchets([], fixture);
+    assert.equal(r.status, 1, "a 1,300-line CR-only file must fail the cap");
+    assert.match(r.stderr, /cr-only\.ts is 1300 lines/);
+  });
+});
+
+test("file-size ratchet: --update never creates a NEW ceiling, even out of scope; empty scope behaves unscoped (round 15)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    // New oversized file, scope file lists an unrelated path -> out of scope.
+    writeFileSync(path.join(fixture.src, "fresh-giant.ts"), "pad\n".repeat(1400));
+    const scopePath = path.join(fixture.root, "scope.txt");
+    writeFileSync(scopePath, "docs/README.md\n");
+    const scoped = runRatchets(["--update"], fixture, { REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath });
+    assert.equal(scoped.status, 1, "scoped --update must not adopt a new oversized file");
+    assert.match(scoped.stderr, /fresh-giant\.ts/);
+
+    // Empty scope: growth guards behave as if unscoped (raise rejected).
+    // legacy-big must predate the baseline (bootstrap adopts it), since a
+    // post-baseline oversized file is refused regardless of scope above.
+    rmSync(path.join(fixture.src, "fresh-giant.ts"));
+    rmSync(fixture.baseline);
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    writeFileSync(scopePath, "");
+    const empty = runRatchets(["--update"], fixture, { REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath });
+    assert.equal(empty.status, 1, "empty scope must not unlock ceiling raises");
+    assert.match(empty.stderr, /legacy-big\.ts \(1400 -> 1410\)/);
   });
 });

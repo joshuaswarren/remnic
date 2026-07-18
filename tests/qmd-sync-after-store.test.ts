@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+
+// Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
+// callers now write via `writeSealedMemory`. Test doubles keep stubbing
+// `writeMemory`; this decorator adds a sealed entry that delegates through
+// the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
+// cannot drift from the real envelope→options translation.
+function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
+  const decorated = stub as T & {
+    writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
+  };
+  decorated.writeSealedMemory = (envelope, extras = {}) => {
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return (stub.writeMemory as (c: unknown, b: unknown, o: unknown) => unknown)(category, content, options);
+  };
+  return decorated;
+}
+
 
 /**
  * Regression test for: memory_store not triggering QMD sync after write.
@@ -94,7 +112,7 @@ test("memory_store queues orchestrator-maintained QMD sync after write", async (
       feedbackEnabled: false,
       namespacesEnabled: false,
     },
-    getStorage: async () => ({
+    getStorage: async () => withSealedWrite({
       readAllMemories: async () => [],
       writeMemory: async (category: string, content: string) => {
         writeCalls.push({ category, content });

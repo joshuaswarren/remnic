@@ -113,8 +113,11 @@ export {
 } from "./storage.js";
 export {
   composeMemoryEnvelope,
+  buildAccessWriteRequestFingerprint,
+  buildObserveRequestFingerprint,
   buildWriteIdempotencyPayload,
   isSealedMemoryEnvelope,
+  sealedWriteToLegacyArgs,
   TAG_LIMITS,
   STRUCTURED_ATTRIBUTE_LIMITS,
   WRITE_FINGERPRINT_FIELDS,
@@ -124,6 +127,9 @@ export {
   type MemoryWriteInput,
   type WriteContext,
   type FingerprintScope,
+  type AccessWriteFingerprintParts,
+  type ObserveFingerprintParts,
+  type ComposeEnvelopeOptions,
 } from "./write-envelope.js";
 export {
   getHostEmbeddingProvider,
