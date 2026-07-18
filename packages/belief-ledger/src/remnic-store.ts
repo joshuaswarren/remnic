@@ -1,4 +1,4 @@
-import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
+import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import type { MemoryFile, StorageManager } from "@remnic/core";
 import { sanitizeMemoryContent } from "@remnic/core/sanitize";
 import { ContentHashIndex, normalizeAttributePairs } from "@remnic/core/storage";
@@ -56,10 +56,12 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    // Sealed-envelope write (issue #1989 PR4): the claim body and
-    // attributes are system-serialized — strict compose; an invalid claim
-    // is a ledger bug that must surface.
-    const claimEnvelope = composeMemoryEnvelope(
+    // Sealed-envelope write (issue #1989 PR4): claims are system-serialized
+    // but structured attributes (ledger.sourceText, evidence excerpts) may
+    // exceed the envelope's value-length limit — SALVAGE keeps oversized
+    // fields from aborting a valid claim; drops warn-logged.
+    const claimEnvelope = composeSalvagedEnvelope(
+      "belief-ledger",
       {
         content: serializeClaimBody(pending),
         category: "fact",

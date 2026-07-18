@@ -1,5 +1,6 @@
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
+import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite.js";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
 
 /**
@@ -97,7 +98,9 @@ export async function executeMemoryPromote(
       }
     }
   } catch (err) {
-    return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId} (index refresh failed — recall picks it up on the next maintenance pass: ${err instanceof Error ? err.message : String(err)})`;
+    // displayErrorDetail strips absolute paths and stack noise before the
+    // detail reaches a user-facing tool result (MCP/tool clients).
+    return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId} (index refresh failed — recall picks it up on the next maintenance pass: ${displayErrorDetail(err)})`;
   }
 
   return `Promoted ${srcNs}:${memoryId} → ${dstNs}:${newId}`;
