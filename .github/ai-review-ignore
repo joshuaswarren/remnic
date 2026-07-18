@@ -14,9 +14,10 @@
 #
 # Syntax: strict gitignore subset — see scripts/effective-diff.mjs.
 
-# Benchmark corpora and result artifacts (PR #1863: 52k artifact lines
-# pushed through bot review with zero actionable findings on them).
-packages/bench/baselines/
+# Benchmark run-output artifact trees (PR #1863: 52k artifact lines pushed
+# through bot review with zero actionable findings on them). NOTE: the
+# package's baselines/ and profiles/ directories are PUBLISHED, partly
+# hand-authored inputs and deliberately NOT listed here.
 packages/bench/src/benchmarks/published/**/artifacts/
 
 # Lockfiles — machine-written, reviewed by dependency tooling instead.

@@ -79,7 +79,7 @@ test("the committed manifest parses and classifies known repo paths correctly", 
   const patterns = parseIgnoreManifest(manifest);
   assert.ok(patterns.length > 0);
   // Ignored: bench baselines, lockfiles anywhere, machine-written baselines.
-  assert.equal(isIgnoredPath("packages/bench/baselines/tier-f/run1.json", patterns), true);
+  assert.equal(isIgnoredPath("packages/bench/src/benchmarks/published/beam/artifacts/run1.json", patterns), true);
   assert.equal(isIgnoredPath("pnpm-lock.yaml", patterns), true);
   assert.equal(isIgnoredPath("packages/hermes-provider/package-lock.json", patterns), true);
   assert.equal(isIgnoredPath("scripts/ratchet-baseline.json", patterns), true);
@@ -113,9 +113,10 @@ test("renames from source paths into artifact paths stay effective (round 2)", (
   );
 });
 
-test("hand-authored bench profiles are no longer ignored (round 2)", () => {
+test("published bench inputs (profiles, baselines) are no longer ignored (rounds 2-3)", () => {
   const manifest = readFileSync(path.join(REPO_ROOT, ".github", "ai-review-ignore"), "utf8");
   const patterns = parseIgnoreManifest(manifest);
   assert.equal(isIgnoredPath("packages/bench/profiles/README.md", patterns), false);
-  assert.equal(isIgnoredPath("packages/bench/baselines/run.json", patterns), true);
+  assert.equal(isIgnoredPath("packages/bench/baselines/coding-graph-baseline.json", patterns), false);
+  assert.equal(isIgnoredPath("packages/bench/src/benchmarks/published/beam/artifacts/out.json", patterns), true);
 });
