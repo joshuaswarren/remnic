@@ -19,8 +19,8 @@
  * tests continue to work.
  */
 
-import { composeMemoryEnvelope, isMemoryCategory, TAG_LIMITS } from "../write-envelope.js";
-import { normalizeTags } from "../recall-tag-filter.js";
+import { isMemoryCategory } from "../write-envelope.js";
+import { composeSalvagedExtractionEnvelope, withReservedMarkerTag } from "./extraction-envelope.js";
 import path from "node:path";
 import {
   StorageManager,
@@ -271,22 +271,6 @@ export class ExtractionPersistCoordinator {
       return attachCitation(content, citationContext, citationTemplate);
     };
     const persistedIds: string[] = [];
-    // #2014/#2017 review round: system marker tags ("shared-promotion",
-    // "<target>-promotion", "chunked") must survive the 50-tag cap — the CLI
-    // and stats identify chunked parents/promotions through them. Normalize
-    // the source tags first (same trim/dedupe salvage would apply), reserve
-    // one slot for the marker, and warn when source tags are dropped.
-    const withReservedMarkerTag = (sourceTags: string[], marker: string): string[] => {
-      const normalized = normalizeTags(sourceTags) ?? [];
-      const budget = TAG_LIMITS.maxTags - 1;
-      if (normalized.length > budget) {
-        log.warn(
-          `extraction tags exceed ${budget}+marker cap; keeping the first ${budget} of ${normalized.length} and the ${JSON.stringify(marker)} marker`,
-        );
-      }
-      const capped = normalized.length > budget ? normalized.slice(0, budget) : normalized;
-      return [...capped, marker];
-    };
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
@@ -503,7 +487,7 @@ export class ExtractionPersistCoordinator {
           // drop or clamp attributes, and the dedup hash, contentHashSource,
           // and supersession keys below must all describe the SURVIVING
           // fields that writeSealedMemory actually persists.
-          const targetPromotionEnvelope = composeMemoryEnvelope(
+          const targetPromotionEnvelope = composeSalvagedExtractionEnvelope(
             {
               content: citedContent,
               category: options.category as MemoryCategory,
@@ -515,14 +499,7 @@ export class ExtractionPersistCoordinator {
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
             },
             { source: `${options.source}-${target.target}-promotion` },
-            // Machine-generated input: salvage invalid optional fields instead
-            // of aborting the whole extraction batch (#2014; rule 34 — drops
-            // are recorded on salvageNotes and logged here).
-            { salvage: true },
           );
-          if (targetPromotionEnvelope.salvageNotes.length > 0) {
-            log.warn(`extraction write salvaged invalid fields: ${targetPromotionEnvelope.salvageNotes.join("; ")}`);
-          }
           const targetSurvivingAttrs = targetPromotionEnvelope.rawStructuredAttributes;
           const dedupContent =
             options.category === "fact" &&
@@ -732,7 +709,7 @@ export class ExtractionPersistCoordinator {
         // or clamp attributes, and the dedup hash, contentHashSource, and
         // supersession keys below must all describe the SURVIVING fields that
         // writeSealedMemory actually persists — never the raw extractor map.
-        const sharedPromotionEnvelope = composeMemoryEnvelope(
+        const sharedPromotionEnvelope = composeSalvagedExtractionEnvelope(
           {
             content: citedContent,
             category: options.category as MemoryCategory,
@@ -744,14 +721,7 @@ export class ExtractionPersistCoordinator {
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
           },
           { source: `${options.source}-shared-promotion` },
-          // Machine-generated input: salvage invalid optional fields instead of
-          // aborting the whole extraction batch (#2014; rule 34 — drops are
-          // recorded on salvageNotes and logged here).
-          { salvage: true },
         );
-        if (sharedPromotionEnvelope.salvageNotes.length > 0) {
-          log.warn(`extraction write salvaged invalid fields: ${sharedPromotionEnvelope.salvageNotes.join("; ")}`);
-        }
         const sharedSurvivingAttrs = sharedPromotionEnvelope.rawStructuredAttributes;
         const dedupContent =
           options.category === "fact" &&
@@ -2217,7 +2187,7 @@ export class ExtractionPersistCoordinator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          const parentWriteEnvelope = composeMemoryEnvelope(
+          const parentWriteEnvelope = composeSalvagedExtractionEnvelope(
             {
               content: citedChunkedContent,
               category: writeCategory,
@@ -2229,15 +2199,7 @@ export class ExtractionPersistCoordinator {
               ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
             },
             { source: extractionWriteSource },
-          
-            // Machine-generated input: salvage invalid optional fields instead of
-            // aborting the whole extraction batch (#2014 review round; rule 34 —
-            // drops are recorded on salvageNotes and logged below).
-            { salvage: true },
 );
-          if (parentWriteEnvelope.salvageNotes.length > 0) {
-            log.warn(`extraction write salvaged invalid fields: ${parentWriteEnvelope.salvageNotes.join("; ")}`);
-          }
           const parentWrite = await targetStorage.writeSealedMemory(parentWriteEnvelope, {
             importance,
             supersedes,
@@ -2580,7 +2542,7 @@ export class ExtractionPersistCoordinator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      const factWriteEnvelope = composeMemoryEnvelope(
+      const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
           content: citedFactContent,
           category: writeCategory,
@@ -2595,15 +2557,7 @@ export class ExtractionPersistCoordinator {
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
         },
         { source: extractionWriteSource },
-      
-        // Machine-generated input: salvage invalid optional fields instead of
-        // aborting the whole extraction batch (#2014 review round; rule 34 —
-        // drops are recorded on salvageNotes and logged below).
-        { salvage: true },
 );
-      if (factWriteEnvelope.salvageNotes.length > 0) {
-        log.warn(`extraction write salvaged invalid fields: ${factWriteEnvelope.salvageNotes.join("; ")}`);
-      }
       const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
         importance,
         supersedes,

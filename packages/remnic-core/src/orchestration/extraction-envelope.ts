@@ -1,0 +1,53 @@
+import {
+  composeMemoryEnvelope,
+  TAG_LIMITS,
+  type MemoryWriteInput,
+  type SealedMemoryEnvelope,
+  type WriteContext,
+} from "../write-envelope.js";
+import { normalizeTags } from "../recall-tag-filter.js";
+import { log } from "../logger.js";
+
+/**
+ * Envelope helpers for the extraction persistence pipeline (issue #1989 PR2).
+ *
+ * Extraction input is MACHINE-GENERATED: one malformed LLM field must never
+ * abort a whole persistence batch that legacy `writeMemory` would have
+ * accepted. Every extraction-side compose therefore runs in salvage mode,
+ * and every drop is warn-logged (rule 34 — visible, never silent).
+ */
+
+/**
+ * Compose an extraction-side envelope in salvage mode and warn-log any
+ * salvage notes. The single compose wrapper for all extraction-persist
+ * write sites, so note logging cannot be forgotten at a new site.
+ */
+export function composeSalvagedExtractionEnvelope(
+  input: MemoryWriteInput,
+  ctx: WriteContext,
+): SealedMemoryEnvelope {
+  const envelope = composeMemoryEnvelope(input, ctx, { salvage: true });
+  if (envelope.salvageNotes.length > 0) {
+    log.warn(`extraction write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
+  }
+  return envelope;
+}
+
+/**
+ * System marker tags ("shared-promotion", "<target>-promotion", "chunked")
+ * must survive the tag cap — the CLI and stats identify chunked parents and
+ * promotions through them (#2014/#2017 review round). Normalize the source
+ * tags first (same trim/dedupe salvage would apply), reserve one slot for
+ * the marker, and warn when source tags are dropped to make room.
+ */
+export function withReservedMarkerTag(sourceTags: string[], marker: string): string[] {
+  const normalized = normalizeTags(sourceTags) ?? [];
+  const budget = TAG_LIMITS.maxTags - 1;
+  if (normalized.length > budget) {
+    log.warn(
+      `extraction tags exceed ${budget}+marker cap; keeping the first ${budget} of ${normalized.length} and the ${JSON.stringify(marker)} marker`,
+    );
+  }
+  const capped = normalized.length > budget ? normalized.slice(0, budget) : normalized;
+  return [...capped, marker];
+}
