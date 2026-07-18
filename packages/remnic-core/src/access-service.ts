@@ -3294,9 +3294,20 @@ export class EngramAccessService {
       );
     }
 
+    // The flight key represents the recall WORK — the query + options that shape
+    // the result — NOT the persistence key. `idempotencyKey` only selects an
+    // idempotency-store slot; it never changes the computed result. Excluding it
+    // lets identical recalls that arrive with DISTINCT per-request idempotency
+    // keys (a common transport-retry pattern) coalesce onto ONE pipeline + slot
+    // instead of each key spawning its own (round 11). Contract: the leader
+    // persists under ITS key via handleIdempotentRead; a coalesced follower that
+    // carried a DIFFERENT key shares the leader's result but gets NO idempotent-
+    // replay entry of its own. A same-key retry still replays from the store
+    // (its requestFingerprint — below — is unchanged and still carries the key).
+    const { idempotencyKey: _flightKeyOmitIdemKey, ...flightFingerprint } = requestFingerprint;
     const flightKey = `${principalKey}\u0000${hashAccessIdempotencyPayload({
       operation: "recall",
-      request: requestFingerprint,
+      request: flightFingerprint,
     })}`;
     // Follower fast-path (#1906 review #2): join an in-flight identical recall
     // WITHOUT acquiring a concurrency slot. Because the leader registers its

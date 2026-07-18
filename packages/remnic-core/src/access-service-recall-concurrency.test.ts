@@ -1339,3 +1339,42 @@ test("a response's budgetWarning never carries the internal reservation token / 
     "no reservation field in the serialized warning",
   );
 });
+
+test("identical recalls with DISTINCT idempotency keys coalesce onto one pipeline (round 11)", async () => {
+  const gate = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await gate.promise;
+      return stubResponse([]);
+    },
+  });
+  // The leader (miss path) runs execute() so it registers its flight
+  // synchronously; the follower's fast-path then finds it. The follower joins
+  // via followRecallFlight and never touches handleIdempotentRead.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => options.execute();
+
+  // Same recall WORK (query + options), DISTINCT per-request idempotency keys —
+  // a common transport-retry pattern. They must share ONE pipeline + slot.
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  const follower = h.service.recall({ query: "same", idempotencyKey: "key-B" });
+  gate.resolve();
+  const [leaderResp, followerResp] = await Promise.all([leader, follower]);
+
+  assert.ok(leaderResp);
+  assert.ok(followerResp);
+  assert.equal(
+    pipelineRuns,
+    1,
+    "distinct-key identical recalls coalesced onto ONE pipeline (idempotencyKey is not in the flight key)",
+  );
+});
