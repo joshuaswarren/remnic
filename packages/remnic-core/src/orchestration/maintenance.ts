@@ -27,7 +27,7 @@ import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
 import type { SearchBackend } from "../search/port.js";
-import type { StorageManager } from "../storage.js";
+import type { StorageManager } from "../index.js";
 import {
   NamespaceSearchRouter,
   type NamespaceUpdateResult,

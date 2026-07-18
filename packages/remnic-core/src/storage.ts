@@ -19,11 +19,11 @@ import path from "node:path";
 import { log } from "./logger.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
+import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
-  readMaybeEncryptedLines,
-  readMemoryActionEventRowsFromLines,
-  readMemoryLifecycleEventsFromLines,
-} from "./storage/secure-line-reader.js";
+  readAllLifecycleEventsFromLedger,
+  readBoundedLifecycleEventsFromLedger,
+} from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
@@ -153,10 +153,8 @@ import {
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
 import {
-  compareMemoryLifecycleEvents,
   inferMemoryStatus,
   isArchivedMemoryPath,
-  sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
@@ -5542,14 +5540,8 @@ export class StorageManager {
     return events.length;
   }
 
-  /**
-   * Rewrite the lifecycle ledger through the secure writer (issue #1910). Used
-   * by auto-compaction so a secure-store deployment's ledger is re-encrypted
-   * with the active key instead of being rewritten as plaintext. When the store
-   * is unlocked `writeStorageSecureFile` encrypts atomically; when it is
-   * required-but-locked it throws `SecureStoreLockedError` so compaction fails
-   * loudly (and stays eligible to retry) rather than leaking plaintext.
-   */
+  /** Rewrite the ledger through the secure writer (#1910): re-encrypts with the
+   *  active key when unlocked; throws SecureStoreLockedError when locked. */
   async writeMemoryLifecycleLedgerContent(content: string): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(this.memoryLifecycleLedgerPath, content);
@@ -5720,59 +5712,12 @@ export class StorageManager {
   }
 
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
-    try {
-      const out: MemoryLifecycleEvent[] = [];
-      for await (const line of readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
-        this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
-      )) {
-        const row = line.trim();
-        if (!row) continue;
-        try {
-          const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
-          if (
-            typeof parsed.eventId === "string" &&
-            typeof parsed.memoryId === "string" &&
-            typeof parsed.eventType === "string" &&
-            typeof parsed.timestamp === "string" &&
-            typeof parsed.actor === "string" &&
-            typeof parsed.ruleVersion === "string"
-          ) {
-            out.push(parsed as MemoryLifecycleEvent);
-          }
-        } catch {
-          // Ignore malformed rows (fail-open).
-        }
-      }
-      return sortMemoryLifecycleEvents(out);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return [];
-    }
+    return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {
-    const cappedLimit = Math.max(0, Math.floor(limit));
-    if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
-    try {
-      // Bounded ring: retain at most `limit` most-recently-appended rows, then
-      // sort only that tail. For the sole production caller (governance, which
-      // passes Number.MAX_SAFE_INTEGER) the ring keeps every row, so the result
-      // is byte-for-byte identical to readAllMemoryLifecycleEvents(). For small
-      // limits the result is the most recent activity (append tail), then
-      // canonically sorted.
-      const tail = await readMemoryLifecycleEventsFromLines(
-        readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
-          this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
-        ),
-        cappedLimit,
-      );
-      return sortMemoryLifecycleEvents(tail);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return [];
-    }
+    return readBoundedLifecycleEventsFromLedger(
+      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), limit);
   }
 
   async writeCompressionGuidelines(content: string): Promise<void> {
@@ -6679,34 +6624,8 @@ export class StorageManager {
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
     warnProjectionFallback(this.baseDir, "getMemoryTimeline");
-    // Stream the ledger with a per-memory ring so the fallback never allocates
-    // the whole file. For a single memoryId the memoryId-first canonical sort
-    // collapses to timestamp order, so the retained last-`limit` rows sorted
-    // are the same rows in the same order as the previous filter→slice(-limit).
-    return await this.readMemoryLifecycleEventsForMemory(memoryId, cappedLimit);
-  }
-
-  private async readMemoryLifecycleEventsForMemory(
-    memoryId: string,
-    limit: number,
-  ): Promise<MemoryLifecycleEvent[]> {
-    const cappedLimit = Math.max(0, Math.floor(limit));
-    if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
-    try {
-      const tail = await readMemoryLifecycleEventsFromLines(
-        readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
-          this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
-        ),
-        cappedLimit,
-        memoryId,
-        compareMemoryLifecycleEvents,
-      );
-      return sortMemoryLifecycleEvents(tail);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return [];
-    }
+    return readBoundedLifecycleEventsFromLedger(
+      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), cappedLimit, memoryId);
   }
 
   // ---------------------------------------------------------------------------

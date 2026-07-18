@@ -26,6 +26,7 @@ import {
   type SafeArchiveRoot,
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS } from "./offline-sync-exclude-globs.js";
 
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
 export const OFFLINE_SYNC_CHANGESET_FORMAT = "remnic.offline-sync.changeset.v1";
@@ -197,24 +198,6 @@ const EXCLUDED_FILE_NAMES = new Set([
 const EXCLUDED_FILE_PREFIXES = [
   ".remnic-sync.",
   ".remnic-sync-state.",
-];
-// Issue #1786: node-local runtime state that each node rebuilds from synced
-// records. Pushing these wastes bandwidth, corrupts the remote's live state
-// dir, and trips the large-file push retry loop on a live SQLite database.
-const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
-  // Leading `**/` matches zero or more segments, so each pattern covers both
-  // the root `state/` dir AND per-namespace `namespaces/<ns>/state/` dirs
-  // (Cursor review on PR #1793: multi-namespace deployments previously kept
-  // pushing their namespaced live sqlite files).
-  "**/state/*.sqlite",
-  "**/state/*.sqlite-*",
-  "**/state/index_tags.json",
-  "**/state/entity-mention-index.json",
-  "**/state/memory-governance/runs/**",
-  // Rotated recall-impression archives (issue #1910). The active
-  // recall_impressions.jsonl stays remote-authoritative; only the .1..N
-  // archives are node-local and never pushed/hashed.
-  "**/state/recall_impressions.jsonl.*",
 ];
 
 /**

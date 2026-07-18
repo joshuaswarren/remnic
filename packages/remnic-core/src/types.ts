@@ -1,3 +1,5 @@
+import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
+
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
 export type SignalLevel = "none" | "low" | "medium" | "high";
@@ -668,7 +670,7 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
-export interface PluginConfig {
+export interface PluginConfig extends BoundedJsonlStateConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -2103,35 +2105,10 @@ export interface PluginConfig {
   /** Confidence threshold for the "below visibility" telemetry counter. Default 0.2. */
   graphEdgeDecayVisibilityThreshold: number;
 
-  // Issue #1910 — bounded JSONL state files.
   /**
-   * Auto-compact `state/memory-lifecycle-ledger.jsonl` when it exceeds this many
-   * bytes, triggered off the debounced maintenance path. `0` disables. Default
-   * 64MB.
-   */
-  memoryLifecycleLedgerCompactBytes: number;
-  /**
-   * Minimum interval between auto-compactions of the lifecycle ledger, so a
-   * heavy rebuild cannot run back-to-back. Floored at 60s. Default 6h.
-   */
-  memoryLifecycleLedgerCompactMinIntervalMs: number;
-  /**
-   * Rotate `state/recall_impressions.jsonl` to `.1..N` when it exceeds this many
-   * bytes. `0` disables. Default 32MB.
-   */
-  recallImpressionsRotateBytes: number;
-  /**
-   * Number of rotated recall-impression archives to keep (`.1 .. .N`). Floored
-   * at 1 when rotation is enabled. Default 5.
-   */
-  recallImpressionsRotateKeep: number;
-
-  /**
-   * Issue #681 PR 3/3 — minimum edge confidence required for an edge to be
-   * traversed during spreading activation. Edges with `confidence` below this
-   * floor are pruned and contribute neither activation nor downstream
-   * neighbors. Legacy edges without `confidence` are treated as 1.0 so they
-   * always pass the floor. Range `[0, 1]`; default `0.2`.
+   * Issue #681 PR 3/3 — minimum edge confidence to traverse during spreading
+   * activation. Edges below are pruned (no activation, no downstream neighbors);
+   * legacy edges without `confidence` are treated as 1.0. Range `[0, 1]`; default `0.2`.
    */
   graphTraversalConfidenceFloor: number;
   /**

@@ -44,6 +44,7 @@ import {
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
+import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
@@ -3581,41 +3582,9 @@ export function parseConfig(
       Number.isFinite(cfg.graphEdgeDecayVisibilityThreshold)
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
-    // Issue #1910 — bounded JSONL state files. Numeric knobs accept CLI/overlay
-    // string forms (Gotcha #28) via coerceNumber, then require an integer >= min.
-    // A present-but-malformed or fractional value is REJECTED (throws) rather
-    // than silently taking the default; only an absent value falls back. `0`
-    // survives when `min` is 0, so the documented disable stays effective on
-    // every surface (byte thresholds floor at 0, the min-interval at 60s, and
-    // the keep count at 1 so rotation always retains at least one archive).
-    memoryLifecycleLedgerCompactBytes: parseIntegerAtLeast(
-      cfg.memoryLifecycleLedgerCompactBytes,
-      64 * 1024 * 1024,
-      0,
-      "memoryLifecycleLedgerCompactBytes",
-    ),
-    memoryLifecycleLedgerCompactMinIntervalMs: parseIntegerAtLeast(
-      cfg.memoryLifecycleLedgerCompactMinIntervalMs,
-      6 * 60 * 60 * 1000,
-      60_000,
-      "memoryLifecycleLedgerCompactMinIntervalMs",
-    ),
-    recallImpressionsRotateBytes: parseIntegerAtLeast(
-      cfg.recallImpressionsRotateBytes,
-      32 * 1024 * 1024,
-      0,
-      "recallImpressionsRotateBytes",
-    ),
-    recallImpressionsRotateKeep: parseIntegerAtLeast(
-      cfg.recallImpressionsRotateKeep,
-      5,
-      1,
-      "recallImpressionsRotateKeep",
-    ),
-    // Issue #681 PR 3/3 — confidence-aware traversal & PageRank refinement.
-    // Floor clamps to [0, 1] so misconfigured input cannot accept negative
-    // confidences or reject every edge. Iterations floors at 0 so a
-    // documented 0 disables PageRank refinement and BFS scores pass through.
+    ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
+    // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
+    // documented 0 iterations disables PageRank refinement (BFS scores pass through).
     graphTraversalConfidenceFloor:
       typeof cfg.graphTraversalConfidenceFloor === "number" &&
       Number.isFinite(cfg.graphTraversalConfidenceFloor)
