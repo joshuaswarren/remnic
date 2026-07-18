@@ -2926,6 +2926,27 @@ export class EngramAccessService {
             throwIfAborted(request.abortSignal);
             const consumed = await this.consumeFlight(existing, request, true, race);
             capturedReservation = consumed.reservation;
+            // A KEYED follower that coalesced onto the leader's flight must
+            // inherit the leader's persistence outcome before reporting success.
+            // The shared pipeline settling is NOT the leader's idempotency.put:
+            // the leader detaches (consumeFlight) BEFORE its put, so without this
+            // await a keyed follower could return success (and run its OWN
+            // idempotency.put), keeping its cross-namespace reservation, while the
+            // leader's put later FAILS — a phantom success that a same-key retry
+            // would then diverge from. Await the joined flight's `persisted` gate
+            // so a keyed join resolves only after the leader's put succeeds and
+            // REJECTS (releasing this caller's reservation via the outer catch,
+            // and skipping its own put) with the leader's exact error when the
+            // put fails — identical to the leader's put-failure behavior (round
+            // 13 #1). This await is non-racing, mirroring the keyed leader's own
+            // commit: a keyed caller persists regardless of its own disconnect,
+            // and the final post-consume abort check still returns AbortError to
+            // a follower that left. Unkeyed joins (race=true) keep existing
+            // behavior: they consumed the shared result and never depend on
+            // another caller's persistence, so they never block on `persisted`.
+            if (keyed && existing.persisted) {
+              await existing.persisted.promise;
+            }
             return consumed.response;
           }
           // No LIVE flight to join. If the caller already disconnected before we
@@ -2953,13 +2974,15 @@ export class EngramAccessService {
       // a pipeline failure already rolled back inside executeRecall/consumeFlight
       // — capturedReservation is undefined, so this is a no-op (round 3 #3).
       if (capturedReservation) this.budget.release(capturedReservation);
-      // Tell keyed fast-path followers that persistence failed so they behave
+      // Tell keyed followers coalescing via the existing-join (they await this
+      // flight's `persisted` gate) that persistence failed so they behave
       // identically to this leader (release + reject) — no phantom success
-      // (round 7 #1).
+      // (round 7 #1; keyed followers moved to the existing-join in round 12 #1).
       ownedFlight?.persisted?.reject(err);
       throw err;
     }
-    // Leader persisted successfully — release keyed followers awaiting the put.
+    // Leader persisted successfully — resolve the gate so keyed followers
+    // awaiting the put return success.
     ownedFlight?.persisted?.resolve();
     try {
       throwIfAborted(request.abortSignal);

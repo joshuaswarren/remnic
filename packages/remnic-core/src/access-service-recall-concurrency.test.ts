@@ -1393,3 +1393,173 @@ test("an identical arrival during a keyed leader's FAILING idempotency.put still
   // recorded its own event, so exactly one live reservation remains.
   assert.equal(h.liveBudget(), 1, "leader's reservation released on put failure; follower's stands");
 });
+
+test("a keyed follower coalescing via the existing-join awaits the leader's persisted gate before succeeding (round 13 #1, success)", async () => {
+  // Finding 1: a keyed caller that coalesces onto a live flight through
+  // leadRecallFlight's existing-join must not report success (nor run its OWN
+  // idempotency.put) before the LEADER's put settled. It awaits the joined
+  // flight's persisted gate; on the leader's put SUCCESS it then returns.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  // Both callers are keyed and enter handleIdempotentRead (store MISS for each
+  // distinct key). Only the LEADER (key-A) holds a slow put; the follower's
+  // execute() parks on the leader's persisted gate, so it never reaches its own
+  // put until the leader's put resolves.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    if (options.idempotencyKey === "key-A") {
+      leaderExecuted.resolve();
+      await putGate.promise; // leader's slow put
+    }
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise; // leader consumed + detached; flight in the put window
+
+  let followerSettled = false;
+  const follower = h.service
+    .recall({ query: "same", idempotencyKey: "key-B" })
+    .then((r) => {
+      followerSettled = true;
+      return r;
+    });
+  await flushMacrotasks();
+
+  assert.equal(pipelineRuns, 1, "the keyed follower coalesced onto the one pipeline");
+  assert.equal(
+    followerSettled,
+    false,
+    "the keyed follower is pending on the leader's persisted gate, not yet successful",
+  );
+
+  putGate.resolve();
+  const [leaderResp, followerResp] = await Promise.all([leader, follower]);
+  assert.ok(leaderResp);
+  assert.ok(followerResp);
+  assert.equal(pipelineRuns, 1, "still exactly one pipeline");
+  assert.equal(
+    h.liveBudget(),
+    2,
+    "both keyed reservations stand on success (leader's pipeline reserve + follower's own event)",
+  );
+});
+
+test("a keyed follower coalescing via the existing-join inherits the leader's put FAILURE (round 13 #1, failure)", async () => {
+  // Finding 1: when the leader's idempotency.put FAILS, a keyed follower that
+  // joined its flight must reject with the SAME error and release its own
+  // reservation — never a phantom success that a same-key retry would diverge
+  // from.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  const putError = new Error("idempotency store write failed");
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    // The follower (key-B) never returns from execute(): it rejects on the
+    // leader's persisted gate, so control never reaches its own put.
+    const response = await options.execute();
+    if (options.idempotencyKey === "key-A") {
+      leaderExecuted.resolve();
+      await putGate.promise; // leader's slow put...
+      throw putError; // ...that FAILS
+    }
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise; // leader in the put window
+
+  const follower = h.service.recall({ query: "same", idempotencyKey: "key-B" });
+  await flushMacrotasks(); // the follower parks on the leader's persisted gate
+
+  // Attach the rejection handlers BEFORE resolving so the follower's inherited
+  // rejection is never momentarily unhandled.
+  const leaderRej = assert.rejects(leader, (err: unknown) => err === putError);
+  const followerRej = assert.rejects(follower, (err: unknown) => err === putError);
+  putGate.resolve();
+  await leaderRej;
+  await followerRej;
+
+  assert.equal(pipelineRuns, 1, "the follower coalesced onto the one pipeline");
+  assert.equal(
+    h.liveBudget(),
+    0,
+    "both reservations released: the leader's on put failure and the follower's on the inherited failure",
+  );
+});
+
+test("an unkeyed follower during a keyed leader's slow put succeeds WITHOUT awaiting the persisted gate (round 13 #1, unkeyed unchanged)", async () => {
+  // Finding 1 scope guard: unkeyed followers keep existing behavior. They
+  // consumed the shared result and never depend on another caller's
+  // persistence, so they must return success while the leader's put is still
+  // pending — never blocking on the persisted gate.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    if (options.idempotencyKey === "key-A") {
+      leaderExecuted.resolve();
+      await putGate.promise; // leader's put still pending while the arrival runs
+    }
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise; // leader in the put window, flight registered
+
+  // The UNKEYED arrival takes the fast-path follower and returns the shared
+  // result while the leader's put is still pending.
+  const arrivalResp = await h.service.recall({ query: "same" });
+  assert.ok(arrivalResp, "the unkeyed follower succeeded before the leader's put settled");
+  assert.equal(pipelineRuns, 1, "coalesced onto the one pipeline");
+
+  putGate.resolve();
+  await leader;
+});
