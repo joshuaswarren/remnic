@@ -7,6 +7,8 @@ condition:
   - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph|replit)(/[^"'']*)?["'']'
   - '(?m)^\s*import\s+["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph|replit)(/[^"'']*)?["'']'
   - 'require\(\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph|replit)(/[^"'']*)?["'']'
+  - 'export\s+(?!type\b)\*[^;]{0,50}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph|replit)(/[^"'']*)?["'']'
+  - 'export\s+(?!type\b)[^;{]{0,120}?\{([^}]*,)?\s*(?!type\s)[A-Za-z_$][\w$]*\s*(as\s+[\w$]+\s*)?[,}][^;]{0,200}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z0-9-]+|connector-[a-z0-9-]+|coding-graph|replit)(/[^"'']*)?["'']'
 globs:
   - "**/packages/remnic-cli/**"
   - "**/packages/remnic-core/**"
@@ -24,7 +26,8 @@ including any `/subpath`) into an install surface
 (a base package, or the repo-root `src/` compatibility wiring that is
 built and published as the OpenClaw extension).
 These are optional peer dependencies — a static import, a side-effect
-import, or a literal-specifier dynamic import (awaited or not: `void
+import, a runtime re-export (`export * from ...`, `export { x } from
+...`), or a literal-specifier dynamic import (awaited or not: `void
 import(...)`, `import(...).then(...)`) lets the bundler resolve them
 and pulls them into every
 base install, breaking the à-la-carte packaging contract (AGENTS.md
