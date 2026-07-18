@@ -12,7 +12,10 @@ name: PR Scope Budget
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    # `edited` fires on base-branch retargets (and title/body edits — cheap
+    # no-op re-runs); a retarget changes the diff and must re-evaluate
+    # (review finding on #2003 round 5).
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
 
 permissions:
   contents: read
