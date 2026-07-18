@@ -4641,3 +4641,92 @@ test("a keyed retry of a cached key during a live flight replays from the store 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a keyed recall whose idempotency.put FAILS rejects, persists nothing, and releases its budget; a retry re-executes cleanly (#1906 r12, put failure)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-putfail-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+  // Fail the FIRST idempotency.put only; later puts (the retry) succeed. This is
+  // the real-store analogue of the stubbed put-failure concurrency test: it must
+  // NOT leave a phantom cache entry and must release the reserved budget.
+  // The idempotency store is private; bind a typed structural view once (unchecked
+  // cast to a test-only internal shape, not external input) then read the store.
+  const internals = service as unknown as {
+    idempotency: { put: (key: string, requestHash: string, response: unknown) => Promise<void> };
+  };
+  const store = internals.idempotency;
+  const realPut = store.put.bind(store);
+  const putError = new Error("idempotency store write failed");
+  let putCalls = 0;
+  store.put = async (key: string, requestHash: string, response: unknown) => {
+    putCalls += 1;
+    if (putCalls === 1) throw putError;
+    return realPut(key, requestHash, response);
+  };
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r12-putfail-key",
+  };
+
+  try {
+    // 1. The keyed leader completes its pipeline (budget count -> 1) but its put
+    //    fails: it must reject, persist nothing, and release its reservation.
+    await assert.rejects(service.recall({ ...request }), (error: Error) => error === putError);
+    assert.equal(recallCalls, 1);
+
+    // 2. A retry of the same key finds NO stored response (put failed) and
+    //    re-executes the pipeline — no phantom success from a half-persisted entry.
+    const retry = await service.recall({ ...request });
+    assert.equal(retry.context, "ctx");
+    assert.equal(recallCalls, 2, "retry re-executes because nothing was persisted");
+
+    // 3. Budget is intact: the failed leader released its reservation, so a fresh
+    //    cross-namespace recall sees count=2 (the successful retry + this fresh
+    //    one), not 3 — proving the failed put did not leak quota.
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(recallCalls, 3);
+    assert.equal(fresh.budgetWarning?.count, 2, "the failed keyed recall consumed no budget");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

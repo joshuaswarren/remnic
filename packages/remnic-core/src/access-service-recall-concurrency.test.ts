@@ -1285,3 +1285,111 @@ test("an identical arrival during a keyed leader's slow idempotency.put coalesce
     "the arrival coalesced onto the leader's pipeline through the slow persistence window",
   );
 });
+
+test("a KEYED distinct-key arrival during a keyed leader's slow idempotency.put coalesces via the existing-join (round 12 #2, keyed follower)", async () => {
+  // Companion to the round 12 #2 unkeyed-arrival test: the codex finding was
+  // specifically about a KEYED caller routing through leadRecallFlight's
+  // existing-join during the leader's persistence window. A keyed follower must
+  // still find the registered flight and coalesce onto the one pipeline.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  // Both callers are keyed, so both enter handleIdempotentRead. The stub runs
+  // execute() (store MISS for every distinct key), then gates the leader in its
+  // put so the flight sits in the persistence window while the second key
+  // arrives. `race`=false for keyed callers, so a coalescing follower awaits the
+  // (already-resolved) pipeline immediately.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    leaderExecuted.resolve();
+    await putGate.promise; // SLOW put for whichever caller is inside
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "key-A" });
+  await leaderExecuted.promise; // leader detached; flight kept alive by persisted gate
+
+  // A DISTINCT idempotency key for the SAME work arrives during the put window.
+  // It shares the flight key (idempotencyKey is excluded from it), so it must
+  // coalesce onto the still-registered flight rather than start a new pipeline.
+  const follower = h.service.recall({ query: "same", idempotencyKey: "key-B" });
+  await flushMacrotasks();
+  putGate.resolve();
+
+  const [leaderResp, followerResp] = await Promise.all([leader, follower]);
+  assert.ok(leaderResp);
+  assert.ok(followerResp);
+  assert.equal(
+    pipelineRuns,
+    1,
+    "the keyed distinct-key follower coalesced onto the leader's pipeline through the persistence window",
+  );
+});
+
+test("an identical arrival during a keyed leader's FAILING idempotency.put still coalesces onto one pipeline; only the leader rejects (round 12 #2, put failure)", async () => {
+  // The flight must stay registered through the persistence window regardless of
+  // the put OUTCOME. A slow put that ultimately FAILS must not (a) start a second
+  // pipeline for an arrival during the window, nor (b) fail that arrival: an
+  // unkeyed follower consumed the shared result and never depends on the leader's
+  // put. The leader's put failure is isolated to the leader.
+  const putGate = deferred<void>();
+  const leaderExecuted = deferred<void>();
+  const putError = new Error("idempotency store write failed");
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    leaderExecuted.resolve();
+    await putGate.promise; // SLOW put
+    throw putError; // ...that ultimately FAILS
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "leader" });
+  await leaderExecuted.promise; // leader detached; flight kept alive by persisted gate
+
+  // An identical UNKEYED arrival during the FAILING put window coalesces onto the
+  // still-registered flight and succeeds from the shared result before the put
+  // fails — it never awaits the leader's persistence (round 12: followRecallFlight
+  // is unkeyed-only and does not gate on `persisted`).
+  const arrival = h.service.recall({ query: "same" });
+  const arrivalResp = await arrival;
+  assert.ok(arrivalResp, "the arrival coalesced and succeeded independent of the leader's put");
+
+  putGate.resolve();
+  await assert.rejects(leader, (err: unknown) => err === putError);
+  assert.equal(
+    pipelineRuns,
+    1,
+    "the arrival coalesced onto the one pipeline through the FAILING persistence window",
+  );
+  // The failed keyed leader released its reservation; the surviving follower
+  // recorded its own event, so exactly one live reservation remains.
+  assert.equal(h.liveBudget(), 1, "leader's reservation released on put failure; follower's stands");
+});
