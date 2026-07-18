@@ -296,3 +296,58 @@ test("payload is deterministic for identical inputs (two composes, one hash)", (
     hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(two, SCOPE)),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Review-round fixes (#1998): canonicalization + strict ISO validation
+// ---------------------------------------------------------------------------
+
+test("content is trimmed on the envelope (matches persisted form)", () => {
+  const env = composeMemoryEnvelope(minimalInput({ content: "  padded fact  " }), CTX);
+  assert.equal(env.content, "padded fact");
+});
+
+test("attribute keys canonicalize to lowercase like storage's normalizeAttributePairs", () => {
+  const env = composeMemoryEnvelope(
+    minimalInput({ structuredAttributes: { City: " Austin ", COUNTRY: "US" } }),
+    CTX,
+  );
+  assert.deepEqual(env.structuredAttributes, { city: "Austin", country: "US" });
+  // Keys colliding only after lowercasing are rejected, not silently merged.
+  assert.throws(
+    () =>
+      composeMemoryEnvelope(
+        minimalInput({ structuredAttributes: { Foo: "1", foo: "2" } }),
+        CTX,
+      ),
+    /duplicate key after canonicalization/,
+  );
+  // Fingerprint equality across key casing (the divergence the review caught).
+  const a = composeMemoryEnvelope(minimalInput({ structuredAttributes: { City: "Austin" } }), CTX);
+  const b = composeMemoryEnvelope(minimalInput({ structuredAttributes: { city: "Austin" } }), CTX);
+  assert.equal(
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(a, SCOPE)),
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(b, SCOPE)),
+  );
+});
+
+test("validAt requires strict ISO 8601 and real calendar values", () => {
+  // Non-ISO shapes Date.parse would happily accept.
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "07/17/2026" }), CTX), /ISO 8601/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "Jul 17 2026" }), CTX), /ISO 8601/);
+  // Calendar/clock overflow Date would silently normalize.
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-30T12:00:00Z" }), CTX), /real calendar/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T12:61:00Z" }), CTX), /validAt/);
+  // Valid shapes pass: date-only, Z, offset, fractional seconds.
+  assert.equal(composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17" }), CTX).validAt, "2026-07-17");
+  assert.equal(
+    composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00.123Z" }), CTX).validAt,
+    "2026-07-17T09:30:00.123Z",
+  );
+  assert.equal(
+    composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00-05:00" }), CTX).validAt,
+    "2026-07-17T09:30:00-05:00",
+  );
+  // Leap-day correctness both directions.
+  assert.equal(composeMemoryEnvelope(minimalInput({ validAt: "2028-02-29" }), CTX).validAt, "2028-02-29");
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-29" }), CTX), /real calendar/);
+});

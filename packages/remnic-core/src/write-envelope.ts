@@ -154,11 +154,33 @@ function fail(field: string, message: string): never {
   throw new Error(`composeMemoryEnvelope: ${field} ${message}`);
 }
 
+// Strict ISO 8601 shape: date, or date-time with Z/offset. `Date.parse`
+// alone is NOT an ISO validator (accepts "07/17/2026", normalizes
+// "2026-02-30" to March 2) — review finding on #1998.
+const ISO_TIMESTAMP_RE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
+
 function validateIsoTimestamp(field: string, value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) fail(field, "must be a non-empty ISO 8601 timestamp");
-  const parsed = Date.parse(trimmed);
-  if (Number.isNaN(parsed)) fail(field, `is not a parseable ISO 8601 timestamp: ${JSON.stringify(value)}`);
+  const match = ISO_TIMESTAMP_RE.exec(trimmed);
+  if (!match || Number.isNaN(Date.parse(trimmed))) {
+    fail(field, `is not an ISO 8601 timestamp: ${JSON.stringify(value)}`);
+  }
+  // Reject calendar/clock overflow (e.g. 2026-02-30, 12:60) instead of
+  // letting Date normalize it to a different instant than requested.
+  const [, y, mo, d, h = "0", mi = "0", s = "0"] = match;
+  const probe = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  if (
+    probe.getUTCFullYear() !== Number(y) ||
+    probe.getUTCMonth() !== Number(mo) - 1 ||
+    probe.getUTCDate() !== Number(d) ||
+    Number(h) > 23 ||
+    Number(mi) > 59 ||
+    Number(s) > 59
+  ) {
+    fail(field, `is not a real calendar date/time: ${JSON.stringify(value)}`);
+  }
   return trimmed;
 }
 
@@ -197,7 +219,11 @@ function normalizeStructuredAttributes(
   }
   const out: Record<string, string> = {};
   for (const [key, value] of entries) {
-    const cleanKey = key.trim();
+    // Canonicalize exactly like storage's normalizeAttributePairs
+    // (storage.ts:1277): keys trim+lowercase, values trim — so the
+    // fingerprint and the persisted searchable form can never diverge
+    // (review finding on #1998; AGENTS.md §13 hash-consistency).
+    const cleanKey = key.trim().toLowerCase();
     if (cleanKey.length === 0) fail("structuredAttributes", "contain an empty key");
     if (cleanKey.length > STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength) {
       fail("structuredAttributes", `key exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength} characters: ${JSON.stringify(cleanKey.slice(0, 40))}…`);
@@ -205,11 +231,14 @@ function normalizeStructuredAttributes(
     if (typeof value !== "string") {
       fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} must be a string (got ${typeof value}) — stringify numbers/booleans at the call site`);
     }
-    if (value.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) {
+    const cleanValue = value.trim();
+    if (cleanValue.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) {
       fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength} characters`);
     }
-    if (cleanKey in out) fail("structuredAttributes", `contain duplicate key after trimming: ${JSON.stringify(cleanKey)}`);
-    out[cleanKey] = value;
+    if (cleanKey in out) {
+      fail("structuredAttributes", `contain duplicate key after canonicalization (trim + lowercase): ${JSON.stringify(cleanKey)}`);
+    }
+    out[cleanKey] = cleanValue;
   }
   return Object.freeze(out);
 }
@@ -268,7 +297,10 @@ export function composeMemoryEnvelope(
 
   const envelope = Object.freeze({
     [sealedBrand]: true,
-    content: input.content,
+    // Trimmed: other write paths persist trimmed content (e.g. explicit
+    // capture), so the sealed form and fingerprint must match what storage
+    // will actually hold (review finding on #1998).
+    content: input.content.trim(),
     category: input.category,
     tags: normalizeEnvelopeTags(input.tags),
     structuredAttributes: normalizeStructuredAttributes(input.structuredAttributes),
