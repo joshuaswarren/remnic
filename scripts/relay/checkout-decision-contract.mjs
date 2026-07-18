@@ -29,9 +29,12 @@ const ANAPHORIC_TOKEN_OBJECT_PATTERN =
   /\b(?:(?:(?:a|the)\s+)?(?:new|fresh|replacement|additional|second|next)\s+one|another(?:\s+one)?|one(?:\s+more)?|anew|(?:it|this|that)(?:\s+one)?|(?:something|anything)\s+(?:new|fresh|different|separate|distinct|alternate)|(?:(?:a|the)\s+)?(?:new|fresh|different|distinct|alternate|separate|replacement|another)\s+(?:value|object|item|thing|secret|identifier|id|handle))\b(?=\s*(?:$|\b(?:on|for|during|across|after|before|prior|ahead|while|when|per|at|each|every)\b))/;
 const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
-const CHECKOUT_SESSION_LIFECYCLE_TARGET_PATTERN = /\b(?:checkout[- ]session|session)\b/;
-const DESTRUCTIVE_SESSION_ACTION_PATTERN =
-  /\b(?:abort(?:s|ed|ing)?|blacklist(?:s|ed|ing)?|cancel(?:s|ed|ing|led|ling)?|clos(?:e|es|ed|ing)|deactivat(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|destroy(?:s|ed|ing)?|disabl(?:e|es|ed|ing)|discard(?:s|ed|ing)?|drop(?:s|ped|ping)?|end(?:s|ed|ing)?|eras(?:e|es|ed|ing)|expir(?:e|es|ed|ing)|invalidat(?:e|es|ed|ing)|nullif(?:y|ies|ied|ying)|purg(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|reset(?:s|ting)?|retir(?:e|es|ed|ing)|revok(?:e|es|ed|ing)|terminat(?:e|es|ed|ing)|void(?:s|ed|ing)?|wipe(?:s|d|ing)?)\b/;
+const CHECKOUT_CONTINUITY_TARGET_PATTERN =
+  /\bcheckout[- ](?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service|account|channel|workflow|processing)\b|\b(?:session|access|auth(?:entication|orization)?|capabilit(?:y|ies)|permissions?|privileges?|endpoint|flow|service)\b/;
+const DESTRUCTIVE_CHECKOUT_CONTINUITY_ACTION_PATTERN =
+  /\b(?:abort(?:s|ed|ing)?|blacklist(?:s|ed|ing)?|block(?:s|ed|ing)?|cancel(?:s|ed|ing|led|ling)?|clos(?:e|es|ed|ing)|deactivat(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|den(?:y|ies|ied|ying)|destroy(?:s|ed|ing)?|disabl(?:e|es|ed|ing)|discard(?:s|ed|ing)?|disconnect(?:s|ed|ing)?|drop(?:s|ped|ping)?|end(?:s|ed|ing)?|eras(?:e|es|ed|ing)|expir(?:e|es|ed|ing)|freez(?:e|es|ing)|halt(?:s|ed|ing)?|invalidat(?:e|es|ed|ing)|lock(?:s|ed|ing)?|nullif(?:y|ies|ied|ying)|purg(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|reset(?:s|ting)?|retir(?:e|es|ed|ing)|revok(?:e|es|ed|ing)|shut\s+down|stop(?:s|ped|ping)?|suspend(?:s|ed|ing)?|terminat(?:e|es|ed|ing)|turn(?:s|ed|ing)?\s+off|void(?:s|ed|ing)?|wipe(?:s|d|ing)?)\b/;
+const DESTRUCTIVE_CHECKOUT_CONTINUITY_STATE_PATTERN =
+  /\b(?:blacklisted|blocked|closed|deactivated|disabled|disconnected|inaccessible|inactive|invalid|locked|offline|revoked|suspended|terminated|unavailable|unusable)\b/;
 const OBJECTLESS_ROTATION_FILLER_PATTERN =
   /\b(?:a|an|the|then|we|system|agent|keep|keeps|keeping|continue|continues|continued|continuing|to|will|would|should|must|can|could|may|might|always|more|again|another|additional|extra|several|multiple|many|twice|two|2|batch|batches|anew|afresh|repeatedly|repetitively|continuously|indefinitely|endlessly)\b/g;
 const OBJECTLESS_ADDITIONAL_ROTATION_PATTERN =
@@ -320,11 +323,12 @@ function isAllowedAffirmativeTokenLifecycleClause(clause) {
   );
 }
 
-function isAffirmativeDestructiveCheckoutSessionClause(clause) {
+function isAffirmativeDestructiveCheckoutContinuityClause(clause) {
   return (
     !hasReplacementPolicyNegation(clause) &&
-    CHECKOUT_SESSION_LIFECYCLE_TARGET_PATTERN.test(clause) &&
-    DESTRUCTIVE_SESSION_ACTION_PATTERN.test(clause)
+    CHECKOUT_CONTINUITY_TARGET_PATTERN.test(clause) &&
+    (DESTRUCTIVE_CHECKOUT_CONTINUITY_ACTION_PATTERN.test(clause) ||
+      DESTRUCTIVE_CHECKOUT_CONTINUITY_STATE_PATTERN.test(clause))
   );
 }
 
@@ -332,7 +336,7 @@ function hasUnrecognizedAffirmativeTokenMutationPolicy(value) {
   return decisionClauseGroups(value)
     .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
     .some((predicate) => {
-      if (isAffirmativeDestructiveCheckoutSessionClause(predicate)) return true;
+      if (isAffirmativeDestructiveCheckoutContinuityClause(predicate)) return true;
       if (!hasTokenLifecycleTarget(predicate)) return false;
       if (hasReplacementPolicyNegation(predicate)) {
         return !ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES.has(predicate);
