@@ -134,6 +134,11 @@ install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount --bind "${RELAY_NETWORK_PROXY_SCRIPT}" "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-network-proxy.mjs"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
+# Relay disables Codex unified_exec, so the model-visible shell_command tool can
+# only submit a script to Codex's already-selected /bin/bash or /bin/sh. Those
+# entrypoints are replaced by relay-shell-guard below. If model-authored script
+# text names this interpreter directly, that invocation therefore occurs only
+# after the guard has entered its masked mount/PID namespace and dropped caps.
 mount --bind /usr/bin/bash "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
 mount -o remount,bind,ro,nosuid,nodev "${RELAY_ROOTFS}/opt/codex/relay-command-interpreter"
 install -m 0755 /dev/null "${RELAY_ROOTFS}/opt/codex/relay-shell-guard"

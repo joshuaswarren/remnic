@@ -266,7 +266,7 @@ test("Relay gives every Codex call a network namespace with allow-listed egress 
 });
 
 test(
-  "model shell cannot read Codex auth, trusted output, parent mounts, or trusted environment",
+  "model shell and a directly named interpreter cannot read Codex auth, trusted output, parent mounts, or trusted environment",
   { skip: process.platform !== "linux" },
   async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "relay-credential-boundary-"));
@@ -286,6 +286,16 @@ test -z "\${REMNIC_RELAY_MCP_TOKEN:-}"
 test -z "\${CODEX_HOME:-}"
 grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
 grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status
+/opt/codex/relay-command-interpreter -c '
+set -eu
+test ! -r /codex-home/auth.json
+test ! -r /proc/1/root/codex-home/auth.json
+test ! -r /output/schema.json
+test -z "\${REMNIC_RELAY_MCP_TOKEN:-}"
+test -z "\${CODEX_HOME:-}"
+grep -Eq "^CapEff:[[:space:]]+0+$" /proc/self/status
+grep -Eq "^NoNewPrivs:[[:space:]]+1$" /proc/self/status
+'
 `;
     const fakeCodex = path.join(parent, "fake-codex.mjs");
     await writeFile(
