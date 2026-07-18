@@ -2563,6 +2563,9 @@ export class StorageManager {
     // A key change flips resolveWriteKey(), so a file's plain/encrypted class on
     // the next full rewrite may differ from what was cached (issue #1909).
     this.secureFileEncryptionSniffCache.clear();
+    // Same rationale for the behavior-signals dedup key cache (issue #1909):
+    // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
+    this.behaviorSignalsKeyCache = null;
   }
 
   private getEntityCacheSecureStoreKey(): string {

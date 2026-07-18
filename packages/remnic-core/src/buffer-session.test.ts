@@ -7,6 +7,7 @@ import type { BufferState, BufferTurn } from "./types.js";
 
 class FakeStorage {
   public saved: BufferState | null = null;
+  public saveCount = 0;
 
   constructor(private readonly initial: BufferState) {}
 
@@ -15,6 +16,7 @@ class FakeStorage {
   }
 
   async saveBuffer(state: BufferState): Promise<void> {
+    this.saveCount += 1;
     this.saved = structuredClone(state);
   }
 }
@@ -558,4 +560,95 @@ test("pruneEntries evicts oldest NON-empty session entries past the cap (#1908 r
   assert.ok(savedKeys.includes("session-newest"), "the just-written key is retained");
   assert.equal(buffer.getTurns("session-000").length, 0, "oldest non-empty entry was evicted");
   assert.ok(buffer.getTurns("session-209").length > 0, "newest pre-existing entry survives");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1909 (Part D) — debounced buffer save
+// ---------------------------------------------------------------------------
+
+function emptyBufferState(): BufferState {
+  return { turns: [], lastExtractionAt: null, extractionCount: 0 };
+}
+
+interface DebouncedBufferInternals {
+  saveTimer: NodeJS.Timeout | null;
+  pendingSave: boolean;
+}
+
+test("debounce on: N keep_buffering turns coalesce into one save on flush", async () => {
+  const storage = new FakeStorage(emptyBufferState());
+  // Large window + high turn cap so every turn keeps buffering (no trigger).
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 100 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  for (let i = 0; i < 5; i += 1) {
+    const decision = await buffer.addTurn("thread-a", makeTurn("thread-a", `turn ${i}`));
+    assert.equal(decision, "keep_buffering");
+  }
+  assert.equal(storage.saveCount, 0, "steady-state buffering does zero full serializations");
+
+  await buffer.flushPendingSave();
+  assert.equal(storage.saveCount, 1, "the trailing-edge flush writes exactly once");
+  assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 5, "flush persists all buffered turns");
+
+  // Idempotent: a second flush with nothing pending does not write again.
+  await buffer.flushPendingSave();
+  assert.equal(storage.saveCount, 1, "flushPendingSave is idempotent");
+});
+
+test("debounce on: an extraction-triggering turn forces an immediate save", async () => {
+  const storage = new FakeStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 1 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  const decision = await buffer.addTurn("thread-a", makeTurn("thread-a", "trigger"));
+  assert.notEqual(decision, "keep_buffering", "the turn triggers extraction");
+  assert.equal(storage.saveCount, 1, "the triggering turn is durable immediately, not on the debounce edge");
+  assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 1);
+});
+
+test("debounce on: clearAfterExtraction cancels the pending timer and persists post-clear state", async () => {
+  const storage = new FakeStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 100 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "buffered turn"));
+  assert.equal(storage.saveCount, 0, "the buffered turn's save is still pending on the timer");
+
+  await buffer.clearAfterExtraction("thread-a");
+  assert.equal(storage.saveCount, 1, "clearAfterExtraction persists exactly once (post-clear state)");
+  assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 0, "the persisted state is cleared");
+
+  // The pending debounce timer was cancelled — it must not fire a stale write.
+  const internals = buffer as unknown as DebouncedBufferInternals;
+  assert.equal(internals.saveTimer, null, "no armed timer remains after clear");
+  assert.equal(internals.pendingSave, false, "no pending save remains after clear");
+});
+
+test("debounce off (bufferSaveDebounceMs: 0) reproduces save-every-turn", async () => {
+  const storage = new FakeStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 0, triggerMode: "smart", bufferMaxTurns: 100 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  for (let i = 0; i < 4; i += 1) {
+    await buffer.addTurn("thread-a", makeTurn("thread-a", `turn ${i}`));
+  }
+  assert.equal(storage.saveCount, 4, "with debounce disabled every turn saves immediately");
+  assert.equal(storage.saved?.entries?.["thread-a"]?.turns.length, 4);
+});
+
+test("parseConfig defaults/clamps bufferSaveDebounceMs", () => {
+  assert.equal(parseConfig({}).bufferSaveDebounceMs, 3_000, "default is 3000ms");
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 0 }).bufferSaveDebounceMs, 0, "0 is preserved (compat)");
+  assert.equal(parseConfig({ bufferSaveDebounceMs: -50 }).bufferSaveDebounceMs, 0, "negatives clamp to 0");
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 12.9 }).bufferSaveDebounceMs, 12, "floats floor");
+  assert.equal(parseConfig({ bufferSaveDebounceMs: 5_000 }).bufferSaveDebounceMs, 5_000);
 });
