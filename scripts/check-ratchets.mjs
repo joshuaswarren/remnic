@@ -211,9 +211,13 @@ function countLines(filePath) {
 }
 
 function isCountedSourceFile(name) {
+  // .tsx counts too (round-7 finding: bench-ui compiles JSX; a giant .tsx
+  // would otherwise evade the cap). Legacy #1529 metrics scan only
+  // remnic-core/src, which has no .tsx — their counts are unaffected.
   return (
-    name.endsWith(".ts") &&
+    (name.endsWith(".ts") || name.endsWith(".tsx")) &&
     !name.endsWith(".test.ts") &&
+    !name.endsWith(".test.tsx") &&
     !name.endsWith(".d.ts")
   );
 }

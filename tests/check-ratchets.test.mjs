@@ -617,3 +617,18 @@ test("file-size ratchet: symlinked source files inside scan roots fail the check
     }
   });
 });
+
+test("file-size ratchet: .tsx sources are counted; .test.tsx and .d.ts are not (round 7)", () => {
+  withFixture((fixture) => {
+    const uiSrc = path.join(fixture.root, "packages", "ui-pkg", "src");
+    mkdirSync(uiSrc, { recursive: true });
+    writeFileSync(path.join(uiSrc, "Big.tsx"), "pad\n".repeat(1300));
+    writeFileSync(path.join(uiSrc, "Big.test.tsx"), "pad\n".repeat(1300));
+    writeFileSync(path.join(uiSrc, "types.d.ts"), "pad\n".repeat(1300));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.fileSizeGrandfather["packages/ui-pkg/src/Big.tsx"], 1301);
+    assert.equal("packages/ui-pkg/src/Big.test.tsx" in baseline.metrics.fileSizeGrandfather, false);
+    assert.equal("packages/ui-pkg/src/types.d.ts" in baseline.metrics.fileSizeGrandfather, false);
+  });
+});
