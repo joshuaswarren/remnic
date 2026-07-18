@@ -158,6 +158,7 @@ import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-pr
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
   isSealedMemoryEnvelope,
+  sealedWriteToLegacyArgs,
   type SealedMemoryEnvelope,
 } from "./write-envelope.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
@@ -4215,24 +4216,8 @@ export class StorageManager {
     if (!isSealedMemoryEnvelope(envelope)) {
       throw new Error("writeSealedMemory: envelope must be minted by composeMemoryEnvelope");
     }
-    return this.writeMemory(envelope.category, envelope.content, {
-      ...extras,
-      confidence: envelope.confidence,
-      tags: envelope.tags.length > 0 ? [...envelope.tags] : undefined,
-      entityRef: envelope.entityRef,
-      source: envelope.source,
-      expiresAt: envelope.ttl,
-      validAt: envelope.validAt,
-      // RAW map for frontmatter byte-parity with the legacy path; the body
-      // suffix canonicalizes identically from either form (see the envelope's
-      // rawStructuredAttributes docs and the parity suite).
-      structuredAttributes: envelope.rawStructuredAttributes
-        ? { ...envelope.rawStructuredAttributes }
-        : undefined,
-      ...(envelope.sourceConnector !== undefined
-        ? { sourceConnector: envelope.sourceConnector }
-        : {}),
-    });
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return this.writeMemory(category, content, options as WriteMemoryOptions);
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {
