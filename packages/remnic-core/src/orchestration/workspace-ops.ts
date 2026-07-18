@@ -25,6 +25,7 @@ import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "../fallb
 import { lintWorkspaceFiles, rotateMarkdownFileToArchive } from "../hygiene.js";
 import { StorageManager } from "../index.js";
 import { LocalLlmClient } from "../local-llm.js";
+import { clearQmdResultCaches } from "../memory-cache.js";
 import { log } from "../logger.js";
 import type { NamespaceMaintenanceFanoutRunnerContext } from "../maintenance/namespace-maintenance-fanout.js";
 import type { NamespaceMaintenanceSummary } from "../maintenance/namespace-planner.js";
@@ -647,6 +648,12 @@ export class WorkspaceOpsCoordinator {
         },
         reindexSearch: async () => {
           await this.deps.qmd.update();
+          // The wearable sync path calls qmd.update() directly (bypassing
+          // MaintenanceScheduler.runQmdMaintenance), so it must clear the QMD
+          // result caches itself: newly-indexed transcript/fact content is now
+          // searchable, and a cache entry warmed before the sync would otherwise
+          // omit it for its TTL (#1904, Codex).
+          clearQmdResultCaches();
         },
       });
     }

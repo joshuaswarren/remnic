@@ -441,6 +441,7 @@ export class GraphIndex {
     // would then pass the size-delta check and silently omit the peer edge.
     let allEdges: GraphEdge[] = [];
     let meta = await this.readEnabledGraphFileMeta();
+    let stable = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = meta;
       allEdges = await readAllEdges(this.memoryDir, {
@@ -449,12 +450,23 @@ export class GraphIndex {
         causalGraph: this.cfg.causalGraphEnabled,
       });
       meta = await this.readEnabledGraphFileMeta();
-      if (this.graphFileMetaEqual(before, meta)) break;
+      if (this.graphFileMetaEqual(before, meta)) {
+        stable = true;
+        break;
+      }
       // A write landed during the read; the just-captured `meta` is the new
-      // baseline for the next attempt's read. After the final attempt we accept
-      // the last read paired with its own post-read `meta` (bounded by the TTL).
+      // baseline for the next attempt's before-snapshot.
     }
-    this.edgeCache = { allEdges, loadedAt: Date.now(), meta };
+    if (stable) {
+      this.edgeCache = { allEdges, loadedAt: Date.now(), meta };
+    } else {
+      // Contended: a peer kept writing across every attempt, so the final
+      // allEdges/meta pair is not guaranteed consistent. Serve THIS read's edges
+      // (best effort) but do NOT poison the cache — leave it null so the next
+      // call re-reads, instead of installing a baseline that could hide a peer
+      // edge for the TTL (Codex).
+      this.edgeCache = null;
+    }
     return allEdges;
   }
 

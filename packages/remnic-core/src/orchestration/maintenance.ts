@@ -439,6 +439,7 @@ export class MaintenanceScheduler {
     this.qmdMaintenanceInFlight = true;
     this.qmdMaintenancePending = false;
 
+    let didUpdate = false;
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         // Include cataloged dynamic namespaces, not just the configured set
@@ -463,7 +464,7 @@ export class MaintenanceScheduler {
           }
           this.lastQmdEmbedAtMs = now;
         };
-        await runNamespaceMaintenanceBatchPlan(
+        const summary = await runNamespaceMaintenanceBatchPlan(
           this.deps.config,
           plan,
           async (candidates) => {
@@ -513,6 +514,10 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
+        // Only a real per-namespace update makes new facts searchable; if every
+        // namespace was skipped (throttle / lock_held) no index changed, so there
+        // is nothing to invalidate and we keep the warm QMD caches (#1904, Codex).
+        didUpdate = summary.ran > 0;
       } else {
         await this.deps.getQmd().update();
         const now = Date.now();
@@ -523,12 +528,14 @@ export class MaintenanceScheduler {
           await this.deps.getQmd().embed();
           this.lastQmdEmbedAtMs = now;
         }
+        didUpdate = true;
       }
       // A successful update+embed means newly-persisted facts are now searchable;
       // any cached pre-index QMD recall/search bundle is now stale. Clear ONLY the
-      // QMD result caches (dir-scoped layers untouched) so the create path can keep
-      // them warm during index lag without an extended stale window (#1904, Codex).
-      clearQmdResultCaches();
+      // QMD result caches (dir-scoped layers untouched) — but only when an index
+      // actually changed, so a fully-skipped (throttled) pass keeps them warm
+      // (#1904, Codex).
+      if (didUpdate) clearQmdResultCaches();
     } finally {
       this.qmdMaintenanceInFlight = false;
       if (this.qmdMaintenancePending) {
