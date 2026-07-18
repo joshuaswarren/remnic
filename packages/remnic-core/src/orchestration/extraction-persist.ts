@@ -2284,7 +2284,10 @@ export class ExtractionPersistCoordinator {
                 // survives when a single chunk is quoted in isolation.
                 applyInlineCitation(chunk.content),
                 {
-                  confidence: fact.confidence,
+                  // #2014 round 4: the sealed parent's confidence — salvage
+                  // drops out-of-range values so storage applies its default;
+                  // raw fact.confidence would let parent and chunk disagree.
+                  confidence: parentWriteEnvelope.confidence,
                   tags: [...chunkTags],
                   entityRef: parentWriteEnvelope.entityRef,
                   source: chunkWriteSource,
@@ -2473,10 +2476,10 @@ export class ExtractionPersistCoordinator {
             if (graphCaps.multiGraphMemory && !postWriteGuard) {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
-                const entityRef =
-                  typeof (fact as any).entityRef === "string"
-                    ? (fact as any).entityRef
-                    : undefined;
+                // #2014 round 4: graph identity must match the PERSISTED
+                // memory — the envelope's surviving entityRef (trimmed or
+                // dropped), never the raw extractor string.
+                const entityRef = parentWriteEnvelope.entityRef;
                 const parentRelPath = resolvePersistedMemoryRelativePath({
                   memoryId: parentId,
                   pathById: graphContext.memoryPathById,
@@ -2716,10 +2719,9 @@ export class ExtractionPersistCoordinator {
         if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
-            const entityRef =
-              typeof (fact as any).entityRef === "string"
-                ? (fact as any).entityRef
-                : undefined;
+            // #2014 round 4: graph identity from the sealed envelope (see
+            // the chunked path).
+            const entityRef = factWriteEnvelope.entityRef;
             const memoryRelPath = resolvePersistedMemoryRelativePath({
               memoryId,
               pathById: graphContext.memoryPathById,
