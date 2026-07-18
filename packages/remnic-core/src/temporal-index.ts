@@ -32,6 +32,11 @@ export {
   indexesExist,
 } from "./temporal-index-compat.js";
 
+export {
+  deindexMemoriesBatchAsync,
+  indexMemoriesBatchAsync,
+} from "./temporal-index-batch.js";
+
 export interface TemporalIndex {
   /** version bumped when schema changes */
   version: number;
