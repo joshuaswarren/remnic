@@ -17,7 +17,6 @@
 # Benchmark corpora and result artifacts (PR #1863: 52k artifact lines
 # pushed through bot review with zero actionable findings on them).
 packages/bench/baselines/
-packages/bench/profiles/
 packages/bench/src/benchmarks/published/**/artifacts/
 
 # Lockfiles — machine-written, reviewed by dependency tooling instead.
