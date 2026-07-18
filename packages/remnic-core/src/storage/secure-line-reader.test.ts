@@ -46,6 +46,19 @@ test("readMemoryLifecycleEventsFromLines skips malformed/blank rows fail-open an
   assert.deepEqual(await readMemoryLifecycleEventsFromLines(fromArray(rows), 0), []);
 });
 
+test("readMemoryLifecycleEventsFromLines rejects rows with an unhandled eventType (issue #1910)", async () => {
+  const rows = [
+    // Structurally complete but eventType is not in the handled allow-list.
+    JSON.stringify({ eventId: "bad", memoryId: "m", eventType: "exploded", timestamp: "2026-01-01T00:00:00.000Z", actor: "test", ruleVersion: "1" }),
+    // eventType present but empty string — also unhandled.
+    JSON.stringify({ eventId: "empty", memoryId: "m", eventType: "", timestamp: "2026-01-02T00:00:00.000Z", actor: "test", ruleVersion: "1" }),
+    JSON.stringify(event("keep", "m", "2026-01-03T00:00:00.000Z")),
+  ];
+  assert.deepEqual(await readMemoryLifecycleEventsFromLines(fromArray(rows), 5), [
+    event("keep", "m", "2026-01-03T00:00:00.000Z"),
+  ]);
+});
+
 test("readMemoryLifecycleEventsFromLines filters by memoryId when provided", async () => {
   const rows = [
     JSON.stringify(event("a", "target", "2026-01-01T00:00:00.000Z")),

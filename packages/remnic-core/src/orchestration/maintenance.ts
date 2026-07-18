@@ -451,6 +451,16 @@ export class MaintenanceScheduler {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn(`qmd maintenance request failed (${reason}): ${msg}`);
     }
+    // Lifecycle-ledger auto-compaction (#1910) must run independently of QMD.
+    // When QMD is unavailable or its maintenance capability is off,
+    // requestQmdMaintenance() short-circuits and runQmdMaintenance() never
+    // fires — so a compaction check living only in that path would never run.
+    // Fire it here on every maintenance request (throttled, size-gated,
+    // single-flighted, never awaited, never throws) so a QMD-off deployment
+    // still bounds the lifecycle ledger.
+    void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
+      log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
+    );
   }
 
   /** Internal: run a single QMD maintenance pass under singleflight guard. */
@@ -557,12 +567,9 @@ export class MaintenanceScheduler {
       if (this.qmdMaintenancePending) {
         this.requestQmdMaintenance();
       }
-      // Best-effort, off the recall/extraction hot path: size-gated ledger
-      // compaction (issue #1910). Never awaited into the maintenance path and
-      // never allowed to throw — a compaction failure must not break indexing.
-      void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
-        log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
-      );
+      // Lifecycle-ledger auto-compaction is triggered from
+      // requestQmdMaintenanceForTool (every maintenance request, QMD or not),
+      // so it does not need to be re-fired here (issue #1910).
     }
   }
 
@@ -580,7 +587,7 @@ export class MaintenanceScheduler {
    */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
     const threshold = this.deps.config.memoryLifecycleLedgerCompactBytes;
-    if (threshold <= 0) return;
+    if (!(threshold > 0)) return; // 0 / negative / non-numeric disables compaction.
     if (this.lifecycleCompactionInFlight) return;
     const now = Date.now();
     if (

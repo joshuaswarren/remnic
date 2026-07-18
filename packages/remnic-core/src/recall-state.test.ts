@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -244,56 +244,134 @@ async function fileExists(p: string): Promise<boolean> {
 
 test("LastRecallStore rotates recall_impressions.jsonl once it exceeds the byte threshold", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-rotate-"));
-  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-  const store = new LastRecallStore(dir, { impressionsRotateBytes: 64, impressionsRotateKeep: 3 });
-  await store.load();
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 64, impressionsRotateKeep: 3 });
+    await store.load();
 
-  // First append creates the active file (below threshold, no rotation).
-  await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
-  assert.equal(await fileExists(`${impressionsPath}.1`), false);
+    // First append creates the active file (below threshold, no rotation).
+    await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
+    assert.equal(await fileExists(`${impressionsPath}.1`), false);
 
-  // Grow the active file past the threshold, then append: rotation moves the
-  // oversized active file to .1 and starts a fresh active file.
-  await writeFile(impressionsPath, "x".repeat(128), "utf8");
-  await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
+    // Grow the active file past the threshold, then append: rotation moves the
+    // oversized active file to .1 and starts a fresh active file.
+    await writeFile(impressionsPath, "x".repeat(128), "utf8");
+    await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
 
-  assert.equal(await fileExists(impressionsPath), true, "active file recreated");
-  assert.equal(await fileExists(`${impressionsPath}.1`), true, "archive .1 created");
-  const active = await readFile(impressionsPath, "utf8");
-  assert.ok(active.trim().length > 0, "active file holds the new impression");
-  assert.equal(active.includes("x".repeat(128)), false, "old rows moved out of active file");
+    assert.equal(await fileExists(impressionsPath), true, "active file recreated");
+    assert.equal(await fileExists(`${impressionsPath}.1`), true, "archive .1 created");
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(active.trim().length > 0, "active file holds the new impression");
+    assert.equal(active.includes("x".repeat(128)), false, "old rows moved out of active file");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("LastRecallStore keeps at most impressionsRotateKeep archives", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-keep-"));
-  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-  const keep = 2;
-  const store = new LastRecallStore(dir, { impressionsRotateBytes: 32, impressionsRotateKeep: keep });
-  await store.load();
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const keep = 2;
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 32, impressionsRotateKeep: keep });
+    await store.load();
 
-  // Bootstrap the state dir + active file (record() creates them).
-  await store.record({ sessionKey: "seed", query: "seed", memoryIds: [] });
+    // Bootstrap the state dir + active file (record() creates them).
+    await store.record({ sessionKey: "seed", query: "seed", memoryIds: [] });
 
-  // Force several rotations by growing the active file before each append.
-  for (let i = 0; i < 5; i += 1) {
-    await writeFile(impressionsPath, "y".repeat(64), "utf8");
-    await store.record({ sessionKey: `s${i}`, query: `q${i}`, memoryIds: [] });
+    // Force several rotations by growing the active file before each append.
+    for (let i = 0; i < 5; i += 1) {
+      await writeFile(impressionsPath, "y".repeat(64), "utf8");
+      await store.record({ sessionKey: `s${i}`, query: `q${i}`, memoryIds: [] });
+    }
+
+    assert.equal(await fileExists(`${impressionsPath}.1`), true);
+    assert.equal(await fileExists(`${impressionsPath}.2`), true);
+    assert.equal(await fileExists(`${impressionsPath}.3`), false, "archives beyond keep are dropped");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
-
-  assert.equal(await fileExists(`${impressionsPath}.1`), true);
-  assert.equal(await fileExists(`${impressionsPath}.2`), true);
-  assert.equal(await fileExists(`${impressionsPath}.3`), false, "archives beyond keep are dropped");
 });
 
 test("LastRecallStore never rotates when impressionsRotateBytes is 0 (disabled)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-off-"));
-  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-  const store = new LastRecallStore(dir, { impressionsRotateBytes: 0, impressionsRotateKeep: 5 });
-  await store.load();
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 0, impressionsRotateKeep: 5 });
+    await store.load();
 
-  await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
-  await writeFile(impressionsPath, "z".repeat(1024), "utf8");
-  await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
+    await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
+    await writeFile(impressionsPath, "z".repeat(1024), "utf8");
+    await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
 
-  assert.equal(await fileExists(`${impressionsPath}.1`), false, "rotation disabled leaves no archive");
+    assert.equal(await fileExists(`${impressionsPath}.1`), false, "rotation disabled leaves no archive");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore serializes concurrent impression writes without losing rows (#1910)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-concurrent-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    // Small threshold forces rotations mid-flight; a large keep means no archive
+    // falls off the end, so every appended row survives somewhere.
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 200, impressionsRotateKeep: 100 });
+    await store.load();
+
+    const total = 24;
+    await Promise.all(
+      Array.from({ length: total }, (_, i) =>
+        store.record({ sessionKey: `s${i}`, query: `q${i}`, memoryIds: [`m${i}`] }),
+      ),
+    );
+
+    // Gather every impression line across the active file and all archives.
+    const stateDir = path.dirname(impressionsPath);
+    const files = (await readdir(stateDir)).filter((f) => f.startsWith("recall_impressions.jsonl"));
+    const lines: string[] = [];
+    for (const f of files) {
+      const content = await readFile(path.join(stateDir, f), "utf8");
+      for (const line of content.split("\n")) {
+        if (line.trim()) lines.push(line);
+      }
+    }
+    // Serialization guarantees no interleaved/torn writes: every line parses and
+    // every session key appears exactly once.
+    const keys = new Set<string>();
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as { sessionKey: string };
+      keys.add(parsed.sessionKey);
+    }
+    assert.equal(lines.length, total, "no impression rows lost or duplicated under concurrency");
+    assert.equal(keys.size, total, "every session key persisted exactly once");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore preserves the current impression when rotation fails (#1910)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-rotate-fail-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // Seed an active file over the (tiny) threshold so rotation is attempted.
+    await writeFile(impressionsPath, "seed-row-that-exceeds-threshold\n", "utf8");
+    // Make the .1 archive target a non-empty directory so the active→.1 rename
+    // fails with a non-ENOENT error, forcing rotateImpressionsIfNeeded to throw.
+    await mkdir(`${impressionsPath}.1`, { recursive: true });
+    await writeFile(path.join(`${impressionsPath}.1`, "blocker"), "x", "utf8");
+
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 1, impressionsRotateKeep: 1 });
+    await store.load();
+    await store.record({ sessionKey: "preserved", query: "q", memoryIds: [] });
+
+    // Rotation threw, but the current impression must still be appended.
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(active.includes('"sessionKey":"preserved"'), "impression preserved despite rotation failure");
+    // The blocking directory remains (rotation could not move over it).
+    assert.ok((await stat(`${impressionsPath}.1`)).isDirectory(), "rotation did not clobber the blocked target");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

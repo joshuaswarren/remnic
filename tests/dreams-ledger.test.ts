@@ -1,8 +1,8 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import {
   appendDreamsLedgerEntry,
   readDreamsLedgerEntries,
@@ -18,9 +18,21 @@ import {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+const createdTmpDirs: string[] = [];
+
 async function makeTmpDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "engram-dreams-ledger-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-dreams-ledger-"));
+  createdTmpDirs.push(dir);
+  return dir;
 }
+
+// Remove every temp dir this suite created so the run leaves no litter under
+// os.tmpdir() (issue #1910 review).
+after(async () => {
+  await Promise.all(
+    createdTmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const fullPath = path.join(baseDir, relPath);
@@ -480,4 +492,45 @@ test("getDreamsStatus over a large ledger aggregates only in-window rows", async
   assert.equal(status.phases.rem.runCount, 1);
   assert.equal(status.phases.rem.totalItemsProcessed, 4);
   assert.equal(status.phases.deepSleep.runCount, 0);
+});
+
+test("getDreamsStatus aggregates every in-window row past the former 100k cap (issue #1910)", async () => {
+  const dir = await makeTmpDir();
+  const now = new Date("2026-04-27T12:00:00.000Z");
+  const inWindow = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  // 100_001 in-window rows — one past the old MAX_DREAMS_WINDOW_ENTRIES cap.
+  // A correct aggregator counts all of them; the old cap truncated at 100_000.
+  const total = 100_001;
+  const row = JSON.stringify(makeEntry({ phase: "lightSleep", completedAt: inWindow, itemsProcessed: 1 }));
+  await writeText(dir, "state/dreams-ledger.jsonl", (row + "\n").repeat(total));
+
+  const status = await getDreamsStatus(dir, 24, now);
+  assert.equal(status.phases.lightSleep.runCount, total);
+  assert.equal(status.phases.lightSleep.totalItemsProcessed, total);
+});
+
+test("readDreamsLedgerEntries rejects rows with a present-but-malformed schemaVersion/dryRun/trigger (issue #1910)", async () => {
+  const dir = await makeTmpDir();
+  const ledgerPath = dreamsLedgerPath(dir);
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  const base = {
+    startedAt: "2026-04-27T00:00:00.000Z",
+    completedAt: "2026-04-27T00:00:01.000Z",
+    durationMs: 1000,
+    phase: "lightSleep" as const,
+    itemsProcessed: 5,
+  };
+  const rows = [
+    JSON.stringify({ ...base, schemaVersion: 2 }), // wrong schema version → reject
+    JSON.stringify({ ...base, dryRun: "yes" }), // non-boolean dryRun → reject
+    JSON.stringify({ ...base, trigger: "cron" }), // unknown trigger → reject
+    JSON.stringify({ ...base, itemsProcessed: 9 }), // valid (no optional fields) → keep
+  ];
+  await writeFile(ledgerPath, rows.join("\n") + "\n", "utf-8");
+
+  const entries = await readDreamsLedgerEntries(dir);
+  assert.equal(entries.length, 1, "only the fully-valid row survives");
+  assert.equal(entries[0]!.itemsProcessed, 9);
+  assert.equal(entries[0]!.dryRun, false);
+  assert.equal(entries[0]!.trigger, "scheduled");
 });

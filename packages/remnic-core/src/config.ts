@@ -304,25 +304,6 @@ function parseIntegerAtLeast(
   return coerced;
 }
 
-/**
- * Issue #1910 — bounded-state numeric knobs. Coerce a number OR a CLI/overlay
- * string (Gotcha #28: `--config x=0` arrives as `"0"`) once, then clamp to
- * `min` and floor to an integer. Never throws — a present-but-garbage value
- * falls back to the default (coerceNumber already warns), matching the
- * clamp-not-throw style of the surrounding maintenance knobs. `0` survives when
- * `min` is 0, so the documented disable stays effective on every surface.
- */
-function clampNumberAtLeastOrDefault(
-  value: unknown,
-  fallback: number,
-  min: number,
-  label?: string,
-): number {
-  const coerced = coerceNumber(value, label);
-  if (coerced === undefined) return fallback;
-  return Math.max(min, Math.floor(coerced));
-}
-
 function parseOptionalIntegerAtLeast(
   value: unknown,
   min: number,
@@ -3601,28 +3582,31 @@ export function parseConfig(
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
     // Issue #1910 — bounded JSONL state files. Numeric knobs accept CLI/overlay
-    // string forms (Gotcha #28) via coerceNumber. `0` disables (never coerced to
-    // a default): byte thresholds floor at 0, the min-interval floors at 60s, and
-    // the keep count floors at 1 so rotation always retains at least one archive.
-    memoryLifecycleLedgerCompactBytes: clampNumberAtLeastOrDefault(
+    // string forms (Gotcha #28) via coerceNumber, then require an integer >= min.
+    // A present-but-malformed or fractional value is REJECTED (throws) rather
+    // than silently taking the default; only an absent value falls back. `0`
+    // survives when `min` is 0, so the documented disable stays effective on
+    // every surface (byte thresholds floor at 0, the min-interval at 60s, and
+    // the keep count at 1 so rotation always retains at least one archive).
+    memoryLifecycleLedgerCompactBytes: parseIntegerAtLeast(
       cfg.memoryLifecycleLedgerCompactBytes,
       64 * 1024 * 1024,
       0,
       "memoryLifecycleLedgerCompactBytes",
     ),
-    memoryLifecycleLedgerCompactMinIntervalMs: clampNumberAtLeastOrDefault(
+    memoryLifecycleLedgerCompactMinIntervalMs: parseIntegerAtLeast(
       cfg.memoryLifecycleLedgerCompactMinIntervalMs,
       6 * 60 * 60 * 1000,
       60_000,
       "memoryLifecycleLedgerCompactMinIntervalMs",
     ),
-    recallImpressionsRotateBytes: clampNumberAtLeastOrDefault(
+    recallImpressionsRotateBytes: parseIntegerAtLeast(
       cfg.recallImpressionsRotateBytes,
       32 * 1024 * 1024,
       0,
       "recallImpressionsRotateBytes",
     ),
-    recallImpressionsRotateKeep: clampNumberAtLeastOrDefault(
+    recallImpressionsRotateKeep: parseIntegerAtLeast(
       cfg.recallImpressionsRotateKeep,
       5,
       1,

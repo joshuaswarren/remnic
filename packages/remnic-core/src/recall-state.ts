@@ -236,6 +236,9 @@ export class LastRecallStore {
   private readonly impressionsRotateKeep: number;
   private state: LastRecallState = {};
   private stateWriteChain: Promise<void> = Promise.resolve();
+  // Serializes the rotate-then-append critical section so concurrent record()
+  // calls never interleave rotation renames with each other's appends (#1910).
+  private impressionsWriteChain: Promise<void> = Promise.resolve();
 
   constructor(
     memoryDir: string,
@@ -386,10 +389,17 @@ export class LastRecallStore {
     }
 
     if (opts.appendImpression !== false) {
+      const line = JSON.stringify(snapshot) + "\n";
+      // Chain onto the previous impression write so rotation + append run as one
+      // serialized critical section — concurrent record() calls can never
+      // interleave a rename with another call's append (#1910). `.catch` before
+      // the link keeps a prior failure from poisoning the chain.
+      const chained = this.impressionsWriteChain
+        .catch(() => {})
+        .then(() => this.appendImpressionSerialized(line));
+      this.impressionsWriteChain = chained;
       try {
-        await mkdir(path.dirname(this.impressionsPath), { recursive: true });
-        await this.rotateImpressionsIfNeeded();
-        await appendFile(this.impressionsPath, JSON.stringify(snapshot) + "\n", "utf-8");
+        await chained;
       } catch (err) {
         log.debug(`recall impressions append failed: ${err}`);
       }
@@ -397,12 +407,29 @@ export class LastRecallStore {
   }
 
   /**
+   * Rotate (best-effort) then append one impression line. Rotation failure must
+   * NOT drop the current impression (#1910): a failed rotation is logged and
+   * the append still runs, so the in-hand row is never lost to a rename error.
+   * Callers invoke this only through `impressionsWriteChain` so the
+   * rotate-then-append sequence is serialized against concurrent record() calls.
+   */
+  private async appendImpressionSerialized(line: string): Promise<void> {
+    await mkdir(path.dirname(this.impressionsPath), { recursive: true });
+    try {
+      await this.rotateImpressionsIfNeeded();
+    } catch (err) {
+      log.debug(`recall impressions rotation failed (append preserved): ${err}`);
+    }
+    await appendFile(this.impressionsPath, line, "utf-8");
+  }
+
+  /**
    * Size-based rotation of `recall_impressions.jsonl` (issue #1910). When the
    * active file exceeds `impressionsRotateBytes`, shift `.1..N` down one slot,
    * move the active file to `.1`, and drop anything beyond `keep`. The active
    * file name and format are unchanged; only historical rows move to archives.
-   * `0` disables. Best-effort — a rotation error propagates to the caller's
-   * `log.debug` guard rather than losing the impression append.
+   * `0` disables. A rotation error is caught by the caller
+   * (`appendImpressionSerialized`) so the current impression is still appended.
    */
   private async rotateImpressionsIfNeeded(): Promise<void> {
     if (this.impressionsRotateBytes <= 0) return;

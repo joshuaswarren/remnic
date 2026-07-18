@@ -1060,3 +1060,44 @@ test("auto-compaction bounds per-namespace ledgers, not just the root state path
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("maintenance request triggers lifecycle compaction even when QMD is unavailable (#1910)", async () => {
+  const { memoryDir } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    // QMD reports unavailable, so requestQmdMaintenance() short-circuits and
+    // runQmdMaintenance() never fires. The compaction check must still be wired
+    // off the request entrypoint so a QMD-off deployment keeps bounding the
+    // ledger. requestQmdMaintenanceForTool invokes the check synchronously
+    // (fire-and-forget), so a spy on the private method observes the wiring
+    // deterministically without waiting on the async filesystem work.
+    const scheduler = new MaintenanceScheduler({
+      config: fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      getQmd: () => ({ isAvailable: () => false }) as unknown as SearchBackend,
+      namespaceSearchRouter: {} as unknown as NamespaceSearchRouter,
+      namespaceCatalog: {} as unknown as NamespaceCatalog,
+    });
+    let compactionInvoked = false;
+    // Named seam cast (reason: reach the private compaction method to observe
+    // the request→compaction wiring), mirroring the CompactableScheduler cast
+    // used by the direct compaction tests above.
+    const seam = scheduler as unknown as CompactableScheduler;
+    seam.maybeCompactMemoryLifecycleLedger = async () => {
+      compactionInvoked = true;
+    };
+    try {
+      scheduler.requestQmdMaintenanceForTool("test");
+      assert.ok(
+        compactionInvoked,
+        "lifecycle compaction must be triggered from the maintenance request when QMD is unavailable",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

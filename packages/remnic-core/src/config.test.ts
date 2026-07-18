@@ -2255,7 +2255,7 @@ test("parseConfig namespace-catalog touch-path knobs: defaults, 0-accepting nume
   );
 });
 
-test("parseConfig bounded-state knobs coerce CLI/overlay strings and preserve 0-disable (#1910)", () =>
+test("parseConfig bounded-state knobs coerce valid strings, preserve 0, and reject malformed/fractional (#1910)", () =>
   withIsolatedConnectorsDir(false, () => {
     // Defaults when absent.
     const defaults = parseConfig({});
@@ -2264,7 +2264,7 @@ test("parseConfig bounded-state knobs coerce CLI/overlay strings and preserve 0-
     assert.equal(defaults.recallImpressionsRotateBytes, 32 * 1024 * 1024);
     assert.equal(defaults.recallImpressionsRotateKeep, 5);
 
-    // String forms (CLI `--config x=…` arrives as strings, Gotcha #28) parse.
+    // Valid string forms (CLI `--config x=…` arrives as strings, Gotcha #28) parse.
     const strings = parseConfig({
       memoryLifecycleLedgerCompactBytes: "2048",
       memoryLifecycleLedgerCompactMinIntervalMs: "120000",
@@ -2276,29 +2276,28 @@ test("parseConfig bounded-state knobs coerce CLI/overlay strings and preserve 0-
     assert.equal(strings.recallImpressionsRotateBytes, 4096);
     assert.equal(strings.recallImpressionsRotateKeep, 3);
 
-    // The documented `"0"` disable stays effective on the byte thresholds
-    // instead of silently falling back to the default.
-    const disabled = parseConfig({
+    // The documented `0` disable stays effective on the byte thresholds (min 0),
+    // as both a string and a real number, instead of being rejected.
+    const disabledStr = parseConfig({
       memoryLifecycleLedgerCompactBytes: "0",
       recallImpressionsRotateBytes: "0",
     });
-    assert.equal(disabled.memoryLifecycleLedgerCompactBytes, 0);
-    assert.equal(disabled.recallImpressionsRotateBytes, 0);
-
-    // Clamps hold for numeric and string inputs: min-interval floors at 60s,
-    // keep floors at 1, and negatives clamp to the floor.
-    const clamped = parseConfig({
-      memoryLifecycleLedgerCompactMinIntervalMs: "1000",
-      recallImpressionsRotateKeep: "0",
-      memoryLifecycleLedgerCompactBytes: -5,
+    assert.equal(disabledStr.memoryLifecycleLedgerCompactBytes, 0);
+    assert.equal(disabledStr.recallImpressionsRotateBytes, 0);
+    const disabledNum = parseConfig({
+      memoryLifecycleLedgerCompactBytes: 0,
+      recallImpressionsRotateBytes: 0,
     });
-    assert.equal(clamped.memoryLifecycleLedgerCompactMinIntervalMs, 60_000);
-    assert.equal(clamped.recallImpressionsRotateKeep, 1);
-    assert.equal(clamped.memoryLifecycleLedgerCompactBytes, 0);
+    assert.equal(disabledNum.memoryLifecycleLedgerCompactBytes, 0);
+    assert.equal(disabledNum.recallImpressionsRotateBytes, 0);
 
-    // A present-but-garbage value falls back to the default (coerceNumber warns).
-    assert.equal(
-      parseConfig({ memoryLifecycleLedgerCompactBytes: "abc" }).memoryLifecycleLedgerCompactBytes,
-      64 * 1024 * 1024,
-    );
+    // Present-but-malformed values are REJECTED (throw), not silently defaulted.
+    assert.throws(() => parseConfig({ memoryLifecycleLedgerCompactBytes: "abc" }), /must be an integer/);
+    // Fractional present values are rejected on every surface (number and string).
+    assert.throws(() => parseConfig({ recallImpressionsRotateBytes: 2.5 }), /must be an integer/);
+    assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "3.5" }), /must be an integer/);
+    // Below-min values are rejected rather than clamped up.
+    assert.throws(() => parseConfig({ memoryLifecycleLedgerCompactMinIntervalMs: "1000" }), /greater than or equal to 60000/);
+    assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "0" }), /greater than or equal to 1/);
+    assert.throws(() => parseConfig({ memoryLifecycleLedgerCompactBytes: -5 }), /greater than or equal to 0/);
   }));

@@ -117,33 +117,48 @@ export async function appendDreamsLedgerEntry(
 function parseDreamsLedgerLine(line: string): DreamsLedgerEntry | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(trimmed) as Partial<DreamsLedgerEntry>;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    if (
-      typeof parsed.phase === "string" &&
-      (parsed.phase === "lightSleep" || parsed.phase === "rem" || parsed.phase === "deepSleep") &&
-      typeof parsed.startedAt === "string" &&
-      typeof parsed.completedAt === "string" &&
-      typeof parsed.durationMs === "number" &&
-      typeof parsed.itemsProcessed === "number"
-    ) {
-      return {
-        schemaVersion: 1,
-        startedAt: parsed.startedAt,
-        completedAt: parsed.completedAt,
-        durationMs: parsed.durationMs,
-        phase: parsed.phase,
-        itemsProcessed: parsed.itemsProcessed,
-        dryRun: parsed.dryRun === true,
-        trigger: parsed.trigger === "manual" ? "manual" : "scheduled",
-        notes: typeof parsed.notes === "string" ? parsed.notes : undefined,
-      };
-    }
+    const raw = JSON.parse(trimmed);
+    if (typeof raw !== "object" || raw === null) return null;
+    parsed = raw as Record<string, unknown>;
   } catch {
-    // Malformed line — skip (fail-open).
+    return null; // Malformed JSON — skip (fail-open).
   }
-  return null;
+
+  // Required, strongly-typed fields. A row missing or mistyping any of these is
+  // not a usable telemetry entry.
+  const phase = parsed.phase;
+  if (phase !== "lightSleep" && phase !== "rem" && phase !== "deepSleep") return null;
+  if (
+    typeof parsed.startedAt !== "string" ||
+    typeof parsed.completedAt !== "string" ||
+    typeof parsed.durationMs !== "number" ||
+    typeof parsed.itemsProcessed !== "number"
+  ) {
+    return null;
+  }
+
+  // Optional fields: absence is tolerated (older entries predate them, no
+  // backfill), but a PRESENT value with the wrong type/value marks the row
+  // malformed and skips it — never silently coerced to a default (issue #1910).
+  if ("schemaVersion" in parsed && parsed.schemaVersion !== 1) return null;
+  if ("dryRun" in parsed && typeof parsed.dryRun !== "boolean") return null;
+  if ("trigger" in parsed && parsed.trigger !== "manual" && parsed.trigger !== "scheduled") {
+    return null;
+  }
+
+  return {
+    schemaVersion: 1,
+    startedAt: parsed.startedAt,
+    completedAt: parsed.completedAt,
+    durationMs: parsed.durationMs,
+    phase,
+    itemsProcessed: parsed.itemsProcessed,
+    dryRun: parsed.dryRun === true,
+    trigger: parsed.trigger === "manual" ? "manual" : "scheduled",
+    notes: typeof parsed.notes === "string" ? parsed.notes : undefined,
+  };
 }
 
 /**
@@ -168,7 +183,12 @@ export async function* streamDreamsLedgerLines(memoryDir: string): AsyncGenerato
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   } finally {
+    // Close the readline interface AND destroy the underlying stream. When a
+    // consumer stops early (e.g. `getDreamsStatus` breaks out), the generator's
+    // `.return()` runs this finally; `rl.close()` alone leaves the file
+    // descriptor open, so destroy the stream to release it (issue #1910).
     rl.close();
+    input.destroy();
   }
 }
 
@@ -192,12 +212,6 @@ export async function readDreamsLedgerEntries(memoryDir: string): Promise<Dreams
 
 const ALL_PHASES: DreamsPhase[] = ["lightSleep", "rem", "deepSleep"];
 const MAX_WINDOW_HOURS = 24 * 365 * 100;
-/**
- * Hard ceiling on in-window entries retained during a status aggregation
- * (issue #1910). Bounds heap use even for a pathologically large window, so a
- * status query can never materialize an unbounded slice of the ledger.
- */
-const MAX_DREAMS_WINDOW_ENTRIES = 100_000;
 
 export function normalizeDreamsStatusWindowHours(value: unknown, fallback = 24): number {
   const raw = value === undefined || value === null ? fallback : value;
@@ -237,19 +251,8 @@ export async function getDreamsStatus(
     throw new RangeError("windowHours produces an invalid status window");
   }
 
-  // Stream the ledger and keep only in-window rows, so heap use is bounded by
-  // the window (and the hard cap) rather than the file size (issue #1910).
   const windowStartMs = windowStart.getTime();
   const windowEndMs = windowEnd.getTime();
-  const windowEntries: DreamsLedgerEntry[] = [];
-  for await (const line of streamDreamsLedgerLines(memoryDir)) {
-    const entry = parseDreamsLedgerLine(line);
-    if (!entry) continue;
-    const ts = Date.parse(entry.completedAt);
-    if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
-    windowEntries.push(entry);
-    if (windowEntries.length >= MAX_DREAMS_WINDOW_ENTRIES) break;
-  }
 
   const statusMap = new Map<DreamsPhase, DreamsPhaseStatus>();
   for (const phase of ALL_PHASES) {
@@ -263,18 +266,22 @@ export async function getDreamsStatus(
     });
   }
 
-  for (const entry of windowEntries) {
+  // Stream the ledger and aggregate every in-window row inline, so heap use is
+  // O(number of phases) regardless of window or file size (issue #1910) — no
+  // per-row array and no row cap, so a large in-window window is still counted
+  // in full rather than truncated.
+  for await (const line of streamDreamsLedgerLines(memoryDir)) {
+    const entry = parseDreamsLedgerLine(line);
+    if (!entry) continue;
+    const ts = Date.parse(entry.completedAt);
+    if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
     const status = statusMap.get(entry.phase);
     if (!status) continue;
     status.runCount += 1;
     status.totalDurationMs += entry.durationMs;
     status.totalItemsProcessed += entry.itemsProcessed;
-
     // Track the most recent run (by completedAt).
-    if (
-      status.lastRunAt === null ||
-      Date.parse(entry.completedAt) > Date.parse(status.lastRunAt)
-    ) {
+    if (status.lastRunAt === null || ts > Date.parse(status.lastRunAt)) {
       status.lastRunAt = entry.completedAt;
       status.lastDurationMs = entry.durationMs;
     }

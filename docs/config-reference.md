@@ -944,8 +944,13 @@ of truth for similarity logic across read-time and write-time code paths.
 
 ## Bounded JSONL State (issue #1910)
 
-Append-only JSONL files under `<memoryDir>/state/` are size-bounded so they
-cannot grow without limit and cannot cross V8's ~512MB string ceiling.
+Append-only JSONL files under `<memoryDir>/state/` are size-bounded **by
+default** so they cannot grow without limit and cannot cross V8's ~512MB string
+ceiling. Setting a byte knob (`memoryLifecycleLedgerCompactBytes` /
+`recallImpressionsRotateBytes`) to `0` disables that control for its file (`0`
+is honored, never coerced to a default); a file whose bound is disabled can
+once again grow without limit. Keep the defaults, or any non-zero bound, to
+retain the guarantee.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
