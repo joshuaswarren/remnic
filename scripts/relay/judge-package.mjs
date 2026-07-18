@@ -450,7 +450,8 @@ function assertBuilder(role, call, expectedMemoryId) {
 function scanForSensitiveMaterial(values) {
   const text = values.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join("\n");
   const forbidden = [
-    /\/home\//,
+    /(?:^|[\s"'`(=])\/(?:boot|dev|etc|home|media|mnt|opt|private|proc|root|run|srv|sys|tmp|usr|var)(?:\/|$)/m,
+    /(?:^|[\s"'`(=])[A-Za-z]:\\(?:ProgramData|Users|Windows)(?:\\|$)/m,
     /\.codex\/auth\.json/,
     /\bBearer\s+[A-Za-z0-9._-]{16,}/i,
     /\bsk-[A-Za-z0-9_-]{16,}\b/,

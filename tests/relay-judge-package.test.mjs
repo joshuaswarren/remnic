@@ -215,16 +215,27 @@ test("Relay judge verifier rejects a hand-edited Mission Control frame", async (
   }
 });
 
-test("Relay judge verifier scans copied judge text for host-private material", async () => {
-  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-sensitive-"));
-  try {
-    await copyJudgePackage(parent);
-    const demoPath = path.join(parent, "docs/remnic-relay/DEMO-SCRIPT.md");
-    const demo = await readFile(demoPath, "utf8");
-    await writeFile(demoPath, `${demo}\nPrivate source: /home/operator/production-memory\n`);
-    await assert.rejects(() => verifyRelayJudgePackage(parent), /secret-like or host-private material/);
-  } finally {
-    await rm(parent, { recursive: true, force: true });
+test("Relay judge verifier scans copied judge text for host-private material", async (t) => {
+  for (const privatePath of [
+    "/home/operator/production-memory",
+    "/root/production-memory",
+    "/etc/remnic/operator.json",
+    "/var/lib/remnic/production",
+    "/proc/self/environ",
+    "C:\\Users\\operator\\production-memory",
+  ]) {
+    await t.test(privatePath, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-sensitive-"));
+      try {
+        await copyJudgePackage(parent);
+        const demoPath = path.join(parent, "docs/remnic-relay/DEMO-SCRIPT.md");
+        const demo = await readFile(demoPath, "utf8");
+        await writeFile(demoPath, `${demo}\nPrivate source: ${privatePath}\n`);
+        await assert.rejects(() => verifyRelayJudgePackage(parent), /secret-like or host-private material/);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    });
   }
 });
 
