@@ -3,7 +3,8 @@ name: remnic-no-static-optional-package-imports
 description: "Base packages must not statically value-import optional companion packages (bench, export/import-*, connector-*, coding-graph)"
 condition:
   - 'import\s+(?!type\b)[^;]{0,300}?from\s*["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
-  - '(await\s+import|require)\(\s*["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
+  - '(?<!typeof )(?<!: )(?<!<)(?<!as )import\s*\(\s*["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
+  - '(import\s+|require\(\s*)["'']@remnic/(bench|export-weclone|import-[a-z-]+|connector-[a-z-]+|coding-graph)["'']'
 globs:
   - "**/packages/remnic-cli/**"
   - "**/packages/remnic-core/**"
@@ -15,8 +16,10 @@ globs:
 You are adding a runtime import of an optional companion package
 (`@remnic/bench`, `@remnic/export-weclone`, `@remnic/import-*`,
 `@remnic/connector-*`, `@remnic/coding-graph`) into a base package.
-These are optional peer dependencies — a static or literal-specifier
-dynamic import lets the bundler resolve them and pulls them into every
+These are optional peer dependencies — a static import, a side-effect
+import, or a literal-specifier dynamic import (awaited or not: `void
+import(...)`, `import(...).then(...)`) lets the bundler resolve them
+and pulls them into every
 base install, breaking the à-la-carte packaging contract (AGENTS.md
 pattern 44). A past regression bundled bench and export-weclone into
 every CLI install this way.
