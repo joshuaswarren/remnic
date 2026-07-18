@@ -338,14 +338,19 @@ test("a disconnected MCP recall queued on the budget lock never starts and does 
 
   const lockService = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const lockHost = lockService as unknown as {
-    budgetLocks: Map<string, Promise<void>>;
-    withBudgetLock<T>(
+    recallSemaphores: Map<string, unknown>;
+    orchestrator: { config: Record<string, unknown> };
+    withRecallConcurrency<T>(
       principal: string,
       abortSignal: AbortSignal | undefined,
-      operation: () => Promise<T>,
+      operation: (queueWaitMs: number) => Promise<T>,
     ): Promise<T>;
   };
-  lockHost.budgetLocks = new Map();
+  lockHost.recallSemaphores = new Map();
+  // limit=1 preserves the exact pre-#1906 serialization this test exercises:
+  // the second recall queues behind the first, and an abort while queued now
+  // rejects it immediately (before the holder releases).
+  lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
   const service = {
     recall: async (input: EngramAccessRecallRequest) => {
@@ -356,7 +361,7 @@ test("a disconnected MCP recall queued on the budget lock never starts and does 
         secondQueued.resolve();
       }
       try {
-        return await lockHost.withBudgetLock("principal", input.abortSignal, async () => {
+        return await lockHost.withRecallConcurrency("principal", input.abortSignal, async () => {
           if (call === 1) {
             firstStarted.resolve();
             await releaseFirst.promise;

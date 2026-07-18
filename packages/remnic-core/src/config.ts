@@ -2079,6 +2079,13 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallCrossNamespaceBudgetHardLimit);
       return n !== undefined && n > 0 ? Math.floor(n) : 30;
     })(),
+    recallMaxConcurrentPerPrincipal: (() => {
+      const n = coerceNumber(cfg.recallMaxConcurrentPerPrincipal);
+      // >=0 so 0 (unlimited) is honored; anything invalid falls back to 4.
+      return n !== undefined && n >= 0 ? Math.floor(n) : 4;
+    })(),
+    recallSingleFlightEnabled:
+      coerceBool(cfg.recallSingleFlightEnabled) ?? true,
     // Recall-audit anomaly detector (issue #565 PR 5/5). Defaults off so
     // existing deployments are unaffected; enable explicitly to let the
     // access surfaces flag suspicious query patterns derived from the

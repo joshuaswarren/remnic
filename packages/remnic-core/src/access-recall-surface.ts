@@ -825,6 +825,9 @@ export class AccessRecallSurface {
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+      ...(typeof request.queueWaitMs === "number"
+        ? { queueWaitMs: request.queueWaitMs }
+        : {}),
     };
     const startedAt = Date.now();
     const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);

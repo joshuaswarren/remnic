@@ -462,6 +462,17 @@ export class RecallInternalCoordinator {
       if (Number.isFinite(parsed)) asOfMs = parsed;
     }
     const timings: Record<string, string> = {};
+    // Issue #1906 — additive queue-wait phase. The caller measured the
+    // wall-clock time spent waiting for a per-principal recall slot /
+    // single-flight leader before execution began; fold it into timings so
+    // both recordRecallTiming sites (which spread ...timings) emit it.
+    if (
+      typeof options.queueWaitMs === "number" &&
+      Number.isFinite(options.queueWaitMs) &&
+      options.queueWaitMs >= 0
+    ) {
+      timings.queueWaitMs = `${options.queueWaitMs}ms`;
+    }
     const profileTraceId = this.deps.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: resolveQmdCapabilities(this.deps.config).qmd,
       rerankEnabled: caps.rerank,

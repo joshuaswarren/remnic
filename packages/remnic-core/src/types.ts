@@ -1017,6 +1017,21 @@ export interface PluginConfig {
   recallCrossNamespaceBudgetSoftLimit: number;
   /** Hard threshold — calls past this count are denied in the window. */
   recallCrossNamespaceBudgetHardLimit: number;
+  /**
+   * Maximum concurrent recalls executed per principal. Recalls beyond this
+   * cap queue FIFO (abort leaves the queue immediately). `0` = unlimited
+   * (no cap). Default 4. Replaces the former width-1 budget-lock
+   * serialization; budget accounting stays correct because peek/record are
+   * synchronous (see cross-namespace-budget.ts).
+   */
+  recallMaxConcurrentPerPrincipal: number;
+  /**
+   * When true (default), identical concurrent recalls for the same principal
+   * share a single in-flight execution (single-flight coalescing); each
+   * caller still receives its own cloned response and records its own budget
+   * event. Set false to restore per-request execution.
+   */
+  recallSingleFlightEnabled: boolean;
   // Memory Worth recall filter (issue #560 PR 4)
   /**
    * When true, recall multiplies candidate scores by the Memory Worth

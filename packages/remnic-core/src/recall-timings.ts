@@ -45,6 +45,7 @@ const TIMING_FIELD_ALLOWLIST = [
   "graphShadow",
   "qmdPost",
   "trustStage",
+  "queueWaitMs",
 ] as const;
 // The ring buffer is process-local: a daemon restart or haproxy failover to
 // the other backend starts an empty history. processStartedAt lets consumers

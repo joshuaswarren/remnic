@@ -5,7 +5,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
-import { throwIfAborted } from "./abort-error.js";
+import { abortError, throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
@@ -403,6 +403,14 @@ export interface EngramAccessRecallRequest {
   mode?: RecallPlanMode | "auto";
   includeDebug?: boolean;
   abortSignal?: AbortSignal;
+  /**
+   * Internal, server-set field (issue #1906): wall-clock ms the caller
+   * waited for a per-principal recall slot / single-flight leader before
+   * execution. Set by `recall()`, forwarded into `RecallInvocationOptions`,
+   * and folded additively into recall-timings. Not part of the zod schema
+   * (same pattern as `abortSignal`).
+   */
+  queueWaitMs?: number;
   /**
    * Recall disclosure depth. Omitting it preserves the `"chunk"` default.
    * Other accepted values are `"section"` and `"raw"`.
@@ -1302,10 +1310,28 @@ export function shapeMemorySummary(
   };
 }
 
+/**
+ * Per-principal recall concurrency slot (issue #1906). `active` counts
+ * in-flight recalls holding a permit; `waiters` is the FIFO queue of callers
+ * blocked on a permit. Process-local (per AGENTS.md multi-instance reality);
+ * entries self-delete when idle so the map never grows unbounded.
+ */
+interface PrincipalSemaphore {
+  active: number;
+  waiters: Array<{ take: () => void; drop: () => void }>;
+}
+
 export class EngramAccessService {
   private readonly idempotency: AccessIdempotencyStore;
   private readonly idempotencyLocks = new Map<string, Promise<void>>();
-  private readonly budgetLocks = new Map<string, Promise<void>>();
+  private readonly recallSemaphores = new Map<string, PrincipalSemaphore>();
+  private readonly recallInFlight = new Map<
+    string,
+    Promise<{
+      response: EngramAccessRecallResponse;
+      budgetRecordPrincipal: string | null;
+    }>
+  >();
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
 
@@ -2420,25 +2446,105 @@ export class EngramAccessService {
     }
   }
 
-  private async withBudgetLock<T>(principal: string, abortSignal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
-    const key = principal || "__anonymous__";
-    const previous = this.budgetLocks.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
+  /**
+   * Acquire a recall slot for `key` (issue #1906). Resolves with a release
+   * fn; rejects with an AbortError if `signal` fires while queued. A `limit`
+   * of `0` (or any non-positive/non-finite value, which cannot occur after
+   * config parse) means "unlimited". Waiters are served FIFO; an aborted
+   * waiter leaves the queue immediately and never holds a permit. Empty
+   * entries self-delete so the map never grows unbounded (the 2026-07-10
+   * unbounded-state-file lesson: every structure has a delete path).
+   */
+  private acquireRecallSlot(
+    key: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    const cap = Number.isFinite(limit) && limit > 0 ? limit : Infinity;
+    const sem = this.recallSemaphores.get(key) ?? { active: 0, waiters: [] };
+    this.recallSemaphores.set(key, sem);
+    const release = () => {
+      sem.active--;
+      const next = sem.waiters.shift();
+      if (next) {
+        sem.active++;
+        next.take();
+      }
+      if (sem.active === 0 && sem.waiters.length === 0) {
+        this.recallSemaphores.delete(key);
+      }
+    };
+    if (sem.active < cap) {
+      sem.active++;
+      return Promise.resolve(release);
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter = {
+        take: () => {
+          signal?.removeEventListener("abort", waiter.drop);
+          resolve(release);
+        },
+        drop: () => {
+          const i = sem.waiters.indexOf(waiter);
+          if (i >= 0) sem.waiters.splice(i, 1);
+          if (sem.active === 0 && sem.waiters.length === 0) {
+            this.recallSemaphores.delete(key);
+          }
+          reject(abortError("operation aborted"));
+        },
+      };
+      if (signal?.aborted) {
+        waiter.drop();
+        return;
+      }
+      signal?.addEventListener("abort", waiter.drop, { once: true });
+      sem.waiters.push(waiter);
     });
-    const queued = previous.then(() => current, () => current);
-    this.budgetLocks.set(key, queued);
-    await previous.catch(() => {});
+  }
+
+  /**
+   * Runs `fn` under a per-principal recall slot, passing the measured queue
+   * wait (ms) so it can be folded additively into recall-timings. Replaces
+   * the former width-1 `withBudgetLock` FIFO serialization (issue #1906):
+   * budget accounting stays correct because peek/record are synchronous
+   * (see cross-namespace-budget.ts). Release always runs in `finally`.
+   */
+  private async withRecallConcurrency<T>(
+    principal: string,
+    signal: AbortSignal | undefined,
+    fn: (queueWaitMs: number) => Promise<T>,
+  ): Promise<T> {
+    const key = principal || "__anonymous__";
+    const limit = this.orchestrator.config.recallMaxConcurrentPerPrincipal;
+    throwIfAborted(signal);
+    const startedWaiting = Date.now();
+    const release = await this.acquireRecallSlot(key, limit, signal);
+    const queueWaitMs = Date.now() - startedWaiting;
     try {
-      throwIfAborted(abortSignal);
-      return await fn();
+      return await fn(queueWaitMs);
     } finally {
       release();
-      if (this.budgetLocks.get(key) === queued) {
-        this.budgetLocks.delete(key);
-      }
     }
+  }
+
+  /**
+   * Race `p` against `signal` (issue #1906). A single-flight follower waits
+   * on the shared leader promise but must be able to leave on its own abort
+   * without aborting the leader (other callers may still consume it).
+   */
+  private raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return p;
+    return Promise.race([
+      p,
+      new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) return reject(abortError("operation aborted"));
+        signal.addEventListener(
+          "abort",
+          () => reject(abortError("operation aborted")),
+          { once: true },
+        );
+      }),
+    ]);
   }
 
   async health(namespace?: string): Promise<EngramAccessHealthResponse> {
@@ -2743,30 +2849,74 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    return this.withBudgetLock(principal ?? "default", request.abortSignal, async () => {
-      let budgetRecordPrincipal: string | null = null;
-      const response = await this.handleIdempotentRead({
-        operation: "recall",
-        idempotencyKey: request.idempotencyKey,
-        requestFingerprint,
-        execute: async () => {
-          const result = await this.executeRecall(normalizedRequest);
-          throwIfAborted(request.abortSignal);
-          budgetRecordPrincipal = result.budgetRecordPrincipal;
-          return result.response;
-        },
-        afterStore: () => {
-          if (!budgetRecordPrincipal) return;
-          const recordedBudgetDecision = this.budget.record(budgetRecordPrincipal);
-          if (!recordedBudgetDecision.allowed) {
-            throw new EngramAccessInputError(
-              `recall denied: cross-namespace budget exceeded (${recordedBudgetDecision.count}/${recordedBudgetDecision.limit.hardLimit} in ${recordedBudgetDecision.limit.windowMs}ms window)`,
-            );
-          }
-        },
-      });
-      return response;
-    });
+    return this.withRecallConcurrency(
+      principal ?? "default",
+      request.abortSignal,
+      async (queueWaitMs) => {
+        let budgetRecordPrincipal: string | null = null;
+        const response = await this.handleIdempotentRead({
+          operation: "recall",
+          idempotencyKey: request.idempotencyKey,
+          requestFingerprint,
+          execute: async () => {
+            const singleFlight =
+              this.orchestrator.config.recallSingleFlightEnabled === true;
+            let result: {
+              response: EngramAccessRecallResponse;
+              budgetRecordPrincipal: string | null;
+            };
+            if (singleFlight) {
+              const flightKey = `${principal ?? "default"}\u0000${hashAccessIdempotencyPayload(
+                { operation: "recall", request: requestFingerprint },
+              )}`;
+              const joined = this.recallInFlight.get(flightKey);
+              if (joined) {
+                // Follower: consume the leader's execution. Race our own
+                // abort so a disconnected follower leaves without aborting
+                // the leader (other callers may still consume it).
+                result = await this.raceAbort(joined, request.abortSignal);
+              } else {
+                // Leader: run the pipeline once; followers coalesce onto it.
+                const exec = this.executeRecall({
+                  ...normalizedRequest,
+                  queueWaitMs,
+                });
+                this.recallInFlight.set(flightKey, exec);
+                exec
+                  .catch(() => {})
+                  .finally(() => {
+                    if (this.recallInFlight.get(flightKey) === exec) {
+                      this.recallInFlight.delete(flightKey);
+                    }
+                  });
+                result = await this.raceAbort(exec, request.abortSignal);
+              }
+            } else {
+              const exec = this.executeRecall({
+                ...normalizedRequest,
+                queueWaitMs,
+              });
+              result = await this.raceAbort(exec, request.abortSignal);
+            }
+            throwIfAborted(request.abortSignal);
+            budgetRecordPrincipal = result.budgetRecordPrincipal;
+            // Clone so no two coalesced callers (or the idempotency store)
+            // share a mutable response object (AGENTS.md rule 47).
+            return structuredClone(result.response);
+          },
+          afterStore: () => {
+            if (!budgetRecordPrincipal) return;
+            const recordedBudgetDecision = this.budget.record(budgetRecordPrincipal);
+            if (!recordedBudgetDecision.allowed) {
+              throw new EngramAccessInputError(
+                `recall denied: cross-namespace budget exceeded (${recordedBudgetDecision.count}/${recordedBudgetDecision.limit.hardLimit} in ${recordedBudgetDecision.limit.windowMs}ms window)`,
+              );
+            }
+          },
+        });
+        return response;
+      },
+    );
   }
 
   private async executeRecall(
