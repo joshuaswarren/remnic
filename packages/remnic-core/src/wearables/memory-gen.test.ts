@@ -10,6 +10,7 @@ import {
   writeDailyDigestMemory,
   type WearableMemoryWriter,
 } from "./memory-gen.js";
+import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import { emptySpeakerRegistry } from "./speakers.js";
 import type { WearableConversation, WearableSourceSettings } from "./types.js";
 
@@ -68,6 +69,25 @@ interface WriteCall {
   options: Record<string, unknown>;
 }
 
+
+/**
+ * Wrap a legacy writeMemory-shaped recorder as writeSealedMemory using the
+ * PRODUCTION mapper (AGENTS.md §21 — stub behavior cannot drift from what
+ * StorageManager.writeSealedMemory does with the envelope).
+ */
+function asSealedWrite(
+  writeMemory: (
+    category: string,
+    content: string,
+    options: Record<string, unknown>,
+  ) => Promise<{ id: string; tombstoneBlocked: boolean; blockedBy?: string }>,
+): WearableMemoryWriter["writeSealedMemory"] {
+  return (envelope, extras) => {
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras as Record<string, unknown>);
+    return writeMemory(category, content, options);
+  };
+}
+
 function makeWriter(existingHashes: string[] = []): {
   writer: WearableMemoryWriter;
   writes: WriteCall[];
@@ -77,10 +97,10 @@ function makeWriter(existingHashes: string[] = []): {
   return {
     writes,
     writer: {
-      async writeMemory(category, content, options) {
-        writes.push({ category, content, options: options as Record<string, unknown> });
+      writeSealedMemory: asSealedWrite(async (category, content, options) => {
+        writes.push({ category, content, options });
         return { id: `id-${writes.length}`, tombstoneBlocked: false };
-      },
+      }),
       async hasFactContentHash(content) {
         return existing.has(content);
       },
@@ -173,7 +193,9 @@ test("review mode writes pending_review with full wearable provenance", async ()
   assert.equal(write.category, "decision");
   assert.equal(write.options.status, "pending_review");
   assert.equal(write.options.source, "wearable:limitless");
-  assert.equal(write.options.validAt, "2026-06-10T15:00:00Z");
+  // The envelope canonicalizes validAt at compose time (epoch round-trip) —
+  // the same form storage's own normalization would persist.
+  assert.equal(write.options.validAt, "2026-06-10T15:00:00.000Z");
   const attrs = write.options.structuredAttributes as Record<string, string>;
   assert.equal(attrs.wearableSource, "limitless");
   assert.equal(attrs.wearableDate, "2026-06-10");
@@ -764,10 +786,10 @@ test("#1645: a tombstone-blocked wearable write counts as blocked, not created",
   // blocked content as successfully created active memories.
   const writes: Array<{ category: string; content: string; options: Record<string, unknown> }> = [];
   const writer: WearableMemoryWriter = {
-    async writeMemory(category, content, options) {
-      writes.push({ category, content, options: options as Record<string, unknown> });
+    writeSealedMemory: asSealedWrite(async (category, content, options) => {
+      writes.push({ category, content, options });
       return { id: `id-${writes.length}`, tombstoneBlocked: true, blockedBy: "tomb-1" };
-    },
+    }),
     async hasFactContentHash() {
       return false;
     },
@@ -793,9 +815,9 @@ test("#1645: a tombstone-blocked wearable write counts as blocked, not created",
 
 test("#1645: a tombstone-blocked native import counts as blocked, not imported", async () => {
   const writer: WearableMemoryWriter = {
-    async writeMemory() {
+    writeSealedMemory: asSealedWrite(async () => {
       return { id: "blocked-native-1", tombstoneBlocked: true, blockedBy: "tomb-1" };
-    },
+    }),
     async hasFactContentHash() {
       return false;
     },

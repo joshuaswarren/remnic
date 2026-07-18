@@ -8,6 +8,7 @@ import type { ExtractionResult } from "../types.js";
 import { hashTranscriptBody, parseDayTranscript } from "./day-store.js";
 import { saveCorrectionsFile } from "./corrections.js";
 import type { WearableMemoryWriter } from "./memory-gen.js";
+import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import {
   dateInTimezone,
   resolveSyncDates,
@@ -104,9 +105,11 @@ function makeDeps(memoryDir: string): {
   const memoryWrites: Array<{ category: string; content: string; options: Record<string, unknown> }> = [];
   const files = new Map<string, string>();
   const writer: WearableMemoryWriter = {
-    async writeMemory(category, content, options) {
-      memoryWrites.push({ category, content, options: options as Record<string, unknown> });
-      return { id: `mem-${memoryWrites.length}`, tombstoneBlocked: false };
+    // Production mapper keeps the legacy-shaped recorder faithful (§21).
+    writeSealedMemory: (envelope, extras) => {
+      const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras as Record<string, unknown>);
+      memoryWrites.push({ category, content, options });
+      return Promise.resolve({ id: `mem-${memoryWrites.length}`, tombstoneBlocked: false });
     },
     async hasFactContentHash() {
       return false;
@@ -186,8 +189,8 @@ test("a fact-write failure warns and retries instead of aborting the sync", asyn
     };
     const { deps, memoryWrites } = makeDeps(memoryDir);
     assert.ok(deps.memoryGen);
-    const healthyWrite = deps.memoryGen.writer.writeMemory;
-    deps.memoryGen.writer.writeMemory = async () => {
+    const healthyWrite = deps.memoryGen.writer.writeSealedMemory;
+    deps.memoryGen.writer.writeSealedMemory = async () => {
       throw new Error("storage write exploded");
     };
     const first = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
@@ -203,7 +206,7 @@ test("a fact-write failure warns and retries instead of aborting the sync", asyn
       "no completion record for a failed pass",
     );
 
-    deps.memoryGen.writer.writeMemory = healthyWrite;
+    deps.memoryGen.writer.writeSealedMemory = healthyWrite;
     const second = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
     assert.equal(second.memoriesCreated, 1, "retried on the next sync");
     assert.equal(memoryWrites.length, 1);
@@ -318,7 +321,7 @@ test("#1645: a tombstone-blocked wearable write propagates to summary.memoriesBl
     assert.ok(deps.memoryGen, "memory-gen deps wired");
     // Force every extraction write to be tombstone-blocked (#1579): the
     // write lands pending_review with no active copy.
-    deps.memoryGen.writer.writeMemory = async () => ({
+    deps.memoryGen.writer.writeSealedMemory = async () => ({
       id: "blocked-mem-1",
       tombstoneBlocked: true,
       blockedBy: "tomb-1",

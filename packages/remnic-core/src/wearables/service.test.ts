@@ -29,6 +29,7 @@ import {
   WearablesService,
   type WearableStorageIo,
 } from "./service.js";
+import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import { defaultWearablesConfig, defaultWearableSourceSettings } from "./config.js";
 import type { WearableConversation, WearablesConfig } from "./types.js";
 
@@ -124,7 +125,7 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
     async readAllMemories() {
       return storage.memories;
     },
-    async writeMemory() {
+    async writeSealedMemory() {
       return { id: "mem-1", tombstoneBlocked: false };
     },
     async hasFactContentHash() {
@@ -479,14 +480,11 @@ test("support corpus includes pending_review rows and excludes terminal statuses
     const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-service-mem-")));
     storage.memories.push(...rows);
     const writes: Array<{ options: Record<string, unknown> }> = [];
-    storage.writeMemory = (async (
-      _category: string,
-      _content: string,
-      options: Record<string, unknown>,
-    ) => {
+    storage.writeSealedMemory = ((envelope: Parameters<WearableStorageIo["writeSealedMemory"]>[0], extras: Record<string, unknown>) => {
+      const { options } = sealedWriteToLegacyArgs(envelope, extras);
       writes.push({ options });
-      return { id: `mem-${writes.length}`, tombstoneBlocked: false };
-    }) as WearableStorageIo["writeMemory"];
+      return Promise.resolve({ id: `mem-${writes.length}`, tombstoneBlocked: false });
+    }) as WearableStorageIo["writeSealedMemory"];
     try {
       registerWearableConnector({
         id: "testsource",
