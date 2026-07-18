@@ -25,7 +25,6 @@ import {
   buildExplicitCueRecallSection,
   buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
-  composeMemoryEnvelope,
   EngramAccessService,
   expandTildePath,
   normalizeTurnExpansionEnd,
@@ -36,6 +35,8 @@ import {
   serializeEntityFile,
   StorageManager,
 } from "@remnic/core";
+import { withBenchCoreMemorySource } from "./with-bench-core-memory-source.js";
+
 import type {
   EntityStructuredSection,
   EvidencePackSelectionReceipt,
@@ -1338,53 +1339,6 @@ async function rememberNewBenchCoreMemories(
   }
 }
 
-async function withBenchCoreMemorySource(
-  orchestrator: Orchestrator,
-  sessionId: string,
-  task: () => Promise<void>,
-): Promise<void> {
-  type BenchSealedWrite = Orchestrator["storage"]["writeSealedMemory"];
-  const storage = orchestrator.storage as unknown as {
-    writeSealedMemory: BenchSealedWrite;
-  };
-  const originalWriteSealedMemory = storage.writeSealedMemory;
-  const source = benchCoreMemorySource(sessionId);
-
-  storage.writeSealedMemory = async (envelope, extras) => {
-    const requestedSource = envelope.source;
-    const sourcedEnvelope = composeMemoryEnvelope(
-      {
-        content: envelope.content,
-        category: envelope.category,
-        tags: [...envelope.tags],
-        structuredAttributes: envelope.rawStructuredAttributes
-          ? { ...envelope.rawStructuredAttributes }
-          : undefined,
-        entityRef: envelope.entityRef,
-        confidence: envelope.confidence,
-        ttl: envelope.ttl,
-        validAt: envelope.validAt,
-        sourceConnector: envelope.sourceConnector,
-        sourceReason: envelope.sourceReason,
-      },
-      {
-        source:
-          !requestedSource || requestedSource === "extraction"
-            ? source
-            : requestedSource,
-        now: () => new Date(envelope.composedAt),
-      },
-    );
-    return originalWriteSealedMemory(sourcedEnvelope, extras);
-  };
-
-  try {
-    await task();
-  } finally {
-    storage.writeSealedMemory = originalWriteSealedMemory;
-  }
-}
-
 async function clearBenchCoreSessionMemories(
   orchestrator: Orchestrator,
   sessionId: string,
@@ -2081,7 +2035,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           try {
             replayIngestion = withBenchCoreMemorySource(
               replayOrchestrator,
-              sessionId,
+              benchCoreMemorySource(sessionId),
               () => withBenchEntityStructuredFactCapture(
                 replayOrchestrator,
                 sessionId,
