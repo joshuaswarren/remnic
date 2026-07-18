@@ -20,6 +20,7 @@
     "activeRecallModelFallbackPolicy",
     "activeRecallPersistTranscripts",
     "activeRecallPromptAppend",
+    "activeRecallPromptOverride",
     "activeRecallPromptStyle",
     "activeRecallQueryMode",
     "activeRecallRecentAssistantChars",
@@ -175,15 +176,19 @@
     "connectors.github.userLogin",
     "connectors.gmail",
     "connectors.gmail.clientId",
+    "connectors.gmail.clientSecret",
     "connectors.gmail.enabled",
     "connectors.gmail.pollIntervalMs",
     "connectors.gmail.query",
+    "connectors.gmail.refreshToken",
     "connectors.gmail.userId",
     "connectors.googleDrive",
     "connectors.googleDrive.clientId",
+    "connectors.googleDrive.clientSecret",
     "connectors.googleDrive.enabled",
     "connectors.googleDrive.folderIds",
     "connectors.googleDrive.pollIntervalMs",
+    "connectors.googleDrive.refreshToken",
     "connectors.notion",
     "connectors.notion.databaseIds",
     "connectors.notion.enabled",
@@ -858,6 +863,14 @@
     "trustScoreMinMultiplier",
     "trustScoreQuarantine",
     "trustScoreWeights",
+    "trustScoreWeights.contradiction",
+    "trustScoreWeights.corroboration",
+    "trustScoreWeights.domainCalibration",
+    "trustScoreWeights.faithfulness",
+    "trustScoreWeights.feedback",
+    "trustScoreWeights.memoryWorth",
+    "trustScoreWeights.provenance",
+    "trustScoreWeights.recency",
     "trustZoneRecallEnabled",
     "trustZoneStoreDir",
     "trustZonesEnabled",
@@ -929,63 +942,8 @@
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 2289,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 2290,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 2730,
+      "line": 2735,
       "reason": "Object.entries() over parser input — dynamic key set"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3767,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3768,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3771,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3772,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3887,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3888,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3891,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 3892,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 4555,
-      "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/entity-schema.ts",
@@ -1017,14 +975,12 @@
     "activeRecallCustomInstruction.trim",
     "activeRecallModel.trim",
     "activeRecallPromptAppend.trim",
+    "activeRecallPromptOverride.trim",
     "activeRecallTranscriptDir.trim",
     "agentAccessHttp.authToken.replace",
-    "agentAccessHttp.authToken.source.trim",
-    "agentAccessHttp.authToken.trim",
     "agentAccessHttp.host.trim",
     "agentAccessHttp.port.trim",
     "agentAccessHttp.principal.replace",
-    "agentAccessHttp.principal.trim",
     "agentAccessHttp.writeRateLimitMaxRequests.trim",
     "agentAccessHttp.writeRateLimitWindowMs.trim",
     "autoPromoteToSharedCategories.filter",
@@ -1056,8 +1012,6 @@
     "codingKnowledge.decisionRecords.trim",
     "codingKnowledge.enabled.trim",
     "codingKnowledge.lsp.enabled.trim",
-    "codingKnowledge.lsp.maxRequestsPerRun.trim",
-    "codingKnowledge.lsp.timeoutMs.trim",
     "codingKnowledge.sessionDelta.trim",
     "codingKnowledge.structuralProviderCommand.trim",
     "codingMode.branchScope.trim",
@@ -1148,7 +1102,6 @@
     "hotMemoriesCacheEnabled.trim",
     "hotMemoriesCacheTtlMs.trim",
     "initGateTimeoutMs.trim",
-    "inlineSourceAttributionFormat.trim",
     "lcmObserveConcurrency.trim",
     "lcmTelemetryPrefilterEnabled.trim",
     "lifecycleMetricsEnabled.trim",

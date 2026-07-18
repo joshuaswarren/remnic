@@ -39,8 +39,8 @@ test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destruc
   assert.ok(keys.includes("handRolled.fusion.gapMs"));
   assert.ok(keys.includes("handRolled.label"), "destructured key");
   assert.ok(keys.includes("topLevelFlag"), "entry parser direct read");
-  // Method tails never leak as keys.
-  assert.equal(keys.some((k) => k.endsWith(".trim")), false);
+  // Value properties never leak as config keys.
+  assert.equal(keys.some((k) => k.endsWith(".trim") || k.endsWith(".length")), false);
 });
 
 test("zod fixture: static z.object walk collects nested schema keys", () => {

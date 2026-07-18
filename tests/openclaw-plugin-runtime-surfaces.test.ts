@@ -30,6 +30,7 @@ const REQUIRED_RUNTIME_SURFACE_KEYS = [
   "activeRecallQueryMode",
   "activeRecallPromptStyle",
   "activeRecallCustomInstruction",
+  "activeRecallPromptOverride",
   "activeRecallPromptAppend",
   "activeRecallMaxSummaryChars",
   "activeRecallRecentUserTurns",

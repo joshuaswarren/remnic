@@ -225,6 +225,10 @@
         "type": "string",
         "description": "Optional additional guidance for the active-recall builder."
       },
+      "activeRecallPromptOverride": {
+        "type": "string",
+        "description": "Optional complete prompt override for the active-recall builder."
+      },
       "activeRecallPromptStyle": {
         "type": "string",
         "enum": [

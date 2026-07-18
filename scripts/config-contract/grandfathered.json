@@ -111,11 +111,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "activeRecallPromptAppend",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "activeRecallPromptStyle",
     "issue": "#1990"
   },
@@ -521,11 +516,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "connectors",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "connectors.github",
     "issue": "#1990"
   },
@@ -561,11 +551,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "connectors.gmail",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "connectors.gmail.clientId",
     "issue": "#1990"
   },
@@ -587,11 +572,6 @@
   {
     "kind": "undocumented-key",
     "key": "connectors.gmail.userId",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "connectors.googleDrive",
     "issue": "#1990"
   },
   {
@@ -1351,11 +1331,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "provenance",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "provenance.enabled",
     "issue": "#1990"
   },
@@ -1691,11 +1666,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "trustScoreWeights",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "verboseRecallVisibility",
     "issue": "#1990"
   },
@@ -1796,62 +1766,7 @@
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:2289",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:2290",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:2730",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3767",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3768",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3771",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3772",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:384",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3887",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3888",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3891",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:3892",
     "issue": "#1990"
   },
   {
@@ -1862,11 +1777,6 @@
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:399",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:4555",
     "issue": "#1990"
   },
   {
@@ -1887,6 +1797,11 @@
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/wearables/config.ts:468",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:2735",
     "issue": "#1990"
   }
 ]

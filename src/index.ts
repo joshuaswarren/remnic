@@ -1943,6 +1943,7 @@ const pluginDefinition = {
         queryMode: cfg.activeRecallQueryMode,
         promptStyle: cfg.activeRecallPromptStyle,
         customInstruction: cfg.activeRecallCustomInstruction,
+        promptOverride: cfg.activeRecallPromptOverride,
         promptAppend: cfg.activeRecallPromptAppend,
         maxSummaryChars: cfg.activeRecallMaxSummaryChars,
         recentUserTurns: cfg.activeRecallRecentUserTurns,

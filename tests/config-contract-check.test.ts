@@ -18,6 +18,7 @@ import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
 function makeFixtureRepo(options: {
   parserExtraKey?: boolean;
   schemaExtraTopKey?: boolean;
+  schemaExtraNestedKey?: boolean;
   docsBogus?: string;
   unparseableBody?: boolean;
   grandfather?: Array<{ kind: string; key: string; issue: string }>;
@@ -63,7 +64,10 @@ export function parseRootConfig(raw: unknown): Rec {
         topFlag: { type: "boolean" },
         codingKnowledge: {
           type: "object",
-          properties: { enabled: { type: "boolean" } },
+          properties: {
+            enabled: { type: "boolean" },
+            ...(options.schemaExtraNestedKey ? { typo: { type: "string" } } : {}),
+          },
         },
         ...(options.schemaExtraTopKey ? { deadTopKey: { type: "string" } } : {}),
       },
@@ -156,6 +160,32 @@ test("dead schema: a schema key with no parsed counterpart fails as dead-schema"
       ),
       JSON.stringify(result.violations),
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("dead schema: a nested sibling is not covered by a parsed ancestor", () => {
+  const fixture = makeFixtureRepo({ schemaExtraNestedKey: true });
+  try {
+    const result = fixture.run();
+    assert.ok(
+      result.violations.some(
+        (violation) => violation.kind === "dead-schema" && violation.key === "codingKnowledge.typo",
+      ),
+      JSON.stringify(result.violations),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("grandfather manifest rejects unsupported kinds and empty keys", () => {
+  const fixture = makeFixtureRepo({
+    grandfather: [{ kind: "not-a-violation", key: "", issue: "#1990" }],
+  });
+  try {
+    assert.throws(() => fixture.run(), /grandfather entry must carry/);
   } finally {
     fixture.cleanup();
   }

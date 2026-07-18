@@ -45,10 +45,8 @@ export interface ExtractedConfigKeys {
   /** Constructs the walker could not derive keys from — loud, not silent. */
   unparseable: UnparseableConstruct[];
   /**
-   * Paths dropped by the JS value-member filter (`x.trim` when `x` is also
-   * recorded). Surfaced — not silently deleted — so a genuine config key
-   * that happens to be named like a value member is reviewable in the
-   * snapshot rather than invisible (review finding on #1990).
+   * Confirmed JavaScript value-member calls excluded from accepted parser keys.
+   * Kept for review visibility rather than silently discarded.
    */
   ambiguousValueMembers: string[];
 }
@@ -59,7 +57,12 @@ const SHAPE_PRESERVING_WRAPPERS = new Set([
   "asRecord",
   "toRecord",
 ]);
-
+const JS_VALUE_MEMBERS = new Set([
+  "length", "trim", "toLowerCase", "toUpperCase", "slice", "split", "join", "map",
+  "filter", "some", "every", "includes", "find", "flatMap", "forEach",
+  "toString", "startsWith", "endsWith", "replace", "concat",
+  "keys", "values", "entries", "hasOwnProperty",
+]);
 
 interface AliasInfo {
   /** Path prefix segments from the parser input to this alias ("" = root). */
@@ -70,6 +73,81 @@ function relPath(repoRoot: string, fileName: string): string {
   return path.relative(repoRoot, fileName).split(path.sep).join("/");
 }
 
+export function resolveStaticStringSet(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  beforePosition: number,
+  seen = new Set<string>(),
+): string[] | null {
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return [expression.text];
+  }
+  if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression)) {
+    return resolveStaticStringSet(expression.expression, sourceFile, beforePosition, seen);
+  }
+  if (ts.isArrayLiteralExpression(expression)) {
+    const values: string[] = [];
+    for (const element of expression.elements) {
+      if (!ts.isExpression(element)) return null;
+      const resolved = resolveStaticStringSet(element, sourceFile, beforePosition, seen);
+      if (!resolved) return null;
+      values.push(...resolved);
+    }
+    return values;
+  }
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    expression.expression.name.text === "join" &&
+    expression.arguments.length <= 1
+  ) {
+    const values = resolveStaticStringSet(expression.expression.expression, sourceFile, beforePosition, seen);
+    const separator = expression.arguments[0];
+    if (!values || (separator && !ts.isStringLiteral(separator))) return null;
+    return [values.join(separator?.text ?? ",")];
+  }
+  if (!ts.isIdentifier(expression) || seen.has(expression.text)) return null;
+  seen.add(expression.text);
+  let best: ts.VariableDeclaration | null = null;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === expression.text &&
+      node.initializer &&
+      node.getStart(sourceFile) <= beforePosition &&
+      (!best || node.getStart(sourceFile) > best.getStart(sourceFile))
+    ) {
+      best = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  const initializer = (best as ts.VariableDeclaration | null)?.initializer;
+  return initializer
+    ? resolveStaticStringSet(initializer, sourceFile, beforePosition, seen)
+    : null;
+}
+
+function findEnclosingForOf(sourceFile: ts.SourceFile, target: ts.Node): ts.ForOfStatement | null {
+  let best: ts.ForOfStatement | null = null;
+  const targetStart = target.getStart(sourceFile);
+  const targetEnd = target.getEnd();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isForOfStatement(node) &&
+      node.getStart(sourceFile) <= targetStart &&
+      node.getEnd() >= targetEnd &&
+      (!best || node.getEnd() - node.getStart(sourceFile) < best.getEnd() - best.getStart(sourceFile))
+    ) {
+      best = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return best;
+}
+
 /**
  * Extract the keys a single parser function reads from its raw input.
  * Returns path segments relative to the parser's input object.
@@ -78,7 +156,7 @@ function extractParserKeys(
   fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
   sourceFile: ts.SourceFile,
   repoRoot: string,
-  out: { keys: Set<string>; unparseable: UnparseableConstruct[] },
+  out: { keys: Set<string>; unparseable: UnparseableConstruct[]; ambiguousValueMembers: Set<string> },
   prefix: string[] = [],
   recursion: { program: ts.Program; depth: number; seen: Set<string> } | null = null,
 ): void {
@@ -166,6 +244,28 @@ function extractParserKeys(
   };
 
   const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const method = node.expression;
+      if (
+        JS_VALUE_MEMBERS.has(method.name.text) &&
+        !(
+          ts.isPropertyAccessExpression(method.expression) &&
+          ts.isIdentifier(method.expression.expression) &&
+          method.expression.expression.text === "Object"
+        )
+      ) {
+        const resolved = resolveAliasChain(method.expression);
+        if (resolved) {
+          const methodPath = [...prefix, ...resolved.info.prefix, ...resolved.segments, method.name.text].join(".");
+          out.ambiguousValueMembers.add(methodPath);
+          if (resolved.segments.length > 0) {
+            out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
+          }
+          for (const argument of node.arguments) visit(argument);
+          return;
+        }
+      }
+    }
     // Alias creation: const X = <expr resolving to alias(+segments)>
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const resolved = resolveAliasChain(node.initializer);
@@ -220,31 +320,70 @@ function extractParserKeys(
 
     // Property access on an alias: raw.key / raw?.key / raw["key"]
     if (ts.isPropertyAccessExpression(node)) {
+      const isMethodCallee =
+        node.parent !== undefined &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression === node;
       const resolved = resolveAliasChain(node.expression);
-      if (resolved) {
-        const isMethodCallee =
-          node.parent !== undefined &&
-          ts.isCallExpression(node.parent) &&
-          node.parent.expression === node;
-        if (isMethodCallee) {
-          // `cfg.codexHome.trim()` — trim is a METHOD; the key is the chain
-          // before it. Record the chain segments only (when any exist).
+      if (
+        (isMethodCallee || node.name.text === "length") &&
+        JS_VALUE_MEMBERS.has(node.name.text)
+      ) {
+        if (resolved) {
+          const methodPath = [...prefix, ...resolved.info.prefix, ...resolved.segments, node.name.text].join(".");
+          out.ambiguousValueMembers.add(methodPath);
           if (resolved.segments.length > 0) {
             out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
           }
-        } else {
-          recordKey([...resolved.info.prefix, ...resolved.segments], node.name.text);
         }
-        // Do NOT recurse into node.expression (it would double-count the
-        // chain), but the chain segments were already recorded above.
+        return;
+      }
+      if (resolved) {
+        recordKey([...resolved.info.prefix, ...resolved.segments], node.name.text);
         return;
       }
     }
     if (ts.isElementAccessExpression(node)) {
       const resolved = resolveAliasChain(node.expression);
       if (resolved) {
-        if (node.argumentExpression && ts.isStringLiteral(node.argumentExpression)) {
-          recordKey([...resolved.info.prefix, ...resolved.segments], node.argumentExpression.text);
+        const argument =
+          node.argumentExpression && ts.isAsExpression(node.argumentExpression)
+            ? node.argumentExpression.expression
+            : node.argumentExpression;
+        if (argument && ts.isStringLiteral(argument)) {
+          recordKey([...resolved.info.prefix, ...resolved.segments], argument.text);
+        } else if (argument && ts.isIdentifier(argument)) {
+          const ancestor = findEnclosingForOf(sourceFile, node);
+          if (
+            ancestor &&
+            ts.isVariableDeclarationList(ancestor.initializer) &&
+            ancestor.initializer.declarations.length === 1 &&
+            ts.isIdentifier(ancestor.initializer.declarations[0].name) &&
+            ancestor.initializer.declarations[0].name.text === argument.text
+          ) {
+            const loopKeys = resolveStaticStringSet(
+              ancestor.expression,
+              sourceFile,
+              node.getStart(sourceFile),
+            );
+            if (loopKeys) {
+              for (const key of loopKeys) {
+                recordKey([...resolved.info.prefix, ...resolved.segments], key);
+              }
+              return;
+            }
+          }
+          const keys = resolveStaticStringSet(argument, sourceFile, node.getStart(sourceFile));
+          if (keys) {
+            for (const key of keys) recordKey([...resolved.info.prefix, ...resolved.segments], key);
+            return;
+          }
+          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          out.unparseable.push({
+            file: relPath(repoRoot, sourceFile.fileName),
+            line: pos.line + 1,
+            reason: "computed element access on parser input — key not statically derivable",
+          });
         } else {
           const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
           out.unparseable.push({
@@ -447,7 +586,11 @@ export function extractParsedKeyPaths(options: {
     throw new Error(`extract-parsed-keys: could not find function ${entryFunction} in ${entryFile}`);
   }
 
-  const out = { keys: new Set<string>(), unparseable: [] as UnparseableConstruct[] };
+  const out = {
+    keys: new Set<string>(),
+    unparseable: [] as UnparseableConstruct[],
+    ambiguousValueMembers: new Set<string>(),
+  };
   const recursion = { program, depth: 0, seen: new Set<string>() };
 
   // 1) Walk the entry parser body itself (direct cfg.* reads land at root).
@@ -533,31 +676,6 @@ export function extractParsedKeyPaths(options: {
     ts.forEachChild(entry.fn.body, visitCalls);
   }
 
-  // Post-filter: drop trailing JS VALUE-MEMBER names (string/array/object
-  // methods and properties) that leak through syntax variants the callee
-  // check misses (optional chains, casts, `.length`). Deny-list applies
-  // ONLY when the parent path was itself recorded — a real nested key's
-  // parent block read always records too, so this never drops a genuine
-  // leaf that has no recorded parent.
-  const JS_VALUE_MEMBERS = new Set([
-    "trim", "toLowerCase", "toUpperCase", "slice", "split", "join", "map",
-    "filter", "some", "every", "includes", "find", "flatMap", "forEach",
-    "length", "toString", "startsWith", "endsWith", "replace", "concat",
-    "keys", "values", "entries", "hasOwnProperty",
-  ]);
-  const ambiguousValueMembers: string[] = [];
-  for (const key of [...out.keys]) {
-    const segments = key.split(".");
-    if (segments.length < 2) continue;
-    const tail = segments[segments.length - 1];
-    const parent = segments.slice(0, -1).join(".");
-    if (JS_VALUE_MEMBERS.has(tail) && out.keys.has(parent)) {
-      out.keys.delete(key);
-      ambiguousValueMembers.push(key);
-    }
-  }
-  ambiguousValueMembers.sort();
-
   // De-duplicate unparseable entries (same file:line:reason) and sort both.
   const seen = new Set<string>();
   const unparseable = out.unparseable
@@ -569,7 +687,11 @@ export function extractParsedKeyPaths(options: {
     })
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.reason.localeCompare(b.reason));
 
-  return { keys: [...out.keys].sort(), unparseable, ambiguousValueMembers };
+  return {
+    keys: [...out.keys].sort(),
+    unparseable,
+    ambiguousValueMembers: [...out.ambiguousValueMembers].sort(),
+  };
 }
 
 /** Match `parseXxx(cfg.block…)` / `parseXxx(cfg)` initializers. */
@@ -631,9 +753,18 @@ function unwrapArgument(arg: ts.Expression): ts.Expression {
 function rootedArgumentSegments(arg: ts.Expression, rootNames: Set<string>): string[] | null {
   const segments: string[] = [];
   let a: ts.Expression = unwrapArgument(arg);
-  while (ts.isPropertyAccessExpression(a)) {
-    segments.unshift(a.name.text);
-    a = unwrapArgument(a.expression);
+  for (;;) {
+    if (ts.isPropertyAccessExpression(a)) {
+      segments.unshift(a.name.text);
+      a = unwrapArgument(a.expression);
+      continue;
+    }
+    if (ts.isElementAccessExpression(a) && a.argumentExpression && ts.isStringLiteral(a.argumentExpression)) {
+      segments.unshift(a.argumentExpression.text);
+      a = unwrapArgument(a.expression);
+      continue;
+    }
+    break;
   }
   if (ts.isIdentifier(a) && rootNames.has(a.text)) return segments;
   return null;

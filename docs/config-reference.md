@@ -19,6 +19,35 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 
 OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM calls use the gateway agent model chain instead of requiring a Remnic-specific OpenAI API key.
 
+## Active recall
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `activeRecallPromptAppend` | `(unset)` | Optional guidance appended to the active-recall prompt |
+| `activeRecallPromptOverride` | `(unset)` | Optional complete replacement prompt for the active-recall builder |
+
+## External connectors
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `connectors.googleDrive.clientSecret` | `""` | OAuth2 client secret for the Google Drive connector; use a secret reference |
+| `connectors.googleDrive.refreshToken` | `""` | OAuth2 refresh token for the Google Drive connector; use a secret reference |
+| `connectors.gmail.clientSecret` | `""` | OAuth2 client secret for the Gmail connector; use a secret reference |
+| `connectors.gmail.refreshToken` | `""` | OAuth2 refresh token for the Gmail connector; use a secret reference |
+
+## Trust scoring
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `trustScoreWeights.memoryWorth` | `(default)` | Weight for memory-worth evidence |
+| `trustScoreWeights.provenance` | `(default)` | Weight for provenance evidence |
+| `trustScoreWeights.faithfulness` | `(default)` | Weight for faithfulness evidence |
+| `trustScoreWeights.corroboration` | `(default)` | Weight for corroboration evidence |
+| `trustScoreWeights.contradiction` | `(default)` | Weight for contradiction evidence |
+| `trustScoreWeights.domainCalibration` | `(default)` | Weight for domain-calibration evidence |
+| `trustScoreWeights.feedback` | `(default)` | Weight for feedback evidence |
+| `trustScoreWeights.recency` | `(default)` | Weight for recency evidence |
+
 `captureMode` behavior:
 
 - `implicit`: normal extraction/write behavior.

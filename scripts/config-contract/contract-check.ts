@@ -29,6 +29,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { collectModuleParserFiles, extractParsedKeyPaths } from "./extract-parsed-keys.js";
 
 export interface ContractViolation {
@@ -47,6 +48,35 @@ export interface GrandfatherEntry {
   key: string;
   /** Issue tracking this entry's removal. */
   issue: string;
+}
+
+function readPreviousGrandfatherKeys(repoRoot: string, grandfatherPath: string): Set<string> | null {
+  const relativePath = path.relative(repoRoot, grandfatherPath);
+  if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return null;
+  try {
+    const base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", "origin/main"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!base) return null;
+    const content = execFileSync("git", ["-C", repoRoot, "show", `${base}:${relativePath}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const parsed = JSON.parse(content) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return new Set(
+      parsed
+        .filter(
+          (entry): entry is Partial<GrandfatherEntry> =>
+            !!entry && typeof entry === "object" && !Array.isArray(entry),
+        )
+        .map((entry) => `${entry.kind}:${entry.key}`),
+    );
+  } catch {
+    // Synthetic fixtures and standalone source exports have no Git base.
+    return null;
+  }
 }
 
 interface JsonSchemaNode {
@@ -166,39 +196,33 @@ export function runContractCheck(options: {
     }
   }
 
-  // B. Dead schema: a schema path whose top segment has no parsed counterpart
-  //    at any depth (a structured schema deeper than parser reads is fine —
-  //    the parser may hand the block to an opaque consumer). EVERY manifest
-  //    participates (review finding: a key added to only one manifest must
-  //    not pass because the primary happened to be clean).
+  // B. Dead schema: a schema path must have a parser counterpart at the same
+  // path or below it. Matching an arbitrary parsed ancestor is too broad:
+  // `block.enabled` must not make a manifest-only `block.typo` appear live.
+  // Opaque schema leaves are handled by `coveredBySchema` for the parsed-key
+  // direction; they still need a parser path here so structured siblings
+  // cannot hide behind their parent.
+  for (const schema of schemas) {
+    const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
+    for (const schemaPath of schema.flat.paths) {
+      const hasParsedCounterpart = [...parsedKeys].some(
+        (parsedKey) => parsedKey === schemaPath || parsedKey.startsWith(`${schemaPath}.`),
+      );
+      if (!hasParsedCounterpart) {
+        violations.push({
+          kind: "dead-schema",
+          key: schemaPath,
+          detail: `schema path in ${manifestRel} has no corresponding parsed key at this path or below (validator-implementation drift, §40)`,
+        });
+      }
+    }
+  }
+
   const parsedPrefixes = new Set<string>();
   for (const key of parsedKeys) {
     const segments = key.split(".");
     for (let i = 1; i <= segments.length; i++) {
       parsedPrefixes.add(segments.slice(0, i).join("."));
-    }
-  }
-  for (const schema of schemas) {
-    const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
-    for (const schemaPath of schema.flat.paths) {
-      // Dead when NO parsed key shares ANY ancestor segment — catches a
-      // nested entry below an existing structured block that the parser
-      // never reads (review finding).
-      const segments = schemaPath.split(".");
-      let hasParsedAncestor = false;
-      for (let i = segments.length; i >= 1; i--) {
-        if (parsedPrefixes.has(segments.slice(0, i).join("."))) {
-          hasParsedAncestor = true;
-          break;
-        }
-      }
-      if (!hasParsedAncestor) {
-        violations.push({
-          kind: "dead-schema",
-          key: schemaPath,
-          detail: `schema path in ${manifestRel} has no corresponding parsed key at any depth (validator-implementation drift, §40)`,
-        });
-      }
     }
   }
 
@@ -272,9 +296,16 @@ export function runContractCheck(options: {
     })
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key));
 
-  // Grandfather manifest (decision C). Entries are VALIDATED at load time:
-  // shape + a non-empty tracking issue, so a malformed entry (or one with a
-  // missing issue) is a load failure, not a silent suppression (review).
+  // Grandfather entries are a constrained exception list, not an arbitrary
+  // suppression mechanism. Reject unknown violation kinds and empty keys
+  // before building the suppression index.
+  const validViolationKinds = new Set<ContractViolation["kind"]>([
+    "missing-schema",
+    "dead-schema",
+    "documented-nonexistent",
+    "undocumented-key",
+    "unparseable-construct",
+  ]);
   const rawGrandfathered: unknown = fs.existsSync(grandfatherPath)
     ? JSON.parse(fs.readFileSync(grandfatherPath, "utf8"))
     : [];
@@ -285,8 +316,9 @@ export function runContractCheck(options: {
     const candidate = entry as Partial<GrandfatherEntry>;
     if (
       !candidate ||
-      typeof candidate.kind !== "string" ||
+      !validViolationKinds.has(candidate.kind as ContractViolation["kind"]) ||
       typeof candidate.key !== "string" ||
+      candidate.key.trim().length === 0 ||
       typeof candidate.issue !== "string" ||
       candidate.issue.trim().length === 0
     ) {
@@ -296,6 +328,20 @@ export function runContractCheck(options: {
     }
     return candidate as GrandfatherEntry;
   });
+
+  const previousGrandfatherKeys = readPreviousGrandfatherKeys(repoRoot, grandfatherPath);
+  if (previousGrandfatherKeys) {
+    for (const [index, entry] of grandfathered.entries()) {
+      const entryKey = `${entry.kind}:${entry.key}`;
+      if (!previousGrandfatherKeys.has(entryKey)) {
+        throw new Error(
+          `${grandfatherPath}[${index}]: new grandfather entry ${entryKey} is not allowed; ` +
+            "fix the contract drift or remove the exception",
+        );
+      }
+    }
+  }
+
   const grandfatherIndex = new Set(grandfathered.map((entry) => `${entry.kind}:${entry.key}`));
   const activeViolations = uniqueViolations.filter(
     (violation) => !grandfatherIndex.has(`${violation.kind}:${violation.key}`),

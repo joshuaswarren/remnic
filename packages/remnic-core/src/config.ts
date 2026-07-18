@@ -2293,6 +2293,11 @@ export function parseConfig(
         ? customInstruction.trim()
         : null;
     })(),
+    activeRecallPromptOverride:
+      typeof cfg.activeRecallPromptOverride === "string" &&
+      cfg.activeRecallPromptOverride.trim().length > 0
+        ? cfg.activeRecallPromptOverride.trim()
+        : null,
     activeRecallPromptAppend:
       typeof cfg.activeRecallPromptAppend === "string" &&
       cfg.activeRecallPromptAppend.trim().length > 0

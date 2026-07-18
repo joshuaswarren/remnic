@@ -33,7 +33,7 @@ export function parseFixtureHandRolledConfig(value: unknown): FixtureHandRolledC
 
 export function parseFixtureEntryConfig(raw: unknown): Rec {
   const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Rec) : {};
-  const handRolled = parseFixtureHandRolledConfig(cfg.handRolled);
+  const handRolled = parseFixtureHandRolledConfig(cfg["handRolled"]);
   return {
     handRolled,
     topLevelFlag: cfg.topLevelFlag === true,

@@ -30,6 +30,7 @@ export interface ActiveRecallConfig {
   queryMode: ActiveRecallQueryMode;
   promptStyle: ActiveRecallPromptStyle;
   customInstruction: string | null;
+  promptOverride: string | null;
   promptAppend: string | null;
   maxSummaryChars: number;
   recentUserTurns: number;
@@ -133,6 +134,7 @@ function buildCacheKey(input: ActiveRecallInput, config: ActiveRecallConfig, que
     queryMode: config.queryMode,
     promptStyle: config.promptStyle,
     customInstruction: config.customInstruction,
+    promptOverride: config.promptOverride,
     promptAppend: config.promptAppend,
     maxSummaryChars: config.maxSummaryChars,
     entityGraphDepth: config.entityGraphDepth,
@@ -263,7 +265,9 @@ export function buildActiveRecallPrompt(params: {
   recallExplain: string | null;
 }): string {
   const sections = [
-    params.config.customInstruction?.trim() || STYLE_INSTRUCTIONS[params.config.promptStyle],
+    params.config.promptOverride?.trim() ||
+      params.config.customInstruction?.trim() ||
+      STYLE_INSTRUCTIONS[params.config.promptStyle],
     `Query bundle:\n${params.queryBundle}`,
     params.recallContext ? `Retrieved memory:\n${params.recallContext}` : null,
     params.graphContext.length > 0 ? `Entity graph:\n${params.graphContext.join("\n")}` : null,

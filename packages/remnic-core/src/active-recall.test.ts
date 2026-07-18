@@ -21,6 +21,7 @@ function baseConfig(overrides: Partial<ActiveRecallConfig> = {}): ActiveRecallCo
     queryMode: "recent",
     promptStyle: "balanced",
     customInstruction: null,
+    promptOverride: null,
     promptAppend: null,
     maxSummaryChars: 64,
     recentUserTurns: 2,
@@ -128,6 +129,23 @@ test("buildActiveRecallPrompt varies by prompt style and optional sections", () 
   assert.match(prompt, /Bias toward precision/);
   assert.match(prompt, /Entity graph/);
   assert.match(prompt, /Prefer hard evidence/);
+});
+
+test("buildActiveRecallPrompt uses prompt override before style or custom instruction", () => {
+  const prompt = buildActiveRecallPrompt({
+    config: baseConfig({
+      customInstruction: "ignored custom instruction",
+      promptOverride: "Use only the supplied evidence.",
+    }),
+    queryBundle: "current: What happened?",
+    recallContext: "The deploy was rolled back.",
+    graphContext: [],
+    causalContext: [],
+    daySummary: null,
+    recallExplain: null,
+  });
+  assert.match(prompt, /^Use only the supplied evidence\./);
+  assert.doesNotMatch(prompt, /ignored custom instruction/);
 });
 
 test("normalizeActiveRecallSummary collapses NONE variants and truncates codepoint-safe", () => {
