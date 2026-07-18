@@ -812,7 +812,10 @@ test("#1911B a throwing write observer cannot fail a committed index write", asy
   // retry and ultimately report failure, skipping the paired tag phase and
   // leaving a half-applied index. Isolation must keep the outcome identical to
   // the control on BOTH indexes.
-  setIndexWriteObserverForTest(() => {
+  const observedWrites: string[] = [];
+  setIndexWriteObserverForTest((filePath) => {
+    // Scope to this directory so a concurrent test's index write never counts.
+    if (filePath.startsWith(throwDir)) observedWrites.push(filePath);
     throw new Error("observer boom");
   });
   try {
@@ -820,6 +823,14 @@ test("#1911B a throwing write observer cannot fail a committed index write", asy
   } finally {
     setIndexWriteObserverForTest(undefined);
   }
+
+  // The observer must have fired once per committed index write, in order:
+  // temporal commits first, then tags. This guards against a silent regression
+  // where observer dispatch is dropped and the isolation assertions below pass
+  // vacuously because nothing ever threw.
+  assert.equal(observedWrites.length, 2);
+  assert.ok(observedWrites[0]?.endsWith("index_time.json"));
+  assert.ok(observedWrites[1]?.endsWith("index_tags.json"));
 
   const control = await readRawIndexes(controlDir);
   const thrown = await readRawIndexes(throwDir);
