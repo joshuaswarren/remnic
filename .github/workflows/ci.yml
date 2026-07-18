@@ -108,6 +108,9 @@ jobs:
       - name: Review pattern check
         run: bash scripts/check-review-patterns.sh
 
+      - name: Envelope belt (issue #1989)
+        run: node scripts/check-envelope-belt.mjs
+
       - name: Structural ratchets
         run: node scripts/check-ratchets.mjs
 

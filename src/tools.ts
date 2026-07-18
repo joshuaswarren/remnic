@@ -17,6 +17,7 @@ import {
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
+import { composeMemoryEnvelope } from "./write-envelope.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -1721,9 +1722,18 @@ Best for:
 
         switch (action) {
           case "store_episode": {
-            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            // Sealed-envelope write (issue #1989 PR4): agent-supplied action
+            // input — salvage; drops are warn-logged by the composer notes.
+            const episodeEnvelope = composeMemoryEnvelope(
+              { content: contentValue!, category: normalizedCategory ?? "fact" },
+              { source: "memory_action_apply" },
+              { salvage: true },
+            );
+            if (episodeEnvelope.salvageNotes.length > 0) {
+              log.warn(`memory-action write salvaged invalid fields: ${episodeEnvelope.salvageNotes.join("; ")}`);
+            }
+            const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(episodeEnvelope, {
               actor: "tool.memory_action_apply",
-              source: "memory_action_apply",
               memoryKind: "episode",
             });
             outputMemoryIds.push(createdId);
@@ -1736,9 +1746,17 @@ Best for:
             break;
           }
           case "store_note": {
-            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            // Sealed-envelope write (issue #1989 PR4): see store_episode.
+            const noteEnvelope = composeMemoryEnvelope(
+              { content: contentValue!, category: normalizedCategory ?? "fact" },
+              { source: "memory_action_apply" },
+              { salvage: true },
+            );
+            if (noteEnvelope.salvageNotes.length > 0) {
+              log.warn(`memory-action write salvaged invalid fields: ${noteEnvelope.salvageNotes.join("; ")}`);
+            }
+            const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(noteEnvelope, {
               actor: "tool.memory_action_apply",
-              source: "memory_action_apply",
             });
             outputMemoryIds.push(createdId);
             if (tombstoneBlocked) {
@@ -1790,9 +1808,17 @@ Best for:
             break;
           }
           case "summarize_node": {
-            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            // Sealed-envelope write (issue #1989 PR4): see store_episode.
+            const summaryEnvelope = composeMemoryEnvelope(
+              { content: contentValue!, category: normalizedCategory ?? "fact" },
+              { source: "memory_action_apply" },
+              { salvage: true },
+            );
+            if (summaryEnvelope.salvageNotes.length > 0) {
+              log.warn(`memory-action write salvaged invalid fields: ${summaryEnvelope.salvageNotes.join("; ")}`);
+            }
+            const { id: createdId, tombstoneBlocked } = await storage.writeSealedMemory(summaryEnvelope, {
               actor: "tool.memory_action_apply",
-              source: "memory_action_apply",
               sourceMemoryId: memoryIdValue,
             });
             outputMemoryIds.push(createdId);
@@ -2209,11 +2235,24 @@ Best for:
         }
 
         const dst = await orchestrator.getStorage(dstNs);
-        const { id: newId, tombstoneBlocked } = await dst.writeMemory(mem.frontmatter.category, mem.content, {
-          confidence: mem.frontmatter.confidence,
-          tags: Array.from(new Set([...(mem.frontmatter.tags ?? []), "promoted", `promotedFrom:${srcNs}:${memoryId}`, ...(note ? [`note:${note}`] : [])])),
-          entityRef: mem.frontmatter.entityRef,
-          source: "promote",
+        // Sealed-envelope write (issue #1989 PR4): a promotion REPLAYS a
+        // stored row — legacy data may predate current limits, so salvage
+        // (drops warn-logged).
+        const promoteEnvelope = composeMemoryEnvelope(
+          {
+            content: mem.content,
+            category: mem.frontmatter.category,
+            confidence: mem.frontmatter.confidence,
+            tags: Array.from(new Set([...(mem.frontmatter.tags ?? []), "promoted", `promotedFrom:${srcNs}:${memoryId}`, ...(note ? [`note:${note}`] : [])])),
+            entityRef: mem.frontmatter.entityRef,
+          },
+          { source: "promote" },
+          { salvage: true },
+        );
+        if (promoteEnvelope.salvageNotes.length > 0) {
+          log.warn(`promote write salvaged invalid fields: ${promoteEnvelope.salvageNotes.join("; ")}`);
+        }
+        const { id: newId, tombstoneBlocked } = await dst.writeSealedMemory(promoteEnvelope, {
           importance: mem.frontmatter.importance,
           supersedes: mem.frontmatter.supersedes,
           links: mem.frontmatter.links,
