@@ -297,6 +297,16 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. For every checkout request, create a new token.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Create a fresh checkout token, including subsequent retries.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Renew the checkout token during all retry attempts.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. On every ordinary retry, mint a new one.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. On each checkout request, issue another one.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. For every ordinary retry, rotate to a fresh one.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. On every request, replace it.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. For each retry, mint one more.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. During all retry attempts, create another.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new one, on every ordinary retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Get something new on each retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Switch to a different value on each retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Use a fresh secret for every request.",
   ]) {
     assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
   }
@@ -332,6 +342,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   assert.equal(
     relayCheckoutDecisionContractKey(
       "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Create an audit record early."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. On every retry, create one audit record."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );
