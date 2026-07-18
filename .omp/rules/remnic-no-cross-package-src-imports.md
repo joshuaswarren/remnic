@@ -25,3 +25,11 @@ public surface rather than deep-linking into its `src/`.
 
 (Non-import uses, e.g. `path.resolve(dir, "../../remnic-server/src/...")`
 for dev-mode process spawning, are not affected by this rule.)
+
+Deliberately NOT matched: the `../packages/<pkg>/src/...` form used by
+repo-root `src/`, `scripts/`, and `tests/`. That class is existing
+ratchet-managed debt (`directStorageImports` in
+`scripts/ratchet-baseline.json`, 350+ occurrences) governed by
+`check-ratchets.mjs` — hard-interrupting it would false-positive on
+every managed-debt file. New code should still prefer `@remnic/*`
+package-name imports; the ratchet ensures the count only shrinks.

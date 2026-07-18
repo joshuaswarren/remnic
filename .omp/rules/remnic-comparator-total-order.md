@@ -22,6 +22,9 @@ globs:
   - "**/*.ts"
   - "**/*.tsx"
   - "**/*.mts"
+  - "**/*.js"
+  - "**/*.mjs"
+  - "**/*.cjs"
 ---
 
 You are passing `.sort()`/`.toSorted()` a comparator whose entire body
