@@ -27,12 +27,14 @@ const ROTATION_ACTION_PATTERN =
   /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
 const ROTATION_OBJECT_PATTERN =
   /\b(?:(?:new|fresh|replacement|current)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?tokens?\b/;
+const TOKEN_LIFECYCLE_TARGET_PATTERN =
+  /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
 const PER_REQUEST_ROTATION_PATTERN =
   /\b(?:(?:on|for|at|during|across)\s+)?(?:every|each|all)\s+(?:checkout\s+)?requests?\b|\bper[-\s]+(?:checkout\s+)?request\b/;
 const PER_RETRY_ROTATION_PATTERN =
   /\b(?:including|on|for|during|across)\s+(?:(?:every|each|all)\s+)?(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?\b|\b(?:every|each|all)\s+(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?\b|\bper[-\s]+(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)\b/;
 const PREDICATE_CONJUNCTION_PATTERN =
-  /\b(?:and|but|while|whereas|however)\b(?=\s+(?:after|once|upon|following|for|on|during|across|every|each|all|per|do|does|never|must|should|cannot|can't|without|not|avoid|reject|reuse|keep|use|mint|create|issue|rotate|refresh|replace|renew|regenerate)\b)/;
+  /\b(?:and|but|whereas|however)\b|\bwhile\b(?=\s+(?:after|once|upon|following|for|on|during|across|every|each|all|per|do|does|never|must|should|cannot|can't|without|not|avoid|reject|reuse|keep|use|mint|create|issue|rotate|refresh|replace|renew|regenerate)\b)/;
 const NEGATION_PATTERN =
   /\b(?:do\s+not|does\s+not|don't|doesn't|never|must\s+not|should\s+not|cannot|can't|without|not|forbid(?:s|den)?|disallow(?:s|ed)?|prohibit(?:s|ed)?|avoid(?:s|ed|ing)?|reject(?:s|ed|ing)?|rather\s+than|instead\s+of)\b/;
 const POST_EXPIRY_REPLACEMENT_PATTERNS = [
@@ -199,12 +201,45 @@ function isAllowedPostExpiryReplacementClause(clause) {
   return POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause));
 }
 
+function isAllowedTokenOwnershipClause(clause) {
+  return (
+    /\b(?:one|single|a)\b[^,.;:!?]{0,32}\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,32}\b(?:owned|belongs?|bound|scoped|assigned)\b[^,.;:!?]{0,32}\bsession\b/.test(
+      clause
+    ) ||
+    /\bsession\b[^,.;:!?]{0,32}\b(?:owns?|has|holds?)\b[^,.;:!?]{0,32}\b(?:one|single|a)\b[^,.;:!?]{0,16}\b(?:tokens?|credentials?|keys?)\b/.test(
+      clause
+    )
+  );
+}
+
+function isAllowedNaturalTokenExpiryClause(clause) {
+  return (
+    /\b(?:let|allow)\b[^,.;:!?]{0,32}\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,24}\bexpir(?:e|es)\b[^,.;:!?]{0,16}\bnaturally\b/.test(
+      clause
+    ) ||
+    /\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,24}\bexpir(?:e|es)\b[^,.;:!?]{0,16}\bnaturally\b/.test(
+      clause
+    )
+  );
+}
+
+function isAllowedAffirmativeTokenLifecycleClause(clause) {
+  return (
+    REUSE_PATTERN.test(clause) ||
+    isAllowedInitialTokenMintClause(clause) ||
+    isAllowedPostExpiryReplacementClause(clause) ||
+    isAllowedTokenOwnershipClause(clause) ||
+    isAllowedNaturalTokenExpiryClause(clause)
+  );
+}
+
 function hasUnrecognizedAffirmativeTokenMutationPolicy(value) {
   return decisionClauseGroups(value)
     .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
     .some((predicate) => {
-      if (hasReplacementPolicyNegation(predicate) || !hasReplacementActionSignal(predicate)) return false;
-      return !isAllowedInitialTokenMintClause(predicate) && !isAllowedPostExpiryReplacementClause(predicate);
+      if (hasReplacementPolicyNegation(predicate)) return false;
+      if (!TOKEN_LIFECYCLE_TARGET_PATTERN.test(predicate)) return false;
+      return !isAllowedAffirmativeTokenLifecycleClause(predicate);
     });
 }
 

@@ -236,6 +236,31 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Issue a fresh checkout token in advance.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Preemptively mint a replacement token.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Proactively create a fresh checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Revoke the checkout token immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Invalidate the current token now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Delete the checkout-session token before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Remove the token on an ordinary retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Disable the current checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Deactivate the token immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Retire the token after its first use.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Destroy the checkout token now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Erase the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Purge the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Drop the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Cancel the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Terminate the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Void the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Blacklist the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Block the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Wipe the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Discard the checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Expire the checkout token immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Force the checkout token to expire immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mark the checkout token invalid now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Revoke it immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. The session key becomes unusable immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Clear the checkout credential now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Nullify the access token.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint another token after expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Issue a second replacement after expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. After expiry, mint one replacement, then issue another checkout token.",
@@ -266,6 +291,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Do not issue a fresh checkout token in advance.",
     "Never preemptively mint a replacement token.",
     "Do not proactively create a fresh checkout token.",
+    "Do not revoke the checkout token while it is valid.",
+    "Never invalidate the current checkout token.",
+    "Do not delete the checkout-session token before expiry.",
+    "Never disable the checkout token on an ordinary retry.",
+    "Do not force the checkout token to expire early.",
+    "Never mark the checkout token invalid while valid.",
   ]) {
     assert.equal(
       relayCheckoutDecisionContractKey(
@@ -278,6 +309,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   assert.equal(
     relayCheckoutDecisionContractKey(
       "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Create an audit record early."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Let the checkout token expire naturally. Mint exactly one replacement after expiry. Delete an obsolete audit record."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );
