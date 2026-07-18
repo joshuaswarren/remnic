@@ -45,8 +45,56 @@ test("memory promotion looks up legacy IDs longer than the filename grammar", as
   const { orchestrator, storageCalls } = buildOrchestrator();
   const memoryId = `legacy:${"x".repeat(300)}`;
 
-  const result = await executeMemoryPromote(orchestrator as never, { memoryId });
+  const result = await executeMemoryPromote(orchestrator as never, {
+    memoryId,
+  });
 
   assert.equal(result, `Memory not found in default: ${memoryId}`);
   assert.equal(storageCalls.at(-1)?.memoryId, memoryId);
+});
+
+test("memory promotion preserves provenance tags before source tags", async () => {
+  let promotedTags: readonly string[] | undefined;
+  const sourceMemory = {
+    content: "Synthetic source memory",
+    frontmatter: {
+      category: "fact",
+      confidence: 0.8,
+      tags: Array.from({ length: 50 }, (_, index) => `source-${index}`),
+    },
+  };
+  const sourceStorage = {
+    getMemoryById: async () => sourceMemory,
+  };
+  const destinationStorage = {
+    writeSealedMemory: async (envelope: { tags: readonly string[] }) => {
+      promotedTags = envelope.tags;
+      return { id: "promoted-1", tombstoneBlocked: false };
+    },
+  };
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      memoryDir: "/tmp/remnic-memory-promote-test",
+      queryAwareIndexingEnabled: false,
+    },
+    getStorage: async (namespace: string) =>
+      namespace === "default" ? sourceStorage : destinationStorage,
+  };
+
+  const result = await executeMemoryPromote(orchestrator as never, {
+    memoryId: "fact-42",
+    note: "reviewed",
+  });
+
+  assert.equal(result, "Promoted default:fact-42 → shared:promoted-1");
+  assert.deepEqual(promotedTags?.slice(0, 3), [
+    "promoted",
+    "promotedFrom:default:fact-42",
+    "note:reviewed",
+  ]);
+  assert.equal(promotedTags?.length, 50);
+  assert.equal(promotedTags?.includes("source-46"), true);
+  assert.equal(promotedTags?.includes("source-47"), false);
 });

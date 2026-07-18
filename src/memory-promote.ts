@@ -1,9 +1,9 @@
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
+import { TAG_LIMITS } from "@remnic/core/write-envelope";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
-
 /**
  * `memory_promote` executor — copy a memory into another namespace
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
@@ -12,7 +12,12 @@ import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
 
 export async function executeMemoryPromote(
   orchestrator: Orchestrator,
-  params: { memoryId: string; fromNamespace?: string; toNamespace?: string; note?: string },
+  params: {
+    memoryId: string;
+    fromNamespace?: string;
+    toNamespace?: string;
+    note?: string;
+  },
 ): Promise<string> {
   const { memoryId, fromNamespace, toNamespace, note } = params;
   // Reject invalid input instead of reinterpreting it: a blank namespace or
@@ -54,23 +59,30 @@ export async function executeMemoryPromote(
       content: mem.content,
       category: mem.frontmatter.category,
       confidence: mem.frontmatter.confidence,
-      tags: Array.from(
-        new Set([
-          ...(mem.frontmatter.tags ?? []),
+      tags: (() => {
+        const promotionTags = [
           "promoted",
           `promotedFrom:${srcNs}:${memoryId}`,
           ...(note ? [`note:${note}`] : []),
-        ]),
-      ),
+        ];
+        const sourceTags = mem.frontmatter.tags ?? [];
+        return Array.from(new Set([...promotionTags, ...sourceTags])).slice(
+          0,
+          TAG_LIMITS.maxTags,
+        );
+      })(),
       entityRef: mem.frontmatter.entityRef,
     },
     { source: "promote" },
   );
-  const { id: newId, tombstoneBlocked } = await dst.writeSealedMemory(promoteEnvelope, {
-    importance: mem.frontmatter.importance,
-    supersedes: mem.frontmatter.supersedes,
-    links: mem.frontmatter.links,
-  });
+  const { id: newId, tombstoneBlocked } = await dst.writeSealedMemory(
+    promoteEnvelope,
+    {
+      importance: mem.frontmatter.importance,
+      supersedes: mem.frontmatter.supersedes,
+      links: mem.frontmatter.links,
+    },
+  );
 
   // #1645 (review threads TWB/Yhu): if the destination namespace's tombstone
   // blocked this promotion, the copy landed pending_review (no active
