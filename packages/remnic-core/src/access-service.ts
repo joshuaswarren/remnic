@@ -2573,12 +2573,18 @@ export class EngramAccessService {
 
   /**
    * Attach a caller to a single-flight recall (issue #1906 review). Increments
-   * the flight refcount and wires the caller's abort so the SHARED pipeline is
-   * cancelled ONLY when every attached caller has aborted. Returns a `detach`
-   * to call when the caller settles normally (removes its abort listener and
-   * decrements the refcount without cancelling the flight).
+   * the flight refcount and (when `cancelOnAbort`) wires the caller's abort so
+   * the SHARED pipeline is cancelled ONLY when every attached caller has
+   * aborted. A committed caller (`cancelOnAbort=false`, e.g. an idempotency-keyed
+   * leader that must persist regardless of its own connection) still holds a
+   * refcount slot — keeping the flight alive — but never cancels it. Returns a
+   * `detach` to call when the caller settles.
    */
-  private attachFlightAbort(flight: RecallFlight, signal: AbortSignal | undefined): () => void {
+  private attachFlightAbort(
+    flight: RecallFlight,
+    signal: AbortSignal | undefined,
+    cancelOnAbort: boolean,
+  ): () => void {
     flight.live += 1;
     let settled = false;
     const onAbort = () => {
@@ -2587,7 +2593,7 @@ export class EngramAccessService {
       flight.live -= 1;
       if (flight.live === 0) flight.controller.abort();
     };
-    if (signal) {
+    if (cancelOnAbort && signal) {
       if (signal.aborted) {
         onAbort();
       } else {
@@ -2598,26 +2604,51 @@ export class EngramAccessService {
       if (settled) return;
       settled = true;
       flight.live -= 1;
-      if (signal) signal.removeEventListener("abort", onAbort);
+      if (cancelOnAbort && signal) signal.removeEventListener("abort", onAbort);
     };
   }
 
-  /** Consume a shared recall flight for one caller (issue #1906 review): attach
-   *  to the flight, await its shared pipeline racing THIS caller's own signal,
-   *  then (for callers that did not run the pipeline) record this caller's OWN
-   *  cross-namespace budget event, and return an independent response clone.
-   *  Returns the reservation THIS caller is responsible for so an outer failure
-   *  (idempotency put) can release the exact entry (round 3 #1/#3). The response
-   *  clone runs inside the rollback scope: a clone throw releases too. */
+  /** Consume a shared recall flight for one caller (issue #1906 review). When
+   *  `race` is true the caller leaves early on its own abort; when false (a
+   *  committed idempotency-keyed leader) it awaits the flight to completion so
+   *  persistence survives its disconnect (round 5 #1). Records this caller's OWN
+   *  cross-namespace budget event (coalesced callers), clones the response
+   *  inside the rollback scope, and returns the reservation this caller owns so
+   *  an outer failure can release the exact entry. If the caller leaves before
+   *  observing the result, the pipeline reservation it owns is released once the
+   *  flight resolves so a cancelled recall never leaks quota (round 5 #2). */
   private async consumeFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
     recordBudget: boolean,
+    race: boolean,
   ): Promise<{ response: EngramAccessRecallResponse; reservation: BudgetReservation | undefined }> {
-    const detach = this.attachFlightAbort(flight, request.abortSignal);
+    const detach = this.attachFlightAbort(flight, request.abortSignal, race);
     try {
-      const result = await this.raceAbort(flight.promise, request.abortSignal);
-      throwIfAborted(request.abortSignal);
+      let result: RecallExecResult;
+      try {
+        result = race
+          ? await this.raceAbort(flight.promise, request.abortSignal)
+          : await flight.promise;
+      } catch (err) {
+        // This caller left before observing the result. If it OWNS the
+        // pipeline's reservation (recordBudget=false) and the flight still
+        // resolves with one, release it so a cancelled recall does not leak
+        // quota (round 5 #2). A rejected flight already rolled back inside
+        // executeRecall, so the resolve handler simply never fires.
+        if (!recordBudget) {
+          flight.promise.then(
+            (settled) => {
+              if (settled.reservation) this.budget.release(settled.reservation);
+            },
+            () => {},
+          );
+        }
+        throw err;
+      }
+      // A committed (race=false) caller applies its own abort later (after
+      // persistence); a racing caller re-checks here.
+      if (race) throwIfAborted(request.abortSignal);
       // A caller that ran the pipeline inherits its reservation token; a
       // coalesced caller records its OWN cross-namespace event below.
       let reservation = recordBudget ? undefined : result.reservation;
@@ -2659,7 +2690,7 @@ export class EngramAccessService {
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
   ): Promise<EngramAccessRecallResponse> {
-    return (await this.consumeFlight(flight, request, true)).response;
+    return (await this.consumeFlight(flight, request, true, true)).response;
   }
 
   /** Non-coalesced recall (single-flight disabled): per-request execution
@@ -2683,7 +2714,22 @@ export class EngramAccessService {
           // idempotency-lock await). The caller's own signal drives this
           // non-coalesced pipeline.
           const exec = this.executeRecall({ ...normalizedRequest, queueWaitMs });
-          const result = await this.raceAbort(exec, request.abortSignal);
+          let result: RecallExecResult;
+          try {
+            result = await this.raceAbort(exec, request.abortSignal);
+          } catch (err) {
+            // Caller left (abort) before observing the result. If exec still
+            // resolves with a reservation, release it so the cancelled recall
+            // does not leak quota (round 5 #2). A rejected exec already rolled
+            // back inside executeRecall.
+            exec.then(
+              (settled) => {
+                if (settled.reservation) this.budget.release(settled.reservation);
+              },
+              () => {},
+            );
+            throw err;
+          }
           let cloned: EngramAccessRecallResponse;
           try {
             cloned = structuredClone(result.response);
@@ -2773,18 +2819,23 @@ export class EngramAccessService {
         idempotencyKey: request.idempotencyKey,
         requestFingerprint,
         execute: async () => {
+          // A keyed request commits (race=false): the leader awaits the flight
+          // to completion so idempotency.put persists even if the leader itself
+          // disconnects (round 5 #1). A non-keyed request races its own signal
+          // and may leave early (nothing to persist).
+          const race = !request.idempotencyKey?.trim();
           const existing = this.recallInFlight.get(flightKey);
           if (existing && !existing.controller.signal.aborted) {
             // A LIVE identical flight registered between our fast-path miss and
             // the idempotency guard — join it and record our own event.
-            const consumed = await this.consumeFlight(existing, request, true);
+            const consumed = await this.consumeFlight(existing, request, true, race);
             capturedReservation = consumed.reservation;
             return consumed.response;
           }
           const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey);
           // The leader's own budget event is reserved inside the pipeline, so it
           // must NOT record again here.
-          const consumed = await this.consumeFlight(flight, request, false);
+          const consumed = await this.consumeFlight(flight, request, false, race);
           capturedReservation = consumed.reservation;
           return consumed.response;
         },

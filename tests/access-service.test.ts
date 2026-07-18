@@ -4324,3 +4324,89 @@ test("a post-retrieval failure releases the reserved cross-namespace budget (iss
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a keyed recall persists even when the caller disconnects mid-pipeline; a retry replays with zero new pipeline or budget (#1906 r5 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r5-persist-"));
+  let recallCalls = 0;
+  let releaseRecall: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const firstEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      if (recallCalls === 1) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseRecall = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r5-persist-key",
+  };
+
+  try {
+    const controller = new AbortController();
+    const first = service.recall({ ...request, abortSignal: controller.signal });
+    await firstEntered;
+    // Caller disconnects mid-pipeline, THEN the pipeline completes.
+    controller.abort();
+    releaseRecall?.();
+    await assert.rejects(first, (error: Error) => error.name === "AbortError");
+    assert.equal(recallCalls, 1);
+
+    // The completed result was persisted despite the disconnect: a retry of the
+    // key replays it with ZERO new pipeline executions.
+    const retry = await service.recall(request);
+    assert.equal(retry.context, "ctx");
+    assert.equal(recallCalls, 1, "retry must not re-execute the pipeline");
+
+    // And ZERO new budget events: a fresh cross-namespace recall sees count=2
+    // (the persisted first + this fresh one), not 3.
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(recallCalls, 2);
+    assert.equal(fresh.budgetWarning?.count, 2, "the replay consumed no budget");
+  } finally {
+    releaseRecall?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

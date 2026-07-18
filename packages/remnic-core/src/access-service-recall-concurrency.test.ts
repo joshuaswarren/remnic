@@ -876,3 +876,28 @@ test("a coalesced follower's response carries its OWN soft-limit warning, not th
   assert.equal(followerResp.budgetWarning?.reason, "warn-over-soft");
   assert.equal(followerResp.budgetWarning?.count, 2);
 });
+
+test("single-flight off: a caller abort while the underlying pipeline still resolves does not leak budget (round 5 #2)", async () => {
+  const release = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: false, // direct path (runRecallDirect)
+    crossNamespace: true,
+    // The pipeline resolves (with a reservation) even though the caller aborted.
+    pipeline: async () => {
+      await release.promise;
+      return stubResponse([]);
+    },
+  });
+
+  const controller = new AbortController();
+  const p = h.service.recall({ query: "same", abortSignal: controller.signal });
+  controller.abort();
+  await assert.rejects(p, (error: Error) => error.name === "AbortError");
+
+  // The underlying recall still resolves with a reservation nobody observed.
+  release.resolve();
+  // Drain microtasks so the pipeline resolves and the orphan-release .then runs.
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(h.liveBudget(), 0, "the orphaned reservation from the cancelled recall was released");
+});

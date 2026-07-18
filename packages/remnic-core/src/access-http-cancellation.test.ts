@@ -188,6 +188,7 @@ function makeRecallServiceProbe(): {
     recallInFlight: Map<string, unknown>;
     orchestrator: { config: Record<string, unknown> };
     resolveRequestPrincipal: () => string;
+    budget: { record: () => { allowed: boolean }; release: () => void };
     executeRecall: () => Promise<{ response: Record<string, never>; budgetRecordPrincipal: null }>;
     handleIdempotentRead: (options: {
       requestFingerprint: unknown;
@@ -200,6 +201,7 @@ function makeRecallServiceProbe(): {
     config: { recallMaxConcurrentPerPrincipal: 4, recallSingleFlightEnabled: true },
   };
   host.resolveRequestPrincipal = () => "principal";
+  host.budget = { record: () => ({ allowed: true }), release: () => {} };
   host.executeRecall = async () => {
     await executeRecall();
     return { response: {}, budgetRecordPrincipal: null };
@@ -234,7 +236,11 @@ test("recall excludes its abort signal from the idempotency fingerprint", async 
   );
 });
 
-test("recall does not store a result when the pipeline consumes an abort", async () => {
+test("a keyed recall persists its completed result even when the caller disconnects (#1906 r5 #1)", async () => {
+  // The pipeline runs to completion; the caller aborts mid-flight. Idempotent
+  // persistence must be decoupled from the caller's connection, so the result
+  // IS stored (a retry of the key returns it) while the caller still sees the
+  // AbortError for its own disconnected request.
   const probe = makeRecallServiceProbe();
   const controller = new AbortController();
   probe.setExecuteRecall(async () => {
@@ -248,6 +254,21 @@ test("recall does not store a result when the pipeline consumes an abort", async
       abortSignal: controller.signal,
     }),
     (error: Error) => error.name === "AbortError",
+  );
+  assert.equal(probe.stored(), true);
+});
+
+test("a keyed recall does not store when the pipeline itself throws", async () => {
+  // When the underlying pipeline fails/aborts (throws), nothing is persisted —
+  // a retry re-executes rather than replaying a failed result.
+  const probe = makeRecallServiceProbe();
+  probe.setExecuteRecall(async () => {
+    throw new Error("pipeline failed");
+  });
+
+  await assert.rejects(
+    probe.service.recall({ query: "boom", idempotencyKey: "boom-key" }),
+    /pipeline failed/,
   );
   assert.equal(probe.stored(), false);
 });

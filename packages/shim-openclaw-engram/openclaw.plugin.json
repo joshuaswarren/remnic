@@ -4330,7 +4330,7 @@
         "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
       },
       "recallMaxConcurrentPerPrincipal": {
-        "type": "number",
+        "type": "integer",
         "minimum": 0,
         "default": 4,
         "description": "Maximum concurrent recalls executed per principal (issue #1906). Recalls beyond this cap queue FIFO; an aborted waiter leaves the queue immediately. 0 = unlimited (no cap). Replaces the former width-1 budget-lock serialization; budget accounting stays correct because peek/record are synchronous. Set 1 to restore exact serialization."
