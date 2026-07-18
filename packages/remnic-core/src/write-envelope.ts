@@ -27,6 +27,7 @@
 import type { MemoryCategory } from "./types.js";
 import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { sanitizeMemoryContent } from "./sanitize.js";
 
 // ---------------------------------------------------------------------------
 // Input surface
@@ -313,11 +314,19 @@ export function composeMemoryEnvelope(
     fail("ctx.now", "must return a valid Date");
   }
 
+  // Sanitized THEN trimmed: persistence paths run sanitizeMemoryContent
+  // before writing, so the sealed form and fingerprint must match what
+  // storage will actually hold — an injection-bearing input must not mint
+  // a fingerprint for content that never gets persisted in that form
+  // (review findings on #1998: whitespace round 2, sanitize round 7;
+  // AGENTS.md §13 hash-consistency).
+  const sanitizedContent = sanitizeMemoryContent(input.content).text.trim();
+  if (sanitizedContent.length === 0) {
+    fail("content", "is empty after sanitization");
+  }
+
   const body = {
-    // Trimmed: other write paths persist trimmed content (e.g. explicit
-    // capture), so the sealed form and fingerprint must match what storage
-    // will actually hold (review finding on #1998).
-    content: input.content.trim(),
+    content: sanitizedContent,
     category: input.category,
     tags: normalizeEnvelopeTags(input.tags),
     structuredAttributes: normalizeStructuredAttributes(input.structuredAttributes),
