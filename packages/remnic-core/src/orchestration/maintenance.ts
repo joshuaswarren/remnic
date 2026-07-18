@@ -519,16 +519,26 @@ export class MaintenanceScheduler {
         // is nothing to invalidate and we keep the warm QMD caches (#1904, Codex).
         didUpdate = summary.ran > 0;
       } else {
-        await this.deps.getQmd().update();
+        // Ordinary update() is fail-open: it returns silently (no throw) when
+        // QMD is unavailable or the call is suppressed by a min-interval /
+        // failure backoff, and only advances lastUpdateRanAtMs when an index
+        // refresh actually ran. Treat the cache dirty iff that timestamp moved
+        // past our pre-call snapshot — so a no-op pass keeps the warm QMD caches
+        // and a real refresh invalidates them even if the subsequent embed()
+        // rejects (#1904, Cursor/Codex). Absent getter → assume refreshed.
+        const qmd = this.deps.getQmd();
+        const updateBefore = qmd.lastUpdateRanAtMs ?? null;
+        await qmd.update();
+        didUpdate = qmd.lastUpdateRanAtMs == null || qmd.lastUpdateRanAtMs !== updateBefore;
         const now = Date.now();
         if (
+          didUpdate &&
           resolveQmdCapabilities(this.deps.config).qmdAutoEmbed &&
           now - this.lastQmdEmbedAtMs >= this.deps.config.qmdEmbedMinIntervalMs
         ) {
-          await this.deps.getQmd().embed();
+          await qmd.embed();
           this.lastQmdEmbedAtMs = now;
         }
-        didUpdate = true;
       }
       // A successful update+embed means newly-persisted facts are now searchable;
       // any cached pre-index QMD recall/search bundle is now stale. Clear ONLY the
