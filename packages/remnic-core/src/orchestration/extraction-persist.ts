@@ -20,7 +20,11 @@
  */
 
 import { isMemoryCategory } from "../write-envelope.js";
-import { composeSalvagedExtractionEnvelope, withReservedMarkerTag } from "./extraction-envelope.js";
+import {
+  composeSalvagedExtractionEnvelope,
+  probeSalvageSurvivingFields,
+  withReservedMarkerTag,
+} from "./extraction-envelope.js";
 import path from "node:path";
 import {
   StorageManager,
@@ -1079,35 +1083,22 @@ export class ExtractionPersistCoordinator {
           : args.content;
       const sanitizedBase = sanitizeMemoryContent(rawContent);
       // #2014 round 3: promoted copies were written from SALVAGE envelopes,
-      // so hash on the same surviving fields the promotion writes persisted —
-      // a raw-attrs hash silently misses after salvage drops/dedupes keys.
-      // A pure salvage compose probe reproduces exactly that surviving set
-      // (deterministic; no side effects). Fail-open to raw fields if the
-      // probe rejects (invalid category/content never reached a promotion
-      // write anyway).
-      let backfillEntityRef = args.entityRef;
-      let survivingBackfillAttrs = args.structuredAttributes;
-      if (args.category === "fact" && isMemoryCategory(args.category)) {
-        try {
-          const probe = composeSalvagedExtractionEnvelope(
-            {
+      // so hash on the same surviving fields those writes persisted — a
+      // raw-attrs hash silently misses after salvage drops/dedupes keys.
+      // Fail open to raw fields when the probe rejects.
+      const probed =
+        args.category === "fact" && isMemoryCategory(args.category)
+          ? probeSalvageSurvivingFields({
               content: rawContent,
               category: args.category,
               structuredAttributes: args.structuredAttributes,
               entityRef: args.entityRef,
-            },
-            { source: "bitemporal-backfill-probe" },
-          );
-          backfillEntityRef = probe.entityRef;
-          survivingBackfillAttrs = probe.rawStructuredAttributes
-            ? { ...probe.rawStructuredAttributes }
-            : undefined;
-        } catch (probeErr) {
-          log.warn(
-            `bitemporal-backfill: salvage probe failed open to raw fields: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`,
-          );
-        }
-      }
+            })
+          : null;
+      const backfillEntityRef = probed ? probed.entityRef : args.entityRef;
+      const survivingBackfillAttrs = probed
+        ? probed.structuredAttributes
+        : args.structuredAttributes;
       const dedupContent =
         args.category === "fact" &&
         survivingBackfillAttrs &&
