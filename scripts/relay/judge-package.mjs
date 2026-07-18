@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import process from "node:process";
@@ -117,130 +117,229 @@ function stableJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-function sameOpenedFile(before, after) {
+function sameOpenedNode(before, after) {
   return (
     before.dev === after.dev &&
     before.ino === after.ino &&
+    before.nlink === after.nlink &&
     before.size === after.size &&
     before.mtimeNs === after.mtimeNs &&
     before.ctimeNs === after.ctimeNs
   );
 }
 
-export async function readRegularFileNoFollow(file, label, encoding) {
+function relayPathSegments(relative) {
   invariant(
-    typeof fsConstants.O_NOFOLLOW === "number",
-    "the declared Linux judge platform must support no-follow file opens"
+    typeof relative === "string" && relative.length > 0 && !path.isAbsolute(relative) && !relative.includes("\\"),
+    `${relative} must be a repository-relative POSIX path`
+  );
+  const segments = relative.split("/");
+  invariant(
+    segments.every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+    `${relative} must stay inside the repository root`
+  );
+  return segments;
+}
+
+function descriptorChildPath(handle, segment) {
+  return `/proc/self/fd/${handle.fd}/${segment}`;
+}
+
+async function openPinnedRepoRoot(repoRoot) {
+  invariant(
+    process.platform === "linux" &&
+      typeof fsConstants.O_NOFOLLOW === "number" &&
+      typeof fsConstants.O_DIRECTORY === "number" &&
+      typeof fsConstants.O_NONBLOCK === "number",
+    "the declared Linux judge platform must support descriptor-pinned no-follow traversal"
   );
   let handle;
   try {
-    handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    handle = await open(
+      path.resolve(repoRoot),
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+    );
   } catch (error) {
-    throw new Error(`Relay judge verification failed: ${label} must be a non-symlink regular file`, {
+    throw new Error("Relay judge verification failed: the repository root must be a real directory", { cause: error });
+  }
+  try {
+    invariant((await handle.stat()).isDirectory(), "the repository root must be a real directory");
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function openChildNoFollow(parentHandle, segment, label, expectedType) {
+  const directoryFlag = expectedType === "directory" ? fsConstants.O_DIRECTORY : 0;
+  let handle;
+  try {
+    handle = await open(
+      descriptorChildPath(parentHandle, segment),
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK | directoryFlag
+    );
+  } catch (error) {
+    const expected =
+      expectedType === "directory"
+        ? "a real directory"
+        : expectedType === "file"
+          ? "a non-symlink regular file"
+          : "a non-symlink regular file or directory";
+    throw new Error(`Relay judge verification failed: ${label} must not traverse a symlink and must be ${expected}`, {
       cause: error,
     });
   }
   try {
+    const info = await handle.stat({ bigint: true });
+    const valid =
+      expectedType === "directory"
+        ? info.isDirectory()
+        : expectedType === "file"
+          ? info.isFile()
+          : info.isDirectory() || info.isFile();
+    invariant(valid, `${label} has the wrong filesystem type`);
+    return { handle, info };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function openRepoRelativeFromRoot(rootHandle, relative, expectedType) {
+  const segments = relayPathSegments(relative);
+  let current = rootHandle;
+  let ownsCurrent = false;
+  try {
+    for (const [index, segment] of segments.entries()) {
+      const isTarget = index === segments.length - 1;
+      const opened = await openChildNoFollow(current, segment, relative, isTarget ? expectedType : "directory");
+      if (ownsCurrent) await current.close();
+      current = opened.handle;
+      ownsCurrent = true;
+    }
+    return current;
+  } catch (error) {
+    if (ownsCurrent) await current.close();
+    throw error;
+  }
+}
+
+async function readOpenedRegularFile(handle, label, encoding) {
+  try {
     const before = await handle.stat({ bigint: true });
     invariant(before.isFile(), `${label} must be a non-symlink regular file`);
+    invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
     const contents = await handle.readFile(encoding);
     const after = await handle.stat({ bigint: true });
-    invariant(sameOpenedFile(before, after), `${label} changed while its verified bytes were being read`);
+    invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
     return contents;
   } finally {
     await handle.close();
   }
 }
 
-async function readJson(root, relative) {
-  const file = path.join(root, relative);
-  const contents = await readRegularFileNoFollow(file, relative, "utf8");
+async function readRepoFileFromRoot(rootHandle, relative, encoding) {
+  return readOpenedRegularFile(await openRepoRelativeFromRoot(rootHandle, relative, "file"), relative, encoding);
+}
+
+export async function readRegularRepoFileNoFollow(repoRoot, relative, encoding) {
+  const rootHandle = await openPinnedRepoRoot(repoRoot);
   try {
-    return JSON.parse(contents);
+    return await readRepoFileFromRoot(rootHandle, relative, encoding);
+  } finally {
+    await rootHandle.close();
+  }
+}
+
+async function snapshotDirectory(directoryHandle, treeLabel, prefix = "", snapshot = new Map()) {
+  const before = await directoryHandle.stat({ bigint: true });
+  invariant(before.isDirectory(), `${treeLabel} must be a real directory`);
+  const names = (await readdir(`/proc/self/fd/${directoryHandle.fd}`)).sort((left, right) => left.localeCompare(right));
+  for (const name of names) {
+    invariant(name !== "." && name !== ".." && !name.includes("/"), `${treeLabel} contains an invalid entry name`);
+    const relative = prefix ? `${prefix}/${name}` : name;
+    const label = `${treeLabel}/${relative}`;
+    const { handle, info } = await openChildNoFollow(directoryHandle, name, label);
+    if (info.isDirectory()) {
+      try {
+        await snapshotDirectory(handle, treeLabel, relative, snapshot);
+      } finally {
+        await handle.close();
+      }
+    } else {
+      snapshot.set(relative, await readOpenedRegularFile(handle, label));
+    }
+  }
+  const after = await directoryHandle.stat({ bigint: true });
+  invariant(sameOpenedNode(before, after), `${treeLabel} changed while its verified snapshot was being captured`);
+  return snapshot;
+}
+
+async function snapshotRepoTree(rootHandle, relative) {
+  const directoryHandle = await openRepoRelativeFromRoot(rootHandle, relative, "directory");
+  try {
+    return await snapshotDirectory(directoryHandle, relative);
+  } finally {
+    await directoryHandle.close();
+  }
+}
+
+async function snapshotJudgeInputs(repoRoot) {
+  const rootHandle = await openPinnedRepoRoot(repoRoot);
+  try {
+    const before = await rootHandle.stat({ bigint: true });
+    const [recording, fixture, ui, demoScript, packageManifest] = await Promise.all([
+      snapshotRepoTree(rootHandle, RECORDING_RELATIVE),
+      snapshotRepoTree(rootHandle, FIXTURE_RELATIVE),
+      snapshotRepoTree(rootHandle, UI_RELATIVE),
+      readRepoFileFromRoot(rootHandle, DEMO_SCRIPT_RELATIVE, "utf8"),
+      readRepoFileFromRoot(rootHandle, "package.json", "utf8"),
+    ]);
+    const after = await rootHandle.stat({ bigint: true });
+    invariant(sameOpenedNode(before, after), "the repository root changed while the judge snapshot was captured");
+    return { recording, fixture, ui, demoScript, packageManifest };
+  } finally {
+    await rootHandle.close();
+  }
+}
+
+function snapshotFile(snapshot, relative, label = relative) {
+  const contents = snapshot.get(relative);
+  invariant(Buffer.isBuffer(contents), `${label} is missing from the descriptor-pinned snapshot`);
+  return contents;
+}
+
+function readJson(snapshot, relative) {
+  const contents = snapshotFile(snapshot, relative);
+  try {
+    return JSON.parse(contents.toString("utf8"));
   } catch (error) {
     throw new Error(`Relay judge verification failed: cannot parse ${relative}`, { cause: error });
   }
 }
 
-async function guardedRepoPath(repoRoot, relative, expectedType) {
-  const root = path.resolve(repoRoot);
-  const rootInfo = await lstat(root);
-  invariant(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), "the repository root must be a real directory");
-  const target = path.resolve(root, relative);
-  const targetRelative = path.relative(root, target);
-  invariant(
-    targetRelative.length > 0 &&
-      targetRelative !== ".." &&
-      !targetRelative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(targetRelative),
-    `${relative} must stay inside the repository root`
-  );
-
-  let current = root;
-  const segments = targetRelative.split(path.sep);
-  for (const [index, segment] of segments.entries()) {
-    current = path.join(current, segment);
-    const info = await lstat(current);
-    invariant(!info.isSymbolicLink(), `${relative} must not traverse a symlink`);
-    const isTarget = index === segments.length - 1;
-    if (!isTarget) invariant(info.isDirectory(), `${relative} parent paths must be directories`);
-    else if (expectedType === "directory") invariant(info.isDirectory(), `${relative} must be a directory`);
-    else invariant(info.isFile(), `${relative} must be a regular file`);
-  }
-  return target;
-}
-
-async function readRegularRepoFile(repoRoot, relative, encoding) {
-  return readRegularFileNoFollow(await guardedRepoPath(repoRoot, relative, "file"), relative, encoding);
-}
-
-async function regularFiles(root) {
-  const rootInfo = await lstat(root);
-  invariant(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), `${root} must be a real directory`);
-  const files = [];
-  const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    const entries = (await readdir(current, { withFileTypes: true })).sort((left, right) =>
-      left.name.localeCompare(right.name)
-    );
-    for (const entry of entries) {
-      const entryPath = path.join(current, entry.name);
-      const info = await lstat(entryPath);
-      invariant(!info.isSymbolicLink(), `${path.relative(root, entryPath)} must not be a symlink`);
-      if (info.isDirectory()) pending.push(entryPath);
-      else {
-        invariant(info.isFile(), `${path.relative(root, entryPath)} must be a regular file`);
-        files.push(entryPath);
-      }
-    }
-  }
-  return files.sort();
-}
-
-async function digestTree(root, excluded = []) {
+function digestSnapshot(snapshot, excluded = []) {
   const excludedSet = new Set(excluded);
-  const digests = [];
-  for (const file of await regularFiles(root)) {
-    const relative = path.relative(root, file).split(path.sep).join("/");
-    if (excludedSet.has(relative)) continue;
-    const contents = await readRegularFileNoFollow(file, relative);
-    digests.push({ path: relative, bytes: contents.byteLength, sha256: sha256(contents) });
-  }
-  return digests;
+  return [...snapshot.entries()]
+    .filter(([relative]) => !excludedSet.has(relative))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([relative, contents]) => ({
+      path: relative,
+      bytes: contents.byteLength,
+      sha256: sha256(contents),
+    }));
 }
 
-async function readTextTree(root) {
-  return Promise.all(
-    (await regularFiles(root)).map((file) =>
-      readRegularFileNoFollow(file, path.relative(root, file).split(path.sep).join("/"), "utf8")
-    )
-  );
+function readTextSnapshot(snapshot) {
+  return [...snapshot.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, contents]) => contents.toString("utf8"));
 }
 
-async function verifyManifest(root, expectedFiles) {
-  const manifest = asObject(await readJson(root, "manifest.json"), "manifest.json");
-  const files = await digestTree(root, ["manifest.json"]);
+function verifyManifest(snapshot, expectedFiles) {
+  const manifest = asObject(readJson(snapshot, "manifest.json"), "manifest.json");
+  const files = digestSnapshot(snapshot, ["manifest.json"]);
   const actual = { schemaVersion: 1, files, rootSha256: sha256(JSON.stringify(files)) };
   invariant(sameJson(manifest, actual), "the recording integrity manifest does not match its bytes");
   invariant(
@@ -253,9 +352,9 @@ async function verifyManifest(root, expectedFiles) {
   return actual;
 }
 
-async function verifyFixtureManifest(fixtureRoot) {
-  const manifest = asObject(await readJson(fixtureRoot, "manifest.json"), "fixture manifest");
-  const files = await digestTree(fixtureRoot, ["manifest.json"]);
+function verifyFixtureManifest(snapshot) {
+  const manifest = asObject(readJson(snapshot, "manifest.json"), "fixture manifest");
+  const files = digestSnapshot(snapshot, ["manifest.json"]);
   const actual = { schemaVersion: 1, files, rootSha256: sha256(JSON.stringify(files)) };
   invariant(sameJson(manifest, actual), "the committed synthetic fixture manifest does not match its bytes");
   return actual;
@@ -409,18 +508,12 @@ export function verifyRelayHiddenTestEvidence(testResults, recordingMetadata) {
   return testOutputSha256;
 }
 
-export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
+async function verifyRelayJudgePackageSnapshot(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
   const root = path.resolve(repoRoot);
-  const [recordingRoot, fixtureRoot, uiRoot] = await Promise.all([
-    guardedRepoPath(root, RECORDING_RELATIVE, "directory"),
-    guardedRepoPath(root, FIXTURE_RELATIVE, "directory"),
-    guardedRepoPath(root, UI_RELATIVE, "directory"),
-  ]);
-  const [manifest, fixtureManifest, uiFiles] = await Promise.all([
-    verifyManifest(recordingRoot, EXPECTED_RECORDING_FILES),
-    verifyFixtureManifest(fixtureRoot),
-    digestTree(uiRoot),
-  ]);
+  const snapshot = await snapshotJudgeInputs(root);
+  const manifest = verifyManifest(snapshot.recording, EXPECTED_RECORDING_FILES);
+  const fixtureManifest = verifyFixtureManifest(snapshot.fixture);
+  const uiFiles = digestSnapshot(snapshot.ui);
   invariant(manifest.rootSha256 === RELAY_RECORDING_ROOT_SHA256, "the canonical recording root changed without review");
   const uiRootSha256 = sha256(JSON.stringify(uiFiles));
   invariant(uiRootSha256 === RELAY_UI_ROOT_SHA256, "the Mission Control UI root changed without review");
@@ -438,20 +531,20 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     replacementMemory,
     missionReceipt,
     replay,
-  ] = await Promise.all([
-    readJson(recordingRoot, "recording.json"),
-    readJson(recordingRoot, "preflight.json"),
-    readJson(recordingRoot, "credit-receipt.json"),
-    readJson(recordingRoot, "budget-adjustment.json"),
-    readJson(recordingRoot, "events.json"),
-    readJson(recordingRoot, "tests.json"),
-    readJson(recordingRoot, "approval.json"),
-    readJson(recordingRoot, "correction.json"),
-    readJson(recordingRoot, "memories/stale.json"),
-    readJson(recordingRoot, "memories/replacement.json"),
-    readJson(recordingRoot, "mission-receipt.json"),
-    readJson(uiRoot, "replay.json"),
-  ]);
+  ] = [
+    readJson(snapshot.recording, "recording.json"),
+    readJson(snapshot.recording, "preflight.json"),
+    readJson(snapshot.recording, "credit-receipt.json"),
+    readJson(snapshot.recording, "budget-adjustment.json"),
+    readJson(snapshot.recording, "events.json"),
+    readJson(snapshot.recording, "tests.json"),
+    readJson(snapshot.recording, "approval.json"),
+    readJson(snapshot.recording, "correction.json"),
+    readJson(snapshot.recording, "memories/stale.json"),
+    readJson(snapshot.recording, "memories/replacement.json"),
+    readJson(snapshot.recording, "mission-receipt.json"),
+    readJson(snapshot.ui, "replay.json"),
+  ];
 
   asObject(metadata, "recording.json");
   asObject(preflight, "preflight.json");
@@ -520,7 +613,7 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
 
   const calls = {};
   for (const role of ROLE_ORDER) {
-    const call = asObject(await readJson(recordingRoot, `calls/${role}.json`), `${role} call`);
+    const call = asObject(readJson(snapshot.recording, `calls/${role}.json`), `${role} call`);
     const summary = asObject(call.summary, `${role} summary`);
     invariant(summary.role === role, `${role} artifact has the wrong role`);
     invariant(summary.model === MODEL && summary.reasoningEffort === REASONING_EFFORT, `${role} model policy drifted`);
@@ -561,8 +654,7 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     "cold-builder": "cold-builder.md",
   };
   for (const role of ROLE_ORDER) {
-    const promptRelative = `${FIXTURE_RELATIVE}/prompts/${promptFiles[role]}`;
-    const prompt = await readRegularRepoFile(root, promptRelative);
+    const prompt = snapshotFile(snapshot.fixture, `prompts/${promptFiles[role]}`, `${role} prompt`);
     invariant(calls[role].summary.promptSha256 === sha256(prompt), `${role} is not bound to its committed prompt`);
   }
 
@@ -719,17 +811,13 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     ),
     "judge UI file set is incomplete or unexpected"
   );
-  const [staticAssets, demoScript, recordingText, fixtureText, packageManifest] = await Promise.all([
-    Promise.all(
-      EXPECTED_UI_FILES.map((name) =>
-        readRegularFileNoFollow(path.join(uiRoot, name), `${UI_RELATIVE}/${name}`, "utf8")
-      )
-    ),
-    readRegularRepoFile(root, DEMO_SCRIPT_RELATIVE, "utf8"),
-    readTextTree(recordingRoot),
-    readTextTree(fixtureRoot),
-    readRegularRepoFile(root, "package.json", "utf8"),
-  ]);
+  const staticAssets = EXPECTED_UI_FILES.map((name) =>
+    snapshotFile(snapshot.ui, name, `${UI_RELATIVE}/${name}`).toString("utf8")
+  );
+  const demoScript = snapshot.demoScript;
+  const recordingText = readTextSnapshot(snapshot.recording);
+  const fixtureText = readTextSnapshot(snapshot.fixture);
+  const packageManifest = snapshot.packageManifest;
   const sensitiveFilesScanned = recordingText.length + fixtureText.length + staticAssets.length + 2;
   scanForSensitiveMaterial([...recordingText, ...fixtureText, ...staticAssets, demoScript, packageManifest]);
   const demo = measureDemoScript(demoScript);
@@ -741,7 +829,7 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     "mission timestamps are invalid"
   );
 
-  return {
+  const receipt = {
     status: "verified",
     mode: "offline-sealed-live-replay",
     missionId: MISSION_ID,
@@ -766,6 +854,14 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     sensitiveFilesScanned,
     demo,
   };
+  const verifiedAssets = new Map(
+    EXPECTED_UI_FILES.map((name) => [name, Buffer.from(snapshotFile(snapshot.ui, name, `${UI_RELATIVE}/${name}`))])
+  );
+  return { receipt, verifiedAssets };
+}
+
+export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
+  return (await verifyRelayJudgePackageSnapshot(repoRoot)).receipt;
 }
 
 const CONTENT_TYPES = {
@@ -796,27 +892,6 @@ function closeServer(server) {
   });
 }
 
-async function cacheVerifiedUiAssets(repoRoot, expectedRootSha256) {
-  const uiRoot = await guardedRepoPath(repoRoot, UI_RELATIVE, "directory");
-  const assets = new Map();
-  const digests = [];
-  for (const asset of [...EXPECTED_UI_FILES].sort()) {
-    const file = await guardedRepoPath(repoRoot, `${UI_RELATIVE}/${asset}`, "file");
-    const body = await readRegularFileNoFollow(file, `${UI_RELATIVE}/${asset}`);
-    assets.set(asset, body);
-    digests.push({
-      path: path.relative(uiRoot, file).split(path.sep).join("/"),
-      bytes: body.byteLength,
-      sha256: sha256(body),
-    });
-  }
-  invariant(
-    sha256(JSON.stringify(digests)) === expectedRootSha256,
-    "the judge server asset snapshot changed after verification"
-  );
-  return assets;
-}
-
 export async function startRelayJudgeServer(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? DEFAULT_RELAY_REPO_ROOT);
   const host = "127.0.0.1";
@@ -825,8 +900,7 @@ export async function startRelayJudgeServer(options = {}) {
     Number.isInteger(port) && port >= 0 && port <= 65_535,
     "server port must be an integer from 0 through 65535"
   );
-  const receipt = await verifyRelayJudgePackage(repoRoot);
-  const verifiedAssets = await cacheVerifiedUiAssets(repoRoot, receipt.uiSha256);
+  const { receipt, verifiedAssets } = await verifyRelayJudgePackageSnapshot(repoRoot);
   const routes = new Map([
     ["/", "index.html"],
     ["/index.html", "index.html"],
