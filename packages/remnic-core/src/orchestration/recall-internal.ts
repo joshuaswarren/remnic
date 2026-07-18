@@ -4356,6 +4356,13 @@ export class RecallInternalCoordinator {
         // its next loop boundary instead of burning I/O after recall returned,
         // and the metric records the truth (#1905, Codex/Kilo).
         const trustAbort = new AbortController();
+        // Also honor the caller's abort (e.g. a disconnected request) while the
+        // stage runs: compose the deadline controller with the request signal so
+        // EITHER cancels the cooperative reads. AbortSignal.any manages the
+        // listener lifecycle internally — no manual disposal (#1905, Codex).
+        const trustSignal = options.abortSignal
+          ? AbortSignal.any([options.abortSignal, trustAbort.signal])
+          : trustAbort.signal;
         const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath };
         const trustOutcome = await awaitAssemblyStep(
           "trustStage",
@@ -4366,7 +4373,7 @@ export class RecallInternalCoordinator {
               caps,
               "hot-qmd",
               qmdBoostInput.memoryByPath,
-              trustAbort.signal,
+              trustSignal,
             ),
           trustFallback,
         );
@@ -4564,6 +4571,11 @@ export class RecallInternalCoordinator {
           // semantics (rule 41 parity).
           const trustT0 = Date.now();
           const trustAbort = new AbortController();
+          // Compose with the caller's signal so a disconnected request also
+          // cancels the cooperative reads (#1905, Codex).
+          const trustSignal = options.abortSignal
+            ? AbortSignal.any([options.abortSignal, trustAbort.signal])
+            : trustAbort.signal;
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
@@ -4574,7 +4586,7 @@ export class RecallInternalCoordinator {
                 caps,
                 "embedding-fallback",
                 undefined,
-                trustAbort.signal,
+                trustSignal,
               ),
             trustFallback,
           );
@@ -4764,6 +4776,11 @@ export class RecallInternalCoordinator {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
           const trustAbort = new AbortController();
+          // Compose with the caller's signal so a disconnected request also
+          // cancels the cooperative reads (#1905, Codex).
+          const trustSignal = options.abortSignal
+            ? AbortSignal.any([options.abortSignal, trustAbort.signal])
+            : trustAbort.signal;
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
@@ -4774,7 +4791,7 @@ export class RecallInternalCoordinator {
                 caps,
                 "embedding-fallback",
                 undefined,
-                trustAbort.signal,
+                trustSignal,
               ),
             trustFallback,
           );
@@ -4990,6 +5007,11 @@ export class RecallInternalCoordinator {
                 queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
               );
               const trustAbort = new AbortController();
+              // Compose with the caller's signal so a disconnected request also
+              // cancels the cooperative reads (#1905, Codex).
+              const trustSignal = options.abortSignal
+                ? AbortSignal.any([options.abortSignal, trustAbort.signal])
+                : trustAbort.signal;
               const trustFallback = { results: recent, trustByPath: recallTrustByPath };
               const trustOutcome = await awaitAssemblyStep(
                 "trustStage",
@@ -5000,7 +5022,7 @@ export class RecallInternalCoordinator {
                     caps,
                     "recent-scan",
                     recentPreloaded,
-                    trustAbort.signal,
+                    trustSignal,
                   ),
                 trustFallback,
               );
