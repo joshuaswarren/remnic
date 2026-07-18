@@ -10,7 +10,7 @@
  * All writes are fail-open: errors are caught/logged, never thrown.
  */
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
@@ -59,6 +59,18 @@ export interface GraphConfig {
    * and return raw BFS scores. Default 8.
    */
   graphTraversalPageRankIterations: number;
+  /**
+   * Issue #1904 — incremental GraphIndex edge cache. When true (the default,
+   * and the value when omitted), a single-writer edge append is pushed into the
+   * warm edge cache in place (revalidated by file size for cross-process
+   * coherence) instead of nulling the cache and paying a full 6 MB re-read +
+   * parse on the next traversal. Set false to restore the pre-#1904
+   * null-on-every-write behavior. Optional here (unlike the required
+   * PluginConfig field parseConfig always sets) so GraphConfig can still be
+   * constructed directly with a partial config; only an explicit `false` opts
+   * out, so an omitted field keeps the incremental default.
+   */
+  graphEdgeCacheIncrementalEnabled?: boolean;
 }
 
 /** Default minimum edge confidence required for traversal (issue #681 PR 3/3). */
@@ -370,6 +382,18 @@ export function detectCausalPhrase(text: string): string | null {
  *   // After each memory write:
  *   await this.graphIndex.onMemoryWritten(memoryPath, frontmatter, threadId, recentInThread);
  */
+/**
+ * Identity of one graph JSONL file used to validate the incremental edge cache
+ * (issue #1904). An absent file (ENOENT) is recorded as the all-zero sentinel
+ * `{ size: 0, mtimeMs: 0, ino: 0 }` so a later peer creation (ino becomes
+ * non-zero) is detected as a change.
+ */
+interface GraphFileMeta {
+  size: number;
+  mtimeMs: number;
+  ino: number;
+}
+
 export class GraphIndex {
   private readonly memoryDir: string;
   private readonly cfg: GraphConfig;
@@ -378,7 +402,20 @@ export class GraphIndex {
   // file read + JSON parse takes 2-4 s per call.  This instance-level cache
   // eliminates that overhead on every spreadingActivation() call; it is
   // invalidated (set to null) in onMemoryWritten() so new edges appear promptly.
-  private edgeCache: { allEdges: GraphEdge[]; loadedAt: number } | null = null;
+  private edgeCache: {
+    allEdges: GraphEdge[];
+    loadedAt: number;
+    // Per-file identity of each enabled graph file observed at load (issue
+    // #1904). An incremental push is trusted only when every file's identity is
+    // explained entirely by OUR own append: size grows by exactly the bytes we
+    // appended and the inode is unchanged (a local append keeps the inode; an
+    // external atomic temp+rename rewrite — e.g. the edge-decay job — changes
+    // it). Untouched files must match size AND mtime AND inode exactly. This
+    // closes the size-only holes Codex flagged: a peer append racing cache
+    // construction, and an equal-length atomic rewrite (e.g. confidence
+    // 0.9->0.8) that preserves byte length. Any divergence forces a full reload.
+    meta: Partial<Record<GraphType, GraphFileMeta>>;
+  } | null = null;
   private static readonly EDGE_CACHE_TTL_MS = 300_000; // 5 minutes
 
   constructor(memoryDir: string, cfg: GraphConfig) {
@@ -396,13 +433,118 @@ export class GraphIndex {
     if (this.edgeCache && Date.now() - this.edgeCache.loadedAt < GraphIndex.EDGE_CACHE_TTL_MS) {
       return this.edgeCache.allEdges;
     }
-    const allEdges = await readAllEdges(this.memoryDir, {
-      entityGraph: this.cfg.entityGraphEnabled,
-      timeGraph: this.cfg.timeGraphEnabled,
-      causalGraph: this.cfg.causalGraphEnabled,
-    });
-    this.edgeCache = { allEdges, loadedAt: Date.now() };
+    // Consistent snapshot (issue #1904, Codex): capture file identity BEFORE and
+    // AFTER reading edges and retry if it changed, so `allEdges` and the recorded
+    // `meta` baseline reflect the SAME on-disk state. Without this a peer append
+    // landing mid-read would leave the cache holding edges that exclude the peer
+    // edge while the baseline already counts its bytes — a later local append
+    // would then pass the size-delta check and silently omit the peer edge.
+    let allEdges: GraphEdge[] = [];
+    let meta = await this.readEnabledGraphFileMeta();
+    let stable = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = meta;
+      allEdges = await readAllEdges(this.memoryDir, {
+        entityGraph: this.cfg.entityGraphEnabled,
+        timeGraph: this.cfg.timeGraphEnabled,
+        causalGraph: this.cfg.causalGraphEnabled,
+      });
+      meta = await this.readEnabledGraphFileMeta();
+      if (this.graphFileMetaEqual(before, meta)) {
+        stable = true;
+        break;
+      }
+      // A write landed during the read; the just-captured `meta` is the new
+      // baseline for the next attempt's before-snapshot.
+    }
+    if (stable) {
+      this.edgeCache = { allEdges, loadedAt: Date.now(), meta };
+    } else {
+      // Contended: a peer kept writing across every attempt, so the final
+      // allEdges/meta pair is not guaranteed consistent. Serve THIS read's edges
+      // (best effort) but do NOT poison the cache — leave it null so the next
+      // call re-reads, instead of installing a baseline that could hide a peer
+      // edge for the TTL (Codex).
+      this.edgeCache = null;
+    }
     return allEdges;
+  }
+
+  /**
+   * Identity ({ size, mtimeMs, ino }) of each ENABLED graph file (issue #1904).
+   * Missing files (ENOENT) and any stat error map to the all-zero sentinel so
+   * the baseline is fail-open: a later revalidation sees a mismatch (or a peer
+   * creation flipping ino from 0 to non-zero) and forces a full reload rather
+   * than trusting a stale incremental push.
+   */
+  private async readEnabledGraphFileMeta(): Promise<Partial<Record<GraphType, GraphFileMeta>>> {
+    const enabled: GraphType[] = [];
+    if (this.cfg.entityGraphEnabled) enabled.push("entity");
+    if (this.cfg.timeGraphEnabled) enabled.push("time");
+    if (this.cfg.causalGraphEnabled) enabled.push("causal");
+    const meta: Partial<Record<GraphType, GraphFileMeta>> = {};
+    for (const type of enabled) {
+      try {
+        const st = await stat(graphFilePath(this.memoryDir, type));
+        meta[type] = { size: st.size, mtimeMs: st.mtimeMs, ino: Number(st.ino) };
+      } catch {
+        meta[type] = { size: 0, mtimeMs: 0, ino: 0 };
+      }
+    }
+    return meta;
+  }
+
+  /** True iff both metadata maps carry identical identity for every key. */
+  private graphFileMetaEqual(
+    a: Partial<Record<GraphType, GraphFileMeta>>,
+    b: Partial<Record<GraphType, GraphFileMeta>>,
+  ): boolean {
+    const types: GraphType[] = ["entity", "time", "causal"];
+    for (const type of types) {
+      const x = a[type];
+      const y = b[type];
+      if (!x && !y) continue;
+      if (!x || !y) return false;
+      if (x.size !== y.size || x.mtimeMs !== y.mtimeMs || x.ino !== y.ino) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Re-stat every graph file whose identity the cache just committed and return
+   * false if any has moved since (issue #1904, Codex). Closes the validation→
+   * in-place-push TOCTOU window: a peer process (concurrent CLI / daemon /
+   * decay job) can append between edgeFilesUnchangedExceptOurAppends()'s final
+   * stat and the allEdges.push(...). Without this re-check the cache would be
+   * accepted with identity predating the peer write and miss the peer edge for
+   * the TTL. A residual infinitesimal window (peer writes during this re-stat)
+   * remains and is TTL-bounded.
+   */
+  private async edgeCacheIdentityUnchangedSinceCommit(): Promise<boolean> {
+    if (!this.edgeCache) return false;
+    for (const type of Object.keys(this.edgeCache.meta) as GraphType[]) {
+      const committed = this.edgeCache.meta[type];
+      if (!committed) continue;
+      let cur: GraphFileMeta;
+      try {
+        const st = await stat(graphFilePath(this.memoryDir, type));
+        cur = { size: st.size, mtimeMs: st.mtimeMs, ino: Number(st.ino) };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+          cur = { size: 0, mtimeMs: 0, ino: 0 };
+        } else {
+          return false;
+        }
+      }
+      if (
+        cur.size !== committed.size ||
+        cur.mtimeMs !== committed.mtimeMs ||
+        cur.ino !== committed.ino
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -444,20 +586,25 @@ export class GraphIndex {
     const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
     const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
+    // Collect the edges appended this call so a coherent single-writer push can
+    // extend the warm edge cache in place instead of nulling it (issue #1904).
+    const appended: GraphEdge[] = [];
 
     try {
       // Entity graph
       if (entityOn && opts.entityRef && opts.entitySiblings?.length) {
         const siblings = opts.entitySiblings.slice(0, this.cfg.maxEntityGraphEdgesPerMemory);
         for (const sibling of siblings) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: opts.memoryPath,
             to: sibling,
             type: "entity",
             weight: 1.0,
             label: opts.entityRef,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
 
@@ -465,14 +612,16 @@ export class GraphIndex {
       if (timeOn && opts.threadId && opts.recentInThread?.length) {
         const predecessor = opts.recentInThread[opts.recentInThread.length - 1];
         if (predecessor && predecessor !== opts.memoryPath) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: predecessor,
             to: opts.memoryPath,
             type: "time",
             weight: 1.0,
             label: opts.threadId,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
 
@@ -480,14 +629,16 @@ export class GraphIndex {
       if (causalOn && opts.causalPredecessor) {
         const phrase = detectCausalPhrase(opts.content);
         if (phrase) {
-          await appendEdge(this.memoryDir, {
+          const edge: GraphEdge = {
             from: opts.causalPredecessor,
             to: opts.memoryPath,
             type: "causal",
             weight: 1.0,
             label: phrase,
             ts,
-          });
+          };
+          appended.push(edge);
+          await appendEdge(this.memoryDir, edge);
         }
       }
     } catch (err) {
@@ -495,10 +646,116 @@ export class GraphIndex {
       const { log } = await import("./logger.js");
       log.warn(`[graph] onMemoryWritten error: ${err}`);
     } finally {
-      // Invalidate edge cache so spreadingActivation() picks up new edges.
-      // In `finally` so the cache is cleared even on partial write failure.
-      this.edgeCache = null;
+      // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
+      // every write, paying a 2-4 s full re-read + parse on the next traversal.
+      if (!this.edgeCache || Date.now() - this.edgeCache.loadedAt >= GraphIndex.EDGE_CACHE_TTL_MS) {
+        // Nothing warm, or the entry is past its 5-min TTL backstop — reload.
+        this.edgeCache = null;
+      } else if (this.cfg.graphEdgeCacheIncrementalEnabled === false) {
+        // Rollback lever: restore the pre-#1904 null-on-every-write behavior.
+        this.edgeCache = null;
+      } else {
+        // Trust an in-place push ONLY when WE are the sole writer since load:
+        // every enabled graph file's on-disk size must equal our baseline plus
+        // exactly the bytes we appended to it. A divergence means a peer process
+        // (backup daemon / CLI / decay job) also wrote — force a full reload for
+        // cross-process coherence. Any stat error fails open to a full reload.
+        try {
+          if (await this.edgeFilesUnchangedExceptOurAppends(appended)) {
+            if (appended.length > 0) {
+              this.edgeCache.allEdges.push(...appended);
+              // Close the validation→push TOCTOU window (#1904, Codex): a peer
+              // process can append between the validation stat above and this
+              // in-place push. Re-verify every committed identity; if any file
+              // moved, the cache would miss the peer edge for the TTL, so null
+              // it and let the next traversal reload. (Skipped when this call
+              // pushed nothing — no new window was opened, and the validation
+              // already confirmed no peer wrote.)
+              if (this.edgeCache && !(await this.edgeCacheIdentityUnchangedSinceCommit())) {
+                this.edgeCache = null;
+              }
+            }
+          } else {
+            this.edgeCache = null;
+          }
+        } catch {
+          this.edgeCache = null;
+        }
+      }
     }
+  }
+
+  /**
+   * Cross-process coherence check for the incremental edge cache (issue #1904).
+   *
+   * Returns true iff every ENABLED graph file's current identity is explained
+   * ENTIRELY by THIS call's own append — no other process wrote to any graph
+   * file since load. Per file:
+   *   - inode must be unchanged. A local append (`appendFile`) keeps the inode;
+   *     an external atomic temp+rename rewrite (e.g. the edge-decay job) changes
+   *     it, so an inode change — even one that preserves byte length, such as
+   *     decaying confidence 0.9->0.8 — forces a reload (Codex).
+   *   - a file WE appended to (delta > 0): size must equal baseline + our exact
+   *     appended bytes. If it was absent at load (sentinel ino 0), our append
+   *     created it, so we accept size === delta and adopt the new identity.
+   *   - a file we did NOT touch (delta 0): size AND mtime must be unchanged, so
+   *     an in-place equal-length rewrite (mtime bump) or a peer append (size
+   *     bump) both force a reload.
+   * On success it commits the new identity baseline so the next append
+   * revalidates against post-this-write truth. Fail-open: an unreadable file
+   * (non-ENOENT) returns false, forcing a full reload.
+   */
+  private async edgeFilesUnchangedExceptOurAppends(appended: GraphEdge[]): Promise<boolean> {
+    if (!this.edgeCache) return false;
+    const expectedDelta: Partial<Record<GraphType, number>> = {};
+    for (const edge of appended) {
+      const bytes = Buffer.byteLength(`${JSON.stringify(edge)}\n`, "utf8");
+      expectedDelta[edge.type] = (expectedDelta[edge.type] ?? 0) + bytes;
+    }
+    const enabled: GraphType[] = [];
+    if (this.cfg.entityGraphEnabled) enabled.push("entity");
+    if (this.cfg.timeGraphEnabled) enabled.push("time");
+    if (this.cfg.causalGraphEnabled) enabled.push("causal");
+    const observed: Partial<Record<GraphType, GraphFileMeta>> = {};
+    for (const type of enabled) {
+      let cur: GraphFileMeta;
+      try {
+        const st = await stat(graphFilePath(this.memoryDir, type));
+        cur = { size: st.size, mtimeMs: st.mtimeMs, ino: Number(st.ino) };
+      } catch (err) {
+        // An absent graph file (ENOENT) is the normal partially-populated state
+        // (e.g. entity edges written before any causal edge): treat it as the
+        // all-zero sentinel so the incremental cache stays warm. Only a genuine
+        // stat failure forces a full reload (#1904, Codex).
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+          cur = { size: 0, mtimeMs: 0, ino: 0 };
+        } else {
+          return false;
+        }
+      }
+      const base = this.edgeCache.meta[type] ?? { size: 0, mtimeMs: 0, ino: 0 };
+      const delta = expectedDelta[type] ?? 0;
+      if (delta > 0) {
+        if (base.ino === 0) {
+          // File was absent at load; our append created it. Accept iff its whole
+          // size is exactly our appended bytes (nothing else wrote it).
+          if (cur.ino === 0 || cur.size !== delta) return false;
+        } else {
+          // Existing file: our append keeps the inode and grows size by exactly
+          // our bytes. An atomic rewrite (ino change) or a peer append (size
+          // mismatch) both fail here.
+          if (cur.ino !== base.ino || cur.size !== base.size + delta) return false;
+        }
+      } else {
+        // Untouched file: identity must be byte-for-byte unchanged.
+        if (cur.ino !== base.ino || cur.size !== base.size || cur.mtimeMs !== base.mtimeMs) {
+          return false;
+        }
+      }
+      observed[type] = cur;
+    }
+    this.edgeCache.meta = observed;
+    return true;
   }
 
   /**

@@ -646,6 +646,10 @@ export class WorkspaceOpsCoordinator {
           },
         },
         reindexSearch: async () => {
+          // qmd.update() clears the global QMD result caches itself on success
+          // (QmdClient.runUpdateForCollection), so newly-indexed wearable
+          // transcript/fact content is never hidden by a pre-sync cache entry
+          // (#1904, Codex).
           await this.deps.qmd.update();
         },
       });

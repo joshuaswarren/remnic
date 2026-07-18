@@ -999,6 +999,20 @@ export class LocalLlmClient {
         THINKING_COMPATIBLE_BACKENDS.has(this.detectedType)
       ) {
         requestBody.chat_template_kwargs = { enable_thinking: false };
+      } else if (shouldSuppressThinking && this.detectedType === "ollama") {
+        // Ollama's /v1 endpoint silently drops `chat_template_kwargs` AND
+        // `enable_thinking` — the ONLY field it maps to think-off is
+        // `reasoning_effort` ("none" → ThinkValue{false} in openai.go;
+        // verified against Ollama 0.32.0 source and live probes,
+        // issue #1996). Without this, thinking-capable models (Gemma 4,
+        // Qwen 3.5+) burn 1,700-2,000 reasoning tokens per extraction on
+        // Ollama, exceed the client timeout, and retry forever. The effort
+        // is configurable via `localLlmReasoningEffort` (default "none");
+        // an empty value disables injection (pre-#1996 behavior).
+        const effort = this.config.localLlmReasoningEffort;
+        if (effort) {
+          requestBody.reasoning_effort = effort;
+        }
       }
 
       // Normalize URL (use 127.0.0.1 instead of localhost)
