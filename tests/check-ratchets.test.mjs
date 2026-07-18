@@ -323,7 +323,7 @@ test("file-size ratchet: --update refuses to raise a grandfathered ceiling", () 
     const update = runRatchets(["--update"], fixture);
     assert.equal(update.status, 1);
     assert.match(update.stderr, /grew past their ceiling/);
-    assert.match(update.stderr, /--update never raises a ceiling/);
+    assert.match(update.stderr, /--update never raises or adds a ceiling/);
   });
 });
 
