@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "@remnic/core";
-import { createAdminControls, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
+import { createAdminControls, envOverrides, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
 
 async function writeConfig(content: string): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-config-"));
@@ -257,5 +257,34 @@ test("parseServerConfig write rate limit keys: optional, string-coerced, invalid
       /server\.writeRateLimitWindowMs: expected a positive integer/,
       `writeRateLimitWindowMs=${JSON.stringify(bad)} must throw`,
     );
+  }
+});
+
+test("envOverrides surfaces write rate limit env vars, REMNIC_ over ENGRAM_ (issue #2029)", () => {
+  const keys = [
+    "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
+    "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
+    "ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS",
+    "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
+  ];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    for (const k of keys) delete process.env[k];
+    process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS = "1800";
+    process.env.REMNIC_WRITE_RATE_LIMIT_WINDOW_MS = "30000";
+    // env arrives as strings; parseServerConfig coerces + validates them.
+    const parsed = parseServerConfig(envOverrides());
+    assert.equal(parsed.writeRateLimitMaxRequests, 1800);
+    assert.equal(parsed.writeRateLimitWindowMs, 30000);
+
+    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset.
+    delete process.env.REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS;
+    process.env.ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS = "42";
+    assert.equal(parseServerConfig(envOverrides()).writeRateLimitMaxRequests, 42);
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
   }
 });
