@@ -244,8 +244,11 @@ export class RemnicLedgerStore implements LedgerStore {
   ): Promise<void> {
     try {
       // Sealed-envelope write (issue #1989 PR4): system-built audit body.
+      // Audit-trail correction — system-built body, salvage for the same
+      // attribute-limit reason as the claim write.
       await this.storage.writeSealedMemory(
-        composeMemoryEnvelope(
+        composeSalvagedEnvelope(
+          "belief-ledger:audit",
           {
             content: `Superseded: ${prior.statement}\n\nReplacement: ${next.statement}\n\nReason: ${reason}`,
             category: "correction",
