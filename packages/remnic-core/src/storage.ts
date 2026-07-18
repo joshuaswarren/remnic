@@ -2665,15 +2665,20 @@ export class StorageManager {
   private factHashIndexAuthoritativePromise: Promise<void> | null = null;
   private readonly secureAppendChains = new Map<string, Promise<void>>();
   /**
-   * Cache of "is this file encrypted?" keyed by absolute path (issue #1909).
-   * Only this process's own full rewrites (`writeMaybeEncryptedFile`) can flip
-   * a file's plain/encrypted classification, so the cache is invalidated
-   * exactly there. A plaintext `appendFile` never changes the header, so a
-   * cached `false` stays valid across appends. A foreign process encrypting a
-   * file mid-session is a pre-existing hazard (see appendStorageSecureFileUnlocked)
-   * and is out of scope here.
+   * Cache of "is this file encrypted?" keyed by absolute path, VALIDATED by file
+   * identity (size + mtimeMs) — issue #1909 review round 10 finding 1. A prior
+   * design cached only a boolean and relied on this instance's own writes to
+   * invalidate it; a PEER process encrypting the file would not invalidate,
+   * leaving a stale `false` that made the append path write RAW bytes into an
+   * encrypted file (corruption). Now each entry records the (size, mtime) the
+   * classification was read at; `isEncryptedFileHeader` re-sniffs (header-only)
+   * whenever the on-disk identity no longer matches, so a foreign rewrite is
+   * detected. The whole-file read is still never performed.
    */
-  private readonly secureFileEncryptionSniffCache = new Map<string, boolean>();
+  private readonly secureFileEncryptionSniffCache = new Map<
+    string,
+    { identity: { size: number; mtimeMs: number }; encrypted: boolean }
+  >();
   private offlineSyncDigestCache: Map<string, OfflineSyncDigestCacheEntry> | null = null;
   private offlineSyncDigestCacheLoadPromise: Promise<Map<string, OfflineSyncDigestCacheEntry>> | null = null;
   private offlineSyncDigestCacheWriteChain: Promise<void> = Promise.resolve();
@@ -3368,20 +3373,16 @@ export class StorageManager {
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
     const writeKey = this.resolveWriteKey();
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
-      // Keep the append-path encryption sniff cache coherent (issue #1909): a
-      // full rewrite through this method may flip an append-target file's
-      // plain/encrypted classification (e.g. a JSONL compaction after the store
-      // was unlocked). Only this process's rewrites can flip it.
-      this.secureFileEncryptionSniffCache.set(path.resolve(filePath), writeKey !== null);
-      this.secureFileEncryptionSniffCache.set(filePath, writeKey !== null);
+      // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
+      // changes the file's (size, mtime), so isEncryptedFileHeader re-sniffs on
+      // the next append when its identity check misses. Identity validation also
+      // covers PEER rewrites that this hook never sees.
       this.notifyCatalogWriteForPath(filePath);
     });
   }
   private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const writeKey = this.resolveWriteKey();
     return writeMaybeEncryptedFileFromChunks(filePath, chunks, writeKey, {}, this.baseDir).then(() => {
-      this.secureFileEncryptionSniffCache.set(path.resolve(filePath), writeKey !== null);
-      this.secureFileEncryptionSniffCache.set(filePath, writeKey !== null);
       this.notifyCatalogWriteForPath(filePath);
     });
   }
@@ -3628,16 +3629,26 @@ export class StorageManager {
 
   /**
    * Classify a file as encrypted by reading ONLY the fixed-size magic header
-   * (issue #1909), never the whole file. Mirrors the header-only pattern in
-   * `secure-line-reader.ts` and `offlineSyncFileIsEncrypted`. Result is cached
-   * per-path (see `secureFileEncryptionSniffCache`); the cache is invalidated
-   * by this class's own full rewrites in `appendStorageSecureFileUnlocked`.
-   * ENOENT and short/empty files classify as not-encrypted (fall through to a
-   * plain `appendFile`), matching the prior whole-file-read behavior.
+   * (issue #1909), never the whole file. The result is cached per-path but
+   * VALIDATED against the file's (size, mtime) identity (review round 10 finding
+   * 1): a `stat` on each call is O(1), and the 12-byte header read happens only
+   * on a cache miss or when the on-disk identity changed — so a PEER process
+   * rewriting/encrypting the file is detected and we never append raw bytes into
+   * an encrypted body. ENOENT and short/empty files classify as not-encrypted
+   * (fall through to a plain `appendFile`).
    */
   private async isEncryptedFileHeader(filePath: string): Promise<boolean> {
+    let st;
+    try {
+      st = await stat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
     const cached = this.secureFileEncryptionSniffCache.get(filePath);
-    if (cached !== undefined) return cached;
+    if (cached && cached.identity.size === st.size && cached.identity.mtimeMs === st.mtimeMs) {
+      return cached.encrypted;
+    }
     let handle;
     try {
       handle = await open(filePath, "r");
@@ -3649,7 +3660,10 @@ export class StorageManager {
       const header = Buffer.alloc(MAGIC_HEADER_SIZE);
       const { bytesRead } = await handle.read(header, 0, header.length, 0);
       const encrypted = isEncryptedFile(header.subarray(0, bytesRead));
-      this.secureFileEncryptionSniffCache.set(filePath, encrypted);
+      this.secureFileEncryptionSniffCache.set(filePath, {
+        identity: { size: st.size, mtimeMs: st.mtimeMs },
+        encrypted,
+      });
       return encrypted;
     } finally {
       await handle.close().catch(() => undefined);
@@ -3668,21 +3682,19 @@ export class StorageManager {
         if (await this.isEncryptedFileHeader(filePath)) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
-          // Full rewrite with a null key leaves the file plaintext; keep the
-          // cached classification coherent with what we just wrote.
-          this.secureFileEncryptionSniffCache.set(filePath, false);
           this.notifyCatalogWriteForPath(filePath);
           return;
         }
       } catch (err) {
         if (!isErrnoCode(err, "ENOENT")) throw err;
       }
-      // Plaintext append does not touch the header — the cached `false` (set by
-      // the sniff, or absent for ENOENT) remains correct. NOTE (pre-existing
-      // limitation, issue #1909): if a DIFFERENT process encrypts this file
-      // between our sniff and this append, we append raw bytes to an encrypted
-      // body. This hazard existed with the prior whole-file read too and is out
-      // of scope; this fix only removes the wasteful sniff read.
+      // Plaintext append does not touch the header. isEncryptedFileHeader is now
+      // (size, mtime)-identity-validated (issue #1909 round 10), so a PEER
+      // process that encrypted this file since our last sniff is detected on the
+      // stat above and re-sniffed — we will NOT append raw bytes into an
+      // encrypted body. A residual sub-call TOCTOU (a peer encrypts between this
+      // stat and the appendFile below) is inherent to any check-then-act and is
+      // out of scope; the identity check closes the long-lived stale-cache hole.
       await appendFile(filePath, content, "utf-8");
       this.notifyCatalogWriteForPath(filePath);
       return;
@@ -3698,8 +3710,6 @@ export class StorageManager {
       if (!isErrnoCode(err, "ENOENT")) throw err;
     }
     await writeMaybeEncryptedFile(filePath, `${existing}${content}`, writeKey, {}, this.baseDir);
-    // A rewrite with a non-null key leaves the file encrypted; keep the cache coherent.
-    this.secureFileEncryptionSniffCache.set(filePath, true);
     this.notifyCatalogWriteForPath(filePath);
   }
   private get stateDir(): string {

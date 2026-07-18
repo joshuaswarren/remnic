@@ -53,6 +53,11 @@ interface OrchestratorTestSurface {
   // the #1909 defer-durability tests (registration failure + concurrent runs).
   addContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<void>;
   hasContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<boolean>;
+  removeContentHashForMemory: (
+    targetStorage: StorageManager,
+    memory: MemoryFile,
+    context: string,
+  ) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,4 +1276,44 @@ test("#1909 finding 5: a non-fact (preference) deferred write does NOT invalidat
 
   // The marker is untouched — the preference write never deferred a fact hash.
   assert.equal(existsSync(readyPath), true, "non-fact write left the ready marker intact");
+});
+test("#1909 round 10 finding 2: a fact-hash removal invalidates the ready marker (restart rebuilds)", async () => {
+  // A removal (archival / consolidation) changes the fact-hash index, but its
+  // durable flush can time out on the advisory lock. Invalidating the ready
+  // marker on removal guarantees a restart rebuilds from the corpus and the
+  // removal lands — never trusting a stale on-disk index over an archived fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-removal-marker-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+
+  const body = "The nightly job compacts cold storage at 02:00 UTC.";
+  await orchestrator.persistExtraction(factResult(body), storage, null);
+
+  // Re-establish the marker via a rebuild (the deferred fact write invalidated it).
+  await storage.hasFactContentHash("warm-after-persist");
+  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
+  assert.equal(existsSync(readyPath), true, "marker present after the rebuild");
+
+  // Archive the fact: remove its content hash. This must invalidate the marker.
+  const memories = await storage.readAllMemories();
+  const mem = memories.find((m: MemoryFile) => m.content.includes(body));
+  assert.ok(mem, "persisted fact is readable");
+  await orchestrator.removeContentHashForMemory(storage, mem, "test-archival");
+
+  assert.equal(
+    existsSync(readyPath),
+    false,
+    "the removal invalidated the ready marker so a restart rebuilds authoritatively",
+  );
 });

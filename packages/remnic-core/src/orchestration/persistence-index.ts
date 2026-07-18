@@ -80,13 +80,24 @@ export class PersistenceIndexCoordinator {
 
     if (memory.frontmatter.contentHash) {
       index.removeByHash(memory.frontmatter.contentHash);
-      return;
+    } else {
+      log.warn(
+        `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
+      );
+      index.remove(memory.content);
     }
-
-    log.warn(
-      `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
-    );
-    index.remove(memory.content);
+    // #1909 review round 10 finding 2: a removal changes the fact-hash index, but
+    // the durable flush (saveContentHashIndexes) may not land — the advisory lock
+    // can time out, leaving the removal only dirty in memory. Invalidate the
+    // fact-hashes.ready marker NOW so that regardless of whether the save
+    // publishes, a restart rebuilds authoritatively from the corpus and the
+    // removal lands — never trusting a stale on-disk index that still suppresses
+    // re-extraction of the archived/superseded fact. Best-effort (fail-open).
+    await targetStorage.invalidateFactHashIndexReadyMarkerOnDisk().catch((err) => {
+      log.warn(
+        `[${context}] failed to invalidate fact-hash ready marker after removal: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   /**

@@ -24,21 +24,20 @@ function lifecycleEvent(eventId: string): MemoryLifecycleEvent {
 }
 
 /**
- * Wrap the private header-sniff helper so a test can count how many appends
- * actually re-read the file to classify it. A cache HIT skips the read; a MISS
- * opens the file and reads the 12-byte header. We detect a miss by inspecting
- * the private classification cache at entry — exactly the branch production
- * takes — so the counter reflects real header reads, not helper invocations.
+ * Spy the private whole-file read used by the encrypted-append branch so a test
+ * can assert the plaintext append path NEVER reads the whole file to classify —
+ * the #1909 Part A invariant. The classification uses a header-only sniff
+ * (open + read MAGIC_HEADER_SIZE bytes), now (size, mtime)-identity-validated so
+ * a peer rewrite is detected (round 10); it never falls back to a whole-file read.
  */
-function instrumentHeaderReads(storage: StorageManager): { count: () => number } {
+function instrumentWholeFileReads(storage: StorageManager): { count: () => number } {
   const priv = storage as unknown as {
-    isEncryptedFileHeader: (filePath: string) => Promise<boolean>;
-    secureFileEncryptionSniffCache: Map<string, boolean>;
+    readStorageSecureFile: (filePath: string) => Promise<string>;
   };
-  const real = priv.isEncryptedFileHeader.bind(storage);
+  const real = priv.readStorageSecureFile.bind(storage);
   let reads = 0;
-  priv.isEncryptedFileHeader = async (filePath: string) => {
-    if (!priv.secureFileEncryptionSniffCache.has(filePath)) reads += 1;
+  priv.readStorageSecureFile = async (filePath: string) => {
+    reads += 1;
     return real(filePath);
   };
   return { count: () => reads };
@@ -53,25 +52,23 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
   }
 }
 
-test("plaintext append classifies via a single header read and caches it (no per-append reclassification)", async () => {
+test("plaintext appends classify via a header sniff only — never a whole-file read", async () => {
   await withMemoryDir(async (dir) => {
     const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
     await mkdir(path.dirname(ledgerPath), { recursive: true });
-    // A large plaintext ledger — the whole-file sniff would scale with this.
+    // A large plaintext ledger — a whole-file sniff would scale with this.
     await writeFile(ledgerPath, `${"x".repeat(2_000_000)}\n`, "utf8");
 
     const storage = new StorageManager(dir);
-    const reads = instrumentHeaderReads(storage);
+    const wholeReads = instrumentWholeFileReads(storage);
 
     await storage.appendMemoryLifecycleEvents([lifecycleEvent("a")]);
-    assert.equal(reads.count(), 1, "first append reads the header once to classify");
-
     await storage.appendMemoryLifecycleEvents([lifecycleEvent("b")]);
     await storage.appendMemoryLifecycleEvents([lifecycleEvent("c")]);
     assert.equal(
-      reads.count(),
-      1,
-      "subsequent appends reuse the cached classification — zero reclassification reads",
+      wholeReads.count(),
+      0,
+      "plaintext appends never read the whole file to classify (header sniff only)",
     );
 
     // The appends actually landed on top of the pre-existing large body.
@@ -80,19 +77,20 @@ test("plaintext append classifies via a single header read and caches it (no per
     assert.equal(rows.length, 3, "all three appended events are present");
     assert.ok(body.startsWith("x".repeat(100)), "the original plaintext body is preserved");
 
-    // White-box: read the private classification cache to confirm the ledger
-    // was recorded as plaintext.
+    // White-box: the identity-validated cache entry records plaintext.
     const cacheOwner = storage as unknown as {
-      secureFileEncryptionSniffCache: Map<string, boolean>;
+      secureFileEncryptionSniffCache: Map<
+        string,
+        { identity: { size: number; mtimeMs: number }; encrypted: boolean }
+      >;
     };
     assert.equal(
-      cacheOwner.secureFileEncryptionSniffCache.get(ledgerPath),
+      cacheOwner.secureFileEncryptionSniffCache.get(ledgerPath)?.encrypted,
       false,
-      "the ledger is cached as plaintext",
+      "the ledger is classified as plaintext",
     );
   });
 });
-
 test("isEncryptedFileHeader classifies large files correctly from the header alone", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
@@ -157,17 +155,40 @@ test("encrypted files still round-trip through the append path unchanged", async
 test("append to a missing path creates the file via the plaintext append path", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
-    const reads = instrumentHeaderReads(storage);
-    // Fresh (ENOENT) ledger: header sniff returns false without caching, and the
-    // append creates the file.
+    const wholeReads = instrumentWholeFileReads(storage);
+    // Fresh (ENOENT) ledger: the header sniff stats → ENOENT → not-encrypted, and
+    // the append creates the file — never a whole-file read.
     const n = await storage.appendMemoryLifecycleEvents([lifecycleEvent("fresh")]);
     assert.equal(n, 1);
-    // ENOENT does not populate the cache, so the first read attempt counted as a
-    // miss but the second append (file now exists) does the one real read.
-    assert.ok(reads.count() >= 1);
+    assert.equal(wholeReads.count(), 0, "creating the ledger does no whole-file read");
 
     const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
     const body = await readFile(ledgerPath, "utf8");
     assert.ok(body.includes("\"eventId\":\"fresh\""));
+  });
+});
+
+test("#1909 round 10: a peer encrypting the file flips the sniff classification (no raw append into ciphertext)", async () => {
+  // A long-lived manager caches plaintext for an append target; a SECOND manager
+  // then encrypts that file (whole-file rewrite). The first manager's next append
+  // must detect the flip via (size, mtime) identity re-validation and NOT append
+  // raw bytes into the encrypted body (data corruption).
+  await withMemoryDir(async (dir) => {
+    const a = new StorageManager(dir); // no key → plaintext writer
+    await a.appendMemoryLifecycleEvents([lifecycleEvent("a1")]); // creates the ledger
+    await a.appendMemoryLifecycleEvents([lifecycleEvent("a2")]); // now A caches plaintext=false
+
+    // Peer B encrypts the whole file by appending under a key.
+    const b = new StorageManager(dir);
+    b.setSecureStoreKey(Buffer.alloc(32, 7));
+    await b.appendMemoryLifecycleEvents([lifecycleEvent("b1")]); // whole-file rewrite → encrypted
+
+    // A's next append must detect the flip and refuse (A has no key) rather than
+    // corrupt the ciphertext with a raw plaintext append.
+    await assert.rejects(() => a.appendMemoryLifecycleEvents([lifecycleEvent("a3")]));
+
+    // The encrypted ledger is intact and fully decryptable by B — a3 never landed.
+    const ids = (await b.readAllMemoryLifecycleEvents()).map((e) => e.eventId).sort();
+    assert.deepEqual(ids, ["a1", "a2", "b1"]);
   });
 });
