@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ import {
 import {
   RELAY_RECORDING_ROOT_SHA256,
   RELAY_UI_ROOT_SHA256,
+  readRegularFileNoFollow,
   startRelayJudgeServer,
   verifyRelayHiddenTestEvidence,
   verifyRelayJudgePackage,
@@ -245,6 +246,28 @@ test("Relay judge verifier rejects symlinked standalone text inputs", async (t) 
         await rm(outside, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("Relay judge atomic reader rejects a symlink swapped in after pathname validation", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-read-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-outside-"));
+  try {
+    const target = path.join(parent, "judge-input.txt");
+    const outsideFile = path.join(outside, "host-private.txt");
+    await Promise.all([writeFile(target, "verified bytes\n"), writeFile(outsideFile, "host-private bytes\n")]);
+    assert.equal((await lstat(target)).isFile(), true);
+
+    await rm(target);
+    await symlink(outsideFile, target);
+
+    await assert.rejects(
+      () => readRegularFileNoFollow(target, "judge-input.txt", "utf8"),
+      /judge-input\.txt must be a non-symlink regular file/
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

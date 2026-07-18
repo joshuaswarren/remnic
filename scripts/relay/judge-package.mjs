@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import process from "node:process";
@@ -116,12 +117,46 @@ function stableJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
+function sameOpenedFile(before, after) {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
+  );
+}
+
+export async function readRegularFileNoFollow(file, label, encoding) {
+  invariant(
+    typeof fsConstants.O_NOFOLLOW === "number",
+    "the declared Linux judge platform must support no-follow file opens"
+  );
+  let handle;
+  try {
+    handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    throw new Error(`Relay judge verification failed: ${label} must be a non-symlink regular file`, {
+      cause: error,
+    });
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    invariant(before.isFile(), `${label} must be a non-symlink regular file`);
+    const contents = await handle.readFile(encoding);
+    const after = await handle.stat({ bigint: true });
+    invariant(sameOpenedFile(before, after), `${label} changed while its verified bytes were being read`);
+    return contents;
+  } finally {
+    await handle.close();
+  }
+}
+
 async function readJson(root, relative) {
   const file = path.join(root, relative);
-  const info = await lstat(file);
-  invariant(info.isFile() && !info.isSymbolicLink(), `${relative} must be a non-symlink regular file`);
+  const contents = await readRegularFileNoFollow(file, relative, "utf8");
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return JSON.parse(contents);
   } catch (error) {
     throw new Error(`Relay judge verification failed: cannot parse ${relative}`, { cause: error });
   }
@@ -156,7 +191,7 @@ async function guardedRepoPath(repoRoot, relative, expectedType) {
 }
 
 async function readRegularRepoFile(repoRoot, relative, encoding) {
-  return readFile(await guardedRepoPath(repoRoot, relative, "file"), encoding);
+  return readRegularFileNoFollow(await guardedRepoPath(repoRoot, relative, "file"), relative, encoding);
 }
 
 async function regularFiles(root) {
@@ -189,14 +224,18 @@ async function digestTree(root, excluded = []) {
   for (const file of await regularFiles(root)) {
     const relative = path.relative(root, file).split(path.sep).join("/");
     if (excludedSet.has(relative)) continue;
-    const contents = await readFile(file);
+    const contents = await readRegularFileNoFollow(file, relative);
     digests.push({ path: relative, bytes: contents.byteLength, sha256: sha256(contents) });
   }
   return digests;
 }
 
 async function readTextTree(root) {
-  return Promise.all((await regularFiles(root)).map((file) => readFile(file, "utf8")));
+  return Promise.all(
+    (await regularFiles(root)).map((file) =>
+      readRegularFileNoFollow(file, path.relative(root, file).split(path.sep).join("/"), "utf8")
+    )
+  );
 }
 
 async function verifyManifest(root, expectedFiles) {
@@ -522,7 +561,8 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     "cold-builder": "cold-builder.md",
   };
   for (const role of ROLE_ORDER) {
-    const prompt = await readFile(path.join(root, FIXTURE_RELATIVE, "prompts", promptFiles[role]));
+    const promptRelative = `${FIXTURE_RELATIVE}/prompts/${promptFiles[role]}`;
+    const prompt = await readRegularRepoFile(root, promptRelative);
     invariant(calls[role].summary.promptSha256 === sha256(prompt), `${role} is not bound to its committed prompt`);
   }
 
@@ -680,7 +720,11 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     "judge UI file set is incomplete or unexpected"
   );
   const [staticAssets, demoScript, recordingText, fixtureText, packageManifest] = await Promise.all([
-    Promise.all(EXPECTED_UI_FILES.map((name) => readFile(path.join(uiRoot, name), "utf8"))),
+    Promise.all(
+      EXPECTED_UI_FILES.map((name) =>
+        readRegularFileNoFollow(path.join(uiRoot, name), `${UI_RELATIVE}/${name}`, "utf8")
+      )
+    ),
     readRegularRepoFile(root, DEMO_SCRIPT_RELATIVE, "utf8"),
     readTextTree(recordingRoot),
     readTextTree(fixtureRoot),
@@ -758,7 +802,7 @@ async function cacheVerifiedUiAssets(repoRoot, expectedRootSha256) {
   const digests = [];
   for (const asset of [...EXPECTED_UI_FILES].sort()) {
     const file = await guardedRepoPath(repoRoot, `${UI_RELATIVE}/${asset}`, "file");
-    const body = await readFile(file);
+    const body = await readRegularFileNoFollow(file, `${UI_RELATIVE}/${asset}`);
     assets.set(asset, body);
     digests.push({
       path: path.relative(uiRoot, file).split(path.sep).join("/"),
