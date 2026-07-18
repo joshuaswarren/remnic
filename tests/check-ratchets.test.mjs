@@ -444,11 +444,12 @@ test("file-size ratchet: symlinked src roots are rejected, not traversed (round 
       writeFileSync(path.join(outside, "huge.ts"), "pad\n".repeat(2000));
       symlinkSync(outside, path.join(evilPkg, "src"), "dir");
 
-      assert.equal(runRatchets(["--update"], fixture).status, 0);
-      const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
-      const grandfathered = Object.keys(baseline.metrics.fileSizeGrandfather);
-      assert.equal(grandfathered.some((f) => f.includes("evil-pkg")), false,
-        `symlinked root was traversed: ${grandfathered}`);
+      // Round 14: --update refuses to mint a baseline while the symlinked
+      // root exists; the violation is reported, never traversed.
+      const update = runRatchets(["--update"], fixture);
+      assert.equal(update.status, 1, "--update must fail on a symlinked src root");
+      assert.match(update.stderr, /evil-pkg\/src/);
+      assert.doesNotMatch(update.stderr, /huge\.ts/, "symlinked root must not be traversed");
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -497,11 +498,12 @@ test("file-size ratchet: a symlinked packages discovery root is skipped entirely
       renameSync(packagesDir, realPackages);
       symlinkSync(outside, packagesDir, "dir");
       try {
-        // Watchlist files vanished with the rename -> expect that specific
-        // failure, but crucially NO grandfather adoption from the symlink.
+        // Round 14: the symlink gate fires first — the symlinked packages
+        // root itself is the reported violation, and crucially there is NO
+        // grandfather adoption from behind the symlink.
         const update = runRatchets(["--update"], fixture);
         assert.equal(update.status, 1);
-        assert.match(update.stderr, /watchlist file\(s\) missing/);
+        assert.match(update.stderr, /symlinked source entries present: packages/);
         assert.doesNotMatch(update.stderr, /sneaky/);
       } finally {
         rmSync(packagesDir, { force: true });
