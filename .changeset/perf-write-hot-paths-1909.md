@@ -8,8 +8,8 @@ Eliminate O(file-size) work from four per-write hot paths (issue #1909):
 
 - Plaintext secure appends now classify a file as encrypted by reading only the
   fixed-size magic header (cached per path, self-invalidated on in-process
-  rewrites and key changes) instead of reading the whole target file (the
-  production lifecycle ledger reached 119MB).
+  rewrites and key changes) instead of reading the whole target file (a
+  lifecycle ledger can grow to hundreds of MB on a large corpus).
 - `writeMemory("fact", …)` gains `deferHashIndexSave`; the extraction persist
   path defers the per-fact fact-hash-index flush to the existing authoritative
   batch save, turning 11 whole-index rewrites per 10-fact batch into 1. Single

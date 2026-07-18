@@ -1327,6 +1327,49 @@ test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE ca
     "buffer flush must run before the catalog-touch flush on shutdown",
   );
 });
+test("#1909 round 14: destroy() surfaces a buffer flush failure and still completes teardown", async () => {
+  // Graceful-shutdown durability contract: a failed shutdown buffer flush must
+  // NOT be silently swallowed — the pending turns are retained in memory but
+  // lost on process exit, so the host has to learn about it. destroy() runs the
+  // remaining teardown in a finally block, then rethrows the flush failure.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-fail-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config);
+  const priv = orchestrator as unknown as {
+    buffer: { flushPendingSave: (opts?: { throwOnFailure?: boolean }) => Promise<void> };
+    namespaceCatalog: { flushPendingTouches: () => Promise<void> };
+    destroy: () => Promise<void>;
+  };
+  const flushErr = new Error("simulated shutdown buffer write failure");
+  priv.buffer.flushPendingSave = async () => {
+    throw flushErr;
+  };
+  let catalogFlushed = false;
+  const realFlushTouch = priv.namespaceCatalog.flushPendingTouches.bind(priv.namespaceCatalog);
+  priv.namespaceCatalog.flushPendingTouches = async () => {
+    catalogFlushed = true;
+    return realFlushTouch();
+  };
+
+  await assert.rejects(
+    priv.destroy(),
+    (err: unknown) => err === flushErr,
+    "destroy() must surface the buffer flush failure instead of swallowing it",
+  );
+  assert.equal(
+    catalogFlushed,
+    true,
+    "teardown (catalog flush) must still run in the finally block despite the flush failure",
+  );
+});
 test("#1909 round 12: after a crash before the batch save, the orchestrator dedup sees the fact (corpus rebuild)", async () => {
   // A deferred fact write persists the .md but not fact-hashes.txt; a crash
   // before saveContentHashIndexes leaves only the .md durable. On restart the

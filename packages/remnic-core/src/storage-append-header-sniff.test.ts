@@ -9,8 +9,9 @@ import type { MemoryLifecycleEvent } from "./types.js";
 
 // Issue #1909 (Part A): the plaintext secure-append path must classify a file
 // as encrypted by reading ONLY the fixed-size magic header, never the whole
-// file (the production lifecycle ledger reached 119MB), and it must cache the
-// classification so subsequent appends do NO reclassification read at all.
+// file (a lifecycle ledger can grow to hundreds of MB on a large corpus), and
+// it must cache the classification so subsequent appends do NO reclassification
+// read at all.
 
 function lifecycleEvent(eventId: string): MemoryLifecycleEvent {
   return {

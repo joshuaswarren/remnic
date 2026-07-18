@@ -955,17 +955,38 @@ export class Orchestrator {
     // first would let that shutdown-time touch queue after the flush and be lost.
     // Ordering it before flushPendingTouches folds the buffer-save's touch into
     // the flush below so both settle before destroy() returns.
-    await this.buffer.flushPendingSave().catch(() => undefined);
-    // Issue #1903: flush any coalesced namespace-catalog touches before teardown
-    // so a long-lived host does not drop buffered read/write timestamps.
-    await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
-    await this.namespaceSearchRouter.dispose();
-    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
-    if (this.conversationQmd && this.conversationQmd !== this.qmd) {
-      await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
+    //
+    // Graceful-shutdown durability contract (review round 14): the flush runs
+    // with throwOnFailure so a failed buffer write is NOT silently swallowed.
+    // flushPendingSave keeps the save pending on failure (in-memory turns are
+    // retained), so we finish the rest of teardown in a finally block and then
+    // rethrow — the host learns buffered turns did not reach disk instead of
+    // destroy() reporting a clean shutdown and losing them on exit.
+    let bufferFlushError: unknown;
+    try {
+      await this.buffer.flushPendingSave({ throwOnFailure: true });
+    } catch (err) {
+      bufferFlushError = err;
     }
-    // Issue #1674: terminate archive-scoring worker threads on destroy.
-    await disposeDefaultArchiveScoring();
+    try {
+      // Issue #1903: flush any coalesced namespace-catalog touches before teardown
+      // so a long-lived host does not drop buffered read/write timestamps.
+      await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
+      await this.namespaceSearchRouter.dispose();
+      await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
+      if (this.conversationQmd && this.conversationQmd !== this.qmd) {
+        await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
+      }
+      // Issue #1674: terminate archive-scoring worker threads on destroy.
+      await disposeDefaultArchiveScoring();
+    } finally {
+      if (bufferFlushError !== undefined) {
+        log.warn(
+          `orchestrator.destroy: buffer flush failed; pending turns retained in memory but not persisted: ${String(bufferFlushError)}`,
+        );
+        throw bufferFlushError;
+      }
+    }
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */

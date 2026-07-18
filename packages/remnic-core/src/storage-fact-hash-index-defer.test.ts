@@ -348,3 +348,47 @@ test("#1909: saveMergingWithDisk is a no-op when the index is not dirty (dirty s
     assert.ok(fresh.has("foreign fact"), "a non-dirty merge-save did not rewrite/clobber the file");
   });
 });
+
+// Issue #1909 review round 14: the markerless authoritative rebuild
+// (ensureFactHashIndexAuthoritative) used to read ONLY the hot tier
+// (readAllMemories). A fact or procedure demoted to the cold tier is still
+// active, so a restart dropped its content-hash from the dedup index and the
+// next extraction re-created the demoted memory. The rebuild now unions the hot
+// AND cold tiers (readAllColdMemories), so hashes survive a hot/cold restart.
+
+test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survives restart", async () => {
+  await withMemoryDir(async (dir) => {
+    StorageManager.clearAllStaticCaches();
+    const storage = new StorageManager(dir);
+
+    // Two facts: one stays hot, one is demoted to cold.
+    await storage.writeMemory("fact", "hot tier fact stays put", { source: "manual" });
+    await storage.writeMemory("fact", "cold tier fact was demoted", { source: "manual" });
+
+    storage.invalidateAllMemoriesCacheForDir();
+    const demoted = (await storage.readAllMemories()).find(
+      (m) => m.content.includes("cold tier fact was demoted"),
+    );
+    assert.ok(demoted, "the fact to demote must be readable in hot before migration");
+    await storage.migrateMemoryToTier(demoted!, "cold");
+
+    // Simulate a process restart: drop every static/in-memory cache and open a
+    // fresh StorageManager over the same baseDir. Its first dedup lookup forces
+    // a full corpus rebuild with no marker to trust.
+    StorageManager.clearAllStaticCaches();
+    const reopened = new StorageManager(dir);
+
+    // The cold-demoted fact must be confirmed present in the rebuilt index (this
+    // FAILS on a hot-only rebuild), and the hot fact must still be present too.
+    assert.equal(
+      await reopened.hasFactContentHash("cold tier fact was demoted"),
+      true,
+      "a fact demoted to cold must survive the corpus rebuild (hot+cold union)",
+    );
+    assert.equal(
+      await reopened.hasFactContentHash("hot tier fact stays put"),
+      true,
+      "the hot-tier fact must also survive the rebuild",
+    );
+  });
+});

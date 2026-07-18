@@ -3674,9 +3674,10 @@ export class StorageManager {
     if (writeKey === null) {
       try {
         // Header-only sniff (issue #1909): reads at most MAGIC_HEADER_SIZE bytes
-        // instead of the whole target file (the production lifecycle ledger is
-        // 119MB) to decide "is this encrypted?". A plaintext append below cannot
-        // flip the classification, so a cached `false` stays valid across appends.
+        // instead of the whole target file (a lifecycle ledger can grow to
+        // hundreds of MB on a large corpus) to decide "is this encrypted?". A
+        // plaintext append below cannot flip the classification, so a cached
+        // `false` stays valid across appends.
         if (await this.isEncryptedFileHeader(filePath)) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
@@ -3949,7 +3950,15 @@ export class StorageManager {
       // amortized by the #1902 hot-memories cache after the first read.
       const factHashIndex = await this.getFactHashIndex();
       factHashIndex.clear();
-      const existing = await this.readAllMemories();
+      // #1909 review round 14: index the HOT and COLD tiers together. A fact or
+      // procedure demoted to cold/ is still active and its content-hash must
+      // survive the corpus rebuild, or a restart would drop the hash and let the
+      // next extraction re-create the demoted memory. Matches the hot+cold union
+      // that removeFactContentHashesForMemories already reconciles against.
+      const existing = [
+        ...(await this.readAllMemories()),
+        ...(await this.readAllColdMemories()),
+      ];
       let legacyRecovered = 0;
       for (const memory of existing) {
         // #1909 review round 13: the content-hash dedup index is SHARED by fact
