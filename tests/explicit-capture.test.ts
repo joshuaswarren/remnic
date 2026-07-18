@@ -18,6 +18,24 @@ import { ContentHashIndex } from "../src/storage.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { registerTools } from "../src/tools.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+
+// Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
+// callers now write via `writeSealedMemory`. Test doubles keep stubbing
+// `writeMemory`; this decorator adds a sealed entry that delegates through
+// the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
+// cannot drift from the real envelope→options translation.
+function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
+  const decorated = stub as T & {
+    writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
+  };
+  decorated.writeSealedMemory = (envelope, extras = {}) => {
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return (stub.writeMemory as (c: unknown, b: unknown, o: unknown) => unknown)(category, content, options);
+  };
+  return decorated;
+}
+
 
 test("parseConfig defaults captureMode to implicit and accepts explicit modes", () => {
   assert.equal(parseConfig({ openaiApiKey: "sk-test" }).captureMode, "implicit");
@@ -178,7 +196,7 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
   };
 
   const orchestrator = {
-    getStorage: async () => storage,
+    getStorage: async () => withSealedWrite(storage),
   };
 
   const first = await persistExplicitCapture(
@@ -240,7 +258,7 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
       namespacesEnabled: false,
       namespacePolicies: [],
     },
-    getStorage: async () => storage,
+    getStorage: async () => withSealedWrite(storage),
   };
 
   await persistExplicitCapture(
@@ -282,7 +300,7 @@ function makeDedupFixture() {
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  return { memories, orchestrator: { getStorage: async () => storage } as never };
+  return { memories, orchestrator: { getStorage: async () => withSealedWrite(storage) } as never };
 }
 
 function dedupCapture(orch: unknown, connector?: string) {
@@ -376,7 +394,7 @@ function makeQueueFixture() {
     writeMemoryFrontmatter: async () => {},
     appendMemoryLifecycleEvents: async () => 1,
   };
-  return { memories, orchestrator: { getStorage: async () => storage } as never };
+  return { memories, orchestrator: { getStorage: async () => withSealedWrite(storage) } as never };
 }
 
 function queueCapture(orch: unknown, connector?: string) {
@@ -462,7 +480,7 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
       namespacesEnabled: false,
       namespacePolicies: [],
     },
-    getStorage: async () => storage,
+    getStorage: async () => withSealedWrite(storage),
   };
 
   await queueExplicitCaptureForReview(
@@ -514,7 +532,7 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
       namespacesEnabled: true,
       namespacePolicies: [{ name: "team" }],
     },
-    getStorage: async () => storage,
+    getStorage: async () => withSealedWrite(storage),
   };
 
   await assert.rejects(
@@ -563,7 +581,7 @@ test("persistExplicitCapture rejects namespaces outside the configured policy", 
             namespacesEnabled: false,
             namespacePolicies: [],
           },
-          getStorage: async () => storage,
+          getStorage: async () => withSealedWrite(storage),
         } as never,
         validateExplicitCaptureInput({
           content: "Store this in a namespace that is not configured.",
@@ -615,7 +633,7 @@ test("queueExplicitCaptureForReview stores a pending-review memory and lifecycle
         namespacesEnabled: false,
         namespacePolicies: [],
       },
-      getStorage: async () => storage,
+      getStorage: async () => withSealedWrite(storage),
     } as never,
     {
       content: "api_key=supersecretvalue123 should be reviewed, not dropped",
@@ -690,7 +708,7 @@ test("queueExplicitCaptureForReview redacts credential-like review metadata", as
         namespacesEnabled: false,
         namespacePolicies: [],
       },
-      getStorage: async () => storage,
+      getStorage: async () => withSealedWrite(storage),
     } as never,
     {
       content: "This safe explicit capture should be queued for manual review.",
@@ -762,7 +780,7 @@ test("queueExplicitCaptureForReview preserves requested namespace isolation when
           },
           getStorage: async (namespace?: string) => {
             requestedNamespaces.push(namespace ?? "default");
-            return storage;
+            return withSealedWrite(storage);
           },
         } as never,
         {
@@ -798,7 +816,7 @@ test("persistExplicitCapture attributes lifecycle actors to the correct tool sou
       return events.length;
     },
   };
-  const orchestrator = { getStorage: async () => storage };
+  const orchestrator = { getStorage: async () => withSealedWrite(storage) };
 
   await persistExplicitCapture(
     orchestrator as never,
@@ -856,7 +874,7 @@ test("queueExplicitCaptureForReview attributes queued suggestion submissions to 
         namespacesEnabled: false,
         namespacePolicies: [],
       },
-      getStorage: async () => storage,
+      getStorage: async () => withSealedWrite(storage),
     } as never,
     {
       content: "Queue this suggestion submission for review with the correct actor attribution.",
@@ -887,7 +905,7 @@ test("fact duplicate checks short-circuit without a full corpus scan when author
   };
 
   const duplicate = await persistExplicitCapture(
-    { getStorage: async () => storage } as never,
+    { getStorage: async () => withSealedWrite(storage) } as never,
     validateExplicitCaptureInput({
       content: "This fact should miss the hash gate and skip the full scan.",
       category: "fact",
@@ -918,7 +936,7 @@ test("fact duplicate checks fall back to the full corpus scan when hash index co
   };
 
   const duplicate = await persistExplicitCapture(
-    { getStorage: async () => storage } as never,
+    { getStorage: async () => withSealedWrite(storage) } as never,
     validateExplicitCaptureInput({
       content: "Legacy fact content that predates the hash index.",
       category: "fact",
@@ -951,7 +969,7 @@ test("fact duplicate checks fail open to the full corpus scan when hash index ac
   };
 
   const duplicate = await persistExplicitCapture(
-    { getStorage: async () => storage } as never,
+    { getStorage: async () => withSealedWrite(storage) } as never,
     validateExplicitCaptureInput({
       content: "Legacy fact content that predates the hash index.",
       category: "fact",
@@ -984,7 +1002,7 @@ test("explicit capture duplicate checks preserve punctuation that changes techni
   };
 
   const result = await persistExplicitCapture(
-    { getStorage: async () => storage } as never,
+    { getStorage: async () => withSealedWrite(storage) } as never,
     validateExplicitCaptureInput({
       content: "User prefers C",
       category: "fact",
@@ -1032,7 +1050,7 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
       queryAwareIndexingEnabled: false,
       memoryDir: "/tmp/engram-explicit-tools",
     },
-    getStorage: async () => ({
+    getStorage: async () => withSealedWrite({
       readAllMemories: async () => memories,
       writeMemory: async (category: string, content: string, options: { tags?: string[] }) => {
         const id = `fact-${memories.length + 1}`;
@@ -1170,7 +1188,7 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
       localLlmTimeoutMs: 0,
       qmdEnabled: false,
     },
-    getStorage: async () => ({
+    getStorage: async () => withSealedWrite({
       writeMemory: async () => {
         throw new Error("queue storage unavailable");
       },
@@ -1212,4 +1230,48 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
     result.content[0]?.text ?? "",
     /Memory capture failed: content appears to contain a secret or credential/
   );
+});
+
+test("review-queue fallback survives 49+ requested tags (salvage clamp, #2014)", async () => {
+  const written: Array<{ tags?: readonly string[] }> = [];
+  const storage = withSealedWrite({
+    writeMemory: async (_c: unknown, _b: unknown, options: { tags?: readonly string[] }) => {
+      written.push(options);
+      return { id: "fact-review-clamp", tombstoneBlocked: false };
+    },
+    getMemoryById: async () => null,
+    readAllMemories: async () => [],
+    writeMemoryFrontmatter: async () => {},
+    appendMemoryLifecycleEvents: async () => 1,
+  });
+  const orchestrator = {
+    config: { defaultNamespace: "default", sharedNamespace: "shared", namespacesEnabled: false },
+    getStorage: async () => storage,
+  };
+  const result = await queueExplicitCaptureForReview(
+    orchestrator as never,
+    {
+      content: "capture body that failed primary validation",
+      category: "fact",
+      tags: Array.from({ length: 55 }, (_, i) => `req-tag-${i}`),
+    } as never,
+    "memory_store",
+    new Error("duplicate-suspected"),
+  );
+  assert.ok(result.id, "capture must queue instead of throwing");
+  assert.equal(written.length, 1);
+  assert.ok((written[0].tags?.length ?? 0) <= 50, "tags must be clamped to the limit");
+  assert.ok(
+    written[0].tags?.includes("explicit-capture") || written[0].tags?.some((t) => t.includes("review")),
+    `fixed review tags must survive the clamp, got: ${written[0].tags?.slice(0, 4).join(",")}`,
+  );
+});
+
+test("whitespace-only sourceConnector is dropped at validation, not thrown at compose (round 14)", () => {
+  const candidate = validateExplicitCaptureInput({
+    content: "This capture supplies a whitespace-only connector value.",
+    category: "fact",
+    sourceConnector: "   ",
+  });
+  assert.equal(candidate.sourceConnector, undefined);
 });

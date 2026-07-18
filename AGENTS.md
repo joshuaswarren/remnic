@@ -1,5 +1,14 @@
 # Remnic - Agent Guide
 
+> **PUBLIC, OPEN-SOURCE REPOSITORY.** Remnic is a public open-source project.
+> Everything pushed to GitHub — commits, issues, PRs, review comments — is
+> world-readable. Never include PII or operator-specific infrastructure details
+> (hostnames, internal IPs, usernames/home paths, client or project names,
+> memory IDs or memory content, links to private repos/docs). Write issues and
+> PRs for the general case: describe the reproducing deployment *shape* and
+> design fixes that benefit all users, not one operator's setup. Full rules:
+> "PUBLIC REPOSITORY — Privacy Policy" below.
+
 ## Architecture Boundaries (Non-Negotiable)
 
 Remnic is a multi-platform memory system. Keep these boundaries intact on every change:
@@ -161,12 +170,30 @@ Minimum scenario matrix for session/retrieval/cache work:
 If you cannot explain the behavior for every row in that matrix, the PR is not
 ready for external review.
 
+## Mechanical Stream Rules (`.omp/rules/`)
+
+The most-recurring, textually-detectable mistakes from AI review feedback are
+also enforced mechanically as project-scoped omp TTSRs in `.omp/rules/`. Agents
+running in the omp harness get interrupted (or reminded) at code-write time —
+before a PR exists — for: non-total sort comparators, `process.env.X =
+undefined`, cross-package `../<pkg>/src/` imports, static imports of optional
+`@remnic/*` packages, real home-directory paths (public-repo privacy),
+discarded `tombstoneBlocked`, config string/zero coercion footguns, ratchet
+baseline raises, and weak symlink/containment checks. See
+`.omp/rules/README.md` before adding rules: run every new condition against the
+existing codebase first, and keep hard interrupts for near-zero-false-positive
+signatures only.
+
 ## Review Prevention Checklist (All Agents — Read Before Every PR)
 
 These patterns were extracted from 60+ PRs across 2026-04-05 to 2026-04-12
 (including deep analysis of PRs #343-#408 with 980+ review comments).
 Every item below was caught by a reviewer (Cursor Bugbot, Codex, or CodeQL) and
 required a follow-up commit to fix. Follow these rules to ship clean on the first push.
+
+Also: this is a **public repo** — issue and PR text must follow the
+"PUBLIC REPOSITORY — Privacy Policy" section (no PII or operator-specific
+details; describe problems and design fixes for all users, not one deployment).
 
 ### 1. Input Validation — Reject Invalid Inputs Explicitly
 
@@ -1676,6 +1703,30 @@ Old, low-importance memories are summarized:
 - `git diff --cached` contains NO personal information
 - No hardcoded API keys, URLs with tokens, or credentials
 - No references to specific users or their data
+
+### Issues, PRs, and review comments are public too
+
+The rules above apply to EVERYTHING pushed to GitHub, not just commits — issue
+bodies, PR descriptions, review replies, and commit messages.
+
+1. **No PII or operator-specific details** in issue/PR text: hostnames, internal
+   IPs/subnets/VIP addresses, usernames or home-directory paths, client or
+   project names, memory IDs, quoted memory content, or links/paths to an
+   operator's private repos and docs.
+2. **Describe the deployment *shape*, not the deployment** — state the config
+   conditions that reproduce the behavior (e.g. "namespaces enabled, default
+   namespace at the flat root, ~100k-file base collection"), never "on <host>".
+   Round counts, strip identifying values from quoted logs/output, and replace
+   concrete examples with placeholders or synthetic equivalents.
+3. **Generalize the problem statement** — an issue must describe a defect or
+   gap as it affects ANY user who meets the reproducing conditions, and
+   proposed fixes must be designed for all use cases, not one operator's
+   workflow. If a report only makes sense for a single deployment, it belongs
+   in that operator's private notes, with a distilled general issue filed here.
+4. **Audit before submitting**: re-read the issue/PR body the way a stranger
+   would. `gh issue view <n> --json body` piped through a grep for your hosts,
+   IPs, usernames, and org/client names is cheap — run it before and after
+   posting.
 
 ## Agent Notes: Retrieval Explain Surface (issues #518, #570)
 
