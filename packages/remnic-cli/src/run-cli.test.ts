@@ -41,7 +41,7 @@ before(async () => {
 
 after(async () => {
   if (originalHome === undefined) {
-    process.env.HOME = undefined;
+    delete process.env.HOME;
   } else {
     process.env.HOME = originalHome;
   }
@@ -120,7 +120,7 @@ test("runCli honours env overrides and restores prior values afterwards", async 
     assert.equal(process.env.REMNIC_TEST_ENV_VAR, "original", "env override was restored to its pre-run value");
   } finally {
     if (previousValue === undefined) {
-      process.env.REMNIC_TEST_ENV_VAR = undefined;
+      delete process.env.REMNIC_TEST_ENV_VAR;
     } else {
       process.env.REMNIC_TEST_ENV_VAR = previousValue;
     }
@@ -138,7 +138,7 @@ test("runCli deletes env keys mapped to undefined and restores them afterwards",
     assert.equal(process.env.REMNIC_TEST_DELETE_VAR, "set", "deleted env key was restored after the run");
   } finally {
     if (previousValue === undefined) {
-      process.env.REMNIC_TEST_DELETE_VAR = undefined;
+      delete process.env.REMNIC_TEST_DELETE_VAR;
     } else {
       process.env.REMNIC_TEST_DELETE_VAR = previousValue;
     }
