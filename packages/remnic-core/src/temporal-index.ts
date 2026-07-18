@@ -130,6 +130,13 @@ export function setIndexReadObserverForTest(observer?: () => void): void {
   indexReadObserverForTest = observer;
 }
 
+let indexWriteObserverForTest: ((filePath: string) => void) | undefined;
+
+/** Test-only observer fired once per committed atomic index write. */
+export function setIndexWriteObserverForTest(observer?: (filePath: string) => void): void {
+  indexWriteObserverForTest = observer;
+}
+
 interface IndexLockOwner {
   pid: number;
   createdAt?: string;
@@ -415,6 +422,7 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<boolean
     try {
       await fs.promises.writeFile(tmp, payload, "utf8");
       await fs.promises.rename(tmp, filePath);
+      indexWriteObserverForTest?.(filePath);
       return true;
     } catch {
       try {
@@ -1060,6 +1068,52 @@ export async function indexMemoriesBatchAsync(
     });
   } catch {
     // Fail silently
+  }
+}
+
+/**
+ * Batch-remove multiple memories from both indexes in a single read-modify-write
+ * cycle per index. Mirrors {@link indexMemoriesBatchAsync}: maintenance loops that
+ * invalidate/archive N memories collect their entries and call this once, replacing
+ * the O(N) full read-parse-stringify-write amplification of per-memory
+ * {@link deindexMemoryAsync} with O(1) temporal + O(1) tag write cycles.
+ *
+ * Per-entry semantics are byte-identical to {@link deindexMemoryAsync}: the date
+ * set for each entry's `createdAt` drops the path, the temporal event is deleted,
+ * and each tag graph entry is removed. The temporal half commits first; the tag
+ * half only runs if it succeeds, so a partial failure never leaves tags orphaned
+ * from a temporal entry that still exists.
+ */
+export async function deindexMemoriesBatchAsync(
+  memoryDir: string,
+  entries: ReadonlyArray<Pick<TemporalIndexEntry, "path" | "createdAt" | "tags">>,
+): Promise<void> {
+  if (entries.length === 0) return;
+  try {
+    await ensureStateDir(memoryDir);
+
+    await withMemoryDirMutex(memoryDir, async () => {
+      const temporalOk = await updateTemporalIndex(memoryDir, (index) => {
+        for (const entry of entries) {
+          const dateKey = isoDateFromTimestamp(entry.createdAt);
+          removePathFromSet(index.dates, dateKey, entry.path);
+          delete index.events[entry.path];
+        }
+      });
+      if (temporalOk) {
+        await updateTagIndex(memoryDir, (index) => {
+          for (const entry of entries) {
+            for (const tag of entry.tags) {
+              if (tag && typeof tag === "string") {
+                removeTagGraphEntry(index, tag, entry.path);
+              }
+            }
+          }
+        });
+      }
+    });
+  } catch {
+    // Fail silently — indexes are advisory only
   }
 }
 

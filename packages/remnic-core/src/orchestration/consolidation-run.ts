@@ -30,7 +30,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import { applyCommitmentLedgerLifecycle } from "../commitment-ledger.js";
 import { recordDreamsPhaseRun } from "../maintenance/dreams-ledger.js";
-import { deindexMemoryAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
   resolveConsolidationCapabilities,
@@ -153,6 +153,13 @@ export class ConsolidationRunCoordinator {
       ? new Map(allMemories.map((m) => [m.frontmatter.id, m]))
       : null;
 
+    // Collect deindex entries from INVALIDATE/MERGE actions and de-index them in
+    // one batch after the loop, instead of a full index read-modify-write per
+    // memory. The queryAwareIndexing guard is preserved: memoryLookup is null when
+    // it is disabled, so toInvalidate/toMergeInvalidate stay null and nothing is
+    // collected.
+    const itemsDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
+
     for (const item of result.items) {
       switch (item.action) {
         case "INVALIDATE": {
@@ -165,12 +172,11 @@ export class ConsolidationRunCoordinator {
             memoryItemMutated = true;
             await this.deps.embeddingFallback.removeFromIndex(item.existingId);
             if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
-              await deindexMemoryAsync(
-                config.memoryDir,
-                toInvalidate.path,
-                toInvalidate.frontmatter.created,
-                toInvalidate.frontmatter.tags ?? [],
-              );
+              itemsDeindexBatch.push({
+                path: toInvalidate.path,
+                createdAt: toInvalidate.frontmatter.created,
+                tags: toInvalidate.frontmatter.tags ?? [],
+              });
             }
           }
           break;
@@ -216,18 +222,18 @@ export class ConsolidationRunCoordinator {
                 toMergeInvalidate?.path &&
                 toMergeInvalidate.frontmatter?.created
               ) {
-                await deindexMemoryAsync(
-                  config.memoryDir,
-                  toMergeInvalidate.path,
-                  toMergeInvalidate.frontmatter.created,
-                  toMergeInvalidate.frontmatter.tags ?? [],
-                );
+                itemsDeindexBatch.push({
+                  path: toMergeInvalidate.path,
+                  createdAt: toMergeInvalidate.frontmatter.created,
+                  tags: toMergeInvalidate.frontmatter.tags ?? [],
+                });
               }
             }
           }
           break;
       }
     }
+    await deindexMemoriesBatchAsync(config.memoryDir, itemsDeindexBatch);
 
     if (result.profileUpdates.length > 0) {
       await storage.appendToProfile(result.profileUpdates);
@@ -292,14 +298,14 @@ export class ConsolidationRunCoordinator {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
-        for (const m of deletedCommitments) {
-          await deindexMemoryAsync(
-            config.memoryDir,
-            m.path,
-            m.frontmatter.created,
-            m.frontmatter.tags ?? [],
-          );
-        }
+        await deindexMemoriesBatchAsync(
+          config.memoryDir,
+          deletedCommitments.map((m) => ({
+            path: m.path,
+            createdAt: m.frontmatter.created,
+            tags: m.frontmatter.tags ?? [],
+          })),
+        );
       }
     }
 
@@ -335,14 +341,14 @@ export class ConsolidationRunCoordinator {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
       if (resolveIndexingCapabilities(config).queryAwareIndexing) {
-        for (const m of deletedTTL) {
-          await deindexMemoryAsync(
-            config.memoryDir,
-            m.path,
-            m.frontmatter.created,
-            m.frontmatter.tags ?? [],
-          );
-        }
+        await deindexMemoriesBatchAsync(
+          config.memoryDir,
+          deletedTTL.map((m) => ({
+            path: m.path,
+            createdAt: m.frontmatter.created,
+            tags: m.frontmatter.tags ?? [],
+          })),
+        );
       }
     }
 

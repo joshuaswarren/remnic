@@ -34,7 +34,7 @@ import {
   resolveCreationMemoryCapabilities,
 } from "../capabilities.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { deindexMemoryAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index.js";
 import { extractTopics } from "../topics.js";
 import { log } from "../logger.js";
 import path from "node:path";
@@ -304,6 +304,10 @@ export class LifecyclePolicyCoordinator {
       this.config.factArchivalProtectedCategories,
     );
     let archivedCount = 0;
+    // Collect deindex entries and remove them in one batch after the loop rather
+    // than a full index read-modify-write per archived fact. Guard is preserved:
+    // entries are only collected when queryAwareIndexing is enabled.
+    const deindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
 
     for (const memory of allMemories) {
       const fm = memory.frontmatter;
@@ -345,15 +349,18 @@ export class LifecyclePolicyCoordinator {
           memory.path &&
           memory.frontmatter?.created
         ) {
-          await deindexMemoryAsync(
-            this.config.memoryDir,
-            memory.path,
-            memory.frontmatter.created,
-            memory.frontmatter.tags ?? [],
-          );
+          deindexBatch.push({
+            path: memory.path,
+            createdAt: memory.frontmatter.created,
+            tags: memory.frontmatter.tags ?? [],
+          });
         }
         archivedCount++;
       }
+    }
+
+    if (deindexBatch.length > 0) {
+      await deindexMemoriesBatchAsync(this.config.memoryDir, deindexBatch);
     }
 
     // Save hash indexes if we removed any entries.

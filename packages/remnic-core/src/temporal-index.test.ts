@@ -11,6 +11,7 @@ import {
   clearIndexes,
   deindexMemory as deindexMemorySync,
   deindexMemoryAsync as deindexMemory,
+  deindexMemoriesBatchAsync,
   indexMemoriesBatch,
   indexMemory as indexMemorySync,
   indexMemoryAsync as indexMemory,
@@ -21,6 +22,7 @@ import {
   queryTemporalTimelineAsync,
   resolvePromptTagPrefilterAsync,
   setIndexReadObserverForTest,
+  setIndexWriteObserverForTest,
 } from "./temporal-index.js";
 
 test("legacy temporal-index exports preserve synchronous return timing and booleans", async () => {
@@ -643,4 +645,141 @@ test("temporal timeline generic edge selection honors small and zero limits", as
     }))?.length,
     4,
   );
+});
+
+// ─── #1911B: batch de-index ─────────────────────────────────────────────────
+
+interface DeindexEntry {
+  path: string;
+  createdAt: string;
+  tags: string[];
+}
+
+// A spread of memories across distinct dates with hierarchical (alias-producing)
+// and flat tags, so equivalence covers date sets, event map, tag graph, and aliases.
+function sampleMemories(prefix: string, count: number): DeindexEntry[] {
+  const entries: DeindexEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const day = String((i % 28) + 1).padStart(2, "0");
+    entries.push({
+      path: `/tmp/${prefix}-memory-${i}.md`,
+      createdAt: `2026-05-${day}T09:00:00.000Z`,
+      tags: ["project/remnic", `worker/${i % 3}`, "shared", `flat-${i}`],
+    });
+  }
+  return entries;
+}
+
+async function seedIndex(memoryDir: string, entries: DeindexEntry[]): Promise<void> {
+  for (const e of entries) {
+    await indexMemory(memoryDir, e.path, e.createdAt, e.tags);
+  }
+}
+
+async function readRawIndexes(memoryDir: string): Promise<{ temporal: unknown; tags: unknown }> {
+  const temporal = JSON.parse(
+    await readFile(join(memoryDir, "state", "index_time.json"), "utf8"),
+  );
+  const tags = JSON.parse(
+    await readFile(join(memoryDir, "state", "index_tags.json"), "utf8"),
+  );
+  return { temporal, tags };
+}
+
+test("#1911B batch de-index yields the same final index as per-memory de-index", async () => {
+  const sequentialDir = await mkdtemp(join(tmpdir(), "remnic-deindex-seq-"));
+  const batchDir = await mkdtemp(join(tmpdir(), "remnic-deindex-batch-"));
+  const all = sampleMemories("equiv", 12);
+  await seedIndex(sequentialDir, all);
+  await seedIndex(batchDir, all);
+
+  // Remove a non-contiguous subset in a scrambled order; batching must not depend
+  // on removal order to reach the same final index.
+  const removed = [all[10], all[1], all[7], all[4], all[0]];
+
+  for (const e of removed) {
+    await deindexMemory(sequentialDir, e.path, e.createdAt, e.tags);
+  }
+  await deindexMemoriesBatchAsync(batchDir, removed);
+
+  const seq = await readRawIndexes(sequentialDir);
+  const batch = await readRawIndexes(batchDir);
+  assert.deepEqual(batch.temporal, seq.temporal);
+  assert.deepEqual(batch.tags, seq.tags);
+
+  // Survivors remain, removed paths are gone from both indexes.
+  const survivorPaths = all.filter((e) => !removed.includes(e)).map((e) => e.path);
+  const stillIndexed = await queryByTagsAsync(batchDir, ["shared"]);
+  assert.deepEqual(stillIndexed, new Set(survivorPaths));
+});
+
+test("#1911B de-indexing N memories performs exactly one temporal + one tag write", async () => {
+  const batchDir = await mkdtemp(join(tmpdir(), "remnic-deindex-writes-batch-"));
+  const seqDir = await mkdtemp(join(tmpdir(), "remnic-deindex-writes-seq-"));
+  const entries = sampleMemories("writes", 8);
+  await seedIndex(batchDir, entries);
+  await seedIndex(seqDir, entries);
+
+  const countWrites = (dir: string) => {
+    let temporal = 0;
+    let tags = 0;
+    setIndexWriteObserverForTest((filePath) => {
+      if (filePath.endsWith("index_time.json")) temporal += 1;
+      else if (filePath.endsWith("index_tags.json")) tags += 1;
+    });
+    return () => {
+      setIndexWriteObserverForTest(undefined);
+      return { temporal, tags };
+    };
+  };
+
+  const stopBatch = countWrites(batchDir);
+  await deindexMemoriesBatchAsync(batchDir, entries);
+  const batchWrites = stopBatch();
+  assert.deepEqual(batchWrites, { temporal: 1, tags: 1 });
+
+  const stopSeq = countWrites(seqDir);
+  for (const e of entries) {
+    await deindexMemory(seqDir, e.path, e.createdAt, e.tags);
+  }
+  const seqWrites = stopSeq();
+  // The per-memory path is the O(N) amplification this batch API replaces.
+  assert.deepEqual(seqWrites, { temporal: entries.length, tags: entries.length });
+});
+
+test("#1911B empty batch is a no-op that performs no writes", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-deindex-empty-"));
+  await seedIndex(memoryDir, sampleMemories("empty", 2));
+  let writes = 0;
+  setIndexWriteObserverForTest(() => {
+    writes += 1;
+  });
+  try {
+    await deindexMemoriesBatchAsync(memoryDir, []);
+  } finally {
+    setIndexWriteObserverForTest(undefined);
+  }
+  assert.equal(writes, 0);
+});
+
+test("#1911B batch de-index keeps tag index consistent when the temporal write fails", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-deindex-partialfail-"));
+  const entries = sampleMemories("partial", 4);
+  await seedIndex(memoryDir, entries);
+  const before = await readRawIndexes(memoryDir);
+
+  // Make the state dir read-only so writeJsonAtomic cannot create its tmp sibling;
+  // the temporal update fails first, so the tag half must be skipped entirely,
+  // leaving BOTH indexes at their pre-batch contents (no half-applied removal).
+  const stateDir = join(memoryDir, "state");
+  await fs.promises.chmod(stateDir, 0o500);
+  try {
+    await deindexMemoriesBatchAsync(memoryDir, entries);
+  } finally {
+    await fs.promises.chmod(stateDir, 0o700);
+  }
+
+  const after = await readRawIndexes(memoryDir);
+  assert.deepEqual(after.temporal, before.temporal);
+  assert.deepEqual(after.tags, before.tags);
 });

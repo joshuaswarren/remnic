@@ -42,7 +42,7 @@ import {
   gatewayTaskChainOptions,
 } from "../fallback-llm.js";
 import { resolveIndexingCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
-import { deindexMemoryAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index.js";
 import { runPeerProfileReasoner } from "../peers/index.js";
 import type { StorageManager } from "../index.js";
 import type { LocalLlmClient } from "../local-llm.js";
@@ -317,6 +317,10 @@ export class SemanticConsolidationCoordinator {
         result.memoriesConsolidated++;
 
         // Archive originals
+        // Collect deindex entries and remove them in one batch after the loop
+        // rather than a full index read-modify-write per archived source. Guard
+        // is preserved: entries are only collected when queryAwareIndexing is on.
+        const clusterDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
         for (const m of cluster.memories) {
           const archiveResult = await targetStorage.archiveMemory(m, {
             actor: "semantic-consolidation",
@@ -342,12 +346,11 @@ export class SemanticConsolidationCoordinator {
                 m.path &&
                 m.frontmatter?.created
               ) {
-                await deindexMemoryAsync(
-                  targetStorage.dir,
-                  m.path,
-                  m.frontmatter.created,
-                  m.frontmatter.tags ?? [],
-                );
+                clusterDeindexBatch.push({
+                  path: m.path,
+                  createdAt: m.frontmatter.created,
+                  tags: m.frontmatter.tags ?? [],
+                });
               }
             } catch (cleanupErr) {
               log.warn(
@@ -355,6 +358,17 @@ export class SemanticConsolidationCoordinator {
               );
             }
             result.memoriesArchived++;
+          }
+        }
+        // Best-effort batch index cleanup: never abort the cluster (and thereby
+        // skip the catalog touch in `finally`) on an index write failure.
+        if (clusterDeindexBatch.length > 0) {
+          try {
+            await deindexMemoriesBatchAsync(targetStorage.dir, clusterDeindexBatch);
+          } catch (cleanupErr) {
+            log.warn(
+              `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
+            );
           }
         }
 
