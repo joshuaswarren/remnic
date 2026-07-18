@@ -27,7 +27,7 @@
 import type { MemoryCategory } from "./types.js";
 import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
-import { sanitizeMemoryContent } from "./sanitize.js";
+import { assemblePersistedBody } from "./structured-attributes.js";
 
 // ---------------------------------------------------------------------------
 // Input surface
@@ -137,10 +137,39 @@ declare const sealed: unique symbol;
  */
 export interface SealedMemoryEnvelope {
   readonly [sealed]: true;
+  /**
+   * Caller-supplied content VERBATIM (validated non-empty-after-trim).
+   * `StorageManager.writeMemory` persists content byte-for-byte (callers
+   * that trim, e.g. explicit capture, do so before composing), so the
+   * envelope must not transform it — the earlier compose-time trim/sanitize
+   * broke byte-parity with extraction writes and was removed in PR2.
+   */
   readonly content: string;
+  /**
+   * The exact body persistence will write: attribute-suffix enrichment then
+   * combined sanitization, produced by the SAME `assemblePersistedBody`
+   * helper `writeMemory` uses (issue #1989 PR2; AGENTS.md §13). This is the
+   * form write-idempotency fingerprints hash.
+   */
+  readonly persistedBody: string;
+  /** Injection patterns matched during body assembly (empty = clean). */
+  readonly sanitizeViolations: readonly string[];
   readonly category: MemoryCategory;
   readonly tags: readonly string[];
+  /**
+   * CANONICAL attributes (keys trim+lowercase, values trim) — the form
+   * fingerprints and downstream consumers use; stable across caller casing.
+   */
   readonly structuredAttributes: Readonly<Record<string, string>> | undefined;
+  /**
+   * The validated ORIGINAL attribute map, byte-preserved. `writeMemory`
+   * persists frontmatter attributes raw (canonicalizing only the body
+   * suffix via normalizeAttributePairs) — a pre-existing raw/canonical
+   * inconsistency (supersession keys read the raw form). The sealed path
+   * preserves those bytes; canonicalizing the frontmatter at the storage
+   * boundary is a follow-up once the legacy path retires (#1989 PR4).
+   */
+  readonly rawStructuredAttributes: Readonly<Record<string, string>> | undefined;
   readonly entityRef: string | undefined;
   readonly confidence: number | undefined;
   readonly ttl: string | undefined;
@@ -314,22 +343,35 @@ export function composeMemoryEnvelope(
     fail("ctx.now", "must return a valid Date");
   }
 
-  // Sanitized THEN trimmed: persistence paths run sanitizeMemoryContent
-  // before writing, so the sealed form and fingerprint must match what
-  // storage will actually hold — an injection-bearing input must not mint
-  // a fingerprint for content that never gets persisted in that form
-  // (review findings on #1998: whitespace round 2, sanitize round 7;
-  // AGENTS.md §13 hash-consistency).
-  const sanitizedContent = sanitizeMemoryContent(input.content).text.trim();
-  if (sanitizedContent.length === 0) {
+  const structuredAttributes = normalizeStructuredAttributes(input.structuredAttributes);
+  // The raw map is validated by the same routine (it throws before returning
+  // the canonical form), then byte-preserved for frontmatter parity.
+  const rawStructuredAttributes =
+    structuredAttributes === undefined
+      ? undefined
+      : Object.freeze({ ...(input.structuredAttributes as Record<string, string>) });
+  // Assemble the EXACT persisted form (attribute suffix + combined sanitize)
+  // with the same helper writeMemory uses — fingerprints hash this form, so
+  // envelope and storage cannot diverge (§13; #1998 round-8 thread resolved
+  // here in PR2 as promised). writeMemory assembles from the RAW map;
+  // normalizeAttributePairs canonicalizes internally, so raw and canonical
+  // maps yield the same suffix — asserted by the parity suite.
+  const assembled = assemblePersistedBody(
+    input.content,
+    rawStructuredAttributes ? { ...rawStructuredAttributes } : undefined,
+  );
+  if (assembled.text.trim().length === 0) {
     fail("content", "is empty after sanitization");
   }
 
   const body = {
-    content: sanitizedContent,
+    content: input.content,
+    persistedBody: assembled.text,
+    sanitizeViolations: Object.freeze([...assembled.violations]),
     category: input.category,
     tags: normalizeEnvelopeTags(input.tags),
-    structuredAttributes: normalizeStructuredAttributes(input.structuredAttributes),
+    structuredAttributes,
+    rawStructuredAttributes,
     entityRef: normalizeOptionalString("entityRef", input.entityRef),
     confidence,
     ttl: normalizeOptionalString("ttl", input.ttl),
@@ -457,6 +499,13 @@ export function buildWriteIdempotencyPayload(
       const tags = value as readonly string[];
       if (tags.length === 0) continue;
       fields.tags = [...tags].sort();
+      continue;
+    }
+    if (field === "content") {
+      // Fingerprints hash the PERSISTED form (attribute suffix + combined
+      // sanitize), not the raw input — one instant of stored state, one
+      // fingerprint (§13; issue #1989 PR2).
+      fields.content = envelope.persistedBody;
       continue;
     }
     fields[field] = value;

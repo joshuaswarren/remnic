@@ -19,6 +19,7 @@
  * tests continue to work.
  */
 
+import { composeMemoryEnvelope } from "../write-envelope.js";
 import path from "node:path";
 import {
   StorageManager,
@@ -101,6 +102,7 @@ import type {
   MemoryLink,
   PluginConfig,
   ProvenanceSource,
+  MemoryCategory,
 } from "../types.js";
 import { confidenceTier } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
@@ -533,33 +535,37 @@ export class ExtractionPersistCoordinator {
             continue;
             }
           }
-          const targetPromotion = await targetStorage.writeMemory(
-            options.category as any,
-            citedContent,
+          // Sealed-envelope write (issue #1989 PR2): cross-cutting fields ride
+          // the composed envelope; per-write extras stay explicit.
+          const targetPromotionEnvelope = composeMemoryEnvelope(
             {
+              content: citedContent,
+              category: options.category as MemoryCategory,
               confidence: options.confidence,
               tags: [...options.tags, `${target.target}-promotion`],
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
-              source: `${options.source}-${target.target}-promotion`,
-              importance: options.importance,
-              lineage: [options.sourceMemoryId],
-              sourceMemoryId: options.sourceMemoryId,
-              intentGoal: options.intentGoal,
-              intentActionType: options.intentActionType,
-              intentEntityTypes: options.intentEntityTypes,
-              memoryKind: options.memoryKind,
               validAt: options.validAt,
-              // #1578 — forward bi-temporal bounds + ingestion provenance.
-              ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-              ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-              ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-              contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-              ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-              ...(options.provenance ? { provenance: options.provenance } : {}),
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
             },
+            { source: `${options.source}-${target.target}-promotion` },
           );
+          const targetPromotion = await targetStorage.writeSealedMemory(targetPromotionEnvelope, {
+            importance: options.importance,
+            lineage: [options.sourceMemoryId],
+            sourceMemoryId: options.sourceMemoryId,
+            intentGoal: options.intentGoal,
+            intentActionType: options.intentActionType,
+            intentEntityTypes: options.intentEntityTypes,
+            memoryKind: options.memoryKind,
+            // #1578 — forward bi-temporal bounds + ingestion provenance.
+            ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+            ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+            ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+            ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+            ...(options.provenance ? { provenance: options.provenance } : {}),
+          });
           const promotedId = targetPromotion.id;
           // #1645: if the TARGET namespace's own tombstone blocked this promotion,
           // the row lands pending_review — do NOT supersede active target memories.
@@ -924,34 +930,36 @@ export class ExtractionPersistCoordinator {
             // No same-connector active shared fact — fall through to write.
           }
         }
-        const sharedPromotion = await sharedStorage.writeMemory(
-          options.category as any,
-          citedContent,
+        const sharedPromotionEnvelope = composeMemoryEnvelope(
           {
+            content: citedContent,
+            category: options.category as MemoryCategory,
             confidence: options.confidence,
             tags: [...options.tags, "shared-promotion"],
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
-            source: `${options.source}-shared-promotion`,
-            importance: options.importance,
-            lineage: [options.sourceMemoryId],
-            sourceMemoryId: options.sourceMemoryId,
-            intentGoal: options.intentGoal,
-            intentActionType: options.intentActionType,
-            intentEntityTypes: options.intentEntityTypes,
-            memoryKind: options.memoryKind,
             validAt: options.validAt,
-            // #1578 — forward bi-temporal bounds + ingestion provenance.
-            ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-            ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-            ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-            // Claim-level provenance spans (issue #1575 PR 2).
-            ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-            ...(options.provenance ? { provenance: options.provenance } : {}),
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
           },
+          { source: `${options.source}-shared-promotion` },
         );
+        const sharedPromotion = await sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
+          importance: options.importance,
+          lineage: [options.sourceMemoryId],
+          sourceMemoryId: options.sourceMemoryId,
+          intentGoal: options.intentGoal,
+          intentActionType: options.intentActionType,
+          intentEntityTypes: options.intentEntityTypes,
+          memoryKind: options.memoryKind,
+          // #1578 — forward bi-temporal bounds + ingestion provenance.
+          ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+          ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+          ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+          contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+          // Claim-level provenance spans (issue #1575 PR 2).
+          ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+          ...(options.provenance ? { provenance: options.provenance } : {}),
+        });
         const promotedId = sharedPromotion.id;
         // #1645: if the shared namespace's own tombstone blocked this promotion,
         // leave the row pending_review but do NOT supersede active shared memories.
@@ -2158,34 +2166,36 @@ export class ExtractionPersistCoordinator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          const parentWrite = await targetStorage.writeMemory(
-            writeCategory,
-            citedChunkedContent,
+          const parentWriteEnvelope = composeMemoryEnvelope(
             {
+              content: citedChunkedContent,
+              category: writeCategory,
               confidence: fact.confidence,
               tags: [...fact.tags, "chunked"],
               entityRef: fact.entityRef,
-              source: extractionWriteSource,
-              ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
-              importance,
-              supersedes,
-              links: links.length > 0 ? links : undefined,
-              intentGoal: inferredIntent?.goal,
-              intentActionType: inferredIntent?.actionType,
-              intentEntityTypes: inferredIntent?.entityTypes,
-              memoryKind,
               structuredAttributes: fact.structuredAttributes,
               validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
-              ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
-              contentHashSource: rawChunkedContent,
-              // Faithfulness gate (issue #1576).
-              ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
-              ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
-              // Claim-level provenance spans (issue #1575 PR 2).
-              ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
-              ...(fact.provenance ? { provenance: fact.provenance } : {}),
+              ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
             },
+            { source: extractionWriteSource },
           );
+          const parentWrite = await targetStorage.writeSealedMemory(parentWriteEnvelope, {
+            importance,
+            supersedes,
+            links: links.length > 0 ? links : undefined,
+            intentGoal: inferredIntent?.goal,
+            intentActionType: inferredIntent?.actionType,
+            intentEntityTypes: inferredIntent?.entityTypes,
+            memoryKind,
+            ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
+            contentHashSource: rawChunkedContent,
+            // Faithfulness gate (issue #1576).
+            ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+            ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+            // Claim-level provenance spans (issue #1575 PR 2).
+            ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+            ...(fact.provenance ? { provenance: fact.provenance } : {}),
+          });
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
           // (chunks, supersession, shared promotion, graph/artifact) like #1576.
@@ -2511,39 +2521,41 @@ export class ExtractionPersistCoordinator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      const factWrite = await targetStorage.writeMemory(
-        writeCategory,
-        citedFactContent,
+      const factWriteEnvelope = composeMemoryEnvelope(
         {
+          content: citedFactContent,
+          category: writeCategory,
           confidence: fact.confidence,
           tags: fact.tags,
           entityRef:
             typeof (fact as any).entityRef === "string"
               ? (fact as any).entityRef
               : undefined,
-          source: extractionWriteSource,
-          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
-          importance,
-          supersedes,
-          links: links.length > 0 ? links : undefined,
-          intentGoal: inferredIntent?.goal,
-          intentActionType: inferredIntent?.actionType,
-          intentEntityTypes: inferredIntent?.entityTypes,
-          memoryKind,
           structuredAttributes: fact.structuredAttributes,
           validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
-          ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
-          contentHashSource: writeCategory === "fact" ? fact.content : undefined,
-          // Faithfulness gate (issue #1576).
-          ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
-          ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
-          // Claim-level provenance spans (issue #1575 PR 2). Carry verified
-          // sources + the coarse strength tag from the extraction validator
-          // through to frontmatter so they survive end-to-end.
-          ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
-          ...(fact.provenance ? { provenance: fact.provenance } : {}),
+          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
         },
+        { source: extractionWriteSource },
       );
+      const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
+        importance,
+        supersedes,
+        links: links.length > 0 ? links : undefined,
+        intentGoal: inferredIntent?.goal,
+        intentActionType: inferredIntent?.actionType,
+        intentEntityTypes: inferredIntent?.entityTypes,
+        memoryKind,
+        ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
+        contentHashSource: writeCategory === "fact" ? fact.content : undefined,
+        // Faithfulness gate (issue #1576).
+        ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+        ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+        // Claim-level provenance spans (issue #1575 PR 2). Carry verified
+        // sources + the coarse strength tag from the extraction validator
+        // through to frontmatter so they survive end-to-end.
+        ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+        ...(fact.provenance ? { provenance: fact.provenance } : {}),
+      });
       const memoryId = factWrite.id;
       // #1645: surface the tombstone block; gate active post-write paths like #1576
       // so a blocked fact creates no active shared copy / supersession / graph entry.

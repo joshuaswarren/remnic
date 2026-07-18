@@ -1,3 +1,4 @@
+import { composeMemoryEnvelope } from "./write-envelope.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
@@ -442,14 +443,21 @@ export async function persistExplicitCapture(
   // #1645 (review thread yG-): surface the tombstone block so callers
   // (memory_store tool, access-service HTTP/MCP) can report the capture as
   // queued for review instead of a successfully stored active memory.
-  const { id, tombstoneBlocked } = await storage.writeMemory(candidate.category, candidate.content, {
-    confidence: candidate.confidence,
-    tags: candidate.tags,
-    entityRef: candidate.entityRef,
-    expiresAt: candidate.expiresAt,
-    source: source === "inline" ? "explicit-inline" : "explicit",
-    ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
-  });
+  // Sealed-envelope write (issue #1989 PR2).
+  const captureEnvelope = composeMemoryEnvelope(
+    {
+      content: candidate.content,
+      category: candidate.category,
+      confidence: candidate.confidence,
+      tags: candidate.tags,
+      ...(candidate.entityRef ? { entityRef: candidate.entityRef } : {}),
+      ...(candidate.expiresAt ? { ttl: candidate.expiresAt } : {}),
+      ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
+      ...(candidate.sourceReason ? { sourceReason: candidate.sourceReason } : {}),
+    },
+    { source: source === "inline" ? "explicit-inline" : "explicit" },
+  );
+  const { id, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
   // post-write hook records the namespace touch automatically.
 
@@ -547,13 +555,18 @@ export async function queueExplicitCaptureForReview(
     : "fact";
   const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
-  const { id: id } = await storage.writeMemory(reviewCategory, content, {
-    confidence: 0.2,
-    tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
-    entityRef: sanitizeReviewMetadata(input.entityRef),
-    source: source === "inline" ? "explicit-inline-review" : "explicit-review",
-    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
-  });
+  const reviewEnvelope = composeMemoryEnvelope(
+    {
+      content,
+      category: reviewCategory,
+      confidence: 0.2,
+      tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
+      ...(sanitizeReviewMetadata(input.entityRef) ? { entityRef: sanitizeReviewMetadata(input.entityRef) } : {}),
+      ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
+    },
+    { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
+  );
+  const { id: id } = await storage.writeSealedMemory(reviewEnvelope);
   try {
     const created = await storage.getMemoryById(id);
     if (created) {
