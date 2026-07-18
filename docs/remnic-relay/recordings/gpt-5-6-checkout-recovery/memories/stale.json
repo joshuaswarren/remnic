@@ -1,0 +1,7 @@
+{
+  "memoryId": "decision-1784334962608-vhi3",
+  "decisionId": "decision-new-token-every-request",
+  "status": "superseded",
+  "statement": "Mint a new checkout token for every request and every retry.",
+  "synthetic": true
+}

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-07-18T00:36:02.556Z",
+  "status": "passed",
+  "model": "gpt-5.6-terra",
+  "reasoningEffort": "medium",
+  "modelCatalogVerified": true,
+  "maxLiveCalls": 4,
+  "accountCreditCapUnits": 2473,
+  "quarantinedUncertainUnits": 300,
+  "quarantinedLedgerSha256": "2c5436ca2724170434782ae5755c731f4f22fca80953312a382b0f5b8318f929",
+  "budgetUnits": 2173,
+  "reserveUnits": 473,
+  "plannedSpendCeilingUnits": 1700,
+  "worstCasePlannedSpendUnits": 1200,
+  "ledgerSpentUnits": 11.329925,
+  "ledgerRemainingPlannedUnits": 1688.670075,
+  "codexVersion": "codex-cli 0.144.4",
+  "authMethod": "ChatGPT",
+  "codexToolSurface": {
+    "accountLinkedAppsDisabled": true,
+    "mcpServers": [
+      "relay"
+    ],
+    "mcpTools": [
+      "relay.remnic.recall"
+    ]
+  },
+  "fixtureManifestSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e",
+  "isolation": {
+    "userNamespace": true,
+    "mountNamespace": true,
+    "chroot": true
+  },
+  "remnic": {
+    "loopbackOnly": true,
+    "namespace": "relay-build-week",
+    "advertisedTools": [
+      "remnic.recall"
+    ],
+    "isolatedMemoryDir": true
+  },
+  "productionDataRead": false,
+  "solAllowed": false
+}

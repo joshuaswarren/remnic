@@ -1,0 +1,32 @@
+{
+  "summary": {
+    "role": "stale-builder",
+    "model": "gpt-5.6-terra",
+    "reasoningEffort": "medium",
+    "threadId": "019f72a7-0736-7280-96df-39829e987910",
+    "promptSha256": "ea9dd89593c31c5ef256f966dbea67716d45d41fddf8f4b431f254d1662ac20d",
+    "outputSha256": "8f2bc2e92ff1f60260f2e5c9aa99ce11a390235ddbaff1dcbdd8f232225da04b",
+    "exitCode": 0,
+    "durationMs": 27156,
+    "usage": {
+      "inputTokens": 83470,
+      "cachedInputTokens": 78848,
+      "outputTokens": 1018,
+      "reasoningOutputTokens": 198
+    },
+    "recallToolCalls": 1,
+    "status": "completed"
+  },
+  "output": {
+    "summary": "Implemented checkout token selection.",
+    "recall_memory_id": "decision-1784334962608-vhi3",
+    "recall_provenance": "Remnic recall from namespace relay-build-week returned the active shared checkout-token lifecycle decision.",
+    "decision_applied": "Mint a new checkout token for every request and every retry.",
+    "files_changed": [
+      "src/token-policy.mjs"
+    ],
+    "tests_run": [
+      "npm test"
+    ]
+  }
+}

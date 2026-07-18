@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "ledgerSha256": "d62e6cd95fa7d9970cc552b44eb6ecc5594d30994cf32c07c77af7332b018230",
+  "budgetUnits": 2173,
+  "reserveUnits": 473,
+  "plannedSpendCeilingUnits": 1700,
+  "totalSpentUnits": 15.8101125,
+  "remainingBudgetUnits": 2157.1898875,
+  "blocked": false,
+  "run": {
+    "inputTokens": 235351,
+    "cachedInputTokens": 203520,
+    "outputTokens": 3250,
+    "reasoningOutputTokens": 746,
+    "calls": 4,
+    "budgetUnits": 4.4801875,
+    "accountBalanceResolutionCount": 0,
+    "conservativeResolutionChargeUnits": 0,
+    "models": [
+      {
+        "inputTokens": 235351,
+        "cachedInputTokens": 203520,
+        "outputTokens": 3250,
+        "reasoningOutputTokens": 746,
+        "model": "gpt-5.6-terra",
+        "calls": 4,
+        "budgetUnits": 4.4801875
+      }
+    ],
+    "id": "relay-build-week-1784334960025-a8ac29fb"
+  }
+}

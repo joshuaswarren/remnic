@@ -6,7 +6,10 @@ import vm from "node:vm";
 
 import { RelayMissionEventInputSchema } from "@remnic/core";
 
-import { createRelayUiReplay } from "../scripts/generate-relay-ui-replay.js";
+import { createRelayUiReplayFromRecording } from "../scripts/generate-relay-ui-replay.js";
+
+const repoRoot = path.resolve(import.meta.dirname, "..");
+const recordingDir = path.join(repoRoot, "docs", "remnic-relay", "recordings", "gpt-5-6-checkout-recovery");
 
 interface RelayBrowserModel {
   agentCards(snapshot: unknown): Array<{
@@ -61,14 +64,16 @@ async function loadModel(): Promise<RelayBrowserModel> {
   return vm.runInContext("RelayModel", context) as RelayBrowserModel;
 }
 
-async function committedReplay(): Promise<ReturnType<typeof createRelayUiReplay>> {
+async function committedReplay(): Promise<Awaited<ReturnType<typeof createRelayUiReplayFromRecording>>> {
   const raw = await readFile(path.resolve("admin-console/public/relay/replay.json"), "utf8");
-  return JSON.parse(raw) as ReturnType<typeof createRelayUiReplay>;
+  return JSON.parse(raw) as Awaited<ReturnType<typeof createRelayUiReplayFromRecording>>;
 }
 
 test("committed Relay replay is generated exactly from the authoritative core reducer", async () => {
   const committed = await committedReplay();
-  assert.equal(JSON.stringify(committed), JSON.stringify(createRelayUiReplay()));
+  const generated = await createRelayUiReplayFromRecording(recordingDir, repoRoot);
+  assert.equal(JSON.stringify(committed), JSON.stringify(generated));
+  assert.match(committed.source, /^integrity-checked Remnic Relay recording sha256:[a-f0-9]{64}$/);
   assert.equal(committed.initialFrameId, "conflict");
   assert.equal(committed.frames.length, 12);
   assert.deepEqual(
@@ -89,8 +94,8 @@ test("browser model derives Scout, Builder, and late cold-start Reviewer from sn
   assert.deepEqual(
     Array.from(conflictCards, (card) => `${card.slot}:${card.label}:${card.decision?.decisionId ?? "waiting"}`),
     [
-      "scout:Nova:decision-refresh-after-expiry",
-      "builder:Atlas:decision-new-token-every-request",
+      "scout:Scout:decision-refresh-after-expiry",
+      "builder:Builder A:decision-new-token-every-request",
       "reviewer:Reviewer:waiting",
     ]
   );
@@ -173,11 +178,11 @@ test("approval consent is derived from the exact selected correction", async () 
   assert.equal(view.correctionId, "correction-token-refresh");
   assert.equal(view.title, "Approve correction-token-refresh?");
   assert.deepEqual(Array.from(view.retirementStatements), [
-    "decision-new-token-every-request — Mint a new checkout token for every request and retry.",
+    "decision-new-token-every-request — Mint a new checkout token for every request and every retry.",
   ]);
   assert.equal(
     view.replacementStatement,
-    "decision-refresh-after-expiry — Reuse the checkout-session token and refresh it only after expiry."
+    "decision-refresh-after-expiry — Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry."
   );
   assert.equal(view.complete, true);
 
@@ -259,7 +264,7 @@ test("browser model preserves the causal event order through recovered receipt",
     propagated: true,
     contractPassed: true,
     missingEvidence: [],
-    summary: "One approved correction reached a cold agent and changed the observable outcome.",
+    summary: "One human-approved correction reached a fresh GPT-5.6 thread and changed a hidden contract from fail to pass.",
   });
   const lineage = model.lineage(finalSnapshot);
   assert.equal(lineage.stale?.status, "superseded");

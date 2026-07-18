@@ -1,0 +1,534 @@
+[
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-14ffc015-8bf1-47c4-874a-c53e07c3b493",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:02.617Z",
+    "occurredAt": "2026-07-18T00:36:02.614Z",
+    "idempotencyKey": "live-001",
+    "payload": {
+      "kind": "mission_started",
+      "title": "The checkout token split",
+      "objective": "Resolve a stale shared decision and prove a transcript-free cold Codex agent recovers the outcome.",
+      "runMode": "live",
+      "evidence": [
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-0c3ce675-1ca6-4c59-84a0-dbf6ccae2a7a",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:02.624Z",
+    "occurredAt": "2026-07-18T00:36:02.620Z",
+    "idempotencyKey": "live-002",
+    "payload": {
+      "kind": "agent_status",
+      "agentId": "agent-scout",
+      "sessionId": "session-scout",
+      "label": "Scout",
+      "role": "Authoritative-source verification",
+      "status": "working",
+      "evidence": [
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-5a721361-d6b4-4caf-b039-af6bd134cff7",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:02.627Z",
+    "occurredAt": "2026-07-18T00:36:02.625Z",
+    "idempotencyKey": "live-003",
+    "payload": {
+      "kind": "agent_status",
+      "agentId": "agent-stale-builder",
+      "sessionId": "session-stale-builder",
+      "label": "Builder A",
+      "role": "Stale-memory implementation",
+      "status": "working",
+      "evidence": [
+        {
+          "kind": "memory",
+          "id": "decision-1784334962608-vhi3",
+          "label": "Active stale Remnic decision available to Builder A",
+          "locator": "recording://memories/decision-1784334962608-vhi3.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-b0e562f0-acc2-4e5b-9e4c-4a23cad14929",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:16.280Z",
+    "occurredAt": "2026-07-18T00:36:16.278Z",
+    "idempotencyKey": "live-004",
+    "payload": {
+      "kind": "agent_output",
+      "agentId": "agent-scout",
+      "sessionId": "session-scout",
+      "outputId": "output-scout",
+      "summary": "The authoritative contract requires session-token reuse and one replacement after expiry.",
+      "evidence": [
+        {
+          "kind": "agent_output",
+          "id": "output-scout",
+          "label": "scout GPT-5.6 one-shot output",
+          "locator": "recording://calls/scout.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-70420bd5-1018-4844-96a8-5183aabeaf81",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:16.284Z",
+    "occurredAt": "2026-07-18T00:36:16.282Z",
+    "idempotencyKey": "live-005",
+    "payload": {
+      "kind": "belief_observed",
+      "agentId": "agent-scout",
+      "sessionId": "session-scout",
+      "beliefId": "belief-refresh-after-expiry",
+      "decisionId": "decision-refresh-after-expiry",
+      "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
+      "confidence": 1,
+      "evidence": [
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-scout",
+          "label": "scout GPT-5.6 one-shot output",
+          "locator": "recording://calls/scout.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-1418b955-053b-4633-846a-c00be8100feb",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:43.541Z",
+    "occurredAt": "2026-07-18T00:36:43.539Z",
+    "idempotencyKey": "live-006",
+    "payload": {
+      "kind": "agent_output",
+      "agentId": "agent-stale-builder",
+      "sessionId": "session-stale-builder",
+      "outputId": "output-stale-builder",
+      "summary": "Builder A followed the active stale memory and rotated the token on every retry.",
+      "evidence": [
+        {
+          "kind": "agent_output",
+          "id": "output-stale-builder",
+          "label": "stale-builder GPT-5.6 one-shot output",
+          "locator": "recording://calls/stale-builder.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-36beaed6-cab9-40cd-91cf-3939b34cdb74",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:43.547Z",
+    "occurredAt": "2026-07-18T00:36:43.544Z",
+    "idempotencyKey": "live-007",
+    "payload": {
+      "kind": "belief_observed",
+      "agentId": "agent-stale-builder",
+      "sessionId": "session-stale-builder",
+      "beliefId": "belief-new-token-every-request",
+      "decisionId": "decision-new-token-every-request",
+      "statement": "Mint a new checkout token for every request and every retry.",
+      "confidence": 0.96,
+      "evidence": [
+        {
+          "kind": "memory",
+          "id": "decision-1784334962608-vhi3",
+          "label": "Active stale Remnic decision recalled at action time",
+          "locator": "recording://memories/decision-1784334962608-vhi3.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-stale-builder",
+          "label": "stale-builder GPT-5.6 one-shot output",
+          "locator": "recording://calls/stale-builder.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-89c72c37-363b-4763-acab-8d1a8c61a2df",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:43.550Z",
+    "occurredAt": "2026-07-18T00:36:43.548Z",
+    "idempotencyKey": "live-008",
+    "payload": {
+      "kind": "conflict_detected",
+      "conflictId": "conflict-token-lifecycle",
+      "decisionIds": [
+        "decision-refresh-after-expiry",
+        "decision-new-token-every-request"
+      ],
+      "agentIds": [
+        "agent-scout",
+        "agent-stale-builder"
+      ],
+      "summary": "Source truth and active shared memory disagree on whether checkout retries reuse or rotate the token.",
+      "evidence": [
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-scout",
+          "label": "scout GPT-5.6 one-shot output",
+          "locator": "recording://calls/scout.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-stale-builder",
+          "label": "stale-builder GPT-5.6 one-shot output",
+          "locator": "recording://calls/stale-builder.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-a17a4ec8-b64b-4b6f-89f3-2575839fcb31",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:43.646Z",
+    "occurredAt": "2026-07-18T00:36:43.643Z",
+    "idempotencyKey": "live-009",
+    "payload": {
+      "kind": "test_result",
+      "testId": "test-before-correction",
+      "decisionId": "decision-new-token-every-request",
+      "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+      "status": "failed",
+      "summary": "The stale decision rotated the token on an ordinary retry, violating session idempotency.",
+      "durationMs": 92,
+      "evidence": [
+        {
+          "kind": "test",
+          "id": "test-checkout-hidden-contract",
+          "label": "Hidden checkout token contract",
+          "locator": "fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-stale-builder",
+          "label": "stale-builder GPT-5.6 one-shot output",
+          "locator": "recording://calls/stale-builder.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-3954beb9-9ffc-442e-b17d-afb9628bcd6c",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:56.177Z",
+    "occurredAt": "2026-07-18T00:36:56.175Z",
+    "idempotencyKey": "live-010",
+    "payload": {
+      "kind": "correction_proposed",
+      "correctionId": "correction-token-refresh",
+      "conflictId": "conflict-token-lifecycle",
+      "proposedDecisionId": "decision-refresh-after-expiry",
+      "supersedesDecisionIds": [
+        "decision-new-token-every-request"
+      ],
+      "statement": "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
+      "rationale": "`CONTRACT.md` declares this accepted, authoritative lifecycle and explicitly supersedes per-request token rotation. The executable reference returns `currentToken` whenever it exists and `tokenExpired !== true`, minting only otherwise; its contract tests verify both retry reuse and one replacement mint after expiry.",
+      "proposedBy": "agent-resolver",
+      "evidence": [
+        {
+          "kind": "source",
+          "id": "source-checkout-contract",
+          "label": "Authoritative checkout token contract",
+          "locator": "fixtures/remnic-relay/upstream/CONTRACT.md",
+          "capture": "at_action"
+        },
+        {
+          "kind": "test",
+          "id": "test-checkout-hidden-contract",
+          "label": "Hidden checkout token contract",
+          "locator": "fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-resolver",
+          "label": "resolver GPT-5.6 one-shot output",
+          "locator": "recording://calls/resolver.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-5df37456-9d33-4114-94a4-93e2c275ef1c",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:56.180Z",
+    "occurredAt": "2026-07-18T00:36:56.178Z",
+    "idempotencyKey": "live-011",
+    "payload": {
+      "kind": "correction_approved",
+      "correctionId": "correction-token-refresh",
+      "approvedBy": {
+        "kind": "human",
+        "id": "relay-build-week-operator",
+        "label": "Build Week operator"
+      },
+      "note": "Explicit CLI approval accepted the source-grounded correction and authorized supersession.",
+      "evidence": [
+        {
+          "kind": "approval",
+          "id": "approval-relay-build-week-operator",
+          "label": "Explicit human CLI approval gate",
+          "locator": "recording://approval.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-f92f23a8-0e1a-4990-9fa7-ba545a8f81bb",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:36:56.235Z",
+    "occurredAt": "2026-07-18T00:36:56.233Z",
+    "idempotencyKey": "live-012",
+    "payload": {
+      "kind": "decision_superseded",
+      "decisionId": "decision-new-token-every-request",
+      "replacementDecisionId": "decision-refresh-after-expiry",
+      "correctionId": "correction-token-refresh",
+      "evidence": [
+        {
+          "kind": "correction",
+          "id": "correction-token-refresh",
+          "label": "Applied Remnic Correction Contract supersession",
+          "locator": "recording://correction.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-209a852f-0355-4c62-be88-d6b0e70c4c08",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:37:29.739Z",
+    "occurredAt": "2026-07-18T00:37:29.736Z",
+    "idempotencyKey": "live-013",
+    "payload": {
+      "kind": "recall_observed",
+      "agentId": "agent-cold-builder",
+      "sessionId": "session-019f72a7-a314-7e41-b283-538ef0b11932",
+      "recallReceiptId": "recall-cold-builder",
+      "decisionId": "decision-refresh-after-expiry",
+      "query": "checkout token retry policy decision",
+      "capturedAtAction": true,
+      "evidence": [
+        {
+          "kind": "recall_audit",
+          "id": "recall-cold-builder",
+          "label": "Transcript-free cold Builder recall",
+          "locator": "recording://calls/cold-builder.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "memory",
+          "id": "decision-1784335016203-pa1f",
+          "label": "Active replacement Remnic decision",
+          "locator": "recording://memories/decision-1784335016203-pa1f.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-a5259204-1a6b-409f-8129-5d6e717c9940",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:37:29.744Z",
+    "occurredAt": "2026-07-18T00:37:29.742Z",
+    "idempotencyKey": "live-014",
+    "payload": {
+      "kind": "propagation_verified",
+      "agentId": "agent-cold-builder",
+      "sessionId": "session-019f72a7-a314-7e41-b283-538ef0b11932",
+      "correctionId": "correction-token-refresh",
+      "decisionId": "decision-refresh-after-expiry",
+      "recallReceiptId": "recall-cold-builder",
+      "staleDecisionAbsent": true,
+      "evidence": [
+        {
+          "kind": "recall_audit",
+          "id": "recall-cold-builder",
+          "label": "Transcript-free cold Builder recall",
+          "locator": "recording://calls/cold-builder.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "correction",
+          "id": "correction-token-refresh",
+          "label": "Applied Remnic Correction Contract supersession",
+          "locator": "recording://correction.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-083c8935-df09-4904-8bae-00724846469f",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:37:29.834Z",
+    "occurredAt": "2026-07-18T00:37:29.830Z",
+    "idempotencyKey": "live-015",
+    "payload": {
+      "kind": "test_result",
+      "testId": "test-after-correction",
+      "decisionId": "decision-refresh-after-expiry",
+      "correctionId": "correction-token-refresh",
+      "command": "node --test fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+      "status": "passed",
+      "summary": "The cold agent reused the valid session token and minted exactly one replacement after expiry.",
+      "durationMs": 85,
+      "evidence": [
+        {
+          "kind": "test",
+          "id": "test-checkout-hidden-contract",
+          "label": "Hidden checkout token contract",
+          "locator": "fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+          "capture": "at_action"
+        },
+        {
+          "kind": "agent_output",
+          "id": "output-cold-builder",
+          "label": "cold-builder GPT-5.6 one-shot output",
+          "locator": "recording://calls/cold-builder.json",
+          "capture": "at_action"
+        },
+        {
+          "kind": "correction",
+          "id": "correction-token-refresh",
+          "label": "Applied Remnic Correction Contract supersession",
+          "locator": "recording://correction.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1",
+    "eventId": "relay-2b7a0506-b3af-48c6-ae9c-679d229ad49a",
+    "missionId": "checkout-token-recovery",
+    "namespace": "relay-build-week",
+    "authenticatedPrincipal": "relay-build-week-operator",
+    "recordedAt": "2026-07-18T00:37:29.840Z",
+    "occurredAt": "2026-07-18T00:37:29.836Z",
+    "idempotencyKey": "live-016",
+    "payload": {
+      "kind": "mission_completed",
+      "outcome": "recovered",
+      "summary": "One human-approved correction reached a fresh GPT-5.6 thread and changed a hidden contract from fail to pass.",
+      "evidence": [
+        {
+          "kind": "test",
+          "id": "test-checkout-hidden-contract",
+          "label": "Hidden checkout token contract",
+          "locator": "fixtures/remnic-relay/hidden/token-policy.hidden.test.mjs",
+          "capture": "at_action"
+        },
+        {
+          "kind": "approval",
+          "id": "approval-relay-build-week-operator",
+          "label": "Explicit human CLI approval gate",
+          "locator": "recording://approval.json",
+          "capture": "at_action"
+        }
+      ]
+    }
+  }
+]

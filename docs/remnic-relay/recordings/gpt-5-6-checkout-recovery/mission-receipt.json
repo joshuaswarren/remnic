@@ -1,0 +1,14 @@
+{
+  "missionReceiptSha256": "9b874a10e41c101c76b37c37d4f275492e0685b26899a83d3385d7737ed94e62",
+  "complete": true,
+  "missingEvidence": [],
+  "coldStartVerified": true,
+  "passingOutcomeVerified": true,
+  "activeDecisionIds": [
+    "decision-refresh-after-expiry"
+  ],
+  "supersededDecisionIds": [
+    "decision-new-token-every-request"
+  ],
+  "outcome": "recovered"
+}

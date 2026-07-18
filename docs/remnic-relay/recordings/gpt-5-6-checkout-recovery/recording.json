@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-18T00:37:29.849Z",
+  "missionId": "checkout-token-recovery",
+  "namespace": "relay-build-week",
+  "runMode": "live",
+  "model": "gpt-5.6-terra",
+  "reasoningEffort": "medium",
+  "accountCreditCapUnits": 2473,
+  "quarantinedUncertainUnits": 300,
+  "quarantinedLedgerSha256": "2c5436ca2724170434782ae5755c731f4f22fca80953312a382b0f5b8318f929",
+  "effectiveBudgetUnits": 2173,
+  "fixtureManifestSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e",
+  "missionReceiptSha256": "9b874a10e41c101c76b37c37d4f275492e0685b26899a83d3385d7737ed94e62",
+  "callOrder": [
+    "scout",
+    "stale-builder",
+    "resolver",
+    "cold-builder"
+  ],
+  "threadIds": [
+    "019f72a6-d1a0-79f1-a89b-adb81021064f",
+    "019f72a7-0736-7280-96df-39829e987910",
+    "019f72a7-7293-7e40-8b9d-02dd313980e0",
+    "019f72a7-a314-7e41-b283-538ef0b11932"
+  ],
+  "testTransition": [
+    "failed",
+    "passed"
+  ],
+  "creditUnitsSpentByRun": 4.4801875,
+  "evidence": {
+    "syntheticFixturesOnly": true,
+    "productionDataRead": false,
+    "transcriptsShared": false,
+    "promptsRecorded": false,
+    "rawJsonlRecorded": false,
+    "integrityManifest": true
+  }
+}
