@@ -9,28 +9,30 @@ import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).
  * Returns the user-facing result message.
  */
-const SAFE_MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
 export async function executeMemoryPromote(
   orchestrator: Orchestrator,
   params: { memoryId: string; fromNamespace?: string; toNamespace?: string; note?: string },
 ): Promise<string> {
   const { memoryId, fromNamespace, toNamespace, note } = params;
-  // Reject invalid input instead of reinterpreting it (#2022 review): a
-  // blank or malformed namespace must not silently select the default and
-  // read/write somewhere the caller never named. Defaults apply only when
-  // the optional fields are truly ABSENT.
-  if (typeof memoryId !== "string" || !SAFE_MEMORY_ID_RE.test(memoryId)) {
-    return `Invalid memoryId: ${JSON.stringify(memoryId)} — expected a filename-safe id like fact-123.`;
+  // Reject invalid input instead of reinterpreting it: a blank namespace or
+  // non-string memory reference must not silently select a different target.
+  // `null` is treated as absent because optional tool parameters historically
+  // used it interchangeably with omission.
+  if (typeof memoryId !== "string" || memoryId.length === 0) {
+    return `Invalid memoryId: ${JSON.stringify(memoryId)} — expected a non-empty memory ID.`;
   }
   // Namespace validation reuses the SAME contract as core routing
-  // (isSafeRouteNamespace), so every namespace core accepts is accepted
-  // here too — `_team`, `.team`, `-team` are valid (round-3 finding).
+  // (isSafeRouteNamespace), so every namespace core accepts is accepted here.
   for (const [name, value] of [
     ["fromNamespace", fromNamespace],
     ["toNamespace", toNamespace],
   ] as const) {
-    if (value !== undefined && !isSafeRouteNamespace(value)) {
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== "string" || !isSafeRouteNamespace(value))
+    ) {
       return `Invalid ${name}: ${JSON.stringify(value)} — expected a path-safe namespace name.`;
     }
   }
