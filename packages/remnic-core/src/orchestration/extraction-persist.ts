@@ -110,7 +110,10 @@ import type {
   ProvenanceSource,
   MemoryCategory,
 } from "../types.js";
-import { confidenceTier } from "../types.js";
+import {
+  profileAutoPromotionAllows,
+  shouldPromoteToShared,
+} from "./extraction-persist-promotion.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   buildMemoryPathById,
@@ -366,12 +369,6 @@ export class ExtractionPersistCoordinator {
         events: [...events],
       });
     };
-    const confidenceTierOrder = [
-      "explicit",
-      "implied",
-      "inferred",
-      "speculative",
-    ] as const;
     const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
       (layer) =>
         layer.id === "serverShared" &&
@@ -395,59 +392,6 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
-    const profileAutoPromotionAllows = (
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (!scopeProfileWritePlan) return false;
-      const actualTier = confidenceTier(confidence);
-      const actualRank = confidenceTierOrder.indexOf(actualTier);
-      if (actualRank === -1) return false;
-      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
-      if (!autoPromote.enabled) return false;
-      if (!autoPromote.categories.includes(category as any)) return false;
-      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
-      return minimumRank !== -1 && actualRank <= minimumRank;
-    };
-    const sharedAutoPromotionAllows = (
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (!scopeProfileWritePlan) {
-        const actualTier = confidenceTier(confidence);
-        const actualRank = confidenceTierOrder.indexOf(actualTier);
-        if (actualRank === -1) return false;
-        if (!resolveRecallEnhancementCapabilities(this.deps.config).autoPromoteToShared) return false;
-        if (!this.deps.config.autoPromoteToSharedCategories.includes(category as any))
-          return false;
-        const minimumRank = confidenceTierOrder.indexOf(
-          this.deps.config.autoPromoteMinConfidenceTier,
-        );
-        return minimumRank !== -1 && actualRank <= minimumRank;
-      }
-      return (
-        scopeProfileWritePlan.profile.autoPromote.targets.includes("serverShared") &&
-        profileAutoPromotionAllows(category, confidence)
-      );
-    };
-    const shouldPromoteToShared = (
-      targetStorage: StorageManager,
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (
-        !resolveNamespaceCapabilities(this.deps.config).namespaces ||
-        !profileAllowsSharedWrites ||
-        !sharedAutoPromotionAllows(category, confidence)
-      )
-        return false;
-      if (
-        this.deps.storageDirNamespace(targetStorage.dir) ===
-        this.deps.config.sharedNamespace
-      )
-        return false;
-      return true;
-    };
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -474,7 +418,7 @@ export class ExtractionPersistCoordinator {
     }): Promise<void> => {
       if (
         !scopeProfileWritePlan ||
-        !profileAutoPromotionAllows(options.category, options.confidence)
+        !profileAutoPromotionAllows(scopeProfileWritePlan, options.category, options.confidence)
       )
         return;
       const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
@@ -668,6 +612,10 @@ export class ExtractionPersistCoordinator {
       await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(
+          this.deps.config,
+          scopeProfileWritePlan,
+          profileAllowsSharedWrites,
+          (dir) => this.deps.storageDirNamespace(dir),
           options.sourceStorage,
           options.category,
           options.confidence,

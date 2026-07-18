@@ -127,6 +127,10 @@ import { SessionContextCoordinator } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
 import {
+  computeSemanticDedupScope,
+  qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix,
+} from "./orchestration/orchestrator-namespace-scope.js";
+import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
@@ -437,7 +441,6 @@ import {
   type NamespaceMaintenanceHealthSummary,
 } from "./maintenance/namespace-maintenance-fanout.js";
 import {
-  namespaceIdentityFromToken,
   namespaceIdentityToken,
   normalizeNamespaceIdentity,
 } from "./namespaces/identity.js";
@@ -1561,7 +1564,7 @@ export class Orchestrator {
       getConfig: () => this.config,
       storageFor: (namespace) => this.storageRouter.storageFor(namespace),
       storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
-      qmdCollectionNamespaceFromPrefix: (prefix) => this.qmdCollectionNamespaceFromPrefix(prefix),
+      qmdCollectionNamespaceFromPrefix: (prefix) => computeQmdCollectionNamespaceFromPrefix(prefix, this.config),
       namespaceFromPath: (p) => this.namespaceFromPath(p),
     });
 
@@ -3400,33 +3403,6 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Apply MMR over the pre-truncation recall candidate pool and then slice
-   * the result to `limit`. This is the single place in the pipeline where
-   * MMR runs, and it must be called *before* callers throw away candidates
-   * that would otherwise sit below the final cutoff. Running MMR post-slice
-   * is a no-op in the cases we care about — diverse candidates just below
-   * the cutoff are already gone and can never be promoted.
-   *
-   * Callers must pass the full candidate pool (post-rerank, pre-slice).
-   */
-  private qmdCollectionNamespaceFromPrefix(collectionPrefix: string): string | null {
-    const baseCollection = this.config.qmdCollection;
-    if (collectionPrefix === baseCollection) return this.config.defaultNamespace;
-    const namespaceSuffix = collectionPrefix.startsWith(`${baseCollection}--`)
-      ? collectionPrefix.slice(baseCollection.length + 2)
-      : "";
-    if (!namespaceSuffix) return null;
-
-    const decoded = namespaceIdentityFromToken(namespaceSuffix);
-    if (decoded !== null) return decoded || this.config.defaultNamespace;
-    if (namespaceSuffix.startsWith("ns--")) {
-      const legacyNamespace = namespaceSuffix.slice("ns--".length).trim();
-      return legacyNamespace || null;
-    }
-    return null;
-  }
-
   // Issue #1526 seam 11: QMD result-resolution methods moved to QmdResultResolver.
   // Thin delegation keeps the private API stable for callers + tests.
   private async readQmdResultMemory(
@@ -3571,34 +3547,7 @@ export class Orchestrator {
     pathPrefix?: string;
     pathExcludePrefixes?: readonly string[];
   } {
-    if (!resolveNamespaceCapabilities(this.config).namespaces) return {};
-    const memoryDir = path.resolve(this.config.memoryDir);
-    const storageDir = path.resolve(targetStorage.dir);
-    if (storageDir === memoryDir) {
-      // Default namespace at legacy root. Include everything that isn't
-      // under `namespaces/*` (those belong to other namespaces).
-      return { pathExcludePrefixes: ["namespaces/"] };
-    }
-    let rel = path.relative(memoryDir, storageDir);
-    if (!rel || rel.startsWith("..")) {
-      // Round 12 fix (PR #399 thread PRRT_kwDORJXyws56U6Gj): when
-      // targetStorage.dir is outside memoryDir (custom namespace routing),
-      // toMemoryRelativePath() stores the absolute file path in the index
-      // rather than a memoryDir-relative path. Return the absolute storageDir
-      // as the pathPrefix so the search() filter still scopes the lookup to
-      // the correct tenant's files. Previously this returned {} (no scoping),
-      // which let high-similarity hits from other namespaces' absolute-path
-      // entries suppress writes in the target namespace — a cross-tenant
-      // dedup suppression path.
-      log.debug(
-        `semantic dedup: target storage dir ${storageDir} is outside memoryDir ${memoryDir}; scoping lookup to absolute path prefix`,
-      );
-      const absPrefix = storageDir.replace(/\\/g, "/");
-      return { pathPrefix: absPrefix.endsWith("/") ? absPrefix : `${absPrefix}/` };
-    }
-    rel = rel.replace(/\\/g, "/");
-    if (!rel.endsWith("/")) rel = `${rel}/`;
-    return { pathPrefix: rel };
+    return computeSemanticDedupScope(targetStorage, this.config);
   }
 
   private async searchEmbeddingFallback(
