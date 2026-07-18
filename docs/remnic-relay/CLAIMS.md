@@ -52,7 +52,7 @@ evaluate only the new Relay extension:
 | New: Relay evidence contract/API | Issue #1966, PR #1970, merge `98e83cc1` on 2026-07-17; versioned events, reducer, append-only store, receipt, access/HTTP surface. |
 | New: Mission Control | Issue #1967, PR #1972, merge `34f1f1bb` on 2026-07-17; dedicated conflict/lineage/approval/cold-start product surface and browser audit. |
 | New: isolated live mission | Issue #1968, PR #1999, merge `a236ad07` on 2026-07-18, with dated commits beginning `386aa5f3` on 2026-07-17; bounded Codex CLI runner, synthetic harness, isolation, live GPT-5.6 recording, replay binding. |
-| New: judge package | Issue #1969; dependency-free verifier/server, clean-room smoke, claims ledger, demo script, Devpost copy, and refreshed captures. Final PR/merge is added before submission. |
+| New: judge package | Issue #1969, PR #2012; dependency-free verifier/server, clean-room smoke, claims ledger, demo script, Devpost copy, and refreshed captures. The linked PR retains its current-head review and merge record. |
 
 The required Codex `/feedback` session ID is intentionally left to the user,
 who must select the real primary project thread before submitting. Dated Git

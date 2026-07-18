@@ -123,7 +123,8 @@ Issue [#1968](https://github.com/joshuaswarren/remnic/issues/1968), PR
 
 ### 4. Judge and submission package
 
-Issue [#1969](https://github.com/joshuaswarren/remnic/issues/1969).
+Issue [#1969](https://github.com/joshuaswarren/remnic/issues/1969), PR
+[#2012](https://github.com/joshuaswarren/remnic/pull/2012).
 
 - dependency-free semantic verifier and exact allow-list loopback server;
 - clean-room copy/run/fetch test with no `node_modules`;
@@ -133,7 +134,8 @@ Issue [#1969](https://github.com/joshuaswarren/remnic/issues/1969).
   sanitized captures; and
 - explicit preservation of the user's video, `/feedback`, and Devpost actions.
 
-The final #1969 PR and merge commit will be added here before submission.
+PR #2012 is the final scoped Relay change; its current-head reviews, checks,
+and merge record remain visible on GitHub.
 
 ## Sealed live mission evidence
 

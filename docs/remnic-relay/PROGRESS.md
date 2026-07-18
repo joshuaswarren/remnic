@@ -10,7 +10,7 @@ Last updated: 2026-07-18
 - [x] Phase 1: mission contract and receipt API (#1966, PR #1970).
 - [x] Phase 2: Mission Control UI (#1967, PR #1972).
 - [x] Phase 3: isolated Codex runner and replay (#1968, PR #1999).
-- [ ] Phase 4: hardening, evidence, and submission package (#1969).
+- [ ] Phase 4: hardening, evidence, and submission package (#1969, PR #2012).
 
 ## Phase 1 — merged
 
@@ -69,7 +69,8 @@ Last updated: 2026-07-18
 - [x] Judge guide, claim ledger, Devpost copy, and prior-vs-new provenance.
 - [x] Refresh and re-audit sanitized hero screenshots against the final package.
 - [ ] Full local gates and fresh-install/package checks.
-- [ ] One scoped #1969 PR, current-head PR loop, manual merge, and main check.
+- [x] One scoped #1969 PR opened (#2012).
+- [ ] Current-head PR loop, manual merge, and `origin/main` check.
 - [ ] Close child issues and epic after merged evidence is verified.
 
 ## Evidence discipline
