@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["replacement_decision", "rationale", "source_locators", "confidence"],
+  "properties": {
+    "replacement_decision": { "type": "string" },
+    "rationale": { "type": "string" },
+    "source_locators": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "confidence": { "type": "number" }
+  }
+}

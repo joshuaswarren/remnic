@@ -1028,6 +1028,14 @@ export interface PluginConfig {
    */
   recallMemoryWorthFilterEnabled: boolean;
   /**
+   * When false, the Trust/Memory-Worth recall stage skips its corpus-level
+   * fallback (a per-namespace `readAllMemories`-derived counter/signal map)
+   * and relies only on frontmatter already loaded on the hot recall path plus
+   * a bounded-parallel per-candidate direct read — fully O(candidates)
+   * (issue #1905). Default true keeps the corpus fallback reachable.
+   */
+  recallTrustStageCorpusFallbackEnabled: boolean;
+  /**
    * Serve `StorageManager.readAllMemories()` from a version-keyed in-process
    * cache of the full parsed corpus (issue #1902). Default true. When on, a
    * scan-once-then-serve fast path eliminates the repeated full-corpus disk

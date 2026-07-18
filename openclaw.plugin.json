@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.14",
+  "version": "9.7.15",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4338,6 +4338,11 @@
         "type": "boolean",
         "default": true,
         "description": "When true, recall multiplies candidate scores by the Memory Worth factor (mw_success / mw_fail counters, see issue #560). Memories with a history of failed sessions sink; neutral/uninstrumented memories are untouched. PR 5 bench: +0.60 precision@5 vs baseline on all 50 seeded cases. Operators can opt out with false."
+      },
+      "recallTrustStageCorpusFallbackEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), the Memory-Worth/TrustScore recall rerank stage probes a per-namespace corpus counter/signal map for candidates whose frontmatter was NOT already loaded on the hot path (cold-tier / embedding-fallback / archive rows). The map is version-keyed (invalidated on corpus mutation) and age-bounded for trust signals, so it hits in steady state without the old 30s-TTL permanent-miss. Set false to disable the corpus fallback entirely (only preloaded-candidate + direct-read paths run) — max performance when every candidate is hot, at the cost of neutral treatment for cold candidates."
       },
       "hotMemoriesCacheEnabled": {
         "type": "boolean",

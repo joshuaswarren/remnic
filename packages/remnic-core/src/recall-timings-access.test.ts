@@ -201,6 +201,30 @@ test("recall timing records expose only the fixed telemetry schema", () => {
   });
 });
 
+test("trustStage is allowlisted and its ms is parsed (issue #1905)", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-trust"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "10ms",
+    trustStage: "3ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+  });
+  recordRecallTiming(config, {
+    timestamp: new Date(1).toISOString(),
+    namespace: "default",
+    total: "10ms",
+    trustStage: "2ms-cache",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+  });
+  const records = getRecallTimings(config);
+  // newest-first ordering
+  assert.equal(records[0]?.timingsMs.trustStage, 2, "\"2ms-cache\" parses to numeric 2");
+  assert.equal(records[1]?.timingsMs.trustStage, 3, "\"3ms\" parses to numeric 3");
+});
+
 test("phases that did not run are omitted while measured zeros survive", () => {
   const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-phases"));
   recordRecallTiming(config, {

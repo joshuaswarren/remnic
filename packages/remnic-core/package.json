@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.7.14",
+  "version": "9.7.15",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -2954,6 +2954,16 @@
       "types": "./dist/work/types.d.ts",
       "remnic-source": "./src/work/types.ts",
       "import": "./dist/work/types.js"
+    },
+    "./write-envelope": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
+    },
+    "./write-envelope.js": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
     }
   },
   "files": [
@@ -3017,7 +3027,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.7.14"
+    "@remnic/coding-graph": "^9.7.15"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {
