@@ -13,7 +13,9 @@
  */
 
 import path from "node:path";
+import { createReadStream, type ReadStream } from "node:fs";
 import { appendFile, lstat, mkdir, readdir, readFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -108,50 +110,80 @@ export async function appendDreamsLedgerEntry(
 // ── Reader ────────────────────────────────────────────────────────────────────
 
 /**
- * Parse all valid `DreamsLedgerEntry` rows from the ledger file.
- * Malformed lines are silently skipped (resilience over strictness for telemetry).
+ * Parse and validate one ledger line into a `DreamsLedgerEntry`, or `null` when
+ * blank/malformed/incomplete. Shared by the streaming reader and the windowed
+ * status aggregator so both apply the identical fail-open guard.
  */
-export async function readDreamsLedgerEntries(memoryDir: string): Promise<DreamsLedgerEntry[]> {
-  const ledgerPath = dreamsLedgerPath(memoryDir);
-  let raw: string;
+function parseDreamsLedgerLine(line: string): DreamsLedgerEntry | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
   try {
-    raw = await readFile(ledgerPath, "utf-8");
+    const parsed = JSON.parse(trimmed) as Partial<DreamsLedgerEntry>;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    if (
+      typeof parsed.phase === "string" &&
+      (parsed.phase === "lightSleep" || parsed.phase === "rem" || parsed.phase === "deepSleep") &&
+      typeof parsed.startedAt === "string" &&
+      typeof parsed.completedAt === "string" &&
+      typeof parsed.durationMs === "number" &&
+      typeof parsed.itemsProcessed === "number"
+    ) {
+      return {
+        schemaVersion: 1,
+        startedAt: parsed.startedAt,
+        completedAt: parsed.completedAt,
+        durationMs: parsed.durationMs,
+        phase: parsed.phase,
+        itemsProcessed: parsed.itemsProcessed,
+        dryRun: parsed.dryRun === true,
+        trigger: parsed.trigger === "manual" ? "manual" : "scheduled",
+        notes: typeof parsed.notes === "string" ? parsed.notes : undefined,
+      };
+    }
+  } catch {
+    // Malformed line — skip (fail-open).
+  }
+  return null;
+}
+
+/**
+ * Stream the dreams ledger line-by-line. The ledger is plaintext `appendFile`
+ * (never encrypted), so a raw line stream is safe at any size — heap stays
+ * O(1) in the file, unlike the previous whole-file `readFile` + `split`.
+ * Yields nothing when the ledger does not exist yet.
+ */
+export async function* streamDreamsLedgerLines(memoryDir: string): AsyncGenerator<string> {
+  const ledgerPath = dreamsLedgerPath(memoryDir);
+  let input: ReadStream;
+  try {
+    input = createReadStream(ledgerPath, { encoding: "utf8" });
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return [];
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   }
+  const rl = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) yield line;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  } finally {
+    rl.close();
+  }
+}
 
+/**
+ * Parse all valid `DreamsLedgerEntry` rows from the ledger file. Thin wrapper
+ * over the line stream so any caller that genuinely needs every row still
+ * works; `getDreamsStatus` streams directly and filters in-window instead.
+ * Malformed lines are silently skipped (resilience over strictness for
+ * telemetry).
+ */
+export async function readDreamsLedgerEntries(memoryDir: string): Promise<DreamsLedgerEntry[]> {
   const entries: DreamsLedgerEntry[] = [];
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as Partial<DreamsLedgerEntry>;
-      if (typeof parsed !== "object" || parsed === null) continue;
-      if (
-        typeof parsed.phase === "string" &&
-        (parsed.phase === "lightSleep" || parsed.phase === "rem" || parsed.phase === "deepSleep") &&
-        typeof parsed.startedAt === "string" &&
-        typeof parsed.completedAt === "string" &&
-        typeof parsed.durationMs === "number" &&
-        typeof parsed.itemsProcessed === "number"
-      ) {
-        entries.push({
-          schemaVersion: 1,
-          startedAt: parsed.startedAt,
-          completedAt: parsed.completedAt,
-          durationMs: parsed.durationMs,
-          phase: parsed.phase,
-          itemsProcessed: parsed.itemsProcessed,
-          dryRun: parsed.dryRun === true,
-          trigger: parsed.trigger === "manual" ? "manual" : "scheduled",
-          notes: typeof parsed.notes === "string" ? parsed.notes : undefined,
-        });
-      }
-    } catch {
-      // Malformed line — skip.
-    }
+  for await (const line of streamDreamsLedgerLines(memoryDir)) {
+    const entry = parseDreamsLedgerLine(line);
+    if (entry) entries.push(entry);
   }
   return entries;
 }
@@ -160,6 +192,12 @@ export async function readDreamsLedgerEntries(memoryDir: string): Promise<Dreams
 
 const ALL_PHASES: DreamsPhase[] = ["lightSleep", "rem", "deepSleep"];
 const MAX_WINDOW_HOURS = 24 * 365 * 100;
+/**
+ * Hard ceiling on in-window entries retained during a status aggregation
+ * (issue #1910). Bounds heap use even for a pathologically large window, so a
+ * status query can never materialize an unbounded slice of the ledger.
+ */
+const MAX_DREAMS_WINDOW_ENTRIES = 100_000;
 
 export function normalizeDreamsStatusWindowHours(value: unknown, fallback = 24): number {
   const raw = value === undefined || value === null ? fallback : value;
@@ -199,13 +237,19 @@ export async function getDreamsStatus(
     throw new RangeError("windowHours produces an invalid status window");
   }
 
-  const entries = await readDreamsLedgerEntries(memoryDir);
-
-  // Filter to entries within the window based on completedAt.
-  const windowEntries = entries.filter((e) => {
-    const ts = Date.parse(e.completedAt);
-    return Number.isFinite(ts) && ts >= windowStart.getTime() && ts < windowEnd.getTime();
-  });
+  // Stream the ledger and keep only in-window rows, so heap use is bounded by
+  // the window (and the hard cap) rather than the file size (issue #1910).
+  const windowStartMs = windowStart.getTime();
+  const windowEndMs = windowEnd.getTime();
+  const windowEntries: DreamsLedgerEntry[] = [];
+  for await (const line of streamDreamsLedgerLines(memoryDir)) {
+    const entry = parseDreamsLedgerLine(line);
+    if (!entry) continue;
+    const ts = Date.parse(entry.completedAt);
+    if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
+    windowEntries.push(entry);
+    if (windowEntries.length >= MAX_DREAMS_WINDOW_ENTRIES) break;
+  }
 
   const statusMap = new Map<DreamsPhase, DreamsPhaseStatus>();
   for (const phase of ALL_PHASES) {

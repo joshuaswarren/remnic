@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import {
   appendDreamsLedgerEntry,
   readDreamsLedgerEntries,
+  streamDreamsLedgerLines,
   getDreamsStatus,
   dreamsLedgerPath,
   summarizeGovernanceResultForDreams,
@@ -431,4 +432,52 @@ test("summarizeGovernanceResultForDreams does not double-count proposed actions"
   assert.equal(result.scannedMemories, 5);
   assert.equal(result.appliedActionCount, 1);
   assert.match(result.notes ?? "", /2 actions proposed/);
+});
+
+// ── Streaming reads (issue #1910) ──────────────────────────────────────────
+
+test("streamDreamsLedgerLines yields nothing when the ledger is missing", async () => {
+  const dir = await makeTmpDir();
+  const lines: string[] = [];
+  for await (const line of streamDreamsLedgerLines(dir)) lines.push(line);
+  assert.deepEqual(lines, []);
+});
+
+test("streamDreamsLedgerLines streams appended rows line by line", async () => {
+  const dir = await makeTmpDir();
+  await appendDreamsLedgerEntry(dir, makeEntry({ itemsProcessed: 1 }));
+  await appendDreamsLedgerEntry(dir, makeEntry({ itemsProcessed: 2 }));
+  const lines: string[] = [];
+  for await (const line of streamDreamsLedgerLines(dir)) {
+    if (line.trim()) lines.push(line);
+  }
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /"itemsProcessed":1/);
+  assert.match(lines[1]!, /"itemsProcessed":2/);
+});
+
+test("getDreamsStatus over a large ledger aggregates only in-window rows", async () => {
+  const dir = await makeTmpDir();
+  const now = new Date("2026-04-27T12:00:00.000Z");
+  // Many out-of-window rows (30 days old) plus a few in-window rows. A correct
+  // streaming window filter must aggregate ONLY the in-window rows regardless
+  // of how many stale rows precede them.
+  const stale = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const staleRows: string[] = [];
+  for (let i = 0; i < 5000; i += 1) {
+    staleRows.push(JSON.stringify(makeEntry({ completedAt: stale, itemsProcessed: 7 })));
+  }
+  const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const recentRows = [
+    JSON.stringify(makeEntry({ phase: "lightSleep", completedAt: recent, itemsProcessed: 3 })),
+    JSON.stringify(makeEntry({ phase: "rem", completedAt: recent, itemsProcessed: 4 })),
+  ];
+  await writeText(dir, "state/dreams-ledger.jsonl", [...staleRows, ...recentRows].join("\n") + "\n");
+
+  const status = await getDreamsStatus(dir, 24, now);
+  assert.equal(status.phases.lightSleep.runCount, 1);
+  assert.equal(status.phases.lightSleep.totalItemsProcessed, 3);
+  assert.equal(status.phases.rem.runCount, 1);
+  assert.equal(status.phases.rem.totalItemsProcessed, 4);
+  assert.equal(status.phases.deepSleep.runCount, 0);
 });

@@ -18,7 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 
 import { MaintenanceScheduler } from "./maintenance.js";
 import type { PluginConfig } from "../types.js";
@@ -734,5 +734,170 @@ test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regre
     );
   } finally {
     scheduler.dispose();
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Lifecycle-ledger auto-compaction (issue #1910)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Access the private size-gated compaction trigger for focused testing. */
+interface CompactableScheduler {
+  maybeCompactMemoryLifecycleLedger(): Promise<void>;
+  dispose(): void;
+}
+
+async function seedMemoryDirWithOversizedLedger(
+  padBytes: number,
+): Promise<{ memoryDir: string; ledgerPath: string }> {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-"));
+  await mkdir(path.join(memoryDir, "facts", "2026-03-08"), { recursive: true });
+  await writeFile(
+    path.join(memoryDir, "facts", "2026-03-08", "fact-1.md"),
+    `---
+id: fact-1
+category: fact
+created: 2026-03-08T00:00:00.000Z
+updated: 2026-03-08T01:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["alpha"]
+---
+
+alpha
+`,
+    "utf-8",
+  );
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  // Oversized legacy ledger: many junk rows the rebuild will discard (it
+  // reconstructs from frontmatter), so the compacted output is far smaller.
+  const line = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+  const rows = Math.ceil(padBytes / line.length);
+  await writeFile(ledgerPath, line.repeat(rows), "utf-8");
+  return { memoryDir, ledgerPath };
+}
+
+function buildCompactionScheduler(config: PluginConfig): CompactableScheduler {
+  return new MaintenanceScheduler({
+    config,
+    getQmd: () => stubQmd(),
+    // The compaction path never touches the router/catalog.
+    namespaceSearchRouter: {} as unknown as NamespaceSearchRouter,
+    namespaceCatalog: {} as unknown as NamespaceCatalog,
+  }) as unknown as CompactableScheduler;
+}
+
+test("auto-compaction shrinks an oversized ledger and writes a verbatim backup", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const before = await readFile(ledgerPath, "utf-8");
+    const beforeSize = (await stat(ledgerPath)).size;
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const afterSize = (await stat(ledgerPath)).size;
+    assert.ok(afterSize < beforeSize, "compacted ledger must be smaller");
+    const rebuilt = (await readFile(ledgerPath, "utf-8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(rebuilt.map((r) => r.eventType), ["created", "updated"]);
+
+    // A verbatim backup of the original ledger must exist under archive/.
+    const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
+    const stamps = await readdir(archiveRoot);
+    assert.equal(stamps.length, 1);
+    const backup = await readFile(
+      path.join(archiveRoot, stamps[0]!, "state", "memory-lifecycle-ledger.jsonl"),
+      "utf-8",
+    );
+    assert.equal(backup, before, "backup must be the verbatim original ledger");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction is disabled when memoryLifecycleLedgerCompactBytes is 0", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const before = await readFile(ledgerPath, "utf-8");
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 0,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    assert.equal(await readFile(ledgerPath, "utf-8"), before, "disabled: ledger untouched");
+    await assert.rejects(() => readdir(path.join(memoryDir, "archive", "memory-lifecycle-ledger")));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction min-interval throttle prevents a second run within the window", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      const compactedSize = (await stat(ledgerPath)).size;
+
+      // Re-grow the ledger past the threshold; a second immediate call is
+      // inside the min-interval window and must be throttled (no recompaction).
+      const line = '{"legacy":true,"pad":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}\n';
+      await writeFile(ledgerPath, line.repeat(Math.ceil(4096 / line.length)), "utf-8");
+      const regrownSize = (await stat(ledgerPath)).size;
+
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.equal((await stat(ledgerPath)).size, regrownSize, "throttled: ledger not recompacted");
+      assert.ok(regrownSize > compactedSize);
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction is a no-op when the ledger is below the threshold", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(256);
+  try {
+    const before = await readFile(ledgerPath, "utf-8");
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024 * 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    assert.equal(await readFile(ledgerPath, "utf-8"), before, "under threshold: ledger untouched");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });

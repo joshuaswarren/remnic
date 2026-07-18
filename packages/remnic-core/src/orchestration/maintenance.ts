@@ -22,6 +22,7 @@
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -46,6 +47,7 @@ import {
   ensureProceduralMiningCron,
   graphEdgeDecayCadenceToCronExpr,
 } from "../maintenance/memory-governance-cron.js";
+import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 
@@ -90,6 +92,10 @@ export class MaintenanceScheduler {
   private qmdMaintenanceInFlight = false;
   private lastQmdEmbedAtMs = 0;
   private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
+
+  // ── Lifecycle-ledger auto-compaction state (issue #1910) ──
+  private lifecycleCompactionInFlight = false;
+  private lastLifecycleCompactionAtMs = 0;
 
   constructor(private readonly deps: MaintenanceSchedulerDeps) {}
 
@@ -535,6 +541,58 @@ export class MaintenanceScheduler {
       if (this.qmdMaintenancePending) {
         this.requestQmdMaintenance();
       }
+      // Best-effort, off the recall/extraction hot path: size-gated ledger
+      // compaction (issue #1910). Never awaited into the maintenance path and
+      // never allowed to throw — a compaction failure must not break indexing.
+      void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
+        log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
+      );
+    }
+  }
+
+  /**
+   * Size-gated, throttled, single-flighted auto-compaction of the lifecycle
+   * ledger (issue #1910). Delegates to the existing `rebuildMemoryLifecycleLedger`
+   * so the archive-then-atomic-write discipline is reused verbatim. `0` disables.
+   */
+  private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
+    const threshold = this.deps.config.memoryLifecycleLedgerCompactBytes;
+    if (threshold <= 0) return;
+    if (this.lifecycleCompactionInFlight) return;
+    const now = Date.now();
+    if (
+      now - this.lastLifecycleCompactionAtMs <
+      this.deps.config.memoryLifecycleLedgerCompactMinIntervalMs
+    ) {
+      return;
+    }
+    const ledgerPath = path.join(
+      this.deps.config.memoryDir,
+      "state",
+      "memory-lifecycle-ledger.jsonl",
+    );
+    let size = 0;
+    try {
+      size = (await stat(ledgerPath)).size;
+    } catch {
+      return; // ENOENT etc. — nothing to compact yet.
+    }
+    if (size < threshold) return;
+    this.lifecycleCompactionInFlight = true;
+    this.lastLifecycleCompactionAtMs = now;
+    try {
+      const result = await rebuildMemoryLifecycleLedger({
+        memoryDir: this.deps.config.memoryDir,
+        dryRun: false,
+      });
+      log.info(
+        `lifecycle ledger auto-compacted: ${size}B -> ${result.rebuiltRows} rows, `
+        + `backup=${result.backupPath ?? "none"}`,
+      );
+    } catch (err) {
+      log.warn(`lifecycle ledger auto-compaction failed (non-fatal): ${err}`);
+    } finally {
+      this.lifecycleCompactionInFlight = false;
     }
   }
 

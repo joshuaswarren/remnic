@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -230,4 +230,70 @@ test("LastRecallStore.record copies sourceAnchors array and lineRange tuple", as
   assert.equal(snap?.tierExplain?.sourceAnchors?.length, 1);
   assert.equal(snap?.tierExplain?.sourceAnchors?.[0]?.path, "/a.md");
   assert.deepEqual(snap?.tierExplain?.sourceAnchors?.[0]?.lineRange, [1, 2]);
+});
+
+// ── Recall-impressions rotation (issue #1910) ──────────────────────────────
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("LastRecallStore rotates recall_impressions.jsonl once it exceeds the byte threshold", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-rotate-"));
+  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+  const store = new LastRecallStore(dir, { impressionsRotateBytes: 64, impressionsRotateKeep: 3 });
+  await store.load();
+
+  // First append creates the active file (below threshold, no rotation).
+  await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
+  assert.equal(await fileExists(`${impressionsPath}.1`), false);
+
+  // Grow the active file past the threshold, then append: rotation moves the
+  // oversized active file to .1 and starts a fresh active file.
+  await writeFile(impressionsPath, "x".repeat(128), "utf8");
+  await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
+
+  assert.equal(await fileExists(impressionsPath), true, "active file recreated");
+  assert.equal(await fileExists(`${impressionsPath}.1`), true, "archive .1 created");
+  const active = await readFile(impressionsPath, "utf8");
+  assert.ok(active.trim().length > 0, "active file holds the new impression");
+  assert.equal(active.includes("x".repeat(128)), false, "old rows moved out of active file");
+});
+
+test("LastRecallStore keeps at most impressionsRotateKeep archives", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-keep-"));
+  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+  const keep = 2;
+  const store = new LastRecallStore(dir, { impressionsRotateBytes: 32, impressionsRotateKeep: keep });
+  await store.load();
+
+  // Bootstrap the state dir + active file (record() creates them).
+  await store.record({ sessionKey: "seed", query: "seed", memoryIds: [] });
+
+  // Force several rotations by growing the active file before each append.
+  for (let i = 0; i < 5; i += 1) {
+    await writeFile(impressionsPath, "y".repeat(64), "utf8");
+    await store.record({ sessionKey: `s${i}`, query: `q${i}`, memoryIds: [] });
+  }
+
+  assert.equal(await fileExists(`${impressionsPath}.1`), true);
+  assert.equal(await fileExists(`${impressionsPath}.2`), true);
+  assert.equal(await fileExists(`${impressionsPath}.3`), false, "archives beyond keep are dropped");
+});
+
+test("LastRecallStore never rotates when impressionsRotateBytes is 0 (disabled)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-off-"));
+  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+  const store = new LastRecallStore(dir, { impressionsRotateBytes: 0, impressionsRotateKeep: 5 });
+  await store.load();
+
+  await store.record({ sessionKey: "s1", query: "q1", memoryIds: [] });
+  await writeFile(impressionsPath, "z".repeat(1024), "utf8");
+  await store.record({ sessionKey: "s2", query: "q2", memoryIds: [] });
+
+  assert.equal(await fileExists(`${impressionsPath}.1`), false, "rotation disabled leaves no archive");
 });

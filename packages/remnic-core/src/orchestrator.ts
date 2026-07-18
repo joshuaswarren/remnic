@@ -1493,7 +1493,10 @@ export class Orchestrator {
     });
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
-    this.lastRecall = new LastRecallStore(config.memoryDir);
+    this.lastRecall = new LastRecallStore(config.memoryDir, {
+      impressionsRotateBytes: config.recallImpressionsRotateBytes,
+      impressionsRotateKeep: config.recallImpressionsRotateKeep,
+    });
     this.handleHistory = new RecallHandleHistoryStore(config.memoryDir, {
       maxDepth: config.recallHandleSnapshotDepth,
     });

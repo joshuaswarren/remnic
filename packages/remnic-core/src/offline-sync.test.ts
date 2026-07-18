@@ -297,6 +297,9 @@ test("offline sync includes durable runtime state and excludes only transient sy
     await write(root, "state/memory-projection.sqlite-shm", "projection-shm");
     await write(root, "state/memory-projection.sqlite-wal", "projection-wal");
     await write(root, "state/recall_impressions.jsonl", "impressions");
+    // Rotated archive (issue #1910) must be excluded from the push snapshot
+    // while the active file stays remote-authoritative.
+    await write(root, "state/recall_impressions.jsonl.1", "rotated-impressions");
     await write(root, "namespaces/generalist-project-origin-6ebeaa54/state/last_intent.json", "intent");
     await write(root, "namespaces/generalist-project-origin-6ebeaa54/state/entity-mention-index.json", "entities");
     await write(root, "namespaces/generalist-project-origin-6ebeaa54/state/.memory-status-version.log", "version");
@@ -363,11 +366,12 @@ test("offline sync includes durable runtime state and excludes only transient sy
       }],
     });
 
-    // 18 = the 13 durable local-only files plus the 5 node-local excluded
-    // artifacts, which the corrected apply-side view (#1793 review) now
+    // 19 = the 13 durable local-only files plus the 6 node-local excluded
+    // artifacts (the 5 prior ones plus the rotated recall_impressions.jsonl.1
+    // from #1910), which the corrected apply-side view (#1793 review) now
     // SEES and deliberately leaves untouched (counted as skipped) instead
     // of hiding from enumeration entirely.
-    assert.equal(pull.skipped, 18);
+    assert.equal(pull.skipped, 19);
     assert.equal(await readUtf8(root, "state/memory-lifecycle-ledger.jsonl"), "ledger");
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -3581,6 +3581,29 @@ export function parseConfig(
       Number.isFinite(cfg.graphEdgeDecayVisibilityThreshold)
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
+    // Issue #1910 — bounded JSONL state files. `0` disables (never coerced to a
+    // default); byte thresholds floor at 0, the min-interval floors at 60s, and
+    // the keep count floors at 1 so rotation always retains at least one archive.
+    memoryLifecycleLedgerCompactBytes:
+      typeof cfg.memoryLifecycleLedgerCompactBytes === "number" &&
+      Number.isFinite(cfg.memoryLifecycleLedgerCompactBytes)
+        ? Math.max(0, Math.floor(cfg.memoryLifecycleLedgerCompactBytes))
+        : 64 * 1024 * 1024,
+    memoryLifecycleLedgerCompactMinIntervalMs:
+      typeof cfg.memoryLifecycleLedgerCompactMinIntervalMs === "number" &&
+      Number.isFinite(cfg.memoryLifecycleLedgerCompactMinIntervalMs)
+        ? Math.max(60_000, Math.floor(cfg.memoryLifecycleLedgerCompactMinIntervalMs))
+        : 6 * 60 * 60 * 1000,
+    recallImpressionsRotateBytes:
+      typeof cfg.recallImpressionsRotateBytes === "number" &&
+      Number.isFinite(cfg.recallImpressionsRotateBytes)
+        ? Math.max(0, Math.floor(cfg.recallImpressionsRotateBytes))
+        : 32 * 1024 * 1024,
+    recallImpressionsRotateKeep:
+      typeof cfg.recallImpressionsRotateKeep === "number" &&
+      Number.isFinite(cfg.recallImpressionsRotateKeep)
+        ? Math.max(1, Math.floor(cfg.recallImpressionsRotateKeep))
+        : 5,
     // Issue #681 PR 3/3 — confidence-aware traversal & PageRank refinement.
     // Floor clamps to [0, 1] so misconfigured input cannot accept negative
     // confidences or reject every edge. Iterations floors at 0 so a

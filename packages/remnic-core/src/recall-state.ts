@@ -1,8 +1,9 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
+import { isErrnoCode } from "./utils/errno.js";
 import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
@@ -231,12 +232,24 @@ export class LastRecallStore {
   private readonly statePath: string;
   private readonly impressionsPath: string;
   private readonly writeStateFile: StateFileWriter;
+  private readonly impressionsRotateBytes: number;
+  private readonly impressionsRotateKeep: number;
   private state: LastRecallState = {};
   private stateWriteChain: Promise<void> = Promise.resolve();
 
-  constructor(memoryDir: string, options: { writeStateFile?: StateFileWriter } = {}) {
+  constructor(
+    memoryDir: string,
+    options: {
+      writeStateFile?: StateFileWriter;
+      impressionsRotateBytes?: number;
+      impressionsRotateKeep?: number;
+    } = {},
+  ) {
     this.statePath = path.join(memoryDir, "state", "last_recall.json");
     this.impressionsPath = path.join(memoryDir, "state", "recall_impressions.jsonl");
+    // 0 disables rotation (never coerced to a default); keep floors at 1.
+    this.impressionsRotateBytes = Math.max(0, Math.floor(options.impressionsRotateBytes ?? 0));
+    this.impressionsRotateKeep = Math.max(1, Math.floor(options.impressionsRotateKeep ?? 5));
     this.writeStateFile =
       options.writeStateFile ??
       (async (filePath, content) => {
@@ -375,10 +388,51 @@ export class LastRecallStore {
     if (opts.appendImpression !== false) {
       try {
         await mkdir(path.dirname(this.impressionsPath), { recursive: true });
+        await this.rotateImpressionsIfNeeded();
         await appendFile(this.impressionsPath, JSON.stringify(snapshot) + "\n", "utf-8");
       } catch (err) {
         log.debug(`recall impressions append failed: ${err}`);
       }
+    }
+  }
+
+  /**
+   * Size-based rotation of `recall_impressions.jsonl` (issue #1910). When the
+   * active file exceeds `impressionsRotateBytes`, shift `.1..N` down one slot,
+   * move the active file to `.1`, and drop anything beyond `keep`. The active
+   * file name and format are unchanged; only historical rows move to archives.
+   * `0` disables. Best-effort — a rotation error propagates to the caller's
+   * `log.debug` guard rather than losing the impression append.
+   */
+  private async rotateImpressionsIfNeeded(): Promise<void> {
+    if (this.impressionsRotateBytes <= 0) return;
+    let size = 0;
+    try {
+      size = (await stat(this.impressionsPath)).size;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return;
+      throw err;
+    }
+    if (size < this.impressionsRotateBytes) return;
+    const keep = this.impressionsRotateKeep;
+    // Drop the archive that would fall off the end, then shift down: .(keep-1)
+    // -> .keep, ..., .1 -> .2, active -> .1.
+    try {
+      await rm(`${this.impressionsPath}.${keep}`, { force: true });
+    } catch {
+      // best-effort cleanup of the oldest archive
+    }
+    for (let i = keep - 1; i >= 1; i -= 1) {
+      try {
+        await rename(`${this.impressionsPath}.${i}`, `${this.impressionsPath}.${i + 1}`);
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    try {
+      await rename(this.impressionsPath, `${this.impressionsPath}.1`);
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err;
     }
   }
 

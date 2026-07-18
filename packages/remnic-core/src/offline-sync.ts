@@ -211,6 +211,10 @@ const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   "**/state/index_tags.json",
   "**/state/entity-mention-index.json",
   "**/state/memory-governance/runs/**",
+  // Rotated recall-impression archives (issue #1910). The active
+  // recall_impressions.jsonl stays remote-authoritative; only the .1..N
+  // archives are node-local and never pushed/hashed.
+  "**/state/recall_impressions.jsonl.*",
 ];
 
 /**

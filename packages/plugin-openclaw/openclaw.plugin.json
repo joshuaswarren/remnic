@@ -3163,6 +3163,18 @@
         "default": "",
         "description": "Root directory for memory extensions. Empty string derives from memoryDir (go up to Remnic home and append memory_extensions)."
       },
+      "memoryLifecycleLedgerCompactBytes": {
+        "type": "number",
+        "default": 67108864,
+        "minimum": 0,
+        "description": "Auto-compact state/memory-lifecycle-ledger.jsonl when it exceeds this many bytes, triggered off the debounced maintenance path (issue #1910). Set 0 to disable. Default 64MB."
+      },
+      "memoryLifecycleLedgerCompactMinIntervalMs": {
+        "type": "number",
+        "default": 21600000,
+        "minimum": 60000,
+        "description": "Minimum interval between auto-compactions of the lifecycle ledger (issue #1910). Default 6 hours."
+      },
       "memoryLinkingEnabled": {
         "type": "boolean",
         "default": false,
@@ -4328,6 +4340,18 @@
         "maximum": 50,
         "default": 5,
         "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
+      },
+      "recallImpressionsRotateBytes": {
+        "type": "number",
+        "default": 33554432,
+        "minimum": 0,
+        "description": "Rotate state/recall_impressions.jsonl to .1..N when it exceeds this many bytes (issue #1910). Set 0 to disable. Default 32MB."
+      },
+      "recallImpressionsRotateKeep": {
+        "type": "number",
+        "default": 5,
+        "minimum": 1,
+        "description": "Number of rotated recall-impression archives to keep (.1 .. .N) (issue #1910). Default 5."
       },
       "recallMaxConcurrentPerPrincipal": {
         "type": "integer",

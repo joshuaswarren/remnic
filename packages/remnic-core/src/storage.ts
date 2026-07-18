@@ -19,7 +19,11 @@ import path from "node:path";
 import { log } from "./logger.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
-import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
+import {
+  readMaybeEncryptedLines,
+  readMemoryActionEventRowsFromLines,
+  readMemoryLifecycleEventsFromLines,
+} from "./storage/secure-line-reader.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
@@ -5735,9 +5739,26 @@ export class StorageManager {
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {
     const cappedLimit = Math.max(0, Math.floor(limit));
-    if (cappedLimit === 0) return [];
-    const events = await this.readAllMemoryLifecycleEvents();
-    return events.slice(-cappedLimit);
+    if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
+    try {
+      // Bounded ring: retain at most `limit` most-recently-appended rows, then
+      // sort only that tail. For the sole production caller (governance, which
+      // passes Number.MAX_SAFE_INTEGER) the ring keeps every row, so the result
+      // is byte-for-byte identical to readAllMemoryLifecycleEvents(). For small
+      // limits the result is the most recent activity (append tail), then
+      // canonically sorted.
+      const tail = await readMemoryLifecycleEventsFromLines(
+        readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
+          this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
+        ),
+        cappedLimit,
+      );
+      return sortMemoryLifecycleEvents(tail);
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      return [];
+    }
   }
 
   async writeCompressionGuidelines(content: string): Promise<void> {
@@ -6644,8 +6665,33 @@ export class StorageManager {
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
     warnProjectionFallback(this.baseDir, "getMemoryTimeline");
-    const events = await this.readAllMemoryLifecycleEvents();
-    return events.filter((event) => event.memoryId === memoryId).slice(-cappedLimit);
+    // Stream the ledger with a per-memory ring so the fallback never allocates
+    // the whole file. For a single memoryId the memoryId-first canonical sort
+    // collapses to timestamp order, so the retained last-`limit` rows sorted
+    // are the same rows in the same order as the previous filter→slice(-limit).
+    return await this.readMemoryLifecycleEventsForMemory(memoryId, cappedLimit);
+  }
+
+  private async readMemoryLifecycleEventsForMemory(
+    memoryId: string,
+    limit: number,
+  ): Promise<MemoryLifecycleEvent[]> {
+    const cappedLimit = Math.max(0, Math.floor(limit));
+    if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
+    try {
+      const tail = await readMemoryLifecycleEventsFromLines(
+        readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
+          this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
+        ),
+        cappedLimit,
+        memoryId,
+      );
+      return sortMemoryLifecycleEvents(tail);
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      return [];
+    }
   }
 
   // ---------------------------------------------------------------------------
