@@ -382,3 +382,54 @@ test("file-size ratchet: --update refuses to grandfather files that became overs
     assert.equal(runRatchets(["--update"], fixture).status, 0);
   });
 });
+
+test("file-size ratchet: changed-file scoping suppresses failures for files the PR did not touch", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // Simulate merge-skew: the file grew on main, but THIS PR changed only
+    // an unrelated file.
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    const scopePath = path.join(fixture.root, "changed.txt");
+    writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+    const scoped = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(scoped.status, 0, scoped.stderr);
+
+    // Same growth, but the PR touched the file: fails.
+    writeFileSync(scopePath, "packages/remnic-core/src/legacy-big.ts\n");
+    const inScope = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(inScope.status, 1);
+    assert.match(inScope.stderr, /legacy-big\.ts grew from its grandfathered ceiling/);
+
+    // A configured-but-missing scope file is a loud wiring error.
+    const missing = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: path.join(fixture.root, "nope.txt"),
+      },
+    });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /missing file/);
+  });
+});

@@ -108,6 +108,20 @@ jobs:
       - name: Review pattern check
         run: bash scripts/check-review-patterns.sh
 
+      # Merge-skew scoping (issue #1995): on PRs, per-file ceiling failures
+      # only fire for files THIS PR changed — a PR must not fail because an
+      # unrelated merge grew a grandfathered file on main after this PR's
+      # baseline was committed. Pushes to main evaluate everything.
+      - name: Compute PR changed files for ratchet scoping
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --quiet --depth=1 origin "$BASE_REF"
+          git diff --name-only FETCH_HEAD HEAD > /tmp/ratchet-changed-files.txt
+          echo "changed files: $(wc -l < /tmp/ratchet-changed-files.txt)"
+          echo "REMNIC_RATCHET_CHANGED_FILES_PATH=/tmp/ratchet-changed-files.txt" >> "$GITHUB_ENV"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+
       - name: Structural ratchets
         run: node scripts/check-ratchets.mjs
 

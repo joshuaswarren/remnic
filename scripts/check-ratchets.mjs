@@ -61,6 +61,35 @@ const ROOT = process.env.REMNIC_RATCHET_ROOT
 const BASELINE_PATH = process.env.REMNIC_RATCHET_BASELINE
   ? path.resolve(process.env.REMNIC_RATCHET_BASELINE)
   : path.join(ROOT, "scripts", "ratchet-baseline.json");
+/**
+ * Optional changed-file scoping for the file-size ratchet (issue #1995,
+ * merge-skew fix): when this env var points at a newline-separated list of
+ * repo-relative paths (the PR's changed files), per-file ceiling FAILURES
+ * only fire for files in the list. Without it (local runs, pushes to main)
+ * every file is evaluated. Rationale: a PR that never touched config.ts
+ * must not fail because ANOTHER merged PR grew config.ts on main after
+ * this PR's baseline was committed — each PR is judged on its own changes,
+ * and main's drift is caught on the PRs that cause it.
+ */
+const CHANGED_FILES_PATH = process.env.REMNIC_RATCHET_CHANGED_FILES_PATH
+  ? path.resolve(process.env.REMNIC_RATCHET_CHANGED_FILES_PATH)
+  : null;
+
+function readChangedFileScope() {
+  if (!CHANGED_FILES_PATH) return null;
+  if (!existsSync(CHANGED_FILES_PATH)) {
+    fail(
+      `REMNIC_RATCHET_CHANGED_FILES_PATH points at a missing file: ${CHANGED_FILES_PATH} — ` +
+        "fix the CI wiring; an empty file means 'no source changes', absence is an error (never silently widen or narrow scope)",
+    );
+  }
+  const scope = new Set();
+  for (const line of readFileSync(CHANGED_FILES_PATH, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) scope.add(trimmed.replaceAll("\\", "/"));
+  }
+  return scope;
+}
 
 const CORE_SRC = path.join(ROOT, "packages", "remnic-core", "src");
 const DEFAULT_OVERSIZE_THRESHOLD_LOC = 3000;
@@ -419,14 +448,21 @@ function main() {
       // A legacy baseline (predating the metric) also bootstraps as-is: the
       // migration --update runs in the PR that introduces the metric.
       if (previousCeilings !== undefined) {
+        // Blame scoping mirrors the check path: with a changed-file scope
+        // (REMNIC_RATCHET_CHANGED_FILES_PATH = this branch's own diff),
+        // the guard only blocks growth in files THIS change touched.
+        // Growth that arrived via merges to main was judged on the PRs
+        // that caused it and may be refreshed into the baseline.
+        const changedScope = readChangedFileScope();
+        const inScope = (file) => changedScope === null || changedScope.has(file);
         const laundered = [];
         const newlyOversized = [];
         for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
           const ceiling = previousCeilings[file];
           if (ceiling === undefined) {
-            newlyOversized.push(`${file} (${lines})`);
+            if (inScope(file)) newlyOversized.push(`${file} (${lines})`);
           } else if (lines > ceiling) {
-            laundered.push(`${file} (${ceiling} -> ${lines})`);
+            if (inScope(file)) laundered.push(`${file} (${ceiling} -> ${lines})`);
           }
         }
         if (laundered.length > 0 || newlyOversized.length > 0) {
@@ -519,22 +555,31 @@ function main() {
         "regenerate with `node scripts/check-ratchets.mjs --update` and commit it",
     );
   } else {
+    // Merge-skew scoping: in PR CI, ceiling FAILURES only fire for files the
+    // PR itself changed (see readChangedFileScope). Improvements are always
+    // reported — they carry no blame.
+    const changedScope = readChangedFileScope();
+    const inScope = (file) => changedScope === null || changedScope.has(file);
     const sortedOversize = Object.entries(current.oversizeByFile).sort(([a], [b]) =>
       a.localeCompare(b),
     );
     for (const [file, lines] of sortedOversize) {
       const ceiling = baselineCeilings[file];
       if (ceiling === undefined) {
-        failures.push(
-          `${file} is ${lines} lines — new source files are capped at ${NEW_FILE_SIZE_CAP_LOC} LOC (issue #1995). ` +
-            "Either extract the addition into a sibling module, or shrink the file to the cap. " +
-            "Grandfathering new files is not available.",
-        );
+        if (inScope(file)) {
+          failures.push(
+            `${file} is ${lines} lines — new source files are capped at ${NEW_FILE_SIZE_CAP_LOC} LOC (issue #1995). ` +
+              "Either extract the addition into a sibling module, or shrink the file to the cap. " +
+              "Grandfathering new files is not available.",
+          );
+        }
       } else if (lines > ceiling) {
-        failures.push(
-          `${file} grew from its grandfathered ceiling ${ceiling} to ${lines} lines (issue #1995). ` +
-            "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition.",
-        );
+        if (inScope(file)) {
+          failures.push(
+            `${file} grew from its grandfathered ceiling ${ceiling} to ${lines} lines (issue #1995). ` +
+              "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition.",
+          );
+        }
       } else if (lines < ceiling) {
         improvements.push(`file-size ceiling ${file}: ${ceiling} -> ${lines} lines`);
       }
