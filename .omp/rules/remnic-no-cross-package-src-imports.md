@@ -28,9 +28,9 @@ public surface rather than deep-linking into its `src/`.
 for dev-mode process spawning, are not affected by this rule.)
 
 Deliberately NOT matched: the `../packages/<pkg>/src/...` form used by
-repo-root `src/`, `scripts/`, and `tests/`. That class is existing
-ratchet-managed debt (`directStorageImports` in
-`scripts/ratchet-baseline.json`, 350+ occurrences) governed by
-`check-ratchets.mjs` — hard-interrupting it would false-positive on
-every managed-debt file. New code should still prefer `@remnic/*`
-package-name imports; the ratchet ensures the count only shrinks.
+repo-root `src/`, `scripts/`, and `tests/`. That form appears ~360
+times in the existing tree, so hard-interrupting it would fire on
+routine edits to those files. New code should still prefer `@remnic/*`
+package-name imports. (The narrower slice of core files importing
+`storage.ts` directly is separately ratchet-managed as
+`directStorageImports` in `scripts/ratchet-baseline.json`.)
