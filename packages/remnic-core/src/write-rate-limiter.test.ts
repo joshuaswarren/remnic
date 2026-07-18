@@ -40,10 +40,10 @@ test("WriteRateLimiter: reserve returns a release, refuses at the limit, frees o
   const limiter = new WriteRateLimiter(1, 60_000);
   const release = limiter.reserve();
   assert.ok(release, "first reservation succeeds");
-  assert.equal(limiter.slots.length, 1);
+  assert.equal(limiter.slotsFor().length, 1);
   assert.equal(limiter.reserve(), null, "second reservation refused at the limit");
   release?.();
-  assert.equal(limiter.slots.length, 0, "release frees the reserved slot");
+  assert.equal(limiter.slotsFor().length, 0, "release frees the reserved slot");
   assert.ok(limiter.reserve(), "capacity restored after release");
 });
 
@@ -60,4 +60,16 @@ test("WriteRateLimiter: old slots pruned after the rolling window", () => {
   } finally {
     Date.now = realNow;
   }
+});
+
+test("WriteRateLimiter: buckets are isolated per principal (issue #2029)", () => {
+  const limiter = new WriteRateLimiter(1, 60_000);
+  limiter.record("alice");
+  assert.equal(limiter.hasCapacity("alice"), false, "alice is at her own limit");
+  assert.equal(limiter.hasCapacity("bob"), true, "bob is unaffected by alice");
+  assert.equal(limiter.hasCapacity(), true, "the no-principal global bucket is separate");
+  limiter.record("bob");
+  assert.equal(limiter.slotsFor("alice").length, 1);
+  assert.equal(limiter.slotsFor("bob").length, 1);
+  assert.equal(limiter.totalSlots(), 2, "each principal keeps its own window");
 });

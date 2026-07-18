@@ -1083,7 +1083,7 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("capsule_export"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "capsuleExport");
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const result = await this.service.capsuleExport({
         name: body.name,
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1094,7 +1094,7 @@ export class EngramAccessHttpServer {
         includeTranscripts: body.includeTranscripts,
         encrypt: body.encrypt,
       });
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, result);
       return;
     }
@@ -1105,7 +1105,7 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("capsule_import"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "capsuleImport");
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const result = await this.service.capsuleImport({
         archivePath: expandTildePath(body.archivePath),
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1113,7 +1113,7 @@ export class EngramAccessHttpServer {
         mode: body.mode,
         passphrase: body.passphrase,
       });
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, result);
       return;
     }
@@ -1624,12 +1624,12 @@ export class EngramAccessHttpServer {
         // attempt may have consumed the last quota slot; the retry returns the
         // cached response without requiring another. Matches memory_store's
         // hook-in-the-lock pattern (#1434 invariant).
-        { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
+        { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
       );
       // A replayed (deduplicated) observe must not consume a second write-quota
       // slot — same invariant as memory_store/suggestion_submit (#1434).
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, 202, response);
       return;
@@ -1656,13 +1656,13 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionFlush");
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const response = await this.service.lcmCompactionFlush({
         sessionKey: body.sessionKey,
         namespace: this.resolveNamespace(req, body.namespace),
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, response);
       return;
     }
@@ -1673,7 +1673,7 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("lcm_compaction_record"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionRecord");
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const response = await this.service.lcmCompactionRecord({
         sessionKey: body.sessionKey,
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1681,7 +1681,7 @@ export class EngramAccessHttpServer {
         tokensAfter: body.tokensAfter,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, response);
       return;
     }
@@ -1739,7 +1739,7 @@ export class EngramAccessHttpServer {
             authenticatedPrincipal: this.resolveRequestPrincipal(req),
             hooks: {
               enforceWriteQuota: () => {
-                releaseWriteQuota ??= this.reserveWriteRateLimitSlot();
+                releaseWriteQuota ??= this.reserveWriteRateLimitSlot(req);
               },
             },
           },
@@ -1821,14 +1821,14 @@ export class EngramAccessHttpServer {
       const output = (await op.run(envelope, {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
+        hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
         // Phase 1 provenance: server-resolved connector identity from the
         // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),
       })) as { result: EngramAccessWriteResponse };
       const response = output.result;
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, this.writeResponseStatus(response), response);
       return;
@@ -1846,7 +1846,7 @@ export class EngramAccessHttpServer {
       const isWriteSubcommand =
         body.subcommand === "record" || body.subcommand === "supersede";
       if (isWriteSubcommand) {
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
       }
       const op = getOperation("coding_decision");
       if (!op) {
@@ -1858,7 +1858,7 @@ export class EngramAccessHttpServer {
         sourceConnector: this.resolveConnector(req),
       })) as { result: unknown };
       if (isWriteSubcommand) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, 200, output.result);
       return;
@@ -1871,7 +1871,7 @@ export class EngramAccessHttpServer {
       const body = await this.readJsonBody(req);
       const isWriteSubcommand = body.subcommand === "refresh";
       if (isWriteSubcommand) {
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
       }
       const op = getOperation("coding_architecture");
       if (!op) {
@@ -1883,7 +1883,7 @@ export class EngramAccessHttpServer {
         sourceConnector: this.resolveConnector(req),
       })) as { result: unknown };
       if (isWriteSubcommand) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, 200, output.result);
       return;
@@ -1917,7 +1917,7 @@ export class EngramAccessHttpServer {
       // mirror the apply route's precheck + accounting to bound files under
       // state/corrections/pending instead of letting an HTTP client create
       // unbounded plan files without consuming write quota.
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_plan");
       if (!op) {
@@ -1927,13 +1927,13 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, output.result);
       return;
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/correction/apply") {
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_apply");
       if (!op) {
@@ -1943,7 +1943,7 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
-      this.recordWriteRateLimitHit();
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, output.result);
       return;
     }
@@ -1996,10 +1996,10 @@ export class EngramAccessHttpServer {
       // (enforceWriteQuota), atomic with the real miss and never on a replay; no
       // HTTP pre-check, so a stale peek can't 429 a safe replay (#1434 Codex review).
       const response = await this.service.suggestionSubmit(request, {
-        enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(),
+        enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req),
       });
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, this.writeResponseStatus(response), response);
       return;
@@ -2188,7 +2188,7 @@ export class EngramAccessHttpServer {
     if (req.method === "POST" && pathname === "/engram/v1/review-disposition") {
       this.enforceTokenOp("review_disposition"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "reviewDisposition");
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
       const response = await this.service.reviewDisposition({
         memoryId: body.memoryId,
         status: body.status,
@@ -2197,7 +2197,7 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
       if (this.shouldCountWriteRateLimit(response as unknown as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, 200, response);
       return;
@@ -2208,7 +2208,7 @@ export class EngramAccessHttpServer {
       const body = await this.readValidatedBody(req, "trustZonePromote");
       const dryRun = body.dryRun === true;
       if (!dryRun) {
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
       }
       const response = await this.service.trustZonePromote({
         recordId: body.recordId,
@@ -2221,7 +2221,7 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
       if (this.shouldCountWriteRateLimit(response as unknown as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, response.dryRun ? 200 : 201, response);
       return;
@@ -2232,7 +2232,7 @@ export class EngramAccessHttpServer {
       const body = await this.readValidatedBody(req, "trustZoneDemoSeed");
       const dryRun = body.dryRun === true;
       if (!dryRun) {
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
       }
       const response = await this.service.trustZoneDemoSeed({
         scenario: body.scenario,
@@ -2242,7 +2242,7 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
       if (this.shouldCountWriteRateLimit(response as unknown as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, response.dryRun ? 200 : 201, response);
       return;
@@ -2817,7 +2817,7 @@ export class EngramAccessHttpServer {
       const dryRun = body.dryRun === true;
       const namespace = this.resolveNamespace(req, typeof body.namespace === "string" ? body.namespace : undefined);
       if (!dryRun) {
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
       }
       const result = await this.service.dreamsRun({
         phase: phase as import("./types.js").DreamsPhase,
@@ -2826,7 +2826,7 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       });
       if (this.shouldCountWriteRateLimit(result as { dryRun?: boolean; idempotencyReplay?: boolean })) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
       this.respondJson(res, 200, result);
       return;
@@ -2969,7 +2969,7 @@ export class EngramAccessHttpServer {
         // Rate-limit the promotion write, matching every other write route
         // (observe, trust-zone promotion, etc.). The check throws on limit
         // exceeded; the hit is recorded after the write succeeds.
-        this.ensureWriteRateLimitAvailable();
+        this.ensureWriteRateLimitAvailable(req);
         const result = await this.service.adminPromoteMemory({
           sourceMemoryId: body.sourceMemoryId,
           namespace: typeof body.namespace === "string" ? body.namespace : undefined,
@@ -2979,7 +2979,7 @@ export class EngramAccessHttpServer {
           reason: body.reason,
         });
         // actor is derived from the authenticated principal inside adminPromoteMemory;
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
         this.respondJson(res, 200, result);
       } catch (err) {
         if (err instanceof EngramAccessInputError) {
@@ -3236,7 +3236,7 @@ export class EngramAccessHttpServer {
     const observeSelfEnforcesQuota =
       toolName === "engram.observe" || toolName === "remnic.observe";
     if (isMcpWrite && !observeSelfEnforcesQuota) {
-      this.ensureWriteRateLimitAvailable();
+      this.ensureWriteRateLimitAvailable(req);
     }
 
     const sessionId = (() => {
@@ -3275,7 +3275,7 @@ export class EngramAccessHttpServer {
       sessionId,
       correlationId: mcpCorrelationId,
       enforceWriteQuota: observeSelfEnforcesQuota
-        ? () => this.ensureWriteRateLimitAvailable()
+        ? () => this.ensureWriteRateLimitAvailable(req)
         : undefined,
       sourceConnector: this.resolveConnector(req),
       abortSignal,
@@ -3299,7 +3299,7 @@ export class EngramAccessHttpServer {
       // dryRun/idempotencyReplay guards.
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
       if (!isError && !isRejectedCodegraph && counts) {
-        this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit(req);
       }
     }
     // A mutating tool may have committed just before the client disconnected.
@@ -3859,22 +3859,26 @@ export class EngramAccessHttpServer {
     return 200;
   }
 
-  private ensureWriteRateLimitAvailable(): void {
-    if (!this.writeLimiter.hasCapacity()) {
+  private ensureWriteRateLimitAvailable(req?: IncomingMessage): void {
+    if (!this.writeLimiter.hasCapacity(this.principalForRateLimit(req))) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
   }
 
-  private recordWriteRateLimitHit(): void {
-    this.writeLimiter.record();
+  private recordWriteRateLimitHit(req?: IncomingMessage): void {
+    this.writeLimiter.record(this.principalForRateLimit(req));
   }
 
-  private reserveWriteRateLimitSlot(): () => void {
-    const release = this.writeLimiter.reserve();
+  private reserveWriteRateLimitSlot(req?: IncomingMessage): () => void {
+    const release = this.writeLimiter.reserve(this.principalForRateLimit(req));
     if (!release) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
     return release;
+  }
+
+  private principalForRateLimit(req?: IncomingMessage): string | undefined {
+    return req ? this.resolveRequestPrincipal(req) : undefined;
   }
 
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {
