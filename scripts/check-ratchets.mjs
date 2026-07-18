@@ -31,6 +31,13 @@
  *                                Every handler must dispatch through the
  *                                operation registry; this ratchet pins the
  *                                residual count so it can only shrink.
+ *   6. fileSizeGrandfather      — per-file line-count ceilings for every source
+ *                                file above the 1200-line cap across ALL
+ *                                packages/<pkg>/src roots and root src/
+ *                                (issue #1995, umbrella #1988). New files are
+ *                                hard-capped at 1200 lines; grandfathered files
+ *                                may only shrink, and --update can only lower
+ *                                a ceiling, never raise one.
  *
  * Improvements pass and print a reminder to tighten the baseline with:
  *   node scripts/check-ratchets.mjs --update
@@ -57,6 +64,39 @@ const BASELINE_PATH = process.env.REMNIC_RATCHET_BASELINE
 
 const CORE_SRC = path.join(ROOT, "packages", "remnic-core", "src");
 const DEFAULT_OVERSIZE_THRESHOLD_LOC = 3000;
+
+/**
+ * File-size ratchet (issue #1995, umbrella #1988).
+ *
+ * Every non-test .ts source file under packages/<pkg>/src and root src/ is
+ * capped at NEW_FILE_SIZE_CAP_LOC lines. Files already above the cap when the
+ * baseline was generated are grandfathered with their then-current size as a
+ * personal ceiling (metrics.fileSizeGrandfather): they may shrink, never
+ * grow. `--update` can only LOWER a ceiling — laundering growth through a
+ * baseline refresh is rejected; a deliberate exception requires hand-editing
+ * the baseline JSON, which is loud in review.
+ */
+const NEW_FILE_SIZE_CAP_LOC = 1200;
+
+/** Roots scanned by the file-size ratchet (repo-relative). */
+function sizeCapScanRoots() {
+  const roots = [];
+  const packagesDir = path.join(ROOT, "packages");
+  if (existsSync(packagesDir)) {
+    for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const src = path.join(packagesDir, entry.name, "src");
+      if (existsSync(src) && statSync(src).isDirectory()) {
+        roots.push(src);
+      }
+    }
+  }
+  const rootSrc = path.join(ROOT, "src");
+  if (existsSync(rootSrc) && statSync(rootSrc).isDirectory()) {
+    roots.push(rootSrc);
+  }
+  return roots.sort();
+}
 
 /** Repo-relative watchlist paths, always stored with forward slashes. */
 const WATCHLIST = [
@@ -105,7 +145,8 @@ function usage() {
     "",
     "  (no flags)  compare current metrics against scripts/ratchet-baseline.json;",
     "              exit 1 if any structural metric grew",
-    "  --update    rewrite the baseline with current metrics (commit the result)",
+    "  --update    rewrite the baseline with current metrics (commit the result);",
+    "              grandfathered file-size ceilings can only be LOWERED by --update",
     "  --help      show this message",
   ].join("\n");
 }
@@ -228,11 +269,24 @@ function collectMetrics(oversizeThresholdLoc) {
     }
   }
 
+  // File-size ratchet (issue #1995): every source file over the cap, across
+  // ALL package src roots + root src/, keyed by repo-relative posix path.
+  const oversizeByFile = {};
+  for (const rootDir of sizeCapScanRoots()) {
+    for (const file of walkSourceFiles(rootDir)) {
+      const lines = countLines(file);
+      if (lines > NEW_FILE_SIZE_CAP_LOC) {
+        oversizeByFile[toPosix(path.relative(ROOT, file))] = lines;
+      }
+    }
+  }
+
   return {
     watchlistLoc,
     missingWatchlistFiles,
     oversizedFiles,
     oversizedFileCount: oversizedFiles.length,
+    oversizeByFile,
     scatteredConfigFlagReads,
     adHocNamespaceResolutions,
     unmigratedHandlerCount,
@@ -276,6 +330,26 @@ function readBaseline() {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
   }
+  // fileSizeGrandfather (issue #1995) may be ABSENT on a legacy baseline —
+  // the comparison in main() then fails with a regenerate hint. Absence must
+  // not fail here or `--update` could never migrate a legacy baseline.
+  if (metrics.fileSizeGrandfather !== undefined) {
+    if (
+      typeof metrics.fileSizeGrandfather !== "object" ||
+      metrics.fileSizeGrandfather === null ||
+      Array.isArray(metrics.fileSizeGrandfather)
+    ) {
+      fail("baseline metrics.fileSizeGrandfather must be an object when present (issue #1995)");
+    }
+    for (const [file, ceiling] of Object.entries(metrics.fileSizeGrandfather)) {
+      if (!Number.isInteger(ceiling) || ceiling <= NEW_FILE_SIZE_CAP_LOC) {
+        fail(
+          `baseline metrics.fileSizeGrandfather entry ${file} must be an integer above ` +
+            `${NEW_FILE_SIZE_CAP_LOC} — entries at or under the cap must simply be removed`,
+        );
+      }
+    }
+  }
   const threshold = parsed.oversizeThresholdLoc;
   if (!Number.isInteger(threshold) || threshold <= 0) {
     fail("baseline oversizeThresholdLoc must be a positive integer");
@@ -293,6 +367,9 @@ function writeBaseline(metrics, oversizeThresholdLoc) {
     metrics: {
       watchlistLoc: metrics.watchlistLoc,
       oversizedFileCount: metrics.oversizedFileCount,
+      fileSizeGrandfather: Object.fromEntries(
+        Object.entries(metrics.oversizeByFile).sort(([a], [b]) => a.localeCompare(b)),
+      ),
       scatteredConfigFlagReads: metrics.scatteredConfigFlagReads,
       adHocNamespaceResolutions: metrics.adHocNamespaceResolutions,
       unmigratedHandlerCount: metrics.unmigratedHandlerCount,
@@ -328,6 +405,26 @@ function main() {
           "If a god file was deliberately split or renamed, remove it from WATCHLIST in this script first, then rerun --update.",
       );
     }
+    // Issue #1995: --update may only LOWER a grandfathered ceiling. Growth
+    // cannot be laundered through a baseline refresh; a deliberate exception
+    // requires hand-editing the baseline JSON (loud in review).
+    if (existsSync(BASELINE_PATH)) {
+      const previous = readBaseline();
+      const previousCeilings = previous.metrics.fileSizeGrandfather ?? {};
+      const laundered = [];
+      for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
+        const ceiling = previousCeilings[file];
+        if (ceiling !== undefined && lines > ceiling) {
+          laundered.push(`${file} (${ceiling} -> ${lines})`);
+        }
+      }
+      if (laundered.length > 0) {
+        fail(
+          `cannot write baseline: grandfathered file(s) grew past their ceiling: ${laundered.join(", ")}. ` +
+            "Shrink the file(s) first — --update never raises a ceiling.",
+        );
+      }
+    }
     writeBaseline(metrics, DEFAULT_OVERSIZE_THRESHOLD_LOC);
     console.log(`[ratchet] baseline written to ${BASELINE_PATH}`);
     for (const [file, lines] of Object.entries(metrics.watchlistLoc)) {
@@ -338,6 +435,9 @@ function main() {
     console.log(`[ratchet]   adHocNamespaceResolutions: ${metrics.adHocNamespaceResolutions}`);
     console.log(`[ratchet]   unmigratedHandlerCount: ${metrics.unmigratedHandlerCount}`);
     console.log(`[ratchet]   directStorageImports: ${metrics.directStorageImports}`);
+    console.log(
+      `[ratchet]   fileSizeGrandfather (> ${NEW_FILE_SIZE_CAP_LOC} LOC): ${Object.keys(metrics.oversizeByFile).length} files`,
+    );
     return;
   }
 
@@ -388,6 +488,43 @@ function main() {
     improvements.push(
       `oversized files: ${baseline.metrics.oversizedFileCount} -> ${current.oversizedFileCount}`,
     );
+  }
+
+  // File-size ratchet (issue #1995): per-file ceilings across all src roots.
+  const baselineCeilings = baseline.metrics.fileSizeGrandfather;
+  if (baselineCeilings === undefined) {
+    failures.push(
+      "baseline predates the file-size ratchet (missing metrics.fileSizeGrandfather) — " +
+        "regenerate with `node scripts/check-ratchets.mjs --update` and commit it",
+    );
+  } else {
+    const sortedOversize = Object.entries(current.oversizeByFile).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    for (const [file, lines] of sortedOversize) {
+      const ceiling = baselineCeilings[file];
+      if (ceiling === undefined) {
+        failures.push(
+          `${file} is ${lines} lines — new source files are capped at ${NEW_FILE_SIZE_CAP_LOC} LOC (issue #1995). ` +
+            "Either extract the addition into a sibling module, or shrink the file to the cap. " +
+            "Grandfathering new files is not available.",
+        );
+      } else if (lines > ceiling) {
+        failures.push(
+          `${file} grew from its grandfathered ceiling ${ceiling} to ${lines} lines (issue #1995). ` +
+            "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition.",
+        );
+      } else if (lines < ceiling) {
+        improvements.push(`file-size ceiling ${file}: ${ceiling} -> ${lines} lines`);
+      }
+    }
+    for (const file of Object.keys(baselineCeilings).sort()) {
+      if (!(file in current.oversizeByFile)) {
+        improvements.push(
+          `file-size ceiling ${file}: now at/under the ${NEW_FILE_SIZE_CAP_LOC}-line cap (or removed) — prune with --update`,
+        );
+      }
+    }
   }
 
   if (current.scatteredConfigFlagReads > baseline.metrics.scatteredConfigFlagReads) {

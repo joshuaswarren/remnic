@@ -240,3 +240,129 @@ test("unknown arguments are rejected with usage", () => {
     assert.match(result.stderr, /--update/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// File-size ratchet (issue #1995, umbrella #1988)
+// ---------------------------------------------------------------------------
+
+test("file-size ratchet: --update grandfathers >1200-line files across all src roots", () => {
+  withFixture((fixture) => {
+    const otherSrc = path.join(fixture.root, "packages", "other-pkg", "src");
+    mkdirSync(otherSrc, { recursive: true });
+    writeFileSync(path.join(otherSrc, "legacy-big.ts"), "pad\n".repeat(1500));
+    const rootSrc = path.join(fixture.root, "src");
+    mkdirSync(rootSrc, { recursive: true });
+    writeFileSync(path.join(rootSrc, "root-big.ts"), "pad\n".repeat(1300));
+    // Test files and small files never enter the map.
+    writeFileSync(path.join(otherSrc, "legacy-big.test.ts"), "pad\n".repeat(1500));
+    writeFileSync(path.join(otherSrc, "small.ts"), "export {};\n");
+
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/other-pkg/src/legacy-big.ts"],
+      1501,
+    );
+    assert.equal(baseline.metrics.fileSizeGrandfather["src/root-big.ts"], 1301);
+    assert.equal(
+      "packages/other-pkg/src/legacy-big.test.ts" in baseline.metrics.fileSizeGrandfather,
+      false,
+    );
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 0, check.stderr);
+  });
+});
+
+test("file-size ratchet: a NEW file over the cap fails naming the cap and the sanctioned moves", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(path.join(fixture.src, "fresh-big.ts"), "pad\n".repeat(1250));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /fresh-big\.ts is 1251 lines — new source files are capped at 1200 LOC/);
+    assert.match(check.stderr, /sibling module/);
+    assert.match(check.stderr, /Grandfathering new files is not available/);
+  });
+});
+
+test("file-size ratchet: grandfathered growth past the ceiling fails; shrink is an improvement", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    appendFileSync(bigPath, "pad\n".repeat(10));
+    const grown = runRatchets([], fixture);
+    assert.equal(grown.status, 1);
+    assert.match(grown.stderr, /legacy-big\.ts grew from its grandfathered ceiling 1401 to 1411 lines/);
+
+    writeFileSync(bigPath, "pad\n".repeat(1350));
+    const shrunk = runRatchets([], fixture);
+    assert.equal(shrunk.status, 0, shrunk.stderr);
+    assert.match(shrunk.stdout, /file-size ceiling .*legacy-big\.ts: 1401 -> 1351 lines/);
+
+    // --update ratchets the ceiling down to the new measured size.
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"],
+      1351,
+    );
+  });
+});
+
+test("file-size ratchet: --update refuses to raise a grandfathered ceiling", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    appendFileSync(bigPath, "pad\n".repeat(50));
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1);
+    assert.match(update.stderr, /grew past their ceiling/);
+    assert.match(update.stderr, /--update never raises a ceiling/);
+  });
+});
+
+test("file-size ratchet: a legacy baseline without the metric fails with a regenerate hint", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    delete baseline.metrics.fileSizeGrandfather;
+    writeFileSync(fixture.baseline, JSON.stringify(baseline, null, 2));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /predates the file-size ratchet/);
+    assert.match(check.stderr, /--update/);
+  });
+});
+
+test("file-size ratchet: hand-added entries at or under the cap are rejected at parse", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/small-headroom.ts"] = 900;
+    writeFileSync(fixture.baseline, JSON.stringify(baseline, null, 2));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /must be an integer above 1200/);
+  });
+});
+
+test("file-size ratchet: a pruned (now-small) grandfathered file surfaces as an improvement", () => {
+  withFixture((fixture) => {
+    const bigPath = path.join(fixture.src, "legacy-big.ts");
+    writeFileSync(bigPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    writeFileSync(bigPath, "export {};\n");
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stdout, /now at\/under the 1200-line cap .* prune with --update/);
+  });
+});
