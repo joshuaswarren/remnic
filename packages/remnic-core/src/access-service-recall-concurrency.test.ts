@@ -40,6 +40,15 @@ function deferred<T = void>(): {
   return { promise, resolve, reject };
 }
 
+// Yield past all pending microtasks (a single macrotask hop). Deterministic and
+// count-free: lets a coalesced follower fully consume and reach its persistence
+// await before the test observes its state.
+function flushMacrotasks(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
+}
+
 // A recall response shaped only as this suite's stubs need it. Assigned via a
 // named helper (not an inline cast into a member access): the pipeline is
 // stubbed, so the real envelope shape is irrelevant — we only assert
@@ -89,6 +98,8 @@ function makeService(opts: {
   /** Fired by the default budget model each time a reservation is released —
    *  lets tests await release deterministically instead of polling microtasks. */
   onBudgetRelease?: () => void;
+  /** Fired by the default budget model each time a reservation is recorded. */
+  onBudgetRecord?: () => void;
 }): Harness {
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const recallSemaphores = new Map<string, unknown>();
@@ -100,6 +111,7 @@ function makeService(opts: {
   const defaultRecord = (principal: string): BudgetDecision => {
     const id = ++reservationSeq;
     liveReservations.add(id);
+    opts.onBudgetRecord?.();
     return { allowed: true, reservation: { principal, id } };
   };
   const defaultRelease = (reservation: BudgetReservation | undefined): void => {
@@ -1002,16 +1014,21 @@ test("round 6 #2 (flight path): abort between the result and the final check rel
 });
 
 test("a keyed fast-path follower does not report success before the leader's put settles (round 7 #1)", async () => {
+  const pipelineGate = deferred<void>();
   const putGate = deferred<void>();
-  const executeDone = deferred<void>();
+  let pipelineRuns = 0;
   const h = makeService({
     limit: 0,
     singleFlight: true,
     crossNamespace: true,
-    pipeline: async () => stubResponse([]),
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await pipelineGate.promise;
+      return stubResponse([]);
+    },
   });
-  // Simulate the keyed leader's handleIdempotentRead: run execute (which
-  // registers the flight + consumes it), then a GATED idempotency.put.
+  // Simulate the keyed leader's handleIdempotentRead: run execute (registers +
+  // consumes the flight), then a GATED idempotency.put.
   const host = h.service as unknown as {
     handleIdempotentRead: (options: {
       execute: () => Promise<EngramAccessRecallResponse>;
@@ -1019,14 +1036,17 @@ test("a keyed fast-path follower does not report success before the leader's put
   };
   host.handleIdempotentRead = async (options) => {
     const response = await options.execute();
-    executeDone.resolve();
     await putGate.promise;
     return response;
   };
 
   const leader = h.service.recall({ query: "same", idempotencyKey: "k" });
-  await executeDone.promise; // leader consumed; flight registered; parked on the put
+  // The follower joins WHILE the pipeline is gated, so it coalesces onto the
+  // leader's flight instead of starting its own once the leader detaches.
   const follower = h.service.recall({ query: "same", idempotencyKey: "k" });
+  pipelineGate.resolve();
+  // Drain microtasks so the follower consumes and reaches the persistence await.
+  await flushMacrotasks();
 
   // The follower has coalesced but must NOT report success before the put.
   const state = await Promise.race([
@@ -1039,16 +1059,22 @@ test("a keyed fast-path follower does not report success before the leader's put
   const [lr, fr] = await Promise.all([leader, follower]);
   assert.ok(lr);
   assert.ok(fr);
+  assert.equal(pipelineRuns, 1, "the follower coalesced onto the leader's single pipeline");
 });
 
 test("a keyed fast-path follower mirrors the leader on put failure: rejects and releases (round 7 #1)", async () => {
+  const pipelineGate = deferred<void>();
   const putGate = deferred<void>();
-  const executeDone = deferred<void>();
+  let pipelineRuns = 0;
   const h = makeService({
     limit: 0,
     singleFlight: true,
     crossNamespace: true,
-    pipeline: async () => stubResponse([]),
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await pipelineGate.promise;
+      return stubResponse([]);
+    },
   });
   const host = h.service as unknown as {
     handleIdempotentRead: (options: {
@@ -1059,19 +1085,104 @@ test("a keyed fast-path follower mirrors the leader on put failure: rejects and 
     // Run execute() (registers + consumes the flight), then simulate a FAILED
     // idempotency.put after the gate.
     await options.execute();
-    executeDone.resolve();
     await putGate.promise;
     throw new Error("idempotency put failed");
   };
 
   const leader = h.service.recall({ query: "same", idempotencyKey: "k" });
-  await executeDone.promise;
   const follower = h.service.recall({ query: "same", idempotencyKey: "k" });
+  pipelineGate.resolve();
   putGate.resolve();
 
   // The leader rejects on put failure (releasing its reservation); the follower
   // must behave IDENTICALLY — reject with the same error and release its own.
   await assert.rejects(leader, /idempotency put failed/);
   await assert.rejects(follower, /idempotency put failed/);
+  assert.equal(pipelineRuns, 1, "the follower coalesced onto the leader's single pipeline");
   assert.equal(h.liveBudget(), 0, "both leader and follower released their reservations on put failure");
+});
+
+test("an unkeyed cross-namespace follower that disconnects after reserving releases its reservation (round 8 #1)", async () => {
+  const gate = deferred<void>();
+  const controller = new AbortController();
+  let records = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      await gate.promise;
+      return stubResponse([]);
+    },
+    // record #1 = leader's pipeline reserve, record #2 = the follower's own
+    // per-caller reserve — abort the follower the instant it reserves so the
+    // disconnect lands after the reserve but before delivery.
+    onBudgetRecord: () => {
+      records += 1;
+      if (records === 2) controller.abort();
+    },
+  });
+
+  const leader = h.service.recall({ query: "same" });
+  const follower = h.service.recall({ query: "same", abortSignal: controller.signal });
+  gate.resolve();
+
+  const leaderResp = await leader;
+  assert.ok(leaderResp, "the leader delivered");
+  await assert.rejects(follower, (error: Error) => error.name === "AbortError");
+  assert.equal(
+    h.liveBudget(),
+    1,
+    "the follower's post-consume reservation was released; only the leader's delivered one stands",
+  );
+});
+
+test("a keyed follower that disconnects during the leader's put gets AbortError while the flight still persists (round 8 #2)", async () => {
+  const pipelineGate = deferred<void>();
+  const putGate = deferred<void>();
+  const controller = new AbortController();
+  let pipelineRuns = 0;
+  let putCompleted = false;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await pipelineGate.promise;
+      return stubResponse([]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    await putGate.promise;
+    putCompleted = true;
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "k" });
+  // Follower joins WHILE the pipeline is gated, so it coalesces onto the flight.
+  const follower = h.service.recall({ query: "same", idempotencyKey: "k", abortSignal: controller.signal });
+  pipelineGate.resolve();
+  // Drain microtasks so the follower consumes and parks on flight.persisted while
+  // the leader is parked on the (still-gated) put.
+  await flushMacrotasks();
+
+  // The follower disconnects during the leader's put.
+  controller.abort();
+  await assert.rejects(follower, (error: Error) => error.name === "AbortError");
+
+  // The leader's put still completes and persists for other consumers.
+  putGate.resolve();
+  const leaderResp = await leader;
+  assert.ok(leaderResp);
+  assert.equal(pipelineRuns, 1, "the follower coalesced onto the leader's single pipeline");
+  assert.equal(putCompleted, true, "the leader's put completed despite the follower's disconnect");
+  // The follower released its own reservation; the leader's persisted one stands.
+  assert.equal(h.liveBudget(), 1, "the disconnected follower released its reservation");
 });

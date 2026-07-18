@@ -2715,11 +2715,15 @@ export class EngramAccessService {
   }
 
   /** Follower path (issue #1906 review): join an already-registered flight
-   *  WITHOUT taking a concurrency slot. For a KEYED flight the follower does not
-   *  report success until the leader's idempotency persistence has settled
-   *  (round 7 #1) — on a persistence failure it behaves identically to the
-   *  leader: releases its own reservation and rejects, so a retry of the key
-   *  re-executes consistently (nobody saw a phantom success). */
+   *  WITHOUT taking a concurrency slot. Mirrors the leaders' post-consume
+   *  guards: a caller that disconnected after its reservation was recorded but
+   *  before delivery releases it rather than leaking quota (round 8 #1). For a
+   *  KEYED flight the follower does not report success until the leader's
+   *  idempotency persistence settles (round 7 #1) — that wait is raced against
+   *  the caller's own abort so a disconnect during the leader's put returns
+   *  AbortError while the flight still completes and persists for others
+   *  (round 8 #2). On persistence failure it behaves identically to the leader
+   *  (release + reject). */
   private async followRecallFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
@@ -2727,7 +2731,21 @@ export class EngramAccessService {
     const consumed = await this.consumeFlight(flight, request, true, true);
     if (request.idempotencyKey?.trim() && flight.persisted) {
       try {
-        await flight.persisted.promise;
+        // Race the persistence gate with THIS caller's abort: a disconnect here
+        // rejects the follower (releasing its reservation) while the leader's put
+        // still completes for other consumers (round 8 #2). A persistence failure
+        // rejects identically (round 7 #1).
+        await this.raceAbort(flight.persisted.promise, request.abortSignal);
+      } catch (err) {
+        this.budget.release(consumed.reservation);
+        throw err;
+      }
+    } else {
+      // Unkeyed: a caller that aborted after its per-caller reservation was
+      // recorded but before delivery releases it (round 8 #1), matching the
+      // final-abort guard in leadRecallFlight / runRecallDirect.
+      try {
+        throwIfAborted(request.abortSignal);
       } catch (err) {
         this.budget.release(consumed.reservation);
         throw err;
