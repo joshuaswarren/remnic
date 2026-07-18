@@ -209,3 +209,29 @@ test("a failed append leaves the dedup cache clean so a retry persists the event
     assert.equal(rows.length, 2, "both distinct signals are on disk after the retry");
   });
 });
+
+test("concurrent appends serialize: both batches persist once and a later append dedups against their union", async () => {
+  // Issue #1909 review round 3: without a per-instance mutex, two concurrent
+  // appends each snapshot their own dedup set before the writes serialize; the
+  // later completion commits an INCOMPLETE set under the final file identity, so
+  // a subsequent call cache-hits a set missing the first batch and writes
+  // duplicate signals.
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const signalsPath = path.join(dir, "state", "behavior-signals.jsonl");
+
+    const [n1, n2] = await Promise.all([
+      storage.appendBehaviorSignals([signal("mA", "hA")]),
+      storage.appendBehaviorSignals([signal("mB", "hB")]),
+    ]);
+    assert.equal(n1, 1, "first concurrent batch persisted");
+    assert.equal(n2, 1, "second concurrent batch persisted");
+    assert.equal((await readRows(signalsPath)).length, 2, "both concurrent batches written exactly once");
+
+    // Re-submitting BOTH keys must dedup against the UNION of the two batches —
+    // proving the cache reflects everything actually on disk.
+    const n3 = await storage.appendBehaviorSignals([signal("mA", "hA"), signal("mB", "hB")]);
+    assert.equal(n3, 0, "later append deduped against the union of both concurrent batches");
+    assert.equal((await readRows(signalsPath)).length, 2, "no duplicate rows written");
+  });
+});

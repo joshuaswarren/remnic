@@ -3850,6 +3850,17 @@ export class StorageManager {
     | { identity: { size: number; mtimeMs: number }; keys: Set<string> }
     | null = null;
   /**
+   * Per-instance serializer for `appendBehaviorSignals` (issue #1909 review
+   * round 3). The read→dedup→append→cache-commit transaction must run to
+   * completion before the next append starts; otherwise two concurrent callers
+   * each snapshot their own `existingKeys`, and the later one commits an
+   * INCOMPLETE set under the final file identity, so a subsequent call
+   * cache-hits a set missing the earlier batch and writes duplicate signals.
+   * The `.catch` links keep the chain alive after a rejected append
+   * (AGENTS.md #28).
+   */
+  private behaviorSignalsAppendChain: Promise<unknown> = Promise.resolve();
+  /**
    * Buffer surprise telemetry ledger (issue #563 PR 3).
    *
    * Append-only JSONL of per-turn `BUFFER_SURPRISE` events emitted by
@@ -5593,6 +5604,18 @@ export class StorageManager {
   }
 
   async appendBehaviorSignals(events: BehaviorSignalEvent[]): Promise<number> {
+    if (events.length === 0) return 0;
+    // Serialize the whole read→dedup→append→cache-commit transaction per
+    // instance (issue #1909 review round 3) so concurrent callers cannot each
+    // commit an incomplete dedup set. The chain recovers after a rejection.
+    const run = this.behaviorSignalsAppendChain
+      .catch(() => undefined)
+      .then(() => this.appendBehaviorSignalsUnlocked(events));
+    this.behaviorSignalsAppendChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async appendBehaviorSignalsUnlocked(events: BehaviorSignalEvent[]): Promise<number> {
     if (events.length === 0) return 0;
     await this.ensureDirectories();
 
