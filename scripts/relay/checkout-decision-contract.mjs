@@ -188,6 +188,26 @@ function hasAffirmativeAdditionalReplacementPolicy(value) {
     .some(isAffirmativeAdditionalReplacementClause);
 }
 
+function isAllowedInitialTokenMintClause(clause) {
+  return (
+    hasReplacementActionSignal(clause) &&
+    /\b(?:first|initial)\s+(?:checkout\s+)?request\b/.test(clause)
+  );
+}
+
+function isAllowedPostExpiryReplacementClause(clause) {
+  return POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause));
+}
+
+function hasUnrecognizedAffirmativeTokenMutationPolicy(value) {
+  return decisionClauseGroups(value)
+    .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
+    .some((predicate) => {
+      if (hasReplacementPolicyNegation(predicate) || !hasReplacementActionSignal(predicate)) return false;
+      return !isAllowedInitialTokenMintClause(predicate) && !isAllowedPostExpiryReplacementClause(predicate);
+    });
+}
+
 function isAffirmativePreExpiryReplacementClause(clause) {
   return !NEGATION_PATTERN.test(clause) && hasPreExpiryTiming(clause) && hasReplacementActionSignal(clause);
 }
@@ -249,6 +269,7 @@ export function relayCheckoutDecisionContractKey(value) {
   const contradictoryPreExpiryReplacement = hasAffirmativePreExpiryReplacementPolicy(value);
   const contradictoryAdditionalReplacement =
     hasAffirmativeAdditionalReplacementPolicy(value) || postExpiryReplacementSignalCount(value) > 1;
+  const unrecognizedAffirmativeTokenMutation = hasUnrecognizedAffirmativeTokenMutationPolicy(value);
   const matches =
     sessionLifecycle &&
     positiveReuseLifecycle &&
@@ -256,7 +277,8 @@ export function relayCheckoutDecisionContractKey(value) {
     !negatedRequiredBehavior &&
     !contradictoryPerUseRotation &&
     !contradictoryPreExpiryReplacement &&
-    !contradictoryAdditionalReplacement;
+    !contradictoryAdditionalReplacement &&
+    !unrecognizedAffirmativeTokenMutation;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
