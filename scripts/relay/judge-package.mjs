@@ -123,6 +123,38 @@ async function readJson(root, relative) {
   }
 }
 
+async function guardedRepoPath(repoRoot, relative, expectedType) {
+  const root = path.resolve(repoRoot);
+  const rootInfo = await lstat(root);
+  invariant(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), "the repository root must be a real directory");
+  const target = path.resolve(root, relative);
+  const targetRelative = path.relative(root, target);
+  invariant(
+    targetRelative.length > 0 &&
+      targetRelative !== ".." &&
+      !targetRelative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(targetRelative),
+    `${relative} must stay inside the repository root`
+  );
+
+  let current = root;
+  const segments = targetRelative.split(path.sep);
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const info = await lstat(current);
+    invariant(!info.isSymbolicLink(), `${relative} must not traverse a symlink`);
+    const isTarget = index === segments.length - 1;
+    if (!isTarget) invariant(info.isDirectory(), `${relative} parent paths must be directories`);
+    else if (expectedType === "directory") invariant(info.isDirectory(), `${relative} must be a directory`);
+    else invariant(info.isFile(), `${relative} must be a regular file`);
+  }
+  return target;
+}
+
+async function readRegularRepoFile(repoRoot, relative, encoding) {
+  return readFile(await guardedRepoPath(repoRoot, relative, "file"), encoding);
+}
+
 async function regularFiles(root) {
   const rootInfo = await lstat(root);
   invariant(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), `${root} must be a real directory`);
@@ -178,8 +210,7 @@ async function verifyManifest(root, expectedFiles) {
   return actual;
 }
 
-async function verifyFixtureManifest(repoRoot) {
-  const fixtureRoot = path.join(repoRoot, FIXTURE_RELATIVE);
+async function verifyFixtureManifest(fixtureRoot) {
   const manifest = asObject(await readJson(fixtureRoot, "manifest.json"), "fixture manifest");
   const files = await digestTree(fixtureRoot, ["manifest.json"]);
   const actual = { schemaVersion: 1, files, rootSha256: sha256(JSON.stringify(files)) };
@@ -332,13 +363,43 @@ function measureDemoScript(contents) {
   };
 }
 
+export function verifyRelayHiddenTestEvidence(testResults, recordingMetadata) {
+  const tests = asArray(testResults, "tests.json");
+  const metadata = asObject(recordingMetadata, "recording.json");
+  invariant(tests.length === 2, "exactly two hidden-contract test results are required");
+  invariant(
+    tests[0]?.phase === "before-correction" &&
+      tests[0]?.status === "failed" &&
+      Number.isInteger(tests[0]?.exitCode) &&
+      tests[0].exitCode > 0,
+    "before-correction test must record a positive integer exit code"
+  );
+  invariant(
+    tests[1]?.phase === "after-correction" && tests[1]?.status === "passed" && tests[1]?.exitCode === 0,
+    "after-correction test does not prove recovery"
+  );
+  const testOutputSha256 = tests.map((result) => result?.outputSha256);
+  invariant(
+    testOutputSha256.every((digest) => typeof digest === "string" && SHA256_PATTERN.test(digest)),
+    "hidden-contract test output digests are invalid"
+  );
+  invariant(
+    sameJson(metadata.testOutputSha256, testOutputSha256),
+    "recording metadata is not bound to the ordered hidden-contract test output digests"
+  );
+  return testOutputSha256;
+}
+
 export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
   const root = path.resolve(repoRoot);
-  const recordingRoot = path.join(root, RECORDING_RELATIVE);
-  const uiRoot = path.join(root, UI_RELATIVE);
+  const [recordingRoot, fixtureRoot, uiRoot] = await Promise.all([
+    guardedRepoPath(root, RECORDING_RELATIVE, "directory"),
+    guardedRepoPath(root, FIXTURE_RELATIVE, "directory"),
+    guardedRepoPath(root, UI_RELATIVE, "directory"),
+  ]);
   const [manifest, fixtureManifest, uiFiles] = await Promise.all([
     verifyManifest(recordingRoot, EXPECTED_RECORDING_FILES),
-    verifyFixtureManifest(root),
+    verifyFixtureManifest(fixtureRoot),
     digestTree(uiRoot),
   ]);
   invariant(manifest.rootSha256 === RELAY_RECORDING_ROOT_SHA256, "the canonical recording root changed without review");
@@ -485,24 +546,7 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     invariant(calls[role].summary.promptSha256 === sha256(prompt), `${role} is not bound to its committed prompt`);
   }
 
-  invariant(tests.length === 2, "exactly two hidden-contract test results are required");
-  invariant(
-    tests[0]?.phase === "before-correction" && tests[0]?.status === "failed" && tests[0]?.exitCode !== 0,
-    "before-correction test does not prove failure"
-  );
-  invariant(
-    tests[1]?.phase === "after-correction" && tests[1]?.status === "passed" && tests[1]?.exitCode === 0,
-    "after-correction test does not prove recovery"
-  );
-  const testOutputSha256 = tests.map((result) => result?.outputSha256);
-  invariant(
-    testOutputSha256.every((digest) => typeof digest === "string" && SHA256_PATTERN.test(digest)),
-    "hidden-contract test output digests are invalid"
-  );
-  invariant(
-    sameJson(metadata.testOutputSha256, testOutputSha256),
-    "recording metadata is not bound to the ordered hidden-contract test output digests"
-  );
+  const testOutputSha256 = verifyRelayHiddenTestEvidence(tests, metadata);
 
   invariant(events.length === EXPECTED_EVENT_KINDS.length, "the mission must contain exactly 16 causal events");
   invariant(
@@ -657,10 +701,10 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
   );
   const [staticAssets, demoScript, recordingText, fixtureText, packageManifest] = await Promise.all([
     Promise.all(EXPECTED_UI_FILES.map((name) => readFile(path.join(uiRoot, name), "utf8"))),
-    readFile(path.join(root, DEMO_SCRIPT_RELATIVE), "utf8"),
+    readRegularRepoFile(root, DEMO_SCRIPT_RELATIVE, "utf8"),
     readTextTree(recordingRoot),
-    readTextTree(path.join(root, FIXTURE_RELATIVE)),
-    readFile(path.join(root, "package.json"), "utf8"),
+    readTextTree(fixtureRoot),
+    readRegularRepoFile(root, "package.json", "utf8"),
   ]);
   const sensitiveFilesScanned = recordingText.length + fixtureText.length + staticAssets.length + 2;
   scanForSensitiveMaterial([...recordingText, ...fixtureText, ...staticAssets, demoScript, packageManifest]);

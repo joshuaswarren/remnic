@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   RELAY_RECORDING_ROOT_SHA256,
   RELAY_UI_ROOT_SHA256,
   startRelayJudgeServer,
+  verifyRelayHiddenTestEvidence,
   verifyRelayJudgePackage,
 } from "../scripts/relay/judge-package.mjs";
 
@@ -109,6 +110,19 @@ test("dependency-free Relay judge verifier binds the canonical live mission", as
   assert.ok(receipt.demo.estimatedTotalSeconds < 180);
 });
 
+test("Relay hidden-test evidence requires a real nonzero failure exit", async () => {
+  const recordingRoot = path.join(repoRoot, recordingRelative);
+  const [results, metadata] = await Promise.all([
+    readFile(path.join(recordingRoot, "tests.json"), "utf8").then(JSON.parse),
+    readFile(path.join(recordingRoot, "recording.json"), "utf8").then(JSON.parse),
+  ]);
+  results[0].exitCode = null;
+  assert.throws(
+    () => verifyRelayHiddenTestEvidence(results, metadata),
+    /before-correction test must record a positive integer exit code/
+  );
+});
+
 test("Relay judge verifier rejects a hand-edited Mission Control frame", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-ui-tamper-"));
   try {
@@ -133,6 +147,27 @@ test("Relay judge verifier scans copied judge text for host-private material", a
     await assert.rejects(() => verifyRelayJudgePackage(parent), /secret-like or host-private material/);
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("Relay judge verifier rejects symlinked standalone text inputs", async (t) => {
+  for (const relative of ["docs/remnic-relay/DEMO-SCRIPT.md", "package.json"]) {
+    await t.test(relative, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-symlink-root-"));
+      const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-symlink-outside-"));
+      try {
+        await copyJudgePackage(parent);
+        const target = path.join(parent, relative);
+        const outsideFile = path.join(outside, "host-private.txt");
+        await writeFile(outsideFile, "host-private material that must never be read\n");
+        await rm(target);
+        await symlink(outsideFile, target);
+        await assert.rejects(() => verifyRelayJudgePackage(parent), /must not traverse a symlink/);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
   }
 });
 
