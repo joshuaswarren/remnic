@@ -586,12 +586,22 @@ function delegatedParserCall(
   const arg = current.arguments[0];
   if (!arg) return null;
   // cfg → root; cfg.block → ["block"]; cfg.block.sub → ["block","sub"];
-  // `cfg.block ?? {}` and `(cfg.block as Rec)` unwrap first (review finding).
+  // casts and ?? {} / || {} fallbacks unwrap via unwrapArgument; ELEMENT
+  // ACCESS (cfg["block"]) is accepted too (review finding).
   const segments: string[] = [];
   let a: ts.Expression = unwrapArgument(arg);
-  while (ts.isPropertyAccessExpression(a)) {
-    segments.unshift(a.name.text);
-    a = unwrapArgument(a.expression);
+  for (;;) {
+    if (ts.isPropertyAccessExpression(a)) {
+      segments.unshift(a.name.text);
+      a = unwrapArgument(a.expression);
+      continue;
+    }
+    if (ts.isElementAccessExpression(a) && a.argumentExpression && ts.isStringLiteral(a.argumentExpression)) {
+      segments.unshift(a.argumentExpression.text);
+      a = unwrapArgument(a.expression);
+      continue;
+    }
+    break;
   }
   if (!ts.isIdentifier(a)) return null;
   return { helperName: current.expression.text, argSegments: segments };

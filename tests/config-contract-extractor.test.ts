@@ -90,6 +90,9 @@ test("real config.ts extraction matches the committed snapshot (config-surface c
       "so the config-surface change is visible in review",
   );
   assert.deepEqual(actual.unparseable, snapshot.unparseable);
+  // Round-3 review: the new ambiguousValueMembers surface must round-trip
+  // too — dropped-but-reviewable value-member paths are part of the snapshot.
+  assert.deepEqual(actual.ambiguousValueMembers, snapshot.ambiguousValueMembers);
 });
 
 test("real extraction is deterministic across runs (§12: sorted output)", () => {

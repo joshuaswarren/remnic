@@ -122,6 +122,7 @@ export function runContractCheck(options: {
   const manifestPaths = options.manifestPaths ?? [
     path.join(repoRoot, "packages", "plugin-openclaw", "openclaw.plugin.json"),
     path.join(repoRoot, "packages", "shim-openclaw-engram", "openclaw.plugin.json"),
+    path.join(repoRoot, "openclaw.plugin.json"),
   ];
   const docsPath = options.docsPath ?? path.join(repoRoot, "docs", "config-reference.md");
   const grandfatherPath =
@@ -180,12 +181,22 @@ export function runContractCheck(options: {
   for (const schema of schemas) {
     const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
     for (const schemaPath of schema.flat.paths) {
-      const topSegment = schemaPath.split(".")[0];
-      if (!parsedPrefixes.has(topSegment)) {
+      // Dead when NO parsed key shares ANY ancestor segment — catches a
+      // nested entry below an existing structured block that the parser
+      // never reads (review finding).
+      const segments = schemaPath.split(".");
+      let hasParsedAncestor = false;
+      for (let i = segments.length; i >= 1; i--) {
+        if (parsedPrefixes.has(segments.slice(0, i).join("."))) {
+          hasParsedAncestor = true;
+          break;
+        }
+      }
+      if (!hasParsedAncestor) {
         violations.push({
           kind: "dead-schema",
-          key: topSegment,
-          detail: `schema key in ${manifestRel} has no corresponding parsed key (validator-implementation drift, §40)`,
+          key: schemaPath,
+          detail: `schema path in ${manifestRel} has no corresponding parsed key at any depth (validator-implementation drift, §40)`,
         });
       }
     }

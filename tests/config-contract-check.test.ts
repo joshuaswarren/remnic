@@ -18,13 +18,28 @@ import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
 function makeFixtureRepo(options: {
   parserExtraKey?: boolean;
   schemaExtraTopKey?: boolean;
+  docsBogus?: string;
+  unparseableBody?: boolean;
   grandfather?: Array<{ kind: string; key: string; issue: string }>;
 }) {
   const root = mkdtempSync(path.join(os.tmpdir(), "config-contract-"));
   const parserPath = path.join(root, "parser.ts");
-  writeFileSync(
-    parserPath,
-    `
+  const parserTemplate = options.unparseableBody
+    ? `
+type Rec = Record<string, unknown>;
+export function parseFixtureBlockConfig(value: unknown): Rec {
+  const raw = value && typeof value === "object" ? (value as Rec) : {};
+  const out: Rec = {};
+  for (const key of Object.keys(raw)) { out[key] = raw[key]; }
+  out.enabled = raw.enabled;
+  return out;
+}
+export function parseRootConfig(raw: unknown): Rec {
+  const cfg = raw && typeof raw === "object" ? (raw as Rec) : {};
+  return { topFlag: cfg.topFlag === true, codingKnowledge: parseFixtureBlockConfig(cfg.codingKnowledge) };
+}
+`
+    : `
 type Rec = Record<string, unknown>;
 export function parseFixtureBlockConfig(value: unknown): Rec {
   const raw = value && typeof value === "object" ? (value as Rec) : {};
@@ -40,8 +55,8 @@ export function parseRootConfig(raw: unknown): Rec {
     codingKnowledge: parseFixtureBlockConfig(cfg.codingKnowledge),
   };
 }
-`,
-  );
+`;
+  writeFileSync(parserPath, parserTemplate);
   const schema = {
     configSchema: {
       properties: {
@@ -63,7 +78,7 @@ export function parseRootConfig(raw: unknown): Rec {
     docsPath,
     // Docs mention exactly the keys the fixture variant declares — the
     // documented-nonexistent check correctly flags anything beyond them.
-    `Config keys: \`topFlag\`, \`codingKnowledge.enabled\`${options.parserExtraKey ? ", `codingKnowledge.fixture`" : ""}${options.schemaExtraTopKey ? ", `deadTopKey`" : ""}.\n`,
+    `Config keys: \`topFlag\`, \`codingKnowledge.enabled\`${options.parserExtraKey ? ", \`codingKnowledge.fixture\`" : ""}${options.schemaExtraTopKey ? ", \`deadTopKey\`" : ""}${options.docsBogus ? `, \`${options.docsBogus}\`` : ""}.\n`,
   );
   const grandfatherPath = path.join(root, "grandfathered.json");
   if (options.grandfather) {
@@ -84,6 +99,32 @@ export function parseRootConfig(raw: unknown): Rec {
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+
+test("documented-nonexistent: a docs path under a known top-level key that matches nothing fails", () => {
+  const fixture = makeFixtureRepo({ docsBogus: "codingKnowledge.nope" });
+  try {
+    const result = fixture.run();
+    assert.ok(
+      result.violations.some((v) => v.kind === "documented-nonexistent" && v.key === "codingKnowledge.nope"),
+      JSON.stringify(result.violations),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("unparseable construct: a dynamic Object.keys loop over the parser input surfaces loudly", () => {
+  const fixture = makeFixtureRepo({ unparseableBody: true });
+  try {
+    const result = fixture.run();
+    assert.ok(
+      result.violations.some((v) => v.kind === "unparseable-construct"),
+      JSON.stringify(result.violations),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 test("#1923 reproduction: a parsed key missing from the manifests fails naming the key and BOTH manifests", () => {
   const fixture = makeFixtureRepo({ parserExtraKey: true });
