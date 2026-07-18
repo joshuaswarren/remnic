@@ -419,3 +419,38 @@ test("the runtime brand does not survive object spread (round 4)", () => {
   // JSON round-trips (the common accidental copy) also drop the brand.
   assert.equal(isSealedMemoryEnvelope(JSON.parse(JSON.stringify(sealed))), false);
 });
+
+test("the runtime seal is not recoverable via reflection (round 5)", () => {
+  const sealed = composeMemoryEnvelope(minimalInput(), CTX);
+  // No own symbols exist on the envelope at all — there is nothing to
+  // recover and re-apply to a forged object.
+  assert.deepEqual(Object.getOwnPropertySymbols(sealed), []);
+  // Even copying every own property (string and symbol, enumerable or not)
+  // does not transfer the seal.
+  const clone = Object.create(
+    Object.getPrototypeOf(sealed),
+    Object.getOwnPropertyDescriptors(sealed),
+  );
+  assert.equal(isSealedMemoryEnvelope(clone), false);
+});
+
+test("non-plain structuredAttributes objects are rejected, not silently emptied (round 5)", () => {
+  const asMap = new Map([["city", "Austin"]]);
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: asMap as unknown as Record<string, string> }), CTX),
+    /plain object/,
+  );
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: new Date() as unknown as Record<string, string> }), CTX),
+    /plain object/,
+  );
+  class Attrs { city = "Austin"; }
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: new Attrs() as unknown as Record<string, string> }), CTX),
+    /plain object/,
+  );
+  // Null-prototype objects (JSON.parse reviver output etc.) remain accepted.
+  const nullProto = Object.assign(Object.create(null), { city: "Austin" }) as Record<string, string>;
+  const env = composeMemoryEnvelope(minimalInput({ structuredAttributes: nullProto }), CTX);
+  assert.equal(env.structuredAttributes?.city, "Austin");
+});

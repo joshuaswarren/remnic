@@ -202,8 +202,16 @@ function normalizeStructuredAttributes(
   raw: Record<string, string> | undefined,
 ): Readonly<Record<string, string>> | undefined {
   if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    fail("structuredAttributes", "must be a plain object of string values");
+  if (
+    raw === null ||
+    typeof raw !== "object" ||
+    Array.isArray(raw) ||
+    (Object.getPrototypeOf(raw) !== Object.prototype && Object.getPrototypeOf(raw) !== null)
+  ) {
+    // Map/Date/class instances have empty Object.entries() and would
+    // silently normalize to "no attributes" (review finding on #1998
+    // round 5) — reject anything that is not a plain object.
+    fail("structuredAttributes", "must be a plain object of string values (Map, Date, and class instances are rejected)");
   }
   const entries = Object.entries(raw);
   if (entries.length === 0) return undefined;
@@ -322,35 +330,23 @@ export function composeMemoryEnvelope(
     source: ctx.source.trim(),
     composedAt: now.toISOString(),
   };
-  // The runtime brand is NON-ENUMERABLE: object spread / Object.assign copy
-  // only enumerable own properties, so `{ ...sealed, content: "forged" }`
-  // does NOT carry the brand — a spread-modified copy fails the runtime
-  // check instead of impersonating a sealed envelope (review finding on
-  // #1998 round 4).
-  Object.defineProperty(body, sealedBrand, {
-    value: true,
-    enumerable: false,
-    writable: false,
-    configurable: false,
-  });
+  // Runtime seal: membership in a module-private WeakSet. Unlike a symbol
+  // property — even a non-enumerable one — WeakSet membership cannot be
+  // recovered by reflection (Object.getOwnPropertySymbols) and re-applied
+  // to a forged object, cannot be transferred by spread/assign/JSON, and
+  // costs nothing at GC time (review finding on #1998 round 5).
   const envelope = Object.freeze(body) as unknown as SealedMemoryEnvelope;
+  SEALED_ENVELOPES.add(envelope);
   return envelope;
 }
 
-// The runtime carrier for the compile-time brand. The declared `sealed`
-// unique symbol never exists at runtime; the single mint site above casts
-// through `unknown`, which is safe precisely because no other module can
-// name the brand. Runtime consumers can verify a value came through the
-// composer with `isSealedMemoryEnvelope`.
-const sealedBrand = Symbol("remnic.sealedMemoryEnvelope");
+// The runtime seal registry. The declared `sealed` unique symbol exists only
+// at the type level (compile-time fence); this WeakSet is the runtime fence.
+const SEALED_ENVELOPES = new WeakSet<object>();
 
 /** Runtime check (belt) — true only for composer-minted envelopes. */
 export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnvelope {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<PropertyKey, unknown>)[sealedBrand] === true
-  );
+  return typeof value === "object" && value !== null && SEALED_ENVELOPES.has(value);
 }
 
 // ---------------------------------------------------------------------------
