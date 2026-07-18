@@ -547,7 +547,10 @@ export class ExtractionPersistCoordinator {
                   ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                   ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
                 },
-                options.entityRef,
+                // #2014 round 3: the envelope's SURVIVING entityRef — the raw
+                // option can differ (untrimmed/dropped) from what sealed
+                // writes persisted, mistargeting the backfill row.
+                targetPromotionEnvelope.entityRef,
                 sourceContext?.sourceConnector,
               );
             }
@@ -780,7 +783,8 @@ export class ExtractionPersistCoordinator {
                 ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               },
-              options.entityRef,
+              // #2014 round 3: envelope-surviving entityRef (see profile-target).
+              sharedPromotionEnvelope.entityRef,
               sourceContext?.sourceConnector,
             );
           }
@@ -1074,11 +1078,41 @@ export class ExtractionPersistCoordinator {
           ? stripCitationForTemplate(args.content, citationTemplate)
           : args.content;
       const sanitizedBase = sanitizeMemoryContent(rawContent);
+      // #2014 round 3: promoted copies were written from SALVAGE envelopes,
+      // so hash on the same surviving fields the promotion writes persisted —
+      // a raw-attrs hash silently misses after salvage drops/dedupes keys.
+      // A pure salvage compose probe reproduces exactly that surviving set
+      // (deterministic; no side effects). Fail-open to raw fields if the
+      // probe rejects (invalid category/content never reached a promotion
+      // write anyway).
+      let backfillEntityRef = args.entityRef;
+      let survivingBackfillAttrs = args.structuredAttributes;
+      if (args.category === "fact" && isMemoryCategory(args.category)) {
+        try {
+          const probe = composeSalvagedExtractionEnvelope(
+            {
+              content: rawContent,
+              category: args.category,
+              structuredAttributes: args.structuredAttributes,
+              entityRef: args.entityRef,
+            },
+            { source: "bitemporal-backfill-probe" },
+          );
+          backfillEntityRef = probe.entityRef;
+          survivingBackfillAttrs = probe.rawStructuredAttributes
+            ? { ...probe.rawStructuredAttributes }
+            : undefined;
+        } catch (probeErr) {
+          log.warn(
+            `bitemporal-backfill: salvage probe failed open to raw fields: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`,
+          );
+        }
+      }
       const dedupContent =
         args.category === "fact" &&
-        args.structuredAttributes &&
-        Object.keys(args.structuredAttributes).length > 0
-          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(args.structuredAttributes)}]`
+        survivingBackfillAttrs &&
+        Object.keys(survivingBackfillAttrs).length > 0
+          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(survivingBackfillAttrs)}]`
           : sanitizedBase.text;
       // Profile targets. NOTE: we do NOT gate on profileAutoPromotionAllows —
       // a promoted profile copy may exist from an EARLIER extraction with
@@ -1109,7 +1143,7 @@ export class ExtractionPersistCoordinator {
               targetStorage,
               dedupContent,
               args.bounds,
-              args.entityRef,
+              backfillEntityRef,
               args.sourceConnector,
             );
           } catch (err) {
@@ -1137,7 +1171,7 @@ export class ExtractionPersistCoordinator {
               sharedStorage,
               dedupContent,
               args.bounds,
-              args.entityRef,
+              backfillEntityRef,
               args.sourceConnector,
             );
           }
@@ -2232,13 +2266,18 @@ export class ExtractionPersistCoordinator {
             postWriteGuard,
           );
           try {
+            // #2014 round 3: chunks inherit the PARENT ENVELOPE's surviving
+            // tags (minus the parent-only "chunked" marker) and entityRef —
+            // passing raw fact.tags let chunk frontmatter disagree with the
+            // sealed parent and retain tags past the per-memory limits.
+            const chunkTags = parentWriteEnvelope.tags.filter((tag) => tag !== "chunked");
             // Write individual chunks with parent reference
             for (const chunk of chunkResult.chunks) {
               // Score each chunk's importance separately
               const chunkImportance = scoreImportance(
                 chunk.content,
                 writeCategory,
-                fact.tags,
+                chunkTags,
               );
               const chunkWriteSource =
                 (fact as any).source === "proactive"
@@ -2255,8 +2294,8 @@ export class ExtractionPersistCoordinator {
                 applyInlineCitation(chunk.content),
                 {
                   confidence: fact.confidence,
-                  tags: fact.tags,
-                  entityRef: fact.entityRef,
+                  tags: [...chunkTags],
+                  entityRef: parentWriteEnvelope.entityRef,
                   source: chunkWriteSource,
                   importance: chunkImportance,
                   intentGoal: inferredIntent?.goal,

@@ -598,9 +598,11 @@ export function sealedWriteToLegacyArgs(
       structuredAttributes: envelope.rawStructuredAttributes
         ? { ...envelope.rawStructuredAttributes }
         : undefined,
-      ...(envelope.sourceConnector !== undefined
-        ? { sourceConnector: envelope.sourceConnector }
-        : {}),
+      // Unconditional (round 3): envelope-owned fields must ALWAYS overwrite
+      // extras — a conditional spread let extras.sourceConnector smuggle
+      // unvalidated connector provenance past the sealed envelope when the
+      // envelope had none.
+      sourceConnector: envelope.sourceConnector,
     },
   };
 }
