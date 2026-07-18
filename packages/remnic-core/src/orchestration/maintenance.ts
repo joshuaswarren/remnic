@@ -48,7 +48,6 @@ import {
 } from "../maintenance/memory-governance-cron.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
-import { clearQmdResultCaches } from "../memory-cache.js";
 
 /** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
@@ -439,7 +438,6 @@ export class MaintenanceScheduler {
     this.qmdMaintenanceInFlight = true;
     this.qmdMaintenancePending = false;
 
-    let didUpdate = false;
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         // Include cataloged dynamic namespaces, not just the configured set
@@ -464,7 +462,7 @@ export class MaintenanceScheduler {
           }
           this.lastQmdEmbedAtMs = now;
         };
-        const summary = await runNamespaceMaintenanceBatchPlan(
+        await runNamespaceMaintenanceBatchPlan(
           this.deps.config,
           plan,
           async (candidates) => {
@@ -514,38 +512,24 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
-        // Only a real per-namespace update makes new facts searchable; if every
-        // namespace was skipped (throttle / lock_held) no index changed, so there
-        // is nothing to invalidate and we keep the warm QMD caches (#1904, Codex).
-        didUpdate = summary.ran > 0;
       } else {
-        // Ordinary update() is fail-open: it returns silently (no throw) when
-        // QMD is unavailable or the call is suppressed by a min-interval /
-        // failure backoff, and only advances lastUpdateRanAtMs when an index
-        // refresh actually ran. Treat the cache dirty iff that timestamp moved
-        // past our pre-call snapshot — so a no-op pass keeps the warm QMD caches
-        // and a real refresh invalidates them even if the subsequent embed()
-        // rejects (#1904, Cursor/Codex). Absent getter → assume refreshed.
-        const qmd = this.deps.getQmd();
-        const updateBefore = qmd.lastUpdateRanAtMs ?? null;
-        await qmd.update();
-        didUpdate = qmd.lastUpdateRanAtMs == null || qmd.lastUpdateRanAtMs !== updateBefore;
+        await this.deps.getQmd().update();
         const now = Date.now();
         if (
-          didUpdate &&
           resolveQmdCapabilities(this.deps.config).qmdAutoEmbed &&
           now - this.lastQmdEmbedAtMs >= this.deps.config.qmdEmbedMinIntervalMs
         ) {
-          await qmd.embed();
+          await this.deps.getQmd().embed();
           this.lastQmdEmbedAtMs = now;
         }
       }
-      // A successful update+embed means newly-persisted facts are now searchable;
-      // any cached pre-index QMD recall/search bundle is now stale. Clear ONLY the
-      // QMD result caches (dir-scoped layers untouched) — but only when an index
-      // actually changed, so a fully-skipped (throttled) pass keeps them warm
-      // (#1904, Codex).
-      if (didUpdate) clearQmdResultCaches();
+      // Note: a successful QMD update/embed clears the global QMD result caches
+      // itself (QmdClient.runUpdateForCollection / runEmbedForCollection), so
+      // this scheduler does not invalidate them here — every refresh path
+      // (direct update, namespace router, wearable/OpenClaw sync) funnels through
+      // the backend and clears centrally. A no-op pass (throttle/unavailable/
+      // backoff) does not advance lastUpdateRanAtMs, so it leaves caches warm
+      // (#1904, Codex/Cursor).
     } finally {
       this.qmdMaintenanceInFlight = false;
       if (this.qmdMaintenancePending) {
