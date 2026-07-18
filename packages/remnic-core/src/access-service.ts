@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
 import * as nodeFs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { readdirSync, unlinkSync } from "node:fs";
@@ -2947,18 +2948,20 @@ export class EngramAccessService {
     return this.peekIdempotentWrite({
       operation: "memory_store",
       idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
+      // Shared builder (issue #1989 PR3): byte-parity with the historical
+      // inline literal is asserted by access-fingerprint-parity.test.ts.
+      requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
+        namespace,
         content: request.content,
         category: request.category,
         confidence: request.confidence,
-        namespace,
         tags: request.tags,
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
         sourceConnector: request.sourceConnector,
-      },
+      }),
       skip: request.dryRun === true,
     });
   }
@@ -2984,18 +2987,20 @@ export class EngramAccessService {
     return this.peekIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
+      // Shared builder (issue #1989 PR3): byte-parity with the historical
+      // inline literal is asserted by access-fingerprint-parity.test.ts.
+      requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
+        namespace,
         content: request.content,
         category: request.category,
         confidence: request.confidence,
-        namespace,
         tags: request.tags,
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
         sourceConnector: request.sourceConnector,
-      },
+      }),
       skip: request.dryRun === true,
     });
   }
@@ -4050,7 +4055,9 @@ export class EngramAccessService {
     return this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
       idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
+      // Shared builder (issue #1989 PR3): byte-parity with the historical
+      // inline literal is asserted by access-fingerprint-parity.test.ts.
+      requestFingerprint: buildObserveRequestFingerprint({
         sessionKey: request.sessionKey,
         messages: request.messages,
         namespace: request.namespace,
@@ -4060,7 +4067,7 @@ export class EngramAccessService {
         projectTag: request.projectTag,
         effectiveCodingContext: effectiveCodingContext ?? null,
         sourceConnector: request.sourceConnector,
-      },
+      }),
       beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),
     });
