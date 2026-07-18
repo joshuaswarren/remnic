@@ -11,6 +11,14 @@ const EXPIRY_SOURCE = String.raw`expir(?:y|ed|es|ation)`;
 const COUNT_SOURCE = String.raw`(?:exactly\s+(?:one|1)|one|a\s+single|single)`;
 const REPLACEMENT_ACTION_SOURCE = String.raw`(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing))`;
 const REPLACEMENT_OBJECT_SOURCE = String.raw`(?:replacement|(?:new\s+)?(?:checkout\s+)?token)`;
+const PRE_EXPIRY_REPLACEMENT_OBJECT_SOURCE = String.raw`(?:replacement|(?:(?:new|fresh|current|existing|replacement)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?token)`;
+const PRE_EXPIRY_TIMING_SOURCE = String.raw`(?:pre[-\s]?expir(?:y|ation)|(?:before|prior\s+to|ahead\s+of)\s+(?:(?:the|a|its|it)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?(?:token(?:'s)?\s+)?(?:explicit\s+)?${EXPIRY_SOURCE})`;
+const REPLACEMENT_ACTION_PATTERN = new RegExp(String.raw`\b${REPLACEMENT_ACTION_SOURCE}\b`);
+const PRE_EXPIRY_REPLACEMENT_OBJECT_PATTERN = new RegExp(
+  String.raw`\b${PRE_EXPIRY_REPLACEMENT_OBJECT_SOURCE}\b`
+);
+const IMPLICIT_REPLACEMENT_ACTION_PATTERN =
+  /\b(?:mint(?:s|ed|ing)?|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|rotat(?:e|es|ed|ing)|regenerat(?:e|es|ed|ing))\b/;
 const ROTATION_ACTION_PATTERN =
   /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
 const ROTATION_OBJECT_PATTERN =
@@ -31,6 +39,14 @@ const POST_EXPIRY_REPLACEMENT_PATTERNS = [
     String.raw`\b${REPLACEMENT_ACTION_SOURCE}\b[^.;:!?]{0,48}\b${COUNT_SOURCE}\b[^.;:!?]{0,32}\b${REPLACEMENT_OBJECT_SOURCE}\b[^.;:!?]{0,48}\b(?:only\s+)?after\s+(?:(?:the|a)\s+(?:checkout\s+)?token\s+)?(?:explicit\s+)?${EXPIRY_SOURCE}\b`
   ),
 ];
+const PRE_EXPIRY_TIMING_PATTERNS = [
+  new RegExp(String.raw`\b${PRE_EXPIRY_TIMING_SOURCE}\b`),
+  /\b(?:while|when)\b[^.;:!?]{0,48}\b(?:valid|unexpired)\b/,
+  /\bduring\b[^.;:!?]{0,48}\bvalidity\b/,
+];
+const POST_EXPIRY_TIMING_PATTERN = new RegExp(
+  String.raw`\b(?:after|once|upon|following)\s+(?:(?:the|a)\s+(?:checkout\s+)?token\s+)?(?:explicit\s+)?${EXPIRY_SOURCE}\b`
+);
 
 function decisionClauseGroups(value) {
   return value
@@ -93,6 +109,49 @@ function hasAffirmativeRotationPolicy(value) {
   });
 }
 
+function hasPreExpiryTiming(clause) {
+  return PRE_EXPIRY_TIMING_PATTERNS.some((pattern) => pattern.test(clause));
+}
+
+function hasExplicitReplacementActionAndObject(clause) {
+  return REPLACEMENT_ACTION_PATTERN.test(clause) && PRE_EXPIRY_REPLACEMENT_OBJECT_PATTERN.test(clause);
+}
+
+function hasReplacementActionSignal(clause) {
+  return hasExplicitReplacementActionAndObject(clause) || IMPLICIT_REPLACEMENT_ACTION_PATTERN.test(clause);
+}
+
+function isAffirmativePreExpiryReplacementClause(clause) {
+  return !NEGATION_PATTERN.test(clause) && hasPreExpiryTiming(clause) && hasReplacementActionSignal(clause);
+}
+
+function hasAffirmativePreExpiryReplacementPolicy(value) {
+  return decisionClauseGroups(value).some((clauses) => {
+    const predicateGroups = clauses.map(rotationPredicateClauses);
+    if (predicateGroups.flat().some(isAffirmativePreExpiryReplacementClause)) return true;
+    return predicateGroups.some((predicates, index) => {
+      const nextPredicates = predicateGroups[index + 1];
+      if (!nextPredicates) return false;
+      return predicates.some((predicate) =>
+        nextPredicates.some((nextPredicate) => {
+          if (NEGATION_PATTERN.test(predicate) || NEGATION_PATTERN.test(nextPredicate)) return false;
+          const timingFirst =
+            hasPreExpiryTiming(predicate) &&
+            !POST_EXPIRY_TIMING_PATTERN.test(predicate) &&
+            hasReplacementActionSignal(nextPredicate) &&
+            !POST_EXPIRY_TIMING_PATTERN.test(nextPredicate);
+          const actionFirst =
+            hasExplicitReplacementActionAndObject(predicate) &&
+            !POST_EXPIRY_TIMING_PATTERN.test(predicate) &&
+            hasPreExpiryTiming(nextPredicate) &&
+            !POST_EXPIRY_TIMING_PATTERN.test(nextPredicate);
+          return timingFirst || actionFirst;
+        })
+      );
+    });
+  });
+}
+
 export function relayCheckoutDecisionContractKey(value) {
   if (typeof value !== "string") return null;
   const normalized = value.toLowerCase();
@@ -120,12 +179,14 @@ export function relayCheckoutDecisionContractKey(value) {
         POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause)))
   );
   const contradictoryPerUseRotation = hasAffirmativeRotationPolicy(value);
+  const contradictoryPreExpiryReplacement = hasAffirmativePreExpiryReplacementPolicy(value);
   const matches =
     sessionLifecycle &&
     positiveReuseLifecycle &&
     postExpiryReplacement &&
     !negatedRequiredBehavior &&
-    !contradictoryPerUseRotation;
+    !contradictoryPerUseRotation &&
+    !contradictoryPreExpiryReplacement;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 

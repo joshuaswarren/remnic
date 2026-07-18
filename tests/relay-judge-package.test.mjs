@@ -222,6 +222,14 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Do not reuse the checkout-session token while it is valid; mint one replacement before expiry.",
     "Reuse the checkout-session token while valid; do not mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint exactly one replacement before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Before the checkout token expires, issue a fresh checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Refresh the current checkout token prior to expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. A replacement is created ahead of expiration.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Create one replacement pre-expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint again while the checkout token is still valid.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Refresh before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Rotate the checkout token during its validity.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new checkout token for every request and every ordinary retry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Mint a new checkout token for every request, including ordinary retries.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Issue a fresh checkout token per checkout request.",
@@ -231,6 +239,22 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Renew the checkout token during all retry attempts.",
   ]) {
     assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
+  }
+
+  for (const explicitPreExpiryProhibition of [
+    "Do not mint another replacement before expiry.",
+    "Never refresh the checkout token prior to expiry.",
+    "The checkout token must not be replaced before it expires.",
+    "Do not mint again while the checkout token is still valid.",
+    "Do not refresh before expiry.",
+    "Never rotate the checkout token during its validity.",
+  ]) {
+    assert.equal(
+      relayCheckoutDecisionContractKey(
+        `Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. ${explicitPreExpiryProhibition}`
+      ),
+      "checkout-session-reuse-one-post-expiry-replacement"
+    );
   }
 
   assert.equal(
