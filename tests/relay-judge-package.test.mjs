@@ -164,6 +164,25 @@ test("Relay judge server exposes only the verified offline demo allow-list", asy
   }
 });
 
+test("Relay judge server sanitizes asset failures", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-server-error-"));
+  let running;
+  try {
+    await copyJudgePackage(parent);
+    running = await startRelayJudgeServer({ repoRoot: parent, port: 0 });
+    await rm(path.join(parent, "admin-console/public/relay/index.html"));
+
+    const [getResponse, headResponse] = await Promise.all([fetch(running.url), fetch(running.url, { method: "HEAD" })]);
+    assert.equal(getResponse.status, 500);
+    assert.equal(await getResponse.text(), "Relay judge server error\n");
+    assert.equal(headResponse.status, 500);
+    assert.equal(await headResponse.text(), "");
+  } finally {
+    await running?.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("Relay judge verifier rejects a coordinated reseal of the cold Builder decision", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-tamper-"));
   try {

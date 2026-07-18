@@ -77,6 +77,7 @@ const EXPECTED_RECORDING_FILES = [
   "tests.json",
 ];
 const EXPECTED_UI_FILES = ["index.html", "relay-model.js", "relay.css", "relay.js", "replay.json"];
+const SERVER_ERROR_BODY = "Relay judge server error\n";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -771,9 +772,9 @@ export async function startRelayJudgeServer(options = {}) {
       const body = await readFile(file);
       response.writeHead(200, responseHeaders(CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream"));
       response.end(request.method === "HEAD" ? undefined : body);
-    } catch (error) {
+    } catch {
       response.writeHead(500, responseHeaders("text/plain; charset=utf-8"));
-      response.end(`Relay judge server error: ${error instanceof Error ? error.message : String(error)}\n`);
+      response.end(request.method === "HEAD" ? undefined : SERVER_ERROR_BODY);
     }
   });
   await new Promise((resolve, reject) => {
