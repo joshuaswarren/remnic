@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.12",
+  "version": "9.7.14",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3006,6 +3006,19 @@
         "type": "string",
         "default": "local-model",
         "description": "Model name for local LLM requests"
+      },
+      "localLlmReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "none",
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default": "none",
+        "description": "Ollama-backend thinking suppression: reasoning_effort injected for thinking-suppressed operations (Ollama ignores chat_template_kwargs). Empty string disables injection."
       },
       "localLlmRetry5xxCount": {
         "type": "number",

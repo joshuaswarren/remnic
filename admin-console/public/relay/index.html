@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Remnic Relay Mission Control makes agent disagreement, approved corrections, and cold-start propagation inspectable.">
+  <title>Remnic Relay · Mission Control</title>
+  <link rel="stylesheet" href="./relay.css">
+</head>
+<body>
+  <a class="skip-link" href="#missionMain">Skip to mission</a>
+
+  <header class="topbar">
+    <a class="brand" href="../" aria-label="Return to Remnic admin console">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span>
+        <strong>REMNIC RELAY</strong>
+        <small>MISSION CONTROL / BUILD WEEK 2026</small>
+      </span>
+    </a>
+
+    <div class="topbar-status" aria-label="Connection status">
+      <span class="mode-pill" id="modePill"><i aria-hidden="true"></i> Replay</span>
+      <span class="mission-code" id="missionCode">CHECKOUT-TOKEN-RECOVERY</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="button button-quiet" id="evidenceIndexButton" type="button">Evidence index</button>
+      <button class="button button-ink" id="connectButton" type="button">Connect live</button>
+    </div>
+  </header>
+
+  <div class="state-banner" id="stateBanner" role="status" hidden></div>
+
+  <main id="missionMain" tabindex="-1">
+    <section class="mission-intro" aria-labelledby="missionTitle">
+      <div class="mission-copy">
+        <p class="kicker"><span id="frameCounter">04 / 12</span> · APPEND-ONLY CAUSAL TRACE</p>
+        <h1 id="missionTitle">The checkout token split</h1>
+        <p class="mission-objective" id="missionObjective">Resolve a conflicting token refresh policy and prove a cold agent acts on it.</p>
+        <div class="phase-line">
+          <span class="phase-beacon" id="phaseBeacon" aria-hidden="true"></span>
+          <strong id="phaseLabel">Agent conflict detected</strong>
+          <span id="phaseDetail">Two agents. Two incompatible beliefs. One observable contract.</span>
+        </div>
+      </div>
+
+      <div class="replay-deck" aria-label="Replay controls">
+        <div class="replay-heading">
+          <span id="frameLabel">Conflict detected</span>
+          <label for="speedSelect">Pace
+            <select id="speedSelect">
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2">2×</option>
+            </select>
+          </label>
+        </div>
+        <div class="replay-controls">
+          <button class="icon-button" id="restartButton" type="button" aria-label="Restart replay">↺</button>
+          <button class="icon-button" id="previousButton" type="button" aria-label="Previous frame">←</button>
+          <button class="play-button" id="playButton" type="button" aria-label="Play replay"><span aria-hidden="true">▶</span> Play trace</button>
+          <button class="icon-button" id="nextButton" type="button" aria-label="Next frame">→</button>
+        </div>
+        <div class="replay-progress" aria-hidden="true"><span id="replayProgress"></span></div>
+        <p class="shortcut-hint">Space play · ← → step · E evidence</p>
+      </div>
+    </section>
+
+    <section class="causal-stage" aria-labelledby="causalTitle">
+      <div class="stage-grid" aria-hidden="true"></div>
+      <div class="stage-header">
+        <div>
+          <p class="section-index">01 / THE DECISION LINEAGE</p>
+          <h2 id="causalTitle">What the team believes</h2>
+        </div>
+        <span class="stage-status" id="lineageStatus">CONFLICT OPEN</span>
+      </div>
+
+      <div class="lineage" id="lineage">
+        <article class="belief belief-stale" id="staleBelief">
+          <p class="belief-owner">BUILDER · ATLAS</p>
+          <span class="belief-state">ACTIVE BELIEF</span>
+          <blockquote>Mint a new checkout token for every request and retry.</blockquote>
+          <button class="evidence-link" type="button" data-agent-id="agent-atlas">Why did Atlas believe this? <span>↗</span></button>
+        </article>
+
+        <div class="lineage-transfer" aria-label="Correction path">
+          <svg viewBox="0 0 300 110" role="img" aria-label="Stale belief is replaced by the source-grounded belief">
+            <path class="transfer-track" d="M8 55 H292"></path>
+            <path class="transfer-pulse" d="M8 55 H292"></path>
+            <circle class="transfer-node transfer-node-start" cx="8" cy="55" r="6"></circle>
+            <circle class="transfer-node transfer-node-end" cx="292" cy="55" r="6"></circle>
+          </svg>
+          <span class="transfer-label" id="transferLabel">DISAGREEMENT DETECTED</span>
+        </div>
+
+        <article class="belief belief-grounded" id="replacementBelief">
+          <p class="belief-owner">SCOUT · NOVA</p>
+          <span class="belief-state">SOURCE-GROUNDED</span>
+          <blockquote>Reuse the checkout-session token and refresh it only after expiry.</blockquote>
+          <button class="evidence-link" type="button" data-agent-id="agent-nova">Inspect Nova's sources <span>↗</span></button>
+        </article>
+      </div>
+
+      <div class="correction-gate" id="correctionGate" hidden>
+        <div>
+          <span class="gate-icon" aria-hidden="true">!</span>
+          <p><strong>Human correction gate</strong><br><span id="gateCopy">Source and test evidence agree. Approval is required before shared memory changes.</span></p>
+        </div>
+        <button class="button button-coral" id="approveButton" type="button">Review correction</button>
+      </div>
+    </section>
+
+    <section class="receipt-panel" aria-labelledby="receiptTitle">
+      <div class="receipt-heading">
+        <div>
+          <p class="section-index">02 / PROOF, NOT A PROMISE</p>
+          <h2 id="receiptTitle">Mission receipt</h2>
+        </div>
+        <div class="receipt-seal" id="receiptSeal" aria-label="Receipt pending">
+          <span>R</span><small>PENDING</small>
+        </div>
+      </div>
+      <p class="receipt-summary" id="receiptSummary">The receipt is still accumulating causal proof.</p>
+      <dl class="receipt-grid">
+        <div><dt>Human approved</dt><dd id="receiptApproval">—</dd></div>
+        <div><dt>Cold start</dt><dd id="receiptPropagation">—</dd></div>
+        <div><dt>Contract</dt><dd id="receiptContract">—</dd></div>
+        <div><dt>Causal events</dt><dd id="receiptEvents">08</dd></div>
+      </dl>
+      <div class="outcome-shift" id="outcomeShift">
+        <span class="outcome-before"><i></i> BEFORE · TEST WAITING</span>
+        <span class="outcome-arrow" aria-hidden="true">→</span>
+        <span class="outcome-after"><i></i> AFTER · PROOF PENDING</span>
+      </div>
+    </section>
+
+    <section class="agents-section" aria-labelledby="agentsTitle">
+      <div class="section-heading">
+        <div>
+          <p class="section-index">03 / DISTRIBUTED CONTEXT</p>
+          <h2 id="agentsTitle">Three agents. One corrected memory.</h2>
+        </div>
+        <p>Each card is reduced from the current Relay snapshot—not a scripted chat transcript.</p>
+      </div>
+      <div class="agent-grid" id="agentGrid" aria-live="polite"></div>
+    </section>
+
+    <section class="trace-section" aria-labelledby="traceTitle">
+      <div class="trace-copy">
+        <div class="section-heading compact">
+          <div>
+            <p class="section-index">04 / APPEND-ONLY CAUSAL TRACE</p>
+            <h2 id="traceTitle">How the outcome changed</h2>
+          </div>
+        </div>
+        <p class="trace-lede">No hidden orchestration. Every visible turn is backed by a versioned mission event and inspectable evidence.</p>
+      </div>
+      <ol class="event-rail" id="eventRail"></ol>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>REMNIC RELAY / OPENAI BUILD WEEK 2026</span>
+    <span id="dataProvenance">DETERMINISTIC SYNTHETIC REPLAY · ZERO MODEL CREDITS</span>
+    <a href="../">ADMIN CONSOLE ↗</a>
+  </footer>
+
+  <aside class="provenance-drawer" id="provenanceDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <p class="section-index">EVIDENCE X-RAY</p>
+        <h2 id="drawerTitle">Why did this agent believe this?</h2>
+      </div>
+      <button class="icon-button" id="closeDrawerButton" type="button" aria-label="Close evidence drawer">×</button>
+    </div>
+    <div class="drawer-context" id="drawerContext"></div>
+    <div class="evidence-list" id="evidenceList"></div>
+    <div class="fresh-inspection">
+      <div>
+        <strong>Fresh inspection</strong>
+        <p>Re-read the live mission now. Fresh inspection is labeled separately and never counted as at-action receipt proof.</p>
+      </div>
+      <button class="button button-quiet" id="freshInspectionButton" type="button">Run fresh X-ray</button>
+      <p class="fresh-result" id="freshInspectionResult" role="status"></p>
+    </div>
+  </aside>
+  <button class="drawer-scrim" id="drawerScrim" type="button" aria-label="Close evidence drawer" hidden></button>
+
+  <dialog class="approval-dialog" id="approvalDialog" aria-labelledby="approvalTitle">
+    <form method="dialog" id="approvalForm">
+      <div class="dialog-number" aria-hidden="true">HUMAN / 01</div>
+      <button class="dialog-close" type="button" data-close-dialog="approvalDialog" aria-label="Cancel correction approval">×</button>
+      <p class="section-index" id="approvalModeLabel">DETERMINISTIC REPLAY GATE</p>
+      <h2 id="approvalTitle">Review selected correction</h2>
+      <p class="dialog-lede" id="approvalLede">Mission Control will bind this approval to the exact selected correction.</p>
+      <div class="approval-diff">
+        <div><span>RETIRE</span><del id="approvalRetireStatements">Selected stale decision</del></div>
+        <div><span>ACTIVATE</span><ins id="approvalReplacementStatement">Selected replacement decision</ins></div>
+      </div>
+      <div class="approval-evidence" id="approvalEvidence">
+        <span>Evidence loads from the selected correction</span>
+      </div>
+      <div class="live-identity" id="liveIdentityFields" hidden>
+        <label>Server-authenticated principal<input id="operatorIdInput" name="operatorId" value="" placeholder="Unavailable" autocomplete="off" maxlength="128" readonly></label>
+        <label>Approval label<input id="operatorLabelInput" name="operatorLabel" value="Build Week operator" autocomplete="off" maxlength="240"></label>
+      </div>
+      <label class="confirm-field" for="approvalConfirmInput">Type <strong>APPROVE</strong> to cross the human gate
+        <input id="approvalConfirmInput" name="approvalConfirm" autocomplete="off" spellcheck="false" placeholder="APPROVE">
+      </label>
+      <p class="dialog-error" id="approvalError" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" data-close-dialog="approvalDialog">Keep reviewing</button>
+        <button class="button button-coral" id="confirmApprovalButton" type="submit" disabled>Approve correction →</button>
+      </div>
+      <p class="dialog-footnote" id="approvalFootnote">Replay mode advances an integrity-checked fixture; it does not claim a live write.</p>
+    </form>
+  </dialog>
+
+  <dialog class="connection-dialog" id="connectionDialog" aria-labelledby="connectionTitle">
+    <form method="dialog" id="connectionForm">
+      <button class="dialog-close" type="button" data-close-dialog="connectionDialog" aria-label="Close live connection settings">×</button>
+      <p class="section-index">LIVE RELAY API</p>
+      <h2 id="connectionTitle">Connect Mission Control</h2>
+      <p class="dialog-lede">The bearer token stays in this tab's session storage. Replay remains the safe default.</p>
+      <label>Mission ID<input id="missionInput" name="mission" value="checkout-token-recovery" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="64"></label>
+      <label>Namespace<input id="namespaceInput" name="namespace" value="relay-build-week" required maxlength="128"></label>
+      <label>Bearer token<input id="tokenInput" name="token" type="password" autocomplete="off" placeholder="Stored only for this tab"></label>
+      <p class="dialog-error" id="connectionError" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" data-close-dialog="connectionDialog">Stay in replay</button>
+        <button class="button button-ink" type="submit">Connect live →</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="loading-screen" id="loadingScreen" aria-live="polite">
+    <div class="loading-mark"><span>R</span></div>
+    <p>Reconstructing causal trace…</p>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./relay-model.js"></script>
+  <script src="./relay.js"></script>
+</body>
+</html>

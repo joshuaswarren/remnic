@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { type OperationContext, defineOperation } from "../access-boundary.js";
-import type { EngramAccessService } from "../access-service.js";
+import { EngramAccessInputError, type EngramAccessService } from "../access-service.js";
 import {
   RELAY_MISSION_MAX_EVENT_LIMIT,
   RelayIsoDateTimeSchema,
@@ -76,12 +76,26 @@ export async function appendRelayMissionEvent(
   authenticatedPrincipal?: string,
   beforeAppend?: () => void | Promise<void>
 ): Promise<RelayMissionAppendResult> {
-  const resolved = await service.getWritableStorageForNamespace(input.namespace ?? undefined, authenticatedPrincipal);
+  const event = RelayMissionEventInputSchema.parse(input.event);
+  const approvalPrincipal = authenticatedPrincipal?.trim() || undefined;
+  if (event.payload.kind === "correction_approved" && event.payload.approvedBy.kind === "human") {
+    if (!approvalPrincipal) {
+      throw new EngramAccessInputError(
+        "Relay human approval requires a server-resolved authenticated principal"
+      );
+    }
+    if (event.payload.approvedBy.id !== approvalPrincipal) {
+      throw new EngramAccessInputError(
+        "Relay human approval identity must match the server-resolved authenticated principal"
+      );
+    }
+  }
+  const resolved = await service.getWritableStorageForNamespace(input.namespace ?? undefined, approvalPrincipal);
   const store = new RelayMissionStore({
     rootDir: resolved.storage.dir,
     namespace: resolved.namespace,
   });
-  return store.append(input.missionId, input.event, { authenticatedPrincipal, beforeAppend });
+  return store.append(input.missionId, event, { authenticatedPrincipal: approvalPrincipal, beforeAppend });
 }
 
 /** Namespace-authorized, bounded Relay snapshot read shared by HTTP and UI. */
