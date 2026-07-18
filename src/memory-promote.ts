@@ -87,7 +87,9 @@ export async function executeMemoryPromote(
   const promoteEnvelope = composeSalvagedEnvelope(
     "promote",
     {
-      content: stripAttributesSuffix(mem.content),
+      content: mem.frontmatter.structuredAttributes
+        ? stripAttributesSuffix(mem.content)
+        : mem.content,
       category: mem.frontmatter.category,
       confidence: mem.frontmatter.confidence,
       tags: (() => {

@@ -111,6 +111,42 @@ test("memory promotion preserves provenance tags before source tags", async () =
   assert.equal(promotedAttributes?.promotedFromMemoryId, "fact-42");
 });
 
+test("memory promotion preserves literal attribute-looking content", async () => {
+  let promotedContent: string | undefined;
+  const sourceStorage = {
+    getMemoryById: async () => ({
+      content: "Hand-authored note\n[Attributes: this is literal text]",
+      frontmatter: {
+        category: "fact",
+        confidence: 0.8,
+      },
+    }),
+  };
+  const destinationStorage = {
+    writeSealedMemory: async (envelope: { content: string }) => {
+      promotedContent = envelope.content;
+      return { id: "promoted-literal", tombstoneBlocked: false };
+    },
+  };
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      memoryDir: "/tmp/remnic-memory-promote-test",
+      queryAwareIndexingEnabled: false,
+    },
+    getStorage: async (namespace: string) =>
+      namespace === "default" ? sourceStorage : destinationStorage,
+  };
+
+  await executeMemoryPromote(orchestrator as never, { memoryId: "fact-literal" });
+
+  assert.equal(
+    promotedContent,
+    "Hand-authored note\n[Attributes: this is literal text]",
+  );
+});
+
 test("memory promotion preserves origin for long legacy IDs", async () => {
   const memoryId = `legacy:${"x".repeat(300)}`;
   const memoryIdHash = createHash("sha256").update(memoryId).digest("hex");
