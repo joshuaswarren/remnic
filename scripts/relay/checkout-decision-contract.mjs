@@ -33,8 +33,14 @@ function decisionClauses(value) {
     .filter(Boolean);
 }
 
-function hasNegatedClause(clauses, targetPattern) {
-  return clauses.some((clause) => targetPattern.test(clause) && NEGATION_PATTERN.test(clause));
+function isAffirmativePerRequestRotationClause(clause) {
+  return (
+    ROTATION_ACTION_PATTERN.test(clause) &&
+    /\b(?:new\s+)?(?:checkout\s+)?token\b/.test(clause) &&
+    /\bevery (?:checkout )?request\b/.test(clause) &&
+    /\bevery (?:ordinary )?retr(?:y|ies)\b/.test(clause) &&
+    !NEGATION_PATTERN.test(clause)
+  );
 }
 
 export function relayCheckoutDecisionContractKey(value) {
@@ -63,7 +69,13 @@ export function relayCheckoutDecisionContractKey(value) {
         (RETRY_PATTERN.test(clause) || VALIDITY_PATTERN.test(clause) || /\bsession\b/.test(clause))) ||
         POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause)))
   );
-  const matches = sessionLifecycle && positiveReuseLifecycle && postExpiryReplacement && !negatedRequiredBehavior;
+  const contradictoryPerRequestRotation = clauses.some(isAffirmativePerRequestRotationClause);
+  const matches =
+    sessionLifecycle &&
+    positiveReuseLifecycle &&
+    postExpiryReplacement &&
+    !negatedRequiredBehavior &&
+    !contradictoryPerRequestRotation;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
@@ -78,16 +90,19 @@ export function assertRelayCheckoutDecision(value, context) {
 export function relayStaleCheckoutDecisionContractKey(value) {
   if (typeof value !== "string") return null;
   const clauses = decisionClauses(value);
-  const rotatesEveryRequest = clauses.some(
-    (clause) =>
-      ROTATION_ACTION_PATTERN.test(clause) &&
-      /\b(?:new\s+)?(?:checkout\s+)?token\b/.test(clause) &&
-      /\bevery (?:checkout )?request\b/.test(clause) &&
-      /\bevery (?:ordinary )?retr(?:y|ies)\b/.test(clause) &&
-      !NEGATION_PATTERN.test(clause)
-  );
-  const negatedRotation = hasNegatedClause(clauses, ROTATION_ACTION_PATTERN);
-  return rotatesEveryRequest && !negatedRotation ? RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY : null;
+  const rotatesEveryRequest = clauses.some(isAffirmativePerRequestRotationClause);
+  const statesCompleteCanonicalPolicy =
+    clauses.some(
+      (clause) =>
+        REUSE_PATTERN.test(clause) &&
+        (RETRY_PATTERN.test(clause) || VALIDITY_PATTERN.test(clause) || /\bsession\b/.test(clause)) &&
+        !NEGATION_PATTERN.test(clause)
+    ) &&
+    clauses.some(
+      (clause) =>
+        POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause)) && !NEGATION_PATTERN.test(clause)
+    );
+  return rotatesEveryRequest && !statesCompleteCanonicalPolicy ? RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
 export function assertRelayStaleCheckoutDecision(value, context) {

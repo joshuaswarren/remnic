@@ -181,6 +181,7 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Do not reuse the checkout-session token while it is valid; mint one replacement before expiry.",
     "Reuse the checkout-session token while valid; do not mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement before expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new checkout token for every request and every ordinary retry.",
   ]) {
     assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
   }
@@ -198,6 +199,18 @@ test("Relay judge decisions use the authoritative live source-grounding contract
       "Never reuse the checkout-session token; mint a new checkout token for every request and every ordinary retry."
     ),
     "checkout-token-per-request-and-retry-rotation"
+  );
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey(
+      "Do not mint one replacement after expiry. Mint a new checkout token for every request and every ordinary retry."
+    ),
+    "checkout-token-per-request-and-retry-rotation"
+  );
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new checkout token for every request and every ordinary retry."
+    ),
+    null
   );
 });
 
