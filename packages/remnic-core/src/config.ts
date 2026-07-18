@@ -2081,8 +2081,10 @@ export function parseConfig(
     })(),
     recallMaxConcurrentPerPrincipal: (() => {
       const n = coerceNumber(cfg.recallMaxConcurrentPerPrincipal);
-      // >=0 so 0 (unlimited) is honored; anything invalid falls back to 4.
-      return n !== undefined && n >= 0 ? Math.floor(n) : 4;
+      // Accept only finite integers >= 0 so 0 means "unlimited" deliberately.
+      // A fractional typo like 0.5 must NOT floor to 0 (which would silently
+      // disable the cap); it falls back to the default 4 (AGENTS.md #1/#17).
+      return n !== undefined && Number.isInteger(n) && n >= 0 ? n : 4;
     })(),
     recallSingleFlightEnabled:
       coerceBool(cfg.recallSingleFlightEnabled) ?? true,

@@ -419,14 +419,20 @@ test("parseConfig recall concurrency + single-flight knobs (issue #1906)", () =>
     parseConfig({ recallMaxConcurrentPerPrincipal: 1 }).recallMaxConcurrentPerPrincipal,
     1,
   );
-  // CLI/env surfaces pass strings — floored numeric-like strings are accepted.
+  // CLI/env surfaces pass strings — integer-like strings are accepted.
   assert.equal(
     parseConfig({ recallMaxConcurrentPerPrincipal: "8" }).recallMaxConcurrentPerPrincipal,
     8,
   );
+  // Fractional values are NOT floored (a typo like 0.5 must not become 0 =
+  // unlimited): they fall back to the default 4 (issue #1906 review round 3 #4).
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: 0.5 }).recallMaxConcurrentPerPrincipal,
+    4,
+  );
   assert.equal(
     parseConfig({ recallMaxConcurrentPerPrincipal: 3.9 }).recallMaxConcurrentPerPrincipal,
-    3,
+    4,
   );
   // Negative / NaN fall back to the default 4.
   assert.equal(

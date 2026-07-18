@@ -7,6 +7,7 @@ import {
   type EngramAccessRecallRequest,
   type EngramAccessRecallResponse,
 } from "./access-service.js";
+import type { BudgetReservation } from "./cross-namespace-budget.js";
 
 // Issue #1906 (+ review): the per-principal recall lock was a width-1 FIFO
 // mutex held for the whole ~30s recall. Its replacement is a per-principal
@@ -57,21 +58,25 @@ type BudgetDecision = {
   allowed: boolean;
   count?: number;
   limit?: { hardLimit: number; windowMs: number };
+  reservation?: BudgetReservation;
 };
 
 interface Harness {
   service: EngramAccessService;
   recallSemaphores: Map<string, unknown>;
   recallInFlight: Map<string, unknown>;
+  /** Net live budget reservations (record minus release) under the default
+   *  budget model — used to assert exact-entry rollback on failures. */
+  liveBudget: () => number;
 }
 
 /**
  * Build an EngramAccessService whose recall pipeline is a stub. `pipeline` runs
  * once per leader execution (its call count == number of real pipeline runs).
  * When `crossNamespace` is set, executeRecall models the real atomic budget
- * admission: it RESERVES (budget.record) BEFORE running the pipeline and rolls
- * back (budget.release) if the pipeline fails — exactly like
- * access-recall-surface.executeRecall.
+ * admission: it RESERVES (budget.record, returning a token) BEFORE running the
+ * pipeline and rolls back (budget.release(token)) if the pipeline fails —
+ * exactly like access-recall-surface.executeRecall.
  */
 function makeService(opts: {
   limit?: number;
@@ -79,13 +84,25 @@ function makeService(opts: {
   pipeline: (request: EngramAccessRecallRequest) => Promise<EngramAccessRecallResponse>;
   crossNamespace?: boolean;
   budgetRecord?: (principal: string) => BudgetDecision;
-  budgetRelease?: (principal: string) => void;
+  budgetRelease?: (reservation: BudgetReservation | undefined) => void;
 }): Harness {
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const recallSemaphores = new Map<string, unknown>();
   const recallInFlight = new Map<string, unknown>();
-  const budgetRecord = opts.budgetRecord ?? (() => ({ allowed: true }) as BudgetDecision);
-  const budgetRelease = opts.budgetRelease ?? (() => {});
+  // Default budget model: token-tracking so tests can assert exact-entry
+  // rollback. Custom budgetRecord (deny/count tests) bypasses the live set.
+  let reservationSeq = 0;
+  const liveReservations = new Set<number>();
+  const defaultRecord = (principal: string): BudgetDecision => {
+    const id = ++reservationSeq;
+    liveReservations.add(id);
+    return { allowed: true, reservation: { principal, id } };
+  };
+  const defaultRelease = (reservation: BudgetReservation | undefined): void => {
+    if (reservation) liveReservations.delete(reservation.id);
+  };
+  const budgetRecord = opts.budgetRecord ?? defaultRecord;
+  const budgetRelease = opts.budgetRelease ?? defaultRelease;
   const host = service as unknown as {
     recallSemaphores: Map<string, unknown>;
     recallInFlight: Map<string, unknown>;
@@ -93,8 +110,15 @@ function makeService(opts: {
     resolveRequestPrincipal: () => string;
     executeRecall: (
       request: EngramAccessRecallRequest,
-    ) => Promise<{ response: EngramAccessRecallResponse; budgetRecordPrincipal: string | null }>;
-    budget: { record: (principal: string) => BudgetDecision; release: (principal: string) => void };
+    ) => Promise<{
+      response: EngramAccessRecallResponse;
+      budgetRecordPrincipal: string | null;
+      reservation?: BudgetReservation;
+    }>;
+    budget: {
+      record: (principal: string) => BudgetDecision;
+      release: (reservation: BudgetReservation | undefined) => void;
+    };
   };
   host.recallSemaphores = recallSemaphores;
   host.recallInFlight = recallInFlight;
@@ -108,6 +132,7 @@ function makeService(opts: {
   host.budget = { record: budgetRecord, release: budgetRelease };
   host.executeRecall = async (request) => {
     let reserved: string | null = null;
+    let reservation: BudgetReservation | undefined;
     if (opts.crossNamespace) {
       // Atomic admission reserve BEFORE the pipeline (#1906): a denied reserve
       // throws here, so the pipeline never runs (no over-admission).
@@ -118,16 +143,22 @@ function makeService(opts: {
         );
       }
       reserved = "principal";
+      reservation = decision.reservation;
     }
     try {
       const response = await opts.pipeline(request);
-      return { response, budgetRecordPrincipal: reserved };
+      return { response, budgetRecordPrincipal: reserved, reservation };
     } catch (err) {
-      if (reserved) budgetRelease(reserved); // roll back on pipeline failure
+      budgetRelease(reservation); // roll back the exact entry on pipeline failure
       throw err;
     }
   };
-  return { service, recallSemaphores, recallInFlight };
+  return {
+    service,
+    recallSemaphores,
+    recallInFlight,
+    liveBudget: () => liveReservations.size,
+  };
 }
 
 function abortRejects(signal: AbortSignal): Promise<never> {
@@ -684,4 +715,97 @@ test("a leader aborted while the flight is queued for a slot still completes for
   assert.ok(result);
   assert.equal(sameRuns, 1, "the shared pipeline ran once for the surviving follower");
   await occupier;
+});
+
+test("a response clone failure on a successful pipeline releases the reservation (flight path, round 3 #1)", async () => {
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    // A function in the response is not structuredClone-able => clone throws
+    // AFTER the pipeline (and its reserve) succeeded.
+    pipeline: async () => stubResponse([() => {}]),
+  });
+  await assert.rejects(h.service.recall({ query: "same" }));
+  assert.equal(h.liveBudget(), 0, "clone failure released the admission reservation");
+});
+
+test("a response clone failure on a successful pipeline releases the reservation (direct path, round 3 #1)", async () => {
+  const h = makeService({
+    limit: 0,
+    singleFlight: false,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([() => {}]),
+  });
+  await assert.rejects(h.service.recall({ query: "same" }));
+  assert.equal(h.liveBudget(), 0, "clone failure released the admission reservation");
+});
+
+test("a new caller after all callers abort runs a fresh pipeline (does not join the cancelled flight, round 3 #2)", async () => {
+  let sameRuns = 0;
+  const firstStarted = deferred<void>();
+  const { service, recallInFlight } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async (request) => {
+      sameRuns += 1;
+      const myRun = sameRuns;
+      if (myRun === 1) {
+        // The first (to-be-cancelled) run blocks on the flight's own signal.
+        firstStarted.resolve();
+        const flightSignal = request.abortSignal;
+        assert.ok(flightSignal);
+        await abortRejects(flightSignal);
+        throw Object.assign(new Error("operation aborted"), { name: "AbortError" });
+      }
+      return stubResponse([{ run: myRun }]);
+    },
+  });
+
+  const cA = new AbortController();
+  const cB = new AbortController();
+  const a = service.recall({ query: "same", abortSignal: cA.signal });
+  const b = service.recall({ query: "same", abortSignal: cB.signal });
+  await firstStarted.promise;
+
+  // Every attached caller aborts => the flight is cancelled AND unregistered.
+  cA.abort();
+  cB.abort();
+  assert.equal(recallInFlight.size, 0, "cancelled flight unregisters immediately");
+
+  // A new caller arriving now must lead a FRESH pipeline, not inherit the
+  // cancelled flight's AbortError.
+  const fresh = service.recall({ query: "same" });
+  await assert.rejects(a, (error: Error) => error.name === "AbortError");
+  await assert.rejects(b, (error: Error) => error.name === "AbortError");
+  const result = await fresh;
+  assert.ok(result);
+  assert.equal(sameRuns, 2, "the new caller ran a second, fresh pipeline");
+  assert.equal(recallInFlight.size, 0);
+});
+
+test("an idempotency put failure after the leader reserves releases the reservation (round 3 #3)", async () => {
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  // Simulate handleIdempotentRead's store put failing AFTER execute() (and thus
+  // the leader's budget reserve) succeeded.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    await options.execute();
+    throw new Error("idempotency put failed");
+  };
+
+  await assert.rejects(
+    h.service.recall({ query: "same", idempotencyKey: "put-fail" }),
+    /idempotency put failed/,
+  );
+  assert.equal(h.liveBudget(), 0, "the leader's reservation was released on put failure");
 });

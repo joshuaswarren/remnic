@@ -619,6 +619,7 @@ export class AccessRecallSurface {
   ): Promise<{
     response: EngramAccessRecallResponse;
     budgetRecordPrincipal: string | null;
+    reservation?: BudgetReservation;
   }> {
     const query = request.query;
     // Disclosure depth (issue #677).  Default to `"chunk"` when omitted so
@@ -858,7 +859,7 @@ export class AccessRecallSurface {
     // budget entry (by token, review #4) instead of leaking it.
     try {
       const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
-      return await this.assembleRecallResponse({
+      const assembled = await this.assembleRecallResponse({
         request,
         context,
         query,
@@ -873,6 +874,10 @@ export class AccessRecallSurface {
         budgetDecision,
         budgetRecordPrincipal: reservedBudgetPrincipal,
       });
+      // Expose the reservation token so a consumer that fails AFTER this
+      // returns (response clone, idempotency put) can release the exact entry
+      // (#1906 review round 3, findings #1/#3).
+      return { ...assembled, reservation: reservedBudget };
     } catch (err) {
       if (reservedBudget) this.deps.budget.release(reservedBudget);
       throw err;
