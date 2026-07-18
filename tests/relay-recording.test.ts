@@ -70,7 +70,7 @@ function fixtureCalls(): RelayMissionRunResult["calls"] {
     output: {
       decision: "Reuse the session token and mint exactly one replacement after expiry.",
       rationale: "The sources agree.",
-      source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs"],
+      source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
       confidence: 0.99,
     },
   };
@@ -90,7 +90,7 @@ function fixtureCalls(): RelayMissionRunResult["calls"] {
     output: {
       replacement_decision: "Reuse the session token and mint exactly one replacement after expiry.",
       rationale: "The accepted contract and executable test agree.",
-      source_locators: ["CONTRACT.md", "test/token-policy.contract.test.mjs"],
+      source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
       confidence: 0.99,
     },
   };

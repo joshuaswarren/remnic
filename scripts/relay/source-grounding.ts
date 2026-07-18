@@ -5,11 +5,12 @@ export const RELAY_CANONICAL_CHECKOUT_DECISION =
 
 export const RELAY_CHECKOUT_DECISION_CONTRACT_KEY = "checkout-session-reuse-one-post-expiry-replacement";
 
-const AUTHORITATIVE_SOURCE_LOCATORS = new Set([
+export const RELAY_AUTHORITATIVE_SOURCE_LOCATORS = [
   "CONTRACT.md",
   "src/reference-token-policy.mjs",
   "test/token-policy.contract.test.mjs",
-]);
+] as const;
+const AUTHORITATIVE_SOURCE_LOCATORS = new Set<string>(RELAY_AUTHORITATIVE_SOURCE_LOCATORS);
 
 export function normalizeRelaySourceLocator(value: string): string {
   const withoutLocator = value.trim().replace(/:\d+(?:-\d+)?$/, "");
@@ -53,21 +54,15 @@ export function assertRelayCheckoutDecision(value: string, context: string): str
 
 export function assertRelaySourceLocators(locators: string[], context: string): string[] {
   const normalized = locators.map(normalizeRelaySourceLocator);
-  if (new Set(normalized).size !== normalized.length) {
-    throw new Error(`Relay ${context} source grounding contains duplicate locators`);
-  }
   for (const locator of normalized) {
     if (!AUTHORITATIVE_SOURCE_LOCATORS.has(locator)) {
       throw new Error(`Relay ${context} source grounding cites a non-authoritative fixture path: ${locator}`);
     }
   }
-  if (!normalized.includes("CONTRACT.md")) {
-    throw new Error(`Relay ${context} source grounding must cite the authoritative CONTRACT.md`);
+  const unique = new Set(normalized);
+  const missing = RELAY_AUTHORITATIVE_SOURCE_LOCATORS.filter((locator) => !unique.has(locator));
+  if (missing.length > 0) {
+    throw new Error(`Relay ${context} source grounding omitted authoritative fixture paths: ${missing.join(", ")}`);
   }
-  if (
-    !["src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"].some((item) => normalized.includes(item))
-  ) {
-    throw new Error(`Relay ${context} source grounding must cite executable reference code or its contract test`);
-  }
-  return normalized;
+  return [...RELAY_AUTHORITATIVE_SOURCE_LOCATORS];
 }

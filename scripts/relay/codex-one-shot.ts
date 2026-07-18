@@ -22,7 +22,9 @@ import {
   RelayCodexCallSummarySchema,
   type RelayRecallReceipt,
   RelayRecallReceiptSchema,
+  RelayResolverOutputSchema,
   type RelayRole,
+  RelayScoutOutputSchema,
   promptFilenameForRole,
   schemaFilenameForRole,
   schemaForRole,
@@ -35,6 +37,7 @@ import {
   type RelayNetworkGateway,
   startRelayNetworkGateway,
 } from "./network-gateway.js";
+import { assertRelaySourceLocators } from "./source-grounding.js";
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
@@ -500,7 +503,15 @@ export async function runRelayCodexOneShot(
         recall_memory_id: recallReceipt?.memoryIds[0],
         recall_provenance: `Relay captured completed Codex MCP recall for query ${RELAY_QUERY} in namespace ${RELAY_NAMESPACE}`,
       })
-    : modelOutput;
+    : options.role === "scout"
+      ? (() => {
+          const scout = RelayScoutOutputSchema.parse(modelOutput);
+          return { ...scout, source_locators: assertRelaySourceLocators(scout.source_locators, "Scout") };
+        })()
+      : (() => {
+          const resolver = RelayResolverOutputSchema.parse(modelOutput);
+          return { ...resolver, source_locators: assertRelaySourceLocators(resolver.source_locators, "Resolver") };
+        })();
   const summary = RelayCodexCallSummarySchema.parse({
     role: options.role,
     model: RELAY_MODEL,

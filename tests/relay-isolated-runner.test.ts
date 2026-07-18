@@ -45,6 +45,7 @@ import {
 } from "../scripts/relay/network-gateway.js";
 import { resolveRelayAuthSourcePath } from "../scripts/relay/preflight-lib.js";
 import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/remnic-harness.js";
+import { assertRelaySourceLocators } from "../scripts/relay/source-grounding.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtures = path.join(repoRoot, "fixtures", "remnic-relay");
@@ -86,7 +87,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
           decision:
             "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
           rationale: "The accepted contract and executable reference implementation agree.",
-          source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs"],
+          source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
           confidence: 0.99,
         },
         stdout: "",
@@ -100,7 +101,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
           replacement_decision:
             "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
           rationale: "CONTRACT.md and the executable contract test establish retry reuse and one post-expiry mint.",
-          source_locators: ["CONTRACT.md", "test/token-policy.contract.test.mjs"],
+          source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
           confidence: 0.99,
         },
         stdout: "",
@@ -326,6 +327,22 @@ test("Relay run roots reject non-empty and symlinked targets and clean only mark
 test("synthetic fixture copies contain no symlinks and hidden contract flips stale to corrected behavior", async () => {
   await assertTreeContainsNoSymlinks(fixtures);
   await verifyRelayFixtureManifest(fixtures);
+  assert.deepEqual(
+    assertRelaySourceLocators(
+      [
+        "CONTRACT.md:1-10",
+        "src/reference-token-policy.mjs:1-8",
+        "test/token-policy.contract.test.mjs:6-31",
+        "CONTRACT.md:2-4",
+      ],
+      "test"
+    ),
+    ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"]
+  );
+  assert.throws(
+    () => assertRelaySourceLocators(["CONTRACT.md", "package.json"], "test"),
+    /non-authoritative fixture path/
+  );
   assert.throws(
     () =>
       assertRelayWireOutputSchema({
@@ -408,7 +425,7 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
         replacement_decision:
           "Reuse the checkout-session token while it is valid and mint exactly one replacement only after expiry.",
         rationale: "The accepted contract and executable reference agree.",
-        source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs"],
+        source_locators: ["CONTRACT.md", "src/reference-token-policy.mjs", "test/token-policy.contract.test.mjs"],
         confidence: 0.99,
       },
       staleMemoryId,

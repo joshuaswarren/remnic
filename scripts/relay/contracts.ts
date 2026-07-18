@@ -23,7 +23,7 @@ export const RelayRoleSchema = z.enum(["scout", "stale-builder", "resolver", "co
 export type RelayRole = z.infer<typeof RelayRoleSchema>;
 
 const boundedText = z.string().trim().min(1).max(2_000);
-const sourceLocators = z.array(z.string().trim().min(1).max(300)).min(1).max(8);
+const sourceLocators = z.array(z.string().trim().min(1).max(300)).min(1).max(32);
 
 export const RelayScoutOutputSchema = z
   .object({
