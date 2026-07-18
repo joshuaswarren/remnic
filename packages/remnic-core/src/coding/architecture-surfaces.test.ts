@@ -31,6 +31,7 @@ import {
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceStorage,
 } from "./architecture-surfaces.js";
+import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import type { ArchitectureCardBuildResult } from "./architecture-card.js";
 import type {
   CodingKnowledgeConfig,
@@ -109,7 +110,9 @@ function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
     written,
     updated,
     async readAllMemories() { return [...allMemories]; },
-    async writeMemory(category, content, options) {
+    // Production mapper keeps the legacy-shaped recorder faithful (§21).
+    async writeSealedMemory(envelope, extras) {
+      const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras as Record<string, unknown>);
       const id = `fact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       written.push({ category, content, options });
       allMemories.push({
@@ -409,8 +412,8 @@ test("refresh: tombstone-blocked write surfaces refreshed:false + blocked reason
   const base = makeStubStorage();
   const storage: StubStorage = {
     ...base,
-    async writeMemory(category, content, options) {
-      const result = await base.writeMemory(category, content, options);
+    async writeSealedMemory(envelope, extras) {
+      const result = await base.writeSealedMemory(envelope, extras);
       return { ...result, tombstoneBlocked: true, blockedBy: "tomb-arch-1" };
     },
   };
