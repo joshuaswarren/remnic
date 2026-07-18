@@ -162,7 +162,11 @@ async function validateSourceGrounding(workspace: string, locators: string[], de
   }
 }
 
-async function runProcess(executable: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<ProcessResult> {
+async function runProcess(
+  executable: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv }
+): Promise<ProcessResult> {
   const startedAt = Date.now();
   return await new Promise<ProcessResult>((resolve, reject) => {
     const child = spawn(executable, args, {
@@ -223,7 +227,7 @@ async function verifyPublicContract(workspace: string, runId: string): Promise<v
 export async function runRelayHiddenContractTest(
   fixtureRoot: string,
   workspace: string,
-  phase: "before-correction" | "after-correction",
+  phase: "before-correction" | "after-correction"
 ): Promise<RelayTestResult> {
   const hiddenTest = path.join(fixtureRoot, "hidden", "token-policy.hidden.test.mjs");
   const result = await runProcess(process.execPath, ["--test", hiddenTest], {
@@ -265,7 +269,7 @@ async function validateBuilderWorkspace(
   fixtureRoot: string,
   workspace: string,
   output: RelayBuilderOutput,
-  runId: string,
+  runId: string
 ): Promise<void> {
   await assertTreeContainsNoSymlinks(workspace);
   const [before, after] = await Promise.all([
@@ -391,7 +395,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
         idempotencyKey: `live-${String(eventIndex).padStart(3, "0")}`,
         payload,
       },
-      { authenticatedPrincipal: options.approval.operatorPrincipal },
+      { authenticatedPrincipal: options.approval.operatorPrincipal }
     );
   };
 
@@ -443,7 +447,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
         kind: "memory",
         id: staleMemoryId,
         label: "Active stale Remnic decision available to Builder A",
-        locator: `recording://memories/${staleMemoryId}.json`,
+        locator: "recording://memories/stale.json",
         capture: "at_action",
       },
     ],
@@ -452,7 +456,8 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   const scoutRaw = await execute("scout", scoutWorkspace);
   const scoutOutput = RelayScoutOutputSchema.parse(scoutRaw.output);
   await validateSourceGrounding(scoutWorkspace, scoutOutput.source_locators, scoutOutput.decision);
-  if (scoutRaw.summary.recallToolCalls !== 0) throw new Error("Relay Scout must be grounded only in its synthetic source tree");
+  if (scoutRaw.summary.recallToolCalls !== 0)
+    throw new Error("Relay Scout must be grounded only in its synthetic source tree");
   const scout = sanitizedCall(scoutRaw, "scout", scoutOutput);
   calls.push(scout);
   await append({
@@ -477,7 +482,8 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   const staleRaw = await execute("stale-builder", staleWorkspace);
   const staleOutput = RelayBuilderOutputSchema.parse(staleRaw.output);
   validateRecallOutput(staleOutput, staleMemoryId, "stale");
-  if (staleRaw.summary.recallToolCalls !== 1) throw new Error("Relay stale Builder must perform exactly one Remnic recall");
+  if (staleRaw.summary.recallToolCalls !== 1)
+    throw new Error("Relay stale Builder must perform exactly one Remnic recall");
   await validateBuilderWorkspace(fixtureRoot, staleWorkspace, staleOutput, "stale");
   const stale = sanitizedCall(staleRaw, "stale-builder", staleOutput);
   calls.push(stale);
@@ -502,7 +508,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
         kind: "memory",
         id: staleMemoryId,
         label: "Active stale Remnic decision recalled at action time",
-        locator: `recording://memories/${staleMemoryId}.json`,
+        locator: "recording://memories/stale.json",
         capture: "at_action",
       },
       callEvidence("stale-builder"),
@@ -531,7 +537,8 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   const resolverRaw = await execute("resolver", resolverWorkspace);
   const resolverOutput = RelayResolverOutputSchema.parse(resolverRaw.output);
   await validateSourceGrounding(resolverWorkspace, resolverOutput.source_locators, resolverOutput.replacement_decision);
-  if (resolverRaw.summary.recallToolCalls !== 0) throw new Error("Relay Resolver must be grounded only in authoritative sources");
+  if (resolverRaw.summary.recallToolCalls !== 0)
+    throw new Error("Relay Resolver must be grounded only in authoritative sources");
   const resolver = sanitizedCall(resolverRaw, "resolver", resolverOutput);
   calls.push(resolver);
   await append({
@@ -567,7 +574,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   const correction = await options.harness.applyResolverCorrection(
     resolverOutput,
     staleMemoryId,
-    options.approval.operatorPrincipal,
+    options.approval.operatorPrincipal
   );
   const correctionSummary = correctionReceipt(correction);
   await append({
@@ -583,13 +590,21 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
         locator: "recording://correction.json",
         capture: "at_action",
       },
+      {
+        kind: "correction",
+        id: correctionSummary.planId,
+        label: "Remnic correction plan receipt",
+        locator: "recording://correction.json",
+        capture: "at_action",
+      },
     ],
   });
 
   const coldRaw = await execute("cold-builder", coldWorkspace);
   const coldOutput = RelayBuilderOutputSchema.parse(coldRaw.output);
   validateRecallOutput(coldOutput, correction.replacementMemoryId, "cold");
-  if (coldRaw.summary.recallToolCalls !== 1) throw new Error("Relay cold Builder must perform exactly one Remnic recall");
+  if (coldRaw.summary.recallToolCalls !== 1)
+    throw new Error("Relay cold Builder must perform exactly one Remnic recall");
   await validateBuilderWorkspace(fixtureRoot, coldWorkspace, coldOutput, "cold");
   const cold = sanitizedCall(coldRaw, "cold-builder", coldOutput);
   calls.push(cold);
@@ -613,7 +628,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
         kind: "memory",
         id: correction.replacementMemoryId,
         label: "Active replacement Remnic decision",
-        locator: `recording://memories/${correction.replacementMemoryId}.json`,
+        locator: "recording://memories/replacement.json",
         capture: "at_action",
       },
     ],
@@ -668,7 +683,8 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   await append({
     kind: "mission_completed",
     outcome: "recovered",
-    summary: "One human-approved correction reached a fresh GPT-5.6 thread and changed a hidden contract from fail to pass.",
+    summary:
+      "One human-approved correction reached a fresh GPT-5.6 thread and changed a hidden contract from fail to pass.",
     evidence: [
       testEvidence(),
       {
