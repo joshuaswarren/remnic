@@ -24,6 +24,7 @@ import {
   RELAY_NAMESPACE,
   RELAY_OPERATOR_PRINCIPAL,
   RELAY_PLANNED_SPEND_CEILING_UNITS,
+  RELAY_QUERY,
   RELAY_REASONING_EFFORT,
   RELAY_REPLACEMENT_DECISION_ID,
   RELAY_STALE_DECISION_ID,
@@ -448,6 +449,26 @@ function assertRelayRecordingBindings(bindings: RelayRecordingBindings) {
   const replacementContractKey = assertRelayCheckoutDecision(replacementMemory.statement, "replacement memory");
   if (scoutContractKey !== replacementContractKey || resolverContractKey !== replacementContractKey) {
     throw new Error("Relay recording source-agent decisions do not resolve to the sealed replacement decision");
+  }
+  const recallReceiptMatches = (call: SanitizedRelayCall, expectedMemoryId: string): boolean => {
+    const receipt = call.summary.recallReceipt;
+    return (
+      call.summary.recallToolCalls === 1 &&
+      receipt !== null &&
+      receipt.query === RELAY_QUERY &&
+      receipt.namespace === RELAY_NAMESPACE &&
+      JSON.stringify(receipt.memoryIds) === JSON.stringify([expectedMemoryId])
+    );
+  };
+  if (
+    scoutCall.summary.recallToolCalls !== 0 ||
+    scoutCall.summary.recallReceipt !== null ||
+    resolverCall.summary.recallToolCalls !== 0 ||
+    resolverCall.summary.recallReceipt !== null ||
+    !recallReceiptMatches(staleCall, staleMemory.memoryId) ||
+    !recallReceiptMatches(coldCall, replacementMemory.memoryId)
+  ) {
+    throw new Error("Relay recording Codex MCP receipts are not bound to the sealed memory transition");
   }
   if (
     staleOutput.recall_memory_id !== staleMemory.memoryId ||

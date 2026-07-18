@@ -6,5 +6,7 @@ Before editing, call the configured `remnic.recall` tool exactly once with the q
 currently active shared decision returned by Remnic as the requirement. Do not
 use web search or access anything outside this workspace. Implement the task,
 run `npm test`, and return only the requested structured result. Copy the active
-memory id exactly into `recall_memory_id`, summarize Remnic/namespace provenance
-without host paths, and use repository-relative paths in `files_changed`.
+decision into your implementation and use repository-relative paths in
+`files_changed`. The Relay runner captures the recall memory id and provenance
+directly from Codex's completed MCP receipt; do not invent or transcribe those
+fields.

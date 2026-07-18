@@ -1,18 +1,9 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "summary",
-    "recall_memory_id",
-    "recall_provenance",
-    "decision_applied",
-    "files_changed",
-    "tests_run"
-  ],
+  "required": ["summary", "decision_applied", "files_changed", "tests_run"],
   "properties": {
     "summary": { "type": "string" },
-    "recall_memory_id": { "type": "string" },
-    "recall_provenance": { "type": "string" },
     "decision_applied": { "type": "string" },
     "files_changed": {
       "type": "array",

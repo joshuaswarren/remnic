@@ -49,7 +49,7 @@ import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/rem
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtures = path.join(repoRoot, "fixtures", "remnic-relay");
 
-function mockSummary(role: RelayRole, recallToolCalls: number) {
+function mockSummary(role: RelayRole, recallToolCalls: number, recallMemoryId?: string) {
   return {
     role,
     model: RELAY_MODEL,
@@ -61,6 +61,9 @@ function mockSummary(role: RelayRole, recallToolCalls: number) {
     durationMs: 25,
     usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1 },
     recallToolCalls,
+    recallReceipt: recallMemoryId
+      ? { query: RELAY_QUERY, namespace: RELAY_NAMESPACE, memoryIds: [recallMemoryId] as [string] }
+      : null,
     status: "completed" as const,
   };
 }
@@ -136,7 +139,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
         : "export function selectCheckoutToken({ mintToken }) { return mintToken(); }\n"
     );
     return {
-      summary: mockSummary(role, 1),
+      summary: mockSummary(role, 1, activeMemoryId),
       output: {
         summary: corrected ? "Implemented corrected session token reuse." : "Implemented the active rotation decision.",
         recall_memory_id: activeMemoryId,

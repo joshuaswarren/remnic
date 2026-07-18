@@ -28,8 +28,8 @@
     },
     {
       "path": "prompts/builder.md",
-      "bytes": 686,
-      "sha256": "ea9dd89593c31c5ef256f966dbea67716d45d41fddf8f4b431f254d1662ac20d"
+      "bytes": 768,
+      "sha256": "34552036c42317b656cbf80681b30d621c9bedbe8a2ecdb0dc69e54b3e564d4e"
     },
     {
       "path": "prompts/resolver.md",
@@ -43,8 +43,8 @@
     },
     {
       "path": "schemas/builder.json",
-      "bytes": 574,
-      "sha256": "334ea6efd7ab956a93d98880fcbb3ca551386dc2a1919ae6186cfcdf9eecef53"
+      "bytes": 412,
+      "sha256": "7d13f6fd504044795dc5b684b601e90dda50985207a1b3de5285cbba28b01e71"
     },
     {
       "path": "schemas/resolver.json",
@@ -72,5 +72,5 @@
       "sha256": "e292a22f6aef1395879b5786070a6d734fb339a8e5bd26409898477872b98837"
     }
   ],
-  "rootSha256": "4d42d2e100fed0b65ee46ba29c0ca4fdf2165a67cea433de2129ffc1206ebf3e"
+  "rootSha256": "1edf5555580da6c22a0320829db079a378203cf0cbcf1366cd8b40e9d1d8a98c"
 }

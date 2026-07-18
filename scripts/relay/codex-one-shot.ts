@@ -1,33 +1,39 @@
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
   CodexCreditAccountingError,
+  type CodexCreditBudgetConfig,
   CodexCreditDispatchError,
   parseCodexJsonlUsage,
   runWithinCodexCreditBudget,
-  type CodexCreditBudgetConfig,
 } from "@remnic/bench";
 
 import {
   RELAY_MODEL,
+  RELAY_NAMESPACE,
+  RELAY_QUERY,
   RELAY_REASONING_EFFORT,
-  RelayCodexCallSummarySchema,
+  RelayBuilderModelOutputSchema,
+  RelayBuilderOutputSchema,
   type RelayCodexCallResult,
+  RelayCodexCallSummarySchema,
+  type RelayRecallReceipt,
+  RelayRecallReceiptSchema,
   type RelayRole,
   promptFilenameForRole,
   schemaFilenameForRole,
   schemaForRole,
 } from "./contracts.js";
-import { createRoleCodexHome, type RelayRunDirectories } from "./isolation.js";
+import { type RelayRunDirectories, createRoleCodexHome } from "./isolation.js";
 import {
   RELAY_ISOLATED_MCP_URL,
   RELAY_NETWORK_PROXY_PORT,
   RELAY_UNSHARE_NAMESPACE_ARGS,
-  startRelayNetworkGateway,
   type RelayNetworkGateway,
+  startRelayNetworkGateway,
 } from "./network-gateway.js";
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
@@ -102,7 +108,7 @@ export function buildRelayCodexConfigArgs(mcpUrl: string): string[] {
     'approval_policy="never"',
     'web_search="disabled"',
     'shell_environment_policy.inherit="none"',
-    'shell_environment_policy.ignore_default_excludes=false',
+    "shell_environment_policy.ignore_default_excludes=false",
     'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/codex-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
     `mcp_servers.relay.url=${tomlString(mcpUrl)}`,
     'mcp_servers.relay.bearer_token_env_var="REMNIC_RELAY_MCP_TOKEN"',
@@ -159,7 +165,7 @@ function classifyCodexFailure(stdout: string, stderr: string): string[] {
 
 export function buildRelayCodexFailureDiagnostic(
   role: RelayRole,
-  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">,
+  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">
 ): RelayCodexFailureDiagnostic {
   const eventCounts = new Map<string, number>();
   const errorCodes = new Set<string>();
@@ -201,7 +207,7 @@ export function buildRelayCodexFailureDiagnostic(
 async function writeFailureDiagnostic(
   outputDir: string,
   role: RelayRole,
-  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">,
+  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">
 ): Promise<RelayCodexFailureDiagnostic> {
   const diagnostic = buildRelayCodexFailureDiagnostic(role, capture);
   await writeFile(path.join(outputDir, "failure-diagnostic.json"), `${JSON.stringify(diagnostic, null, 2)}\n`, {
@@ -230,11 +236,12 @@ export function countRecallToolCalls(jsonl: string): number {
     try {
       const event = JSON.parse(line) as {
         type?: unknown;
-        item?: { id?: unknown; type?: unknown; tool?: unknown; name?: unknown; status?: unknown };
+        item?: { id?: unknown; type?: unknown; server?: unknown; tool?: unknown; name?: unknown; status?: unknown };
       };
       if (event.type !== "item.completed" || event.item?.type !== "mcp_tool_call") continue;
       const tool = event.item.tool ?? event.item.name;
       if (tool !== "remnic.recall" && tool !== "relay.remnic.recall") continue;
+      if (event.item.server !== "relay") continue;
       if (event.item.status !== "completed") continue;
       if (typeof event.item.id === "string") completedIds.add(event.item.id);
       else anonymous += 1;
@@ -245,12 +252,66 @@ export function countRecallToolCalls(jsonl: string): number {
   return completedIds.size + anonymous;
 }
 
+export function parseRelayRecallReceipts(jsonl: string): RelayRecallReceipt[] {
+  const receipts: RelayRecallReceipt[] = [];
+  const completedIds = new Set<string>();
+  for (const line of jsonl.split(/\r?\n/)) {
+    let event: {
+      type?: unknown;
+      item?: {
+        id?: unknown;
+        type?: unknown;
+        server?: unknown;
+        tool?: unknown;
+        name?: unknown;
+        status?: unknown;
+        arguments?: unknown;
+        result?: { structured_content?: unknown; structuredContent?: unknown };
+      };
+    };
+    try {
+      event = JSON.parse(line) as typeof event;
+    } catch {
+      continue;
+    }
+    if (event.type !== "item.completed" || event.item?.type !== "mcp_tool_call") continue;
+    const tool = event.item.tool ?? event.item.name;
+    if (event.item.server !== "relay" || (tool !== "remnic.recall" && tool !== "relay.remnic.recall")) continue;
+    if (event.item.status !== "completed") continue;
+    if (typeof event.item.id === "string") {
+      if (completedIds.has(event.item.id)) continue;
+      completedIds.add(event.item.id);
+    }
+    const args = event.item.arguments;
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      throw new RelayCodexRunError("Relay completed recall omitted structured arguments");
+    }
+    const argumentsObject = args as Record<string, unknown>;
+    if (argumentsObject.query !== RELAY_QUERY || argumentsObject.namespace !== RELAY_NAMESPACE) {
+      throw new RelayCodexRunError("Relay completed recall escaped the fixed query or namespace");
+    }
+    const structured = event.item.result?.structured_content ?? event.item.result?.structuredContent;
+    if (!structured || typeof structured !== "object" || Array.isArray(structured)) {
+      throw new RelayCodexRunError("Relay completed recall omitted structured MCP result evidence");
+    }
+    const result = structured as Record<string, unknown>;
+    receipts.push(
+      RelayRecallReceiptSchema.parse({
+        query: result.query,
+        namespace: result.namespace,
+        memoryIds: result.memoryIds,
+      })
+    );
+  }
+  return receipts;
+}
+
 async function spawnIsolated(
   options: RunRelayCodexOneShotOptions,
   codexHome: string,
   outputDir: string,
   prompt: string,
-  gateway: RelayNetworkGateway,
+  gateway: RelayNetworkGateway
 ): Promise<SpawnCapture> {
   const isolationScript = path.join(options.repoRoot, "scripts", "relay", "isolate-codex.sh");
   const networkProxyScript = path.join(options.repoRoot, "scripts", "relay", "network-proxy.mjs");
@@ -272,8 +333,7 @@ async function spawnIsolated(
         RELAY_CODEX_HOME: codexHome,
         RELAY_OUTPUT_DIR: outputDir,
         RELAY_CODEX_BIN: options.codexBinary,
-        RELAY_WORKSPACE_READ_ONLY:
-          options.role === "scout" || options.role === "resolver" ? "1" : "0",
+        RELAY_WORKSPACE_READ_ONLY: options.role === "scout" || options.role === "resolver" ? "1" : "0",
         RELAY_NETWORK_PROXY_SCRIPT: networkProxyScript,
         RELAY_NETWORK_GATEWAY_SOCKET: gateway.socketPath,
         RELAY_NETWORK_PROXY_PORT: String(RELAY_NETWORK_PROXY_PORT),
@@ -292,7 +352,8 @@ async function spawnIsolated(
       spawned = true;
     });
     child.once("error", (error) => {
-      if (!spawned) reject(new CodexCreditDispatchError("isolated Codex process failed before dispatch", { cause: error }));
+      if (!spawned)
+        reject(new CodexCreditDispatchError("isolated Codex process failed before dispatch", { cause: error }));
       else reject(new CodexCreditAccountingError("isolated Codex process errored after dispatch"));
     });
     const capture = (target: "stdout" | "stderr", chunk: Buffer) => {
@@ -327,11 +388,15 @@ async function spawnIsolated(
         return;
       }
       if (timedOut) {
-        reject(new CodexCreditAccountingError("Codex one-shot timed out after dispatch; usage requires reconciliation"));
+        reject(
+          new CodexCreditAccountingError("Codex one-shot timed out after dispatch; usage requires reconciliation")
+        );
         return;
       }
       if (aborted) {
-        reject(new CodexCreditAccountingError("Codex one-shot was cancelled after dispatch; usage requires reconciliation"));
+        reject(
+          new CodexCreditAccountingError("Codex one-shot was cancelled after dispatch; usage requires reconciliation")
+        );
         return;
       }
       resolve({ spawned, exitCode, signal, stdout, stderr, durationMs: Date.now() - startedAt });
@@ -348,14 +413,26 @@ export class RelayCodexRunError extends Error {
 }
 
 export async function runRelayCodexOneShot(
-  options: RunRelayCodexOneShotOptions,
+  options: RunRelayCodexOneShotOptions
 ): Promise<RelayCodexCallResult<unknown>> {
   if (options.signal?.aborted) {
     throw new CodexCreditDispatchError("Relay Codex one-shot was cancelled before dispatch");
   }
   if (RELAY_MODEL.toLowerCase().includes("sol")) throw new Error("Relay model policy forbids Sol");
-  const promptPath = path.join(options.repoRoot, "fixtures", "remnic-relay", "prompts", promptFilenameForRole(options.role));
-  const schemaPath = path.join(options.repoRoot, "fixtures", "remnic-relay", "schemas", schemaFilenameForRole(options.role));
+  const promptPath = path.join(
+    options.repoRoot,
+    "fixtures",
+    "remnic-relay",
+    "prompts",
+    promptFilenameForRole(options.role)
+  );
+  const schemaPath = path.join(
+    options.repoRoot,
+    "fixtures",
+    "remnic-relay",
+    "schemas",
+    schemaFilenameForRole(options.role)
+  );
   const [prompt, schemaContents] = await Promise.all([readFile(promptPath, "utf8"), readFile(schemaPath)]);
   const outputDir = path.join(options.directories.outputsDir, options.role);
   await mkdir(outputDir, { mode: 0o700 });
@@ -374,9 +451,10 @@ export async function runRelayCodexOneShot(
         const usage = parseCodexJsonlUsage(result.stdout);
         if (!usage) {
           const diagnostic = await writeFailureDiagnostic(outputDir, options.role, result);
-          const classification = diagnostic.errorClasses.length > 0 ? diagnostic.errorClasses.join(",") : "unclassified";
+          const classification =
+            diagnostic.errorClasses.length > 0 ? diagnostic.errorClasses.join(",") : "unclassified";
           throw new CodexCreditAccountingError(
-            `Codex completion did not emit a complete turn.completed usage record (diagnostic: ${classification})`,
+            `Codex completion did not emit a complete turn.completed usage record (diagnostic: ${classification})`
           );
         }
         return { value: result, usage };
@@ -403,9 +481,26 @@ export async function runRelayCodexOneShot(
   } catch {
     throw new RelayCodexRunError(`Relay ${options.role} one-shot wrote invalid JSON output`);
   }
-  const output = schemaForRole(options.role).parse(parsed);
+  const modelOutput = schemaForRole(options.role).parse(parsed);
   const usage = parseCodexJsonlUsage(capture.stdout);
   if (!usage) throw new RelayCodexRunError(`Relay ${options.role} one-shot usage disappeared after accounting`);
+  const recallToolCalls = countRecallToolCalls(capture.stdout);
+  const recallReceipts = parseRelayRecallReceipts(capture.stdout);
+  if (recallReceipts.length !== recallToolCalls) {
+    throw new RelayCodexRunError(`Relay ${options.role} recall count lacks a complete structured receipt`);
+  }
+  const isBuilder = options.role === "stale-builder" || options.role === "cold-builder";
+  if ((isBuilder && recallReceipts.length !== 1) || (!isBuilder && recallReceipts.length !== 0)) {
+    throw new RelayCodexRunError(`Relay ${options.role} violated its fixed recall contract`);
+  }
+  const recallReceipt = recallReceipts[0] ?? null;
+  const output = isBuilder
+    ? RelayBuilderOutputSchema.parse({
+        ...RelayBuilderModelOutputSchema.parse(modelOutput),
+        recall_memory_id: recallReceipt?.memoryIds[0],
+        recall_provenance: `Relay captured completed Codex MCP recall for query ${RELAY_QUERY} in namespace ${RELAY_NAMESPACE}`,
+      })
+    : modelOutput;
   const summary = RelayCodexCallSummarySchema.parse({
     role: options.role,
     model: RELAY_MODEL,
@@ -416,7 +511,8 @@ export async function runRelayCodexOneShot(
     exitCode,
     durationMs: capture.durationMs,
     usage,
-    recallToolCalls: countRecallToolCalls(capture.stdout),
+    recallToolCalls,
+    recallReceipt,
     status: "completed",
   });
   await chmod(finalPath, 0o600);

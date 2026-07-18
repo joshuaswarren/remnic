@@ -46,6 +46,20 @@ function callSummary(role: RelayRole): RelayCodexCallSummary {
     durationMs: 100,
     usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5 },
     recallToolCalls: role === "stale-builder" || role === "cold-builder" ? 1 : 0,
+    recallReceipt:
+      role === "stale-builder"
+        ? {
+            query: "checkout token retry policy decision",
+            namespace: "relay-build-week",
+            memoryIds: ["memory-stale-token-policy"],
+          }
+        : role === "cold-builder"
+          ? {
+              query: "checkout token retry policy decision",
+              namespace: "relay-build-week",
+              memoryIds: ["memory-replacement-token-policy"],
+            }
+          : null,
     status: "completed",
   };
 }
@@ -507,6 +521,14 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
         resolver.output.source_locators = ["CONTRACT.md", "package.json"];
       },
       /non-authoritative fixture path/
+    );
+    await assertResealedJsonTamperRejected<{ summary: { recallReceipt: { memoryIds: string[] } } }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.summary.recallReceipt.memoryIds = ["memory-unrelated"];
+      },
+      /MCP receipts are not bound/
     );
     await assertResealedJsonSetTamperRejected(
       recordingDir,

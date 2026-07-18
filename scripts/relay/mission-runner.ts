@@ -305,7 +305,20 @@ async function validateBuilderWorkspace(
   await runRelayPublicContractTest(workspace, runId);
 }
 
-function validateRecallOutput(output: RelayBuilderOutput, expectedMemoryId: string, runId: string): void {
+function validateRecallOutput(
+  output: RelayBuilderOutput,
+  summary: RelayCodexCallSummary,
+  expectedMemoryId: string,
+  runId: string
+): void {
+  if (
+    summary.recallToolCalls !== 1 ||
+    summary.recallReceipt?.query !== RELAY_QUERY ||
+    summary.recallReceipt.namespace !== RELAY_NAMESPACE ||
+    JSON.stringify(summary.recallReceipt.memoryIds) !== JSON.stringify([expectedMemoryId])
+  ) {
+    throw new Error(`Relay ${runId} Builder's completed MCP receipt did not cite the active Remnic memory id`);
+  }
   if (output.recall_memory_id !== expectedMemoryId) {
     throw new Error(`Relay ${runId} Builder did not cite the active Remnic memory id`);
   }
@@ -357,6 +370,10 @@ function sanitizedCall<T>(result: RelayCodexCallResult<unknown>, role: RelayRole
   const summary = RelayCodexCallSummarySchema.parse(result.summary);
   if (summary.role !== role || summary.status !== "completed" || summary.exitCode !== 0) {
     throw new Error(`Relay ${role} call did not complete under the fixed call contract`);
+  }
+  const expectsRecall = role === "stale-builder" || role === "cold-builder";
+  if ((expectsRecall && !summary.recallReceipt) || (!expectsRecall && summary.recallReceipt)) {
+    throw new Error(`Relay ${role} call did not preserve its deterministic recall receipt contract`);
   }
   return { summary, output };
 }
@@ -496,7 +513,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
 
   const staleRaw = await execute("stale-builder", staleWorkspace);
   const staleOutput = RelayBuilderOutputSchema.parse(staleRaw.output);
-  validateRecallOutput(staleOutput, staleMemoryId, "stale");
+  validateRecallOutput(staleOutput, staleRaw.summary, staleMemoryId, "stale");
   if (staleRaw.summary.recallToolCalls !== 1)
     throw new Error("Relay stale Builder must perform exactly one Remnic recall");
   await validateBuilderWorkspace(fixtureRoot, staleWorkspace, staleOutput, "stale");
@@ -617,7 +634,7 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
 
   const coldRaw = await execute("cold-builder", coldWorkspace);
   const coldOutput = RelayBuilderOutputSchema.parse(coldRaw.output);
-  validateRecallOutput(coldOutput, correction.replacementMemoryId, "cold");
+  validateRecallOutput(coldOutput, coldRaw.summary, correction.replacementMemoryId, "cold");
   if (coldRaw.summary.recallToolCalls !== 1)
     throw new Error("Relay cold Builder must perform exactly one Remnic recall");
   await validateBuilderWorkspace(fixtureRoot, coldWorkspace, coldOutput, "cold");

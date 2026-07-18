@@ -45,17 +45,30 @@ export const RelayResolverOutputSchema = z
   .strict();
 export type RelayResolverOutput = z.infer<typeof RelayResolverOutputSchema>;
 
-export const RelayBuilderOutputSchema = z
+export const RelayBuilderModelOutputSchema = z
   .object({
     summary: boundedText,
-    recall_memory_id: z.string().trim().min(1).max(256),
-    recall_provenance: z.string().trim().min(1).max(1_000),
     decision_applied: boundedText,
     files_changed: z.array(z.string().trim().min(1).max(300)).min(1).max(16),
     tests_run: z.array(z.string().trim().min(1).max(500)).min(1).max(16),
   })
   .strict();
+export type RelayBuilderModelOutput = z.infer<typeof RelayBuilderModelOutputSchema>;
+
+export const RelayBuilderOutputSchema = RelayBuilderModelOutputSchema.extend({
+  recall_memory_id: z.string().trim().min(1).max(256),
+  recall_provenance: z.string().trim().min(1).max(1_000),
+}).strict();
 export type RelayBuilderOutput = z.infer<typeof RelayBuilderOutputSchema>;
+
+export const RelayRecallReceiptSchema = z
+  .object({
+    query: z.literal(RELAY_QUERY),
+    namespace: z.literal(RELAY_NAMESPACE),
+    memoryIds: z.tuple([z.string().trim().min(1).max(256)]),
+  })
+  .strict();
+export type RelayRecallReceipt = z.infer<typeof RelayRecallReceiptSchema>;
 
 export const RelayNativeUsageSchema = z
   .object({
@@ -83,6 +96,7 @@ export const RelayCodexCallSummarySchema = z
     durationMs: z.number().int().nonnegative(),
     usage: RelayNativeUsageSchema,
     recallToolCalls: z.number().int().nonnegative(),
+    recallReceipt: RelayRecallReceiptSchema.nullable(),
     status: z.enum(["completed", "failed"]),
   })
   .strict();
@@ -119,7 +133,10 @@ export const RelayPreflightReceiptSchema = z
     maxLiveCalls: z.literal(RELAY_MAX_LIVE_CALLS),
     accountCreditCapUnits: z.literal(RELAY_ACCOUNT_CREDIT_CAP_UNITS),
     quarantinedUncertainUnits: z.number().int().min(0).max(RELAY_QUARANTINED_ATTEMPT_UNITS),
-    quarantinedLedgerSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    quarantinedLedgerSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
     budgetUnits: z.number().int().positive().max(RELAY_CREDIT_BUDGET_UNITS),
     reserveUnits: z.literal(RELAY_CREDIT_RESERVE_UNITS),
     plannedSpendCeilingUnits: z.number().int().positive().max(RELAY_PLANNED_SPEND_CEILING_UNITS),
@@ -185,7 +202,7 @@ export type RelayPreflightReceipt = z.infer<typeof RelayPreflightReceiptSchema>;
 export function schemaForRole(role: RelayRole) {
   if (role === "scout") return RelayScoutOutputSchema;
   if (role === "resolver") return RelayResolverOutputSchema;
-  return RelayBuilderOutputSchema;
+  return RelayBuilderModelOutputSchema;
 }
 
 export function schemaFilenameForRole(role: RelayRole): string {

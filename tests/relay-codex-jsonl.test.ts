@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   buildRelayCodexFailureDiagnostic,
   countRecallToolCalls,
+  parseRelayRecallReceipts,
   parseThreadId,
 } from "../scripts/relay/codex-one-shot.js";
+import { RELAY_NAMESPACE, RELAY_QUERY } from "../scripts/relay/contracts.js";
 
 test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
   const jsonl = [
@@ -16,7 +18,22 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
     },
     {
       type: "item.completed",
-      item: { id: "item-2", type: "mcp_tool_call", server: "relay", tool: "remnic.recall", status: "completed" },
+      item: {
+        id: "item-2",
+        type: "mcp_tool_call",
+        server: "relay",
+        tool: "remnic.recall",
+        status: "completed",
+        arguments: { query: RELAY_QUERY, namespace: RELAY_NAMESPACE },
+        result: {
+          structured_content: {
+            query: RELAY_QUERY,
+            namespace: RELAY_NAMESPACE,
+            memoryIds: ["memory-active"],
+            context: "synthetic",
+          },
+        },
+      },
     },
     {
       type: "item.completed",
@@ -28,6 +45,24 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
 
   assert.equal(parseThreadId(jsonl), "019f62b9-3200-7df1-99fb-cbb35fc28573");
   assert.equal(countRecallToolCalls(jsonl), 1);
+  assert.deepEqual(parseRelayRecallReceipts(jsonl), [
+    { query: RELAY_QUERY, namespace: RELAY_NAMESPACE, memoryIds: ["memory-active"] },
+  ]);
+});
+
+test("Codex JSONL recall proof rejects missing structured MCP evidence", () => {
+  const jsonl = JSON.stringify({
+    type: "item.completed",
+    item: {
+      id: "item-1",
+      type: "mcp_tool_call",
+      server: "relay",
+      tool: "remnic.recall",
+      status: "completed",
+      arguments: { query: RELAY_QUERY, namespace: RELAY_NAMESPACE },
+    },
+  });
+  assert.throws(() => parseRelayRecallReceipts(jsonl), /omitted structured MCP result evidence/);
 });
 
 test("Codex failure diagnostics retain classifications and hashes without raw output", () => {
