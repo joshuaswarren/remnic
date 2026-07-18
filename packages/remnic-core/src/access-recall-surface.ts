@@ -721,7 +721,7 @@ export class AccessRecallSurface {
         : legacyRecallNamespaces;
     const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
     let budgetDecision: BudgetDecision;
-    let recordBudgetAfterSuccess = false;
+    let willReserveBudget = false;
     if (modeSkipsBudget) {
       budgetDecision = {
         allowed: true as const,
@@ -736,11 +736,11 @@ export class AccessRecallSurface {
     } else {
       // Peek at every effective namespace to determine whether ANY would be
       // cross-namespace WITHOUT recording side effects (Cursor review:
-      // multi-count bug).  Record a single budget event only when at least
-      // one effective namespace differs from the principal's self namespace,
-      // and only after recall succeeds so retried transient failures do not
-      // consume budget multiple times before a successful response can be
-      // cached behind the request idempotency key.
+      // multi-count bug). When cross-namespace, the actual reserve
+      // (budget.record) happens ATOMICALLY at admission just before the
+      // pipeline runs (issue #1906) — see the reserve+rollback block below —
+      // so concurrent recalls for one principal cannot each pass a stale peek
+      // and collectively overrun the hard limit.
       let anyCrossNamespace = false;
       let denied: BudgetDecision | null = null;
       let crossNamespaceDecision: BudgetDecision | null = null;
@@ -774,7 +774,7 @@ export class AccessRecallSurface {
             windowMs: this.deps.orchestrator.config.recallCrossNamespaceBudgetWindowMs ?? 60_000,
           },
         };
-        recordBudgetAfterSuccess = true;
+        willReserveBudget = true;
       } else {
         budgetDecision = {
           allowed: true as const,
@@ -833,7 +833,30 @@ export class AccessRecallSurface {
         : {}),
     };
     const startedAt = Date.now();
-    const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+    // #1906 atomic budget admission: the peek loop above and this record are
+    // one synchronous JS turn (no await between them), so record()'s own
+    // atomic project-and-push denies the Nth concurrent cross-namespace recall
+    // for a principal BEFORE its pipeline runs — no over-admission. On a
+    // pipeline failure/abort the reservation is rolled back (budget.release)
+    // so an errored recall does not consume budget permanently.
+    let reservedBudgetPrincipal: string | null = null;
+    if (willReserveBudget) {
+      const reserveDecision = this.deps.budget.record(principal);
+      budgetDecision = reserveDecision;
+      if (!reserveDecision.allowed) {
+        throw new EngramAccessInputError(
+          `recall denied: cross-namespace budget exceeded (${reserveDecision.count}/${reserveDecision.limit.hardLimit} in ${reserveDecision.limit.windowMs}ms window)`,
+        );
+      }
+      reservedBudgetPrincipal = principal;
+    }
+    let context: string;
+    try {
+      context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+    } catch (err) {
+      if (reservedBudgetPrincipal) this.deps.budget.release(reservedBudgetPrincipal);
+      throw err;
+    }
     const snapshot = request.sessionKey
       ? this.deps.orchestrator.lastRecall.get(request.sessionKey)
       : null;
@@ -1072,7 +1095,10 @@ export class AccessRecallSurface {
         latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),
         debug,
       },
-      budgetRecordPrincipal: recordBudgetAfterSuccess ? principal : null,
+      // Non-null when this recall reserved a cross-namespace budget event at
+      // admission (#1906). Single-flight followers use it to record their OWN
+      // per-caller budget event (the pipeline — and its reserve — ran once).
+      budgetRecordPrincipal: reservedBudgetPrincipal,
     };
   }
 

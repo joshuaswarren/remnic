@@ -336,6 +336,26 @@ export class CrossNamespaceBudget {
   }
 
   /**
+   * Roll back a single reservation made by {@link record} (issue #1906).
+   * When a recall reserves budget at admission (atomic peek+record) but then
+   * fails or is aborted before completing, the caller releases the reservation
+   * so an errored/denied recall does not consume budget permanently. Pops the
+   * most-recent live timestamp for the principal — for accounting the window
+   * count is what matters, not which specific timestamp is removed. A no-op
+   * when the principal has no live reservation. Evicts empty buckets.
+   */
+  release(principal: string): void {
+    const key =
+      typeof principal === "string" && principal.length > 0
+        ? principal
+        : "__anonymous__";
+    const bucket = this.buckets.get(key);
+    if (!bucket || bucket.timestamps.length === 0) return;
+    bucket.timestamps.pop();
+    if (bucket.timestamps.length === 0) this.buckets.delete(key);
+  }
+
+  /**
    * Clear all state. Intended for tests and for the orchestrator's
    * lifecycle `before_reset` hook.
    */

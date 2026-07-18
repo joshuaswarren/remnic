@@ -2,20 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  EngramAccessInputError,
   EngramAccessService,
   type EngramAccessRecallRequest,
   type EngramAccessRecallResponse,
 } from "./access-service.js";
 
-// Issue #1906 — the per-principal recall lock was a width-1 FIFO mutex held
-// for the whole ~30s recall. These tests exercise the replacement: a
-// per-principal concurrency semaphore (recallMaxConcurrentPerPrincipal) plus
-// query-level single-flight coalescing (recallSingleFlightEnabled).
+// Issue #1906 (+ review): the per-principal recall lock was a width-1 FIFO
+// mutex held for the whole ~30s recall. Its replacement is a per-principal
+// concurrency semaphore (recallMaxConcurrentPerPrincipal) plus query-level
+// single-flight coalescing (recallSingleFlightEnabled). These tests exercise:
+//   - concurrency (distinct recalls overlap; cap honored; queueWaitMs)
+//   - single-flight (coalesce to one pipeline; exactly-once even at cap < N;
+//     followers join without a slot)
+//   - atomic budget admission (no over-admission; per-caller record; deny msg;
+//     rollback on failure)
+//   - flight abort semantics (own refcounted controller: leader abort keeps the
+//     shared pipeline for followers; all-callers-abort cancels it; queued abort
+//     immediate; no lane poisoning) and abort-listener cleanup.
 //
-// Coalescing here is deterministic without wall-clock waits: identical recalls
-// acquire their slot synchronously, and the leader registers its in-flight
-// promise in the same microtask before any follower checks the map, so all
-// followers join one execution purely by microtask ordering.
+// Coalescing is deterministic: the leader registers its flight synchronously in
+// the same turn recall() sees the miss, so every later identical arrival joins
+// by map lookup — no wall-clock waits.
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -31,10 +39,10 @@ function deferred<T = void>(): {
   return { promise, resolve, reject };
 }
 
-// A recall response shaped only as this suite's stubs need it. Assigned to a
-// named const with an explicit reason so the cast is not smuggled inline into a
-// member access (the pipeline is stubbed; the real envelope shape is irrelevant
-// here — we only assert structuredClone independence of the `results` array).
+// A recall response shaped only as this suite's stubs need it. Assigned via a
+// named helper (not an inline cast into a member access): the pipeline is
+// stubbed, so the real envelope shape is irrelevant — we only assert
+// structuredClone independence of the `results` array.
 function stubResponse(results: unknown[]): EngramAccessRecallResponse {
   return { results } as unknown as EngramAccessRecallResponse;
 }
@@ -44,11 +52,6 @@ function readResults(response: EngramAccessRecallResponse): unknown[] {
   const { results } = response as { results: unknown[] };
   return results;
 }
-
-type ExecuteResult = {
-  response: EngramAccessRecallResponse;
-  budgetRecordPrincipal: string | null;
-};
 
 type BudgetDecision = {
   allowed: boolean;
@@ -62,22 +65,36 @@ interface Harness {
   recallInFlight: Map<string, unknown>;
 }
 
+/**
+ * Build an EngramAccessService whose recall pipeline is a stub. `pipeline` runs
+ * once per leader execution (its call count == number of real pipeline runs).
+ * When `crossNamespace` is set, executeRecall models the real atomic budget
+ * admission: it RESERVES (budget.record) BEFORE running the pipeline and rolls
+ * back (budget.release) if the pipeline fails — exactly like
+ * access-recall-surface.executeRecall.
+ */
 function makeService(opts: {
   limit?: number;
   singleFlight?: boolean;
-  executeRecall: (request: EngramAccessRecallRequest) => Promise<ExecuteResult>;
+  pipeline: (request: EngramAccessRecallRequest) => Promise<EngramAccessRecallResponse>;
+  crossNamespace?: boolean;
   budgetRecord?: (principal: string) => BudgetDecision;
+  budgetRelease?: (principal: string) => void;
 }): Harness {
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const recallSemaphores = new Map<string, unknown>();
   const recallInFlight = new Map<string, unknown>();
+  const budgetRecord = opts.budgetRecord ?? (() => ({ allowed: true }) as BudgetDecision);
+  const budgetRelease = opts.budgetRelease ?? (() => {});
   const host = service as unknown as {
     recallSemaphores: Map<string, unknown>;
     recallInFlight: Map<string, unknown>;
     orchestrator: { config: Record<string, unknown> };
     resolveRequestPrincipal: () => string;
-    executeRecall: (request: EngramAccessRecallRequest) => Promise<ExecuteResult>;
-    budget: { record: (principal: string) => BudgetDecision };
+    executeRecall: (
+      request: EngramAccessRecallRequest,
+    ) => Promise<{ response: EngramAccessRecallResponse; budgetRecordPrincipal: string | null }>;
+    budget: { record: (principal: string) => BudgetDecision; release: (principal: string) => void };
   };
   host.recallSemaphores = recallSemaphores;
   host.recallInFlight = recallInFlight;
@@ -88,11 +105,39 @@ function makeService(opts: {
     },
   };
   host.resolveRequestPrincipal = () => "principal";
-  host.executeRecall = opts.executeRecall;
-  host.budget = {
-    record: opts.budgetRecord ?? (() => ({ allowed: true })),
+  host.budget = { record: budgetRecord, release: budgetRelease };
+  host.executeRecall = async (request) => {
+    let reserved: string | null = null;
+    if (opts.crossNamespace) {
+      // Atomic admission reserve BEFORE the pipeline (#1906): a denied reserve
+      // throws here, so the pipeline never runs (no over-admission).
+      const decision = budgetRecord("principal");
+      if (!decision.allowed) {
+        throw new EngramAccessInputError(
+          `recall denied: cross-namespace budget exceeded (${decision.count}/${decision.limit?.hardLimit} in ${decision.limit?.windowMs}ms window)`,
+        );
+      }
+      reserved = "principal";
+    }
+    try {
+      const response = await opts.pipeline(request);
+      return { response, budgetRecordPrincipal: reserved };
+    } catch (err) {
+      if (reserved) budgetRelease(reserved); // roll back on pipeline failure
+      throw err;
+    }
   };
   return { service, recallSemaphores, recallInFlight };
+}
+
+function abortRejects(signal: AbortSignal): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
 }
 
 test("distinct concurrent recalls for one principal overlap (not serialized)", async () => {
@@ -101,11 +146,11 @@ test("distinct concurrent recalls for one principal overlap (not serialized)", a
   const release = deferred<void>();
   const { service } = makeService({
     limit: 4,
-    executeRecall: async () => {
+    pipeline: async () => {
       started += 1;
       if (started === 2) bothStarted.resolve();
       await release.promise;
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+      return stubResponse([]);
     },
   });
 
@@ -121,18 +166,16 @@ test("distinct concurrent recalls for one principal overlap (not serialized)", a
   await Promise.all([a, b]);
 });
 
-test("identical concurrent recalls coalesce to one execution; each caller gets its own response", async () => {
-  let invocations = 0;
+test("identical concurrent recalls coalesce to one pipeline; each caller gets its own response", async () => {
+  let pipelineRuns = 0;
   const recordCalls: string[] = [];
   const { service, recallInFlight, recallSemaphores } = makeService({
-    limit: 0, // unlimited so all N are in flight together and coalesce
+    limit: 0,
     singleFlight: true,
-    executeRecall: async () => {
-      invocations += 1;
-      return {
-        response: stubResponse([{ id: "m1" }]),
-        budgetRecordPrincipal: "principal",
-      };
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([{ id: "m1" }]);
     },
     budgetRecord: (p) => {
       recordCalls.push(p);
@@ -145,7 +188,7 @@ test("identical concurrent recalls coalesce to one execution; each caller gets i
     Array.from({ length: 5 }, () => service.recall({ ...req })),
   );
 
-  assert.equal(invocations, 1, "the pipeline runs exactly once for 5 identical recalls");
+  assert.equal(pipelineRuns, 1, "the pipeline runs exactly once for 5 identical recalls");
   assert.equal(responses.length, 5);
   for (const r of responses) assert.ok(r);
 
@@ -153,33 +196,51 @@ test("identical concurrent recalls coalesce to one execution; each caller gets i
   readResults(responses[0]).push({ id: "mutated" });
   assert.equal(readResults(responses[1]).length, 1);
 
-  // Budget record runs once per caller (N times for N coalesced callers).
-  assert.deepEqual(recordCalls, [
-    "principal",
-    "principal",
-    "principal",
-    "principal",
-    "principal",
-  ]);
+  // Budget recorded once per caller: leader reserved in executeRecall + 4
+  // followers each record their own event in followRecallFlight.
+  assert.equal(recordCalls.length, 5);
 
   // No leaks after all coalesced callers settle.
   assert.equal(recallInFlight.size, 0);
   assert.equal(recallSemaphores.size, 0);
 });
 
+test("exactly-once coalescing even when the concurrency cap is below the caller count", async () => {
+  let pipelineRuns = 0;
+  const release = deferred<void>();
+  const { service, recallInFlight } = makeService({
+    limit: 2, // cap 2 < 5 callers
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await release.promise;
+      return stubResponse([]);
+    },
+  });
+
+  const calls = Array.from({ length: 5 }, () => service.recall({ query: "same" }));
+  // Followers join the synchronously-registered flight without taking a slot.
+  release.resolve();
+  const responses = await Promise.all(calls);
+
+  assert.equal(pipelineRuns, 1, "cap < N must still coalesce to one pipeline run");
+  assert.equal(responses.length, 5);
+  assert.equal(recallInFlight.size, 0);
+});
+
 test("single-flight disabled runs the pipeline once per identical request", async () => {
-  let invocations = 0;
+  let pipelineRuns = 0;
   const { service } = makeService({
     limit: 0,
     singleFlight: false,
-    executeRecall: async () => {
-      invocations += 1;
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
     },
   });
 
   await Promise.all(Array.from({ length: 5 }, () => service.recall({ query: "same" })));
-  assert.equal(invocations, 5);
+  assert.equal(pipelineRuns, 5);
 });
 
 test("budget accounting stays per-caller under coalescing and preserves the deny message", async () => {
@@ -187,10 +248,8 @@ test("budget accounting stays per-caller under coalescing and preserves the deny
   const { service } = makeService({
     limit: 0,
     singleFlight: true,
-    executeRecall: async () => ({
-      response: stubResponse([]),
-      budgetRecordPrincipal: "principal",
-    }),
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
     budgetRecord: () => {
       recordCount += 1;
       // First two callers allowed; the third crosses the hard limit.
@@ -217,17 +276,80 @@ test("budget accounting stays per-caller under coalescing and preserves the deny
   );
 });
 
+test("budget hard-limit holds under N concurrent distinct recalls (no over-admission)", async () => {
+  let pipelineRuns = 0;
+  let recordCount = 0;
+  const release = deferred<void>();
+  const { service } = makeService({
+    limit: 0, // unlimited concurrency: all N reach admission together
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await release.promise;
+      return stubResponse([]);
+    },
+    budgetRecord: () => {
+      recordCount += 1;
+      // hard limit 2: the 3rd+ reserve is denied AT ADMISSION, before its
+      // pipeline can run.
+      if (recordCount <= 2) return { allowed: true };
+      return { allowed: false, count: 3, limit: { hardLimit: 2, windowMs: 60_000 } };
+    },
+  });
+
+  // Distinct queries => 5 independent leaders, each reserves before its own
+  // pipeline. Fire them, then release the two admitted pipelines.
+  const calls = Array.from({ length: 5 }, (_, i) => service.recall({ query: `q${i}` }));
+  // Let all 5 reach the reserve (each is a leader; reserves are synchronous
+  // record() calls sequenced by the event loop).
+  await Promise.resolve();
+  await Promise.resolve();
+  release.resolve();
+  const settled = await Promise.allSettled(calls);
+
+  assert.equal(pipelineRuns, 2, "only 2 pipelines run; the 3rd+ deny before running (no over-admission)");
+  assert.equal(settled.filter((s) => s.status === "fulfilled").length, 2);
+  assert.equal(settled.filter((s) => s.status === "rejected").length, 3);
+});
+
+test("a failed pipeline rolls back its budget reservation", async () => {
+  let recordCount = 0;
+  let releaseCount = 0;
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      throw new Error("pipeline boom");
+    },
+    budgetRecord: () => {
+      recordCount += 1;
+      return { allowed: true };
+    },
+    budgetRelease: () => {
+      releaseCount += 1;
+    },
+  });
+
+  await assert.rejects(service.recall({ query: "same" }), /pipeline boom/);
+  assert.equal(recordCount, 1, "reserved once at admission");
+  assert.equal(releaseCount, 1, "rolled back once on pipeline failure");
+});
+
 test("a queued recall rejects immediately on abort — before the holder releases", async () => {
-  let invocations = 0;
+  let pipelineRuns = 0;
   const leaderStarted = deferred<void>();
   const releaseLeader = deferred<void>();
   const { service, recallSemaphores } = makeService({
     limit: 1,
-    executeRecall: async () => {
-      invocations += 1;
-      leaderStarted.resolve();
-      await releaseLeader.promise;
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "leader") {
+        leaderStarted.resolve();
+        await releaseLeader.promise;
+      }
+      return stubResponse([]);
     },
   });
 
@@ -238,9 +360,9 @@ test("a queued recall rejects immediately on abort — before the holder release
   const queued = service.recall({ query: "queued", abortSignal: controller.signal });
   controller.abort();
 
-  // Rejects on abort while the leader is still held (invocations stays 1).
+  // Rejects on abort while the leader is still held (pipelineRuns stays 1).
   await assert.rejects(queued, (error: Error) => error.name === "AbortError");
-  assert.equal(invocations, 1, "the aborted queued recall never started its pipeline");
+  assert.equal(pipelineRuns, 1, "the aborted queued recall never started its pipeline");
 
   releaseLeader.resolve();
   await leader;
@@ -253,14 +375,14 @@ test("an aborted queued recall does not poison the per-principal lane", async ()
   const releaseLeader = deferred<void>();
   const { service } = makeService({
     limit: 1,
-    executeRecall: async (request) => {
+    pipeline: async (request) => {
       if (request.query === "leader") {
         leaderStarted.resolve();
         await releaseLeader.promise;
       } else if (request.query === "third") {
         thirdRan = true;
       }
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+      return stubResponse([]);
     },
   });
 
@@ -279,6 +401,107 @@ test("an aborted queued recall does not poison the per-principal lane", async ()
   assert.equal(thirdRan, true);
 });
 
+test("a leader abort does not reject still-connected followers (flight completes for them)", async () => {
+  let pipelineRuns = 0;
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      started.resolve();
+      await release.promise;
+      return stubResponse([{ id: "shared" }]);
+    },
+  });
+
+  const leaderController = new AbortController();
+  const leader = service.recall({ query: "same", abortSignal: leaderController.signal });
+  const follower = service.recall({ query: "same" }); // no signal
+  await started.promise;
+
+  // Leader disconnects mid-pipeline; the follower must still get the result.
+  leaderController.abort();
+  release.resolve();
+
+  await assert.rejects(leader, (error: Error) => error.name === "AbortError");
+  const result = await follower;
+  assert.ok(result);
+  assert.equal(pipelineRuns, 1, "the shared pipeline was not restarted for the follower");
+});
+
+test("the shared pipeline is cancelled only when every attached caller aborts", async () => {
+  let pipelineCancelled = false;
+  const started = deferred<void>();
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async (request) => {
+      started.resolve();
+      const flightSignal = request.abortSignal;
+      assert.ok(flightSignal, "the shared pipeline runs on the flight's own signal");
+      try {
+        // Honor the flight's own abort signal (not any single caller's).
+        await abortRejects(flightSignal);
+        return stubResponse([]);
+      } catch {
+        pipelineCancelled = true;
+        throw Object.assign(new Error("operation aborted"), { name: "AbortError" });
+      }
+    },
+  });
+
+  const cA = new AbortController();
+  const cB = new AbortController();
+  const a = service.recall({ query: "same", abortSignal: cA.signal });
+  const b = service.recall({ query: "same", abortSignal: cB.signal });
+  await started.promise;
+
+  cA.abort(); // one caller aborts — pipeline must keep running
+  await Promise.resolve();
+  assert.equal(pipelineCancelled, false, "one caller aborting must not cancel the shared pipeline");
+
+  cB.abort(); // last caller aborts — now cancel the flight
+  await assert.rejects(a, (error: Error) => error.name === "AbortError");
+  await assert.rejects(b, (error: Error) => error.name === "AbortError");
+  assert.equal(pipelineCancelled, true, "flight cancelled once all attached callers aborted");
+});
+
+test("abort listeners on a caller's signal return to baseline after the recall settles", async () => {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  let liveAbortListeners = 0;
+  const origAdd = signal.addEventListener.bind(signal);
+  const origRemove = signal.removeEventListener.bind(signal);
+  // Count only "abort" listeners that are explicitly removed (the recall path
+  // never fires abort here, so raceAbort's .finally and attachFlightAbort's
+  // detach must remove every listener they added).
+  type AddArgs = Parameters<typeof signal.addEventListener>;
+  type RemoveArgs = Parameters<typeof signal.removeEventListener>;
+  const patched = signal as unknown as {
+    addEventListener: (...args: AddArgs) => void;
+    removeEventListener: (...args: RemoveArgs) => void;
+  };
+  patched.addEventListener = (...args: AddArgs) => {
+    if (args[0] === "abort") liveAbortListeners += 1;
+    origAdd(...args);
+  };
+  patched.removeEventListener = (...args: RemoveArgs) => {
+    if (args[0] === "abort") liveAbortListeners -= 1;
+    origRemove(...args);
+  };
+
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async () => stubResponse([]),
+  });
+
+  await service.recall({ query: "same", abortSignal: signal });
+  assert.equal(liveAbortListeners, 0, "every abort listener added during the recall was removed");
+});
+
 async function measurePeakConcurrency(limit: number): Promise<number> {
   let active = 0;
   let peak = 0;
@@ -289,7 +512,7 @@ async function measurePeakConcurrency(limit: number): Promise<number> {
   const { service } = makeService({
     limit,
     singleFlight: false, // distinct queries anyway; keep coalescing out of the way
-    executeRecall: async () => {
+    pipeline: async () => {
       active += 1;
       peak = Math.max(peak, active);
       startedCount += 1;
@@ -298,7 +521,7 @@ async function measurePeakConcurrency(limit: number): Promise<number> {
       gates.push(gate.resolve);
       await gate.promise;
       active -= 1;
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+      return stubResponse([]);
     },
   });
 
@@ -314,9 +537,8 @@ async function measurePeakConcurrency(limit: number): Promise<number> {
   await reachedExpected.promise;
   const capturedPeak = peak;
 
-  // Drain to completion: resolve every gate as it appears (each release frees a
-  // slot for the next queued recall) until all three calls settle. Bounded by
-  // call completion, not by wall-clock time.
+  // Drain to completion: resolve gates as they appear until all three calls
+  // settle. Bounded by call completion, not by wall-clock time.
   const all = Promise.all(calls);
   let settled = false;
   void all.then(
@@ -344,7 +566,7 @@ test("semaphore honors recallMaxConcurrentPerPrincipal (cap = 2, 1, unlimited)",
   assert.equal(await measurePeakConcurrency(0), 3, "limit=0 (unlimited) runs all 3 at once");
 });
 
-test("queueWaitMs is threaded to the pipeline: ~0 when a slot is free, >0 when queued", async () => {
+test("queueWaitMs is threaded to the pipeline: 0 when a slot is free, >0 when queued", async () => {
   // Drive Date.now deterministically so the queued recall records a positive
   // wait without depending on wall-clock timing.
   const realNow = Date.now;
@@ -357,13 +579,13 @@ test("queueWaitMs is threaded to the pipeline: ~0 when a slot is free, >0 when q
     const { service } = makeService({
       limit: 1,
       singleFlight: false,
-      executeRecall: async (request) => {
+      pipeline: async (request) => {
         seen.push(request.queueWaitMs);
         if (request.query === "leader") {
           leaderStarted.resolve();
           await releaseLeader.promise;
         }
-        return { response: stubResponse([]), budgetRecordPrincipal: null };
+        return stubResponse([]);
       },
     });
 
@@ -385,14 +607,14 @@ test("queueWaitMs is threaded to the pipeline: ~0 when a slot is free, >0 when q
 });
 
 test("leader failure does not poison followers permanently — a later identical recall succeeds", async () => {
-  let invocations = 0;
+  let pipelineRuns = 0;
   const { service, recallInFlight, recallSemaphores } = makeService({
     limit: 0,
     singleFlight: true,
-    executeRecall: async () => {
-      invocations += 1;
-      if (invocations === 1) throw new Error("leader boom");
-      return { response: stubResponse([]), budgetRecordPrincipal: null };
+    pipeline: async () => {
+      pipelineRuns += 1;
+      if (pipelineRuns === 1) throw new Error("leader boom");
+      return stubResponse([]);
     },
   });
 
@@ -409,7 +631,7 @@ test("leader failure does not poison followers permanently — a later identical
   assert.equal(recallInFlight.size, 0, "failed leader does not leave a poisoned entry");
   const recovered = await service.recall({ query: "same" });
   assert.ok(recovered);
-  assert.equal(invocations, 2, "the recovery recall ran a fresh pipeline");
+  assert.equal(pipelineRuns, 2, "the recovery recall ran a fresh pipeline");
   assert.equal(recallInFlight.size, 0);
   assert.equal(recallSemaphores.size, 0);
 });

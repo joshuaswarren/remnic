@@ -1321,17 +1321,30 @@ interface PrincipalSemaphore {
   waiters: Array<{ take: () => void; drop: () => void }>;
 }
 
+/** Result of one coalesced recall pipeline (issue #1906). */
+type RecallExecResult = {
+  response: EngramAccessRecallResponse;
+  budgetRecordPrincipal: string | null;
+};
+
+/**
+ * A shared single-flight recall execution (issue #1906 review). Identical
+ * concurrent recalls for one principal coalesce onto one `promise`. The flight
+ * owns its OWN AbortController so a single caller disconnecting never cancels
+ * the shared pipeline; `live` refcounts attached callers and the controller is
+ * aborted only when EVERY attached caller has aborted.
+ */
+interface RecallFlight {
+  promise: Promise<RecallExecResult>;
+  controller: AbortController;
+  live: number;
+}
+
 export class EngramAccessService {
   private readonly idempotency: AccessIdempotencyStore;
   private readonly idempotencyLocks = new Map<string, Promise<void>>();
   private readonly recallSemaphores = new Map<string, PrincipalSemaphore>();
-  private readonly recallInFlight = new Map<
-    string,
-    Promise<{
-      response: EngramAccessRecallResponse;
-      budgetRecordPrincipal: string | null;
-    }>
-  >();
+  private readonly recallInFlight = new Map<string, RecallFlight>();
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
 
@@ -2528,23 +2541,191 @@ export class EngramAccessService {
   }
 
   /**
-   * Race `p` against `signal` (issue #1906). A single-flight follower waits
-   * on the shared leader promise but must be able to leave on its own abort
-   * without aborting the leader (other callers may still consume it).
+   * Race `p` against `signal` (issue #1906). A single-flight caller waits on
+   * the shared flight promise but must be able to leave on its own abort. The
+   * abort listener is removed as soon as the race settles (either `p` won or
+   * the abort fired) so a settled-first promise never leaks a listener on a
+   * long-lived signal.
    */
   private raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) return p;
-    return Promise.race([
-      p,
-      new Promise<never>((_resolve, reject) => {
-        if (signal.aborted) return reject(abortError("operation aborted"));
-        signal.addEventListener(
-          "abort",
-          () => reject(abortError("operation aborted")),
-          { once: true },
-        );
-      }),
-    ]);
+    let onAbort: (() => void) | undefined;
+    const racer = new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(abortError("operation aborted"));
+        return;
+      }
+      onAbort = () => reject(abortError("operation aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return Promise.race([p, racer]).finally(() => {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    });
+  }
+
+  /**
+   * Attach a caller to a single-flight recall (issue #1906 review). Increments
+   * the flight refcount and wires the caller's abort so the SHARED pipeline is
+   * cancelled ONLY when every attached caller has aborted. Returns a `detach`
+   * to call when the caller settles normally (removes its abort listener and
+   * decrements the refcount without cancelling the flight).
+   */
+  private attachFlightAbort(flight: RecallFlight, signal: AbortSignal | undefined): () => void {
+    flight.live += 1;
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      flight.live -= 1;
+      if (flight.live === 0) flight.controller.abort();
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+    return () => {
+      if (settled) return;
+      settled = true;
+      flight.live -= 1;
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+  }
+
+  /** Follower path (issue #1906 review): join an in-flight identical recall
+   *  WITHOUT taking a concurrency slot, then record this caller's OWN
+   *  per-caller cross-namespace budget event and return an independent
+   *  response clone. */
+  private async followRecallFlight(
+    flight: RecallFlight,
+    request: EngramAccessRecallRequest,
+  ): Promise<EngramAccessRecallResponse> {
+    const detach = this.attachFlightAbort(flight, request.abortSignal);
+    try {
+      const result = await this.raceAbort(flight.promise, request.abortSignal);
+      throwIfAborted(request.abortSignal);
+      if (result.budgetRecordPrincipal) {
+        const decision = this.budget.record(result.budgetRecordPrincipal);
+        if (!decision.allowed) {
+          throw new EngramAccessInputError(
+            `recall denied: cross-namespace budget exceeded (${decision.count}/${decision.limit.hardLimit} in ${decision.limit.windowMs}ms window)`,
+          );
+        }
+      }
+      return structuredClone(result.response);
+    } finally {
+      detach();
+    }
+  }
+
+  /** Non-coalesced recall (single-flight disabled): per-request execution
+   *  under a concurrency slot, the caller's own signal driving its pipeline. */
+  private async runRecallDirect(
+    request: EngramAccessRecallRequest,
+    normalizedRequest: EngramAccessRecallRequest,
+    requestFingerprint: unknown,
+    queueWaitMs: number,
+  ): Promise<EngramAccessRecallResponse> {
+    const response = await this.handleIdempotentRead({
+      operation: "recall",
+      idempotencyKey: request.idempotencyKey,
+      requestFingerprint,
+      execute: async () => {
+        // Create + await the pipeline inside the closure so its rejection is
+        // observed immediately (no unhandled-rejection window across the
+        // idempotency-lock await). The caller's own signal drives this
+        // non-coalesced pipeline.
+        const exec = this.executeRecall({ ...normalizedRequest, queueWaitMs });
+        const result = await this.raceAbort(exec, request.abortSignal);
+        return structuredClone(result.response);
+      },
+    });
+    throwIfAborted(request.abortSignal);
+    return response;
+  }
+
+  /** Leader path (issue #1906 review): register a flight SYNCHRONOUSLY (before
+   *  taking a slot) so identical arrivals coalesce even when the concurrency
+   *  cap is below the number of concurrent callers (#2), run the pipeline once
+   *  under the flight's OWN abort controller (#3), and return an independent
+   *  clone. The leader reserved its OWN cross-namespace budget event atomically
+   *  at admission inside executeRecall (#1). */
+  private async leadRecallFlight(
+    request: EngramAccessRecallRequest,
+    normalizedRequest: EngramAccessRecallRequest,
+    requestFingerprint: unknown,
+    flightKey: string,
+    principalKey: string,
+  ): Promise<EngramAccessRecallResponse> {
+    const controller = new AbortController();
+    let settleExec!: (result: RecallExecResult) => void;
+    let failExec!: (reason: unknown) => void;
+    const flightPromise = new Promise<RecallExecResult>((resolve, reject) => {
+      settleExec = resolve;
+      failExec = reject;
+    });
+    // Never let the shared deferred surface an unhandled rejection: consumers
+    // (followers / the leader) attach their own handlers, but if none do the
+    // .catch keeps Node quiet.
+    flightPromise.catch(() => {});
+    const flight: RecallFlight = { promise: flightPromise, controller, live: 0 };
+    // Register in the SAME synchronous turn as recall()'s miss check (no await
+    // between) so any identical arrival in a later turn joins without a slot.
+    this.recallInFlight.set(flightKey, flight);
+    const cleanup = () => {
+      if (this.recallInFlight.get(flightKey) === flight) {
+        this.recallInFlight.delete(flightKey);
+      }
+    };
+    const detach = this.attachFlightAbort(flight, request.abortSignal);
+    let execStarted = false;
+    try {
+      return await this.withRecallConcurrency(
+        principalKey,
+        request.abortSignal,
+        async (queueWaitMs) => {
+          execStarted = true;
+          // Shared pipeline runs on the FLIGHT'S signal, never a single caller's
+          // — it is cancelled only when every attached caller has aborted (#3).
+          const exec = this.executeRecall({
+            ...normalizedRequest,
+            abortSignal: controller.signal,
+            queueWaitMs,
+          });
+          exec.then(settleExec, failExec);
+          exec
+            .catch(() => {})
+            .finally(cleanup);
+          const response = await this.handleIdempotentRead({
+            operation: "recall",
+            idempotencyKey: request.idempotencyKey,
+            requestFingerprint,
+            execute: async () => {
+              const result = await this.raceAbort(exec, request.abortSignal);
+              // Clone so no two coalesced callers (or the idempotency store)
+              // share a mutable response object (AGENTS.md rule 47).
+              return structuredClone(result.response);
+            },
+          });
+          throwIfAborted(request.abortSignal);
+          return response;
+        },
+      );
+    } catch (err) {
+      // If the pipeline never started (e.g. the leader was aborted while queued
+      // for a slot), release followers waiting on the deferred and unregister so
+      // a later identical recall re-leads. Documented edge: those followers
+      // receive this error; no pipeline work is lost.
+      if (!execStarted) {
+        failExec(err);
+        cleanup();
+      }
+      throw err;
+    } finally {
+      detach();
+    }
   }
 
   async health(namespace?: string): Promise<EngramAccessHealthResponse> {
@@ -2849,73 +3030,38 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    return this.withRecallConcurrency(
-      principal ?? "default",
-      request.abortSignal,
-      async (queueWaitMs) => {
-        let budgetRecordPrincipal: string | null = null;
-        const response = await this.handleIdempotentRead({
-          operation: "recall",
-          idempotencyKey: request.idempotencyKey,
-          requestFingerprint,
-          execute: async () => {
-            const singleFlight =
-              this.orchestrator.config.recallSingleFlightEnabled === true;
-            let result: {
-              response: EngramAccessRecallResponse;
-              budgetRecordPrincipal: string | null;
-            };
-            if (singleFlight) {
-              const flightKey = `${principal ?? "default"}\u0000${hashAccessIdempotencyPayload(
-                { operation: "recall", request: requestFingerprint },
-              )}`;
-              const joined = this.recallInFlight.get(flightKey);
-              if (joined) {
-                // Follower: consume the leader's execution. Race our own
-                // abort so a disconnected follower leaves without aborting
-                // the leader (other callers may still consume it).
-                result = await this.raceAbort(joined, request.abortSignal);
-              } else {
-                // Leader: run the pipeline once; followers coalesce onto it.
-                const exec = this.executeRecall({
-                  ...normalizedRequest,
-                  queueWaitMs,
-                });
-                this.recallInFlight.set(flightKey, exec);
-                exec
-                  .catch(() => {})
-                  .finally(() => {
-                    if (this.recallInFlight.get(flightKey) === exec) {
-                      this.recallInFlight.delete(flightKey);
-                    }
-                  });
-                result = await this.raceAbort(exec, request.abortSignal);
-              }
-            } else {
-              const exec = this.executeRecall({
-                ...normalizedRequest,
-                queueWaitMs,
-              });
-              result = await this.raceAbort(exec, request.abortSignal);
-            }
-            throwIfAborted(request.abortSignal);
-            budgetRecordPrincipal = result.budgetRecordPrincipal;
-            // Clone so no two coalesced callers (or the idempotency store)
-            // share a mutable response object (AGENTS.md rule 47).
-            return structuredClone(result.response);
-          },
-          afterStore: () => {
-            if (!budgetRecordPrincipal) return;
-            const recordedBudgetDecision = this.budget.record(budgetRecordPrincipal);
-            if (!recordedBudgetDecision.allowed) {
-              throw new EngramAccessInputError(
-                `recall denied: cross-namespace budget exceeded (${recordedBudgetDecision.count}/${recordedBudgetDecision.limit.hardLimit} in ${recordedBudgetDecision.limit.windowMs}ms window)`,
-              );
-            }
-          },
-        });
-        return response;
-      },
+    const principalKey = principal ?? "default";
+    const singleFlight = this.orchestrator.config.recallSingleFlightEnabled === true;
+
+    if (!singleFlight) {
+      // No coalescing: per-request execution under a concurrency slot.
+      return this.withRecallConcurrency(
+        principalKey,
+        request.abortSignal,
+        (queueWaitMs) =>
+          this.runRecallDirect(request, normalizedRequest, requestFingerprint, queueWaitMs),
+      );
+    }
+
+    const flightKey = `${principalKey}\u0000${hashAccessIdempotencyPayload({
+      operation: "recall",
+      request: requestFingerprint,
+    })}`;
+    // Follower fast-path (#1906 review #2): join an in-flight identical recall
+    // WITHOUT acquiring a concurrency slot. Because the leader registers its
+    // flight synchronously (below, before any await), every later identical
+    // arrival coalesces here — even when the concurrency cap is below the number
+    // of concurrent callers. Followers never wait for, or consume, a slot.
+    const existing = this.recallInFlight.get(flightKey);
+    if (existing) return this.followRecallFlight(existing, request);
+    // We are the leader: leadRecallFlight registers the flight synchronously in
+    // this same turn, then acquires a slot to run the one shared pipeline.
+    return this.leadRecallFlight(
+      request,
+      normalizedRequest,
+      requestFingerprint,
+      flightKey,
+      principalKey,
     );
   }
 
