@@ -22,6 +22,7 @@ import {
   queryTemporalTimelineAsync,
   resolvePromptTagPrefilterAsync,
   setIndexReadObserverForTest,
+  setIndexWriteFailureForTest,
   setIndexWriteObserverForTest,
 } from "./temporal-index.js";
 
@@ -724,6 +725,8 @@ test("#1911B de-indexing N memories performs exactly one temporal + one tag writ
     let temporal = 0;
     let tags = 0;
     setIndexWriteObserverForTest((filePath) => {
+      // Scope to this directory so unrelated index writes never skew the count.
+      if (!filePath.startsWith(dir)) return;
       if (filePath.endsWith("index_time.json")) temporal += 1;
       else if (filePath.endsWith("index_tags.json")) tags += 1;
     });
@@ -733,16 +736,26 @@ test("#1911B de-indexing N memories performs exactly one temporal + one tag writ
     };
   };
 
+  // try/finally guarantees the global observer is cleared even if an awaited
+  // op throws, so it can never leak into a later test.
+  let batchWrites = { temporal: 0, tags: 0 };
   const stopBatch = countWrites(batchDir);
-  await deindexMemoriesBatchAsync(batchDir, entries);
-  const batchWrites = stopBatch();
+  try {
+    await deindexMemoriesBatchAsync(batchDir, entries);
+  } finally {
+    batchWrites = stopBatch();
+  }
   assert.deepEqual(batchWrites, { temporal: 1, tags: 1 });
 
+  let seqWrites = { temporal: 0, tags: 0 };
   const stopSeq = countWrites(seqDir);
-  for (const e of entries) {
-    await deindexMemory(seqDir, e.path, e.createdAt, e.tags);
+  try {
+    for (const e of entries) {
+      await deindexMemory(seqDir, e.path, e.createdAt, e.tags);
+    }
+  } finally {
+    seqWrites = stopSeq();
   }
-  const seqWrites = stopSeq();
   // The per-memory path is the O(N) amplification this batch API replaces.
   assert.deepEqual(seqWrites, { temporal: entries.length, tags: entries.length });
 });
@@ -768,18 +781,48 @@ test("#1911B batch de-index keeps tag index consistent when the temporal write f
   await seedIndex(memoryDir, entries);
   const before = await readRawIndexes(memoryDir);
 
-  // Make the state dir read-only so writeJsonAtomic cannot create its tmp sibling;
-  // the temporal update fails first, so the tag half must be skipped entirely,
-  // leaving BOTH indexes at their pre-batch contents (no half-applied removal).
-  const stateDir = join(memoryDir, "state");
-  await fs.promises.chmod(stateDir, 0o500);
+  // Deterministically fail the temporal write via the test-only hook. chmod is a
+  // no-op for privileged users (common in CI) and differs on Windows; the hook
+  // fails the same branch in every environment. Temporal fails first, so the tag
+  // half is skipped, leaving BOTH indexes at their pre-batch contents.
+  setIndexWriteFailureForTest((filePath) => filePath.endsWith("index_time.json"));
   try {
     await deindexMemoriesBatchAsync(memoryDir, entries);
   } finally {
-    await fs.promises.chmod(stateDir, 0o700);
+    setIndexWriteFailureForTest(undefined);
   }
 
   const after = await readRawIndexes(memoryDir);
   assert.deepEqual(after.temporal, before.temporal);
   assert.deepEqual(after.tags, before.tags);
+});
+
+test("#1911B a throwing write observer cannot fail a committed index write", async () => {
+  const throwDir = await mkdtemp(join(tmpdir(), "remnic-deindex-observer-throw-"));
+  const controlDir = await mkdtemp(join(tmpdir(), "remnic-deindex-observer-control-"));
+  const entries = sampleMemories("obsthrow", 3);
+  await seedIndex(throwDir, entries);
+  await seedIndex(controlDir, entries);
+
+  // Control: a clean batch de-index with no observer installed.
+  await deindexMemoriesBatchAsync(controlDir, entries);
+
+  // Same batch, but the committed-write observer throws. The exception fires
+  // only after the temporal rename has committed; if it escaped, the write would
+  // retry and ultimately report failure, skipping the paired tag phase and
+  // leaving a half-applied index. Isolation must keep the outcome identical to
+  // the control on BOTH indexes.
+  setIndexWriteObserverForTest(() => {
+    throw new Error("observer boom");
+  });
+  try {
+    await deindexMemoriesBatchAsync(throwDir, entries);
+  } finally {
+    setIndexWriteObserverForTest(undefined);
+  }
+
+  const control = await readRawIndexes(controlDir);
+  const thrown = await readRawIndexes(throwDir);
+  assert.deepEqual(thrown.temporal, control.temporal);
+  assert.deepEqual(thrown.tags, control.tags);
 });

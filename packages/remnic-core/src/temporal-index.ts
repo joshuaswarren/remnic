@@ -137,6 +137,18 @@ export function setIndexWriteObserverForTest(observer?: (filePath: string) => vo
   indexWriteObserverForTest = observer;
 }
 
+let indexWriteFailureForTest: ((filePath: string) => boolean) | undefined;
+
+/**
+ * Test-only hook to deterministically fail an atomic index write for matching
+ * paths. Return true to fail the write for a given path. Lets partial-failure
+ * branches be exercised without relying on filesystem permissions, which no-op
+ * for privileged users (common in containerized CI) and differ on Windows.
+ */
+export function setIndexWriteFailureForTest(shouldFail?: (filePath: string) => boolean): void {
+  indexWriteFailureForTest = shouldFail;
+}
+
 interface IndexLockOwner {
   pid: number;
   createdAt?: string;
@@ -420,9 +432,20 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<boolean
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tmp = uniqueTempPath(filePath);
     try {
+      if (indexWriteFailureForTest?.(filePath)) {
+        throw new Error("injected atomic-write failure (test)");
+      }
       await fs.promises.writeFile(tmp, payload, "utf8");
       await fs.promises.rename(tmp, filePath);
-      indexWriteObserverForTest?.(filePath);
+      // The observer fires only after the committed rename. Isolate its
+      // exceptions so a test hook can never turn a successful write into a
+      // retry or a false (failed) result, which would clear the cache and
+      // skip the paired tag-index phase.
+      try {
+        indexWriteObserverForTest?.(filePath);
+      } catch {
+        // Test hooks must not alter committed index-write results.
+      }
       return true;
     } catch {
       try {
