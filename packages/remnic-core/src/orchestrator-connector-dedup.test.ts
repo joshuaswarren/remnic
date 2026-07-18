@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -1120,4 +1121,41 @@ test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fa
     true,
     "the fact hash was flushed immediately despite the batch saver being a no-op",
   );
+});
+test("#1909: deferred persist run restores the ready marker and dedups the fact after restart", async () => {
+  // Review round 4: with dedup ON the main-path write defers, so persistExtraction
+  // opens the crash window (removes fact-hashes.ready) and must restore it after
+  // the batch save. After a normal run the marker is present AND a fresh
+  // StorageManager (trusting the marker, no rebuild) still dedups the fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-window-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  // Warm authoritative + create the marker so the run's guard has one to toggle.
+  assert.equal(await storage.hasFactContentHash("warm"), false);
+  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
+  assert.equal(existsSync(readyPath), true, ".ready present before the run");
+
+  const body = "The scheduler batches webhook deliveries into 250ms windows.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written");
+
+  // The marker was restored after the batch save.
+  assert.equal(existsSync(readyPath), true, ".ready restored after a successful deferred batch");
+
+  // A fresh instance trusts the marker (no rebuild) and still finds the hash —
+  // proving the batch save flushed the deferred write and the marker points at a
+  // complete index.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(await restarted.hasFactContentHash(body), true);
 });

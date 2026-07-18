@@ -241,6 +241,21 @@ export class ExtractionPersistCoordinator {
     // (or re-enabling dedup) with fact-hashes.ready present would trust a stale
     // index. Defer only when the batch will actually cover the write.
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
+    // #1909 (review round 4): guard the deferred-batch crash window. While a
+    // deferred main-path write is outstanding, remove that target storage's
+    // fact-hashes.ready marker so a crash BEFORE the end-of-persist batch save
+    // forces a rebuild-from-corpus on restart instead of trusting a stale index;
+    // restore the marker after the batch save succeeds. One toggle per storage
+    // per run; a complete no-op when nothing defers (factDedup off).
+    const readyMarkerToRestore = new Set<StorageManager>();
+    const readyMarkerHandled = new Set<StorageManager>();
+    const guardDeferredFactHashWindow = async (target: StorageManager): Promise<void> => {
+      if (!factDedupEnabled) return;
+      if (readyMarkerHandled.has(target)) return;
+      readyMarkerHandled.add(target);
+      const existed = await target.invalidateFactHashIndexReadyMarkerOnDisk();
+      if (existed) readyMarkerToRestore.add(target);
+    };
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -2173,6 +2188,8 @@ export class ExtractionPersistCoordinator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
+          // #1909: open the deferred-batch crash window for this storage.
+          await guardDeferredFactHashWindow(targetStorage);
           const parentWrite = await targetStorage.writeMemory(
             writeCategory,
             citedChunkedContent,
@@ -2529,6 +2546,8 @@ export class ExtractionPersistCoordinator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
+      // #1909: open the deferred-batch crash window for this storage.
+      await guardDeferredFactHashWindow(targetStorage);
       const factWrite = await targetStorage.writeMemory(
         writeCategory,
         citedFactContent,
@@ -2905,9 +2924,23 @@ export class ExtractionPersistCoordinator {
     }
 
     // Save any content-hash indexes touched during the batch.
-    await this.deps.saveContentHashIndexes().catch((err) =>
-      log.warn(`content-hash index save failed: ${err}`),
-    );
+    let batchIndexSaveOk = true;
+    await this.deps.saveContentHashIndexes().catch((err) => {
+      batchIndexSaveOk = false;
+      log.warn(`content-hash index save failed: ${err}`);
+    });
+    // #1909 (review round 4): the deferred hashes are now durable in the on-disk
+    // index, so restore each target storage's fact-hashes.ready marker (only for
+    // storages whose marker we removed). On a failed batch save, leave the marker
+    // absent — a fresh instance rebuilds from the corpus (fail-open) rather than
+    // trusting an index that may be missing this run's hashes.
+    if (batchIndexSaveOk) {
+      for (const target of readyMarkerToRestore) {
+        await target.restoreFactHashIndexReadyMarkerOnDisk().catch((err) =>
+          log.warn(`fact-hash ready marker restore failed: ${err}`),
+        );
+      }
+    }
 
     for (const {
       storage: targetStorage,

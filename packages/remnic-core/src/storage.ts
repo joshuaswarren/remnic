@@ -3495,6 +3495,40 @@ export class StorageManager {
     return path.join(this.stateDir, "fact-hashes.ready");
   }
 
+  /**
+   * Remove the on-disk fact-hash "ready" marker for the duration of a deferred
+   * batch persist (issue #1909 review round 4). While the marker is absent a
+   * fresh StorageManager will NOT trust the on-disk index and instead rebuilds
+   * from the corpus via `ensureFactHashIndexAuthoritative`, so a crash AFTER a
+   * deferred fact write but BEFORE the batch `saveContentHashIndexes()` cannot
+   * leave a just-written fact missing from dedup. Deliberately does NOT clear
+   * this instance's in-memory `factHashIndexAuthoritative` flag — the live index
+   * already holds the deferred hashes (added by writeMemory), so in-process
+   * dedup stays correct and fast during the run. Returns true iff a marker
+   * existed and was removed (so only a previously-trusted index is restored).
+   */
+  async invalidateFactHashIndexReadyMarkerOnDisk(): Promise<boolean> {
+    try {
+      await unlink(this.factHashIndexReadyPath);
+      return true;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+  }
+
+  /**
+   * Re-establish the fact-hash "ready" marker after a deferred batch save has
+   * flushed the authoritative superset to disk (issue #1909 review round 4).
+   * Only call this for a storage whose marker was present before the window
+   * (see `invalidateFactHashIndexReadyMarkerOnDisk`) — its on-disk index was
+   * complete and the batch save only appended this run's hashes to it.
+   */
+  async restoreFactHashIndexReadyMarkerOnDisk(): Promise<void> {
+    await mkdir(path.dirname(this.factHashIndexReadyPath), { recursive: true });
+    await writeFile(this.factHashIndexReadyPath, "v1\n", "utf-8");
+  }
+
   // ── Tombstone store access (issue #1579) ─────────────────────────────────
   /**
    * The on-disk tombstone log path. Lives under `<stateDir>/tombstones.jsonl`

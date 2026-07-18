@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { mock } from "node:test";
@@ -164,5 +165,56 @@ test("concurrent deferred fact writes both land in the index (no lost update)", 
     const reopened = new StorageManager(dir);
     assert.equal(await reopened.hasFactContentHash("concurrent alpha"), true);
     assert.equal(await reopened.hasFactContentHash("concurrent beta"), true);
+  });
+});
+
+test("#1909: crash in the deferred window (marker invalidated, no batch save) rebuilds from the corpus", async () => {
+  // Review round 4: with a deferred main-path write outstanding, the
+  // fact-hashes.ready marker must be removed so a crash BEFORE the batch save
+  // does not leave a fresh instance trusting a stale index that is missing the
+  // just-written fact.
+  await withMemoryDir(async (dir) => {
+    const readyPath = path.join(dir, "state", "fact-hashes.ready");
+    // Warm the index authoritative + create the .ready marker.
+    const warm = new StorageManager(dir);
+    assert.equal(await warm.hasFactContentHash("warm"), false);
+    assert.equal(existsSync(readyPath), true, ".ready present after warm");
+
+    // Open the deferred-batch window: remove the marker, then a deferred write.
+    assert.equal(await warm.invalidateFactHashIndexReadyMarkerOnDisk(), true, "marker existed and was removed");
+    assert.equal(existsSync(readyPath), false, "marker absent during the deferred window");
+    await warm.writeMemory("fact", "windowed fact", {
+      source: "extraction",
+      deferHashIndexSave: true,
+    });
+    // CRASH: no batch save, no marker restore. Drop the instance.
+
+    // A fresh instance finds no marker → ensureFactHashIndexAuthoritative rebuilds
+    // from the durable fact corpus (the .md is on disk) → the fact is deduped.
+    const restarted = new StorageManager(dir);
+    assert.equal(
+      await restarted.hasFactContentHash("windowed fact"),
+      true,
+      "a crash in the deferred window rebuilds from the corpus — the fact is not lost from dedup",
+    );
+  });
+});
+
+test("#1909: restoring the ready marker re-establishes trust after a successful batch", async () => {
+  await withMemoryDir(async (dir) => {
+    const readyPath = path.join(dir, "state", "fact-hashes.ready");
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash("warm"), false); // creates marker
+    assert.equal(existsSync(readyPath), true);
+
+    assert.equal(await storage.invalidateFactHashIndexReadyMarkerOnDisk(), true);
+    assert.equal(existsSync(readyPath), false, "marker removed for the window");
+
+    await storage.restoreFactHashIndexReadyMarkerOnDisk();
+    assert.equal(existsSync(readyPath), true, "marker restored after the batch save");
+
+    // invalidate on an already-absent marker reports false (nothing to restore).
+    await storage.invalidateFactHashIndexReadyMarkerOnDisk();
+    assert.equal(await storage.invalidateFactHashIndexReadyMarkerOnDisk(), false);
   });
 });
