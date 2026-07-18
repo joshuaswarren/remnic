@@ -355,3 +355,38 @@ test("inverted soft/hard limits clamp soft <= hard", () => {
   const cfg = limiter.getConfig();
   assert.equal(cfg.softLimit, cfg.hardLimit);
 });
+
+test("release(token) removes the EXACT reserved entry, not the newest (issue #1906 review #4)", () => {
+  const limiter = new CrossNamespaceBudget({
+    enabled: true,
+    softLimit: 0,
+    hardLimit: 10,
+    windowMs: 60_000,
+  });
+
+  // A reserves first (older), B reserves later (newer).
+  const a = limiter.record("p1", 0);
+  const b = limiter.record("p1", 1_000);
+  assert.ok(a.reservation, "an allowed record returns a reservation token");
+  assert.ok(b.reservation);
+  assert.equal(a.count, 1);
+  assert.equal(b.count, 2);
+
+  // A fails and releases ITS token. A naive pop-newest would drop B's entry.
+  limiter.release(a.reservation);
+
+  // Advance so A's original timestamp (t=0) would have expired but B's (t=1000)
+  // is still live. A fresh record counts only B + itself => 2. If B had been
+  // wrongly removed, only the fresh entry would remain => 1.
+  const after = limiter.record("p1", 60_500);
+  assert.equal(
+    after.count,
+    2,
+    "B's newer reservation survives A's release (A's exact entry was removed)",
+  );
+
+  // release() is idempotent and a no-op for an unknown/already-freed token.
+  limiter.release(a.reservation);
+  limiter.release(undefined);
+  assert.equal(limiter.bucketCount(), 1);
+});

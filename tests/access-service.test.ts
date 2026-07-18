@@ -4191,3 +4191,136 @@ test("access service serializes recall budget records under the hard limit", asy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("single-flight idempotent replay returns the stored response with zero new pipeline or budget events", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-sf-replay-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "sf-replay-key",
+  };
+
+  try {
+    const first = await service.recall(request);
+    assert.equal(first.context, "ctx");
+    assert.equal(first.budgetWarning?.reason, "warn-over-soft");
+    assert.equal(recallCalls, 1);
+
+    // Replay: stored response, ZERO new pipeline execution.
+    const replay = await service.recall(request);
+    assert.equal(replay.context, "ctx");
+    assert.equal(recallCalls, 1, "replay must not spawn a pipeline");
+
+    // A fresh distinct cross-namespace recall now sees count=2 (first + fresh),
+    // proving the replay recorded ZERO new budget events (else it would be 3).
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(fresh.context, "ctx");
+    assert.equal(recallCalls, 2);
+    assert.equal(fresh.budgetWarning?.count, 2, "replay consumed no budget");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a post-retrieval failure releases the reserved cross-namespace budget (issue #1906 review #5)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-postfail-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  try {
+    // orchestrator.recall SUCCEEDS (budget reserved) but response assembly
+    // throws on the invalid tagMatch — a POST-retrieval failure. The widened
+    // rollback must release the reserved budget entry.
+    await assert.rejects(
+      () =>
+        service.recall({
+          query: "hello",
+          sessionKey: "agent:project-x:chat",
+          namespace: "shared",
+          tagMatch: "bogus",
+        }),
+    );
+    assert.equal(recallCalls, 1, "the pipeline ran (reserve happened) before assembly failed");
+
+    // If the reserve leaked, this would be count=2. Released => count=1.
+    const ok = await service.recall({
+      query: "hello-2",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(ok.budgetWarning?.count, 1, "the failed recall's reservation was rolled back");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

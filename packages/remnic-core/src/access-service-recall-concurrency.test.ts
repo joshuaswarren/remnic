@@ -635,3 +635,53 @@ test("leader failure does not poison followers permanently — a later identical
   assert.equal(recallInFlight.size, 0);
   assert.equal(recallSemaphores.size, 0);
 });
+
+test("a leader aborted while the flight is queued for a slot still completes for a live follower", async () => {
+  let sameRuns = 0;
+  const occStarted = deferred<void>();
+  const occGate = deferred<void>();
+  const { service, recallInFlight } = makeService({
+    limit: 1, // one slot: the occupier holds it while the "same" flight queues
+    singleFlight: true,
+    pipeline: async (request) => {
+      if (request.query === "occupier") {
+        occStarted.resolve();
+        await occGate.promise;
+        return stubResponse([]);
+      }
+      sameRuns += 1;
+      return stubResponse([{ id: "shared" }]);
+    },
+  });
+
+  // Occupy the only slot.
+  const occupier = service.recall({ query: "occupier" });
+  await occStarted.promise;
+  const baselineFlights = recallInFlight.size;
+
+  // Leader for "same": registers a flight whose pipeline QUEUES for the slot.
+  const leaderController = new AbortController();
+  const leader = service.recall({ query: "same", abortSignal: leaderController.signal });
+  // Deterministically wait (microtask spins, no wall clock) for the leader to
+  // register its flight.
+  for (let i = 0; i < 50 && recallInFlight.size <= baselineFlights; i++) {
+    await Promise.resolve();
+  }
+  assert.ok(recallInFlight.size > baselineFlights, "leader registered its flight");
+
+  // Follower joins the queued flight (no slot).
+  const follower = service.recall({ query: "same" });
+  await Promise.resolve();
+
+  // Leader disconnects WHILE the flight is still queued for a slot.
+  leaderController.abort();
+  await assert.rejects(leader, (error: Error) => error.name === "AbortError");
+  assert.equal(sameRuns, 0, "the queued pipeline has not run yet");
+
+  // Free the slot: the flight (still wanted by the follower) now runs.
+  occGate.resolve();
+  const result = await follower;
+  assert.ok(result);
+  assert.equal(sameRuns, 1, "the shared pipeline ran once for the surviving follower");
+  await occupier;
+});

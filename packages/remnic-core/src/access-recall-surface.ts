@@ -17,7 +17,7 @@ import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
 import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
-import { type BudgetDecision, CrossNamespaceBudget } from "./cross-namespace-budget.js";
+import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget } from "./cross-namespace-budget.js";
 import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
@@ -840,6 +840,7 @@ export class AccessRecallSurface {
     // pipeline failure/abort the reservation is rolled back (budget.release)
     // so an errored recall does not consume budget permanently.
     let reservedBudgetPrincipal: string | null = null;
+    let reservedBudget: BudgetReservation | undefined;
     if (willReserveBudget) {
       const reserveDecision = this.deps.budget.record(principal);
       budgetDecision = reserveDecision;
@@ -849,14 +850,75 @@ export class AccessRecallSurface {
         );
       }
       reservedBudgetPrincipal = principal;
+      reservedBudget = reserveDecision.reservation;
     }
-    let context: string;
+    // #1906 review #5: the rollback covers the ENTIRE post-reservation
+    // operation — orchestrator.recall AND serialization / debug / response
+    // construction — so ANY failure after the reserve releases the exact
+    // budget entry (by token, review #4) instead of leaking it.
     try {
-      context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+      const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+      return await this.assembleRecallResponse({
+        request,
+        context,
+        query,
+        mode,
+        namespace,
+        requestedDisclosure,
+        callerProvidedDisclosure,
+        topK,
+        principal,
+        authenticatedPrincipal,
+        startedAt,
+        budgetDecision,
+        budgetRecordPrincipal: reservedBudgetPrincipal,
+      });
     } catch (err) {
-      if (reservedBudgetPrincipal) this.deps.budget.release(reservedBudgetPrincipal);
+      if (reservedBudget) this.deps.budget.release(reservedBudget);
       throw err;
     }
+  }
+
+  /**
+   * Build the recall response from the completed pipeline (issue #1906 review
+   * #5). Extracted so executeRecall can wrap the ENTIRE post-reservation
+   * operation — this method plus orchestrator.recall — in one rollback guard,
+   * releasing the reserved budget entry on any failure through response
+   * construction. `budgetRecordPrincipal` is threaded back unchanged.
+   */
+  private async assembleRecallResponse(params: {
+    request: EngramAccessRecallRequest;
+    context: string;
+    query: string;
+    mode: RecallPlanMode | undefined;
+    namespace: string;
+    requestedDisclosure: RecallDisclosure;
+    callerProvidedDisclosure: boolean;
+    topK: number | undefined;
+    principal: string;
+    authenticatedPrincipal: string | undefined;
+    startedAt: number;
+    budgetDecision: BudgetDecision;
+    budgetRecordPrincipal: string | null;
+  }): Promise<{
+    response: EngramAccessRecallResponse;
+    budgetRecordPrincipal: string | null;
+  }> {
+    const {
+      request,
+      context,
+      query,
+      mode,
+      namespace,
+      requestedDisclosure,
+      callerProvidedDisclosure,
+      topK,
+      principal,
+      authenticatedPrincipal,
+      startedAt,
+      budgetDecision,
+      budgetRecordPrincipal,
+    } = params;
     const snapshot = request.sessionKey
       ? this.deps.orchestrator.lastRecall.get(request.sessionKey)
       : null;
@@ -1098,7 +1160,7 @@ export class AccessRecallSurface {
       // Non-null when this recall reserved a cross-namespace budget event at
       // admission (#1906). Single-flight followers use it to record their OWN
       // per-caller budget event (the pipeline — and its reserve — ran once).
-      budgetRecordPrincipal: reservedBudgetPrincipal,
+      budgetRecordPrincipal,
     };
   }
 

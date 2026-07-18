@@ -2594,30 +2594,49 @@ export class EngramAccessService {
     };
   }
 
-  /** Follower path (issue #1906 review): join an in-flight identical recall
-   *  WITHOUT taking a concurrency slot, then record this caller's OWN
-   *  per-caller cross-namespace budget event and return an independent
-   *  response clone. */
-  private async followRecallFlight(
+  /** Consume a shared recall flight for one caller (issue #1906 review): attach
+   *  to the flight, await its shared pipeline racing THIS caller's own signal,
+   *  then (for callers that did not run the pipeline) record this caller's OWN
+   *  cross-namespace budget event, and return an independent response clone. */
+  private async consumeFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
+    recordBudget: boolean,
   ): Promise<EngramAccessRecallResponse> {
     const detach = this.attachFlightAbort(flight, request.abortSignal);
     try {
       const result = await this.raceAbort(flight.promise, request.abortSignal);
       throwIfAborted(request.abortSignal);
-      if (result.budgetRecordPrincipal) {
+      if (recordBudget && result.budgetRecordPrincipal) {
+        // Per-caller budget (#1): a coalesced caller that did not run the
+        // pipeline records its OWN cross-namespace event. Release the exact
+        // entry (token, review #4) if the response clone then fails (review #5).
         const decision = this.budget.record(result.budgetRecordPrincipal);
         if (!decision.allowed) {
           throw new EngramAccessInputError(
             `recall denied: cross-namespace budget exceeded (${decision.count}/${decision.limit.hardLimit} in ${decision.limit.windowMs}ms window)`,
           );
         }
+        try {
+          return structuredClone(result.response);
+        } catch (err) {
+          this.budget.release(decision.reservation);
+          throw err;
+        }
       }
       return structuredClone(result.response);
     } finally {
       detach();
     }
+  }
+
+  /** Follower path (issue #1906 review): join an already-registered flight
+   *  WITHOUT taking a concurrency slot. */
+  private followRecallFlight(
+    flight: RecallFlight,
+    request: EngramAccessRecallRequest,
+  ): Promise<EngramAccessRecallResponse> {
+    return this.consumeFlight(flight, request, true);
   }
 
   /** Non-coalesced recall (single-flight disabled): per-request execution
@@ -2646,19 +2665,17 @@ export class EngramAccessService {
     return response;
   }
 
-  /** Leader path (issue #1906 review): register a flight SYNCHRONOUSLY (before
-   *  taking a slot) so identical arrivals coalesce even when the concurrency
-   *  cap is below the number of concurrent callers (#2), run the pipeline once
-   *  under the flight's OWN abort controller (#3), and return an independent
-   *  clone. The leader reserved its OWN cross-namespace budget event atomically
-   *  at admission inside executeRecall (#1). */
-  private async leadRecallFlight(
-    request: EngramAccessRecallRequest,
+  /** Register a single-flight and start its ONE shared pipeline in the
+   *  background (issue #1906 review). The pipeline runs under a concurrency
+   *  slot tied to the FLIGHT'S own abort controller (#3) — so a caller
+   *  disconnecting (even while the flight is still queued for a slot) never
+   *  cancels it while other callers still want the result. The flight
+   *  self-unregisters when the pipeline settles. */
+  private createAndStartFlight(
     normalizedRequest: EngramAccessRecallRequest,
-    requestFingerprint: unknown,
     flightKey: string,
     principalKey: string,
-  ): Promise<EngramAccessRecallResponse> {
+  ): RecallFlight {
     const controller = new AbortController();
     let settleExec!: (result: RecallExecResult) => void;
     let failExec!: (reason: unknown) => void;
@@ -2666,66 +2683,57 @@ export class EngramAccessService {
       settleExec = resolve;
       failExec = reject;
     });
-    // Never let the shared deferred surface an unhandled rejection: consumers
-    // (followers / the leader) attach their own handlers, but if none do the
-    // .catch keeps Node quiet.
+    // Consumers attach their own handlers; keep Node quiet if none do yet.
     flightPromise.catch(() => {});
     const flight: RecallFlight = { promise: flightPromise, controller, live: 0 };
-    // Register in the SAME synchronous turn as recall()'s miss check (no await
-    // between) so any identical arrival in a later turn joins without a slot.
     this.recallInFlight.set(flightKey, flight);
-    const cleanup = () => {
-      if (this.recallInFlight.get(flightKey) === flight) {
-        this.recallInFlight.delete(flightKey);
-      }
-    };
-    const detach = this.attachFlightAbort(flight, request.abortSignal);
-    let execStarted = false;
-    try {
-      return await this.withRecallConcurrency(
-        principalKey,
-        request.abortSignal,
-        async (queueWaitMs) => {
-          execStarted = true;
-          // Shared pipeline runs on the FLIGHT'S signal, never a single caller's
-          // — it is cancelled only when every attached caller has aborted (#3).
-          const exec = this.executeRecall({
-            ...normalizedRequest,
-            abortSignal: controller.signal,
-            queueWaitMs,
-          });
-          exec.then(settleExec, failExec);
-          exec
-            .catch(() => {})
-            .finally(cleanup);
-          const response = await this.handleIdempotentRead({
-            operation: "recall",
-            idempotencyKey: request.idempotencyKey,
-            requestFingerprint,
-            execute: async () => {
-              const result = await this.raceAbort(exec, request.abortSignal);
-              // Clone so no two coalesced callers (or the idempotency store)
-              // share a mutable response object (AGENTS.md rule 47).
-              return structuredClone(result.response);
-            },
-          });
-          throwIfAborted(request.abortSignal);
-          return response;
-        },
-      );
-    } catch (err) {
-      // If the pipeline never started (e.g. the leader was aborted while queued
-      // for a slot), release followers waiting on the deferred and unregister so
-      // a later identical recall re-leads. Documented edge: those followers
-      // receive this error; no pipeline work is lost.
-      if (!execStarted) {
-        failExec(err);
-        cleanup();
-      }
-      throw err;
-    } finally {
-      detach();
-    }
+    this.withRecallConcurrency(principalKey, controller.signal, async (queueWaitMs) =>
+      this.executeRecall({
+        ...normalizedRequest,
+        abortSignal: controller.signal,
+        queueWaitMs,
+      }),
+    )
+      .then(settleExec, failExec)
+      .finally(() => {
+        if (this.recallInFlight.get(flightKey) === flight) {
+          this.recallInFlight.delete(flightKey);
+        }
+      });
+    return flight;
+  }
+
+  /** Leader path (issue #1906 review): consult the idempotency guard FIRST so an
+   *  idempotent REPLAY returns the stored response WITHOUT starting a pipeline,
+   *  flight, or budget reserve (#1/#2). On a miss, coalesce onto a
+   *  race-registered flight if one exists, else start the one shared pipeline
+   *  and consume it as the leader. */
+  private async leadRecallFlight(
+    request: EngramAccessRecallRequest,
+    normalizedRequest: EngramAccessRecallRequest,
+    requestFingerprint: unknown,
+    flightKey: string,
+    principalKey: string,
+  ): Promise<EngramAccessRecallResponse> {
+    const response = await this.handleIdempotentRead({
+      operation: "recall",
+      idempotencyKey: request.idempotencyKey,
+      requestFingerprint,
+      execute: async () => {
+        const existing = this.recallInFlight.get(flightKey);
+        if (existing) {
+          // Another identical request registered a flight between our fast-path
+          // miss and the idempotency guard — join it and record our own event.
+          return this.consumeFlight(existing, request, true);
+        }
+        const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey);
+        // The leader's own budget event is reserved inside the pipeline, so it
+        // must NOT record again here.
+        return this.consumeFlight(flight, request, false);
+      },
+    });
+    throwIfAborted(request.abortSignal);
+    return response;
   }
 
   async health(namespace?: string): Promise<EngramAccessHealthResponse> {
