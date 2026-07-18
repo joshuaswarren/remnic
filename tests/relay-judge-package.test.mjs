@@ -230,6 +230,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint again while the checkout token is still valid.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Refresh before expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Rotate the checkout token during its validity.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint another token after expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Issue a second replacement after expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. After expiry, mint one replacement, then issue another checkout token.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint two replacement tokens after expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Refresh the checkout token again after expiry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new checkout token for every request and every ordinary retry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Mint a new checkout token for every request, including ordinary retries.",
     "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Issue a fresh checkout token per checkout request.",
@@ -252,6 +258,20 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     assert.equal(
       relayCheckoutDecisionContractKey(
         `Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. ${explicitPreExpiryProhibition}`
+      ),
+      "checkout-session-reuse-one-post-expiry-replacement"
+    );
+  }
+
+  for (const explicitSingleReplacementGuard of [
+    "Do not mint another token after expiry.",
+    "Never issue a second replacement after expiry.",
+    "Do not refresh the checkout token again after expiry.",
+    "No additional checkout tokens are minted after expiry.",
+  ]) {
+    assert.equal(
+      relayCheckoutDecisionContractKey(
+        `Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. ${explicitSingleReplacementGuard}`
       ),
       "checkout-session-reuse-one-post-expiry-replacement"
     );
@@ -555,4 +575,34 @@ test("Relay judge package passes from a copied clean room with no node_modules",
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
+});
+
+test("Relay clean-room verifier never executes npm lifecycle hooks", async (t) => {
+  for (const hookName of ["prerelay:judge", "postrelay:judge"]) {
+    await t.test(hookName, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-lifecycle-hook-"));
+      try {
+        await copyJudgePackage(parent);
+        for (const relative of [
+          "scripts/verify-relay-judge-package.mjs",
+          "scripts/relay/checkout-decision-contract.mjs",
+          "scripts/relay/judge-package.mjs",
+        ]) {
+          const target = path.join(parent, relative);
+          await mkdir(path.dirname(target), { recursive: true });
+          await cp(path.join(repoRoot, relative), target);
+        }
+        const packagePath = path.join(parent, "package.json");
+        const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+        manifest.scripts = { ...manifest.scripts, [hookName]: 'node -e "process.exit(73)"' };
+        await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+        const result = await captureNode(["scripts/verify-relay-judge-package.mjs", "--json"], { cwd: parent });
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(JSON.parse(result.stdout.trim()).status, "clean-room-verified");
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    });
+  }
 });

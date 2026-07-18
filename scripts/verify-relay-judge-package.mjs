@@ -109,12 +109,15 @@ async function main() {
     const isolatedHome = path.join(parent, "home");
     const isolatedTmp = path.join(parent, "tmp");
     await Promise.all([mkdir(isolatedHome, { mode: 0o700 }), mkdir(isolatedTmp, { mode: 0o700 })]);
-    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    const child = await captureCommand(npmCommand, ["run", "--silent", "relay:judge", "--", "--json"], {
-      cwd: cleanRoot,
-      env: cleanRoomEnvironment(isolatedHome, isolatedTmp),
-    });
-    invariant(child.code === 0, child.stderr || `dependency-free npm verifier exited ${child.code}`);
+    const child = await captureCommand(
+      process.execPath,
+      ["scripts/relay/judge-package.mjs", "verify", "--json"],
+      {
+        cwd: cleanRoot,
+        env: cleanRoomEnvironment(isolatedHome, isolatedTmp),
+      }
+    );
+    invariant(child.code === 0, child.stderr || `dependency-free Node verifier exited ${child.code}`);
     const receipt = JSON.parse(child.stdout.trim());
     invariant(
       receipt.status === "verified" && receipt.runtimeDependencies === 0,

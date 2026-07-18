@@ -19,6 +19,10 @@ const PRE_EXPIRY_REPLACEMENT_OBJECT_PATTERN = new RegExp(
 );
 const IMPLICIT_REPLACEMENT_ACTION_PATTERN =
   /\b(?:mint(?:s|ed|ing)?|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|rotat(?:e|es|ed|ing)|regenerat(?:e|es|ed|ing))\b/;
+const ADDITIONAL_REPLACEMENT_PATTERN =
+  /\b(?:another|additional|extra|further|second|two|2|multiple|more\s+than\s+one)\b[^,.;:!?]{0,32}\b(?:replacements?|(?:(?:checkout[- ]session|checkout)\s+)?tokens?)\b|\b(?:again|twice)\b/;
+const NO_REPLACEMENT_PATTERN =
+  /\bno\s+(?:(?:additional|extra|further|second|new|replacement)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?(?:replacements?|tokens?)\b/;
 const ROTATION_ACTION_PATTERN =
   /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
 const ROTATION_OBJECT_PATTERN =
@@ -121,6 +125,69 @@ function hasReplacementActionSignal(clause) {
   return hasExplicitReplacementActionAndObject(clause) || IMPLICIT_REPLACEMENT_ACTION_PATTERN.test(clause);
 }
 
+function hasPostExpiryTiming(clause) {
+  return POST_EXPIRY_TIMING_PATTERN.test(clause);
+}
+
+function hasReplacementPolicyNegation(clause) {
+  return NEGATION_PATTERN.test(clause) || NO_REPLACEMENT_PATTERN.test(clause);
+}
+
+function isAffirmativePostExpiryReplacementClause(clause) {
+  return !hasReplacementPolicyNegation(clause) && hasPostExpiryTiming(clause) && hasReplacementActionSignal(clause);
+}
+
+function isAffirmativeAdditionalReplacementClause(clause) {
+  return (
+    !hasReplacementPolicyNegation(clause) &&
+    hasReplacementActionSignal(clause) &&
+    ADDITIONAL_REPLACEMENT_PATTERN.test(clause)
+  );
+}
+
+function postExpiryReplacementSignalCount(value) {
+  let count = 0;
+  for (const clauses of decisionClauseGroups(value)) {
+    const predicateGroups = clauses.map(rotationPredicateClauses);
+    count += predicateGroups.flat().filter(isAffirmativePostExpiryReplacementClause).length;
+    for (const [index, predicates] of predicateGroups.entries()) {
+      const nextPredicates = predicateGroups[index + 1];
+      if (!nextPredicates) continue;
+      const crossClauseSignal = predicates.some((predicate) =>
+        nextPredicates.some((nextPredicate) => {
+          if (
+            hasReplacementPolicyNegation(predicate) ||
+            hasReplacementPolicyNegation(nextPredicate) ||
+            isAffirmativePostExpiryReplacementClause(predicate) ||
+            isAffirmativePostExpiryReplacementClause(nextPredicate)
+          ) {
+            return false;
+          }
+          const timingFirst =
+            hasPostExpiryTiming(predicate) &&
+            !hasPreExpiryTiming(predicate) &&
+            hasReplacementActionSignal(nextPredicate) &&
+            !hasPreExpiryTiming(nextPredicate);
+          const actionFirst =
+            hasExplicitReplacementActionAndObject(predicate) &&
+            !hasPreExpiryTiming(predicate) &&
+            hasPostExpiryTiming(nextPredicate) &&
+            !hasPreExpiryTiming(nextPredicate);
+          return timingFirst || actionFirst;
+        })
+      );
+      if (crossClauseSignal) count += 1;
+    }
+  }
+  return count;
+}
+
+function hasAffirmativeAdditionalReplacementPolicy(value) {
+  return decisionClauseGroups(value)
+    .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
+    .some(isAffirmativeAdditionalReplacementClause);
+}
+
 function isAffirmativePreExpiryReplacementClause(clause) {
   return !NEGATION_PATTERN.test(clause) && hasPreExpiryTiming(clause) && hasReplacementActionSignal(clause);
 }
@@ -180,13 +247,16 @@ export function relayCheckoutDecisionContractKey(value) {
   );
   const contradictoryPerUseRotation = hasAffirmativeRotationPolicy(value);
   const contradictoryPreExpiryReplacement = hasAffirmativePreExpiryReplacementPolicy(value);
+  const contradictoryAdditionalReplacement =
+    hasAffirmativeAdditionalReplacementPolicy(value) || postExpiryReplacementSignalCount(value) > 1;
   const matches =
     sessionLifecycle &&
     positiveReuseLifecycle &&
     postExpiryReplacement &&
     !negatedRequiredBehavior &&
     !contradictoryPerUseRotation &&
-    !contradictoryPreExpiryReplacement;
+    !contradictoryPreExpiryReplacement &&
+    !contradictoryAdditionalReplacement;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
