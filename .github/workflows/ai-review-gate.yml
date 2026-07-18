@@ -172,7 +172,14 @@ jobs:
                 if (typeof filePath !== 'string' || filePath.length === 0) {
                   throw new Error(`splitEffectiveDiff: file entry has no usable path: ${JSON.stringify(entry)}`);
                 }
-                (isIgnoredPath(filePath, patterns) ? ignored : effective).push(filePath);
+                // Renames count as ignored only when BOTH sides are ignored —
+                // a source file renamed into an artifact path stays effective.
+                const previousPath = typeof entry === 'object' && typeof entry?.previous_filename === 'string'
+                  ? entry.previous_filename
+                  : null;
+                const entirelyIgnored = isIgnoredPath(filePath, patterns) &&
+                  (previousPath === null || isIgnoredPath(previousPath, patterns));
+                (entirelyIgnored ? ignored : effective).push(filePath);
               }
               return { effective, ignored };
             }
@@ -587,12 +594,16 @@ jobs:
                   // anyway still gate via review-thread-guard (unchanged).
                   // GitHub's listFiles API returns at most 3,000 files total;
                   // beyond that the list is TRUNCATED and unseen files could be
-                  // real source. Fail-safe: never apply the exception unless we
-                  // provably saw the complete file set (review finding on #2002).
+                  // real source. The list is provably complete when the fetched
+                  // count matches the PR's reported changed_files (including
+                  // exactly 3,000); without a usable reported count, anything
+                  // at the cap is treated as truncated. Fail-safe direction is
+                  // 'require review' (review findings on #2002, rounds 1+2).
                   const reportedChangedFiles = pullRequest.data.changed_files;
                   const fileListComplete =
-                    files.length < 3000 &&
-                    (typeof reportedChangedFiles !== 'number' || reportedChangedFiles === files.length);
+                    typeof reportedChangedFiles === 'number'
+                      ? reportedChangedFiles === files.length
+                      : files.length < 3000;
                   const ignorePatterns = fileListComplete
                     ? await loadIgnoreManifest(owner, repo, pullRequest.data.base?.sha)
                     : null;

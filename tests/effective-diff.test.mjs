@@ -90,3 +90,32 @@ test("the committed manifest parses and classifies known repo paths correctly", 
   assert.equal(isIgnoredPath("docs/timeline.md", patterns), false);
   assert.equal(isIgnoredPath("packages/bench/src/adapters/remnic-adapter.ts", patterns), false);
 });
+
+test("renames from source paths into artifact paths stay effective (round 2)", () => {
+  const patterns = parseIgnoreManifest("gen/\n");
+  const { effective, ignored } = splitEffectiveDiff(
+    [
+      { filename: "gen/moved.json", previous_filename: "src/real-code.ts", status: "renamed" },
+      { filename: "gen/shuffled.json", previous_filename: "gen/old-name.json", status: "renamed" },
+      { filename: "gen/plain.json" },
+    ],
+    patterns,
+  );
+  assert.deepEqual(effective, ["gen/moved.json"]);
+  assert.deepEqual(ignored, ["gen/shuffled.json", "gen/plain.json"]);
+  // A PR that only renames source into artifact dirs is NOT artifact-only.
+  assert.equal(
+    isArtifactOnlyPullRequest(
+      [{ filename: "gen/moved.json", previous_filename: "src/real-code.ts" }],
+      patterns,
+    ),
+    false,
+  );
+});
+
+test("hand-authored bench profiles are no longer ignored (round 2)", () => {
+  const manifest = readFileSync(path.join(REPO_ROOT, ".github", "ai-review-ignore"), "utf8");
+  const patterns = parseIgnoreManifest(manifest);
+  assert.equal(isIgnoredPath("packages/bench/profiles/README.md", patterns), false);
+  assert.equal(isIgnoredPath("packages/bench/baselines/run.json", patterns), true);
+});

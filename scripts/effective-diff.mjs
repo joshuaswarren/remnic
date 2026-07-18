@@ -104,9 +104,13 @@ export function isIgnoredPath(path, patterns) {
  * Split a PR's changed files into effective (reviewable) and ignored sets.
  *
  * `files` entries may be strings or GitHub API file objects
- * ({ filename } / { path }); pagination to completion is the CALLER's
- * responsibility (GitHub caps listFiles pages at 100 entries — artifact
- * PRs with 3000 files exist).
+ * ({ filename } / { path }, optionally { previous_filename } for renames);
+ * pagination to completion is the CALLER's responsibility (GitHub caps
+ * listFiles pages at 100 entries — artifact PRs with 3000 files exist).
+ *
+ * Renames count as ignored only when BOTH sides are ignored: a file renamed
+ * FROM a source path INTO an artifact path removes reviewable source and
+ * must stay in the effective diff (review finding on #2002).
  */
 export function splitEffectiveDiff(files, patterns) {
   if (!Array.isArray(files)) {
@@ -122,7 +126,14 @@ export function splitEffectiveDiff(files, patterns) {
         `splitEffectiveDiff: file entry has no usable path: ${JSON.stringify(entry)}`,
       );
     }
-    (isIgnoredPath(path, patterns) ? ignored : effective).push(path);
+    const previousPath =
+      typeof entry === "object" && typeof entry?.previous_filename === "string"
+        ? entry.previous_filename
+        : null;
+    const entirelyIgnored =
+      isIgnoredPath(path, patterns) &&
+      (previousPath === null || isIgnoredPath(previousPath, patterns));
+    (entirelyIgnored ? ignored : effective).push(path);
   }
   return { effective, ignored };
 }
