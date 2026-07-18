@@ -113,6 +113,16 @@ export class SmartBuffer {
    */
   private surpriseTelemetryWriteChain: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Debounced buffer-save state (issue #1909). Steady-state buffering used to
+   * serialize + rewrite the whole multi-session buffer on EVERY turn. We now
+   * coalesce those writes onto a trailing-edge timer; correctness boundaries
+   * (extraction trigger, extraction clear, shutdown) still force an immediate
+   * flush. `bufferSaveDebounceMs: 0` restores save-every-turn exactly.
+   */
+  private saveTimer: NodeJS.Timeout | null = null;
+  private pendingSave = false;
+
   constructor(
     private readonly config: PluginConfig,
     private readonly storage: StorageManager,
@@ -291,6 +301,52 @@ export class SmartBuffer {
     await this.enqueueMutation(async () => this.saveUnlocked());
   }
 
+  /**
+   * Schedule a coalesced, trailing-edge buffer save (issue #1909). With debounce
+   * off (`bufferSaveDebounceMs <= 0`) this saves immediately (fire-and-forget,
+   * enqueued after the current mutation) to reproduce save-every-turn. Callers
+   * that need a guaranteed durable write use `flushPendingSave()` instead.
+   */
+  private scheduleSave(): void {
+    const ms = this.config.bufferSaveDebounceMs;
+    if (!ms || ms <= 0) {
+      void this.flushPendingSave();
+      return;
+    }
+    this.pendingSave = true;
+    if (this.saveTimer) return; // trailing-edge coalesce: a timer is already armed
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.flushPendingSave();
+    }, ms);
+    this.saveTimer.unref?.();
+  }
+
+  /** Cancel any armed debounced save without persisting. */
+  private cancelScheduledSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.pendingSave = false;
+  }
+
+  /**
+   * Force any pending debounced save to land now (issue #1909). Idempotent and
+   * safe to call from outside a mutation (timer tick, shutdown/dispose). Do NOT
+   * `await` this from inside a mutation — it enqueues its own mutation and would
+   * deadlock the serializer.
+   */
+  async flushPendingSave(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.pendingSave) return;
+    this.pendingSave = false;
+    await this.enqueueMutation(async () => this.saveUnlocked());
+  }
+
   async addTurn(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
@@ -399,7 +455,17 @@ export class SmartBuffer {
     const turnCountInWindow = entry.turns.length;
 
     this.pruneEntries([bufferKey]);
-    await this.saveUnlocked();
+    if (decision === "keep_buffering") {
+      // Steady-state buffering: coalesce the whole-state serialize onto a
+      // trailing-edge timer (issue #1909) instead of rewriting per turn.
+      this.scheduleSave();
+    } else {
+      // Extraction-triggering turn: persist immediately so the buffer that just
+      // triggered extraction is durable. Cancel any armed debounce so it cannot
+      // fire a stale write afterward. saveUnlocked runs inside this mutation.
+      this.cancelScheduledSave();
+      await this.saveUnlocked();
+    }
     return {
       decision,
       signalLevel: signal.level,
@@ -710,6 +776,10 @@ export class SmartBuffer {
     extractedTurns?: readonly BufferTurn[],
   ): Promise<void> {
     await this.enqueueMutation(async () => {
+      // Cancel any armed debounced save (issue #1909): this method persists the
+      // post-clear state via saveUnlocked() below, so a stale pending timer must
+      // not fire afterward and overwrite it with pre-clear state.
+      this.cancelScheduledSave();
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
       if (Array.isArray(extractedTurns)) {

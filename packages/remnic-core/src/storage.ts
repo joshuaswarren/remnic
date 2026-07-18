@@ -2444,6 +2444,16 @@ export class StorageManager {
   private factHashIndexAuthoritative: boolean | null = null;
   private factHashIndexAuthoritativePromise: Promise<void> | null = null;
   private readonly secureAppendChains = new Map<string, Promise<void>>();
+  /**
+   * Cache of "is this file encrypted?" keyed by absolute path (issue #1909).
+   * Only this process's own full rewrites (`writeMaybeEncryptedFile`) can flip
+   * a file's plain/encrypted classification, so the cache is invalidated
+   * exactly there. A plaintext `appendFile` never changes the header, so a
+   * cached `false` stays valid across appends. A foreign process encrypting a
+   * file mid-session is a pre-existing hazard (see appendStorageSecureFileUnlocked)
+   * and is out of scope here.
+   */
+  private readonly secureFileEncryptionSniffCache = new Map<string, boolean>();
   private offlineSyncDigestCache: Map<string, OfflineSyncDigestCacheEntry> | null = null;
   private offlineSyncDigestCacheLoadPromise: Promise<Map<string, OfflineSyncDigestCacheEntry>> | null = null;
   private offlineSyncDigestCacheWriteChain: Promise<void> = Promise.resolve();
@@ -2550,6 +2560,9 @@ export class StorageManager {
     // decrypted under the previous key, not just the entity layer.
     invalidateAllForDir(this.baseDir);
     this.invalidateKnowledgeIndexCache();
+    // A key change flips resolveWriteKey(), so a file's plain/encrypted class on
+    // the next full rewrite may differ from what was cached (issue #1909).
+    this.secureFileEncryptionSniffCache.clear();
   }
 
   private getEntityCacheSecureStoreKey(): string {
@@ -3130,14 +3143,24 @@ export class StorageManager {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
-    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWriteForPath(filePath)
-    );
+    const writeKey = this.resolveWriteKey();
+    return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
+      // Keep the append-path encryption sniff cache coherent (issue #1909): a
+      // full rewrite through this method may flip an append-target file's
+      // plain/encrypted classification (e.g. a JSONL compaction after the store
+      // was unlocked). Only this process's rewrites can flip it.
+      this.secureFileEncryptionSniffCache.set(path.resolve(filePath), writeKey !== null);
+      this.secureFileEncryptionSniffCache.set(filePath, writeKey !== null);
+      this.notifyCatalogWriteForPath(filePath);
+    });
   }
   private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWriteForPath(filePath)
-    );
+    const writeKey = this.resolveWriteKey();
+    return writeMaybeEncryptedFileFromChunks(filePath, chunks, writeKey, {}, this.baseDir).then(() => {
+      this.secureFileEncryptionSniffCache.set(path.resolve(filePath), writeKey !== null);
+      this.secureFileEncryptionSniffCache.set(filePath, writeKey !== null);
+      this.notifyCatalogWriteForPath(filePath);
+    });
   }
 
   private assertManagedStoragePath(filePath: string, method: string): string {
@@ -3380,25 +3403,71 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Classify a file as encrypted by reading ONLY the fixed-size magic header
+   * (issue #1909), never the whole file. Mirrors the header-only pattern in
+   * `secure-line-reader.ts` and `offlineSyncFileIsEncrypted`. Result is cached
+   * per-path (see `secureFileEncryptionSniffCache`); the cache is invalidated
+   * by this class's own full rewrites in `appendStorageSecureFileUnlocked`.
+   * ENOENT and short/empty files classify as not-encrypted (fall through to a
+   * plain `appendFile`), matching the prior whole-file-read behavior.
+   */
+  private async isEncryptedFileHeader(filePath: string): Promise<boolean> {
+    const cached = this.secureFileEncryptionSniffCache.get(filePath);
+    if (cached !== undefined) return cached;
+    let handle;
+    try {
+      handle = await open(filePath, "r");
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    try {
+      const header = Buffer.alloc(MAGIC_HEADER_SIZE);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      const encrypted = isEncryptedFile(header.subarray(0, bytesRead));
+      this.secureFileEncryptionSniffCache.set(filePath, encrypted);
+      return encrypted;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
   private async appendStorageSecureFileUnlocked(filePath: string, content: string): Promise<void> {
     const writeKey = this.resolveWriteKey();
     await mkdir(path.dirname(filePath), { recursive: true });
     if (writeKey === null) {
       try {
-        if (isEncryptedFile(await readFile(filePath))) {
+        // Header-only sniff (issue #1909): reads at most MAGIC_HEADER_SIZE bytes
+        // instead of the whole target file (the production lifecycle ledger is
+        // 119MB) to decide "is this encrypted?". A plaintext append below cannot
+        // flip the classification, so a cached `false` stays valid across appends.
+        if (await this.isEncryptedFileHeader(filePath)) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
+          // Full rewrite with a null key leaves the file plaintext; keep the
+          // cached classification coherent with what we just wrote.
+          this.secureFileEncryptionSniffCache.set(filePath, false);
           this.notifyCatalogWriteForPath(filePath);
           return;
         }
       } catch (err) {
         if (!isErrnoCode(err, "ENOENT")) throw err;
       }
+      // Plaintext append does not touch the header — the cached `false` (set by
+      // the sniff, or absent for ENOENT) remains correct. NOTE (pre-existing
+      // limitation, issue #1909): if a DIFFERENT process encrypts this file
+      // between our sniff and this append, we append raw bytes to an encrypted
+      // body. This hazard existed with the prior whole-file read too and is out
+      // of scope; this fix only removes the wasteful sniff read.
       await appendFile(filePath, content, "utf-8");
       this.notifyCatalogWriteForPath(filePath);
       return;
     }
 
+    // Encrypted-store branch (issue #1909, known limitation): the sealed format
+    // has no append primitive, so this inherently decrypts + concatenates +
+    // rewrites the whole file. Only the plaintext-path sniff read was wasteful.
     let existing = "";
     try {
       existing = await this.readStorageSecureFile(filePath);
@@ -3406,6 +3475,8 @@ export class StorageManager {
       if (!isErrnoCode(err, "ENOENT")) throw err;
     }
     await writeMaybeEncryptedFile(filePath, `${existing}${content}`, writeKey, {}, this.baseDir);
+    // A rewrite with a non-null key leaves the file encrypted; keep the cache coherent.
+    this.secureFileEncryptionSniffCache.set(filePath, true);
     this.notifyCatalogWriteForPath(filePath);
   }
   private get stateDir(): string {
@@ -3766,6 +3837,16 @@ export class StorageManager {
     return path.join(this.stateDir, "behavior-signals.jsonl");
   }
   /**
+   * In-memory dedup key set for behavior-signals appends (issue #1909),
+   * validated by (size, mtime) file identity like the catalog `compactedCache`.
+   * Avoids re-reading + JSON.parsing the whole `behavior-signals.jsonl` on
+   * every append. A foreign write changes size/mtime, forcing a reload; this
+   * process's own appends refresh the identity in place. null => reload.
+   */
+  private behaviorSignalsKeyCache:
+    | { identity: { size: number; mtimeMs: number }; keys: Set<string> }
+    | null = null;
+  /**
    * Buffer surprise telemetry ledger (issue #563 PR 3).
    *
    * Append-only JSONL of per-turn `BUFFER_SURPRISE` events emitted by
@@ -3931,6 +4012,16 @@ export class StorageManager {
        * even when their citation timestamp differs.
        */
       contentHashSource?: string;
+      /**
+       * When true, writeMemory marks the fact-hash index dirty via `.add(...)`
+       * but does NOT flush it to disk — the caller is responsible for a
+       * subsequent batch save (issue #1909). The extraction persist path sets
+       * this and relies on the orchestrator's authoritative
+       * `saveContentHashIndexes()` batch save, avoiding a whole-index
+       * (~6.4MB) rewrite per fact. Default false: every other (single-write)
+       * caller keeps the immediate, crash-safe save.
+       */
+      deferHashIndexSave?: boolean;
       status?: MemoryStatus;
       /**
        * Consolidation provenance (issue #561 PR 2).  When the caller is a
@@ -4161,7 +4252,13 @@ export class StorageManager {
         } else {
           factHashIndex.add(sanitized.text);
         }
-        await factHashIndex.save();
+        // Gate only the flush (issue #1909): the `.add(...)` above already set
+        // dirty=true. When the caller defers, it owns the batch save
+        // (extraction persist -> saveContentHashIndexes()). Single-write callers
+        // keep the immediate, crash-safe save.
+        if (!options.deferHashIndexSave) {
+          await factHashIndex.save();
+        }
       } catch (err) {
         log.warn(`storage.writeMemory completed but failed to update fact hash index: ${err}`);
       }
@@ -5496,26 +5593,42 @@ export class StorageManager {
     if (events.length === 0) return 0;
     await this.ensureDirectories();
 
-    let existingKeys = new Set<string>();
+    let existingKeys: Set<string>;
+    let identity: { size: number; mtimeMs: number } | null = null;
     try {
-      const raw = await this.readStorageSecureFile(this.behaviorSignalsPath);
-      const lines = raw.split("\n");
-      for (const line of lines) {
-        const row = line.trim();
-        if (!row) continue;
-        try {
-          const parsed = JSON.parse(row) as Partial<BehaviorSignalEvent>;
-          if (typeof parsed.memoryId === "string" && typeof parsed.signalHash === "string") {
-            existingKeys.add(`${parsed.memoryId}:${parsed.signalHash}`);
+      const st = await stat(this.behaviorSignalsPath);
+      identity = { size: st.size, mtimeMs: st.mtimeMs };
+      if (
+        this.behaviorSignalsKeyCache &&
+        this.behaviorSignalsKeyCache.identity.size === identity.size &&
+        this.behaviorSignalsKeyCache.identity.mtimeMs === identity.mtimeMs
+      ) {
+        // Cache hit (issue #1909): reuse the dedup set — no read, no parse.
+        existingKeys = this.behaviorSignalsKeyCache.keys;
+      } else {
+        // Foreign change (or first load): rebuild by streaming the file so we
+        // never materialize the whole (unbounded) ledger as one string.
+        existingKeys = new Set<string>();
+        for await (const line of readMaybeEncryptedLines(this.behaviorSignalsPath, () =>
+          this.readStorageSecureFile(this.behaviorSignalsPath)
+        )) {
+          const row = line.trim();
+          if (!row) continue;
+          try {
+            const parsed = JSON.parse(row) as Partial<BehaviorSignalEvent>;
+            if (typeof parsed.memoryId === "string" && typeof parsed.signalHash === "string") {
+              existingKeys.add(`${parsed.memoryId}:${parsed.signalHash}`);
+            }
+          } catch {
+            // Ignore malformed rows (fail-open).
           }
-        } catch {
-          // Ignore malformed rows (fail-open).
         }
       }
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;
       existingKeys = new Set<string>();
+      identity = null;
     }
 
     const nowIso = new Date().toISOString();
@@ -5530,9 +5643,26 @@ export class StorageManager {
       });
     }
 
-    if (deduped.length === 0) return 0;
+    if (deduped.length === 0) {
+      // Nothing appended — the file identity is unchanged, so cache the set we
+      // just built (or reused) so the next append is a hit (issue #1909).
+      if (identity) this.behaviorSignalsKeyCache = { identity, keys: existingKeys };
+      return 0;
+    }
     const payload = deduped.map((event) => `${JSON.stringify(event)}\n`).join("");
     await this.appendStorageSecureFile(this.behaviorSignalsPath, payload);
+    // Append-only maintenance (issue #1909): refresh the cache with the post-append
+    // identity so a subsequent same-process append reuses the set without a reload.
+    try {
+      const st = await stat(this.behaviorSignalsPath);
+      this.behaviorSignalsKeyCache = {
+        identity: { size: st.size, mtimeMs: st.mtimeMs },
+        keys: existingKeys,
+      };
+    } catch {
+      // Fail-open: force a reload on the next append.
+      this.behaviorSignalsKeyCache = null;
+    }
     return deduped.length;
   }
 

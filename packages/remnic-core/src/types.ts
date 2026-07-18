@@ -677,6 +677,14 @@ export interface PluginConfig {
   bufferMaxTurns: number;
   bufferMaxMinutes: number;
   /**
+   * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
+   * (issue #1909). Steady-state buffering coalesces the whole-state serialize
+   * onto a trailing-edge timer instead of rewriting on every turn; extraction
+   * trigger/clear and shutdown still force an immediate flush. Default 3000.
+   * `0` restores the legacy save-every-turn behavior exactly.
+   */
+  bufferSaveDebounceMs: number;
+  /**
    * Surprise-gated buffer flush (issue #563, D-MEM).
    *
    * When enabled, every turn added to the smart buffer is scored against a

@@ -1780,6 +1780,10 @@ export function parseConfig(
       typeof cfg.sessionObserverDebounceMs === "number"
         ? Math.max(0, Math.floor(cfg.sessionObserverDebounceMs))
         : 120_000,
+    bufferSaveDebounceMs:
+      typeof cfg.bufferSaveDebounceMs === "number"
+        ? Math.max(0, Math.floor(cfg.bufferSaveDebounceMs))
+        : 3_000, // 0 = save immediately every turn (legacy behavior)
     sessionObserverBands,
     injectQuestions: cfg.injectQuestions === true,
     commitmentDecayDays: parseIntegerAtLeast(

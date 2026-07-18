@@ -558,6 +558,9 @@ export class ExtractionPersistCoordinator {
               ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
               ...(options.provenance ? { provenance: options.provenance } : {}),
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+              // #1909: skip the per-fact index flush; the orchestrator batch
+              // save (saveContentHashIndexes) at the end of persist is authoritative.
+              deferHashIndexSave: true,
             },
           );
           const promotedId = targetPromotion.id;
@@ -950,6 +953,8 @@ export class ExtractionPersistCoordinator {
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
             ...(options.provenance ? { provenance: options.provenance } : {}),
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+            // #1909: defer the per-fact index flush to the batch save.
+            deferHashIndexSave: true,
           },
         );
         const promotedId = sharedPromotion.id;
@@ -2184,6 +2189,8 @@ export class ExtractionPersistCoordinator {
               // Claim-level provenance spans (issue #1575 PR 2).
               ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
               ...(fact.provenance ? { provenance: fact.provenance } : {}),
+              // #1909: defer the per-fact index flush to the batch save.
+              deferHashIndexSave: true,
             },
           );
           const parentId = parentWrite.id;
@@ -2542,6 +2549,8 @@ export class ExtractionPersistCoordinator {
           // through to frontmatter so they survive end-to-end.
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
+          // #1909: defer the per-fact index flush to the batch save.
+          deferHashIndexSave: true,
         },
       );
       const memoryId = factWrite.id;
