@@ -1565,8 +1565,7 @@ export class ExtractionPersistCoordinator {
       ) {
         continue;
       }
-      // Normalize extractor whitespace first (round 5): legacy writeMemory
-      // accepted " fact " — trim instead of skipping a valid category.
+      // Trim first (round 5): legacy writeMemory accepted " fact ".
       (fact as any).category = (fact as any).category.trim();
       // #2014/#2017 review round: an unrecognized non-empty category from
       // the extractor is a per-CANDIDATE defect. The composer keeps category
@@ -2287,9 +2286,8 @@ export class ExtractionPersistCoordinator {
                 // survives when a single chunk is quoted in isolation.
                 applyInlineCitation(chunk.content),
                 {
-                  // #2014 round 4: the sealed parent's confidence — salvage
-                  // drops out-of-range values so storage applies its default;
-                  // raw fact.confidence would let parent and chunk disagree.
+                  // #2014 round 4: sealed parent's confidence — raw
+                  // fact.confidence would let parent and chunk disagree.
                   confidence: parentWriteEnvelope.confidence,
                   tags: [...chunkTags],
                   entityRef: parentWriteEnvelope.entityRef,
@@ -2480,8 +2478,7 @@ export class ExtractionPersistCoordinator {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 // #2014 round 4: graph identity must match the PERSISTED
-                // memory — the envelope's surviving entityRef (trimmed or
-                // dropped), never the raw extractor string.
+                // memory — the envelope's surviving entityRef.
                 const entityRef = parentWriteEnvelope.entityRef;
                 const parentRelPath = resolvePersistedMemoryRelativePath({
                   memoryId: parentId,
@@ -2722,8 +2719,7 @@ export class ExtractionPersistCoordinator {
         if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
-            // #2014 round 4: graph identity from the sealed envelope (see
-            // the chunked path).
+            // #2014 round 4: envelope-surviving entityRef (see chunked path).
             const entityRef = factWriteEnvelope.entityRef;
             const memoryRelPath = resolvePersistedMemoryRelativePath({
               memoryId,
