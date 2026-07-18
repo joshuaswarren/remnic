@@ -26,6 +26,7 @@
 
 import type { MemoryCategory } from "./types.js";
 import { normalizeTags } from "./recall-tag-filter.js";
+import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 
 // ---------------------------------------------------------------------------
 // Input surface
@@ -154,34 +155,29 @@ function fail(field: string, message: string): never {
   throw new Error(`composeMemoryEnvelope: ${field} ${message}`);
 }
 
-// Strict ISO 8601 shape: date, or date-time with Z/offset. `Date.parse`
-// alone is NOT an ISO validator (accepts "07/17/2026", normalizes
-// "2026-02-30" to March 2) — review finding on #1998.
-const ISO_TIMESTAMP_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/;
-
+/**
+ * Validate and CANONICALIZE `validAt` via the repo's shared flexible ISO
+ * parser (`utils/iso-timestamp.ts`) — the same family durable writes use, so
+ * the envelope can never accept a value storage would reject or reinterpret
+ * (review findings on #1998: no second validation convention; reduced
+ * precision like `2026-07-17T09:30Z` is valid; offsets are bounded ±14:00;
+ * `Date.parse` alone is not an ISO validator).
+ *
+ * Canonical form is the epoch round-trip (`Date.toISOString()`), so
+ * fingerprints are identical for `...T09:30Z`, `...T09:30:00.000Z`, and the
+ * same instant expressed with an offset (§13 hash-consistency).
+ */
 function validateIsoTimestamp(field: string, value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) fail(field, "must be a non-empty ISO 8601 timestamp");
-  const match = ISO_TIMESTAMP_RE.exec(trimmed);
-  if (!match || Number.isNaN(Date.parse(trimmed))) {
-    fail(field, `is not an ISO 8601 timestamp: ${JSON.stringify(value)}`);
+  const epochMs = parseFlexibleIsoTimestamp(trimmed);
+  if (epochMs === null) {
+    fail(
+      field,
+      `is not a valid ISO 8601 date/timestamp: ${JSON.stringify(value)} (date-only, reduced precision, Z, and ±HH:MM offsets up to ±14:00 are accepted; calendar overflow is not)`,
+    );
   }
-  // Reject calendar/clock overflow (e.g. 2026-02-30, 12:60) instead of
-  // letting Date normalize it to a different instant than requested.
-  const [, y, mo, d, h = "0", mi = "0", s = "0"] = match;
-  const probe = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
-  if (
-    probe.getUTCFullYear() !== Number(y) ||
-    probe.getUTCMonth() !== Number(mo) - 1 ||
-    probe.getUTCDate() !== Number(d) ||
-    Number(h) > 23 ||
-    Number(mi) > 59 ||
-    Number(s) > 59
-  ) {
-    fail(field, `is not a real calendar date/time: ${JSON.stringify(value)}`);
-  }
-  return trimmed;
+  return new Date(epochMs).toISOString();
 }
 
 function normalizeEnvelopeTags(raw: string[] | undefined): readonly string[] {
@@ -217,7 +213,9 @@ function normalizeStructuredAttributes(
       `exceed the ${STRUCTURED_ATTRIBUTE_LIMITS.maxEntries}-entry limit (got ${entries.length})`,
     );
   }
-  const out: Record<string, string> = {};
+  // Null prototype: a JSON-decoded "__proto__"/"constructor" key must hit the
+  // duplicate/ownership checks like any other key (review finding on #1998).
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     // Canonicalize exactly like storage's normalizeAttributePairs
     // (storage.ts:1277): keys trim+lowercase, values trim — so the
@@ -235,12 +233,14 @@ function normalizeStructuredAttributes(
     if (cleanValue.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) {
       fail("structuredAttributes", `value for ${JSON.stringify(cleanKey)} exceeds ${STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength} characters`);
     }
-    if (cleanKey in out) {
+    if (Object.hasOwn(out, cleanKey)) {
       fail("structuredAttributes", `contain duplicate key after canonicalization (trim + lowercase): ${JSON.stringify(cleanKey)}`);
     }
     out[cleanKey] = cleanValue;
   }
-  return Object.freeze(out);
+  // Copy onto a normal object so downstream JSON/stableStringify behavior is
+  // unchanged; keys are already validated.
+  return Object.freeze({ ...out });
 }
 
 function normalizeOptionalString(field: string, value: string | undefined): string | undefined {
@@ -435,6 +435,11 @@ export function buildWriteIdempotencyPayload(
     }
     fields[field] = value;
   }
+  // The write source (extraction vs wearable:bee vs observe replay, ...) is
+  // identity: the same content arriving from two different sources must not
+  // dedupe into one write (review finding on #1998). Not a MemoryWriteInput
+  // key, so it rides beside the registry fields explicitly.
+  fields.source = envelope.source;
 
   const scopeOut: Record<string, string> = {};
   for (const key of FINGERPRINT_SCOPE_FIELDS) {
@@ -443,7 +448,12 @@ export function buildWriteIdempotencyPayload(
     if (typeof value !== "string") {
       throw new Error(`buildWriteIdempotencyPayload: scope.${key} must be a string`);
     }
-    scopeOut[key] = value;
+    // Trimmed: "ns" and "ns " must not mint distinct fingerprints (review
+    // finding on #1998). Empty-after-trim optional scope values are dropped.
+    const cleanValue = value.trim();
+    if (key === "surface" || cleanValue.length > 0) {
+      scopeOut[key] = cleanValue;
+    }
   }
 
   return { v: 1, kind: "memory-write", fields, scope: scopeOut };

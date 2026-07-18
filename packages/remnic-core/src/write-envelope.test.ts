@@ -330,24 +330,66 @@ test("attribute keys canonicalize to lowercase like storage's normalizeAttribute
   );
 });
 
-test("validAt requires strict ISO 8601 and real calendar values", () => {
+test("validAt delegates to the shared flexible ISO parser and canonicalizes to the epoch round-trip", () => {
   // Non-ISO shapes Date.parse would happily accept.
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "07/17/2026" }), CTX), /ISO 8601/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "Jul 17 2026" }), CTX), /ISO 8601/);
   // Calendar/clock overflow Date would silently normalize.
-  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-30T12:00:00Z" }), CTX), /real calendar/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-30T12:00:00Z" }), CTX), /ISO 8601/);
   assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T12:61:00Z" }), CTX), /validAt/);
-  // Valid shapes pass: date-only, Z, offset, fractional seconds.
-  assert.equal(composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17" }), CTX).validAt, "2026-07-17");
+  // Offset bounds: ±14:00 is the ISO maximum.
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00+15:00" }), CTX), /ISO 8601/);
+  // Valid shapes canonicalize to Date.toISOString() form (§13: one instant,
+  // one fingerprint, regardless of input spelling).
+  assert.equal(
+    composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17" }), CTX).validAt,
+    "2026-07-17T00:00:00.000Z",
+  );
   assert.equal(
     composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00.123Z" }), CTX).validAt,
     "2026-07-17T09:30:00.123Z",
   );
   assert.equal(
     composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00-05:00" }), CTX).validAt,
-    "2026-07-17T09:30:00-05:00",
+    "2026-07-17T14:30:00.000Z",
+  );
+  // Reduced precision (no seconds) is valid ISO 8601 (review finding).
+  assert.equal(
+    composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30Z" }), CTX).validAt,
+    "2026-07-17T09:30:00.000Z",
+  );
+  // Same instant, different spellings -> identical fingerprints.
+  const viaOffset = composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T09:30:00-05:00" }), CTX);
+  const viaUtc = composeMemoryEnvelope(minimalInput({ validAt: "2026-07-17T14:30:00Z" }), CTX);
+  assert.equal(
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(viaOffset, SCOPE)),
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(viaUtc, SCOPE)),
   );
   // Leap-day correctness both directions.
-  assert.equal(composeMemoryEnvelope(minimalInput({ validAt: "2028-02-29" }), CTX).validAt, "2028-02-29");
-  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-29" }), CTX), /real calendar/);
+  assert.equal(
+    composeMemoryEnvelope(minimalInput({ validAt: "2028-02-29" }), CTX).validAt,
+    "2028-02-29T00:00:00.000Z",
+  );
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "2026-02-29" }), CTX), /ISO 8601/);
+});
+
+test("write source participates in the fingerprint; scope values are trimmed", () => {
+  const fromExtraction = composeMemoryEnvelope(minimalInput(), { ...CTX, source: "extraction" });
+  const fromWearable = composeMemoryEnvelope(minimalInput(), { ...CTX, source: "wearable:bee" });
+  const h = (e: SealedMemoryEnvelope, s: FingerprintScope = SCOPE) =>
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(e, s));
+  assert.notEqual(h(fromExtraction), h(fromWearable));
+  // Scope trimming: "ns" and " ns " are the same namespace.
+  assert.equal(
+    h(fromExtraction, { surface: "memory_store", namespace: " default " }),
+    h(fromExtraction, { surface: " memory_store", namespace: "default" }),
+  );
+});
+
+test("JSON-decoded __proto__ attribute keys are handled as plain data", () => {
+  const attrs = JSON.parse('{"__proto__": "spoof", "city": "Austin"}') as Record<string, string>;
+  const env = composeMemoryEnvelope(minimalInput({ structuredAttributes: attrs }), CTX);
+  assert.ok(Object.hasOwn(env.structuredAttributes ?? {}, "__proto__"));
+  assert.equal(Object.getPrototypeOf(env.structuredAttributes), Object.prototype);
+  assert.equal(env.structuredAttributes?.city, "Austin");
 });
