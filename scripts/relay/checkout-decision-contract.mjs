@@ -27,8 +27,11 @@ const ROTATION_OBJECT_PATTERN =
   /\b(?:(?:new|fresh|replacement|current)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?tokens?\b/;
 const ANAPHORIC_TOKEN_OBJECT_PATTERN =
   /\b(?:(?:(?:a|the)\s+)?(?:new|fresh|replacement|additional|second|next)\s+one|another(?:\s+one)?|one(?:\s+more)?|anew|(?:it|this|that)(?:\s+one)?|(?:something|anything)\s+(?:new|fresh|different|separate|distinct|alternate)|(?:(?:a|the)\s+)?(?:new|fresh|different|distinct|alternate|separate|replacement|another)\s+(?:value|object|item|thing|secret|identifier|id|handle))\b(?=\s*(?:$|\b(?:on|for|during|across|after|before|prior|ahead|while|when|per|at|each|every)\b))/;
+const PLURAL_ANAPHORIC_TOKEN_OBJECT_PATTERN = /\b(?:them|these|those)(?:\s+ones)?\b/;
 const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
+const TOKEN_LIFECYCLE_ACTION_PATTERN =
+  /\b(?:reus(?:e|es|ed|ing)|mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|provision(?:s|ed|ing)?|allocat(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing)|revok(?:e|es|ed|ing)|invalidat(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|disabl(?:e|es|ed|ing)|deactivat(?:e|es|ed|ing)|retir(?:e|es|ed|ing)|destroy(?:s|ed|ing)?|eras(?:e|es|ed|ing)|purg(?:e|es|ed|ing)|drop(?:s|ped|ping)?|cancel(?:s|ed|ing)?|terminat(?:e|es|ed|ing)|void(?:s|ed|ing)?|blacklist(?:s|ed|ing)?|block(?:s|ed|ing)?|wipe(?:s|d|ing)?|discard(?:s|ed|ing)?|expir(?:e|es|ed|ing)|clear(?:s|ed|ing)?|nullif(?:y|ies|ied|ying))\b/;
 // Treat every checkout-qualified predicate as lifecycle policy so new nouns
 // such as "checkout requests" cannot reopen the closed-world grammar.
 const CHECKOUT_CONTINUITY_TARGET_PATTERN =
@@ -136,7 +139,9 @@ function decisionClauses(value) {
 function hasRotationActionAndObject(clause) {
   return (
     ROTATION_ACTION_PATTERN.test(clause) &&
-    (ROTATION_OBJECT_PATTERN.test(clause) || ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause))
+    (ROTATION_OBJECT_PATTERN.test(clause) ||
+      ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) ||
+      PLURAL_ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause))
   );
 }
 
@@ -144,6 +149,7 @@ function hasObjectlessRotationAction(clause) {
   if (
     ROTATION_OBJECT_PATTERN.test(clause) ||
     ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) ||
+    PLURAL_ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) ||
     PRE_EXPIRY_REPLACEMENT_OBJECT_PATTERN.test(clause) ||
     !ROTATION_ACTION_PATTERN.test(clause)
   ) {
@@ -163,7 +169,11 @@ function hasRotationActionSignal(clause) {
 }
 
 function hasTokenLifecycleTarget(clause) {
-  return TOKEN_LIFECYCLE_TARGET_PATTERN.test(clause) || ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause);
+  return (
+    TOKEN_LIFECYCLE_TARGET_PATTERN.test(clause) ||
+    ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) ||
+    (PLURAL_ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) && TOKEN_LIFECYCLE_ACTION_PATTERN.test(clause))
+  );
 }
 
 function hasRotationTarget(clause) {

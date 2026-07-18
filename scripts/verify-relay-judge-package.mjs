@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, opendir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -18,10 +18,16 @@ const packagePaths = [
   "scripts/relay/judge-package.mjs",
 ];
 const trustedExecutableSha256 = new Map([
-  ["scripts/relay/checkout-decision-contract.mjs", "ecfaa379e168656bb985e3c93f537816f2a1bf17bbefdf15e43d50a709ab82e7"],
-  ["scripts/relay/judge-package.mjs", "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e"],
+  ["scripts/relay/checkout-decision-contract.mjs", "fc6d4bf3df4c1c9095fb23f81c27c1c311e5c76bd651f3b55669b7fbcc0ba372"],
+  ["scripts/relay/judge-package.mjs", "4714984a100bdacb8337b76008f9aa971d63f83e6b8016385292d440ed132b66"],
 ]);
 const executableVerificationMode = "trusted-launcher-pinned-sha256";
+const sourceSnapshotLimits = Object.freeze({
+  maxDepth: 8,
+  maxEntries: 128,
+  maxFileBytes: 1_048_576,
+  maxTotalBytes: 2_097_152,
+});
 
 function invariant(condition, message) {
   if (!condition) throw new Error(`Relay clean-room verification failed: ${message}`);
@@ -52,6 +58,47 @@ function sameOpenedNode(before, after) {
     before.mtimeNs === after.mtimeNs &&
     before.ctimeNs === after.ctimeNs
   );
+}
+
+function createSourceSnapshotBudget() {
+  return { entries: 0, totalBytes: 0 };
+}
+
+function reserveSourceSnapshotEntry(budget, label, depth) {
+  invariant(depth <= sourceSnapshotLimits.maxDepth, `${label} exceeds the maximum snapshot depth`);
+  invariant(
+    budget.entries + 1 <= sourceSnapshotLimits.maxEntries,
+    `the clean-room source snapshot exceeds the snapshot entry limit of ${sourceSnapshotLimits.maxEntries}`
+  );
+  budget.entries += 1;
+}
+
+function reserveSourceSnapshotFileBytes(budget, label, size) {
+  invariant(
+    size <= BigInt(sourceSnapshotLimits.maxFileBytes),
+    `${label} exceeds the per-file snapshot byte limit of ${sourceSnapshotLimits.maxFileBytes}`
+  );
+  const fileBytes = Number(size);
+  invariant(
+    budget.totalBytes + fileBytes <= sourceSnapshotLimits.maxTotalBytes,
+    `the clean-room source snapshot exceeds the snapshot total byte limit of ${sourceSnapshotLimits.maxTotalBytes}`
+  );
+  budget.totalBytes += fileBytes;
+  return fileBytes;
+}
+
+async function readExactOpenedSourceFile(handle, size, label) {
+  const contents = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await handle.read(contents, offset, size - offset, offset);
+    invariant(bytesRead > 0, `${label} changed while its verified bytes were being read`);
+    offset += bytesRead;
+  }
+  const probe = Buffer.alloc(1);
+  const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, size);
+  invariant(extraBytes === 0, `${label} changed while its verified bytes were being read`);
+  return contents;
 }
 
 function packagePathSegments(relative) {
@@ -180,34 +227,45 @@ async function openSourceRelative(rootHandle, rootMountId, relative) {
   }
 }
 
-async function readOpenedSourceFile(handle, label) {
+async function readOpenedSourceFile(handle, label, budget, depth, entryAlreadyCounted = false) {
   const before = await handle.stat({ bigint: true });
   invariant(before.isFile(), `${label} must be a non-symlink regular file`);
   invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
-  const contents = await handle.readFile();
+  if (!entryAlreadyCounted) reserveSourceSnapshotEntry(budget, label, depth);
+  const fileBytes = reserveSourceSnapshotFileBytes(budget, label, before.size);
+  const contents = await readExactOpenedSourceFile(handle, fileBytes, label);
   const after = await handle.stat({ bigint: true });
   invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
   return contents;
 }
 
-async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, snapshot) {
+async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, snapshot, budget, depth) {
   const before = await directoryHandle.stat({ bigint: true });
   invariant(before.isDirectory(), `${prefix} must be a real directory`);
-  const names = (await readdir(`/proc/self/fd/${directoryHandle.fd}`)).sort((left, right) => left.localeCompare(right));
-  for (const name of names) {
-    invariant(name !== "." && name !== ".." && !name.includes("/"), `${prefix} contains an invalid entry name`);
-    const relative = `${prefix}/${name}`;
-    const { handle, info } = await openSourceChildNoFollow(directoryHandle, name, relative, undefined, rootMountId);
-    try {
-      if (info.isDirectory()) {
-        await snapshotSourceDirectory(handle, rootMountId, relative, snapshot);
-      } else {
-        invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
-        snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+  const entries = await opendir(`/proc/self/fd/${directoryHandle.fd}`, { bufferSize: 1 });
+  try {
+    while (true) {
+      const entry = await entries.read();
+      if (!entry) break;
+      const name = entry.name;
+      invariant(name !== "." && name !== ".." && !name.includes("/"), `${prefix} contains an invalid entry name`);
+      const relative = `${prefix}/${name}`;
+      const childDepth = depth + 1;
+      reserveSourceSnapshotEntry(budget, relative, childDepth);
+      const { handle, info } = await openSourceChildNoFollow(directoryHandle, name, relative, undefined, rootMountId);
+      try {
+        if (info.isDirectory()) {
+          await snapshotSourceDirectory(handle, rootMountId, relative, snapshot, budget, childDepth);
+        } else {
+          invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
+          snapshot.set(relative, await readOpenedSourceFile(handle, relative, budget, childDepth, true));
+        }
+      } finally {
+        await handle.close();
       }
-    } finally {
-      await handle.close();
     }
+  } finally {
+    await entries.close();
   }
   const after = await directoryHandle.stat({ bigint: true });
   invariant(sameOpenedNode(before, after), `${prefix} changed while its verified snapshot was being captured`);
@@ -216,17 +274,19 @@ async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, sna
 async function snapshotPackageSources(root, relatives) {
   const { handle: rootHandle, mountId } = await openPinnedSourceRoot(root);
   const snapshot = new Map();
+  const budget = createSourceSnapshotBudget();
   try {
     const before = await rootHandle.stat({ bigint: true });
     for (const relative of relatives) {
       const handle = await openSourceRelative(rootHandle, mountId, relative);
       try {
         const info = await handle.stat({ bigint: true });
+        reserveSourceSnapshotEntry(budget, relative, 0);
         if (info.isDirectory()) {
-          await snapshotSourceDirectory(handle, mountId, relative, snapshot);
+          await snapshotSourceDirectory(handle, mountId, relative, snapshot, budget, 0);
         } else {
           invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
-          snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+          snapshot.set(relative, await readOpenedSourceFile(handle, relative, budget, 0, true));
         }
       } finally {
         await handle.close();
@@ -410,6 +470,7 @@ async function main() {
       executableVerification: executableVerificationMode,
       trustedExecutableSha256: Object.fromEntries(trustedExecutableSha256),
       launcherSha256,
+      sourceSnapshotLimits: { ...sourceSnapshotLimits },
       externalCalls: 0,
       productionDataRead: false,
       sensitiveFilesScanned: receipt.sensitiveFilesScanned,

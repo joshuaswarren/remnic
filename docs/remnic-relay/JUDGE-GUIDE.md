@@ -92,7 +92,7 @@ copy below must match that trusted source. Do not derive either the bootstrap
 or expected value solely from the checkout being tested.
 
 ```bash
-RELAY_LAUNCHER_SHA256=4f48e7c77f22cc733517984f8a7399e5ac426778092750bb002d715b57b112ac
+RELAY_LAUNCHER_SHA256=99619f5a287d85a6bfe026cf2d81f5a246ab2adf4bda885d3bae6c63f39471e8
 relay_trust_dir="$(mktemp -d)"
 trap 'rm -r -- "$relay_trust_dir"' EXIT
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readFile, readdir } from "node:fs/promises";
+import { lstat, open, opendir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,12 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_RELAY_REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 export const RELAY_RECORDING_ROOT_SHA256 = "69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be";
 export const RELAY_UI_ROOT_SHA256 = "55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b";
+export const RELAY_SNAPSHOT_LIMITS = Object.freeze({
+  maxDepth: 8,
+  maxEntries: 128,
+  maxFileBytes: 1_048_576,
+  maxTotalBytes: 2_097_152,
+});
 
 const RECORDING_RELATIVE = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
 const FIXTURE_RELATIVE = "fixtures/remnic-relay";
@@ -129,6 +135,47 @@ function sameOpenedNode(before, after) {
     before.mtimeNs === after.mtimeNs &&
     before.ctimeNs === after.ctimeNs
   );
+}
+
+function createSnapshotBudget() {
+  return { entries: 0, totalBytes: 0 };
+}
+
+function reserveSnapshotEntry(budget, label, depth) {
+  invariant(depth <= RELAY_SNAPSHOT_LIMITS.maxDepth, `${label} exceeds the maximum snapshot depth`);
+  invariant(
+    budget.entries + 1 <= RELAY_SNAPSHOT_LIMITS.maxEntries,
+    `the judge input snapshot exceeds the snapshot entry limit of ${RELAY_SNAPSHOT_LIMITS.maxEntries}`
+  );
+  budget.entries += 1;
+}
+
+function reserveSnapshotFileBytes(budget, label, size) {
+  invariant(
+    size <= BigInt(RELAY_SNAPSHOT_LIMITS.maxFileBytes),
+    `${label} exceeds the per-file snapshot byte limit of ${RELAY_SNAPSHOT_LIMITS.maxFileBytes}`
+  );
+  const fileBytes = Number(size);
+  invariant(
+    budget.totalBytes + fileBytes <= RELAY_SNAPSHOT_LIMITS.maxTotalBytes,
+    `the judge input snapshot exceeds the snapshot total byte limit of ${RELAY_SNAPSHOT_LIMITS.maxTotalBytes}`
+  );
+  budget.totalBytes += fileBytes;
+  return fileBytes;
+}
+
+async function readExactOpenedFile(handle, size, label) {
+  const contents = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await handle.read(contents, offset, size - offset, offset);
+    invariant(bytesRead > 0, `${label} changed while its verified bytes were being read`);
+    offset += bytesRead;
+  }
+  const probe = Buffer.alloc(1);
+  const { bytesRead: extraBytes } = await handle.read(probe, 0, 1, size);
+  invariant(extraBytes === 0, `${label} changed while its verified bytes were being read`);
+  return contents;
 }
 
 function relayPathSegments(relative) {
@@ -280,65 +327,79 @@ async function openRepoRelativeFromRoot(rootHandle, rootMountId, relative, expec
   }
 }
 
-async function readOpenedRegularFile(handle, label, encoding) {
+async function readOpenedRegularFile(handle, label, encoding, budget, depth, entryAlreadyCounted = false) {
   try {
     const before = await handle.stat({ bigint: true });
     invariant(before.isFile(), `${label} must be a non-symlink regular file`);
     invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
-    const contents = await handle.readFile(encoding);
+    if (!entryAlreadyCounted) reserveSnapshotEntry(budget, label, depth);
+    const fileBytes = reserveSnapshotFileBytes(budget, label, before.size);
+    const contents = await readExactOpenedFile(handle, fileBytes, label);
     const after = await handle.stat({ bigint: true });
     invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
-    return contents;
+    return encoding === undefined ? contents : contents.toString(encoding);
   } finally {
     await handle.close();
   }
 }
 
-async function readRepoFileFromRoot(rootHandle, rootMountId, relative, encoding) {
+async function readRepoFileFromRoot(rootHandle, rootMountId, relative, encoding, budget) {
   return readOpenedRegularFile(
     await openRepoRelativeFromRoot(rootHandle, rootMountId, relative, "file"),
     relative,
-    encoding
+    encoding,
+    budget,
+    0
   );
 }
 
 export async function readRegularRepoFileNoFollow(repoRoot, relative, encoding) {
   const { handle: rootHandle, mountId } = await openPinnedRepoRoot(repoRoot);
   try {
-    return await readRepoFileFromRoot(rootHandle, mountId, relative, encoding);
+    return await readRepoFileFromRoot(rootHandle, mountId, relative, encoding, createSnapshotBudget());
   } finally {
     await rootHandle.close();
   }
 }
 
-async function snapshotDirectory(directoryHandle, rootMountId, treeLabel, prefix = "", snapshot = new Map()) {
+async function snapshotDirectory(directoryHandle, rootMountId, treeLabel, prefix, snapshot, budget, depth) {
   const before = await directoryHandle.stat({ bigint: true });
   invariant(before.isDirectory(), `${treeLabel} must be a real directory`);
-  const names = (await readdir(`/proc/self/fd/${directoryHandle.fd}`)).sort((left, right) => left.localeCompare(right));
-  for (const name of names) {
-    invariant(name !== "." && name !== ".." && !name.includes("/"), `${treeLabel} contains an invalid entry name`);
-    const relative = prefix ? `${prefix}/${name}` : name;
-    const label = `${treeLabel}/${relative}`;
-    const { handle, info } = await openChildNoFollow(directoryHandle, name, label, undefined, rootMountId);
-    if (info.isDirectory()) {
-      try {
-        await snapshotDirectory(handle, rootMountId, treeLabel, relative, snapshot);
-      } finally {
-        await handle.close();
+  const entries = await opendir(`/proc/self/fd/${directoryHandle.fd}`, { bufferSize: 1 });
+  try {
+    while (true) {
+      const entry = await entries.read();
+      if (!entry) break;
+      const name = entry.name;
+      invariant(name !== "." && name !== ".." && !name.includes("/"), `${treeLabel} contains an invalid entry name`);
+      const relative = prefix ? `${prefix}/${name}` : name;
+      const label = `${treeLabel}/${relative}`;
+      const childDepth = depth + 1;
+      reserveSnapshotEntry(budget, label, childDepth);
+      const { handle, info } = await openChildNoFollow(directoryHandle, name, label, undefined, rootMountId);
+      if (info.isDirectory()) {
+        try {
+          await snapshotDirectory(handle, rootMountId, treeLabel, relative, snapshot, budget, childDepth);
+        } finally {
+          await handle.close();
+        }
+      } else {
+        snapshot.set(relative, await readOpenedRegularFile(handle, label, undefined, budget, childDepth, true));
       }
-    } else {
-      snapshot.set(relative, await readOpenedRegularFile(handle, label));
     }
+  } finally {
+    await entries.close();
   }
   const after = await directoryHandle.stat({ bigint: true });
   invariant(sameOpenedNode(before, after), `${treeLabel} changed while its verified snapshot was being captured`);
   return snapshot;
 }
 
-async function snapshotRepoTree(rootHandle, rootMountId, relative) {
+async function snapshotRepoTree(rootHandle, rootMountId, relative, budget) {
   const directoryHandle = await openRepoRelativeFromRoot(rootHandle, rootMountId, relative, "directory");
   try {
-    return await snapshotDirectory(directoryHandle, rootMountId, relative);
+    reserveSnapshotEntry(budget, relative, 0);
+    return await snapshotDirectory(directoryHandle, rootMountId, relative, "", new Map(), budget, 0);
   } finally {
     await directoryHandle.close();
   }
@@ -346,14 +407,15 @@ async function snapshotRepoTree(rootHandle, rootMountId, relative) {
 
 async function snapshotJudgeInputs(repoRoot) {
   const { handle: rootHandle, mountId } = await openPinnedRepoRoot(repoRoot);
+  const budget = createSnapshotBudget();
   try {
     const before = await rootHandle.stat({ bigint: true });
     const [recording, fixture, ui, demoScript, packageManifest] = await Promise.all([
-      snapshotRepoTree(rootHandle, mountId, RECORDING_RELATIVE),
-      snapshotRepoTree(rootHandle, mountId, FIXTURE_RELATIVE),
-      snapshotRepoTree(rootHandle, mountId, UI_RELATIVE),
-      readRepoFileFromRoot(rootHandle, mountId, DEMO_SCRIPT_RELATIVE, "utf8"),
-      readRepoFileFromRoot(rootHandle, mountId, "package.json", "utf8"),
+      snapshotRepoTree(rootHandle, mountId, RECORDING_RELATIVE, budget),
+      snapshotRepoTree(rootHandle, mountId, FIXTURE_RELATIVE, budget),
+      snapshotRepoTree(rootHandle, mountId, UI_RELATIVE, budget),
+      readRepoFileFromRoot(rootHandle, mountId, DEMO_SCRIPT_RELATIVE, "utf8", budget),
+      readRepoFileFromRoot(rootHandle, mountId, "package.json", "utf8", budget),
     ]);
     const after = await rootHandle.stat({ bigint: true });
     invariant(sameOpenedNode(before, after), "the repository root changed while the judge snapshot was captured");
@@ -913,6 +975,7 @@ async function verifyRelayJudgePackageSnapshot(repoRoot = DEFAULT_RELAY_REPO_ROO
     runtimeDependencies: 0,
     filesystemVerification: snapshot.filesystemVerification,
     sensitiveFilesScanned,
+    snapshotLimits: { ...RELAY_SNAPSHOT_LIMITS },
     demo,
   };
   const verifiedAssets = new Map(

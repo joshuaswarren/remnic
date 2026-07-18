@@ -14,6 +14,7 @@ import {
 } from "../scripts/relay/checkout-decision-contract.mjs";
 import {
   RELAY_RECORDING_ROOT_SHA256,
+  RELAY_SNAPSHOT_LIMITS,
   RELAY_UI_ROOT_SHA256,
   readRegularRepoFileNoFollow,
   startRelayJudgeServer,
@@ -23,9 +24,9 @@ import {
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const recordingRelative = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
-const trustedLauncherSha256 = "4f48e7c77f22cc733517984f8a7399e5ac426778092750bb002d715b57b112ac";
-const trustedDecisionContractSha256 = "ecfaa379e168656bb985e3c93f537816f2a1bf17bbefdf15e43d50a709ab82e7";
-const trustedJudgePackageSha256 = "860eb663002dfa9812b20530f668a07812de252a469cc1d6bb7946e5b8ea3b0e";
+const trustedLauncherSha256 = "99619f5a287d85a6bfe026cf2d81f5a246ab2adf4bda885d3bae6c63f39471e8";
+const trustedDecisionContractSha256 = "fc6d4bf3df4c1c9095fb23f81c27c1c311e5c76bd651f3b55669b7fbcc0ba372";
+const trustedJudgePackageSha256 = "4714984a100bdacb8337b76008f9aa971d63f83e6b8016385292d440ed132b66";
 
 function descriptorPinnedTest(name, fn) {
   return test(
@@ -110,6 +111,43 @@ async function copyCleanRoomLauncher(destination) {
   }
 }
 
+async function addSnapshotLimitViolation(root, kind) {
+  if (kind === "per-file") {
+    await writeFile(path.join(root, "package.json"), Buffer.alloc(RELAY_SNAPSHOT_LIMITS.maxFileBytes + 1, 0x78));
+    return;
+  }
+
+  const attackRoot = path.join(root, "fixtures/remnic-relay/snapshot-limit-probe");
+  await mkdir(attackRoot, { recursive: true });
+  if (kind === "entries") {
+    await Promise.all(
+      Array.from({ length: RELAY_SNAPSHOT_LIMITS.maxEntries + 1 }, (_, index) =>
+        writeFile(path.join(attackRoot, `entry-${String(index).padStart(3, "0")}.txt`), "")
+      )
+    );
+    return;
+  }
+  if (kind === "depth") {
+    let current = attackRoot;
+    for (let index = 0; index <= RELAY_SNAPSHOT_LIMITS.maxDepth; index += 1) {
+      current = path.join(current, `depth-${index}`);
+      await mkdir(current);
+    }
+    await writeFile(path.join(current, "too-deep.txt"), "bounded\n");
+    return;
+  }
+  if (kind === "total-bytes") {
+    const fileCount = Math.floor(RELAY_SNAPSHOT_LIMITS.maxTotalBytes / RELAY_SNAPSHOT_LIMITS.maxFileBytes) + 1;
+    await Promise.all(
+      Array.from({ length: fileCount }, (_, index) =>
+        writeFile(path.join(attackRoot, `large-${index}.bin`), Buffer.alloc(RELAY_SNAPSHOT_LIMITS.maxFileBytes, index))
+      )
+    );
+    return;
+  }
+  throw new Error(`Unknown snapshot-limit test kind: ${kind}`);
+}
+
 async function resealRecording(recordingRoot) {
   const files = [];
   const pending = [recordingRoot];
@@ -175,6 +213,46 @@ descriptorPinnedTest("Relay judge verifier rejects a nested mount before reading
     () => readRegularRepoFileNoFollow("/", "proc/version", "utf8"),
     /proc\/version crosses a filesystem mount boundary; nested and bind-mounted inputs are forbidden/
   );
+});
+
+const snapshotLimitCases = [
+  ["per-file", /exceeds the per-file snapshot byte limit/],
+  ["entries", /exceeds the snapshot entry limit/],
+  ["depth", /exceeds the maximum snapshot depth/],
+  ["total-bytes", /exceeds the snapshot total byte limit/],
+];
+
+descriptorPinnedTest("Relay judge verifier bounds untrusted snapshot resources before materialization", async (t) => {
+  for (const [kind, expected] of snapshotLimitCases) {
+    await t.test(kind, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-resource-limit-"));
+      try {
+        await copyJudgePackage(parent);
+        await addSnapshotLimitViolation(parent, kind);
+        await assert.rejects(() => verifyRelayJudgePackage(parent), expected);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+descriptorPinnedTest("Relay clean-room launcher enforces the same source snapshot resource bounds", async (t) => {
+  for (const [kind, expected] of snapshotLimitCases) {
+    await t.test(kind, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-launcher-resource-limit-"));
+      try {
+        await copyJudgePackage(parent);
+        await copyCleanRoomLauncher(parent);
+        await addSnapshotLimitViolation(parent, kind);
+        const result = await captureNode(["scripts/verify-relay-judge-package.mjs", "--json"], { cwd: parent });
+        assert.notEqual(result.code, 0, result.stdout);
+        assert.match(result.stderr, expected);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test("Relay judge-facing instructions bypass npm lifecycle hooks", async () => {
@@ -431,6 +509,10 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Always generate more.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Allocate two.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Provision extra.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Revoke them immediately.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Rotate them on every retry.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Invalidate these now.",
+    "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Delete those before expiry.",
   ]) {
     assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
   }
@@ -484,6 +566,12 @@ test("Relay judge decisions use the authoritative live source-grounding contract
   assert.equal(
     relayCheckoutDecisionContractKey(
       "Reuse the checkout-session token while valid. Let the checkout token expire naturally. Mint exactly one replacement after expiry. Delete an obsolete audit record."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Archive these audit records after review."
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );
