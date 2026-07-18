@@ -31,10 +31,12 @@ isolated live mission—not a hand-edited success animation.
 
 ## Judge it without rebuilding
 
-Prerequisite: Node.js 22.12 or newer with npm. No dependency install, account,
-credential, dataset download, build, model call, or network access is needed
-after the repository is available. The purpose-built synthetic mission fixture
-is already staged in `fixtures/remnic-relay/` and integrity-checked in place.
+Prerequisite: Linux with procfs plus Node.js 22.12 or newer with npm. No
+dependency install, account, credential, dataset download, build, model call,
+or network access is needed after the repository is available. The verifier
+deliberately fails closed on platforms that cannot provide descriptor-pinned
+no-follow traversal. The purpose-built synthetic mission fixture is already
+staged in `fixtures/remnic-relay/` and integrity-checked in place.
 
 ```bash
 npm run relay:demo
@@ -253,10 +255,10 @@ remnic bench run longmemeval \
 
 | Path | Support statement |
 | --- | --- |
-| Offline replay/verifier | Node 22.12+ built-ins only; descriptor-pinned no-follow traversal on Linux with procfs, contained file-handle-checked portable snapshot elsewhere; exact mode in receipt; Linux x64 independently verified on Node 22.23.1 |
+| Offline replay/verifier | Linux with procfs and Node 22.12+ built-ins only; component-by-component descriptor-pinned no-follow traversal; Linux x64 independently verified on Node 22.23.1 |
 | Live runner | Linux x64 with user/mount/PID/network namespaces, chroot, Codex CLI 0.144.4-compatible behavior, and installed development dependencies |
 | Browser | Chrome/Chromium 151 verified at 1440 × 900 and 390 × 844, keyboard-only and reduced-motion flows included |
-| Windows/macOS | Not supported for live isolation; offline verifier has a tested portable path, but only Linux x64 is independently claimed verified for this submission |
+| Windows/macOS | No executable verification claim; use the public submission video/gallery or a Linux environment. The verifier fails closed instead of reading evidence through pathname-only fallbacks |
 
 ## Submission assets
 

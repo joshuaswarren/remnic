@@ -128,7 +128,7 @@ test("dependency-free Relay judge verifier binds the canonical live mission", as
   assert.equal(receipt.humanApproved, true);
   assert.equal(receipt.coldStartVerified, true);
   assert.equal(receipt.runtimeDependencies, 0);
-  assert.match(receipt.filesystemVerification, /^(?:descriptor-pinned|portable-contained)-nofollow$/);
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);
@@ -136,17 +136,13 @@ test("dependency-free Relay judge verifier binds the canonical live mission", as
   assert.ok(receipt.demo.estimatedTotalSeconds < 180);
 });
 
-test("Relay judge verifier has a portable contained snapshot path", async () => {
-  const receipt = await verifyRelayJudgePackage(repoRoot, { filesystemMode: "portable" });
-  assert.equal(receipt.filesystemVerification, "portable-contained-nofollow");
+test("Relay judge verifier uses descriptor-pinned no-follow traversal", async () => {
+  const receipt = await verifyRelayJudgePackage(repoRoot);
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
   assert.equal(receipt.uiSha256, RELAY_UI_ROOT_SHA256);
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
-  await assert.rejects(
-    () => verifyRelayJudgePackage(repoRoot, { filesystemMode: "weaker" }),
-    /filesystem verification mode must be auto, descriptor, or portable/
-  );
 });
 
 test("Relay judge CLI expands a conventional tilde checkout root", async () => {
@@ -341,7 +337,7 @@ test("Relay judge verifier rejects symlinked standalone text inputs", async (t) 
   }
 });
 
-test("Relay judge readers reject a parent symlink swapped in after pathname validation", async () => {
+test("Relay judge descriptor traversal rejects a symlinked parent", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-read-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-atomic-outside-"));
   try {
@@ -355,19 +351,36 @@ test("Relay judge readers reject a parent symlink swapped in after pathname vali
     await rm(trustedDirectory, { recursive: true });
     await symlink(outside, trustedDirectory);
 
-    for (const filesystemMode of ["auto", "portable"]) {
-      await assert.rejects(
-        () => readRegularRepoFileNoFollow(parent, "trusted/host-private.txt", "utf8", { filesystemMode }),
-        /trusted\/host-private\.txt must not traverse a symlink/
-      );
-    }
+    await assert.rejects(
+      () => readRegularRepoFileNoFollow(parent, "trusted/host-private.txt", "utf8"),
+      /trusted\/host-private\.txt must not traverse a symlink/
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
 });
 
-test("Relay judge readers reject hard-linked outside files", async () => {
+test("Relay judge descriptor traversal rejects a symlinked checkout ancestor", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-root-parent-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-root-outside-"));
+  try {
+    const checkout = path.join(outside, "checkout");
+    await mkdir(checkout);
+    await writeFile(path.join(checkout, "host-private.txt"), "host-private bytes\n");
+    await symlink(outside, path.join(parent, "swapped-parent"));
+
+    await assert.rejects(
+      () => readRegularRepoFileNoFollow(path.join(parent, "swapped-parent", "checkout"), "host-private.txt", "utf8"),
+      /the repository root must not traverse a symlink/
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("Relay judge descriptor reader rejects hard-linked outside files", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-read-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-outside-"));
   try {
@@ -377,12 +390,10 @@ test("Relay judge readers reject hard-linked outside files", async () => {
     await writeFile(outsideFile, "host-private bytes\n");
     await link(outsideFile, path.join(trustedDirectory, "host-private.txt"));
 
-    for (const filesystemMode of ["auto", "portable"]) {
-      await assert.rejects(
-        () => readRegularRepoFileNoFollow(parent, "trusted/host-private.txt", "utf8", { filesystemMode }),
-        /trusted\/host-private\.txt must not be a hard-linked file/
-      );
-    }
+    await assert.rejects(
+      () => readRegularRepoFileNoFollow(parent, "trusted/host-private.txt", "utf8"),
+      /trusted\/host-private\.txt must not be a hard-linked file/
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
@@ -516,7 +527,7 @@ test("Relay judge package passes from a copied clean room with no node_modules",
   assert.equal(receipt.recordingSha256, RELAY_RECORDING_ROOT_SHA256);
   assert.equal(receipt.uiSha256, RELAY_UI_ROOT_SHA256);
   assert.equal(receipt.nodeModulesPresent, false);
-  assert.match(receipt.filesystemVerification, /^(?:descriptor-pinned|portable-contained)-nofollow$/);
+  assert.equal(receipt.filesystemVerification, "descriptor-pinned-nofollow");
   assert.equal(receipt.externalCalls, 0);
   assert.equal(receipt.productionDataRead, false);
   assert.ok(receipt.sensitiveFilesScanned > 20);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { lstat, open, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -85,7 +85,6 @@ const SERVER_ERROR_BODY = "Relay judge server error\n";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DESCRIPTOR_PINNED_MODE = "descriptor-pinned-nofollow";
-const PORTABLE_CONTAINED_MODE = "portable-contained-nofollow";
 
 function invariant(condition, message) {
   if (!condition) throw new Error(`Relay judge verification failed: ${message}`);
@@ -158,45 +157,41 @@ function descriptorTraversalSupported() {
   );
 }
 
-async function resolveFilesystemVerification(requested = "auto") {
-  invariant(
-    requested === "auto" || requested === "descriptor" || requested === "portable",
-    "filesystem verification mode must be auto, descriptor, or portable"
-  );
-  if (requested === "portable") return PORTABLE_CONTAINED_MODE;
-  if (descriptorTraversalSupported()) {
-    try {
-      if ((await lstat("/proc/self/fd")).isDirectory()) return DESCRIPTOR_PINNED_MODE;
-    } catch {
-      // A Linux runtime without procfs falls back to the contained portable reader.
-    }
-  }
-  invariant(
-    requested !== "descriptor",
-    "descriptor-pinned verification requires Linux with procfs and no-follow flags"
-  );
-  return PORTABLE_CONTAINED_MODE;
-}
-
 async function openPinnedRepoRoot(repoRoot) {
   invariant(
     descriptorTraversalSupported(),
-    "descriptor-pinned verification requires Linux with procfs and no-follow flags"
+    "the Relay judge verifier requires Linux with procfs and descriptor no-follow flags"
   );
-  let handle;
   try {
-    handle = await open(
-      path.resolve(repoRoot),
-      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+    invariant(
+      (await lstat("/proc/self/fd")).isDirectory(),
+      "the Relay judge verifier requires Linux with procfs and descriptor no-follow flags"
     );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Relay judge verification failed:")) throw error;
+    throw new Error(
+      "Relay judge verification failed: the Relay judge verifier requires Linux with procfs and descriptor no-follow flags",
+      { cause: error }
+    );
+  }
+  let current;
+  try {
+    current = await open(path.parse(path.resolve(repoRoot)).root, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
   } catch (error) {
     throw new Error("Relay judge verification failed: the repository root must be a real directory", { cause: error });
   }
   try {
-    invariant((await handle.stat()).isDirectory(), "the repository root must be a real directory");
-    return handle;
+    const segments = path.resolve(repoRoot).split(path.sep).filter(Boolean);
+    for (const segment of segments) {
+      const opened = await openChildNoFollow(current, segment, "the repository root", "directory");
+      const previous = current;
+      current = opened.handle;
+      await previous.close();
+    }
+    invariant((await current.stat()).isDirectory(), "the repository root must be a real directory");
+    return current;
   } catch (error) {
-    await handle.close();
+    await current.close();
     throw error;
   }
 }
@@ -273,12 +268,7 @@ async function readRepoFileFromRoot(rootHandle, relative, encoding) {
   return readOpenedRegularFile(await openRepoRelativeFromRoot(rootHandle, relative, "file"), relative, encoding);
 }
 
-export async function readRegularRepoFileNoFollow(repoRoot, relative, encoding, options = {}) {
-  const filesystemVerification = await resolveFilesystemVerification(options.filesystemMode);
-  if (filesystemVerification === PORTABLE_CONTAINED_MODE) {
-    const root = await openPortableRepoRoot(repoRoot);
-    return readPortableRepoFileFromRoot(root, relative, encoding);
-  }
+export async function readRegularRepoFileNoFollow(repoRoot, relative, encoding) {
   const rootHandle = await openPinnedRepoRoot(repoRoot);
   try {
     return await readRepoFileFromRoot(rootHandle, relative, encoding);
@@ -320,7 +310,7 @@ async function snapshotRepoTree(rootHandle, relative) {
   }
 }
 
-async function snapshotJudgeInputsDescriptor(repoRoot) {
+async function snapshotJudgeInputs(repoRoot) {
   const rootHandle = await openPinnedRepoRoot(repoRoot);
   try {
     const before = await rootHandle.stat({ bigint: true });
@@ -337,164 +327,6 @@ async function snapshotJudgeInputsDescriptor(repoRoot) {
   } finally {
     await rootHandle.close();
   }
-}
-
-function portableReadFlags() {
-  let flags = fsConstants.O_RDONLY;
-  if (process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number") flags |= fsConstants.O_NOFOLLOW;
-  if (process.platform !== "win32" && typeof fsConstants.O_NONBLOCK === "number") flags |= fsConstants.O_NONBLOCK;
-  return flags;
-}
-
-function pathRequirement(expectedType) {
-  if (expectedType === "directory") return "a real directory";
-  if (expectedType === "file") return "a non-symlink regular file";
-  return "a non-symlink regular file or directory";
-}
-
-function pathIsContained(root, target) {
-  const relative = path.relative(root, target);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
-async function openPortableRepoRoot(repoRoot) {
-  const resolved = path.resolve(repoRoot);
-  let suppliedInfo;
-  try {
-    suppliedInfo = await lstat(resolved, { bigint: true });
-  } catch (error) {
-    throw new Error("Relay judge verification failed: the repository root must be a real directory", { cause: error });
-  }
-  invariant(
-    !suppliedInfo.isSymbolicLink() && suppliedInfo.isDirectory(),
-    "the repository root must be a real directory"
-  );
-  let canonicalPath;
-  try {
-    canonicalPath = await realpath(resolved);
-  } catch (error) {
-    throw new Error("Relay judge verification failed: the repository root must be a real directory", { cause: error });
-  }
-  const canonicalInfo = await lstat(canonicalPath, { bigint: true });
-  invariant(
-    canonicalInfo.isDirectory() && sameOpenedNode(suppliedInfo, canonicalInfo),
-    "the repository root changed while it was being resolved"
-  );
-  return { canonicalPath, info: canonicalInfo };
-}
-
-async function assertPortableRootStable(root) {
-  const current = await lstat(root.canonicalPath, { bigint: true });
-  invariant(
-    current.isDirectory() && !current.isSymbolicLink() && sameOpenedNode(root.info, current),
-    "the repository root changed while the judge snapshot was captured"
-  );
-}
-
-async function inspectPortableRepoPath(root, relative, expectedType) {
-  const segments = relayPathSegments(relative);
-  let target = root.canonicalPath;
-  let info;
-  try {
-    for (const [index, segment] of segments.entries()) {
-      target = path.join(target, segment);
-      info = await lstat(target, { bigint: true });
-      const isTarget = index === segments.length - 1;
-      const requiredType = isTarget ? expectedType : "directory";
-      invariant(!info.isSymbolicLink(), `${relative} must not traverse a symlink`);
-      const valid =
-        requiredType === "directory"
-          ? info.isDirectory()
-          : requiredType === "file"
-            ? info.isFile()
-            : info.isDirectory() || info.isFile();
-      invariant(valid, `${relative} has the wrong filesystem type`);
-      const canonicalTarget = await realpath(target);
-      invariant(
-        pathIsContained(root.canonicalPath, canonicalTarget),
-        `${relative} must stay inside the repository root`
-      );
-      const canonicalInfo = await lstat(canonicalTarget, { bigint: true });
-      invariant(sameOpenedNode(info, canonicalInfo), `${relative} changed while its path was being resolved`);
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Relay judge verification failed:")) throw error;
-    throw new Error(
-      `Relay judge verification failed: ${relative} must not traverse a symlink and must be ${pathRequirement(expectedType)}`,
-      { cause: error }
-    );
-  }
-  return { absolutePath: target, info };
-}
-
-async function readPortableRepoFileFromRoot(root, relative, encoding) {
-  const inspected = await inspectPortableRepoPath(root, relative, "file");
-  invariant(inspected.info.nlink === 1n, `${relative} must not be a hard-linked file`);
-  let handle;
-  try {
-    handle = await open(inspected.absolutePath, portableReadFlags());
-  } catch (error) {
-    throw new Error(
-      `Relay judge verification failed: ${relative} must not traverse a symlink and must be a non-symlink regular file`,
-      { cause: error }
-    );
-  }
-  try {
-    const before = await handle.stat({ bigint: true });
-    invariant(before.isFile(), `${relative} must be a non-symlink regular file`);
-    invariant(before.nlink === 1n, `${relative} must not be a hard-linked file`);
-    invariant(sameOpenedNode(inspected.info, before), `${relative} changed before its verified bytes were read`);
-    const contents = await handle.readFile(encoding);
-    const after = await handle.stat({ bigint: true });
-    invariant(sameOpenedNode(before, after), `${relative} changed while its verified bytes were being read`);
-    const current = await inspectPortableRepoPath(root, relative, "file");
-    invariant(sameOpenedNode(after, current.info), `${relative} changed after its verified bytes were read`);
-    await assertPortableRootStable(root);
-    return contents;
-  } finally {
-    await handle.close();
-  }
-}
-
-async function snapshotPortableDirectory(root, directoryRelative, treeLabel, prefix = "", snapshot = new Map()) {
-  const before = await inspectPortableRepoPath(root, directoryRelative, "directory");
-  const names = (await readdir(before.absolutePath)).sort((left, right) => left.localeCompare(right));
-  for (const name of names) {
-    invariant(name !== "." && name !== ".." && !name.includes(path.sep), `${treeLabel} contains an invalid entry name`);
-    const repositoryRelative = `${directoryRelative}/${name}`;
-    const relative = prefix ? `${prefix}/${name}` : name;
-    const child = await inspectPortableRepoPath(root, repositoryRelative, "either");
-    if (child.info.isDirectory()) {
-      await snapshotPortableDirectory(root, repositoryRelative, treeLabel, relative, snapshot);
-    } else {
-      snapshot.set(relative, await readPortableRepoFileFromRoot(root, repositoryRelative));
-    }
-    await assertPortableRootStable(root);
-  }
-  const after = await inspectPortableRepoPath(root, directoryRelative, "directory");
-  invariant(
-    sameOpenedNode(before.info, after.info),
-    `${treeLabel} changed while its verified portable snapshot was being captured`
-  );
-  return snapshot;
-}
-
-async function snapshotJudgeInputsPortable(repoRoot) {
-  const root = await openPortableRepoRoot(repoRoot);
-  const recording = await snapshotPortableDirectory(root, RECORDING_RELATIVE, RECORDING_RELATIVE);
-  const fixture = await snapshotPortableDirectory(root, FIXTURE_RELATIVE, FIXTURE_RELATIVE);
-  const ui = await snapshotPortableDirectory(root, UI_RELATIVE, UI_RELATIVE);
-  const demoScript = await readPortableRepoFileFromRoot(root, DEMO_SCRIPT_RELATIVE, "utf8");
-  const packageManifest = await readPortableRepoFileFromRoot(root, "package.json", "utf8");
-  await assertPortableRootStable(root);
-  return { recording, fixture, ui, demoScript, packageManifest, filesystemVerification: PORTABLE_CONTAINED_MODE };
-}
-
-async function snapshotJudgeInputs(repoRoot, options = {}) {
-  const filesystemVerification = await resolveFilesystemVerification(options.filesystemMode);
-  return filesystemVerification === DESCRIPTOR_PINNED_MODE
-    ? snapshotJudgeInputsDescriptor(repoRoot)
-    : snapshotJudgeInputsPortable(repoRoot);
 }
 
 function snapshotFile(snapshot, relative, label = relative) {
@@ -702,9 +534,9 @@ export function verifyRelayHiddenTestEvidence(testResults, recordingMetadata) {
   return testOutputSha256;
 }
 
-async function verifyRelayJudgePackageSnapshot(repoRoot = DEFAULT_RELAY_REPO_ROOT, options = {}) {
+async function verifyRelayJudgePackageSnapshot(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
   const root = path.resolve(repoRoot);
-  const snapshot = await snapshotJudgeInputs(root, options);
+  const snapshot = await snapshotJudgeInputs(root);
   const manifest = verifyManifest(snapshot.recording, EXPECTED_RECORDING_FILES);
   const fixtureManifest = verifyFixtureManifest(snapshot.fixture);
   const uiFiles = digestSnapshot(snapshot.ui);
@@ -1055,8 +887,8 @@ async function verifyRelayJudgePackageSnapshot(repoRoot = DEFAULT_RELAY_REPO_ROO
   return { receipt, verifiedAssets };
 }
 
-export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT, options = {}) {
-  return (await verifyRelayJudgePackageSnapshot(repoRoot, options)).receipt;
+export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT) {
+  return (await verifyRelayJudgePackageSnapshot(repoRoot)).receipt;
 }
 
 const CONTENT_TYPES = {
@@ -1095,9 +927,7 @@ export async function startRelayJudgeServer(options = {}) {
     Number.isInteger(port) && port >= 0 && port <= 65_535,
     "server port must be an integer from 0 through 65535"
   );
-  const { receipt, verifiedAssets } = await verifyRelayJudgePackageSnapshot(repoRoot, {
-    filesystemMode: options.filesystemMode,
-  });
+  const { receipt, verifiedAssets } = await verifyRelayJudgePackageSnapshot(repoRoot);
   const routes = new Map([
     ["/", "index.html"],
     ["/index.html", "index.html"],

@@ -204,14 +204,14 @@ beliefs, binds a failing outcome to stale memory, requires a human-approved
 correction, retires the old decision, and proves a transcript-free cold agent
 used the replacement to turn the same hidden contract green.
 
-Run the complete judge experience from this checkout with Node 22.12+—no
-dependency install, build, account, credential, dataset download, model call,
-or network access required. The pure-Node verifier uses descriptor-pinned
-no-follow traversal on Linux with procfs and a contained, file-handle-checked
-portable snapshot on other desktop platforms; its receipt names the exact
-mode. Linux x64 is independently clean-room verified, and the portable path is
-exercised by the same adversarial test suite. The synthetic mission fixture is
-already committed under `fixtures/remnic-relay/` and verified in place:
+Run the complete judge experience from a Linux checkout with procfs and Node
+22.12+—no dependency install, build, account, credential, dataset download,
+model call, or network access required. The pure-Node verifier performs
+component-by-component descriptor-pinned no-follow traversal and names that
+mode in its receipt. Linux x64 is independently clean-room verified; on hosts
+without those primitives it fails closed instead of substituting a weaker
+pathname verifier. The synthetic mission fixture is already committed under
+`fixtures/remnic-relay/` and verified in place:
 
 ```bash
 npm run relay:demo

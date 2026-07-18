@@ -10,6 +10,7 @@ from red to green.
 Prerequisites:
 
 - a checkout of this public MIT-licensed repository;
+- Linux with procfs and descriptor no-follow filesystem flags;
 - Node.js 22.12 or newer with npm;
 - a desktop browser.
 
@@ -69,10 +70,9 @@ The dependency-free verifier does not merely trust the final JSON. It:
 - independently recomputes the mission-receipt digest from the final snapshot;
 - pins every byte in the five-file Mission Control package to one reviewed UI
   root and verifies the browser replay against the final sealed event trace;
-- captures one immutable input snapshot before verification or serving. Linux
-  with procfs gets component-by-component descriptor-pinned no-follow reads;
-  other desktop platforms get contained realpath checks, symlink/hard-link
-  rejection, and file-handle identity checks before and after every read;
+- captures one immutable input snapshot before verification or serving using
+  component-by-component descriptor-pinned no-follow reads, with symlink and
+  hard-link rejection plus file-handle identity checks around every read;
 - scans all 39 copied recording, fixture, UI, demo, and package-manifest text
   files for secret-like and host-private material; and
 - measures the demo narration at 326 words: 135 seconds at 145 words per
@@ -152,12 +152,13 @@ reproducible competition evidence.
 
 ## Supported environment
 
-- Offline judge package: Node.js 22.12+ using Node built-ins only. It selects
-  `descriptor-pinned-nofollow` on Linux with procfs and
-  `portable-contained-nofollow` elsewhere, and includes the selected mode in
-  every receipt. Linux x64 is independently clean-room verified on Node
-  22.23.1; the portable branch runs in the adversarial test suite but macOS and
-  Windows have not been independently executed for this submission.
+- Offline judge package: Linux with procfs and Node.js 22.12+ using Node
+  built-ins only. It uses `descriptor-pinned-nofollow` and includes that mode
+  in every receipt. Linux x64 is independently clean-room verified on Node
+  22.23.1. macOS and Windows are intentionally unsupported for executable
+  verification because Node does not expose equivalent parent-component
+  no-follow traversal there; use the public video/gallery or a Linux
+  environment instead.
 - Live isolated runner: Linux x64 only; it requires `unshare`, mount namespaces,
   a network namespace, `chroot`, and loopback proxy support.
 - Browser audit: Chromium/Chrome 151 at 1440 × 900 and 390 × 844, including
@@ -166,6 +167,9 @@ reproducible competition evidence.
 ## Troubleshooting and cleanup
 
 - `Unsupported engine`: run `node --version`; use Node 22.12 or newer.
+- `requires Linux with procfs`: move the checkout to a Linux environment. Do
+  not bypass the gate; no pathname-only fallback is treated as equivalent
+  evidence.
 - Port 4173 busy: run `npm run relay:demo -- --port 4180`.
 - Integrity or semantic verification failure: do not bypass it. Restore the
   committed files and rerun; a changed byte or causal claim is intentionally a
