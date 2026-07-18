@@ -8,7 +8,10 @@ import test from "node:test";
 
 import { calculateCodexBudgetUnits } from "@remnic/bench";
 
-import { buildRelayCodexArgs } from "../scripts/relay/codex-one-shot.js";
+import {
+  RELAY_DISABLED_CODEX_FEATURES,
+  buildRelayCodexArgs,
+} from "../scripts/relay/codex-one-shot.js";
 import {
   RELAY_AGENT_PRINCIPAL,
   RELAY_CREDIT_BUDGET_UNITS,
@@ -173,6 +176,18 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
   assert.ok(args.includes('mcp_servers.relay.enabled_tools=["remnic.recall"]'));
   assert.ok(args.includes('shell_environment_policy.inherit="none"'));
   assert.ok(args.includes('web_search="disabled"'));
+  assert.deepEqual(RELAY_DISABLED_CODEX_FEATURES, [
+    "apps",
+    "in_app_browser",
+    "plugin_sharing",
+    "plugins",
+    "remote_plugin",
+  ]);
+  for (const feature of RELAY_DISABLED_CODEX_FEATURES) {
+    const featureIndex = args.indexOf(feature);
+    assert.ok(featureIndex > 0, `missing disabled Codex feature ${feature}`);
+    assert.equal(args[featureIndex - 1], "--disable");
+  }
   assert.equal(args.some((arg) => arg.toLowerCase().includes("sol")), false);
   assert.equal(args.some((arg) => arg.includes(os.homedir())), false);
   assert.throws(() => buildRelayCodexArgs("scout", "https://example.com/mcp"), /loopback/);

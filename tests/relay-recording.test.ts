@@ -173,6 +173,11 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     ledgerRemainingPlannedUnits: 2_000,
     codexVersion: "codex-cli 0.144.4",
     authMethod: "ChatGPT",
+    codexToolSurface: {
+      accountLinkedAppsDisabled: true,
+      mcpServers: ["relay"],
+      mcpTools: ["relay.remnic.recall"],
+    },
     fixtureManifestSha256: fixtureManifest.rootSha256,
     isolation: { userNamespace: true, mountNamespace: true, chroot: true },
     remnic: {

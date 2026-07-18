@@ -128,6 +128,13 @@ export const RelayPreflightReceiptSchema = z
     ledgerRemainingPlannedUnits: z.number().finite().nonnegative(),
     codexVersion: z.string().regex(/^codex-cli \d+\.\d+\.\d+$/),
     authMethod: z.literal("ChatGPT"),
+    codexToolSurface: z
+      .object({
+        accountLinkedAppsDisabled: z.literal(true),
+        mcpServers: z.tuple([z.literal("relay")]),
+        mcpTools: z.tuple([z.literal("relay.remnic.recall")]),
+      })
+      .strict(),
     fixtureManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
     isolation: z.object({ userNamespace: z.literal(true), mountNamespace: z.literal(true), chroot: z.literal(true) }),
     remnic: z

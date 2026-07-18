@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { countRecallToolCalls, parseThreadId } from "../scripts/relay/codex-one-shot.js";
+import {
+  buildRelayCodexFailureDiagnostic,
+  countRecallToolCalls,
+  parseThreadId,
+} from "../scripts/relay/codex-one-shot.js";
 
 test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
   const jsonl = [
@@ -24,4 +28,26 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
 
   assert.equal(parseThreadId(jsonl), "019f62b9-3200-7df1-99fb-cbb35fc28573");
   assert.equal(countRecallToolCalls(jsonl), 1);
+});
+
+test("Codex failure diagnostics retain classifications and hashes without raw output", () => {
+  const diagnostic = buildRelayCodexFailureDiagnostic("scout", {
+    spawned: true,
+    exitCode: 1,
+    signal: null,
+    durationMs: 42,
+    stdout: [
+      JSON.stringify({ type: "thread.started", thread_id: "019f62b9-3200-7df1-99fb-cbb35fc28573" }),
+      JSON.stringify({ type: "error", error: { code: "invalid_response_format", message: "invalid output schema" } }),
+    ].join("\n"),
+    stderr: "error: structured output schema rejected at /home/example/private/schema.json\n",
+  });
+  assert.equal(diagnostic.threadStarted, true);
+  assert.deepEqual(diagnostic.eventCounts, { error: 1, "thread.started": 1 });
+  assert.deepEqual(diagnostic.jsonlErrorCodes, ["invalid_response_format"]);
+  assert.ok(diagnostic.errorClasses.includes("output-schema"));
+  const serialized = JSON.stringify(diagnostic);
+  assert.doesNotMatch(serialized, /structured output schema rejected|\/home\/example|invalid output schema/);
+  assert.match(diagnostic.stdoutSha256, /^[a-f0-9]{64}$/);
+  assert.match(diagnostic.stderrSha256, /^[a-f0-9]{64}$/);
 });

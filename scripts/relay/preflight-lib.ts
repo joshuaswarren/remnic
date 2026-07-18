@@ -20,11 +20,13 @@ import {
   RelayPreflightReceiptSchema,
   type RelayPreflightReceipt,
 } from "./contracts.js";
+import { buildRelayCodexConfigArgs, buildRelayCodexSafetyArgs } from "./codex-one-shot.js";
 import { verifyRelayFixtureManifest } from "./fixture-manifest.js";
 import { createRoleCodexHome, pathExists, resolveCodexBinary, type RelayRunDirectories } from "./isolation.js";
 import { listRelayMcpTools, startRelayRemnicHarness, type RelayRemnicHarness } from "./remnic-harness.js";
 
 const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
+const APP_SERVER_PROBE_TIMEOUT_MS = 45_000;
 
 interface ProcessResult {
   exitCode: number | null;
@@ -142,6 +144,166 @@ async function probeChroot(
     throw new Error("Relay rootfs mountpoint was not clean after the isolation probe");
   }
   return parseCodexVersion(result.stdout);
+}
+
+interface IsolatedCodexToolSurface {
+  accountLinkedAppsDisabled: true;
+  mcpServers: ["relay"];
+  mcpTools: ["relay.remnic.recall"];
+}
+
+async function probeIsolatedCodexToolSurface(
+  repoRoot: string,
+  directories: RelayRunDirectories,
+  codexBinary: string,
+  authSourcePath: string,
+  harness: RelayRemnicHarness,
+): Promise<IsolatedCodexToolSurface> {
+  if ((await readdir(directories.rootfsDir)).length !== 0) {
+    throw new Error("Relay rootfs mountpoint must be empty before the Codex tool-surface probe");
+  }
+  const codexHome = await createRoleCodexHome(directories.codexHomesDir, "tool-surface", authSourcePath);
+  const workspace = path.join(directories.workspacesDir, "preflight-probe");
+  const output = path.join(directories.outputsDir, "preflight-probe");
+  const unshare = await findOnPath("unshare", process.env.PATH);
+  const args = [
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--kill-child=SIGKILL",
+    path.join(repoRoot, "scripts", "relay", "isolate-codex.sh"),
+    "--strict-config",
+    ...buildRelayCodexSafetyArgs(),
+    ...buildRelayCodexConfigArgs(harness.mcpUrl),
+    "app-server",
+    "--stdio",
+  ];
+  const response = await new Promise<unknown>((resolve, reject) => {
+    const child = spawn(unshare, args, {
+      cwd: repoRoot,
+      env: {
+        PATH: "/usr/sbin:/usr/bin:/sbin:/bin",
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        RELAY_ROOTFS: directories.rootfsDir,
+        RELAY_WORKSPACE: workspace,
+        RELAY_CODEX_HOME: codexHome,
+        RELAY_OUTPUT_DIR: output,
+        RELAY_CODEX_BIN: codexBinary,
+        RELAY_WORKSPACE_READ_ONLY: "1",
+        REMNIC_RELAY_MCP_TOKEN: harness.mcpToken,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdoutBuffer = "";
+    let outputBytes = 0;
+    let reply: unknown;
+    let timedOut = false;
+    let overflow = false;
+    let closed = false;
+    const killTimer = { current: undefined as NodeJS.Timeout | undefined };
+    const terminate = () => {
+      child.kill("SIGTERM");
+      killTimer.current = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      killTimer.current.unref();
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, APP_SERVER_PROBE_TIMEOUT_MS);
+    const captureBytes = (chunk: Buffer) => {
+      outputBytes += chunk.byteLength;
+      if (outputBytes > PROCESS_OUTPUT_LIMIT && !overflow) {
+        overflow = true;
+        terminate();
+      }
+    };
+    child.stderr.on("data", (chunk: Buffer) => captureBytes(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      captureBytes(chunk);
+      if (overflow) return;
+      stdoutBuffer += chunk.toString("utf8");
+      for (;;) {
+        const newline = stdoutBuffer.indexOf("\n");
+        if (newline < 0) break;
+        const line = stdoutBuffer.slice(0, newline);
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        let message: { id?: unknown; result?: unknown; error?: unknown };
+        try {
+          message = JSON.parse(line) as { id?: unknown; result?: unknown; error?: unknown };
+        } catch {
+          continue;
+        }
+        if (message.id === 1 && message.result) {
+          child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
+          child.stdin.write(
+            `${JSON.stringify({
+              id: 2,
+              method: "mcpServerStatus/list",
+              params: { detail: "toolsAndAuthOnly" },
+            })}\n`,
+          );
+        } else if (message.id === 2) {
+          reply = message;
+          terminate();
+        }
+      }
+    });
+    child.once("error", (error) => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timeout);
+      if (killTimer.current) clearTimeout(killTimer.current);
+      reject(error);
+    });
+    child.once("close", () => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timeout);
+      if (killTimer.current) clearTimeout(killTimer.current);
+      if (timedOut) reject(new Error("Relay isolated Codex tool-surface probe timed out"));
+      else if (overflow) reject(new Error("Relay isolated Codex tool-surface probe exceeded its output limit"));
+      else if (!reply) reject(new Error("Relay isolated Codex tool-surface probe ended without a response"));
+      else resolve(reply);
+    });
+    child.stdin.write(
+      `${JSON.stringify({
+        id: 1,
+        method: "initialize",
+        params: {
+          clientInfo: { name: "remnic_relay_preflight", title: "Remnic Relay preflight", version: "1.0.0" },
+        },
+      })}\n`,
+    );
+  });
+  if ((await readdir(directories.rootfsDir)).length !== 0) {
+    throw new Error("Relay rootfs mountpoint was not clean after the Codex tool-surface probe");
+  }
+  if (await pathExists(path.join(codexHome, "plugins"))) {
+    throw new Error("Relay isolated Codex home loaded account-linked plugins despite the safety policy");
+  }
+  const payload = response as {
+    error?: unknown;
+    result?: { data?: Array<{ name?: unknown; authStatus?: unknown; tools?: Record<string, unknown> }> };
+  };
+  if (payload.error) throw new Error("Relay isolated Codex tool-surface probe returned an error");
+  const servers = payload.result?.data ?? [];
+  if (
+    servers.length !== 1 ||
+    servers[0]?.name !== "relay" ||
+    servers[0].authStatus !== "bearerToken" ||
+    JSON.stringify(Object.keys(servers[0].tools ?? {}).sort()) !== JSON.stringify(["remnic.recall"])
+  ) {
+    throw new Error("Relay isolated Codex tool surface exposed something other than relay.remnic.recall");
+  }
+  return {
+    accountLinkedAppsDisabled: true,
+    mcpServers: ["relay"],
+    mcpTools: ["relay.remnic.recall"],
+  };
 }
 
 export interface RelayPreflightOptions {
@@ -297,12 +459,20 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   const probeMemoryDir = path.join(options.directories.root, "preflight-remnic-memory");
   await mkdir(probeMemoryDir, { mode: 0o700 });
   let harness: RelayRemnicHarness | undefined;
+  let codexToolSurface: IsolatedCodexToolSurface | undefined;
   try {
     harness = await startRelayRemnicHarness(probeMemoryDir);
     const tools = await listRelayMcpTools(harness.mcpUrl, harness.mcpToken);
     if (JSON.stringify(tools) !== JSON.stringify(["remnic.recall"])) {
       throw new Error(`Relay capability token advertised unexpected tools: ${tools.join(", ")}`);
     }
+    codexToolSurface = await probeIsolatedCodexToolSurface(
+      options.repoRoot,
+      options.directories,
+      codexBinary,
+      authSourcePath,
+      harness,
+    );
   } finally {
     await harness?.stop().catch(() => undefined);
     await rm(probeMemoryDir, { recursive: true, force: true });
@@ -327,6 +497,7 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
     ledgerRemainingPlannedUnits,
     codexVersion,
     authMethod: "ChatGPT",
+    codexToolSurface,
     fixtureManifestSha256: fixtureManifest.rootSha256,
     isolation: { userNamespace: true, mountNamespace: true, chroot: true },
     remnic: {

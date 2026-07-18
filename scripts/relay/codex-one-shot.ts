@@ -26,6 +26,14 @@ import { createRoleCodexHome, type RelayRunDirectories } from "./isolation.js";
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
+export const RELAY_DISABLED_CODEX_FEATURES = [
+  "apps",
+  "in_app_browser",
+  "plugin_sharing",
+  "plugins",
+  "remote_plugin",
+] as const;
+
 export interface RunRelayCodexOneShotOptions<T> {
   repoRoot: string;
   directories: RelayRunDirectories;
@@ -50,6 +58,24 @@ interface SpawnCapture {
   durationMs: number;
 }
 
+export interface RelayCodexFailureDiagnostic {
+  schemaVersion: 1;
+  role: RelayRole;
+  model: typeof RELAY_MODEL;
+  spawned: boolean;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  durationMs: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutSha256: string;
+  stderrSha256: string;
+  threadStarted: boolean;
+  eventCounts: Record<string, number>;
+  errorClasses: string[];
+  jsonlErrorCodes: string[];
+}
+
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -58,41 +84,41 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-export function buildRelayCodexArgs(role: RelayRole, mcpUrl: string): string[] {
+export function buildRelayCodexSafetyArgs(): string[] {
+  return RELAY_DISABLED_CODEX_FEATURES.flatMap((feature) => ["--disable", feature]);
+}
+
+export function buildRelayCodexConfigArgs(mcpUrl: string): string[] {
   if (!/^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(mcpUrl)) {
     throw new Error("Relay MCP URL must be a loopback HTTP /mcp endpoint");
   }
+  const overrides = [
+    `model_reasoning_effort=${tomlString(RELAY_REASONING_EFFORT)}`,
+    'approval_policy="never"',
+    'web_search="disabled"',
+    'shell_environment_policy.inherit="none"',
+    'shell_environment_policy.ignore_default_excludes=false',
+    'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/codex-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
+    `mcp_servers.relay.url=${tomlString(mcpUrl)}`,
+    'mcp_servers.relay.bearer_token_env_var="REMNIC_RELAY_MCP_TOKEN"',
+    'mcp_servers.relay.enabled_tools=["remnic.recall"]',
+    "mcp_servers.relay.required=true",
+    "mcp_servers.relay.startup_timeout_sec=10",
+    "mcp_servers.relay.tool_timeout_sec=30",
+  ];
+  return overrides.flatMap((override) => ["--config", override]);
+}
+
+export function buildRelayCodexArgs(role: RelayRole, mcpUrl: string): string[] {
   return [
     "exec",
     "--strict-config",
     "--ignore-user-config",
     "--ignore-rules",
+    ...buildRelayCodexSafetyArgs(),
     "--model",
     RELAY_MODEL,
-    "--config",
-    `model_reasoning_effort=${tomlString(RELAY_REASONING_EFFORT)}`,
-    "--config",
-    'approval_policy="never"',
-    "--config",
-    'web_search="disabled"',
-    "--config",
-    'shell_environment_policy.inherit="none"',
-    "--config",
-    'shell_environment_policy.ignore_default_excludes=false',
-    "--config",
-    'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/codex-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
-    "--config",
-    `mcp_servers.relay.url=${tomlString(mcpUrl)}`,
-    "--config",
-    'mcp_servers.relay.bearer_token_env_var="REMNIC_RELAY_MCP_TOKEN"',
-    "--config",
-    'mcp_servers.relay.enabled_tools=["remnic.recall"]',
-    "--config",
-    "mcp_servers.relay.required=true",
-    "--config",
-    "mcp_servers.relay.startup_timeout_sec=10",
-    "--config",
-    "mcp_servers.relay.tool_timeout_sec=30",
+    ...buildRelayCodexConfigArgs(mcpUrl),
     "--ephemeral",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -107,6 +133,77 @@ export function buildRelayCodexArgs(role: RelayRole, mcpUrl: string): string[] {
     "/output/final.json",
     "-",
   ];
+}
+
+function classifyCodexFailure(stdout: string, stderr: string): string[] {
+  const combined = `${stdout}\n${stderr}`;
+  const classes: string[] = [];
+  const add = (name: string, pattern: RegExp) => {
+    if (pattern.test(combined)) classes.push(name);
+  };
+  add("authentication", /\b(?:401|403|authentication|not logged in|unauthori[sz]ed)\b/i);
+  add("cli-arguments", /\b(?:unknown|unexpected|invalid) argument\b|\bUsage:/i);
+  add("mcp-startup", /\bMCP\b|mcp_servers|remnic\.recall/i);
+  add("model-availability", /\bmodel\b.{0,80}\b(?:not found|unsupported|unavailable|does not exist)\b/i);
+  add("network", /\b(?:connection|DNS|network|websocket).{0,80}(?:failed|refused|timed out|unreachable)\b/i);
+  add("output-schema", /\b(?:output|json|response).{0,40}schema\b|response_format|structured output/i);
+  add("sandbox-helper", /\b(?:bubblewrap|bwrap|sandbox)\b/i);
+  if (classes.length === 0 && /\berror\b|"type"\s*:\s*"error"/i.test(combined)) classes.push("runtime-error");
+  return classes.sort();
+}
+
+export function buildRelayCodexFailureDiagnostic(
+  role: RelayRole,
+  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">,
+): RelayCodexFailureDiagnostic {
+  const eventCounts = new Map<string, number>();
+  const errorCodes = new Set<string>();
+  for (const line of capture.stdout.split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line) as {
+        type?: unknown;
+        code?: unknown;
+        error?: { code?: unknown };
+      };
+      if (typeof event.type === "string" && /^[a-z][a-z0-9_.-]{0,63}$/i.test(event.type)) {
+        eventCounts.set(event.type, (eventCounts.get(event.type) ?? 0) + 1);
+      }
+      const code = event.error?.code ?? event.code;
+      if (typeof code === "string" && /^[a-z0-9_.:-]{1,80}$/i.test(code)) errorCodes.add(code);
+    } catch {
+      // Failure diagnostics intentionally retain no raw stdout or stderr.
+    }
+  }
+  return {
+    schemaVersion: 1,
+    role,
+    model: RELAY_MODEL,
+    spawned: capture.spawned,
+    exitCode: capture.exitCode,
+    signal: capture.signal,
+    durationMs: capture.durationMs,
+    stdoutBytes: Buffer.byteLength(capture.stdout, "utf8"),
+    stderrBytes: Buffer.byteLength(capture.stderr, "utf8"),
+    stdoutSha256: sha256(capture.stdout),
+    stderrSha256: sha256(capture.stderr),
+    threadStarted: parseThreadId(capture.stdout) !== undefined,
+    eventCounts: Object.fromEntries([...eventCounts].sort(([left], [right]) => left.localeCompare(right))),
+    errorClasses: classifyCodexFailure(capture.stdout, capture.stderr),
+    jsonlErrorCodes: [...errorCodes].sort(),
+  };
+}
+
+async function writeFailureDiagnostic(
+  outputDir: string,
+  role: RelayRole,
+  capture: Pick<SpawnCapture, "spawned" | "exitCode" | "signal" | "stdout" | "stderr" | "durationMs">,
+): Promise<RelayCodexFailureDiagnostic> {
+  const diagnostic = buildRelayCodexFailureDiagnostic(role, capture);
+  await writeFile(path.join(outputDir, "failure-diagnostic.json"), `${JSON.stringify(diagnostic, null, 2)}\n`, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  return diagnostic;
 }
 
 export function parseThreadId(jsonl: string): string | undefined {
@@ -267,7 +364,11 @@ export async function runRelayCodexOneShot<T>(
       if (!result.spawned) throw new CodexCreditDispatchError("isolated Codex process never dispatched");
       const usage = parseCodexJsonlUsage(result.stdout);
       if (!usage) {
-        throw new CodexCreditAccountingError("Codex completion did not emit a complete turn.completed usage record");
+        const diagnostic = await writeFailureDiagnostic(outputDir, options.role, result);
+        const classification = diagnostic.errorClasses.length > 0 ? diagnostic.errorClasses.join(",") : "unclassified";
+        throw new CodexCreditAccountingError(
+          `Codex completion did not emit a complete turn.completed usage record (diagnostic: ${classification})`,
+        );
       }
       return { value: result, usage };
     },
@@ -275,6 +376,7 @@ export async function runRelayCodexOneShot<T>(
 
   const exitCode = capture.exitCode ?? (capture.signal ? 128 : -1);
   if (exitCode !== 0) {
+    await writeFailureDiagnostic(outputDir, options.role, capture);
     throw new RelayCodexRunError(`Relay ${options.role} one-shot exited with status ${exitCode}`);
   }
   const threadId = parseThreadId(capture.stdout);
