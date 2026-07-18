@@ -2130,6 +2130,10 @@ export function parseConfig(
     // serves from the version-keyed in-process corpus cache. coerceBool
     // handles "false"/"0" string forms; set false to force disk scans.
     hotMemoriesCacheEnabled: coerceBool(cfg.hotMemoriesCacheEnabled) ?? true,
+    // Scope-aware cache invalidation (issue #1904). Default on: a plain fact
+    // create no longer nukes the QMD/entity caches it can't affect. coerceBool
+    // handles "false"/"0" string forms; set false to restore full-clear-per-write.
+    scopedCacheInvalidationEnabled: coerceBool(cfg.scopedCacheInvalidationEnabled) ?? true,
     // External-edit safety net (issue #1902): the version sentinel gives
     // immediate coherence for cooperating writers, but direct user/git/editor
     // writes to memory files (which the project supports) don't bump it. Bound
@@ -2870,6 +2874,15 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
+    // Ollama thinking suppression dialect (issue #1996): reasoning_effort value
+    // for THINKING_SUPPRESSED_OPERATIONS on the ollama backend. Default "none"
+    // (think off). "" disables injection. Invalid values fall back to "none"
+    // rather than reaching Ollama, which 400s on unknown efforts.
+    localLlmReasoningEffort:
+      typeof cfg.localLlmReasoningEffort === "string" &&
+      ["", "none", "low", "medium", "high", "max"].includes(cfg.localLlmReasoningEffort)
+        ? cfg.localLlmReasoningEffort
+        : "none",
     // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
     extractionRetryEnabled: coerceBooleanLike(cfg.extractionRetryEnabled) ?? true,
     extractionRetryScheduleMs:
@@ -3522,6 +3535,11 @@ export function parseConfig(
     memoryReconstructionMaxExpansions:
       typeof cfg.memoryReconstructionMaxExpansions === "number" ? Math.max(0, Math.round(cfg.memoryReconstructionMaxExpansions)) : 3,
     graphLateralInhibitionEnabled: cfg.graphLateralInhibitionEnabled !== false,
+    // Incremental GraphIndex edge cache (issue #1904). Default on: single-writer
+    // edge appends are pushed into the warm cache in place (size-revalidated for
+    // cross-process coherence) instead of nulling + re-reading the 6 MB edge
+    // file. coerceBool handles string forms; set false to null the cache per write.
+    graphEdgeCacheIncrementalEnabled: coerceBool(cfg.graphEdgeCacheIncrementalEnabled) ?? true,
     graphLateralInhibitionBeta:
       typeof cfg.graphLateralInhibitionBeta === "number"
         ? Math.max(0, Math.min(1, cfg.graphLateralInhibitionBeta))

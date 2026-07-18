@@ -523,6 +523,13 @@ export class MaintenanceScheduler {
           this.lastQmdEmbedAtMs = now;
         }
       }
+      // Note: a successful QMD update/embed clears the global QMD result caches
+      // itself (QmdClient.runUpdateForCollection / runEmbedForCollection), so
+      // this scheduler does not invalidate them here — every refresh path
+      // (direct update, namespace router, wearable/OpenClaw sync) funnels through
+      // the backend and clears centrally. A no-op pass (throttle/unavailable/
+      // backoff) does not advance lastUpdateRanAtMs, so it leaves caches warm
+      // (#1904, Codex/Cursor).
     } finally {
       this.qmdMaintenanceInFlight = false;
       if (this.qmdMaintenancePending) {

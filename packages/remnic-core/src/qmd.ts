@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
-import { getCachedQmdSearch, setCachedQmdSearch } from "./memory-cache.js";
+import { clearQmdResultCaches, getCachedQmdSearch, setCachedQmdSearch } from "./memory-cache.js";
 import {
   abortError,
   isAbortError,
@@ -2739,6 +2739,13 @@ export class QmdClient implements SearchBackend {
         this.lastUpdateRunAtMs = at;
         globalState.lastGlobalUpdateRunAtMs = at;
       }
+      // A successful index refresh makes newly-persisted facts searchable, so
+      // any cached pre-refresh QMD search/recall bundle is now stale. Clear the
+      // global QMD result caches here, at the single success point EVERY update
+      // path funnels through (direct calls, wearable/OpenClaw sync reindex, and
+      // the namespace router's per-backend update), so no caller can forget and
+      // serve a stale bundle past the refresh (#1904, Codex/Cursor).
+      clearQmdResultCaches();
       log.debug(`QMD update completed for collection=${name}`);
     } catch (err) {
       const at = Date.now();
@@ -2853,6 +2860,9 @@ export class QmdClient implements SearchBackend {
         globalState.lastEmbedByCollectionMs[name] = at;
       }
       globalState.lastGlobalEmbedRunAtMs = at;
+      // A successful embed changes vector searchability, so cached pre-embed
+      // bundles may now be stale. Clear at this single success point (#1904).
+      clearQmdResultCaches();
       log.debug(`QMD embed completed for collection=${name}`);
     } catch (err) {
       let failure: unknown = err;
@@ -2869,6 +2879,8 @@ export class QmdClient implements SearchBackend {
           }
           globalState.lastGlobalEmbedRunAtMs = recoveredAt;
           globalState.lastGlobalEmbedFailAtMs = null;
+          // Recovery also changed vector searchability — clear cached bundles.
+          clearQmdResultCaches();
           log.warn(`QMD embed for collection ${name} recovered by forcing a full vector rebuild`);
           return;
         } catch (retryErr) {

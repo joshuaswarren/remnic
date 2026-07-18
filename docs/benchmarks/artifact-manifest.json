@@ -9,6 +9,7 @@
     "2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json",
     "2026-07-13-memcorrect-v1-remnic-native-9485f44.json",
     "2026-07-14-locomo-opus-0676347.json",
-    "2026-07-14-longmemeval-opus-0676347.json"
+    "2026-07-14-longmemeval-opus-0676347.json",
+    "2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json"
   ]
 }
