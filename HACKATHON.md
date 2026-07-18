@@ -199,8 +199,9 @@ The user made the consequential product and risk decisions:
 - retain final video, `/feedback`, and submission authority.
 
 The repository's dated commits and review history are the durable in-window
-collaboration evidence. The official `/feedback` session ID is operator input;
-the user must select the actual primary build thread before submitting.
+collaboration evidence. The user completed `/feedback` for the primary build
+thread on 2026-07-18; the uploaded thread ID is
+`019f6219-6517-75e3-84fa-c905cef9978e`.
 
 ### GPT-5.6 inside the product
 
@@ -296,10 +297,10 @@ remnic bench run longmemeval \
   local credit policy.
 - [x] Third-party asset/license check and evidence-backed claim ledger.
 - [ ] User records and uploads the final public YouTube video with audio.
-- [ ] User runs `/feedback` in the actual primary Codex project thread and adds
-  that session ID.
+- [x] User ran `/feedback` in the primary Codex project thread and uploaded
+  session `019f6219-6517-75e3-84fa-c905cef9978e`.
 - [ ] User completes and submits the Devpost entry before July 21, 2026 at
   5:00 PM PDT.
 
-The final three actions are intentionally not automated by the repository or
-performed on the user's behalf.
+The final video upload and Devpost submission remain intentionally outside
+repository automation and under the user's control.

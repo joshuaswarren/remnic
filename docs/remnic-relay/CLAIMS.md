@@ -55,9 +55,9 @@ evaluate only the new Relay extension:
 | New: isolated live mission | Issue #1968, PR #1999, merge `a236ad07` on 2026-07-18, with dated commits beginning `386aa5f3` on 2026-07-17; bounded Codex CLI runner, synthetic harness, isolation, live GPT-5.6 recording, replay binding. |
 | New: judge package | Issue #1969, PR #2012; dependency-free verifier/server, out-of-band launcher and executable trust chain, clean-room smoke, claims ledger, demo script, Devpost copy, and refreshed captures. The linked PR retains its current-head review and merge record. |
 
-The required Codex `/feedback` session ID is intentionally left to the user,
-who must select the real primary project thread before submitting. Dated Git
-history and PR review history remain additional in-window evidence.
+The user completed the required Codex `/feedback` upload on 2026-07-18 for the
+primary project thread `019f6219-6517-75e3-84fa-c905cef9978e`. Dated Git history
+and PR review history remain additional in-window evidence.
 
 ## License and third-party assets
 
@@ -74,6 +74,6 @@ history and PR review history remain additional in-window evidence.
 ## Final operator checks
 
 Before submission, the user should confirm that the final video matches this
-ledger, add the real `/feedback` session ID, verify the YouTube upload is public
-with audio and under three minutes, and submit before July 21, 2026 at 5:00 PM
-PDT. Those actions are deliberately outside repository automation.
+ledger, verify the YouTube upload is public with audio and under three minutes,
+and submit before July 21, 2026 at 5:00 PM PDT. The final upload and submission
+actions remain deliberately outside repository automation.
