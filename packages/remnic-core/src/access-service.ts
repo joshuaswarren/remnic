@@ -1343,6 +1343,11 @@ interface RecallFlight {
   promise: Promise<RecallExecResult>;
   controller: AbortController;
   live: number;
+  /** Called when the flight goes idle (no attached callers remain). Used to
+   *  unregister the flight from `recallInFlight` only AFTER its consumers have
+   *  finished — never on raw pipeline settle — so an identical arrival while a
+   *  consumer is still finishing (e.g. a slow put) still coalesces (round 6 #1). */
+  onIdle?: () => void;
 }
 
 export class EngramAccessService {
@@ -2592,7 +2597,10 @@ export class EngramAccessService {
       if (settled) return;
       settled = true;
       flight.live -= 1;
-      if (flight.live === 0) flight.controller.abort();
+      if (flight.live === 0) {
+        flight.controller.abort();
+        flight.onIdle?.();
+      }
     };
     if (cancelOnAbort && signal) {
       if (signal.aborted) {
@@ -2606,6 +2614,10 @@ export class EngramAccessService {
       settled = true;
       flight.live -= 1;
       if (cancelOnAbort && signal) signal.removeEventListener("abort", onAbort);
+      // Unregister only once the LAST consumer finishes, so a joiner arriving
+      // while a consumer is still settling (slow put / hooked consume) still
+      // coalesces onto the shared result (round 6 #1).
+      if (flight.live === 0) flight.onIdle?.();
     };
   }
 
@@ -2648,8 +2660,15 @@ export class EngramAccessService {
         throw err;
       }
       // A committed (race=false) caller applies its own abort later (after
-      // persistence); a racing caller re-checks here.
-      if (race) throwIfAborted(request.abortSignal);
+      // persistence); a racing caller re-checks here. If the abort landed in the
+      // gap AFTER the result resolved, release the pipeline reservation this
+      // caller owns (recordBudget=false) rather than leak it (round 6 #2).
+      if (race && request.abortSignal?.aborted) {
+        if (!recordBudget && result.reservation) {
+          this.budget.release(result.reservation);
+        }
+        throwIfAborted(request.abortSignal);
+      }
       // A caller that ran the pipeline inherits its reservation token; a
       // coalesced caller records its OWN cross-namespace event below.
       let reservation = recordBudget ? undefined : result.reservation;
@@ -2750,7 +2769,19 @@ export class EngramAccessService {
       if (capturedReservation) this.budget.release(capturedReservation);
       throw err;
     }
-    throwIfAborted(request.abortSignal);
+    try {
+      throwIfAborted(request.abortSignal);
+    } catch (err) {
+      // Abort landed after the result was produced but before delivery. For a
+      // NON-persisted (unkeyed) recall the completed result is discarded and
+      // will not be replayed, so release its reservation rather than leak quota
+      // (round 6 #2). A keyed recall persisted its result (a retry replays it),
+      // so its budget event legitimately stands (round 5 #1).
+      if (!request.idempotencyKey?.trim() && capturedReservation) {
+        this.budget.release(capturedReservation);
+      }
+      throw err;
+    }
     return response;
   }
 
@@ -2759,9 +2790,9 @@ export class EngramAccessService {
    *  slot tied to the FLIGHT'S own abort controller (#3) — so a caller
    *  disconnecting (even while the flight is still queued for a slot) never
    *  cancels it while other callers still want the result. The flight
-   *  unregisters the moment it is cancelled (all callers gone) AND when the
-   *  pipeline settles, so a new arrival never joins a cancelled flight
-   *  (round 3 #2). */
+   *  unregisters via `onIdle` when its LAST consumer finishes (round 6 #1) or
+   *  when every caller has aborted (round 3 #2) — NOT on raw pipeline settle,
+   *  so a joiner arriving while a consumer is still finishing still coalesces. */
   private createAndStartFlight(
     normalizedRequest: EngramAccessRecallRequest,
     flightKey: string,
@@ -2776,26 +2807,24 @@ export class EngramAccessService {
     });
     // Consumers attach their own handlers; keep Node quiet if none do yet.
     flightPromise.catch(() => {});
-    const flight: RecallFlight = { promise: flightPromise, controller, live: 0 };
-    this.recallInFlight.set(flightKey, flight);
-    const cleanup = () => {
-      if (this.recallInFlight.get(flightKey) === flight) {
-        this.recallInFlight.delete(flightKey);
-      }
+    const flight: RecallFlight = {
+      promise: flightPromise,
+      controller,
+      live: 0,
+      onIdle: () => {
+        if (this.recallInFlight.get(flightKey) === flight) {
+          this.recallInFlight.delete(flightKey);
+        }
+      },
     };
-    // Cancelled (all attached callers gone) => unregister immediately so a new
-    // caller arriving before the pipeline settles leads a fresh flight instead
-    // of inheriting this one's AbortError (round 3 #2).
-    controller.signal.addEventListener("abort", cleanup, { once: true });
+    this.recallInFlight.set(flightKey, flight);
     this.withRecallConcurrency(principalKey, controller.signal, async (queueWaitMs) =>
       this.executeRecall({
         ...normalizedRequest,
         abortSignal: controller.signal,
         queueWaitMs,
       }),
-    )
-      .then(settleExec, failExec)
-      .finally(cleanup);
+    ).then(settleExec, failExec);
     return flight;
   }
 
@@ -2850,7 +2879,18 @@ export class EngramAccessService {
       if (capturedReservation) this.budget.release(capturedReservation);
       throw err;
     }
-    throwIfAborted(request.abortSignal);
+    try {
+      throwIfAborted(request.abortSignal);
+    } catch (err) {
+      // Abort landed after consumption but before delivery. A NON-persisted
+      // (unkeyed) recall's completed result is discarded (no replay), so release
+      // its reservation rather than leak quota (round 6 #2); a keyed recall
+      // persisted its result, so its budget event legitimately stands (round 5 #1).
+      if (!request.idempotencyKey?.trim() && capturedReservation) {
+        this.budget.release(capturedReservation);
+      }
+      throw err;
+    }
     return response;
   }
 

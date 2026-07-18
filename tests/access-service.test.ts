@@ -4410,3 +4410,73 @@ test("a keyed recall persists even when the caller disconnects mid-pipeline; a r
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("two concurrent identical keyed recalls coalesce to a single pipeline (#1906 r6 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r6-coalesce-"));
+  let recallCalls = 0;
+  let releaseRecall: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const firstEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      if (recallCalls === 1) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseRecall = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r6-coalesce-key",
+  };
+
+  try {
+    const a = service.recall({ ...request });
+    const b = service.recall({ ...request });
+    await firstEntered;
+    releaseRecall?.();
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(ra.context, "ctx");
+    assert.equal(rb.context, "ctx");
+    assert.equal(recallCalls, 1, "concurrent identical keyed recalls run the pipeline once");
+  } finally {
+    releaseRecall?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -901,3 +901,92 @@ test("single-flight off: a caller abort while the underlying pipeline still reso
   for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(h.liveBudget(), 0, "the orphaned reservation from the cancelled recall was released");
 });
+
+test("the flight stays registered until its consumers finish (cleanup on idle, not pipeline settle) (round 6 #1)", async () => {
+  let pipelineRuns = 0;
+  const gate = deferred<void>();
+  const { service, recallInFlight } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      await gate.promise;
+      return stubResponse([]);
+    },
+  });
+
+  const leader = service.recall({ query: "same" });
+  // Let the leader register its flight.
+  for (let i = 0; i < 5 && recallInFlight.size === 0; i++) await Promise.resolve();
+  assert.equal(recallInFlight.size, 1, "flight registered while the leader is attached");
+
+  // A joiner arrives and coalesces onto the live flight.
+  const joiner = service.recall({ query: "same" });
+  gate.resolve();
+  await Promise.all([leader, joiner]);
+  assert.equal(pipelineRuns, 1, "joiner coalesced onto the shared pipeline");
+  // Only after ALL consumers finished is the flight unregistered.
+  assert.equal(recallInFlight.size, 0, "flight unregistered once idle");
+});
+
+test("round 6 #2 (direct path): abort between the result and the final check releases the reservation", async () => {
+  const hookGate = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: false,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  // Inject a controllable async step AFTER execute() (models the real gap
+  // between the produced result and the final abort check).
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    await hookGate.promise;
+    return response;
+  };
+
+  const controller = new AbortController();
+  const p = h.service.recall({ query: "same", abortSignal: controller.signal });
+  // Let execute() complete (pipeline done, reservation captured), now parked.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(h.liveBudget(), 1, "reservation held while the result is in hand");
+  // Abort lands in the gap, then the parked step completes.
+  controller.abort();
+  hookGate.resolve();
+  await assert.rejects(p, (error: Error) => error.name === "AbortError");
+  assert.equal(h.liveBudget(), 0, "the completed-but-undelivered recall released its reservation");
+});
+
+test("round 6 #2 (flight path): abort between the result and the final check releases the reservation", async () => {
+  const hookGate = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    await hookGate.promise;
+    return response;
+  };
+
+  const controller = new AbortController();
+  const p = h.service.recall({ query: "same", abortSignal: controller.signal });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(h.liveBudget(), 1, "reservation held while the result is in hand");
+  controller.abort();
+  hookGate.resolve();
+  await assert.rejects(p, (error: Error) => error.name === "AbortError");
+  assert.equal(h.liveBudget(), 0, "the completed-but-undelivered recall released its reservation");
+});
