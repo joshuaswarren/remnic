@@ -251,6 +251,20 @@ test("artifact selection breaks a finishedAt tie deterministically (no localeCom
   const newer = { name: "2026-07-17-longmemeval-luna.json", doc: { finishedAt: tie } };
   assert.equal(pick([older, newer]), newer.name, "newest finishedAt wins");
   assert.equal(pick([newer, older]), newer.name, "newest finishedAt wins regardless of input order");
+
+  // Both finishedAt missing/unparseable: epoch subtraction would be NaN, which
+  // Array.sort treats as equality and resolves by input order. The comparator
+  // must still fall through to the filename tiebreak (#2004).
+  const m1 = { name: "2026-07-01-longmemeval-mmm.json", doc: {} };
+  const m2 = { name: "2026-07-02-longmemeval-nnn.json", doc: { finishedAt: "not-a-date" } };
+  assert.equal(pick([m1, m2]), pick([m2, m1]), "both-missing finishedAt orders by filename, not input order");
+  assert.equal(pick([m1, m2]), m2.name, "filename codepoint-max wins when neither has a valid finishedAt");
+
+  // Exactly one valid finishedAt: the real (finite) run wins regardless of order.
+  const realRun = { name: "2026-07-01-longmemeval-aaa.json", doc: { finishedAt: "2026-07-01T00:00:00.000Z" } };
+  const noDate = { name: "2026-07-09-longmemeval-zzz.json", doc: {} };
+  assert.equal(pick([realRun, noDate]), realRun.name, "a run with a valid finishedAt beats one without");
+  assert.equal(pick([noDate, realRun]), realRun.name, "valid finishedAt wins regardless of input order");
 });
 
 // ─── 2. Real values trace to committed artifacts / source ─────────────────

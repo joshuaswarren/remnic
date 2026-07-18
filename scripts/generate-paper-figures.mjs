@@ -159,8 +159,16 @@ function finishedAtEpoch(v) {
  * Operates on `{ name, doc }` entries.
  */
 function compareArtifactsByRecency(a, b) {
-  const dt = finishedAtEpoch(b.doc?.finishedAt) - finishedAtEpoch(a.doc?.finishedAt);
-  if (dt !== 0) return dt;
+  const ea = finishedAtEpoch(a.doc?.finishedAt);
+  const eb = finishedAtEpoch(b.doc?.finishedAt);
+  // Newest finishedAt first — but ONLY trust the epoch delta when both values
+  // are finite and differ. If both are missing/unparseable, `eb - ea` would be
+  // (-Infinity) - (-Infinity) = NaN, which Array.sort treats as equality and
+  // resolves by input/readdir order — the exact flake we are removing. When
+  // exactly one is finite, the finite (real) run wins. Otherwise fall through to
+  // the stable filename tiebreak so selection is ALWAYS deterministic (#2004).
+  if (Number.isFinite(ea) && Number.isFinite(eb) && ea !== eb) return eb - ea;
+  if (Number.isFinite(ea) !== Number.isFinite(eb)) return Number.isFinite(ea) ? -1 : 1;
   if (a.name < b.name) return 1;
   if (a.name > b.name) return -1;
   return 0;
@@ -273,13 +281,15 @@ function findMemCorrectArtifacts() {
     };
     const key = String(adapter).toLowerCase();
     // finishedAt lives at doc.finishedAt (published) or meta.timestamp (nested
-    // BenchmarkResult). Compare as epoch-ms (not locale-sensitive
-    // localeCompare — #2004); on an exact tie the name-sorted iteration above
-    // keeps the codepoint-first file, so selection stays deterministic.
+    // BenchmarkResult). Keep the NEWEST per adapter using the SAME deterministic
+    // comparator as findArtifact, so every selection path shares one tiebreak
+    // direction (largest-filename-wins on an exact tie) — never localeCompare or
+    // readdir order (#2004).
     const finishedAt = String(doc?.finishedAt ?? doc?.meta?.timestamp ?? "");
+    const cand = { name, doc: { finishedAt } };
     const prev = byAdapter.get(key);
-    if (!prev || finishedAtEpoch(prev.finishedAt) < finishedAtEpoch(finishedAt)) {
-      byAdapter.set(key, { entry, finishedAt });
+    if (!prev || compareArtifactsByRecency(cand, prev.cand) < 0) {
+      byAdapter.set(key, { entry, cand });
     }
   }
   return [...byAdapter.values()].map((x) => x.entry);
