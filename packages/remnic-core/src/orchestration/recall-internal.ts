@@ -151,6 +151,7 @@ export interface RecallInternalDeps {
     caps: CapabilitySet,
     label: string,
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    abortSignal?: AbortSignal,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
@@ -4348,6 +4349,14 @@ export class RecallInternalCoordinator {
         // Pass the frontmatter already loaded by the safety filter so the stage
         // does O(candidates) work instead of a full-corpus scan.
         const trustT0 = Date.now();
+        // The fallback is a distinct object: identity-comparing the outcome to
+        // it detects a deadline/abort/error fallback without changing
+        // awaitAssemblyStep. On fallback the losing task is cooperatively
+        // cancelled via the AbortController so an orphaned corpus scan stops at
+        // its next loop boundary instead of burning I/O after recall returned,
+        // and the metric records the truth (#1905, Codex/Kilo).
+        const trustAbort = new AbortController();
+        const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath };
         const trustOutcome = await awaitAssemblyStep(
           "trustStage",
           () =>
@@ -4357,9 +4366,12 @@ export class RecallInternalCoordinator {
               caps,
               "hot-qmd",
               qmdBoostInput.memoryByPath,
+              trustAbort.signal,
             ),
-          { results: memoryResults, trustByPath: recallTrustByPath },
+          trustFallback,
         );
+        const trustFellBack = trustOutcome === trustFallback;
+        if (trustFellBack) trustAbort.abort();
         memoryResults = trustOutcome.results;
         recallTrustByPath = trustOutcome.trustByPath;
         recordRecallSectionMetric({
@@ -4368,7 +4380,7 @@ export class RecallInternalCoordinator {
           durationMs: Date.now() - trustT0,
           deadlineMs: enrichmentSectionDeadlineMs,
           source: "fresh",
-          success: true,
+          success: !trustFellBack,
         });
       }
 
@@ -4551,6 +4563,8 @@ export class RecallInternalCoordinator {
           // the stage's corpus/direct-read fallback cover it — identical lookup
           // semantics (rule 41 parity).
           const trustT0 = Date.now();
+          const trustAbort = new AbortController();
+          const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
             () =>
@@ -4559,9 +4573,13 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 caps,
                 "embedding-fallback",
+                undefined,
+                trustAbort.signal,
               ),
-            { results: scoped, trustByPath: recallTrustByPath },
+            trustFallback,
           );
+          const trustFellBack = trustOutcome === trustFallback;
+          if (trustFellBack) trustAbort.abort();
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
           recordRecallSectionMetric({
@@ -4570,7 +4588,7 @@ export class RecallInternalCoordinator {
             durationMs: Date.now() - trustT0,
             deadlineMs: enrichmentSectionDeadlineMs,
             source: "fresh",
-            success: true,
+            success: !trustFellBack,
           });
         }
         if (scoped.length > 0) {
@@ -4745,6 +4763,8 @@ export class RecallInternalCoordinator {
         {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
+          const trustAbort = new AbortController();
+          const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
             () =>
@@ -4753,9 +4773,13 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 caps,
                 "embedding-fallback",
+                undefined,
+                trustAbort.signal,
               ),
-            { results: scoped, trustByPath: recallTrustByPath },
+            trustFallback,
           );
+          const trustFellBack = trustOutcome === trustFallback;
+          if (trustFellBack) trustAbort.abort();
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
           recordRecallSectionMetric({
@@ -4764,7 +4788,7 @@ export class RecallInternalCoordinator {
             durationMs: Date.now() - trustT0,
             deadlineMs: enrichmentSectionDeadlineMs,
             source: "fresh",
-            success: true,
+            success: !trustFellBack,
           });
         }
       if (scoped.length > 0) {
@@ -4965,6 +4989,8 @@ export class RecallInternalCoordinator {
               const recentPreloaded = new Map<string, MemoryFile>(
                 queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
               );
+              const trustAbort = new AbortController();
+              const trustFallback = { results: recent, trustByPath: recallTrustByPath };
               const trustOutcome = await awaitAssemblyStep(
                 "trustStage",
                 () =>
@@ -4974,9 +5000,12 @@ export class RecallInternalCoordinator {
                     caps,
                     "recent-scan",
                     recentPreloaded,
+                    trustAbort.signal,
                   ),
-                { results: recent, trustByPath: recallTrustByPath },
+                trustFallback,
               );
+              const trustFellBack = trustOutcome === trustFallback;
+              if (trustFellBack) trustAbort.abort();
               recent = trustOutcome.results;
               recallTrustByPath = trustOutcome.trustByPath;
               recordRecallSectionMetric({
@@ -4985,7 +5014,7 @@ export class RecallInternalCoordinator {
                 durationMs: Date.now() - trustT0,
                 deadlineMs: enrichmentSectionDeadlineMs,
                 source: "fresh",
-                success: true,
+                success: !trustFellBack,
               });
             }
 

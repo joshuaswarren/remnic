@@ -112,6 +112,8 @@ export class RecallRerankCoordinator {
     // backward-compatible. When present, counters are seeded from it directly
     // and the O(corpus) `readAllMemories` scan is skipped for warm candidates.
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    // Cooperative cancellation (issue #1905, Codex); additive + last.
+    abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
     const config = this.getConfig();
     const counters = new Map<string, MemoryWorthCounters>();
@@ -151,6 +153,9 @@ export class RecallRerankCoordinator {
     if (config.recallTrustStageCorpusFallbackEnabled) {
       const seenNamespaces = new Set<string>();
       for (const ns of namespaces) {
+        // Cooperative cancellation: the recall's assembly deadline may have won
+        // the race — stop before another namespace scan (#1905, Codex).
+        if (abortSignal?.aborted) break;
         if (seenNamespaces.has(ns)) continue;
         seenNamespaces.add(ns);
         if (results.every((r) => counters.has(r.path) || preloadedPaths.has(r.path))) break;
@@ -208,6 +213,8 @@ export class RecallRerankCoordinator {
         const readerNn = reader;
         const BATCH = 16;
         for (let off = 0; off < missing.length; off += BATCH) {
+          // Cooperative cancellation between batches (#1905, Codex).
+          if (abortSignal?.aborted) break;
           await Promise.all(
             missing.slice(off, off + BATCH).map(async (r) => {
               try {
@@ -295,6 +302,10 @@ export class RecallRerankCoordinator {
     // #1905); additive + last for positional back-compat. Seeds signals
     // directly so warm candidates skip the O(corpus) namespace scan.
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    // Cooperative cancellation (issue #1905, Codex): aborted by the host when
+    // the recall's assembly deadline wins the race, so orphaned corpus scans
+    // stop at the next loop boundary. Additive + last for positional back-compat.
+    abortSignal?: AbortSignal,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
@@ -341,6 +352,7 @@ export class RecallRerankCoordinator {
         logDebug: (message, context) => log.debug(message, context),
         preloadedFrontmatter,
         corpusFallbackEnabled: config.recallTrustStageCorpusFallbackEnabled,
+        abortSignal,
       },
     );
     if (signals.size === 0) {
@@ -385,13 +397,15 @@ export class RecallRerankCoordinator {
     // branches without a safety-filter map → falls back to corpus/direct-read
     // (identical lookup result, rule 41 parity).
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    // Cooperative cancellation (issue #1905, Codex); additive + last.
+    abortSignal?: AbortSignal,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
     if (caps.recallTrustScore && results.length > 0) {
       try {
-        return await this.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter);
+        return await this.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter, abortSignal);
       } catch (err) {
         log.debug(`trust-score stage (${label}) failed open`, {
           error: (err as Error).message,
@@ -399,7 +413,12 @@ export class RecallRerankCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        const filtered = await this.applyMemoryWorthRerank(results, namespaces, preloadedFrontmatter);
+        const filtered = await this.applyMemoryWorthRerank(
+          results,
+          namespaces,
+          preloadedFrontmatter,
+          abortSignal,
+        );
         return { results: filtered, trustByPath: null };
       } catch (err) {
         log.debug(`memory-worth filter (${label}) failed open`, {

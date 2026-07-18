@@ -3455,11 +3455,19 @@ export class Orchestrator {
     caps: CapabilitySet,
     label: string,
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    abortSignal?: AbortSignal,
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
-    return this.recallRerankCoordinator.applyTrustScoreToBranch(results, namespaces, caps, label, preloadedFrontmatter);
+    return this.recallRerankCoordinator.applyTrustScoreToBranch(
+      results,
+      namespaces,
+      caps,
+      label,
+      preloadedFrontmatter,
+      abortSignal,
+    );
   }
 
   private diversifyAndLimitRecallResults(

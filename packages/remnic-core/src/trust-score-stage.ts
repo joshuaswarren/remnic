@@ -380,12 +380,28 @@ export async function buildTrustSignalsForRerank(
      * corpus path stays reachable. See `recallTrustStageCorpusFallbackEnabled`.
      */
     corpusFallbackEnabled?: boolean;
+    /**
+     * Cooperative cancellation (issue #1905, Codex): when the recall's shared
+     * enrichment-assembly deadline wins the race, the host aborts this signal
+     * so an orphaned corpus scan / direct-read loop stops at the next loop
+     * boundary instead of continuing to burn I/O after recall already returned.
+     */
+    abortSignal?: AbortSignal;
   } = {},
 ): Promise<Map<string, TrustSignals>> {
   const logDebug = options.logDebug ?? (() => {});
   const signals = new Map<string, TrustSignals>();
   const corpusFallbackEnabled = options.corpusFallbackEnabled ?? true;
   const halfLife = { recencyHalfLifeDays: options.recencyHalfLifeDays };
+
+  // Paths examined via preloaded frontmatter (issue #1905, Cursor/Codex).
+  // buildTrustSignalMap deliberately OMITS neutral memories (no trust fields),
+  // so a preloaded candidate can be examined yet absent from `signals` — it
+  // must NOT be treated as missing, or the corpus fallback + direct read fire
+  // for every uninstrumented hot candidate, defeating the O(candidates) path.
+  // Absent-from-signals still means multiplier 1.0 downstream, exactly what a
+  // corpus scan would have produced for the same neutral memory.
+  const preloadedPaths = new Set<string>();
 
   // O(candidates) fast path: seed signals from candidate frontmatter already
   // loaded on the hot recall path. Reuses the exact `buildTrustSignalMap`
@@ -394,7 +410,9 @@ export async function buildTrustSignalsForRerank(
     const preloaded: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     for (const path of candidatePaths) {
       const mem = options.preloadedFrontmatter.get(path);
-      if (mem) preloaded.push({ path, frontmatter: mem.frontmatter });
+      if (!mem) continue;
+      preloadedPaths.add(path);
+      preloaded.push({ path, frontmatter: mem.frontmatter });
     }
     if (preloaded.length > 0) {
       const seeded = buildTrustSignalMap(preloaded, now, halfLife);
@@ -409,9 +427,12 @@ export async function buildTrustSignalsForRerank(
   if (corpusFallbackEnabled) {
     const seenNamespaces = new Set<string>();
     for (const ns of namespaces) {
+      // Cooperative cancellation: the recall's assembly deadline may have won
+      // the race — stop before starting another namespace scan (#1905, Codex).
+      if (options.abortSignal?.aborted) break;
       if (seenNamespaces.has(ns)) continue;
       seenNamespaces.add(ns);
-      if (candidatePaths.every((p) => signals.has(p))) break;
+      if (candidatePaths.every((p) => signals.has(p) || preloadedPaths.has(p))) break;
       try {
         const version = await deps.getNamespaceVersion(ns);
         const cached = signalCache.cache.get(ns);
@@ -433,7 +454,9 @@ export async function buildTrustSignalsForRerank(
           capTrustSignalCache(signalCache.cache, TRUST_SIGNAL_CACHE_MAX_NAMESPACES);
         }
         for (const p of candidatePaths) {
-          if (signals.has(p)) continue;
+          // Preloaded paths were already examined — absent-from-signals means
+          // neutral (multiplier 1.0), identical to what the corpus map holds.
+          if (signals.has(p) || preloadedPaths.has(p)) continue;
           const s = nsMap.get(p);
           if (s) signals.set(p, s);
         }
@@ -447,12 +470,15 @@ export async function buildTrustSignalsForRerank(
   }
 
   // Direct per-path fallback for candidates still absent (cold-tier / archive).
+  // Preloaded paths are excluded — they were examined and are neutral priors.
   // Bounded-parallel (≤16) to match loadSearchResultMemoryMap's batch size.
-  const missing = candidatePaths.filter((p) => !signals.has(p));
+  const missing = candidatePaths.filter((p) => !signals.has(p) && !preloadedPaths.has(p));
   if (missing.length > 0) {
     const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     const BATCH = 16;
     for (let off = 0; off < missing.length; off += BATCH) {
+      // Cooperative cancellation between batches (#1905, Codex).
+      if (options.abortSignal?.aborted) break;
       const batch = await Promise.all(
         missing.slice(off, off + BATCH).map(async (path) => {
           try {
