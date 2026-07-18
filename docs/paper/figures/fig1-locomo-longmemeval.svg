@@ -89,32 +89,32 @@
 <text x="540" y="220" font-size="10" text-anchor="start" fill="#555555" font-weight="400" transform="rotate(-90 540 220)">score (0–1)</text>
 <rect x="577" y="318.088" width="18.1" height="23.912000000000003" fill="#0072B2"/>
 <text x="586.05" y="314.088" font-size="8.5" text-anchor="middle" fill="#0072B2" font-weight="600">0.098</text>
-<rect x="598.1" y="221.952" width="18.1" height="120.048" fill="#E69F00"/>
-<text x="607.15" y="217.952" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.492</text>
+<rect x="598.1" y="222.44" width="18.1" height="119.56" fill="#E69F00"/>
+<text x="607.15" y="218.44" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.490</text>
 <rect x="619.2" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="640.3" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="661.4" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <text x="628.25" y="356" font-size="9.5" text-anchor="middle" fill="#555555" font-weight="400">contains_answer</text>
 <rect x="685.5" y="324.71631108170146" width="18.1" height="17.283688918298562" fill="#0072B2"/>
 <text x="694.55" y="320.71631108170146" font-size="8.5" text-anchor="middle" fill="#0072B2" font-weight="600">0.071</text>
-<rect x="706.6" y="221.61062573846732" width="18.1" height="120.38937426153267" fill="#E69F00"/>
-<text x="715.65" y="217.61062573846732" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.493</text>
+<rect x="706.6" y="206.55001033114792" width="18.1" height="135.44998966885208" fill="#E69F00"/>
+<text x="715.65" y="202.55001033114792" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.555</text>
 <rect x="727.7" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="748.8" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="769.9" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <text x="736.75" y="356" font-size="9.5" text-anchor="middle" fill="#555555" font-weight="400">f1</text>
 <rect x="794" y="296.616" width="18.1" height="45.384" fill="#0072B2"/>
 <text x="803.05" y="292.616" font-size="8.5" text-anchor="middle" fill="#0072B2" font-weight="600">0.186</text>
-<rect x="815.1" y="156.56" width="18.1" height="185.44" fill="#E69F00"/>
-<text x="824.15" y="152.56" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.760</text>
+<rect x="815.1" y="156.072" width="18.1" height="185.928" fill="#E69F00"/>
+<text x="824.15" y="152.072" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.762</text>
 <rect x="836.2" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="857.3" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="878.4" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <text x="845.25" y="356" font-size="9.5" text-anchor="middle" fill="#555555" font-weight="400">llm_judge</text>
 <rect x="902.5" y="296.616" width="18.1" height="45.384" fill="#0072B2"/>
 <text x="911.55" y="292.616" font-size="8.5" text-anchor="middle" fill="#0072B2" font-weight="600">0.186</text>
-<rect x="923.6" y="156.56" width="18.1" height="185.44" fill="#E69F00"/>
-<text x="932.65" y="152.56" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.760</text>
+<rect x="923.6" y="156.072" width="18.1" height="185.928" fill="#E69F00"/>
+<text x="932.65" y="152.072" font-size="8.5" text-anchor="middle" fill="#E69F00" font-weight="600">0.762</text>
 <rect x="944.7" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="965.8" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
 <rect x="986.9" y="98" width="18.1" height="244" fill="url(#pendingHatch1)" stroke="#B0B0B0" stroke-width="1" stroke-dasharray="3 2"/>
@@ -135,7 +135,7 @@
 <text x="836" y="390" font-size="9.5" text-anchor="start" fill="#555555" font-weight="400">Letta</text>
 <text x="836" y="401" font-size="8" text-anchor="start" fill="#888888" font-weight="400">(#1747)</text>
 <text x="532" y="408" font-size="8.5" text-anchor="start" fill="#888888" font-weight="400">non-axis metrics (separate scale): search_hits=8.520</text>
-<text x="16" y="434" font-size="9.5" text-anchor="start" fill="#888888" font-weight="400">Sources: locomo 2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json · longmemeval 2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json · Tier-F real (2026-07-14-locomo-opus-0676347.json, 2026-07-14-longmemeval-opus-0676347.json) · third-party pending #1747</text>
+<text x="16" y="434" font-size="9.5" text-anchor="start" fill="#888888" font-weight="400">Sources: locomo 2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json · longmemeval 2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json · Tier-F real (2026-07-14-locomo-opus-0676347.json, 2026-07-17-longmemeval-gpt-5.6-luna-810f36a.json) · third-party pending #1747</text>
 <text x="16" y="447" font-size="9.5" text-anchor="start" fill="#888888" font-weight="400">Pending panels (hatched) await committed artifacts — no value rendered until an artifact exists (rule 55).</text>
 
 </svg>
