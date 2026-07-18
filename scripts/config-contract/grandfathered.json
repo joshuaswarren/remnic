@@ -1,0 +1,1737 @@
+[
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceIncludeBranchNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceIncludeProjectNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceIncludeTeamProjectNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceMaxNamespacesPerCycle",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceNamespaceFanoutEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "maintenanceNamespaceLockStaleMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "openclawFlushPlanProcessingEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "recallBudgetChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "recallPipeline",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "gatewayConfig",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallAgents",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallAllowChainedActiveMemory",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallAllowedChatTypes",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallAttachRecallExplain",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallCacheTtlMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallCustomInstruction",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallEntityGraphDepth",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallIncludeCausalTrajectories",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallIncludeDaySummary",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallMaxSummaryChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallModelFallbackPolicy",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallPersistTranscripts",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallPromptAppend",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallPromptStyle",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallQueryMode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallRecentAssistantChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallRecentAssistantTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallRecentUserChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallRecentUserTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallThinking",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "activeRecallTranscriptDir",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "agentAccessHttp.principal",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.calendarSource",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.defaultFormat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.defaultWindow",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.llmFollowups",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.maxFollowups",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.saveByDefault",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "briefing.saveDir",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "bufferSurpriseK",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "bufferSurpriseProbeTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "bufferSurpriseRecentMemoryCount",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "bufferSurpriseThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "bufferSurpriseTriggerEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "calibrationEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "calibrationMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "calibrationMaxRulesPerRecall",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "chat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "chat.maxToolCallsPerTurn",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "chat.sessionTtlHours",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcBehaviorConfidenceThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcBehaviorLearningEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcBehaviorMinFrequency",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcBehaviorMinSessions",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcConsolidationEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcConsolidationMinRecurrence",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcConsolidationMinSessions",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcConsolidationSuccessThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcLifecycleCausalImpactWeight",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcRetrievalCounterfactualBoost",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcRetrievalEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcRetrievalMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcRetrievalMaxDepth",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcStitchLookbackDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcStitchMaxEdgesPerTrajectory",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "cmcStitchMinScore",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codex",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codex.codexHome",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codex.installExtension",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexCompat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexCompat.compactionFlushMode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexCompat.fingerprintDedup",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexCompat.threadIdBufferKeying",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeMaxSummaryTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeMemories",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeNamespace",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeOnConsolidation",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeOnSessionEnd",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codexMaterializeRolloutRetentionDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.architectureCard",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.architectureCardLlmSummary",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.codegraphDbDir",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.codegraphTools",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.decisionRecords",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.lsp",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.sessionDelta",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.structuralProvider",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "codingKnowledge.structuralProviderCommand",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "collectJudgeTrainingPairs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "commandsListEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github.includeDiscussions",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github.pollIntervalMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github.repos",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github.token",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.github.userLogin",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.gmail",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.gmail.clientId",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.gmail.pollIntervalMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.gmail.query",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.gmail.userId",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.googleDrive",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.googleDrive.clientId",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.googleDrive.folderIds",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.googleDrive.pollIntervalMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.notion",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.notion.databaseIds",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.notion.pollIntervalMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "connectors.notion.token",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan.autoMergeDuplicates",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan.cooldownDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan.maxPairsPerRun",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan.similarityFloor",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "contradictionScan.topicOverlapFloor",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correction.applyRequiresConfirm",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correction.maxAffected",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correction.planTtlHours",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionApplyRequiresConfirm",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCapture.autoApplyMaxAffected",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCapture.confidenceFloor",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCapture.mode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCaptureAutoApplyMaxAffected",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCaptureConfidenceFloor",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionCaptureMode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionIntentBaseUrl",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionIntentModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionMaxAffected",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "correctionPlanTtlHours",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "daySummaryEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "daySummaryTimezone",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.injectRecentCount",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.journalPath",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.maxEntries",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.minIntervalMinutes",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.narrativeModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.narrativePromptStyle",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreaming.watchFile",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.deepSleep",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.deepSleep.cadenceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.archiveDecayThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.cadenceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.filterStaleEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.promoteHeatThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.lightSleep.staleDecayThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.cadenceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.maxPerRun",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.minClusterSize",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.minIntervalMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "dreams.phases.rem.similarityThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "embeddingFallbackModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "entitySchemas",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "entitySynthesisMaxTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "eventOrderRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "eventOrderRecallMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "eventOrderRecallMaxResults",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "eventOrderRecallScanWindowTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "eventOrderRecallScanWindowTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "explicitCueRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "explicitCueRecallMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "explicitCueRecallMaxReferences",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessBaseUrl",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessContextChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessGate",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessLocalParseFallback",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionFaithfulnessTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionJudgeMaxDeferrals",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionJudgeTelemetryEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionMaxOutputTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionMinImportanceLevel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "extractionTelemetryPrefilterEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "flushOnResetEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "focusedListRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "focusedListRecallMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "focusedListRecallMaxResults",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "focusedListRecallScanWindowTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "focusedListRecallScanWindowTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "gatewayConfig",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "graphEdgeCacheIncrementalEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "graphEdgeDecayVisibilityThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.detectionMode",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.gateExtractionDuringHeartbeat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.journalPath",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.maxPreviousRuns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "heartbeat.watchFile",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "hostEmbeddingProviderEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "hostEmbeddingProviderId",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "hostEmbeddingProviderModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "initGateTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "inlineSourceAttributionEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "inlineSourceAttributionFormat",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "ircEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "ircIncludeCorrections",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "ircMaxPreferences",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "ircMinConfidence",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "judgeTrainingDir",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmArchiveRetentionDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmDeterministicMaxTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmFreshTailTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmLeafBatchSize",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmMaxDepth",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmObserveConcurrency",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmRecallBudgetShare",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmRollupFanIn",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "lcmTelemetryPrefilterEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "localLlmReasoningEffort",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "messagePartsEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "messagePartsRecallMaxResults",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "namespaceCatalogEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "namespacesCatalogCompactBytes",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "namespacesCatalogReadTouchCoalesceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "namespacesCatalogTouchStateWrites",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "namespacesCatalogWriteTouchCoalesceMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "nightlyGovernanceCronAutoRegister",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawChannelEnvelopeCleaningEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawHostEmbeddingProviderEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawHostEmbeddingProviderId",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawHostEmbeddingProviderModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawMessageReceivedCaptureEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawReplyMetadataCaptureEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawReplyMetadataExtractionHintsEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawToolsEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "openclawToolSnippetMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "operatorAwareConsolidationEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelAgentWeights",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelAgentWeights.contextual",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelAgentWeights.direct",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelAgentWeights.temporal",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelMaxResultsPerAgent",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "parallelRetrievalEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "profilingEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "profilingMaxTraces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "profilingStorageDir",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "provenance",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "provenance.maxQuoteChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "provenance.requireSpans",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdDaemonTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdRecallCacheMaxEntries",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdRecallCacheStaleTtlMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdRecallCacheTtlMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdSearchStrategy",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "qmdSubprocessStrategy",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallCoreDeadlineMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallDisclosureEscalation",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallDisclosureEscalationThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallEnrichmentDeadlineMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallGraphDamping",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallGraphEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallGraphIterations",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallGraphTopK",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallHandleSnapshotDepth",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMemoryHandles",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMemoryWorthFilterEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMemoryWorthHalfLifeMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMmrEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMmrLambda",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallMmrTopN",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallOuterTimeoutMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallReasoningTraceBoostEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallTranscriptRetentionDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallTranscriptsEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "recallTrustStageCorpusFallbackEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "respectBundledActiveMemoryToggle",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "responseGuidanceRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "responseGuidanceRecallMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "responseGuidanceRecallMaxResults",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "responseGuidanceRecallScanWindowTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "responseGuidanceRecallScanWindowTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "scopedCacheInvalidationEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "secureStoreEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "secureStoreEncryptOnWrite",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationExcludeCategories",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationIntervalHours",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationMaxPerRun",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationMinClusterSize",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationModel",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "semanticConsolidationThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "sessionTogglesEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "slotBehavior",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "slotBehavior.onSlotMismatch",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "slotBehavior.requireExclusiveMemorySlot",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "targetedFactRecallEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "targetedFactRecallMaxChars",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "targetedFactRecallMaxResults",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "targetedFactRecallScanWindowTokens",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "targetedFactRecallScanWindowTurns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "taskModelChain.fallbacks",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "temporalBiTemporal",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "temporalExpiredInInjection",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "temporalSupersessionEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "temporalSupersessionIncludeInRecall",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "tombstonesEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "tombstonesSemanticMatch",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "tombstonesSemanticThreshold",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreEpistemicRendering",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreMaxMultiplier",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreMinMultiplier",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreQuarantine",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "trustScoreWeights",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "verboseRecallVisibility",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.autoSyncDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.autoSyncDeepDays",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.autoSyncEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.autoSyncIntervalMinutes",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.corrections",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.digestEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.fusion",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.offTheRecordEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.redactionEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.redactionPatterns",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.sources",
+    "issue": "#1990"
+  },
+  {
+    "kind": "undocumented-key",
+    "key": "wearables.timezone",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:117",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:2289",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:2290",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:2730",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3767",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3768",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3771",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3772",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3887",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3888",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3891",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:3892",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:4555",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/namespaces/scope-profile-config.ts:102",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/namespaces/scope-profile-config.ts:209",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/wearables/config.ts:468",
+    "issue": "#1990"
+  }
+]

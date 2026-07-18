@@ -1496,6 +1496,68 @@
         "default": "off",
         "description": "Passive correction capture (#1581) — detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
       },
+      "correction": {
+        "type": "object",
+        "description": "Memory-correction contract (issue #1580) — nested form; nested keys win over the flat legacy correction* keys.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the correction contract (plan/apply). Default true."
+          },
+          "applyRequiresConfirm": {
+            "type": "boolean",
+            "description": "Require confirm: true on memory_correct_apply. Default true."
+          },
+          "maxAffected": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum memories one correction plan may touch. Default 10."
+          },
+          "planTtlHours": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Hours a planned correction stays applicable. Default 24."
+          }
+        }
+      },
+      "correctionCapture": {
+        "type": "object",
+        "description": "Implicit correction capture (nested form; nested keys win over the flat legacy correctionCapture* keys).",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "queue",
+              "auto"
+            ],
+            "description": "Implicit capture mode. Default off."
+          },
+          "confidenceFloor": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Minimum detector confidence to act on. Default 0.85."
+          },
+          "autoApplyMaxAffected": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Auto-apply ceiling on affected memories. Default 2."
+          }
+        }
+      },
+      "openclawHostEmbeddingProviderEnabled": {
+        "type": "boolean",
+        "description": "Legacy alias for hostEmbeddingProviderEnabled (OpenClaw host embedding provider). Default true."
+      },
+      "openclawHostEmbeddingProviderId": {
+        "type": "string",
+        "description": "Legacy alias for hostEmbeddingProviderId."
+      },
+      "openclawHostEmbeddingProviderModel": {
+        "type": "string",
+        "description": "Legacy alias for hostEmbeddingProviderModel."
+      },
       "correctionEnabled": {
         "type": "boolean",
         "default": true,

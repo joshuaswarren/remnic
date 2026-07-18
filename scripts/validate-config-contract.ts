@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { runContractCheck } from "./config-contract/contract-check.js";
 
 type Failure = {
   message: string;
@@ -281,6 +282,16 @@ function main() {
     // Adapter-owned OpenClaw runtime gate. It is exposed in the plugin manifest
     // UI but intentionally parsed in src/index.ts instead of core PluginConfig.
     "openclawFlushPlanProcessingEnabled",
+    // Nested INPUT forms (issue #1990): parsed with nested-wins semantics into
+    // the flat PluginConfig fields (correctionEnabled, correctionCaptureMode,
+    // …), so the schema exposes them without a same-named interface key.
+    "correction",
+    "correctionCapture",
+    // Legacy openclawHostEmbeddingProvider* aliases: parsed as fallbacks into
+    // the hostEmbeddingProvider* PluginConfig fields.
+    "openclawHostEmbeddingProviderEnabled",
+    "openclawHostEmbeddingProviderId",
+    "openclawHostEmbeddingProviderModel",
   ]);
   const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
 
@@ -317,6 +328,21 @@ function main() {
 
   failures.push(...collectUnknownPluginConfigObjectKeys(program, pluginConfigType, pluginConfigKeys));
 
+  // v2 (issue #1990): parser-derived key paths vs manifests/docs, gated by
+  // the grandfather manifest (decision C — the manifest may only shrink;
+  // stale entries are failures, not comfort).
+  const contract = runContractCheck({ repoRoot });
+  for (const violation of contract.violations) {
+    failures.push({
+      message: `[v2:${violation.kind}] ${violation.key} — ${violation.detail} (grandfather via scripts/config-contract/grandfathered.json with a tracking issue, or fix the drift)`,
+    });
+  }
+  for (const stale of contract.staleGrandfatherEntries) {
+    failures.push({
+      message: `[v2:stale-grandfather] ${stale.kind}:${stale.key} (${stale.issue}) no longer violates — prune it from scripts/config-contract/grandfathered.json`,
+    });
+  }
+
   if (failures.length > 0) {
     console.error("Config contract validation failed:");
     for (const f of failures) {
@@ -330,7 +356,7 @@ function main() {
   }
 
   console.log(
-    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}`
+    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}, v2 grandfathered=${contract.grandfatheredActive}`
   );
 }
 
