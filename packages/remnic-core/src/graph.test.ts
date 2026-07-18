@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -224,6 +224,45 @@ test("#1904: graphEdgeCacheIncrementalEnabled=false nulls the edge cache on ever
     assert.ok(
       !paths.has("facts/sibling.md"),
       "legacy mode must null the cache on every write (nothing served after the file is removed)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1904: onMemoryWritten reloads when an equal-length atomic rewrite changed the inode (Codex)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-rewrite-"));
+  try {
+    // Initial edge: seed -> old-sibling. An atomic rewrite later swaps the
+    // target to "new-sibling" (also 11 chars), so the JSONL line length is
+    // unchanged — a size-only check could not detect this. The temp+rename
+    // the decay writer uses changes the inode, which the identity check MUST
+    // treat as a divergence and force a reload.
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    await graph.spreadingActivation(["seed"]); // warm + identity baseline
+    // Peer (decay-style) equal-length atomic rewrite via temp + rename.
+    const file = graphFilePath(memoryDir, "entity");
+    const rewritten = `${JSON.stringify(makeEdge("seed", "new-sibling"))}\n`;
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, rewritten, "utf8");
+    await rename(tmp, file);
+    // Our own append: the inode changed (temp+rename), so the cache must null
+    // and the next traversal must reload — making the rewritten target visible.
+    await graph.onMemoryWritten({
+      ...onWriteOpts,
+      memoryPath: "facts/new.md",
+      entitySiblings: ["facts/sibling.md"],
+    });
+    const activated = await graph.spreadingActivation(["seed"]);
+    const paths = new Set(activated.map((candidate) => candidate.path));
+    assert.ok(
+      paths.has("new-sibling"),
+      "an equal-length atomic rewrite changed the inode and must force a reload so the new target appears",
+    );
+    assert.ok(
+      !paths.has("old-sibling"),
+      "the pre-rewrite target must not linger (a stale in-place push would have kept it)",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
