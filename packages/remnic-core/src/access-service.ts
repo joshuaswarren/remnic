@@ -1348,6 +1348,16 @@ interface RecallFlight {
    *  finished — never on raw pipeline settle — so an identical arrival while a
    *  consumer is still finishing (e.g. a slow put) still coalesces (round 6 #1). */
   onIdle?: () => void;
+  /** For KEYED flights only: settles when the leader's idempotency persistence
+   *  (idempotency.put) completes — resolves on success, rejects with the put
+   *  error on failure. Fast-path keyed followers await this before reporting
+   *  success so a retry of the key never re-executes after a follower already
+   *  saw success while the put was still pending or had failed (round 7 #1). */
+  persisted?: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (reason: unknown) => void;
+  };
 }
 
 export class EngramAccessService {
@@ -2705,12 +2715,25 @@ export class EngramAccessService {
   }
 
   /** Follower path (issue #1906 review): join an already-registered flight
-   *  WITHOUT taking a concurrency slot. */
+   *  WITHOUT taking a concurrency slot. For a KEYED flight the follower does not
+   *  report success until the leader's idempotency persistence has settled
+   *  (round 7 #1) — on a persistence failure it behaves identically to the
+   *  leader: releases its own reservation and rejects, so a retry of the key
+   *  re-executes consistently (nobody saw a phantom success). */
   private async followRecallFlight(
     flight: RecallFlight,
     request: EngramAccessRecallRequest,
   ): Promise<EngramAccessRecallResponse> {
-    return (await this.consumeFlight(flight, request, true, true)).response;
+    const consumed = await this.consumeFlight(flight, request, true, true);
+    if (request.idempotencyKey?.trim() && flight.persisted) {
+      try {
+        await flight.persisted.promise;
+      } catch (err) {
+        this.budget.release(consumed.reservation);
+        throw err;
+      }
+    }
+    return consumed.response;
   }
 
   /** Non-coalesced recall (single-flight disabled): per-request execution
@@ -2797,6 +2820,7 @@ export class EngramAccessService {
     normalizedRequest: EngramAccessRecallRequest,
     flightKey: string,
     principalKey: string,
+    keyed: boolean,
   ): RecallFlight {
     const controller = new AbortController();
     let settleExec!: (result: RecallExecResult) => void;
@@ -2807,6 +2831,20 @@ export class EngramAccessService {
     });
     // Consumers attach their own handlers; keep Node quiet if none do yet.
     flightPromise.catch(() => {});
+    // KEYED flights carry a persistence gate that fast-path followers await so
+    // they never report success before the leader's idempotency.put settled
+    // (round 7 #1).
+    let persisted: RecallFlight["persisted"];
+    if (keyed) {
+      let resolvePersist!: () => void;
+      let rejectPersist!: (reason: unknown) => void;
+      const persistPromise = new Promise<void>((resolve, reject) => {
+        resolvePersist = resolve;
+        rejectPersist = reject;
+      });
+      persistPromise.catch(() => {});
+      persisted = { promise: persistPromise, resolve: resolvePersist, reject: rejectPersist };
+    }
     const flight: RecallFlight = {
       promise: flightPromise,
       controller,
@@ -2816,6 +2854,7 @@ export class EngramAccessService {
           this.recallInFlight.delete(flightKey);
         }
       },
+      ...(persisted ? { persisted } : {}),
     };
     this.recallInFlight.set(flightKey, flight);
     this.withRecallConcurrency(principalKey, controller.signal, async (queueWaitMs) =>
@@ -2841,7 +2880,12 @@ export class EngramAccessService {
     flightKey: string,
     principalKey: string,
   ): Promise<EngramAccessRecallResponse> {
+    const keyed = !!request.idempotencyKey?.trim();
     let capturedReservation: BudgetReservation | undefined;
+    // The flight THIS call created (leader) and thus owns persistence for — used
+    // to settle its `persisted` gate so keyed fast-path followers learn the
+    // put outcome (round 7 #1).
+    let ownedFlight: RecallFlight | undefined;
     let response: EngramAccessRecallResponse;
     try {
       response = await this.handleIdempotentRead({
@@ -2853,7 +2897,7 @@ export class EngramAccessService {
           // to completion so idempotency.put persists even if the leader itself
           // disconnects (round 5 #1). A non-keyed request races its own signal
           // and may leave early (nothing to persist).
-          const race = !request.idempotencyKey?.trim();
+          const race = !keyed;
           const existing = this.recallInFlight.get(flightKey);
           if (existing && !existing.controller.signal.aborted) {
             // A LIVE identical flight registered between our fast-path miss and
@@ -2862,7 +2906,8 @@ export class EngramAccessService {
             capturedReservation = consumed.reservation;
             return consumed.response;
           }
-          const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey);
+          const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey, keyed);
+          ownedFlight = flight;
           // The leader's own budget event is reserved inside the pipeline, so it
           // must NOT record again here.
           const consumed = await this.consumeFlight(flight, request, false, race);
@@ -2877,8 +2922,14 @@ export class EngramAccessService {
       // a pipeline failure already rolled back inside executeRecall/consumeFlight
       // — capturedReservation is undefined, so this is a no-op (round 3 #3).
       if (capturedReservation) this.budget.release(capturedReservation);
+      // Tell keyed fast-path followers that persistence failed so they behave
+      // identically to this leader (release + reject) — no phantom success
+      // (round 7 #1).
+      ownedFlight?.persisted?.reject(err);
       throw err;
     }
+    // Leader persisted successfully — release keyed followers awaiting the put.
+    ownedFlight?.persisted?.resolve();
     try {
       throwIfAborted(request.abortSignal);
     } catch (err) {
@@ -2886,7 +2937,7 @@ export class EngramAccessService {
       // (unkeyed) recall's completed result is discarded (no replay), so release
       // its reservation rather than leak quota (round 6 #2); a keyed recall
       // persisted its result, so its budget event legitimately stands (round 5 #1).
-      if (!request.idempotencyKey?.trim() && capturedReservation) {
+      if (!keyed && capturedReservation) {
         this.budget.release(capturedReservation);
       }
       throw err;

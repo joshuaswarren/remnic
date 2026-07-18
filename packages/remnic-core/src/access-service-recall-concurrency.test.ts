@@ -86,6 +86,9 @@ function makeService(opts: {
   crossNamespace?: boolean;
   budgetRecord?: (principal: string) => BudgetDecision;
   budgetRelease?: (reservation: BudgetReservation | undefined) => void;
+  /** Fired by the default budget model each time a reservation is released —
+   *  lets tests await release deterministically instead of polling microtasks. */
+  onBudgetRelease?: () => void;
 }): Harness {
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const recallSemaphores = new Map<string, unknown>();
@@ -101,6 +104,7 @@ function makeService(opts: {
   };
   const defaultRelease = (reservation: BudgetReservation | undefined): void => {
     if (reservation) liveReservations.delete(reservation.id);
+    opts.onBudgetRelease?.();
   };
   const budgetRecord = opts.budgetRecord ?? defaultRecord;
   const budgetRelease = opts.budgetRelease ?? defaultRelease;
@@ -879,6 +883,7 @@ test("a coalesced follower's response carries its OWN soft-limit warning, not th
 
 test("single-flight off: a caller abort while the underlying pipeline still resolves does not leak budget (round 5 #2)", async () => {
   const release = deferred<void>();
+  const released = deferred<void>();
   const h = makeService({
     limit: 0,
     singleFlight: false, // direct path (runRecallDirect)
@@ -888,6 +893,7 @@ test("single-flight off: a caller abort while the underlying pipeline still reso
       await release.promise;
       return stubResponse([]);
     },
+    onBudgetRelease: () => released.resolve(),
   });
 
   const controller = new AbortController();
@@ -895,10 +901,10 @@ test("single-flight off: a caller abort while the underlying pipeline still reso
   controller.abort();
   await assert.rejects(p, (error: Error) => error.name === "AbortError");
 
-  // The underlying recall still resolves with a reservation nobody observed.
+  // The underlying recall still resolves with a reservation nobody observed; the
+  // orphan-release fires the release hook deterministically.
   release.resolve();
-  // Drain microtasks so the pipeline resolves and the orphan-release .then runs.
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await released.promise;
   assert.equal(h.liveBudget(), 0, "the orphaned reservation from the cancelled recall was released");
 });
 
@@ -916,8 +922,8 @@ test("the flight stays registered until its consumers finish (cleanup on idle, n
   });
 
   const leader = service.recall({ query: "same" });
-  // Let the leader register its flight.
-  for (let i = 0; i < 5 && recallInFlight.size === 0; i++) await Promise.resolve();
+  // The leader registers its flight synchronously within recall() (before its
+  // first await), so it is present immediately.
   assert.equal(recallInFlight.size, 1, "flight registered while the leader is attached");
 
   // A joiner arrives and coalesces onto the live flight.
@@ -931,6 +937,7 @@ test("the flight stays registered until its consumers finish (cleanup on idle, n
 
 test("round 6 #2 (direct path): abort between the result and the final check releases the reservation", async () => {
   const hookGate = deferred<void>();
+  const executeDone = deferred<void>();
   const h = makeService({
     limit: 0,
     singleFlight: false,
@@ -946,14 +953,15 @@ test("round 6 #2 (direct path): abort between the result and the final check rel
   };
   host.handleIdempotentRead = async (options) => {
     const response = await options.execute();
+    executeDone.resolve();
     await hookGate.promise;
     return response;
   };
 
   const controller = new AbortController();
   const p = h.service.recall({ query: "same", abortSignal: controller.signal });
-  // Let execute() complete (pipeline done, reservation captured), now parked.
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  // execute() completed (pipeline done, reservation captured); now parked.
+  await executeDone.promise;
   assert.equal(h.liveBudget(), 1, "reservation held while the result is in hand");
   // Abort lands in the gap, then the parked step completes.
   controller.abort();
@@ -964,6 +972,7 @@ test("round 6 #2 (direct path): abort between the result and the final check rel
 
 test("round 6 #2 (flight path): abort between the result and the final check releases the reservation", async () => {
   const hookGate = deferred<void>();
+  const executeDone = deferred<void>();
   const h = makeService({
     limit: 0,
     singleFlight: true,
@@ -977,16 +986,92 @@ test("round 6 #2 (flight path): abort between the result and the final check rel
   };
   host.handleIdempotentRead = async (options) => {
     const response = await options.execute();
+    executeDone.resolve();
     await hookGate.promise;
     return response;
   };
 
   const controller = new AbortController();
   const p = h.service.recall({ query: "same", abortSignal: controller.signal });
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await executeDone.promise;
   assert.equal(h.liveBudget(), 1, "reservation held while the result is in hand");
   controller.abort();
   hookGate.resolve();
   await assert.rejects(p, (error: Error) => error.name === "AbortError");
   assert.equal(h.liveBudget(), 0, "the completed-but-undelivered recall released its reservation");
+});
+
+test("a keyed fast-path follower does not report success before the leader's put settles (round 7 #1)", async () => {
+  const putGate = deferred<void>();
+  const executeDone = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  // Simulate the keyed leader's handleIdempotentRead: run execute (which
+  // registers the flight + consumes it), then a GATED idempotency.put.
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    executeDone.resolve();
+    await putGate.promise;
+    return response;
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "k" });
+  await executeDone.promise; // leader consumed; flight registered; parked on the put
+  const follower = h.service.recall({ query: "same", idempotencyKey: "k" });
+
+  // The follower has coalesced but must NOT report success before the put.
+  const state = await Promise.race([
+    follower.then(() => "settled", () => "settled"),
+    Promise.resolve("pending"),
+  ]);
+  assert.equal(state, "pending", "follower awaits the leader's persistence");
+
+  putGate.resolve();
+  const [lr, fr] = await Promise.all([leader, follower]);
+  assert.ok(lr);
+  assert.ok(fr);
+});
+
+test("a keyed fast-path follower mirrors the leader on put failure: rejects and releases (round 7 #1)", async () => {
+  const putGate = deferred<void>();
+  const executeDone = deferred<void>();
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => stubResponse([]),
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    // Run execute() (registers + consumes the flight), then simulate a FAILED
+    // idempotency.put after the gate.
+    await options.execute();
+    executeDone.resolve();
+    await putGate.promise;
+    throw new Error("idempotency put failed");
+  };
+
+  const leader = h.service.recall({ query: "same", idempotencyKey: "k" });
+  await executeDone.promise;
+  const follower = h.service.recall({ query: "same", idempotencyKey: "k" });
+  putGate.resolve();
+
+  // The leader rejects on put failure (releasing its reservation); the follower
+  // must behave IDENTICALLY — reject with the same error and release its own.
+  await assert.rejects(leader, /idempotency put failed/);
+  await assert.rejects(follower, /idempotency put failed/);
+  assert.equal(h.liveBudget(), 0, "both leader and follower released their reservations on put failure");
 });
