@@ -161,6 +161,20 @@ Minimum scenario matrix for session/retrieval/cache work:
 If you cannot explain the behavior for every row in that matrix, the PR is not
 ready for external review.
 
+## Mechanical Stream Rules (`.omp/rules/`)
+
+The most-recurring, textually-detectable mistakes from AI review feedback are
+also enforced mechanically as project-scoped omp TTSRs in `.omp/rules/`. Agents
+running in the omp harness get interrupted (or reminded) at code-write time —
+before a PR exists — for: non-total sort comparators, `process.env.X =
+undefined`, cross-package `../<pkg>/src/` imports, static imports of optional
+`@remnic/*` packages, real home-directory paths (public-repo privacy),
+discarded `tombstoneBlocked`, config string/zero coercion footguns, ratchet
+baseline raises, and weak symlink/containment checks. See
+`.omp/rules/README.md` before adding rules: run every new condition against the
+existing codebase first, and keep hard interrupts for near-zero-false-positive
+signatures only.
+
 ## Review Prevention Checklist (All Agents — Read Before Every PR)
 
 These patterns were extracted from 60+ PRs across 2026-04-05 to 2026-04-12
