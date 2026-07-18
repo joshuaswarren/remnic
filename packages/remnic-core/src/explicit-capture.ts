@@ -565,6 +565,14 @@ export async function queueExplicitCaptureForReview(
       ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
     },
     { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
+    // The review queue is the FALLBACK for a capture that already failed
+    // primary validation — it must never be un-queueable. The tag list is
+    // machine-assembled (requested tags + the two fixed review tags), so 49+
+    // requested tags would push past the 50-tag limit and strict compose
+    // would throw, losing the capture (#2014 review round). Salvage clamps
+    // instead; the fixed review tags sort first in the assembly above, so
+    // they always survive the clamp.
+    { salvage: true },
   );
   const { id: id } = await storage.writeSealedMemory(reviewEnvelope);
   try {

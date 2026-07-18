@@ -1231,3 +1231,38 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
     /Memory capture failed: content appears to contain a secret or credential/
   );
 });
+
+test("review-queue fallback survives 49+ requested tags (salvage clamp, #2014)", async () => {
+  const written: Array<{ tags?: readonly string[] }> = [];
+  const storage = withSealedWrite({
+    writeMemory: async (_c: unknown, _b: unknown, options: { tags?: readonly string[] }) => {
+      written.push(options);
+      return { id: "fact-review-clamp", tombstoneBlocked: false };
+    },
+    getMemoryById: async () => null,
+    readAllMemories: async () => [],
+    writeMemoryFrontmatter: async () => {},
+    appendMemoryLifecycleEvents: async () => 1,
+  });
+  const orchestrator = {
+    config: { defaultNamespace: "default", sharedNamespace: "shared", namespacesEnabled: false },
+    getStorage: async () => storage,
+  };
+  const result = await queueExplicitCaptureForReview(
+    orchestrator as never,
+    {
+      content: "capture body that failed primary validation",
+      category: "fact",
+      tags: Array.from({ length: 55 }, (_, i) => `req-tag-${i}`),
+    } as never,
+    "duplicate-suspected",
+    "tool",
+  );
+  assert.ok(result.id, "capture must queue instead of throwing");
+  assert.equal(written.length, 1);
+  assert.ok((written[0].tags?.length ?? 0) <= 50, "tags must be clamped to the limit");
+  assert.ok(
+    written[0].tags?.includes("explicit-capture") || written[0].tags?.some((t) => t.includes("review")),
+    `fixed review tags must survive the clamp, got: ${written[0].tags?.slice(0, 4).join(",")}`,
+  );
+});
