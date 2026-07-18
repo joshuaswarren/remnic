@@ -694,3 +694,24 @@ test("file-size ratchet: symlinked scan roots fail loudly instead of evading the
     assert.equal(runRatchets([], fixture).status, 0);
   });
 });
+
+test("file-size ratchet: dist directories under a src root are measured (round 11)", () => {
+  withFixture((fixture) => {
+    const distDir = path.join(fixture.src, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(path.join(distDir, "large.ts"), "pad\n".repeat(1300));
+    const r = runRatchets(["--update"], fixture);
+    assert.equal(r.status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(
+      baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/dist/large.ts"],
+      1300,
+      "src/dist sources must be measured, not skipped",
+    );
+    // node_modules under src stays excluded (tsconfig default exclude).
+    const nmDir = path.join(fixture.src, "node_modules", "dep");
+    mkdirSync(nmDir, { recursive: true });
+    writeFileSync(path.join(nmDir, "big.ts"), "pad\n".repeat(1300));
+    assert.equal(runRatchets([], fixture).status, 0, "node_modules under src stays unmeasured");
+  });
+});

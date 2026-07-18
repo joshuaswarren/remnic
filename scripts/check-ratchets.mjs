@@ -198,6 +198,9 @@ const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 const UNMIGRATED_HANDLER_RE = /operation:\s*null\b/;
 const SURFACE_CATALOG_REL = "packages/remnic-core/src/access-surface-catalog.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
+// The strict (file-size) walker skips ONLY dirs that can never hold compiled
+// sources; "dist" under a src root is real compiled code (round-11 finding).
+const STRICT_SKIPPED_DIR_NAMES = new Set(["node_modules", ".git"]);
 /**
  * Direct imports of the main `storage.ts` module (issue #1533 Phase B): counts
  * non-test source files that import from `./storage.js` or `../storage.js` (the
@@ -298,7 +301,12 @@ function walkSourceFilesStrict(dir) {
       continue;
     }
     if (entry.isDirectory()) {
-      if (!SKIPPED_DIR_NAMES.has(entry.name)) {
+      // Inside a src scan root, only node_modules and .git can never be
+      // source children (tsconfig's default exclude covers node_modules).
+      // A `src/dist/large.ts` IS compiled production code under
+      // `include: ["src"]` and must be measured — skipping every dir named
+      // "dist" here let such a module bypass the cap (round-11 finding).
+      if (!STRICT_SKIPPED_DIR_NAMES.has(entry.name)) {
         const nested = walkSourceFilesStrict(full);
         files.push(...nested.files);
         symlinkedSources.push(...nested.symlinkedSources);
