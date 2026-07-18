@@ -708,11 +708,14 @@ test("file-size ratchet: dist directories under a src root are measured (round 1
       1300,
       "src/dist sources must be measured, not skipped",
     );
-    // node_modules under src stays excluded (tsconfig default exclude).
+    // node_modules under src IS measured (round 13): an explicit relative
+    // import compiles such a file despite tsconfig's default exclude.
     const nmDir = path.join(fixture.src, "node_modules", "dep");
     mkdirSync(nmDir, { recursive: true });
     writeFileSync(path.join(nmDir, "big.ts"), "pad\n".repeat(1300));
-    assert.equal(runRatchets([], fixture).status, 0, "node_modules under src stays unmeasured");
+    const nmCheck = runRatchets([], fixture);
+    assert.equal(nmCheck.status, 1, "oversized src/node_modules source must fail the cap");
+    assert.match(nmCheck.stderr, /node_modules\/dep\/big\.ts/);
   });
 });
 

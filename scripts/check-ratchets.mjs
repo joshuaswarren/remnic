@@ -208,9 +208,14 @@ const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 const UNMIGRATED_HANDLER_RE = /operation:\s*null\b/;
 const SURFACE_CATALOG_REL = "packages/remnic-core/src/access-surface-catalog.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
-// The strict (file-size) walker skips ONLY dirs that can never hold compiled
-// sources; "dist" under a src root is real compiled code (round-11 finding).
-const STRICT_SKIPPED_DIR_NAMES = new Set(["node_modules", ".git"]);
+// The strict (file-size) walker skips ONLY .git: git itself refuses to track
+// paths containing a .git component, so nothing there can be a committed
+// source. Everything else under a src root is measurable — "dist" is real
+// compiled code under include:["src"] (round-11 finding), and even a
+// committed src/node_modules file is compiled when reached through an
+// explicit relative import, which tsconfig's default exclude does not
+// prevent (round-13 finding).
+const STRICT_SKIPPED_DIR_NAMES = new Set([".git"]);
 /**
  * Direct imports of the main `storage.ts` module (issue #1533 Phase B): counts
  * non-test source files that import from `./storage.js` or `../storage.js` (the
