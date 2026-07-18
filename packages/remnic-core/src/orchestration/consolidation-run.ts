@@ -154,86 +154,91 @@ export class ConsolidationRunCoordinator {
       : null;
 
     // Collect deindex entries from INVALIDATE/MERGE actions and de-index them in
-    // one batch after the loop, instead of a full index read-modify-write per
-    // memory. The queryAwareIndexing guard is preserved: memoryLookup is null when
-    // it is disabled, so toInvalidate/toMergeInvalidate stay null and nothing is
-    // collected.
+    // one batch, instead of a full index read-modify-write per memory. The
+    // queryAwareIndexing guard is preserved: memoryLookup is null when it is
+    // disabled, so toInvalidate/toMergeInvalidate stay null and nothing is
+    // collected. The flush runs in `finally` so memories already invalidated on
+    // disk are still de-indexed if a later iteration throws; it runs exactly once
+    // (normal completion or throw) and any loop error still propagates after it.
     const itemsDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
 
-    for (const item of result.items) {
-      switch (item.action) {
-        case "INVALIDATE": {
-          // Capture path/frontmatter before invalidation for index cleanup
-          const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
-            ? (memoryLookup?.get(item.existingId) ?? null)
-            : null;
-          if (await storage.invalidateMemory(item.existingId)) {
-            invalidated += 1;
-            memoryItemMutated = true;
-            await this.deps.embeddingFallback.removeFromIndex(item.existingId);
-            if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
-              itemsDeindexBatch.push({
-                path: toInvalidate.path,
-                createdAt: toInvalidate.frontmatter.created,
-                tags: toInvalidate.frontmatter.tags ?? [],
-              });
-            }
-          }
-          break;
-        }
-        case "UPDATE":
-          if (item.updatedContent) {
-            await storage.updateMemory(
-              item.existingId,
-              item.updatedContent,
-              {
-                lineage: [item.existingId],
-              },
-            );
-            memoryItemMutated = true;
-            await this.deps.indexPersistedMemory(storage, item.existingId);
-            // updateMemory() only changes content/updated/lineage — path, created, and tags
-            // are preserved, so the temporal/tag index entry is already correct; no reindex needed.
-          }
-          break;
-        case "MERGE":
-          if (item.updatedContent && item.mergeWith) {
-            await storage.updateMemory(
-              item.existingId,
-              item.updatedContent,
-              {
-                supersedes: item.mergeWith,
-                lineage: [item.existingId, item.mergeWith],
-              },
-            );
-            memoryItemMutated = true;
-            await this.deps.indexPersistedMemory(storage, item.existingId);
-            // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
-            // are preserved, so the temporal/tag index entry for the survivor is already correct.
-            // Capture before invalidation for index cleanup
-            const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
-              ? (memoryLookup?.get(item.mergeWith) ?? null)
+    try {
+      for (const item of result.items) {
+        switch (item.action) {
+          case "INVALIDATE": {
+            // Capture path/frontmatter before invalidation for index cleanup
+            const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
+              ? (memoryLookup?.get(item.existingId) ?? null)
               : null;
-            if (await storage.invalidateMemory(item.mergeWith)) {
+            if (await storage.invalidateMemory(item.existingId)) {
               invalidated += 1;
-              merged += 1;
-              await this.deps.embeddingFallback.removeFromIndex(item.mergeWith);
-              if (
-                toMergeInvalidate?.path &&
-                toMergeInvalidate.frontmatter?.created
-              ) {
+              memoryItemMutated = true;
+              await this.deps.embeddingFallback.removeFromIndex(item.existingId);
+              if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
                 itemsDeindexBatch.push({
-                  path: toMergeInvalidate.path,
-                  createdAt: toMergeInvalidate.frontmatter.created,
-                  tags: toMergeInvalidate.frontmatter.tags ?? [],
+                  path: toInvalidate.path,
+                  createdAt: toInvalidate.frontmatter.created,
+                  tags: toInvalidate.frontmatter.tags ?? [],
                 });
               }
             }
+            break;
           }
-          break;
+          case "UPDATE":
+            if (item.updatedContent) {
+              await storage.updateMemory(
+                item.existingId,
+                item.updatedContent,
+                {
+                  lineage: [item.existingId],
+                },
+              );
+              memoryItemMutated = true;
+              await this.deps.indexPersistedMemory(storage, item.existingId);
+              // updateMemory() only changes content/updated/lineage — path, created, and tags
+              // are preserved, so the temporal/tag index entry is already correct; no reindex needed.
+            }
+            break;
+          case "MERGE":
+            if (item.updatedContent && item.mergeWith) {
+              await storage.updateMemory(
+                item.existingId,
+                item.updatedContent,
+                {
+                  supersedes: item.mergeWith,
+                  lineage: [item.existingId, item.mergeWith],
+                },
+              );
+              memoryItemMutated = true;
+              await this.deps.indexPersistedMemory(storage, item.existingId);
+              // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
+              // are preserved, so the temporal/tag index entry for the survivor is already correct.
+              // Capture before invalidation for index cleanup
+              const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
+                ? (memoryLookup?.get(item.mergeWith) ?? null)
+                : null;
+              if (await storage.invalidateMemory(item.mergeWith)) {
+                invalidated += 1;
+                merged += 1;
+                await this.deps.embeddingFallback.removeFromIndex(item.mergeWith);
+                if (
+                  toMergeInvalidate?.path &&
+                  toMergeInvalidate.frontmatter?.created
+                ) {
+                  itemsDeindexBatch.push({
+                    path: toMergeInvalidate.path,
+                    createdAt: toMergeInvalidate.frontmatter.created,
+                    tags: toMergeInvalidate.frontmatter.tags ?? [],
+                  });
+                }
+              }
+            }
+            break;
+        }
       }
+    } finally {
+      await deindexMemoriesBatchAsync(config.memoryDir, itemsDeindexBatch);
     }
-    await deindexMemoriesBatchAsync(config.memoryDir, itemsDeindexBatch);
 
     if (result.profileUpdates.length > 0) {
       await storage.appendToProfile(result.profileUpdates);

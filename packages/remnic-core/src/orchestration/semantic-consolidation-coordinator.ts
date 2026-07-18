@@ -317,58 +317,63 @@ export class SemanticConsolidationCoordinator {
         result.memoriesConsolidated++;
 
         // Archive originals
-        // Collect deindex entries and remove them in one batch after the loop
-        // rather than a full index read-modify-write per archived source. Guard
-        // is preserved: entries are only collected when queryAwareIndexing is on.
+        // Collect deindex entries and remove them in one batch rather than a full
+        // index read-modify-write per archived source. Guard is preserved: entries
+        // are only collected when queryAwareIndexing is on.
         const clusterDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
-        for (const m of cluster.memories) {
-          const archiveResult = await targetStorage.archiveMemory(m, {
-            actor: "semantic-consolidation",
-            reasonCode: "semantic-consolidation",
-            relatedMemoryIds: [canonicalId],
-          });
-          if (archiveResult) {
-            // Remove from the same storage-scoped content-hash index that
-            // originally deduped this memory.
-            await this.deps.removeContentHashForMemory(
-              targetStorage,
-              m,
-              "semantic-consolidation",
-            );
-            // Best-effort index cleanup: a failure here (e.g. on-disk index save
-            // under disk-full) must NOT abort the archival loop and thereby skip
-            // the catalog write touch below for an already-durable canonical write
-            // (kilo NV0mh).
-            try {
-              await this.deps.embeddingFallback.removeFromIndex(m.frontmatter.id);
-              if (
-                resolveIndexingCapabilities(this.config).queryAwareIndexing &&
-                m.path &&
-                m.frontmatter?.created
-              ) {
-                clusterDeindexBatch.push({
-                  path: m.path,
-                  createdAt: m.frontmatter.created,
-                  tags: m.frontmatter.tags ?? [],
-                });
+        try {
+          for (const m of cluster.memories) {
+            const archiveResult = await targetStorage.archiveMemory(m, {
+              actor: "semantic-consolidation",
+              reasonCode: "semantic-consolidation",
+              relatedMemoryIds: [canonicalId],
+            });
+            if (archiveResult) {
+              // Remove from the same storage-scoped content-hash index that
+              // originally deduped this memory.
+              await this.deps.removeContentHashForMemory(
+                targetStorage,
+                m,
+                "semantic-consolidation",
+              );
+              // Best-effort index cleanup: a failure here (e.g. on-disk index save
+              // under disk-full) must NOT abort the archival loop and thereby skip
+              // the catalog write touch below for an already-durable canonical write
+              // (kilo NV0mh).
+              try {
+                await this.deps.embeddingFallback.removeFromIndex(m.frontmatter.id);
+                if (
+                  resolveIndexingCapabilities(this.config).queryAwareIndexing &&
+                  m.path &&
+                  m.frontmatter?.created
+                ) {
+                  clusterDeindexBatch.push({
+                    path: m.path,
+                    createdAt: m.frontmatter.created,
+                    tags: m.frontmatter.tags ?? [],
+                  });
+                }
+              } catch (cleanupErr) {
+                log.warn(
+                  `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
+                );
               }
+              result.memoriesArchived++;
+            }
+          }
+        } finally {
+          // Best-effort batch index cleanup, flushed in `finally` so sources
+          // already archived on disk are de-indexed even if a later archive
+          // iteration throws. Never abort the cluster (and thereby skip the
+          // catalog touch in the outer `finally`) on an index write failure.
+          if (clusterDeindexBatch.length > 0) {
+            try {
+              await deindexMemoriesBatchAsync(targetStorage.dir, clusterDeindexBatch);
             } catch (cleanupErr) {
               log.warn(
                 `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
               );
             }
-            result.memoriesArchived++;
-          }
-        }
-        // Best-effort batch index cleanup: never abort the cluster (and thereby
-        // skip the catalog touch in `finally`) on an index write failure.
-        if (clusterDeindexBatch.length > 0) {
-          try {
-            await deindexMemoriesBatchAsync(targetStorage.dir, clusterDeindexBatch);
-          } catch (cleanupErr) {
-            log.warn(
-              `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
-            );
           }
         }
 
