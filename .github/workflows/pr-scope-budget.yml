@@ -1,0 +1,144 @@
+# PR scope budget (issue #1991 PR2, umbrella #1988).
+#
+# Own workflow (not a ci.yml job) so `labeled`/`unlabeled` events re-evaluate
+# the check without re-running the full CI matrix — applying or removing
+# `scope-budget-exempt` alone must update the verdict (review finding on
+# #2003, both bots independently).
+#
+# Warn-first rollout: this check is visible but not yet in any required
+# aggregator; the enforcement flip cites two weeks of its telemetry
+# (#1988 decisions C/D).
+name: PR Scope Budget
+
+on:
+  pull_request:
+    # `edited` fires on base-branch retargets (and title/body edits — cheap
+    # no-op re-runs); a retarget changes the diff and must re-evaluate
+    # (review finding on #2003 round 5).
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-scope-budget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-scope-budget:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Trusted-code checkout (review finding on #2003 round 4, P1): the
+      # evaluator scripts run from the PR's BASE revision, so an over-budget
+      # PR cannot neuter scripts/pr-scope-budget.mjs or effective-diff.mjs in
+      # the same head. PR data (files/labels) comes from the API; budget
+      # config comes from the base ref via getContent.
+      - name: Checkout base revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      # Bootstrap-only: the PR that INTRODUCES the evaluator has no scripts
+      # on base yet. Pull exactly the two script files from the PR head with
+      # a loud notice. Once the scripts exist on main this step is a no-op,
+      # and base copies always win.
+      - name: Bootstrap evaluator scripts when absent on base
+        if: hashFiles('scripts/pr-scope-budget.mjs') == ''
+        run: |
+          echo "::notice title=scope-budget bootstrap::evaluator scripts absent on base ref — using PR head copies (bootstrap PR only)"
+          git fetch --quiet --depth=1 origin "$HEAD_SHA"
+          git checkout FETCH_HEAD -- scripts/pr-scope-budget.mjs scripts/effective-diff.mjs scripts/pr-scope-budget.json
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+
+      - name: Fetch PR files, fresh labels, and base-ref budget config
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+
+            // Paginate to completion — artifact PRs with >100 files exist.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number, per_page: 100,
+            });
+            // GitHub truncates listFiles at 3,000 files even when paginated.
+            // A budget check scoring a truncated list could pass on omitted
+            // core files — fail-safe for a limiter is to FAIL loudly
+            // (review finding on #2003 round 3).
+            const reportedChangedFiles = context.payload.pull_request.changed_files;
+            const listComplete =
+              typeof reportedChangedFiles === 'number'
+                ? reportedChangedFiles === files.length
+                : files.length < 3000; // no usable count: anything at the cap may be truncated
+            if (!listComplete) {
+              core.setFailed(
+                `PR file list may be incomplete (${files.length} fetched, API reports ${reportedChangedFiles ?? 'unknown'}) — the scope budget cannot be measured. Split the PR below GitHub's 3,000-file listing cap.`,
+              );
+              return;
+            }
+            fs.writeFileSync('/tmp/pr-files.json', JSON.stringify(files.map((f) => ({
+              filename: f.filename, additions: f.additions, deletions: f.deletions, status: f.status,
+              previous_filename: f.previous_filename,
+            }))));
+
+            // Labels fetched FRESH (payload labels are stale on synchronize).
+            const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
+              owner, repo, issue_number: pull_number, per_page: 100,
+            });
+            fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels.map((l) => l.name)));
+
+            // Thresholds + ignore manifest from the BASE ref: a PR can never
+            // weaken its own budget by editing them in the same head. Changes
+            // to either file take effect only after merge.
+            //
+            // Bootstrap exception (review finding on #2003 round 2): when a
+            // file does not exist on the base ref yet — the PR introducing
+            // this very check, or a repo without an ignore manifest — fall
+            // back to the checked-out HEAD copy (or an empty manifest). The
+            // fallback only widens what a PR can do while the config is not
+            // yet on main; once merged, base-ref copies take precedence.
+            const baseRef = context.payload.pull_request.base.sha;
+            async function fetchBaseFile(repoPath, outPath, fallbackPath, emptyFallback) {
+              let payload;
+              try {
+                payload = await github.rest.repos.getContent({
+                  owner, repo, path: repoPath, ref: baseRef,
+                });
+              } catch (error) {
+                if (error?.status !== 404) throw error;
+                if (fallbackPath && fs.existsSync(fallbackPath)) {
+                  core.info(`${repoPath} not on base ref — using checked-out copy (bootstrap).`);
+                  fs.copyFileSync(fallbackPath, outPath);
+                  return;
+                }
+                if (emptyFallback !== undefined) {
+                  core.info(`${repoPath} not on base ref and no local copy — using empty fallback.`);
+                  fs.writeFileSync(outPath, emptyFallback);
+                  return;
+                }
+                throw error;
+              }
+              const text = Buffer.from(payload.data.content ?? '', payload.data.encoding ?? 'base64').toString('utf8');
+              fs.writeFileSync(outPath, text);
+            }
+            await fetchBaseFile('scripts/pr-scope-budget.json', '/tmp/budget-thresholds.json', 'scripts/pr-scope-budget.json');
+            await fetchBaseFile('.github/ai-review-ignore', '/tmp/budget-ignore', '.github/ai-review-ignore', '');
+            core.info(`Fetched ${files.length} changed files, ${labels.length} labels, base-ref config @ ${baseRef.slice(0, 7)}.`);
+
+      - name: Evaluate scope budget
+        run: >-
+          node scripts/pr-scope-budget.mjs
+          --files /tmp/pr-files.json
+          --labels /tmp/pr-labels.json
+          --thresholds /tmp/budget-thresholds.json
+          --ignore /tmp/budget-ignore
