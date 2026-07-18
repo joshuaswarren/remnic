@@ -402,3 +402,20 @@ test("prototype-machinery attribute keys are rejected outright", () => {
     );
   }
 });
+
+test("the runtime brand does not survive object spread (round 4)", () => {
+  const sealed = composeMemoryEnvelope(minimalInput(), CTX);
+  assert.equal(isSealedMemoryEnvelope(sealed), true);
+  // Spread copies only enumerable own properties — a modified copy loses
+  // the brand and fails both the runtime check and the payload builder.
+  const forged = { ...sealed, content: "forged content" };
+  assert.equal(isSealedMemoryEnvelope(forged), false);
+  assert.throws(
+    () => buildWriteIdempotencyPayload(forged as unknown as SealedMemoryEnvelope, SCOPE),
+    /minted by composeMemoryEnvelope/,
+  );
+  const assigned = Object.assign({}, sealed, { confidence: 1 });
+  assert.equal(isSealedMemoryEnvelope(assigned), false);
+  // JSON round-trips (the common accidental copy) also drop the brand.
+  assert.equal(isSealedMemoryEnvelope(JSON.parse(JSON.stringify(sealed))), false);
+});

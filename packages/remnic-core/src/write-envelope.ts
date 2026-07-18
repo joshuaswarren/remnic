@@ -305,8 +305,7 @@ export function composeMemoryEnvelope(
     fail("ctx.now", "must return a valid Date");
   }
 
-  const envelope = Object.freeze({
-    [sealedBrand]: true,
+  const body = {
     // Trimmed: other write paths persist trimmed content (e.g. explicit
     // capture), so the sealed form and fingerprint must match what storage
     // will actually hold (review finding on #1998).
@@ -322,7 +321,19 @@ export function composeMemoryEnvelope(
     sourceReason: normalizeOptionalString("sourceReason", input.sourceReason),
     source: ctx.source.trim(),
     composedAt: now.toISOString(),
-  }) as unknown as SealedMemoryEnvelope;
+  };
+  // The runtime brand is NON-ENUMERABLE: object spread / Object.assign copy
+  // only enumerable own properties, so `{ ...sealed, content: "forged" }`
+  // does NOT carry the brand — a spread-modified copy fails the runtime
+  // check instead of impersonating a sealed envelope (review finding on
+  // #1998 round 4).
+  Object.defineProperty(body, sealedBrand, {
+    value: true,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  const envelope = Object.freeze(body) as unknown as SealedMemoryEnvelope;
   return envelope;
 }
 
