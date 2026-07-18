@@ -210,11 +210,29 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     ),
     "checkout-session-reuse-one-post-expiry-replacement"
   );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Avoid issuing a fresh checkout token, for each request or ordinary retry. Reuse the checkout-session token while valid; mint exactly one replacement after expiry."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the current checkout-session token for every request while valid and mint exactly one replacement token after expiry."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
   for (const negatedOrMisordered of [
     "Do not reuse the checkout-session token while it is valid; mint one replacement before expiry.",
     "Reuse the checkout-session token while valid; do not mint exactly one replacement after expiry.",
     "Reuse the checkout-session token while valid; mint exactly one replacement before expiry.",
     "Reuse the checkout-session token while valid. Mint exactly one replacement after expiry. Mint a new checkout token for every request and every ordinary retry.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Mint a new checkout token for every request, including ordinary retries.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Issue a fresh checkout token per checkout request.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Rotate the token on each ordinary retry.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. For every checkout request, create a new token.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Create a fresh checkout token, including subsequent retries.",
+    "Reuse the checkout-session token while valid; mint exactly one replacement after expiry. Renew the checkout token during all retry attempts.",
   ]) {
     assert.equal(relayCheckoutDecisionContractKey(negatedOrMisordered), null);
   }
@@ -223,8 +241,25 @@ test("Relay judge decisions use the authoritative live source-grounding contract
     relayStaleCheckoutDecisionContractKey("Mint a new checkout token for every request and every ordinary retry."),
     "checkout-token-per-request-and-retry-rotation"
   );
+  for (const alternateStalePolicy of [
+    "Mint a new checkout token for every request, including ordinary retries.",
+    "For each checkout request, issue a fresh token.",
+    "Rotate checkout tokens on all retry attempts.",
+    "Create a fresh checkout token, including subsequent retries.",
+  ]) {
+    assert.equal(
+      relayStaleCheckoutDecisionContractKey(alternateStalePolicy),
+      "checkout-token-per-request-and-retry-rotation"
+    );
+  }
   assert.equal(
     relayStaleCheckoutDecisionContractKey("Do not mint a new checkout token every request and every ordinary retry."),
+    null
+  );
+  assert.equal(
+    relayStaleCheckoutDecisionContractKey(
+      "Avoid issuing a fresh checkout token, for each request or ordinary retry."
+    ),
     null
   );
   assert.equal(

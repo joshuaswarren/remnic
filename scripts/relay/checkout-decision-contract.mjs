@@ -12,9 +12,17 @@ const COUNT_SOURCE = String.raw`(?:exactly\s+(?:one|1)|one|a\s+single|single)`;
 const REPLACEMENT_ACTION_SOURCE = String.raw`(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing))`;
 const REPLACEMENT_OBJECT_SOURCE = String.raw`(?:replacement|(?:new\s+)?(?:checkout\s+)?token)`;
 const ROTATION_ACTION_PATTERN =
-  /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing))\b/;
+  /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
+const ROTATION_OBJECT_PATTERN =
+  /\b(?:(?:new|fresh|replacement|current)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?tokens?\b/;
+const PER_REQUEST_ROTATION_PATTERN =
+  /\b(?:(?:on|for|at|during|across)\s+)?(?:every|each|all)\s+(?:checkout\s+)?requests?\b|\bper[-\s]+(?:checkout\s+)?request\b/;
+const PER_RETRY_ROTATION_PATTERN =
+  /\b(?:including|on|for|during|across)\s+(?:(?:every|each|all)\s+)?(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?\b|\b(?:every|each|all)\s+(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?\b|\bper[-\s]+(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)\b/;
+const PREDICATE_CONJUNCTION_PATTERN =
+  /\b(?:and|but|while|whereas|however)\b(?=\s+(?:after|once|upon|following|for|on|during|across|every|each|all|per|do|does|never|must|should|cannot|can't|without|not|avoid|reject|reuse|keep|use|mint|create|issue|rotate|refresh|replace|renew|regenerate)\b)/;
 const NEGATION_PATTERN =
-  /\b(?:do\s+not|does\s+not|don't|doesn't|never|must\s+not|should\s+not|cannot|can't|without|not|forbid(?:s|den)?|disallow(?:s|ed)?|prohibit(?:s|ed)?)\b/;
+  /\b(?:do\s+not|does\s+not|don't|doesn't|never|must\s+not|should\s+not|cannot|can't|without|not|forbid(?:s|den)?|disallow(?:s|ed)?|prohibit(?:s|ed)?|avoid(?:s|ed|ing)?|reject(?:s|ed|ing)?|rather\s+than|instead\s+of)\b/;
 const POST_EXPIRY_REPLACEMENT_PATTERNS = [
   new RegExp(
     String.raw`\b(?:after|once|upon|following)\s+(?:(?:the|a)\s+(?:checkout\s+)?token\s+)?(?:explicit\s+)?${EXPIRY_SOURCE}\b[^.;:!?]{0,80}\b${REPLACEMENT_ACTION_SOURCE}\b[^.;:!?]{0,48}\b${COUNT_SOURCE}\b[^.;:!?]{0,32}\b${REPLACEMENT_OBJECT_SOURCE}\b`
@@ -24,23 +32,65 @@ const POST_EXPIRY_REPLACEMENT_PATTERNS = [
   ),
 ];
 
-function decisionClauses(value) {
+function decisionClauseGroups(value) {
   return value
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .split(/[,.;:!?]+/)
-    .map((clause) => clause.trim())
+    .split(/[.;:!?]+/)
+    .map((statement) =>
+      statement
+        .split(/,+/)
+        .map((clause) => clause.trim())
+        .filter(Boolean)
+    )
+    .filter((clauses) => clauses.length > 0);
+}
+
+function decisionClauses(value) {
+  return decisionClauseGroups(value).flat();
+}
+
+function hasRotationActionAndObject(clause) {
+  return ROTATION_ACTION_PATTERN.test(clause) && ROTATION_OBJECT_PATTERN.test(clause);
+}
+
+function hasRotationTarget(clause) {
+  return PER_REQUEST_ROTATION_PATTERN.test(clause) || PER_RETRY_ROTATION_PATTERN.test(clause);
+}
+
+function rotationPredicateClauses(clause) {
+  return clause
+    .split(PREDICATE_CONJUNCTION_PATTERN)
+    .map((predicate) => predicate.trim())
     .filter(Boolean);
 }
 
-function isAffirmativePerRequestRotationClause(clause) {
+function isAffirmativeRotationClause(clause) {
   return (
-    ROTATION_ACTION_PATTERN.test(clause) &&
-    /\b(?:new\s+)?(?:checkout\s+)?token\b/.test(clause) &&
-    /\bevery (?:checkout )?request\b/.test(clause) &&
-    /\bevery (?:ordinary )?retr(?:y|ies)\b/.test(clause) &&
+    hasRotationActionAndObject(clause) &&
+    hasRotationTarget(clause) &&
     !NEGATION_PATTERN.test(clause)
   );
+}
+
+function hasAffirmativeRotationPolicy(value) {
+  return decisionClauseGroups(value).some((clauses) => {
+    const predicateGroups = clauses.map(rotationPredicateClauses);
+    if (predicateGroups.flat().some(isAffirmativeRotationClause)) return true;
+    return predicateGroups.some((predicates, index) => {
+      const nextPredicates = predicateGroups[index + 1];
+      if (!nextPredicates) return false;
+      return predicates.some((predicate) =>
+        nextPredicates.some((nextPredicate) => {
+          if (NEGATION_PATTERN.test(predicate) || NEGATION_PATTERN.test(nextPredicate)) return false;
+          return (
+            (hasRotationActionAndObject(predicate) && hasRotationTarget(nextPredicate)) ||
+            (hasRotationTarget(predicate) && hasRotationActionAndObject(nextPredicate))
+          );
+        })
+      );
+    });
+  });
 }
 
 export function relayCheckoutDecisionContractKey(value) {
@@ -69,13 +119,13 @@ export function relayCheckoutDecisionContractKey(value) {
         (RETRY_PATTERN.test(clause) || VALIDITY_PATTERN.test(clause) || /\bsession\b/.test(clause))) ||
         POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause)))
   );
-  const contradictoryPerRequestRotation = clauses.some(isAffirmativePerRequestRotationClause);
+  const contradictoryPerUseRotation = hasAffirmativeRotationPolicy(value);
   const matches =
     sessionLifecycle &&
     positiveReuseLifecycle &&
     postExpiryReplacement &&
     !negatedRequiredBehavior &&
-    !contradictoryPerRequestRotation;
+    !contradictoryPerUseRotation;
   return matches ? RELAY_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
@@ -90,7 +140,7 @@ export function assertRelayCheckoutDecision(value, context) {
 export function relayStaleCheckoutDecisionContractKey(value) {
   if (typeof value !== "string") return null;
   const clauses = decisionClauses(value);
-  const rotatesEveryRequest = clauses.some(isAffirmativePerRequestRotationClause);
+  const rotatesEveryUse = hasAffirmativeRotationPolicy(value);
   const statesCompleteCanonicalPolicy =
     clauses.some(
       (clause) =>
@@ -102,7 +152,7 @@ export function relayStaleCheckoutDecisionContractKey(value) {
       (clause) =>
         POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause)) && !NEGATION_PATTERN.test(clause)
     );
-  return rotatesEveryRequest && !statesCompleteCanonicalPolicy ? RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY : null;
+  return rotatesEveryUse && !statesCompleteCanonicalPolicy ? RELAY_STALE_CHECKOUT_DECISION_CONTRACT_KEY : null;
 }
 
 export function assertRelayStaleCheckoutDecision(value, context) {
