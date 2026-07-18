@@ -10,7 +10,6 @@ import {
   runWithinCodexCreditBudget,
   type CodexCreditBudgetConfig,
 } from "@remnic/bench";
-import type { z } from "zod";
 
 import {
   RELAY_MODEL,
@@ -34,7 +33,7 @@ export const RELAY_DISABLED_CODEX_FEATURES = [
   "remote_plugin",
 ] as const;
 
-export interface RunRelayCodexOneShotOptions<T> {
+export interface RunRelayCodexOneShotOptions {
   repoRoot: string;
   directories: RelayRunDirectories;
   role: RelayRole;
@@ -45,7 +44,6 @@ export interface RunRelayCodexOneShotOptions<T> {
   mcpToken: string;
   timeoutMs: number;
   budget: CodexCreditBudgetConfig;
-  outputSchema?: z.ZodType<T>;
   signal?: AbortSignal;
 }
 
@@ -241,7 +239,7 @@ export function countRecallToolCalls(jsonl: string): number {
 }
 
 async function spawnIsolated(
-  options: RunRelayCodexOneShotOptions<unknown>,
+  options: RunRelayCodexOneShotOptions,
   codexHome: string,
   outputDir: string,
   prompt: string,
@@ -341,9 +339,9 @@ export class RelayCodexRunError extends Error {
   }
 }
 
-export async function runRelayCodexOneShot<T>(
-  options: RunRelayCodexOneShotOptions<T>,
-): Promise<RelayCodexCallResult<T>> {
+export async function runRelayCodexOneShot(
+  options: RunRelayCodexOneShotOptions,
+): Promise<RelayCodexCallResult<unknown>> {
   if (options.signal?.aborted) {
     throw new CodexCreditDispatchError("Relay Codex one-shot was cancelled before dispatch");
   }
@@ -360,7 +358,7 @@ export async function runRelayCodexOneShot<T>(
     config: options.budget,
     model: RELAY_MODEL,
     run: async () => {
-      const result = await spawnIsolated(options as RunRelayCodexOneShotOptions<unknown>, codexHome, outputDir, prompt);
+      const result = await spawnIsolated(options, codexHome, outputDir, prompt);
       if (!result.spawned) throw new CodexCreditDispatchError("isolated Codex process never dispatched");
       const usage = parseCodexJsonlUsage(result.stdout);
       if (!usage) {
@@ -391,8 +389,7 @@ export async function runRelayCodexOneShot<T>(
   } catch {
     throw new RelayCodexRunError(`Relay ${options.role} one-shot wrote invalid JSON output`);
   }
-  const outputSchema = options.outputSchema ?? (schemaForRole(options.role) as z.ZodType<T>);
-  const output = outputSchema.parse(parsed);
+  const output = schemaForRole(options.role).parse(parsed);
   const usage = parseCodexJsonlUsage(capture.stdout);
   if (!usage) throw new RelayCodexRunError(`Relay ${options.role} one-shot usage disappeared after accounting`);
   const summary = RelayCodexCallSummarySchema.parse({
