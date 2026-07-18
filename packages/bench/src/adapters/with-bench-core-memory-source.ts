@@ -11,6 +11,7 @@ export async function withBenchCoreMemorySource(
     writeSealedMemory: BenchSealedWrite;
   };
   const originalWriteSealedMemory = storage.writeSealedMemory;
+  const boundWriteSealedMemory = originalWriteSealedMemory.bind(storage);
 
   storage.writeSealedMemory = async (envelope, extras) => {
     const requestedSource = envelope.source;
@@ -37,7 +38,7 @@ export async function withBenchCoreMemorySource(
         now: () => new Date(envelope.composedAt),
       },
     );
-    return originalWriteSealedMemory(sourcedEnvelope, extras);
+    return boundWriteSealedMemory(sourcedEnvelope, extras);
   };
 
   try {
