@@ -2924,6 +2924,15 @@ export class EngramAccessService {
             capturedReservation = consumed.reservation;
             return consumed.response;
           }
+          // No LIVE flight to join. If the caller already disconnected before we
+          // committed any work, reject at admission — creating the flight starts
+          // the pipeline (queue + execute + persist) and reserves a cross-namespace
+          // budget event. For a keyed leader `race` is false, so without this the
+          // caller would burn a full recall + budget event before the final
+          // post-consume abort check rejects, even though it left before admission
+          // and no follower is here to keep the flight alive. The old width-1
+          // budget lock rejected before starting work; preserve that (#1906 r9).
+          throwIfAborted(request.abortSignal);
           const flight = this.createAndStartFlight(normalizedRequest, flightKey, principalKey, keyed);
           ownedFlight = flight;
           // The leader's own budget event is reserved inside the pipeline, so it

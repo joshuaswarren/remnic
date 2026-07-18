@@ -1186,3 +1186,36 @@ test("a keyed follower that disconnects during the leader's put gets AbortError 
   // The follower released its own reservation; the leader's persisted one stands.
   assert.equal(h.liveBudget(), 1, "the disconnected follower released its reservation");
 });
+
+test("a keyed leader whose signal is already aborted at admission rejects without starting a pipeline or reserving budget (round 9)", async () => {
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  // A keyed leader on a cache MISS runs execute() (the admission path under test).
+  // Stub handleIdempotentRead to that miss path (the harness has no real store).
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => options.execute();
+  const controller = new AbortController();
+  controller.abort(); // client disconnected BEFORE admission
+
+  await assert.rejects(
+    h.service.recall({ query: "gone", idempotencyKey: "k", abortSignal: controller.signal }),
+    (error: Error) => error.name === "AbortError",
+  );
+  // Drain any deferred work so a stray pipeline/reserve would surface.
+  await flushMacrotasks();
+
+  assert.equal(pipelineRuns, 0, "no pipeline ran for a caller that left before admission");
+  assert.equal(h.liveBudget(), 0, "no cross-namespace budget event was reserved");
+});
