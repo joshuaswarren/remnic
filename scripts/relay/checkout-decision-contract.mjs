@@ -49,6 +49,32 @@ const ALLOWED_NATURAL_TOKEN_EXPIRY_PATTERNS = [
   /^(?:let|allow)\s+(?:the\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?(?:token|credential|key)\s+(?:to\s+)?expir(?:e|es)\s+naturally$/,
   /^(?:the\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?(?:token|credential|key)\s+expir(?:e|es)\s+naturally$/,
 ];
+const ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES = new Set([
+  "do not rotate tokens on every request",
+  "do not mint a new token on every retry",
+  "avoid issuing a fresh checkout token",
+  "do not mint another replacement before expiry",
+  "never refresh the checkout token prior to expiry",
+  "the checkout token must not be replaced before it expires",
+  "do not mint again while the checkout token is still valid",
+  "never rotate the checkout token during its validity",
+  "do not refresh the checkout token early",
+  "never renew the checkout token prematurely",
+  "avoid rotating the checkout token ahead of time",
+  "do not issue a fresh checkout token in advance",
+  "never preemptively mint a replacement token",
+  "do not proactively create a fresh checkout token",
+  "do not revoke the checkout token while it is valid",
+  "never invalidate the current checkout token",
+  "do not delete the checkout-session token before expiry",
+  "never disable the checkout token on an ordinary retry",
+  "do not force the checkout token to expire early",
+  "never mark the checkout token invalid while valid",
+  "do not mint another token after expiry",
+  "never issue a second replacement after expiry",
+  "do not refresh the checkout token again after expiry",
+  "no additional checkout tokens are minted after expiry",
+]);
 const PER_REQUEST_ROTATION_PATTERN =
   /\b(?:(?:on|for|at|during|across)\s+)?(?:every|each|all)\s+(?:checkout\s+)?requests?\b|\bper[-\s]+(?:checkout\s+)?request\b/;
 const PER_RETRY_ROTATION_PATTERN =
@@ -244,8 +270,10 @@ function hasUnrecognizedAffirmativeTokenMutationPolicy(value) {
   return decisionClauseGroups(value)
     .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
     .some((predicate) => {
-      if (hasReplacementPolicyNegation(predicate)) return false;
       if (!TOKEN_LIFECYCLE_TARGET_PATTERN.test(predicate)) return false;
+      if (hasReplacementPolicyNegation(predicate)) {
+        return !ALLOWED_NEGATED_TOKEN_SAFETY_CLAUSES.has(predicate);
+      }
       return !isAllowedAffirmativeTokenLifecycleClause(predicate);
     });
 }
