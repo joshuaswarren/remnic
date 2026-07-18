@@ -92,9 +92,12 @@ Expected output on the verified platform:
 RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
-This direct Node command copies only the package manifest, five static UI files, sealed
-recording, synthetic fixtures, demo script, and verifier into a new temporary
-directory. It asserts that no symlink or `node_modules` directory exists, runs
+This direct Node command first snapshots the package manifest, five static UI
+files, sealed recording, synthetic fixtures, demo script, and verifier through
+mount-locked no-follow descriptors. It rejects symlinks, hard links, mount
+crossings, and concurrent source changes before any verified byte is copied to
+a new temporary directory. It then asserts that no symlink or `node_modules`
+directory exists in the copy, runs
 the exact dependency-free Node verifier with isolated home/temp variables and empty `NODE_PATH`,
 serves the UI on ephemeral loopback, fetches the page/replay/receipt, rejects
 an unlisted path, and removes the temporary package. Invoking Node directly is

@@ -132,7 +132,9 @@ Issue [#1969](https://github.com/joshuaswarren/remnic/issues/1969), PR
 [#2012](https://github.com/joshuaswarren/remnic/pull/2012).
 
 - dependency-free semantic verifier and exact allow-list loopback server;
-- clean-room copy/run/fetch test with no `node_modules`;
+- descriptor-pinned, mount-locked source snapshot that rejects hard links
+  before a clean-room byte is copied, plus a run/fetch test with no
+  `node_modules`;
 - coordinated-reseal rejection and secret/private-path scan;
 - measured 165-second demo plan and narration;
 - claim ledger, Devpost-ready copy, judge guide, provenance documentation, and

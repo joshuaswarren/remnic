@@ -63,6 +63,8 @@ Last updated: 2026-07-18
   and clean-room verification; no npm lifecycle hooks precede attestation.
 - [x] Clean-room copy has no symlink or `node_modules`, uses isolated env, and
   fetches the UI/replay/receipt locally.
+- [x] Clean-room inputs are descriptor-snapshotted before copying, with source
+  symlink, hard-link, mount-crossing, and concurrent-change rejection.
 - [x] Every opened evidence descriptor is locked to the pinned repository
   mount ID, rejecting nested and same-device bind mounts before content reads.
 - [x] Coordinated-reseal rejection and secret/private-path scan.

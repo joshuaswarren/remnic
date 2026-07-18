@@ -95,6 +95,18 @@ async function copyJudgePackage(destination) {
   }
 }
 
+async function copyCleanRoomLauncher(destination) {
+  for (const relative of [
+    "scripts/verify-relay-judge-package.mjs",
+    "scripts/relay/checkout-decision-contract.mjs",
+    "scripts/relay/judge-package.mjs",
+  ]) {
+    const target = path.join(destination, relative);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(repoRoot, relative), target);
+  }
+}
+
 async function resealRecording(recordingRoot) {
   const files = [];
   const pending = [recordingRoot];
@@ -722,15 +734,7 @@ descriptorPinnedTest("Relay direct clean-room launcher never executes npm lifecy
       const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-lifecycle-hook-"));
       try {
         await copyJudgePackage(parent);
-        for (const relative of [
-          "scripts/verify-relay-judge-package.mjs",
-          "scripts/relay/checkout-decision-contract.mjs",
-          "scripts/relay/judge-package.mjs",
-        ]) {
-          const target = path.join(parent, relative);
-          await mkdir(path.dirname(target), { recursive: true });
-          await cp(path.join(repoRoot, relative), target);
-        }
+        await copyCleanRoomLauncher(parent);
         const packagePath = path.join(parent, "package.json");
         const manifest = JSON.parse(await readFile(packagePath, "utf8"));
         manifest.scripts = { ...manifest.scripts, [hookName]: 'node -e "process.exit(73)"' };
@@ -741,6 +745,36 @@ descriptorPinnedTest("Relay direct clean-room launcher never executes npm lifecy
         assert.equal(JSON.parse(result.stdout.trim()).status, "clean-room-verified");
       } finally {
         await rm(parent, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+descriptorPinnedTest("Relay clean-room launcher rejects hard-linked sources before copying", async (t) => {
+  for (const relative of [
+    "package.json",
+    "fixtures/remnic-relay/upstream/CONTRACT.md",
+    "scripts/relay/judge-package.mjs",
+  ]) {
+    await t.test(relative, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-source-"));
+      const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-hardlink-host-"));
+      try {
+        await copyJudgePackage(parent);
+        await copyCleanRoomLauncher(parent);
+        const target = path.join(parent, relative);
+        const outsideFile = path.join(outside, "host-private-source");
+        await writeFile(outsideFile, await readFile(target));
+        await rm(target);
+        await link(outsideFile, target);
+
+        const result = await captureNode(["scripts/verify-relay-judge-package.mjs", "--json"], { cwd: parent });
+        assert.notEqual(result.code, 0, result.stdout);
+        assert.ok(result.stderr.includes(relative), result.stderr);
+        assert.match(result.stderr, /must not be a hard-linked file/);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
       }
     });
   }

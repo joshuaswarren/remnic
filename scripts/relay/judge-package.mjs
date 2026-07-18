@@ -157,9 +157,9 @@ async function descriptorMountId(handle, label) {
       cause: error,
     });
   }
-  const match = descriptorInfo.match(/^mnt_id:\s+([1-9]\d*)\s*$/m);
-  invariant(match, `${label} must expose exactly one Linux descriptor mount ID`);
-  return match[1];
+  const matches = [...descriptorInfo.matchAll(/^mnt_id:\s+([1-9]\d*)\s*$/gm)];
+  invariant(matches.length === 1, `${label} must expose exactly one Linux descriptor mount ID`);
+  return matches[0][1];
 }
 
 function descriptorTraversalSupported() {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -18,6 +19,216 @@ const packagePaths = [
 
 function invariant(condition, message) {
   if (!condition) throw new Error(`Relay clean-room verification failed: ${message}`);
+}
+
+function sameOpenedNode(before, after) {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.mode === after.mode &&
+    before.nlink === after.nlink &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
+  );
+}
+
+function packagePathSegments(relative) {
+  invariant(
+    typeof relative === "string" && relative.length > 0 && !path.isAbsolute(relative) && !relative.includes("\\"),
+    `${relative} must be a repository-relative POSIX path`
+  );
+  const segments = relative.split("/");
+  invariant(
+    segments.every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
+    `${relative} must stay inside the repository root`
+  );
+  return segments;
+}
+
+function descriptorChildPath(handle, segment) {
+  return `/proc/self/fd/${handle.fd}/${segment}`;
+}
+
+async function descriptorMountId(handle, label) {
+  let descriptorInfo;
+  try {
+    descriptorInfo = await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8");
+  } catch (error) {
+    throw new Error(`Relay clean-room verification failed: ${label} must expose a Linux descriptor mount ID`, {
+      cause: error,
+    });
+  }
+  const matches = [...descriptorInfo.matchAll(/^mnt_id:\s+([1-9]\d*)\s*$/gm)];
+  invariant(matches.length === 1, `${label} must expose exactly one Linux descriptor mount ID`);
+  return matches[0][1];
+}
+
+async function openSourceChildNoFollow(parentHandle, segment, label, expectedType, expectedMountId) {
+  const directoryFlag = expectedType === "directory" ? fsConstants.O_DIRECTORY : 0;
+  let handle;
+  try {
+    handle = await open(
+      descriptorChildPath(parentHandle, segment),
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK | directoryFlag
+    );
+  } catch (error) {
+    throw new Error(
+      `Relay clean-room verification failed: ${label} must not traverse a symlink and must be a regular file or directory`,
+      { cause: error }
+    );
+  }
+  try {
+    const info = await handle.stat({ bigint: true });
+    invariant(
+      expectedType === "directory" ? info.isDirectory() : info.isDirectory() || info.isFile(),
+      `${label} has the wrong filesystem type`
+    );
+    if (expectedMountId !== undefined) {
+      invariant(
+        (await descriptorMountId(handle, label)) === expectedMountId,
+        `${label} crosses a filesystem mount boundary; nested and bind-mounted inputs are forbidden`
+      );
+    }
+    return { handle, info };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function openPinnedSourceRoot(root) {
+  invariant(
+    process.platform === "linux" &&
+      typeof fsConstants.O_NOFOLLOW === "number" &&
+      typeof fsConstants.O_DIRECTORY === "number" &&
+      typeof fsConstants.O_NONBLOCK === "number",
+    "the clean-room source snapshot requires Linux with procfs and descriptor no-follow flags"
+  );
+  const [descriptorDirectory, descriptorInfoDirectory] = await Promise.all([
+    lstat("/proc/self/fd"),
+    lstat("/proc/self/fdinfo"),
+  ]);
+  invariant(
+    descriptorDirectory.isDirectory() && descriptorInfoDirectory.isDirectory(),
+    "the clean-room source snapshot requires Linux with procfs and descriptor no-follow flags"
+  );
+  let current;
+  try {
+    current = await open(path.parse(path.resolve(root)).root, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+  } catch (error) {
+    throw new Error("Relay clean-room verification failed: the source root must be a real directory", {
+      cause: error,
+    });
+  }
+  try {
+    for (const segment of path.resolve(root).split(path.sep).filter(Boolean)) {
+      const opened = await openSourceChildNoFollow(current, segment, "the source root", "directory");
+      const previous = current;
+      current = opened.handle;
+      await previous.close();
+    }
+    return { handle: current, mountId: await descriptorMountId(current, "the source root") };
+  } catch (error) {
+    await current.close();
+    throw error;
+  }
+}
+
+async function openSourceRelative(rootHandle, rootMountId, relative) {
+  const segments = packagePathSegments(relative);
+  let current = rootHandle;
+  let ownsCurrent = false;
+  try {
+    for (const [index, segment] of segments.entries()) {
+      const opened = await openSourceChildNoFollow(
+        current,
+        segment,
+        relative,
+        index === segments.length - 1 ? undefined : "directory",
+        rootMountId
+      );
+      if (ownsCurrent) await current.close();
+      current = opened.handle;
+      ownsCurrent = true;
+    }
+    return current;
+  } catch (error) {
+    if (ownsCurrent) await current.close();
+    throw error;
+  }
+}
+
+async function readOpenedSourceFile(handle, label) {
+  try {
+    const before = await handle.stat({ bigint: true });
+    invariant(before.isFile(), `${label} must be a non-symlink regular file`);
+    invariant(before.nlink === 1n, `${label} must not be a hard-linked file`);
+    const contents = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    invariant(sameOpenedNode(before, after), `${label} changed while its verified bytes were being read`);
+    return contents;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function snapshotSourceDirectory(directoryHandle, rootMountId, prefix, snapshot) {
+  const before = await directoryHandle.stat({ bigint: true });
+  invariant(before.isDirectory(), `${prefix} must be a real directory`);
+  const names = (await readdir(`/proc/self/fd/${directoryHandle.fd}`)).sort((left, right) => left.localeCompare(right));
+  for (const name of names) {
+    invariant(name !== "." && name !== ".." && !name.includes("/"), `${prefix} contains an invalid entry name`);
+    const relative = `${prefix}/${name}`;
+    const { handle, info } = await openSourceChildNoFollow(directoryHandle, name, relative, undefined, rootMountId);
+    if (info.isDirectory()) {
+      try {
+        await snapshotSourceDirectory(handle, rootMountId, relative, snapshot);
+      } finally {
+        await handle.close();
+      }
+    } else {
+      invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
+      snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+    }
+  }
+  const after = await directoryHandle.stat({ bigint: true });
+  invariant(sameOpenedNode(before, after), `${prefix} changed while its verified snapshot was being captured`);
+}
+
+async function snapshotPackageSources(root, relatives) {
+  const { handle: rootHandle, mountId } = await openPinnedSourceRoot(root);
+  const snapshot = new Map();
+  try {
+    const before = await rootHandle.stat({ bigint: true });
+    for (const relative of relatives) {
+      const handle = await openSourceRelative(rootHandle, mountId, relative);
+      const info = await handle.stat({ bigint: true });
+      if (info.isDirectory()) {
+        try {
+          await snapshotSourceDirectory(handle, mountId, relative, snapshot);
+        } finally {
+          await handle.close();
+        }
+      } else {
+        invariant(!snapshot.has(relative), `${relative} appears more than once in the clean-room source snapshot`);
+        snapshot.set(relative, await readOpenedSourceFile(handle, relative));
+      }
+    }
+    const after = await rootHandle.stat({ bigint: true });
+    invariant(sameOpenedNode(before, after), "the source root changed while the clean-room snapshot was captured");
+    return snapshot;
+  } finally {
+    await rootHandle.close();
+  }
+}
+
+async function writePackageSnapshot(snapshot, destinationRoot) {
+  for (const [relative, contents] of [...snapshot.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const destination = path.join(destinationRoot, relative);
+    await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+    await writeFile(destination, contents, { flag: "wx", mode: 0o600 });
+  }
 }
 
 async function assertNoSymlinksOrDependencies(root) {
@@ -94,29 +305,21 @@ function parseArgs(argv) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const sourceSnapshot = await snapshotPackageSources(repoRoot, packagePaths);
   const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-relay-judge-"));
   const cleanRoot = path.join(parent, "remnic-relay-judge-package");
   await mkdir(cleanRoot, { mode: 0o700 });
   try {
-    for (const relative of packagePaths) {
-      const source = path.join(repoRoot, relative);
-      const destination = path.join(cleanRoot, relative);
-      await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-      await cp(source, destination, { recursive: true, dereference: false, errorOnExist: true, force: false });
-    }
+    await writePackageSnapshot(sourceSnapshot, cleanRoot);
     await assertNoSymlinksOrDependencies(cleanRoot);
 
     const isolatedHome = path.join(parent, "home");
     const isolatedTmp = path.join(parent, "tmp");
     await Promise.all([mkdir(isolatedHome, { mode: 0o700 }), mkdir(isolatedTmp, { mode: 0o700 })]);
-    const child = await captureCommand(
-      process.execPath,
-      ["scripts/relay/judge-package.mjs", "verify", "--json"],
-      {
-        cwd: cleanRoot,
-        env: cleanRoomEnvironment(isolatedHome, isolatedTmp),
-      }
-    );
+    const child = await captureCommand(process.execPath, ["scripts/relay/judge-package.mjs", "verify", "--json"], {
+      cwd: cleanRoot,
+      env: cleanRoomEnvironment(isolatedHome, isolatedTmp),
+    });
     invariant(child.code === 0, child.stderr || `dependency-free Node verifier exited ${child.code}`);
     const receipt = JSON.parse(child.stdout.trim());
     invariant(
