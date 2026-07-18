@@ -241,6 +241,41 @@ function walkSourceFiles(dir) {
   return out;
 }
 
+/**
+ * Strict variant for the file-size ratchet (issue #1995 round 6): identical
+ * traversal, but a SYMLINK whose name looks like a counted source file (or a
+ * symlinked subdirectory) is recorded as a violation instead of silently
+ * skipped — otherwise `giant.ts -> elsewhere` would evade the line cap while
+ * still compiling as part of the package.
+ */
+function walkSourceFilesStrict(dir) {
+  const files = [];
+  const symlinkedSources = [];
+  if (!existsSync(dir)) {
+    return { files, symlinkedSources };
+  }
+  const entries = readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      // ANY symlink inside a scan root is a counting-evasion vector
+      // (`giant.ts -> elsewhere`, or a symlinked subtree) — record it.
+      symlinkedSources.push(toPosix(path.relative(ROOT, full)));
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (!SKIPPED_DIR_NAMES.has(entry.name)) {
+        const nested = walkSourceFilesStrict(full);
+        files.push(...nested.files);
+        symlinkedSources.push(...nested.symlinkedSources);
+      }
+    } else if (entry.isFile() && isCountedSourceFile(entry.name)) {
+      files.push(full);
+    }
+  }
+  return { files, symlinkedSources };
+}
+
 function collectMetrics(oversizeThresholdLoc) {
   // `null` marks a watchlist file that is missing on disk. That is never an
   // improvement: a rename would otherwise evade the per-file ratchet while
@@ -323,14 +358,18 @@ function collectMetrics(oversizeThresholdLoc) {
   // File-size ratchet (issue #1995): every source file over the cap, across
   // ALL package src roots + root src/, keyed by repo-relative posix path.
   const oversizeByFile = {};
+  const symlinkedSourceEntries = [];
   for (const rootDir of sizeCapScanRoots()) {
-    for (const file of walkSourceFiles(rootDir)) {
+    const { files: rootFiles, symlinkedSources } = walkSourceFilesStrict(rootDir);
+    symlinkedSourceEntries.push(...symlinkedSources);
+    for (const file of rootFiles) {
       const lines = countLines(file);
       if (lines > NEW_FILE_SIZE_CAP_LOC) {
         oversizeByFile[toPosix(path.relative(ROOT, file))] = lines;
       }
     }
   }
+  symlinkedSourceEntries.sort();
 
   return {
     watchlistLoc,
@@ -338,6 +377,7 @@ function collectMetrics(oversizeThresholdLoc) {
     oversizedFiles,
     oversizedFileCount: oversizedFiles.length,
     oversizeByFile,
+    symlinkedSourceEntries,
     scatteredConfigFlagReads,
     adHocNamespaceResolutions,
     unmigratedHandlerCount,
@@ -598,6 +638,18 @@ function main() {
     // reported — they carry no blame.
     const changedScope = readChangedFileScope();
     const inScope = (file) => changedScope === null || changedScope.has(file);
+    // Symlinks inside scan roots are counting-evasion vectors (round-6
+    // finding: `giant.ts -> elsewhere` would compile but never be counted).
+    // Same blame scoping as ceilings: only symlinks THIS change introduced
+    // fail its CI run.
+    for (const link of current.symlinkedSourceEntries ?? []) {
+      if (inScope(link)) {
+        failures.push(
+          `${link} is a symlink inside a file-size scan root (issue #1995) — source files and directories ` +
+            "must be regular; symlinked sources evade the line cap and are not permitted.",
+        );
+      }
+    }
     const sortedOversize = Object.entries(current.oversizeByFile).sort(([a], [b]) =>
       a.localeCompare(b),
     );

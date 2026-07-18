@@ -586,3 +586,34 @@ test("file-size ratchet: NUL-present scope files never split on newlines; backsl
     assert.match(run.stderr, /grew from its grandfathered ceiling/);
   });
 });
+
+test("file-size ratchet: symlinked source files inside scan roots fail the check (round 6)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-out-"));
+    try {
+      writeFileSync(path.join(outside, "real-huge.ts"), "pad\n".repeat(5000));
+      symlinkSync(path.join(outside, "real-huge.ts"), path.join(fixture.src, "giant.ts"), "file");
+
+      const check = runRatchets([], fixture);
+      assert.equal(check.status, 1);
+      assert.match(check.stderr, /giant\.ts is a symlink inside a file-size scan root/);
+
+      // Out-of-scope symlinks don't fail this PR's run (merge-skew parity).
+      const scopePath = path.join(fixture.root, "changed.txt");
+      writeFileSync(scopePath, "packages/remnic-core/src/widget.ts\n");
+      const scoped = spawnSync(process.execPath, [SCRIPT], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          REMNIC_RATCHET_ROOT: fixture.root,
+          REMNIC_RATCHET_BASELINE: fixture.baseline,
+          REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+        },
+      });
+      assert.equal(scoped.status, 0, scoped.stderr);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
