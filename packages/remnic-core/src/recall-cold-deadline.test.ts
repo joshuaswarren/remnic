@@ -59,9 +59,20 @@ test("#1907: cold archive-scan deadline aborts the injected step signal, returns
   try {
     const stuck = Promise.withResolvers<QmdSearchResult[]>();
     let capturedStepSignal: AbortSignal | undefined;
+    // Observable side-effect channel. A cooperatively-cancelled worker sees
+    // stepSignal.aborted === true by the time it settles late and performs no
+    // write; if the deadline's abort wiring is removed the signal never aborts,
+    // so the late completion leaks "late" here and the assertion below fails.
+    const lateWrites: string[] = [];
+    const abandonedTaskSettled = Promise.withResolvers<void>();
     const deps = coldDeps(config, async (_prompt, _ns, _limit, _prefilter, abortSignal) => {
       capturedStepSignal = abortSignal;
-      return stuck.promise; // never resolves — the deadline must win the race
+      const late = await stuck.promise; // does not settle before the deadline wins
+      if (!abortSignal?.aborted) {
+        for (const hit of late) lateWrites.push(hit.docid);
+      }
+      abandonedTaskSettled.resolve();
+      return late;
     });
     const coordinator = new RecallSearchPipelineCoordinator(deps);
 
@@ -88,11 +99,17 @@ test("#1907: cold archive-scan deadline aborts the injected step signal, returns
       "a task-level deadline must NOT abort the request-level signal",
     );
 
-    // A late resolution of the abandoned task cannot change the already-returned
-    // fallback — no late side effect on the recall result.
+    // The abandoned task's LATE completion has no observable side effect: a
+    // cooperative worker sees its injected signal aborted and performs no write.
+    // Deterministic — we await the abandoned task's own settlement, not a bare
+    // microtask flush.
     stuck.resolve([{ docid: "late", path: "/facts/late.md", snippet: "late", score: 1 }]);
-    await Promise.resolve();
-    assert.deepEqual(result, [], "the fallback is unaffected by the abandoned task settling late");
+    await abandonedTaskSettled.promise;
+    assert.deepEqual(
+      lateWrites,
+      [],
+      "the abandoned task observed its abort and performed no late write",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
