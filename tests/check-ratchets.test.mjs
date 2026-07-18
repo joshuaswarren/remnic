@@ -731,3 +731,18 @@ test("file-size ratchet: dangling symlinked scan roots are rejected, not skipped
     assert.match(r.stderr, /packages\/evil-pkg\/src/);
   });
 });
+
+test("file-size ratchet: --update refuses to write a baseline while symlink violations exist (round 14)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const outside = path.join(fixture.root, "outside-tree");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, "big.ts"), "pad\n".repeat(2000));
+    symlinkSync(path.join(outside, "big.ts"), path.join(fixture.src, "sneaky.ts"), "file");
+    const before = readFileSync(fixture.baseline, "utf8");
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1, "--update must fail while a symlinked source exists");
+    assert.match(update.stderr, /sneaky\.ts/);
+    assert.equal(readFileSync(fixture.baseline, "utf8"), before, "baseline must be untouched");
+  });
+});

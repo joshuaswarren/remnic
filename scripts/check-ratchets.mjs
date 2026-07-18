@@ -550,6 +550,14 @@ function main() {
 
   if (args.includes("--update")) {
     const metrics = collectMetrics(DEFAULT_OVERSIZE_THRESHOLD_LOC);
+    // Symlink violations block the refresh too (round 14): a tree the CHECK
+    // mode rejects must never be able to mint a fresh baseline.
+    if (metrics.symlinkedSourceEntries.length > 0) {
+      fail(
+        `cannot write baseline: symlinked source entries present: ${metrics.symlinkedSourceEntries.join(", ")}. ` +
+          "Remove the symlink(s) — symlinked sources and scan roots are counting-evasion vectors and always fail the check.",
+      );
+    }
     if (metrics.missingWatchlistFiles.length > 0) {
       fail(
         `cannot write baseline: watchlist file(s) missing on disk: ${metrics.missingWatchlistFiles.join(", ")}. ` +
