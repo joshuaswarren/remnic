@@ -58,6 +58,21 @@ if [[ "${RELAY_TEST_KIND}" == "hidden" ]]; then
   fi
 fi
 
+# Node 22.12, the repository's CI floor, exposes the permission model only
+# through the long-lived experimental spelling. Newer Node 22 releases retain
+# that spelling as an alias, so use it across the compatibility window. The
+# SIGUSR1 hardening flag arrived later in Node 22; add it only when the trusted
+# runtime advertises support. The isolated PID and network namespaces remain
+# the primary inspector boundary on older runtimes.
+node_security_args=(
+  --experimental-permission
+  --no-addons
+)
+node_help="$("${RELAY_NODE_BIN}" --help)"
+if [[ "${node_help}" == *"--disable-sigusr1"* ]]; then
+  node_security_args+=(--disable-sigusr1)
+fi
+
 mount --make-rprivate /
 mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "${RELAY_ROOTFS}"
 cleanup() {
@@ -143,9 +158,7 @@ fi
       --ambient-caps=-all \
       --no-new-privs \
       /usr/bin/node \
-        --permission \
-        --no-addons \
-        --disable-sigusr1 \
+        "${node_security_args[@]}" \
         --allow-fs-read='*' \
         --experimental-test-isolation=none \
         --test \
