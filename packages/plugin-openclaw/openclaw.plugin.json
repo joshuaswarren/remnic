@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.13",
+  "version": "9.7.14",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -2382,6 +2382,11 @@
         "default": false,
         "description": "In full mode, compute graph assist for comparison telemetry and snapshots but keep recall output baseline-identical."
       },
+      "graphEdgeCacheIncrementalEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Push single-writer graph-edge appends into the warm edge cache in place (size-revalidated for cross-process coherence) instead of nulling and re-reading the edge file on every write (issue #1904). Set false to restore the pre-#1904 null-on-every-write behavior."
+      },
       "graphEdgeDecayCadenceMs": {
         "type": "number",
         "default": 604800000,
@@ -3001,6 +3006,19 @@
         "type": "string",
         "default": "local-model",
         "description": "Model name for local LLM requests"
+      },
+      "localLlmReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "none",
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default": "none",
+        "description": "Ollama-backend thinking suppression: reasoning_effort injected for thinking-suppressed operations (Ollama ignores chat_template_kwargs). Empty string disables injection."
       },
       "localLlmRetry5xxCount": {
         "type": "number",
@@ -4622,6 +4640,11 @@
         "type": "string",
         "default": "state/routing-rules.json",
         "description": "Relative path under memoryDir for persisted routing rules."
+      },
+      "scopedCacheInvalidationEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Evict only the cache layers a given memory write can affect so a plain fact create no longer nukes the QMD result caches or the version-keyed entity cache (issue #1904). Set false to restore the pre-#1904 full-clear-on-every-write behavior."
       },
       "scopeProfiles": {
         "type": "object",

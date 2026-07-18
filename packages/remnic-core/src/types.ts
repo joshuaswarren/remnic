@@ -1054,6 +1054,15 @@ export interface PluginConfig {
    * pure-daemon deployments with no external edits).
    */
   hotMemoriesCacheTtlMs: number;
+  /**
+   * Scope-aware cache invalidation (issue #1904). When true (default), a memory
+   * write evicts only the cache layers it can actually affect — a plain fact
+   * `create` no longer nukes the global QMD result caches or the version-keyed
+   * entity cache, so continuous extraction stops keeping every cache
+   * permanently cold. Set false to restore the pre-#1904 behavior of clearing
+   * every layer on every write (rollback lever; no featureset change).
+   */
+  scopedCacheInvalidationEnabled: boolean;
   // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
   // provenance, faithfulness, corroboration, contradiction, feedback, recency,
   // and optional domain calibration into one [0,1] trust score applied as a
@@ -1595,6 +1604,12 @@ export interface PluginConfig {
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
   localLlm400CooldownMs: number;
+  /** Ollama-backend thinking suppression: `reasoning_effort` value injected on
+   *  `/v1/chat/completions` for THINKING_SUPPRESSED_OPERATIONS ("none" | "low" |
+   *  "medium" | "high" | "max"; "" disables injection). Ollama ignores
+   *  `chat_template_kwargs`, so this is the only think-off dialect it honors.
+   *  Issue #1996. */
+  localLlmReasoningEffort: string;
   // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
   /** Master gate. When false, restores pre-change behavior (extractor called on every triggered observe; no gate). */
   extractionRetryEnabled: boolean;
@@ -1987,6 +2002,12 @@ export interface PluginConfig {
   tagRecallMaxMatches: number;
   // v8.2 multi-graph memory (PR 18)
   multiGraphMemoryEnabled: boolean;
+  // Incremental GraphIndex edge cache (issue #1904). When true (default), a
+  // single-writer edge append is pushed into the warm edge cache in place
+  // (revalidated by file size for cross-process coherence) instead of nulling
+  // the 6 MB / 30k-edge cache and re-reading + re-parsing it (2-4 s). Set false
+  // to restore the pre-#1904 behavior of nulling the edge cache on every write.
+  graphEdgeCacheIncrementalEnabled: boolean;
   // v8.2 PR 19A: graph recall planner gating
   graphRecallEnabled: boolean;
   graphRecallMaxExpansions: number;
