@@ -12,6 +12,7 @@ const packagePaths = [
   "docs/remnic-relay/DEMO-SCRIPT.md",
   "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery",
   "fixtures/remnic-relay",
+  "scripts/relay/checkout-decision-contract.mjs",
   "scripts/relay/judge-package.mjs",
 ];
 

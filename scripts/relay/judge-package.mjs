@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { assertRelayCheckoutDecision, assertRelayStaleCheckoutDecision } from "./checkout-decision-contract.mjs";
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_RELAY_REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -116,6 +118,8 @@ function stableJson(value) {
 
 async function readJson(root, relative) {
   const file = path.join(root, relative);
+  const info = await lstat(file);
+  invariant(info.isFile() && !info.isSymbolicLink(), `${relative} must be a non-symlink regular file`);
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch (error) {
@@ -238,30 +242,6 @@ function unitsToNanounits(value, label) {
   return BigInt(Math.round(value * 1_000_000_000));
 }
 
-function assertCorrectDecision(value, label) {
-  invariant(typeof value === "string", `${label} must be text`);
-  const normalized = value.toLowerCase();
-  invariant(/reuse/.test(normalized), `${label} must require token reuse`);
-  invariant(
-    /(?:ordinary )?retr(?:y|ies)/.test(normalized) || /while (?:it is |the token is )?valid/.test(normalized),
-    `${label} must require reuse for ordinary retries or while valid`
-  );
-  invariant(/exactly one replacement/.test(normalized), `${label} must require exactly one replacement`);
-  invariant(/expir/.test(normalized), `${label} must bind replacement to expiry`);
-  const mentionsEveryRequest = /every (?:checkout )?request/.test(normalized);
-  const explicitlyRejectsEveryRequest =
-    /(?:do not|don't|never).{0,40}(?:rotate|mint|create|issue).{0,40}every (?:checkout )?request/.test(normalized);
-  invariant(!mentionsEveryRequest || explicitlyRejectsEveryRequest, `${label} must reject per-request rotation`);
-}
-
-function assertStaleDecision(value, label) {
-  invariant(typeof value === "string", `${label} must be text`);
-  const normalized = value.toLowerCase();
-  invariant(/mint|create|issue|rotate/.test(normalized), `${label} must rotate the token`);
-  invariant(/every (?:checkout )?request/.test(normalized), `${label} must cover every request`);
-  invariant(/every (?:ordinary )?retr(?:y|ies)/.test(normalized), `${label} must cover every retry`);
-}
-
 function canonicalModelOutput(role, value) {
   const output = asObject(value, `${role} output`);
   if (role === "scout") {
@@ -290,7 +270,7 @@ function canonicalModelOutput(role, value) {
 
 function assertSourceAgent(role, output) {
   const decision = role === "scout" ? output.decision : output.replacement_decision;
-  assertCorrectDecision(decision, `${role} source decision`);
+  assertRelayCheckoutDecision(decision, `${role} source`);
   invariant(
     sameJson(output.source_locators, [
       "CONTRACT.md",
@@ -309,8 +289,8 @@ function assertSourceAgent(role, output) {
 function assertBuilder(role, call, expectedMemoryId) {
   const output = asObject(call.output, `${role} output`);
   const stale = role === "stale-builder";
-  if (stale) assertStaleDecision(output.decision_applied, `${role} decision`);
-  else assertCorrectDecision(output.decision_applied, `${role} decision`);
+  if (stale) assertRelayStaleCheckoutDecision(output.decision_applied, `${role} output`);
+  else assertRelayCheckoutDecision(output.decision_applied, `${role} output`);
   invariant(sameJson(output.files_changed, [CHANGED_FILE]), `${role} must name only ${CHANGED_FILE}`);
   invariant(
     asArray(output.tests_run, `${role}.tests_run`).some((item) => /npm\s+test/i.test(String(item))),
@@ -477,13 +457,13 @@ export async function verifyRelayJudgePackage(repoRoot = DEFAULT_RELAY_REPO_ROOT
     "stale memory is not synthetic and superseded"
   );
   invariant(staleMemory.decisionId === STALE_DECISION_ID, "stale memory decision ID drifted");
-  assertStaleDecision(staleMemory.statement, "stale memory");
+  assertRelayStaleCheckoutDecision(staleMemory.statement, "stale memory");
   invariant(
     replacementMemory.synthetic === true && replacementMemory.status === "active",
     "replacement memory is not synthetic and active"
   );
   invariant(replacementMemory.decisionId === REPLACEMENT_DECISION_ID, "replacement memory decision ID drifted");
-  assertCorrectDecision(replacementMemory.statement, "replacement memory");
+  assertRelayCheckoutDecision(replacementMemory.statement, "replacement memory");
   invariant(
     correction.correctionId === CORRECTION_ID &&
       correction.staleMemoryId === staleMemory.memoryId &&

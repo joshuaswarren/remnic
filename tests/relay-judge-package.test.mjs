@@ -7,6 +7,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertRelayCheckoutDecision,
+  relayCheckoutDecisionContractKey,
+} from "../scripts/relay/checkout-decision-contract.mjs";
+import {
   RELAY_RECORDING_ROOT_SHA256,
   RELAY_UI_ROOT_SHA256,
   startRelayJudgeServer,
@@ -123,6 +127,21 @@ test("Relay hidden-test evidence requires a real nonzero failure exit", async ()
   );
 });
 
+test("Relay judge decisions use the authoritative live source-grounding contract", () => {
+  const missingSessionLifecycle = "Reuse for ordinary retries and mint exactly one replacement after expiry.";
+  assert.equal(relayCheckoutDecisionContractKey(missingSessionLifecycle), null);
+  assert.throws(
+    () => assertRelayCheckoutDecision(missingSessionLifecycle, "judge parity probe"),
+    /does not match checkout-session reuse and one post-expiry replacement/
+  );
+  assert.equal(
+    relayCheckoutDecisionContractKey(
+      "Reuse the checkout-session token while valid and mint exactly one replacement after expiry."
+    ),
+    "checkout-session-reuse-one-post-expiry-replacement"
+  );
+});
+
 test("Relay judge verifier rejects a hand-edited Mission Control frame", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-ui-tamper-"));
   try {
@@ -163,6 +182,30 @@ test("Relay judge verifier rejects symlinked standalone text inputs", async (t) 
         await rm(target);
         await symlink(outsideFile, target);
         await assert.rejects(() => verifyRelayJudgePackage(parent), /must not traverse a symlink/);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("Relay judge verifier rejects symlinked manifests before parsing", async (t) => {
+  for (const relative of [`${recordingRelative}/manifest.json`, "fixtures/remnic-relay/manifest.json"]) {
+    await t.test(relative, async () => {
+      const parent = await mkdtemp(path.join(os.tmpdir(), "relay-judge-manifest-root-"));
+      const outside = await mkdtemp(path.join(os.tmpdir(), "relay-judge-manifest-outside-"));
+      try {
+        await copyJudgePackage(parent);
+        const target = path.join(parent, relative);
+        const outsideManifest = path.join(outside, "host-private-manifest.json");
+        await writeFile(outsideManifest, await readFile(target, "utf8"));
+        await rm(target);
+        await symlink(outsideManifest, target);
+        await assert.rejects(
+          () => verifyRelayJudgePackage(parent),
+          /manifest\.json must be a non-symlink regular file/
+        );
       } finally {
         await rm(parent, { recursive: true, force: true });
         await rm(outside, { recursive: true, force: true });
