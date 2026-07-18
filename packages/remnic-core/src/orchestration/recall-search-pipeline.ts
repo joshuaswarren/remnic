@@ -813,17 +813,13 @@ export class RecallSearchPipelineCoordinator {
     ): Promise<T> => {
       throwIfRecallAborted(options.abortSignal);
       const remainingMs = deadlineRemainingMs();
-      // Task-level deadline abort (#1907): compose the caller's request signal
-      // with a per-step controller so EITHER a client disconnect or this step's
-      // own deadline cooperatively stops the losing task, instead of letting it
-      // run to completion on the daemon thread after the race is lost. A step
-      // deadline maps to `fallback` (fail-open); only a request-level abort
-      // rejects, and that reject is driven by options.abortSignal, not here.
+      // Step-level deadline abort (#1907): compose the caller's request signal with
+      // a per-step controller so a disconnect OR this step's deadline stops the task.
       const stepController = new AbortController();
       const stepSignal = options.abortSignal
         ? AbortSignal.any([options.abortSignal, stepController.signal])
         : stepController.signal;
-      if (remainingMs === 0) {
+      const abandonToDeadline = () => {
         stepController.abort(abortError(`cold-tier recall ${label} deadline exceeded`));
         try {
           onDeadline?.();
@@ -831,10 +827,12 @@ export class RecallSearchPipelineCoordinator {
           // Observers must never break recall.
         }
         log.debug(`cold-tier recall ${label} skipped: shared assembly deadline expired`);
+      };
+      if (remainingMs === 0) {
+        abandonToDeadline();
         return fallback;
       }
       if (remainingMs === null) return task(stepSignal);
-
       let timeoutHandle: NodeJS.Timeout | undefined;
       let timedOut = false;
       const taskPromise = task(stepSignal).catch((err) => {
@@ -844,28 +842,19 @@ export class RecallSearchPipelineCoordinator {
         }
         throw err;
       });
-
       try {
         return await Promise.race<T>([
           taskPromise,
           new Promise<T>((resolve) => {
             timeoutHandle = setTimeout(() => {
               timedOut = true;
-              stepController.abort(abortError(`cold-tier recall ${label} deadline exceeded`));
-              try {
-                onDeadline?.();
-              } catch {
-                // Observers must never break recall.
-              }
-              log.debug(
-                `cold-tier recall ${label} skipped: shared assembly deadline expired`,
-              );
+              abandonToDeadline();
               resolve(fallback);
             }, remainingMs);
           }),
         ]);
       } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+        clearTimeout(timeoutHandle);
       }
     };
 
