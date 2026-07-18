@@ -780,9 +780,10 @@ test("debounce on: surprise-promoted extract_now flushes the buffer before extra
 
   const outcome = await buffer.addTurnWithOutcome("sess-1", makeTurn("sess-1", "novel turn"));
   assert.equal(outcome.decision, "extract_now", "surprise promotes the turn");
-  assert.ok(
-    storage.saveCount >= 1,
-    "the buffer was flushed to disk before extraction ran (not left on the debounce timer)",
+  assert.equal(
+    storage.saveCount,
+    1,
+    "the buffer was flushed to disk EXACTLY once before extraction (timer cancelled, single flush)",
   );
   assert.equal(
     storage.saved?.entries?.["sess-1"]?.turns.length,

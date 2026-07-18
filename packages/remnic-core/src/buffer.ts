@@ -386,8 +386,15 @@ export class SmartBuffer {
    * surprise-promotion path in `addTurnWithOutcome`). Do NOT `await` this from
    * inside a mutation — it enqueues its own mutation and would deadlock the
    * serializer.
+   *
+   * `throwOnFailure` (review round 7 finding 5): when set, a failed write is
+   * rethrown AFTER the keep-pending + re-arm bookkeeping, so the surprise
+   * extraction boundary gets the same durability guarantee as the built-in
+   * extract triggers (which propagate saveUnlocked failures) instead of
+   * proceeding to extract_now on a non-durable triggering turn. Default false
+   * keeps the fail-open behavior for the timer/shutdown callers.
    */
-  async flushPendingSave(): Promise<void> {
+  async flushPendingSave(opts?: { throwOnFailure?: boolean }): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -400,7 +407,7 @@ export class SmartBuffer {
       // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
       // graceful shutdown flush and the re-armed timer both retry it — clearing
       // the flag here would drop the buffered turns permanently. Re-arm a
-      // background retry when debounced; fail-open (never crash the caller).
+      // background retry when debounced.
       log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
       const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
       if (ms > 0 && !this.saveTimer) {
@@ -410,7 +417,10 @@ export class SmartBuffer {
         }, ms);
         this.saveTimer.unref?.();
       }
-      return;
+      // Surprise-extraction boundary needs the durability guarantee — surface
+      // the failure so the caller does not proceed with a non-durable flush.
+      if (opts?.throwOnFailure) throw err;
+      return; // fail-open for timer/shutdown callers
     }
     // Only mark clean AFTER the write succeeds.
     this.pendingSave = false;
@@ -468,7 +478,10 @@ export class SmartBuffer {
             // the caller runs extraction — otherwise state/buffer.json lags the
             // extracted turns by up to the debounce window on a crash. Safe to
             // await here: we are outside the record mutation (deadlock-free).
-            await this.flushPendingSave();
+            // throwOnFailure (round 7 finding 5): match the built-in extract
+            // triggers — a failed durability write must NOT silently proceed to
+            // extract_now on a non-durable turn.
+            await this.flushPendingSave({ throwOnFailure: true });
           } else {
             log.debug(
               `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} ignored because buffer changed before probe resolved`,

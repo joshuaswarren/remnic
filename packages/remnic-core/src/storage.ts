@@ -24,6 +24,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
@@ -1121,6 +1122,15 @@ function dehyphenate(s: string): string {
 }
 
 /**
+ * Stale threshold (ms) for the per-file advisory lock guarding a fact-hash
+ * index merge-save (issue #1909 review round 7). The critical section is a
+ * single read+atomic-rewrite of one index file (≤ a few MB), so a holder older
+ * than this is treated as crashed. Generous to tolerate slow/encrypted disks
+ * without breaking a legitimately in-progress publish.
+ */
+const CONTENT_HASH_INDEX_LOCK_STALE_MS = 30_000;
+
+/**
  * Content-hash dedup index for facts.
  * Normalizes content (lowercase, strip punctuation, collapse whitespace),
  * computes SHA-256, and stores hashes in a line-delimited file.
@@ -1207,39 +1217,58 @@ export class ContentHashIndex {
 
   /**
    * Persist the index by UNIONing the current on-disk hashes into this set
-   * before writing (issue #1909 review round 6). Safe only where writes are
-   * append-only within the batch (extraction persist / deferred flush): a
-   * concurrent writer's appended hashes are preserved instead of being clobbered
-   * by a blind whole-file overwrite, and a stale in-memory snapshot can never
-   * drop another run's durable fact. NEVER use on a removal path — a union would
-   * resurrect the removed hash. Always writes (no dirty short-circuit) so the
-   * union lands even when this instance itself added nothing this run.
+   * before writing (issue #1909). Safe only where writes are append-only within
+   * the batch (extraction persist / deferred flush): a concurrent writer's
+   * appended hashes are preserved instead of being clobbered by a blind
+   * whole-file overwrite. NEVER use on a removal path — a union would resurrect
+   * the removed hash (review round 7 finding 1: removal batches use `save()`).
+   *
+   * Round 7 hardening:
+   *  - Dirty short-circuit (finding 3): when this instance added nothing this
+   *    run, skip the O(file) read+rewrite entirely — a concurrent process's
+   *    additions are already durable on disk and we have nothing to publish.
+   *  - Cross-process lock (finding 2): serialize the read-union→write window on
+   *    a per-file advisory lock so two concurrent extractions cannot both read
+   *    {prior}, union their own hashes, and drop each other on the atomic
+   *    replace (TOCTOU). On acquisition timeout, fall back to a best-effort
+   *    unlocked publish rather than dropping the write.
    */
   async saveMergingWithDisk(): Promise<void> {
-    try {
-      const raw = await readMaybeEncryptedFile(
+    if (!this.dirty) return;
+    // The advisory lock file lives beside the index — ensure the dir exists
+    // before acquiring it (the index dir may not exist on a first write).
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    const publish = async (): Promise<void> => {
+      try {
+        const raw = await readMaybeEncryptedFile(
+          this.filePath,
+          this.secureStoreKeyProvider(),
+          this.memoryDir
+        );
+        for (const line of raw.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed.length > 0) this.hashes.add(trimmed);
+        }
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+        // ENOENT → no on-disk index yet; write our set as-is.
+      }
+      await mkdir(path.dirname(this.filePath), { recursive: true });
+      await writeMaybeEncryptedFile(
         this.filePath,
-        this.secureStoreKeyProvider(),
+        [...this.hashes].join("\n") + "\n",
+        this.secureStoreWriteKeyProvider(),
+        {},
         this.memoryDir
       );
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) this.hashes.add(trimmed);
-      }
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      // ENOENT → no on-disk index yet; write our set as-is.
-    }
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeMaybeEncryptedFile(
-      this.filePath,
-      [...this.hashes].join("\n") + "\n",
-      this.secureStoreWriteKeyProvider(),
-      {},
-      this.memoryDir
+      this.dirty = false;
+    };
+    await withHeldFileLock(
+      `${this.filePath}.lock`,
+      { staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS },
+      () => publish(),
     );
-    this.dirty = false;
     log.debug(`content-hash index: merge-saved ${this.hashes.size} hashes`);
   }
 

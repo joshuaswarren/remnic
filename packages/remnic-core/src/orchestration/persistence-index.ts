@@ -263,16 +263,31 @@ export class PersistenceIndexCoordinator {
     }
   }
 
-  async saveContentHashIndexes(): Promise<void> {
+  /**
+   * Persist the touched content-hash indexes.
+   *
+   * `merge` selects the write strategy (issue #1909 review round 7 finding 1):
+   *  - `true` (extraction persist, append-only): union-merge with on-disk so two
+   *    interleaved runs cannot clobber each other's appended hashes.
+   *  - `false` (default; archival / semantic consolidation, which REMOVE hashes):
+   *    plain overwrite — a union would resurrect the just-removed hashes and keep
+   *    superseded/archived facts treated as duplicates forever.
+   *
+   * Both strategies dirty-short-circuit, so an untouched index is skipped and
+   * never re-read/rewritten (finding 3).
+   */
+  async saveContentHashIndexes(merge = false): Promise<void> {
     const indexes = new Set<ContentHashIndex>();
     if (this.deps.contentHashIndex) indexes.add(this.deps.contentHashIndex);
     for (const index of this.deps.contentHashIndexesByStorageDir.values()) {
       indexes.add(index);
     }
     for (const index of indexes) {
-      // Union-merge with on-disk (issue #1909 review round 6) so two interleaved
-      // persist runs cannot clobber each other's appended hashes.
-      await index.saveMergingWithDisk();
+      if (merge) {
+        await index.saveMergingWithDisk();
+      } else {
+        await index.save();
+      }
     }
   }
 

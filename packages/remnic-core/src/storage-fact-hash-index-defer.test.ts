@@ -243,3 +243,87 @@ test("#1909: saveMergingWithDisk unions with a concurrent writer instead of clob
     assert.ok(fresh.has("interleaved fact B"), "B's hash preserved");
   });
 });
+
+test("#1909: concurrent (parallel) merge-saves serialize via the file lock — both survive", async () => {
+  // Review round 7 finding 2: the per-file advisory lock serializes the
+  // read-union→write window across truly concurrent writers (here two instances
+  // saving in parallel), closing the TOCTOU where both read {prior} then both
+  // atomically replace and one drop wins.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const a = new ContentHashIndex(stateDir);
+    const b = new ContentHashIndex(stateDir);
+    await a.load();
+    await b.load();
+    a.add("parallel fact A");
+    b.add("parallel fact B");
+
+    await Promise.all([a.saveMergingWithDisk(), b.saveMergingWithDisk()]);
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("parallel fact A"), "A survived the concurrent publish");
+    assert.ok(fresh.has("parallel fact B"), "B survived the concurrent publish");
+  });
+});
+
+test("#1909: removal batches use plain save (no union) so archived hashes do not resurrect", async () => {
+  // Review round 7 finding 1: saveContentHashIndexes is shared by extraction
+  // (append-only → merge) AND archival/consolidation (which REMOVE hashes). The
+  // removal path must use plain save(); a union-merge would read the pre-removal
+  // on-disk contents back in and resurrect the archived hash forever.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const idx = new ContentHashIndex(stateDir);
+    await idx.load();
+    idx.add("archived fact body");
+    await idx.save();
+    const mid = new ContentHashIndex(stateDir);
+    await mid.load();
+    assert.ok(mid.has("archived fact body"), "hash is on disk before archival");
+
+    // Archival: remove + plain save() (what saveContentHashIndexes(merge=false) does).
+    idx.remove("archived fact body");
+    await idx.save();
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.equal(
+      fresh.has("archived fact body"),
+      false,
+      "removed hash stays gone → re-extraction of that content is allowed",
+    );
+  });
+});
+
+test("#1909: saveMergingWithDisk is a no-op when the index is not dirty (dirty short-circuit)", async () => {
+  // Review round 7 finding 3: a no-fact/deduped run must not re-read+rewrite the
+  // whole fact-hashes.txt. An unmutated index skips the O(file) work entirely.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const seed = new ContentHashIndex(stateDir);
+    await seed.load();
+    seed.add("seed fact");
+    await seed.save();
+
+    // A fresh instance that only LOADS (adds nothing) is not dirty → merge-save
+    // writes nothing. Prove it by making a foreign writer append, then a clean
+    // merge-save must NOT clobber that foreign row.
+    const clean = new ContentHashIndex(stateDir);
+    await clean.load();
+    const foreign = new ContentHashIndex(stateDir);
+    await foreign.load();
+    foreign.add("foreign fact");
+    await foreign.save();
+
+    await clean.saveMergingWithDisk(); // not dirty → must be a no-op
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("seed fact"));
+    assert.ok(fresh.has("foreign fact"), "a non-dirty merge-save did not rewrite/clobber the file");
+  });
+});
