@@ -116,8 +116,8 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git fetch --quiet --depth=1 origin "$BASE_REF"
-          git diff --name-only FETCH_HEAD HEAD > /tmp/ratchet-changed-files.txt
-          echo "changed files: $(wc -l < /tmp/ratchet-changed-files.txt)"
+          git -c core.quotePath=off diff --name-only -z FETCH_HEAD HEAD > /tmp/ratchet-changed-files.txt
+          echo "changed files: $(tr -cd "\0" < /tmp/ratchet-changed-files.txt | wc -c)"
           echo "REMNIC_RATCHET_CHANGED_FILES_PATH=/tmp/ratchet-changed-files.txt" >> "$GITHUB_ENV"
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}

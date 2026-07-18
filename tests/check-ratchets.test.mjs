@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -480,5 +480,59 @@ test("file-size ratchet: scoped --update prints out-of-scope ceiling raises loud
     // And the raise is real: baseline now carries the new ceiling.
     const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
     assert.equal(baseline.metrics.fileSizeGrandfather["packages/remnic-core/src/legacy-big.ts"], 1421);
+  });
+});
+
+test("file-size ratchet: a symlinked packages discovery root is skipped entirely (round 3)", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    // Replace the whole packages dir with a symlink to an outside tree
+    // containing an oversized file: the scan must not follow it.
+    const outside = mkdtempSync(path.join(tmpdir(), "ratchet-outside-"));
+    try {
+      mkdirSync(path.join(outside, "sneaky", "src"), { recursive: true });
+      writeFileSync(path.join(outside, "sneaky", "src", "big.ts"), "pad\n".repeat(2000));
+      const packagesDir = path.join(fixture.root, "packages");
+      const realPackages = path.join(fixture.root, "packages-real");
+      renameSync(packagesDir, realPackages);
+      symlinkSync(outside, packagesDir, "dir");
+      try {
+        // Watchlist files vanished with the rename -> expect that specific
+        // failure, but crucially NO grandfather adoption from the symlink.
+        const update = runRatchets(["--update"], fixture);
+        assert.equal(update.status, 1);
+        assert.match(update.stderr, /watchlist file\(s\) missing/);
+        assert.doesNotMatch(update.stderr, /sneaky/);
+      } finally {
+        rmSync(packagesDir, { force: true });
+        renameSync(realPackages, packagesDir);
+      }
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("file-size ratchet: scope file accepts NUL-separated entries with unusual names (round 3)", () => {
+  withFixture((fixture) => {
+    const oddName = "läggy big file.ts";
+    const oddPath = path.join(fixture.src, oddName);
+    writeFileSync(oddPath, "pad\n".repeat(1400));
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    appendFileSync(oddPath, "pad\n".repeat(5));
+
+    const scopePath = path.join(fixture.root, "changed.bin");
+    writeFileSync(scopePath, `packages/remnic-core/src/${oddName}\u0000other.ts\u0000`);
+    const inScope = spawnSync(process.execPath, [SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REMNIC_RATCHET_ROOT: fixture.root,
+        REMNIC_RATCHET_BASELINE: fixture.baseline,
+        REMNIC_RATCHET_CHANGED_FILES_PATH: scopePath,
+      },
+    });
+    assert.equal(inScope.status, 1);
+    assert.match(inScope.stderr, /grew from its grandfathered ceiling/);
   });
 });

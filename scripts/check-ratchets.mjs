@@ -84,7 +84,10 @@ function readChangedFileScope() {
     );
   }
   const scope = new Set();
-  for (const line of readFileSync(CHANGED_FILES_PATH, "utf8").split("\n")) {
+  // Accept newline- OR NUL-separated entries: CI writes the scope with
+  // `git diff -z -c core.quotePath=off` so unusual filenames (spaces,
+  // non-ASCII) arrive verbatim instead of C-quoted (round-3 finding).
+  for (const line of readFileSync(CHANGED_FILES_PATH, "utf8").split(/[\n\0]/)) {
     const trimmed = line.trim();
     if (trimmed.length > 0) scope.add(trimmed.replaceAll("\\", "/"));
   }
@@ -118,7 +121,9 @@ function sizeCapScanRoots() {
     statSync(candidate).isDirectory();
   const roots = [];
   const packagesDir = path.join(ROOT, "packages");
-  if (existsSync(packagesDir)) {
+  // The discovery root itself gets the same treatment (round-3 finding):
+  // a committed `packages` symlink must not redirect the entire scan.
+  if (isRealDirectory(packagesDir)) {
     for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const src = path.join(packagesDir, entry.name, "src");
