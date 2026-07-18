@@ -481,27 +481,49 @@ export function composeMemoryEnvelope(
 const SEALED_ENVELOPES = new WeakSet<object>();
 
 /**
+ * TOCTOU guard for the structural arm (#2014 round 4): a frozen object may
+ * still carry ACCESSOR properties whose getters return different values on
+ * each read — valid data during re-composition, forged data when the write
+ * path reads the field again. Frozen DATA properties are immutable, so
+ * requiring data-only descriptors (on the envelope and its array/map
+ * fields) makes every later read provably identical to the validated one.
+ */
+function hasOnlyFrozenDataProperties(value: object): boolean {
+  if (!Object.isFrozen(value)) return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.get !== undefined || descriptor.set !== undefined) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Runtime check (belt) — the compile-time brand is the real fence.
  *
  * Fast path: WeakSet membership (same module graph). Fallback: RE-COMPOSITION
  * EQUIVALENCE — Node resolves `@remnic/core` through `dist/` for built
  * consumers and `src/` for tsx-loaded tests, and each graph gets its OWN
  * WeakSet, so identity alone would reject genuinely-sealed envelopes that
- * crossed a build boundary. The structural arm re-runs the STRICT composer
- * on the candidate's own inputs and demands every envelope field reproduce
- * exactly (#2014 round 2: shape-only validation admitted lookalikes with 51
- * tags or out-of-range confidence, bypassing the sealed-input contract). A
- * value that survives has, by construction, passed every composer invariant.
+ * crossed a build boundary. The structural arm requires frozen DATA-only
+ * properties (no accessors — TOCTOU guard, round 4), then re-runs the
+ * STRICT composer on the candidate's own inputs and demands every envelope
+ * field reproduce exactly (#2014 round 2: shape-only validation admitted
+ * lookalikes with 51 tags or out-of-range confidence). A value that
+ * survives has, by construction, passed every composer invariant, and its
+ * fields cannot change between validation and the write that follows.
  *
  * `salvageNotes` is deliberately NOT compared: a legitimately salvage-minted
  * envelope carries notes while the strict re-composition of its (already
  * clean) surviving fields yields none. Notes are advisory provenance, not
  * identity — every load-bearing field is still verified.
  */
+
 export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnvelope {
   if (typeof value !== "object" || value === null) return false;
   if (SEALED_ENVELOPES.has(value)) return true;
-  if (!Object.isFrozen(value)) return false;
+  if (!hasOnlyFrozenDataProperties(value)) return false;
   const v = value as Partial<SealedMemoryEnvelope>;
   if (
     typeof v.content !== "string" ||
@@ -511,13 +533,29 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
     typeof v.category !== "string" ||
     !isMemoryCategory(v.category) ||
     !Array.isArray(v.tags) ||
+    !hasOnlyFrozenDataProperties(v.tags) ||
     !Array.isArray(v.sanitizeViolations) ||
-    !Array.isArray(v.salvageNotes)
+    !hasOnlyFrozenDataProperties(v.sanitizeViolations) ||
+    !Array.isArray(v.salvageNotes) ||
+    !hasOnlyFrozenDataProperties(v.salvageNotes)
   ) {
     return false;
   }
   const attrs = v.rawStructuredAttributes;
-  if (attrs !== undefined && (attrs === null || typeof attrs !== "object" || Array.isArray(attrs))) {
+  if (
+    attrs !== undefined &&
+    (attrs === null || typeof attrs !== "object" || Array.isArray(attrs) || !hasOnlyFrozenDataProperties(attrs))
+  ) {
+    return false;
+  }
+  const canonicalAttrs = v.structuredAttributes;
+  if (
+    canonicalAttrs !== undefined &&
+    (canonicalAttrs === null ||
+      typeof canonicalAttrs !== "object" ||
+      Array.isArray(canonicalAttrs) ||
+      !hasOnlyFrozenDataProperties(canonicalAttrs))
+  ) {
     return false;
   }
   let rebuilt: SealedMemoryEnvelope;

@@ -559,14 +559,22 @@ test("strict envelopes carry empty salvageNotes", () => {
   assert.deepEqual([...env.salvageNotes], []);
 });
 
+/** Deep-freeze a plain clone the way the composer freezes its fields. */
+function deepFreezeEnvelopeClone(clone: Record<string, unknown>): Record<string, unknown> {
+  for (const value of Object.values(clone)) {
+    if (typeof value === "object" && value !== null) Object.freeze(value);
+  }
+  return clone;
+}
+
 test("structural fallback rejects frozen lookalikes that violate composer invariants (round 9)", () => {
   const real = composeMemoryEnvelope(minimalInput(), CTX);
-  const clone = JSON.parse(JSON.stringify(real)) as Record<string, unknown>;
+  const clone = deepFreezeEnvelopeClone(JSON.parse(JSON.stringify(real)) as Record<string, unknown>);
 
   // 51 tags — a shape-valid forgery that must NOT pass the seal check.
   const overTagged = Object.freeze({
     ...clone,
-    tags: Array.from({ length: 51 }, (_, i) => `t${i}`),
+    tags: Object.freeze(Array.from({ length: 51 }, (_, i) => `t${i}`)),
   });
   assert.equal(isSealedMemoryEnvelope(overTagged), false, "51-tag lookalike must be rejected");
 
@@ -584,6 +592,39 @@ test("structural fallback rejects frozen lookalikes that violate composer invari
 
   // The unmodified faithful clone still passes (cross-graph acceptance).
   assert.equal(isSealedMemoryEnvelope(Object.freeze({ ...clone })), true, "faithful clone must pass");
+});
+
+test("structural fallback rejects accessor-property lookalikes (round 12 TOCTOU guard)", () => {
+  const real = composeMemoryEnvelope(minimalInput({ tags: ["stable"] }), CTX);
+  const clone = JSON.parse(JSON.stringify(real)) as Record<string, unknown>;
+  // A frozen object whose `tags` GETTER answers differently across reads:
+  // clean during validation, 51 tags for the write that follows.
+  let reads = 0;
+  const shifty: Record<string, unknown> = { ...clone };
+  delete shifty.tags;
+  Object.defineProperty(shifty, "tags", {
+    enumerable: true,
+    configurable: false,
+    get() {
+      reads += 1;
+      return reads <= 6
+        ? Object.freeze(["stable"])
+        : Object.freeze(Array.from({ length: 51 }, (_, i) => `t${i}`));
+    },
+  });
+  for (const value of Object.values(shifty)) {
+    if (typeof value === "object" && value !== null) Object.freeze(value);
+  }
+  Object.freeze(shifty);
+  assert.equal(
+    isSealedMemoryEnvelope(shifty),
+    false,
+    "accessor-bearing lookalike must be rejected before any field is trusted",
+  );
+  // Unfrozen NESTED arrays are also rejected: a genuine cross-graph envelope
+  // carries the composer's frozen arrays; only a serialized copy loses them.
+  const unfrozenNested = Object.freeze(JSON.parse(JSON.stringify(real)) as Record<string, unknown>);
+  assert.equal(isSealedMemoryEnvelope(unfrozenNested), false, "unfrozen nested fields must be rejected");
 });
 
 test("salvage keeps persisted body, attributes, and notes mutually consistent (round 9)", () => {
