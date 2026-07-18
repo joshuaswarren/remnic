@@ -86,18 +86,11 @@ export class PersistenceIndexCoordinator {
       );
       index.remove(memory.content);
     }
-    // #1909 review round 10 finding 2: a removal changes the fact-hash index, but
-    // the durable flush (saveContentHashIndexes) may not land — the advisory lock
-    // can time out, leaving the removal only dirty in memory. Invalidate the
-    // fact-hashes.ready marker NOW so that regardless of whether the save
-    // publishes, a restart rebuilds authoritatively from the corpus and the
-    // removal lands — never trusting a stale on-disk index that still suppresses
-    // re-extraction of the archived/superseded fact. Best-effort (fail-open).
-    await targetStorage.invalidateFactHashIndexReadyMarkerOnDisk().catch((err) => {
-      log.warn(
-        `[${context}] failed to invalidate fact-hash ready marker after removal: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
+    // Round 11: no fact-hashes.ready marker exists — the fact-hash index is
+    // rebuilt from the corpus on every restart. An archived/superseded memory's
+    // .md is gone by then, so the rebuild excludes it and the removal lands
+    // regardless of whether this run's reconciling save published. Nothing else
+    // to do here.
   }
 
   /**

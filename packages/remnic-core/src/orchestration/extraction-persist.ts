@@ -240,37 +240,15 @@ export class ExtractionPersistCoordinator {
     // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
-    // #1909 (review round 2): the main-path fact writes may defer their per-fact
-    // fact-hash-index flush to the orchestrator's end-of-persist batch save ONLY
-    // when fact deduplication is enabled. With it disabled,
-    // contentHashIndexForStorage() returns null and the batch save is a no-op —
-    // so deferring would leave the storage-owned index unflushed and a restart
-    // (or re-enabling dedup) with fact-hashes.ready present would trust a stale
-    // index. Defer only when the batch will actually cover the write.
+    // #1909: the main-path fact writes defer their per-fact fact-hash-index flush
+    // to the orchestrator's end-of-persist reconciling batch save ONLY when fact
+    // deduplication is enabled (with it off, contentHashIndexForStorage() returns
+    // null and the batch save is a no-op, so the write must save immediately).
+    // Round 11: there is NO fact-hashes.ready marker anymore — the fact-hash
+    // index is ALWAYS rebuilt from the corpus on restart (see
+    // ensureFactHashIndexAuthoritative), so a deferred write, crash, or
+    // multi-process interleave is safe by construction with no marker to guard.
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
-    // #1909 (review round 9 — marker design pivot): the fact-hashes.ready marker
-    // is INVALIDATED once, at the start of a deferred FACT-hash write, and is
-    // NEVER restored during a write run. A restart therefore always rebuilds the
-    // index authoritatively from the corpus (ensureFactHashIndexAuthoritative,
-    // the pre-existing fail-open path). This deletes the entire "marker trusted
-    // over a stale index" class of races (rebuild-during-window, publish-without
-    // -lock, snapshot-vs-additions) instead of chasing each edge. The one-time
-    // O(N) rebuild is amortized by the #1902 hot-memories cache. Finding 5: only
-    // fire for FACT writes — non-fact memories (procedures, etc.) never touch the
-    // fact-hash index, so removing the marker for them would force needless
-    // rebuilds. `deferHashIndexSave` on the write still gives the per-fact
-    // O(file) win; the end-of-run batch save persists the current index (used
-    // only until the next rebuild re-establishes the marker).
-    const readyMarkerHandled = new Set<StorageManager>();
-    const guardDeferredFactHashWindow = async (
-      target: StorageManager,
-      isFact: boolean,
-    ): Promise<void> => {
-      if (!factDedupEnabled || !isFact) return;
-      if (readyMarkerHandled.has(target)) return;
-      readyMarkerHandled.add(target);
-      await target.invalidateFactHashIndexReadyMarkerOnDisk();
-    };
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -2246,8 +2224,6 @@ export class ExtractionPersistCoordinator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          // #1909: invalidate the ready marker only for a deferred FACT write.
-          await guardDeferredFactHashWindow(targetStorage, writeCategory === "fact");
           const parentWriteEnvelope = composeSalvagedExtractionEnvelope(
             {
               content: citedChunkedContent,
@@ -2612,8 +2588,6 @@ export class ExtractionPersistCoordinator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      // #1909: invalidate the ready marker only for a deferred FACT write.
-      await guardDeferredFactHashWindow(targetStorage, writeCategory === "fact");
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
           content: citedFactContent,
@@ -2991,20 +2965,14 @@ export class ExtractionPersistCoordinator {
     }
 
     // Save any content-hash indexes touched during the batch via the removal-
-    // aware, lock-held reconciling save (issue #1909).
+    // aware, lock-held reconciling save (issue #1909). Round 11: the fact-hash
+    // index is rebuilt from the corpus on every restart (no ready marker), so
+    // this on-disk write is the in-process persisted view — never a cross-restart
+    // trust anchor. A deferred write whose addContentHashDedup threw is still
+    // safe: the fact .md is durable and the next restart's rebuild includes it.
     await this.deps.saveContentHashIndexes().catch((err) => {
       log.warn(`content-hash index save failed: ${err}`);
     });
-    // Also reconcile-flush each deferred target's OWN fact-hash index so the
-    // deferred hash reaches disk even if addContentHashDedup threw (round 6).
-    // NOTE (round 9 marker pivot): the fact-hashes.ready marker removed at the
-    // start of a deferred fact write is NEVER restored here — a restart rebuilds
-    // authoritatively from the corpus. This eliminates the whole "marker trusted
-    // over a stale index" race class; the flush below just keeps the on-disk
-    // index current for the window until the next rebuild re-establishes it.
-    for (const target of readyMarkerHandled) {
-      await target.flushDeferredFactHashIndexMergingWithDisk();
-    }
 
     for (const {
       storage: targetStorage,

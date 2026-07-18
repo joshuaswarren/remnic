@@ -3590,11 +3590,9 @@ export class StorageManager {
     // chokepoint, which also covers the entity cache (issue #1535).
     this.invalidateAllMemoriesCache();
     this.invalidateKnowledgeIndexCache();
+    // Force a corpus rebuild of the fact-hash index on next use (round 11: no
+    // on-disk ready marker — the in-memory authoritative flag is the only gate).
     this.factHashIndexAuthoritative = false;
-    await unlink(this.factHashIndexReadyPath).catch((error: unknown) => {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    });
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -3721,32 +3719,6 @@ export class StorageManager {
   private get entitySynthesisQueuePath(): string {
     return path.join(this.stateDir, "entity-synthesis-queue.json");
   }
-  private get factHashIndexReadyPath(): string {
-    return path.join(this.stateDir, "fact-hashes.ready");
-  }
-
-  /**
-   * Remove the on-disk fact-hash "ready" marker for the duration of a deferred
-   * batch persist (issue #1909 review round 4). While the marker is absent a
-   * fresh StorageManager will NOT trust the on-disk index and instead rebuilds
-   * from the corpus via `ensureFactHashIndexAuthoritative`, so a crash AFTER a
-   * deferred fact write but BEFORE the batch `saveContentHashIndexes()` cannot
-   * leave a just-written fact missing from dedup. Deliberately does NOT clear
-   * this instance's in-memory `factHashIndexAuthoritative` flag — the live index
-   * already holds the deferred hashes (added by writeMemory), so in-process
-   * dedup stays correct and fast during the run. Returns true iff a marker
-   * existed and was removed (so only a previously-trusted index is restored).
-   */
-  async invalidateFactHashIndexReadyMarkerOnDisk(): Promise<boolean> {
-    try {
-      await unlink(this.factHashIndexReadyPath);
-      return true;
-    } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return false;
-      throw err;
-    }
-  }
-
   // ── Tombstone store access (issue #1579) ─────────────────────────────────
   /**
    * The on-disk tombstone log path. Lives under `<stateDir>/tombstones.jsonl`
@@ -3944,36 +3916,6 @@ export class StorageManager {
     return this.factHashIndexLoadPromise;
   }
 
-  /**
-   * Flush the storage-owned fact-hash index by union-merging with the on-disk
-   * file (issue #1909 review round 6). Called at the end of a deferred-batch
-   * persist run so a deferred write's hash reaches disk EVEN IF the orchestrator
-   * dedup registration (addContentHashDedup) threw — writeMemory already added
-   * the hash to this instance's index, so it is durable independent of that
-   * fragile chain. Union-merge keeps it safe under concurrent writers.
-   *
-   * Returns `true` only when the on-disk index provably reflects this run's
-   * deferred writes (the index was loaded and merge-saved, or was clean). When
-   * the index was NEVER loaded (`factHashIndex === null`), returns `false`
-   * (review round 8 thread 2): the caller only invokes this for storages that
-   * received a guarded deferred write, so a null index means the write's
-   * getFactHashIndex()/add() failed and the hash reached NO index — restoring
-   * the ready marker would then trust a stale on-disk index. Returning false
-   * leaves the marker absent so a restart rebuilds from the corpus (fail-open).
-   */
-  async flushDeferredFactHashIndexMergingWithDisk(): Promise<boolean> {
-    if (!this.factHashIndex) return false;
-    try {
-      await this.factHashIndex.saveMergingWithDisk();
-      return true;
-    } catch (err) {
-      log.warn(
-        `storage.flushDeferredFactHashIndexMergingWithDisk failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      return false;
-    }
-  }
-
   private async ensureFactHashIndexAuthoritative(): Promise<void> {
     if (this.factHashIndexAuthoritative === true) {
       return;
@@ -3983,15 +3925,14 @@ export class StorageManager {
       return;
     }
 
+    this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
-      try {
-        await access(this.factHashIndexReadyPath);
-        this.factHashIndexAuthoritative = true;
-        return;
-      } catch {
-        // Fall through and backfill from the live fact corpus once.
-      }
-
+      // Round 11 (definitive): ALWAYS rebuild the fact-hash index from the
+      // durable fact corpus on first use per process — no on-disk "ready" marker
+      // is written or trusted. A deferred write, crash, or multi-process
+      // interleave therefore can never leave a stale index trusted (there is no
+      // cached authoritative signal to go stale). One-time O(N) per restart,
+      // amortized by the #1902 hot-memories cache after the first read.
       const factHashIndex = await this.getFactHashIndex();
       factHashIndex.clear();
       const existing = await this.readAllMemories();
@@ -4062,8 +4003,6 @@ export class StorageManager {
         );
       }
       await factHashIndex.save();
-      await mkdir(path.dirname(this.factHashIndexReadyPath), { recursive: true });
-      await writeFile(this.factHashIndexReadyPath, "v1\n", "utf-8");
       this.factHashIndexAuthoritative = true;
     })().finally(() => {
       this.factHashIndexAuthoritativePromise = null;

@@ -17,11 +17,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
+import { clearMemoryCache } from "./memory-cache.js";
 import { ContentHashIndex, StorageManager } from "./storage.js";
 import type { ExtractionResult, ExtractedFact, MemoryFile } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
@@ -1131,11 +1132,10 @@ test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fa
     "the fact hash was flushed immediately despite the batch saver being a no-op",
   );
 });
-test("#1909 marker pivot: deferred persist invalidates the ready marker (not restored) and a restart still dedups", async () => {
-  // Review round 9: with dedup ON the main-path fact write defers and
-  // persistExtraction INVALIDATES fact-hashes.ready — and never restores it. A
-  // restart therefore rebuilds authoritatively from the corpus and still dedups
-  // the fact (no reliance on trusting a possibly-stale on-disk index).
+test("#1909 round 11: deferred persist writes no ready marker and a restart rebuild still dedups", async () => {
+  // With dedup ON the main-path fact write defers; there is NO fact-hashes.ready
+  // marker anymore. A restart rebuilds the fact-hash index authoritatively from
+  // the corpus and still dedups the fact.
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-window-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -1150,22 +1150,17 @@ test("#1909 marker pivot: deferred persist invalidates the ready marker (not res
   const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
   const storage = await orchestrator.getStorage("default");
   await storage.ensureDirectories();
-  // Warm authoritative + create the marker so the run's guard has one to remove.
-  assert.equal(await storage.hasFactContentHash("warm"), false);
   const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
-  assert.equal(existsSync(readyPath), true, ".ready present before the run");
 
   const body = "The scheduler batches webhook deliveries into 250ms windows.";
   const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 1, "the fact is written");
+  assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
 
-  // The marker was invalidated by the deferred fact write and NOT restored.
-  assert.equal(existsSync(readyPath), false, ".ready invalidated and not restored (round 9 pivot)");
-
-  // A fresh instance rebuilds from the corpus (marker absent) and still dedups.
+  // A fresh instance rebuilds from the corpus and still dedups.
   const restarted = new StorageManager(memoryDir);
   assert.equal(await restarted.hasFactContentHash(body), true);
-  assert.equal(existsSync(readyPath), true, "the restart rebuild re-established the marker");
+  assert.equal(existsSync(readyPath), false, "still no marker after the restart rebuild");
 });
 test("#1909: a deferred fact stays durable when addContentHashDedup throws", async () => {
   // Review round 6 finding 1: the deferred write's durability must not depend on
@@ -1242,47 +1237,14 @@ test("#1909: two interleaved persist runs both land on disk (merge, no clobber)"
   assert.equal(await fresh.hasFactContentHash("alpha interleaved fact"), true, "A's fact survived");
   assert.equal(await fresh.hasFactContentHash("beta interleaved fact"), true, "B's fact survived");
 });
-test("#1909 finding 5: a non-fact (preference) deferred write does NOT invalidate the fact-hash ready marker", async () => {
-  // Review round 9 finding 5: non-fact memories never touch the fact-hash index,
-  // so the deferred-window guard must not remove fact-hashes.ready for them —
-  // doing so would force needless corpus rebuilds on the next restart.
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonfact-marker-"));
-  const config = parseConfig({
-    openaiApiKey: "sk-test",
-    memoryDir,
-    workspaceDir: path.join(memoryDir, "workspace"),
-    qmdEnabled: false,
-    embeddingFallbackEnabled: false,
-    chunkingEnabled: false,
-    multiGraphMemoryEnabled: false,
-    factDeduplicationEnabled: true,
-  });
-  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
-  const storage = await orchestrator.getStorage("default");
-  await storage.ensureDirectories();
-  // Warm authoritative + create the marker.
-  assert.equal(await storage.hasFactContentHash("warm"), false);
-  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
-  assert.equal(existsSync(readyPath), true, ".ready present before the run");
-
-  const preferenceResult: ExtractionResult = {
-    facts: [{ content: "prefers dark mode in the editor", category: "preference", tags: [], confidence: 0.9 }],
-    entities: [],
-    relationships: [],
-    questions: [],
-    profileUpdates: [],
-  };
-  await orchestrator.persistExtraction(preferenceResult, storage, null);
-
-  // The marker is untouched — the preference write never deferred a fact hash.
-  assert.equal(existsSync(readyPath), true, "non-fact write left the ready marker intact");
-});
-test("#1909 round 10 finding 2: a fact-hash removal invalidates the ready marker (restart rebuilds)", async () => {
-  // A removal (archival / consolidation) changes the fact-hash index, but its
-  // durable flush can time out on the advisory lock. Invalidating the ready
-  // marker on removal guarantees a restart rebuilds from the corpus and the
-  // removal lands — never trusting a stale on-disk index over an archived fact.
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-removal-marker-"));
+test("#1909 round 11: the restart rebuild reflects the current corpus (archived fact is not re-deduped)", async () => {
+  // No ready marker exists — the fact-hash index is ALWAYS rebuilt from the
+  // durable corpus on restart. So an archival/consolidation removal LANDS after
+  // restart (the removed .md is excluded from the rebuild) even if that run's
+  // reconciling save could not publish (lock timeout) — there is no stale
+  // on-disk index to trust. This is the definitive replacement for the
+  // marker-invalidate-on-removal machinery.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-corpus-reflect-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -1299,21 +1261,68 @@ test("#1909 round 10 finding 2: a fact-hash removal invalidates the ready marker
 
   const body = "The nightly job compacts cold storage at 02:00 UTC.";
   await orchestrator.persistExtraction(factResult(body), storage, null);
-
-  // Re-establish the marker via a rebuild (the deferred fact write invalidated it).
-  await storage.hasFactContentHash("warm-after-persist");
   const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
-  assert.equal(existsSync(readyPath), true, "marker present after the rebuild");
+  assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
 
-  // Archive the fact: remove its content hash. This must invalidate the marker.
-  const memories = await storage.readAllMemories();
-  const mem = memories.find((m: MemoryFile) => m.content.includes(body));
+  // A fresh instance rebuilds from the corpus → dedups the persisted fact.
+  const before = new StorageManager(memoryDir);
+  assert.equal(await before.hasFactContentHash(body), true);
+
+  // Archive the fact: remove its .md from the active corpus.
+  const mem = (await storage.readAllMemories()).find((m: MemoryFile) => m.content.includes(body));
   assert.ok(mem, "persisted fact is readable");
-  await orchestrator.removeContentHashForMemory(storage, mem, "test-archival");
+  await rm(mem.path);
+  // Simulate a fresh process (real restart): drop the process-wide memory cache
+  // so the rebuild re-reads the now-smaller corpus from disk.
+  clearMemoryCache(memoryDir);
 
+  // A fresh instance rebuilds from the now-smaller corpus → the archived fact is
+  // no longer deduped (re-extraction is allowed). The removal landed with no
+  // marker and no reliance on the reconciling save having published.
+  const after = new StorageManager(memoryDir);
   assert.equal(
-    existsSync(readyPath),
+    await after.hasFactContentHash(body),
     false,
-    "the removal invalidated the ready marker so a restart rebuilds authoritatively",
+    "archived fact is not deduped after the restart rebuild",
+  );
+});
+test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE catalog touches", async () => {
+  // The buffer save fires a coalesced namespace-catalog touch; if catalog touches
+  // were flushed first, that shutdown-time touch would queue after and be lost.
+  // destroy() must flush the buffer first so its touch folds into the catalog
+  // flush and both settle before destroy() returns.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-order-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config);
+  const priv = orchestrator as unknown as {
+    buffer: { flushPendingSave: () => Promise<void> };
+    namespaceCatalog: { flushPendingTouches: () => Promise<void> };
+    destroy: () => Promise<void>;
+  };
+  const order: string[] = [];
+  const realFlushSave = priv.buffer.flushPendingSave.bind(priv.buffer);
+  priv.buffer.flushPendingSave = async () => {
+    order.push("buffer");
+    return realFlushSave();
+  };
+  const realFlushTouch = priv.namespaceCatalog.flushPendingTouches.bind(priv.namespaceCatalog);
+  priv.namespaceCatalog.flushPendingTouches = async () => {
+    order.push("catalog");
+    return realFlushTouch();
+  };
+
+  await priv.destroy();
+  assert.deepEqual(
+    order,
+    ["buffer", "catalog"],
+    "buffer flush must run before the catalog-touch flush on shutdown",
   );
 });

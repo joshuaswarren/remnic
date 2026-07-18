@@ -949,12 +949,16 @@ export class Orchestrator {
     }
     this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
+    // Issue #1909: persist any turns buffered within the debounce window BEFORE
+    // flushing catalog touches (review round 11 finding 2). The buffer save fires
+    // a coalesced namespace-catalog touch on an unref'd timer; flushing touches
+    // first would let that shutdown-time touch queue after the flush and be lost.
+    // Ordering it before flushPendingTouches folds the buffer-save's touch into
+    // the flush below so both settle before destroy() returns.
+    await this.buffer.flushPendingSave().catch(() => undefined);
     // Issue #1903: flush any coalesced namespace-catalog touches before teardown
     // so a long-lived host does not drop buffered read/write timestamps.
     await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
-    // Issue #1909: persist any turns buffered within the debounce window before
-    // teardown so a graceful shutdown does not drop them from state/buffer.json.
-    await this.buffer.flushPendingSave().catch(() => undefined);
     await this.namespaceSearchRouter.dispose();
     await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {

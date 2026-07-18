@@ -168,57 +168,42 @@ test("concurrent deferred fact writes both land in the index (no lost update)", 
   });
 });
 
-test("#1909: crash in the deferred window (marker invalidated, no batch save) rebuilds from the corpus", async () => {
-  // Review round 4: with a deferred main-path write outstanding, the
-  // fact-hashes.ready marker must be removed so a crash BEFORE the batch save
-  // does not leave a fresh instance trusting a stale index that is missing the
-  // just-written fact.
+test("#1909 round 11: a deferred write with no batch save is rebuilt from the corpus on restart", async () => {
+  // No fact-hashes.ready marker exists anymore — the fact-hash index is ALWAYS
+  // rebuilt from the durable fact corpus on first use per process. So a deferred
+  // write that never got flushed (crash before the batch save) is still deduped
+  // after restart because the fact .md is on disk and the rebuild includes it.
   await withMemoryDir(async (dir) => {
     const readyPath = path.join(dir, "state", "fact-hashes.ready");
-    // Warm the index authoritative + create the .ready marker.
     const warm = new StorageManager(dir);
-    assert.equal(await warm.hasFactContentHash("warm"), false);
-    assert.equal(existsSync(readyPath), true, ".ready present after warm");
-
-    // Open the deferred-batch window: remove the marker, then a deferred write.
-    assert.equal(await warm.invalidateFactHashIndexReadyMarkerOnDisk(), true, "marker existed and was removed");
-    assert.equal(existsSync(readyPath), false, "marker absent during the deferred window");
     await warm.writeMemory("fact", "windowed fact", {
       source: "extraction",
       deferHashIndexSave: true,
     });
-    // CRASH: no batch save, no marker restore. Drop the instance.
+    // CRASH: no batch save. Drop the instance.
+    assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
 
-    // A fresh instance finds no marker → ensureFactHashIndexAuthoritative rebuilds
-    // from the durable fact corpus (the .md is on disk) → the fact is deduped.
     const restarted = new StorageManager(dir);
     assert.equal(
       await restarted.hasFactContentHash("windowed fact"),
       true,
-      "a crash in the deferred window rebuilds from the corpus — the fact is not lost from dedup",
+      "the fact is rebuilt from the corpus — never lost from dedup",
     );
   });
 });
 
-test("#1909 marker pivot: ready marker is invalidated and NOT restored during a run; a restart rebuilds it", async () => {
-  // Review round 9: the marker is removed once at the start of a deferred fact
-  // write and never restored during the run. A fresh instance with the marker
-  // absent rebuilds authoritatively from the corpus (and re-creates the marker).
+test("#1909 round 11: the fact-hash ready marker is never written (always rebuild on start)", async () => {
   await withMemoryDir(async (dir) => {
     const readyPath = path.join(dir, "state", "fact-hashes.ready");
     const storage = new StorageManager(dir);
-    assert.equal(await storage.hasFactContentHash("warm"), false); // rebuild creates marker
-    assert.equal(existsSync(readyPath), true);
+    await storage.writeMemory("fact", "a durable fact", { source: "manual" });
+    assert.equal(await storage.hasFactContentHash("a durable fact"), true); // triggers rebuild
+    assert.equal(existsSync(readyPath), false, "no ready marker written after a rebuild");
 
-    assert.equal(await storage.invalidateFactHashIndexReadyMarkerOnDisk(), true);
-    assert.equal(existsSync(readyPath), false, "marker removed for the window (never restored)");
-    // invalidate on an already-absent marker reports false.
-    assert.equal(await storage.invalidateFactHashIndexReadyMarkerOnDisk(), false);
-
-    // A fresh instance rebuilds from the corpus and re-establishes the marker.
+    // A fresh instance rebuilds authoritatively from the corpus and still dedups.
     const restarted = new StorageManager(dir);
-    assert.equal(await restarted.hasFactContentHash("anything"), false); // triggers rebuild
-    assert.equal(existsSync(readyPath), true, "restart rebuild re-creates the marker");
+    assert.equal(await restarted.hasFactContentHash("a durable fact"), true);
+    assert.equal(existsSync(readyPath), false, "still no marker after the restart rebuild");
   });
 });
 
