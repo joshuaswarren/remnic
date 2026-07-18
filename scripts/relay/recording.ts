@@ -377,7 +377,11 @@ function requireEvidence(
 function requiredCall(calls: SanitizedRelayCall[], role: RelayRole): SanitizedRelayCall {
   const matches = calls.filter((call) => call.summary.role === role);
   if (matches.length !== 1) throw new Error(`Relay recording must contain exactly one ${role} call artifact`);
-  return matches[0] as SanitizedRelayCall;
+  const call = matches[0] as SanitizedRelayCall;
+  if (call.summary.status !== "completed" || call.summary.exitCode !== 0) {
+    throw new Error(`Relay recording ${role} call does not prove successful completion`);
+  }
+  return call;
 }
 
 function assertRecordingLocators(events: RelayMissionEvent[]): void {

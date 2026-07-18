@@ -552,6 +552,22 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
       },
       /MCP receipts are not bound/
     );
+    await assertResealedJsonTamperRejected<{ summary: { status: string } }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.summary.status = "failed";
+      },
+      /cold-builder call does not prove successful completion/
+    );
+    await assertResealedJsonTamperRejected<{ summary: { exitCode: number } }>(
+      recordingDir,
+      "calls/cold-builder.json",
+      (cold) => {
+        cold.summary.exitCode = 9;
+      },
+      /cold-builder call does not prove successful completion/
+    );
     await assertResealedJsonSetTamperRejected(
       recordingDir,
       ["recording.json", "preflight.json"].map((relativePath) => ({
