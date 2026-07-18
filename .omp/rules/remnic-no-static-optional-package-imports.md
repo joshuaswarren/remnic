@@ -50,3 +50,12 @@ all-type inline specifiers (`import { type A, type B } from ...`), or
 `typeof import("@remnic/bench")` type positions. A mixed list like
 `import { type A, B } from ...` still imports `B` at runtime and is
 correctly caught.
+
+Recorded non-goal: token-obfuscated forms such as a block comment
+between `import` and its clause (`import /* x */ { load } from ...`)
+are not matched. TTSRs are guardrails against realistic accidental
+code, not an adversarial sandbox — generated code does not interleave
+comments inside import statements, and supporting arbitrary comment
+positions would make every condition unreadable. The packaging
+contract itself is still enforced downstream by tsup externals and the
+packaging tests; this rule is the early-warning layer.
