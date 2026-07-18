@@ -156,6 +156,11 @@ import {
 } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import {
+  isSealedMemoryEnvelope,
+  sealedWriteToLegacyArgs,
+  type SealedMemoryEnvelope,
+} from "./write-envelope.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
 
@@ -1273,16 +1278,14 @@ export class ContentHashIndex {
 // the coding surfaces + wearable service). Imported here so internal callers
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
 // keep the public storage API stable for existing callers (wearables, dist).
-import { stripAttributesSuffix } from "./structured-attributes.js";
+import { assemblePersistedBody, stripAttributesSuffix } from "./structured-attributes.js";
 export { stripAttributesSuffix };
 
-export function normalizeAttributePairs(pairs: Record<string, string>): string {
-  return Object.entries(pairs)
-    .map(([k, v]) => [k.trim().toLowerCase(), v.trim()] as [string, string])
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("; ");
-}
+// `normalizeAttributePairs` moved to ./structured-attributes.ts (issue #1989
+// PR2) beside `assemblePersistedBody` so the write path and the sealed
+// envelope composer share ONE assembly definition. Re-exported to keep the
+// public storage API stable for existing callers.
+export { normalizeAttributePairs } from "./structured-attributes.js";
 
 // ---------------------------------------------------------------------------
 // Entity file parsing / serialization (Knowledge Graph v7.0)
@@ -2314,6 +2317,94 @@ function parseExtractionRetryStateEntries(
   }
   return valid;
 }
+
+/**
+ * Options accepted by `StorageManager.writeMemory` (extracted verbatim in
+ * issue #1989 PR2 so `SealedWriteExtras` can be derived from it — the
+ * sealed-envelope path takes envelope-owned fields from the envelope and
+ * everything else from these extras).
+ */
+export interface WriteMemoryOptions {
+  actor?: string;
+  confidence?: number;
+  tags?: string[];
+  entityRef?: string;
+  source?: string;
+  supersedes?: string;
+  lineage?: string[];
+  importance?: ImportanceScore;
+  links?: MemoryLink[];
+  intentGoal?: string;
+  intentActionType?: string;
+  intentEntityTypes?: string[];
+  artifactType?: MemoryFrontmatter["artifactType"];
+  sourceMemoryId?: string;
+  sourceTurnId?: string;
+  memoryKind?: MemoryFrontmatter["memoryKind"];
+  expiresAt?: string;
+  validAt?: string;
+  // Issue #1578 — bi-temporal ingestion provenance.  `observedAt` is the
+  // ingestion time (when Remnic learned the fact); `eventTimeSource`
+  // records whether `validAt` was resolved from an extracted expression
+  // or assumed from the ingestion anchor.  Both validate on serialize.
+  observedAt?: string;
+  eventTimeSource?: "extracted" | "assumed";
+  invalidAt?: string;
+  structuredAttributes?: Record<string, string>;
+  /**
+   * When provided, this string is used as the source for the fact-content
+   * dedup hash index instead of the persisted body (`content`).
+   *
+   * Use this when the persisted body differs from the canonical fact text
+   * — for example when `content` is a citation-annotated variant of a raw
+   * fact. Passing the raw fact as `contentHashSource` ensures that
+   * `hasFactContentHash(rawFact)` returns `true` after the write, so
+   * subsequent extractions of the same logical fact are correctly deduped
+   * even when their citation timestamp differs.
+   */
+  contentHashSource?: string;
+  status?: MemoryStatus;
+  /**
+   * Consolidation provenance (issue #561 PR 2).  When the caller is a
+   * consolidation / supersession / dedup-merge path, these fields wire
+   * the page-version snapshots the new memory was derived from and the
+   * operator that produced it.  Persisted onto frontmatter as
+   * `derived_from` + `derived_via`; validated at serialize time.
+   */
+  derivedFrom?: string[];
+  derivedVia?: ConsolidationOperator;
+  /**
+   * Faithfulness gate verdict (issue #1576). When provided, persisted to
+   * frontmatter so downstream readers (TrustScore #1577, review queue)
+   * can consume it. Absent = gate was off or fact predates #1576.
+   */
+  faithfulness?: import("./types.js").FaithfulnessFrontmatter;
+  /**
+   * Claim-level provenance spans (issue #1575 PR 2). When provided,
+   * persisted to frontmatter so downstream readers (memory_get, x-ray,
+   * faithfulness gate #1576) can consume them. Absent = fact predates
+   * #1575 or provenance was disabled.
+   */
+  sources?: ProvenanceSource[];
+  provenance?: "verified" | "unverified" | "none";
+  sourceConnector?: string;
+}
+
+/**
+ * `WriteMemoryOptions` minus the fields a `SealedMemoryEnvelope` owns.
+ * Passing an envelope-owned field twice is a compile error by construction.
+ */
+export type SealedWriteExtras = Omit<
+  WriteMemoryOptions,
+  | "confidence"
+  | "tags"
+  | "entityRef"
+  | "source"
+  | "expiresAt"
+  | "validAt"
+  | "structuredAttributes"
+  | "sourceConnector"
+>;
 
 export class StorageManager {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
@@ -3892,71 +3983,7 @@ export class StorageManager {
   async writeMemory(
     category: MemoryCategory,
     content: string,
-    options: {
-      actor?: string;
-      confidence?: number;
-      tags?: string[];
-      entityRef?: string;
-      source?: string;
-      supersedes?: string;
-      lineage?: string[];
-      importance?: ImportanceScore;
-      links?: MemoryLink[];
-      intentGoal?: string;
-      intentActionType?: string;
-      intentEntityTypes?: string[];
-      artifactType?: MemoryFrontmatter["artifactType"];
-      sourceMemoryId?: string;
-      sourceTurnId?: string;
-      memoryKind?: MemoryFrontmatter["memoryKind"];
-      expiresAt?: string;
-      validAt?: string;
-      // Issue #1578 — bi-temporal ingestion provenance.  `observedAt` is the
-      // ingestion time (when Remnic learned the fact); `eventTimeSource`
-      // records whether `validAt` was resolved from an extracted expression
-      // or assumed from the ingestion anchor.  Both validate on serialize.
-      observedAt?: string;
-      eventTimeSource?: "extracted" | "assumed";
-      invalidAt?: string;
-      structuredAttributes?: Record<string, string>;
-      /**
-       * When provided, this string is used as the source for the fact-content
-       * dedup hash index instead of the persisted body (`content`).
-       *
-       * Use this when the persisted body differs from the canonical fact text
-       * — for example when `content` is a citation-annotated variant of a raw
-       * fact. Passing the raw fact as `contentHashSource` ensures that
-       * `hasFactContentHash(rawFact)` returns `true` after the write, so
-       * subsequent extractions of the same logical fact are correctly deduped
-       * even when their citation timestamp differs.
-       */
-      contentHashSource?: string;
-      status?: MemoryStatus;
-      /**
-       * Consolidation provenance (issue #561 PR 2).  When the caller is a
-       * consolidation / supersession / dedup-merge path, these fields wire
-       * the page-version snapshots the new memory was derived from and the
-       * operator that produced it.  Persisted onto frontmatter as
-       * `derived_from` + `derived_via`; validated at serialize time.
-       */
-      derivedFrom?: string[];
-      derivedVia?: ConsolidationOperator;
-      /**
-       * Faithfulness gate verdict (issue #1576). When provided, persisted to
-       * frontmatter so downstream readers (TrustScore #1577, review queue)
-       * can consume it. Absent = gate was off or fact predates #1576.
-       */
-      faithfulness?: import("./types.js").FaithfulnessFrontmatter;
-      /**
-       * Claim-level provenance spans (issue #1575 PR 2). When provided,
-       * persisted to frontmatter so downstream readers (memory_get, x-ray,
-       * faithfulness gate #1576) can consume them. Absent = fact predates
-       * #1575 or provenance was disabled.
-       */
-      sources?: ProvenanceSource[];
-      provenance?: "verified" | "unverified" | "none";
-      sourceConnector?: string;
-    } = {}
+    options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
     const now = new Date();
@@ -4039,17 +4066,10 @@ export class StorageManager {
       fm.sourceConnector = options.sourceConnector;
     }
 
-    // Append structured attributes as searchable suffix so QMD indexes them.
-    // normalizeAttributePairs sorts and lowercases keys so the enriched content
-    // is stable regardless of the insertion order or key casing supplied by the
-    // caller — this must stay in sync with the dedupContent built in the
-    // orchestrator's hash-dedup path.
-    let enrichedContent = content;
-    if (options.structuredAttributes && Object.keys(options.structuredAttributes).length > 0) {
-      enrichedContent = `${content}\n[Attributes: ${normalizeAttributePairs(options.structuredAttributes)}]`;
-    }
-
-    const sanitized = sanitizeMemoryContent(enrichedContent);
+    // Assemble the persisted body (attribute-suffix enrichment + combined
+    // sanitize) via the SHARED helper — the sealed-envelope composer uses the
+    // same one, so the two write paths cannot diverge (issue #1989 PR2).
+    const sanitized = assemblePersistedBody(content, options.structuredAttributes);
     if (!sanitized.clean) {
       log.warn(`memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
@@ -4168,6 +4188,38 @@ export class StorageManager {
     }
     log.debug(`wrote memory ${id} to ${filePath}`);
     return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}) };
+  }
+
+  /**
+   * Sealed-envelope write entry point (issue #1989 PR2).
+   *
+   * Byte-identity with `writeMemory` is BY DELEGATION: the envelope-owned
+   * fields are unpacked into the exact `writeMemory` arguments a legacy
+   * caller would have passed, so the persisted output is produced by the
+   * same code path. The composer's `persistedBody` was assembled with the
+   * same `assemblePersistedBody` helper `writeMemory` uses, so fingerprints
+   * derived from the envelope match the stored body (§13).
+   *
+   * Differences from a raw `writeMemory` call are REJECTIONS, not silent
+   * changes: the composer enforces tag/attribute caps, strict validAt, and
+   * plain-object attributes that the legacy path never validated.
+   *
+   * `envelope.ttl` maps to `expiresAt` verbatim; converting duration
+   * expressions (`"90d"`) to instants remains the access layer's job (PR3).
+   * `envelope.sourceReason` is access-layer metadata with no frontmatter
+   * field and is deliberately not persisted here.
+   */
+  async writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: SealedWriteExtras = {},
+  ): Promise<MemoryWriteResult> {
+    if (!isSealedMemoryEnvelope(envelope)) {
+      throw new Error(
+        "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)",
+      );
+    }
+    const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+    return this.writeMemory(category, content, options as WriteMemoryOptions);
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {

@@ -31,6 +31,13 @@
  *                                Every handler must dispatch through the
  *                                operation registry; this ratchet pins the
  *                                residual count so it can only shrink.
+ *   6. fileSizeGrandfather      — per-file line-count ceilings for every source
+ *                                file above the 1200-line cap across ALL
+ *                                packages/<pkg>/src roots and root src/
+ *                                (issue #1995, umbrella #1988). New files are
+ *                                hard-capped at 1200 lines; grandfathered files
+ *                                may only shrink, and --update can only lower
+ *                                a ceiling, never raise one.
  *
  * Improvements pass and print a reminder to tighten the baseline with:
  *   node scripts/check-ratchets.mjs --update
@@ -42,7 +49,7 @@
  * configuration.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -54,9 +61,121 @@ const ROOT = process.env.REMNIC_RATCHET_ROOT
 const BASELINE_PATH = process.env.REMNIC_RATCHET_BASELINE
   ? path.resolve(process.env.REMNIC_RATCHET_BASELINE)
   : path.join(ROOT, "scripts", "ratchet-baseline.json");
+/**
+ * Optional changed-file scoping for the file-size ratchet (issue #1995,
+ * merge-skew fix): when this env var points at a newline-separated list of
+ * repo-relative paths (the PR's changed files), per-file ceiling FAILURES
+ * only fire for files in the list. Without it (local runs, pushes to main)
+ * every file is evaluated. Rationale: a PR that never touched config.ts
+ * must not fail because ANOTHER merged PR grew config.ts on main after
+ * this PR's baseline was committed — each PR is judged on its own changes,
+ * and main's drift is caught on the PRs that cause it.
+ */
+const CHANGED_FILES_PATH = process.env.REMNIC_RATCHET_CHANGED_FILES_PATH
+  ? path.resolve(process.env.REMNIC_RATCHET_CHANGED_FILES_PATH)
+  : null;
+
+function readChangedFileScope() {
+  if (!CHANGED_FILES_PATH) return null;
+  if (!existsSync(CHANGED_FILES_PATH)) {
+    fail(
+      `REMNIC_RATCHET_CHANGED_FILES_PATH points at a missing file: ${CHANGED_FILES_PATH} — ` +
+        "fix the CI wiring; an empty file means 'no source changes', absence is an error (never silently widen or narrow scope)",
+    );
+  }
+  const scope = new Set();
+  // CI writes the scope with `git diff -z -c core.quotePath=off`, so entries
+  // are NUL-separated and filenames arrive verbatim (round-3 finding). When
+  // ANY NUL is present it is the ONLY separator — filenames may contain
+  // literal newlines and must not be split on them (round-5 finding). A
+  // NUL-free file (hand-written/local) splits on newlines, with a single
+  // trailing \r stripped per entry (CRLF tolerance). Entries are otherwise
+  // preserved byte-for-byte: no trim() (space-edged filenames are legal —
+  // round-4 finding) and no backslash rewriting (git emits forward-slash
+  // separators on every platform; a literal backslash is CONTENT on Linux —
+  // round-5 finding).
+  const raw = readFileSync(CHANGED_FILES_PATH, "utf8");
+  const entries = raw.includes("\0")
+    ? raw.split("\0")
+    : raw.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  for (const entry of entries) {
+    if (entry.length > 0) scope.add(entry);
+  }
+  return scope;
+}
 
 const CORE_SRC = path.join(ROOT, "packages", "remnic-core", "src");
 const DEFAULT_OVERSIZE_THRESHOLD_LOC = 3000;
+
+/**
+ * File-size ratchet (issue #1995, umbrella #1988).
+ *
+ * Every non-test .ts source file under packages/<pkg>/src and root src/ is
+ * capped at NEW_FILE_SIZE_CAP_LOC lines. Files already above the cap when the
+ * baseline was generated are grandfathered with their then-current size as a
+ * personal ceiling (metrics.fileSizeGrandfather): they may shrink, never
+ * grow. `--update` can only LOWER a ceiling — laundering growth through a
+ * baseline refresh is rejected; a deliberate exception requires hand-editing
+ * the baseline JSON, which is loud in review.
+ */
+const NEW_FILE_SIZE_CAP_LOC = 1200;
+
+/** Roots scanned by the file-size ratchet (repo-relative). */
+function sizeCapScanRoots() {
+  // Symlinked roots are VIOLATIONS, not silently skipped (round-9 finding):
+  // skipping a symlinked `packages/<pkg>`, `packages/<pkg>/src`, `packages`,
+  // or root `src` would let every file behind it evade the cap while the
+  // check stays green. Each symlinked candidate is reported and fails the
+  // metrics collection alongside in-root symlinked sources. statSync follows
+  // links, so lstat first (round-3 finding).
+  // lstat FIRST, tolerating ENOENT (round-12 finding): existsSync FOLLOWS
+  // symlinks, so a DANGLING symlinked root returned false and was silently
+  // skipped — evading the stated all-symlinked-roots rejection.
+  const lstatOrNull = (candidate) => {
+    try {
+      return lstatSync(candidate);
+    } catch {
+      return null;
+    }
+  };
+  const isSymlink = (candidate) => lstatOrNull(candidate)?.isSymbolicLink() === true;
+  const isRealDirectory = (candidate) => {
+    const stats = lstatOrNull(candidate);
+    return stats !== null && !stats.isSymbolicLink() && statSync(candidate).isDirectory();
+  };
+  const roots = [];
+  const symlinkedRoots = [];
+  const packagesDir = path.join(ROOT, "packages");
+  if (isSymlink(packagesDir)) {
+    symlinkedRoots.push(toPosix(path.relative(ROOT, packagesDir)));
+  } else if (isRealDirectory(packagesDir)) {
+    for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+      const pkgPath = path.join(packagesDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        // A symlinked package entry hides everything under it — violation,
+        // whether or not it resolves to a directory with a src/.
+        symlinkedRoots.push(toPosix(path.relative(ROOT, pkgPath)));
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      const src = path.join(pkgPath, "src");
+      if (isSymlink(src)) {
+        symlinkedRoots.push(toPosix(path.relative(ROOT, src)));
+        continue;
+      }
+      if (isRealDirectory(src)) {
+        roots.push(src);
+      }
+    }
+  }
+  const rootSrc = path.join(ROOT, "src");
+  if (isSymlink(rootSrc)) {
+    symlinkedRoots.push(toPosix(path.relative(ROOT, rootSrc)));
+  } else if (isRealDirectory(rootSrc)) {
+    roots.push(rootSrc);
+  }
+  return { roots: roots.sort(), symlinkedRoots: symlinkedRoots.sort() };
+}
 
 /** Repo-relative watchlist paths, always stored with forward slashes. */
 const WATCHLIST = [
@@ -89,6 +208,14 @@ const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 const UNMIGRATED_HANDLER_RE = /operation:\s*null\b/;
 const SURFACE_CATALOG_REL = "packages/remnic-core/src/access-surface-catalog.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
+// The strict (file-size) walker skips ONLY .git: git itself refuses to track
+// paths containing a .git component, so nothing there can be a committed
+// source. Everything else under a src root is measurable — "dist" is real
+// compiled code under include:["src"] (round-11 finding), and even a
+// committed src/node_modules file is compiled when reached through an
+// explicit relative import, which tsconfig's default exclude does not
+// prevent (round-13 finding).
+const STRICT_SKIPPED_DIR_NAMES = new Set([".git"]);
 /**
  * Direct imports of the main `storage.ts` module (issue #1533 Phase B): counts
  * non-test source files that import from `./storage.js` or `../storage.js` (the
@@ -105,7 +232,8 @@ function usage() {
     "",
     "  (no flags)  compare current metrics against scripts/ratchet-baseline.json;",
     "              exit 1 if any structural metric grew",
-    "  --update    rewrite the baseline with current metrics (commit the result)",
+    "  --update    rewrite the baseline with current metrics (commit the result);",
+    "              grandfathered file-size ceilings can only be LOWERED by --update",
     "  --help      show this message",
   ].join("\n");
 }
@@ -115,14 +243,31 @@ function toPosix(relPath) {
 }
 
 function countLines(filePath) {
-  return readFileSync(filePath, "utf8").split("\n").length;
+  // Physical lines under EVERY terminator TypeScript accepts — \r\n, lone
+  // \n, AND lone \r (round-15 finding: a CR-only 1,300-line file measured
+  // as one line). No phantom line for a trailing terminator (round-8
+  // finding); a final line WITHOUT a terminator still counts.
+  const text = readFileSync(filePath, "utf8");
+  if (text.length === 0) return 0;
+  const segments = text.split(/\r\n|\r|\n/);
+  if (segments[segments.length - 1] === "") segments.pop();
+  return segments.length;
 }
 
 function isCountedSourceFile(name) {
+  // .ts/.tsx/.mts/.cts all compile under the packages' tsconfig "src"
+  // globs (round-7 + round-8 findings: bench-ui compiles JSX; TypeScript
+  // compiles .mts/.cts under the same include glob) — a giant .tsx, .mts,
+  // or .cts would otherwise evade the cap. Declarations (.d.*) and tests
+  // stay excluded. Legacy #1529 metrics scan only remnic-core/src, which
+  // has neither — their counts are unaffected.
+  const excluded = [
+    ".test.ts", ".test.tsx", ".test.mts", ".test.cts",
+    ".d.ts", ".d.mts", ".d.cts",
+  ];
   return (
-    name.endsWith(".ts") &&
-    !name.endsWith(".test.ts") &&
-    !name.endsWith(".d.ts")
+    [".ts", ".tsx", ".mts", ".cts"].some((ext) => name.endsWith(ext)) &&
+    !excluded.some((ext) => name.endsWith(ext))
   );
 }
 
@@ -147,6 +292,46 @@ function walkSourceFiles(dir) {
     }
   }
   return out;
+}
+
+/**
+ * Strict variant for the file-size ratchet (issue #1995 round 6): identical
+ * traversal, but a SYMLINK whose name looks like a counted source file (or a
+ * symlinked subdirectory) is recorded as a violation instead of silently
+ * skipped — otherwise `giant.ts -> elsewhere` would evade the line cap while
+ * still compiling as part of the package.
+ */
+function walkSourceFilesStrict(dir) {
+  const files = [];
+  const symlinkedSources = [];
+  if (!existsSync(dir)) {
+    return { files, symlinkedSources };
+  }
+  const entries = readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      // ANY symlink inside a scan root is a counting-evasion vector
+      // (`giant.ts -> elsewhere`, or a symlinked subtree) — record it.
+      symlinkedSources.push(toPosix(path.relative(ROOT, full)));
+      continue;
+    }
+    if (entry.isDirectory()) {
+      // Inside a src scan root, only node_modules and .git can never be
+      // source children (tsconfig's default exclude covers node_modules).
+      // A `src/dist/large.ts` IS compiled production code under
+      // `include: ["src"]` and must be measured — skipping every dir named
+      // "dist" here let such a module bypass the cap (round-11 finding).
+      if (!STRICT_SKIPPED_DIR_NAMES.has(entry.name)) {
+        const nested = walkSourceFilesStrict(full);
+        files.push(...nested.files);
+        symlinkedSources.push(...nested.symlinkedSources);
+      }
+    } else if (entry.isFile() && isCountedSourceFile(entry.name)) {
+      files.push(full);
+    }
+  }
+  return { files, symlinkedSources };
 }
 
 function collectMetrics(oversizeThresholdLoc) {
@@ -228,11 +413,32 @@ function collectMetrics(oversizeThresholdLoc) {
     }
   }
 
+  // File-size ratchet (issue #1995): every source file over the cap, across
+  // ALL package src roots + root src/, keyed by repo-relative posix path.
+  const oversizeByFile = {};
+  const scanRoots = sizeCapScanRoots();
+  // Symlinked roots fail the check exactly like symlinked sources inside a
+  // real root (round-9 finding): both are counting-evasion vectors.
+  const symlinkedSourceEntries = [...scanRoots.symlinkedRoots];
+  for (const rootDir of scanRoots.roots) {
+    const { files: rootFiles, symlinkedSources } = walkSourceFilesStrict(rootDir);
+    symlinkedSourceEntries.push(...symlinkedSources);
+    for (const file of rootFiles) {
+      const lines = countLines(file);
+      if (lines > NEW_FILE_SIZE_CAP_LOC) {
+        oversizeByFile[toPosix(path.relative(ROOT, file))] = lines;
+      }
+    }
+  }
+  symlinkedSourceEntries.sort();
+
   return {
     watchlistLoc,
     missingWatchlistFiles,
     oversizedFiles,
     oversizedFileCount: oversizedFiles.length,
+    oversizeByFile,
+    symlinkedSourceEntries,
     scatteredConfigFlagReads,
     adHocNamespaceResolutions,
     unmigratedHandlerCount,
@@ -276,6 +482,26 @@ function readBaseline() {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
   }
+  // fileSizeGrandfather (issue #1995) may be ABSENT on a legacy baseline —
+  // the comparison in main() then fails with a regenerate hint. Absence must
+  // not fail here or `--update` could never migrate a legacy baseline.
+  if (metrics.fileSizeGrandfather !== undefined) {
+    if (
+      typeof metrics.fileSizeGrandfather !== "object" ||
+      metrics.fileSizeGrandfather === null ||
+      Array.isArray(metrics.fileSizeGrandfather)
+    ) {
+      fail("baseline metrics.fileSizeGrandfather must be an object when present (issue #1995)");
+    }
+    for (const [file, ceiling] of Object.entries(metrics.fileSizeGrandfather)) {
+      if (!Number.isInteger(ceiling) || ceiling <= NEW_FILE_SIZE_CAP_LOC) {
+        fail(
+          `baseline metrics.fileSizeGrandfather entry ${file} must be an integer above ` +
+            `${NEW_FILE_SIZE_CAP_LOC} — entries at or under the cap must simply be removed`,
+        );
+      }
+    }
+  }
   const threshold = parsed.oversizeThresholdLoc;
   if (!Number.isInteger(threshold) || threshold <= 0) {
     fail("baseline oversizeThresholdLoc must be a positive integer");
@@ -293,6 +519,9 @@ function writeBaseline(metrics, oversizeThresholdLoc) {
     metrics: {
       watchlistLoc: metrics.watchlistLoc,
       oversizedFileCount: metrics.oversizedFileCount,
+      fileSizeGrandfather: Object.fromEntries(
+        Object.entries(metrics.oversizeByFile).sort(([a], [b]) => a.localeCompare(b)),
+      ),
       scatteredConfigFlagReads: metrics.scatteredConfigFlagReads,
       adHocNamespaceResolutions: metrics.adHocNamespaceResolutions,
       unmigratedHandlerCount: metrics.unmigratedHandlerCount,
@@ -322,11 +551,87 @@ function main() {
 
   if (args.includes("--update")) {
     const metrics = collectMetrics(DEFAULT_OVERSIZE_THRESHOLD_LOC);
+    // Symlink violations block the refresh too (round 14): a tree the CHECK
+    // mode rejects must never be able to mint a fresh baseline.
+    if (metrics.symlinkedSourceEntries.length > 0) {
+      fail(
+        `cannot write baseline: symlinked source entries present: ${metrics.symlinkedSourceEntries.join(", ")}. ` +
+          "Remove the symlink(s) — symlinked sources and scan roots are counting-evasion vectors and always fail the check.",
+      );
+    }
     if (metrics.missingWatchlistFiles.length > 0) {
       fail(
         `cannot write baseline: watchlist file(s) missing on disk: ${metrics.missingWatchlistFiles.join(", ")}. ` +
           "If a god file was deliberately split or renamed, remove it from WATCHLIST in this script first, then rerun --update.",
       );
+    }
+    // Issue #1995: --update may only LOWER a grandfathered ceiling, and may
+    // never grandfather a file that became oversized AFTER the previous
+    // baseline (review finding on PR #2000: refresh would silently adopt new
+    // >cap files). Growth and new-file adoption both require shrinking the
+    // file; a deliberate exception requires hand-editing the baseline JSON
+    // (loud in review). First generation (no baseline on disk) bootstraps
+    // the grandfather set as-is — that one-time adoption ships in the PR
+    // that introduces the baseline and is itself reviewed.
+    if (existsSync(BASELINE_PATH)) {
+      const previous = readBaseline();
+      const previousCeilings = previous.metrics.fileSizeGrandfather;
+      // A legacy baseline (predating the metric) also bootstraps as-is: the
+      // migration --update runs in the PR that introduces the metric.
+      if (previousCeilings !== undefined) {
+        // Blame scoping mirrors the check path: with a changed-file scope
+        // (REMNIC_RATCHET_CHANGED_FILES_PATH = this branch's own diff),
+        // the guard only blocks growth in files THIS change touched.
+        // Growth that arrived via merges to main was judged on the PRs
+        // that caused it and may be refreshed into the baseline.
+        // An EMPTY scope means "this change touched no source files" — it
+        // must behave like an UNSCOPED update (guards apply everywhere), not
+        // unlock every file as out-of-scope (round-15 finding). And a NEW
+        // ceiling can never be created by --update regardless of scope: only
+        // RAISES of pre-existing ceilings are absorbable as growth inherited
+        // from main; adopting a new oversized file always requires the
+        // documented hand-edit exception (round-15 finding).
+        const changedScope = readChangedFileScope();
+        const scopedUpdate = changedScope !== null && changedScope.size > 0;
+        const inScope = (file) => !scopedUpdate || changedScope.has(file);
+        const laundered = [];
+        const newlyOversized = [];
+        for (const [file, lines] of Object.entries(metrics.oversizeByFile)) {
+          const ceiling = previousCeilings[file];
+          if (ceiling === undefined) {
+            newlyOversized.push(`${file} (${lines})`);
+          } else if (lines > ceiling) {
+            if (inScope(file)) laundered.push(`${file} (${ceiling} -> ${lines})`);
+          }
+        }
+        if (laundered.length > 0 || newlyOversized.length > 0) {
+          const parts = [];
+          if (laundered.length > 0) {
+            parts.push(`grandfathered file(s) grew past their ceiling: ${laundered.join(", ")}`);
+          }
+          if (newlyOversized.length > 0) {
+            parts.push(
+              `file(s) became oversized since the previous baseline and cannot be grandfathered: ${newlyOversized.join(", ")}`,
+            );
+          }
+          fail(
+            `cannot write baseline: ${parts.join("; ")}. ` +
+              `Shrink the file(s) to ${NEW_FILE_SIZE_CAP_LOC} lines or extract sibling modules first — --update never raises or adds a ceiling.`,
+          );
+        }
+        // Out-of-scope raises are permitted (that growth was judged on the
+        // PRs that landed it on main) but NEVER silent: each one is printed
+        // so the baseline diff review sees exactly what moved and why
+        // (review finding on PR #2000 round 2).
+        for (const [file, lines] of Object.entries(metrics.oversizeByFile).sort(([a], [b]) => a.localeCompare(b))) {
+          const ceiling = previousCeilings[file];
+          if (ceiling !== undefined && lines > ceiling && !inScope(file)) {
+            console.log(
+              `[ratchet]   ceiling raised (out-of-scope growth inherited from main): ${file} ${ceiling} -> ${lines}`,
+            );
+          }
+        }
+      }
     }
     writeBaseline(metrics, DEFAULT_OVERSIZE_THRESHOLD_LOC);
     console.log(`[ratchet] baseline written to ${BASELINE_PATH}`);
@@ -338,6 +643,9 @@ function main() {
     console.log(`[ratchet]   adHocNamespaceResolutions: ${metrics.adHocNamespaceResolutions}`);
     console.log(`[ratchet]   unmigratedHandlerCount: ${metrics.unmigratedHandlerCount}`);
     console.log(`[ratchet]   directStorageImports: ${metrics.directStorageImports}`);
+    console.log(
+      `[ratchet]   fileSizeGrandfather (> ${NEW_FILE_SIZE_CAP_LOC} LOC): ${Object.keys(metrics.oversizeByFile).length} files`,
+    );
     return;
   }
 
@@ -388,6 +696,64 @@ function main() {
     improvements.push(
       `oversized files: ${baseline.metrics.oversizedFileCount} -> ${current.oversizedFileCount}`,
     );
+  }
+
+  // File-size ratchet (issue #1995): per-file ceilings across all src roots.
+  const baselineCeilings = baseline.metrics.fileSizeGrandfather;
+  if (baselineCeilings === undefined) {
+    failures.push(
+      "baseline predates the file-size ratchet (missing metrics.fileSizeGrandfather) — " +
+        "regenerate with `node scripts/check-ratchets.mjs --update` and commit it",
+    );
+  } else {
+    // Merge-skew scoping: in PR CI, ceiling FAILURES only fire for files the
+    // PR itself changed (see readChangedFileScope). Improvements are always
+    // reported — they carry no blame.
+    const changedScope = readChangedFileScope();
+    const inScope = (file) => changedScope === null || changedScope.has(file);
+    // Symlinks inside scan roots are counting-evasion vectors (round-6
+    // finding: `giant.ts -> elsewhere` would compile but never be counted).
+    // Same blame scoping as ceilings: only symlinks THIS change introduced
+    // fail its CI run.
+    for (const link of current.symlinkedSourceEntries ?? []) {
+      if (inScope(link)) {
+        failures.push(
+          `${link} is a symlink inside a file-size scan root (issue #1995) — source files and directories ` +
+            "must be regular; symlinked sources evade the line cap and are not permitted.",
+        );
+      }
+    }
+    const sortedOversize = Object.entries(current.oversizeByFile).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    for (const [file, lines] of sortedOversize) {
+      const ceiling = baselineCeilings[file];
+      if (ceiling === undefined) {
+        if (inScope(file)) {
+          failures.push(
+            `${file} is ${lines} lines — new source files are capped at ${NEW_FILE_SIZE_CAP_LOC} LOC (issue #1995). ` +
+              "Either extract the addition into a sibling module, or shrink the file to the cap. " +
+              "Grandfathering new files is not available.",
+          );
+        }
+      } else if (lines > ceiling) {
+        if (inScope(file)) {
+          failures.push(
+            `${file} grew from its grandfathered ceiling ${ceiling} to ${lines} lines (issue #1995). ` +
+              "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition.",
+          );
+        }
+      } else if (lines < ceiling) {
+        improvements.push(`file-size ceiling ${file}: ${ceiling} -> ${lines} lines`);
+      }
+    }
+    for (const file of Object.keys(baselineCeilings).sort()) {
+      if (!(file in current.oversizeByFile)) {
+        improvements.push(
+          `file-size ceiling ${file}: now at/under the ${NEW_FILE_SIZE_CAP_LOC}-line cap (or removed) — prune with --update`,
+        );
+      }
+    }
   }
 
   if (current.scatteredConfigFlagReads > baseline.metrics.scatteredConfigFlagReads) {

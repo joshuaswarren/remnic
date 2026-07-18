@@ -11,6 +11,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -420,18 +421,20 @@ export class AccessObserveWriteSurface {
     return this.deps.handleIdempotentWrite({
       operation: "memory_store",
       idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
+      // Shared builder (issue #1989 PR3): byte-parity with the historical
+      // inline literal is asserted by access-fingerprint-parity.test.ts.
+      requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
+        namespace,
         content: request.content,
         category: request.category,
         confidence: request.confidence,
-        namespace,
         tags: request.tags,
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
         sourceConnector: request.sourceConnector,
-      },
+      }),
       skip: request.dryRun === true,
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
@@ -491,18 +494,20 @@ export class AccessObserveWriteSurface {
     return this.deps.handleIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
+      // Shared builder (issue #1989 PR3): byte-parity with the historical
+      // inline literal is asserted by access-fingerprint-parity.test.ts.
+      requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
+        namespace,
         content: request.content,
         category: request.category,
         confidence: request.confidence,
-        namespace,
         tags: request.tags,
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
         sourceConnector: request.sourceConnector,
-      },
+      }),
       skip: request.dryRun === true,
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
