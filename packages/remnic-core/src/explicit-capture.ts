@@ -1,3 +1,4 @@
+import { composeMemoryEnvelope, TAG_LIMITS } from "./write-envelope.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
@@ -366,12 +367,25 @@ export function validateExplicitCaptureInput(
   }
   const expiresAt = parseExplicitCaptureTtl(input.ttl);
 
+  // #2014 review round: enforce the composer's tag contract HERE so a capture
+  // that passes validation can never fail later at strict compose time
+  // (validated-then-thrown was a broken contract). Same limits as TAG_LIMITS.
+  const dedupedTags = Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean)));
+  if (dedupedTags.length > TAG_LIMITS.maxTags) {
+    throw new Error(`too many tags: ${dedupedTags.length} exceeds the ${TAG_LIMITS.maxTags}-tag limit`);
+  }
+  for (const tag of dedupedTags) {
+    if (tag.length > TAG_LIMITS.maxTagLength) {
+      throw new Error(`tag exceeds ${TAG_LIMITS.maxTagLength} characters: ${JSON.stringify(tag.slice(0, 40))}…`);
+    }
+  }
+
   return {
     content,
     category,
     confidence,
     namespace: asTrimmed(input.namespace),
-    tags: Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))),
+    tags: dedupedTags,
     entityRef: asTrimmed(input.entityRef),
     sourceReason: asTrimmed(input.sourceReason),
     sourceConnector: input.sourceConnector,
@@ -442,14 +456,21 @@ export async function persistExplicitCapture(
   // #1645 (review thread yG-): surface the tombstone block so callers
   // (memory_store tool, access-service HTTP/MCP) can report the capture as
   // queued for review instead of a successfully stored active memory.
-  const { id, tombstoneBlocked } = await storage.writeMemory(candidate.category, candidate.content, {
-    confidence: candidate.confidence,
-    tags: candidate.tags,
-    entityRef: candidate.entityRef,
-    expiresAt: candidate.expiresAt,
-    source: source === "inline" ? "explicit-inline" : "explicit",
-    ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
-  });
+  // Sealed-envelope write (issue #1989 PR2).
+  const captureEnvelope = composeMemoryEnvelope(
+    {
+      content: candidate.content,
+      category: candidate.category,
+      confidence: candidate.confidence,
+      tags: candidate.tags,
+      ...(candidate.entityRef ? { entityRef: candidate.entityRef } : {}),
+      ...(candidate.expiresAt ? { ttl: candidate.expiresAt } : {}),
+      ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
+      ...(candidate.sourceReason ? { sourceReason: candidate.sourceReason } : {}),
+    },
+    { source: source === "inline" ? "explicit-inline" : "explicit" },
+  );
+  const { id, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
   // post-write hook records the namespace touch automatically.
 
@@ -547,13 +568,26 @@ export async function queueExplicitCaptureForReview(
     : "fact";
   const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
-  const { id: id } = await storage.writeMemory(reviewCategory, content, {
-    confidence: 0.2,
-    tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
-    entityRef: sanitizeReviewMetadata(input.entityRef),
-    source: source === "inline" ? "explicit-inline-review" : "explicit-review",
-    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
-  });
+  const reviewEnvelope = composeMemoryEnvelope(
+    {
+      content,
+      category: reviewCategory,
+      confidence: 0.2,
+      tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
+      ...(sanitizeReviewMetadata(input.entityRef) ? { entityRef: sanitizeReviewMetadata(input.entityRef) } : {}),
+      ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
+    },
+    { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
+    // The review queue is the FALLBACK for a capture that already failed
+    // primary validation — it must never be un-queueable. The tag list is
+    // machine-assembled (requested tags + the two fixed review tags), so 49+
+    // requested tags would push past the 50-tag limit and strict compose
+    // would throw, losing the capture (#2014 review round). Salvage clamps
+    // instead; the fixed review tags sort first in the assembly above, so
+    // they always survive the clamp.
+    { salvage: true },
+  );
+  const { id: id } = await storage.writeSealedMemory(reviewEnvelope);
   try {
     const created = await storage.getMemoryById(id);
     if (created) {
