@@ -113,3 +113,38 @@ test("env token takes precedence over a present config token", async () => {
   process.env.REMNIC_AUTH_TOKEN = "env-operator-token";
   assert.equal(resolveStatusProbeToken(), "env-operator-token");
 });
+
+test("skips chatgpt connector tokens (mcp-only) and uses the next ordinary connector token", async () => {
+  await mkdir(path.join(tempHome, ".remnic"), { recursive: true });
+  await writeFile(
+    path.join(tempHome, ".remnic", "tokens.json"),
+    JSON.stringify({
+      tokens: [
+        { token: "chatgpt-mcp-only-token", connector: "chatgpt", createdAt: "2026-07-18T00:00:00.000Z" },
+        { token: "ordinary-connector-token", connector: "cli", createdAt: "2026-07-18T00:00:00.000Z" },
+      ],
+    }),
+  );
+  assert.equal(resolveStatusProbeToken(), "ordinary-connector-token");
+});
+
+test("returns undefined when the only connector token is chatgpt (mcp-only)", async () => {
+  await mkdir(path.join(tempHome, ".remnic"), { recursive: true });
+  await writeFile(
+    path.join(tempHome, ".remnic", "tokens.json"),
+    JSON.stringify({
+      tokens: [{ token: "chatgpt-mcp-only-token", connector: "chatgpt", createdAt: "2026-07-18T00:00:00.000Z" }],
+    }),
+  );
+  assert.equal(resolveStatusProbeToken(), undefined);
+});
+
+test("treats the \${REMNIC_AUTH_TOKEN} config placeholder as unresolved (falls through)", async () => {
+  await writeFile(
+    process.env.REMNIC_CONFIG_PATH!,
+    JSON.stringify({ server: { authToken: "${REMNIC_AUTH_TOKEN}" } }),
+  );
+  // No env token, no connector store → undefined (placeholder did not leak).
+  assert.equal(resolveStatusProbeToken(), undefined);
+});
+

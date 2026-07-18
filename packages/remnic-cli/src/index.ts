@@ -4857,14 +4857,17 @@ function resolveStatusProbeToken(): string | undefined {
   const operatorToken = oauthResolveOperatorToken();
   if (operatorToken) return operatorToken;
   try {
-    const [first] = listTokens();
-    if (first && typeof first.token === "string" && first.token.length > 0) {
-      return first.token;
-    }
+    // Connector tokens authorize health EXCEPT chatgpt-minted ones, which
+    // the access server pins to /mcp only (tokenPathPolicy). Skip those so
+    // a ChatGPT entry at the head of the store doesn't produce a misleading
+    // 401 when an ordinary connector token would authenticate health.
+    const usable = listTokens().find(
+      (t) => t.connector !== "chatgpt" && typeof t.token === "string" && t.token.length > 0,
+    );
+    if (usable) return usable.token;
   } catch {
     // Token store missing/unreadable — fall through to the open probe.
   }
-  return undefined;
 }
 
 export const __statusHealthTestHooks = { resolveStatusProbeToken };
@@ -5023,7 +5026,15 @@ function oauthResolveOperatorToken(): string | undefined {
     const server = raw.server;
     if (server && typeof server === "object" && "authToken" in server) {
       const candidate = (server as Record<string, unknown>).authToken;
-      if (typeof candidate === "string" && candidate.length > 0) {
+      // A config created by `remnic init` may still hold the literal
+      // `${REMNIC_AUTH_TOKEN}` placeholder; treat that as unresolved so
+      // callers fall through to other sources (env, token store) rather
+      // than sending the placeholder as a real bearer token.
+      if (
+        typeof candidate === "string" &&
+        candidate.length > 0 &&
+        !candidate.includes("${")
+      ) {
         return candidate;
       }
     }
