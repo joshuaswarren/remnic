@@ -3952,7 +3952,22 @@ export class StorageManager {
       const existing = await this.readAllMemories();
       let legacyRecovered = 0;
       for (const memory of existing) {
-        if (memory.frontmatter.category !== "fact") continue;
+        // #1909 review round 13: the content-hash dedup index is SHARED by fact
+        // AND procedure dedup. Procedures register their persist-body hash via
+        // the orchestrator's addContentHashDedup into THIS same index, but they
+        // are stored with category "procedure". A fact-only rebuild dropped every
+        // persisted procedure hash on restart, letting the next extraction
+        // recreate identical procedures. Index both categories so the corpus
+        // rebuild is coherent with the shared registration path. Procedures never
+        // carry a frontmatter contentHash (writeMemory only sets it for facts),
+        // so they fall through to the citation-strip reconstruction below — the
+        // same path legacy facts use.
+        if (
+          memory.frontmatter.category !== "fact" &&
+          memory.frontmatter.category !== "procedure"
+        ) {
+          continue;
+        }
         if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
         // Prefer the pre-computed raw-content hash stored in frontmatter
         // (written since round 8 of issue #369). This hash was derived from
@@ -4013,7 +4028,7 @@ export class StorageManager {
       }
       if (legacyRecovered > 0) {
         log.info(
-          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy fact(s) with no contentHash in frontmatter`
+          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
         );
       }
       await factHashIndex.save();

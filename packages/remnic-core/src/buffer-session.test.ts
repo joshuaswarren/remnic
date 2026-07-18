@@ -816,3 +816,55 @@ test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", as
     );
   }
 });
+
+test("debounce on: a failed clearAfterExtraction save keeps pending so other sessions' turns are not lost", async () => {
+  // Issue #1909 review round 13: clearAfterExtraction must NOT clear the global
+  // pending-save state/timer before its post-clear save is durable. If any
+  // session has a debounced save pending and the post-clear write throws, the
+  // pending state must be retained + re-armed so shutdown/the timer retries —
+  // otherwise buffered turns from OTHER sessions that only ever existed in the
+  // debounced state are lost.
+  const storage = new FailOnceBufferStorage();
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  // Session A buffers a turn — only a debounced save is pending (nothing on disk).
+  await buffer.addTurn("session-a", makeTurn("session-a", "A only lives in the pending save"));
+  // Session B buffers a turn too — the pending debounced save now covers A + B.
+  await buffer.addTurn("session-b", makeTurn("session-b", "B is about to be extracted"));
+  assert.equal(storage.saveCount, 0, "both turns are still only in the debounced pending save");
+
+  const internals = buffer as unknown as DebouncedBufferInternals;
+
+  // Extract + clear session B. The post-clear save FAILS (FailOnce). The global
+  // pending state must survive so A (and the cleared-B state) can still land.
+  await assert.rejects(
+    () => buffer.clearAfterExtraction("session-b"),
+    /simulated buffer write failure/,
+    "the failed post-clear save propagates (matching the inline-write guarantee)",
+  );
+  assert.equal(storage.saveCount, 0, "nothing was persisted on the failed clear");
+  assert.equal(
+    internals.pendingSave,
+    true,
+    "a failed clear keeps the save pending (would be false + lost without the round 13 fix)",
+  );
+  assert.notEqual(internals.saveTimer, null, "a background retry timer is re-armed after the failure");
+
+  // Retry (mirrors the re-armed timer or graceful shutdown) succeeds.
+  await buffer.flushPendingSave();
+  assert.equal(storage.saveCount, 1, "the retry performed exactly one successful write");
+  assert.equal(internals.pendingSave, false, "pending is cleared only after the durable write");
+  assert.equal(
+    storage.saved?.entries?.["session-a"]?.turns.length,
+    1,
+    "session A's turn is retained through the failed clear and later persisted",
+  );
+  assert.equal(
+    storage.saved?.entries?.["session-b"]?.turns.length ?? 0,
+    0,
+    "session B's turns were cleared by the extraction",
+  );
+});

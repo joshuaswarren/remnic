@@ -381,6 +381,38 @@ export class SmartBuffer {
   }
 
   /**
+   * Persist the current in-memory buffer state inline, keeping the global
+   * pending-save state armed until the write SUCCEEDS (issue #1909). On failure
+   * the save stays pending and — when debounced — a background retry timer is
+   * (re-)armed before the error propagates, so a graceful shutdown flush and the
+   * next timer tick both retry. A failed post-mutation save therefore can never
+   * silently drop buffered turns, including turns from OTHER sessions that were
+   * only in the debounced pending state. The pending flag is cleared (and any
+   * armed timer dropped) only after a durable write.
+   */
+  private async saveNowRetainingPendingOnFailure(context: string): Promise<void> {
+    this.pendingSave = true;
+    if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
+    try {
+      await this.saveUnlocked();
+    } catch (err) {
+      log.warn(
+        `buffer.${context}: inline save failed, keeping it pending for retry: ${describeError(err)}`,
+      );
+      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
+      if (ms > 0 && !this.saveTimer) {
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
+      throw err;
+    }
+    this.cancelScheduledSave();
+  }
+
+  /**
    * Force any pending debounced save to land now (issue #1909). Idempotent and
    * safe to call from outside a mutation (timer tick, shutdown/dispose, or the
    * surprise-promotion path in `addTurnWithOutcome`). Do NOT `await` this from
@@ -554,27 +586,10 @@ export class SmartBuffer {
       //  - the turn triggered extraction (the buffer must be durable), or
       //  - debounce is disabled (bufferSaveDebounceMs <= 0), which reproduces
       //    the legacy save-every-turn behavior byte-for-byte.
-      // Round 8 thread 4: attempt the write BEFORE clearing pending state, and
-      // mark a pending save first, so a failed inline write leaves pendingSave
-      // set (and a re-armed timer) for shutdown/timer retry instead of dropping
-      // the in-memory turns. Only cancel/clear AFTER the write succeeds.
-      this.pendingSave = true;
-      if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
-      try {
-        await this.saveUnlocked();
-      } catch (err) {
-        log.warn(`buffer.recordTurn: inline save failed, keeping it pending for retry: ${describeError(err)}`);
-        const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
-        if (ms > 0 && !this.saveTimer) {
-          this.saveTimer = setTimeout(() => {
-            this.saveTimer = null;
-            void this.flushPendingSave();
-          }, ms);
-          this.saveTimer.unref?.();
-        }
-        throw err; // propagate: match the extract-trigger durability guarantee
-      }
-      this.cancelScheduledSave();
+      // Round 8 thread 4: the write is attempted BEFORE the pending state is
+      // cleared, and a failed write leaves it pending (+ a re-armed timer) for
+      // shutdown/timer retry instead of dropping the in-memory turns.
+      await this.saveNowRetainingPendingOnFailure("recordTurn");
     }
     return {
       decision,
@@ -886,10 +901,17 @@ export class SmartBuffer {
     extractedTurns?: readonly BufferTurn[],
   ): Promise<void> {
     await this.enqueueMutation(async () => {
-      // Cancel any armed debounced save (issue #1909): this method persists the
-      // post-clear state via saveUnlocked() below, so a stale pending timer must
-      // not fire afterward and overwrite it with pre-clear state.
-      this.cancelScheduledSave();
+      // Drop any armed debounce TIMER so it cannot fire mid-mutation and race
+      // our post-clear write, but KEEP the pending-save state (issue #1909
+      // review round 13): the post-clear save below can fail, and clearing the
+      // pending flag here would strand buffered turns — including turns from
+      // OTHER sessions that only ever entered the debounced pending state — with
+      // nothing left to retry them. saveNowRetainingPendingOnFailure clears the
+      // pending state only after a durable write, or re-arms it on failure.
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
       if (Array.isArray(extractedTurns)) {
@@ -913,7 +935,7 @@ export class SmartBuffer {
           }
         }
         if (!clearedLiveTurns) {
-          await this.saveUnlocked();
+          await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
           return;
         }
       } else {
@@ -927,7 +949,7 @@ export class SmartBuffer {
         this.state.extractionCount = entry.extractionCount;
       }
       this.pruneEntries([bufferKey]);
-      await this.saveUnlocked();
+      await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
     });
   }
 

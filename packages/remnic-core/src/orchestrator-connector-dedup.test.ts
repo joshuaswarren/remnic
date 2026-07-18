@@ -26,6 +26,7 @@ import { clearMemoryCache } from "./memory-cache.js";
 import { ContentHashIndex, StorageManager } from "./storage.js";
 import type { ExtractionResult, ExtractedFact, MemoryFile } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { buildProcedurePersistBody } from "./procedural/procedure-types.js";
 
 // ---------------------------------------------------------------------------
 // Types — minimal surface of Orchestrator needed by these tests.
@@ -1367,4 +1368,97 @@ test("#1909 round 12: after a crash before the batch save, the orchestrator dedu
   // And re-persisting the same fact is deduped (no duplicate .md created).
   const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 0, "the fact is deduped on re-extraction — not re-created");
+});
+
+test("#1909 round 13: startup rebuild preserves PROCEDURE hashes as well as fact hashes across restart", async () => {
+  // The content-hash dedup index is SHARED by fact AND procedure dedup —
+  // procedures register their persist-body hash into the same index. The
+  // marker-less startup rebuild (ensureFactHashIndexAuthoritative) clears the
+  // on-disk index and reconstructs it from the .md corpus on first use per
+  // process. A fact-only rebuild dropped every persisted procedure hash, so a
+  // restart would re-create identical procedures. Both categories must survive.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proc-rebuild-"));
+  const factBody = "The staging deploy gates on a green smoke suite.";
+  const procTitle = "When you cut a hotfix release, follow the checklist";
+  const procSteps = [
+    { intent: "Branch from main and cherry-pick the fix" },
+    { intent: "Run CI and tag the release" },
+  ];
+  // The dedup key for a procedure is its full persist body (title + steps).
+  const procBody = buildProcedurePersistBody(
+    procTitle,
+    procSteps.map((s, i) => ({ order: i + 1, intent: s.intent })),
+  );
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+      // procedural.enabled defaults to true.
+    });
+
+  // Phase 1 — persist a fact and a procedure through the real persist path.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    const factIds = await orch.persistExtraction(factResult(factBody), storage, null);
+    assert.equal(factIds.length, 1, "fact persisted in phase 1");
+    const procIds = await orch.persistExtraction(
+      procedureResult(procTitle, procSteps),
+      storage,
+      null,
+    );
+    assert.equal(procIds.length, 1, "procedure persisted in phase 1");
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the dedup index rebuilds authoritatively from the corpus.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, factBody),
+    true,
+    "fact hash survives the corpus rebuild",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, procBody),
+    true,
+    "PROCEDURE hash survives the corpus rebuild (round 13 fix)",
+  );
+
+  // Re-extraction of both is deduped — neither is re-created.
+  const factReIds = await orch2.persistExtraction(factResult(factBody), storage2, null);
+  assert.equal(factReIds.length, 0, "fact is deduped on restart");
+  const procReIds = await orch2.persistExtraction(
+    procedureResult(procTitle, procSteps),
+    storage2,
+    null,
+  );
+  assert.equal(
+    procReIds.length,
+    0,
+    "procedure is deduped on restart (would be re-created without the round 13 fix)",
+  );
+
+  // Exactly one of each remains on disk.
+  const all = await storage2.readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "fact").length,
+    1,
+    "one fact on disk",
+  );
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "procedure").length,
+    1,
+    "one procedure on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
 });
