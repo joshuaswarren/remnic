@@ -1970,6 +1970,43 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 43. **Direct-write paths must trigger reindex** — bypassing the normal extraction→persist→index pipeline (e.g., heartbeat import writing directly to storage) leaves data undiscoverable until unrelated maintenance. After direct writes, explicitly call the reindex step.
 49. **Deduplicate batch operation inputs before executing** — duplicate rollout slugs in a batch rename cause ENOENT crash when the second rename tries to move an already-moved file. Check for duplicates before processing, or verify source exists before each move. PR #392.
 
+## Sealed memory-write envelope (issue #1989)
+
+How memory writes work since the #1989 series landed — this DESCRIBES the
+mechanism (decision A); the enforced gate is `scripts/check-envelope-belt.mjs`
+in CI's checks job.
+
+- Every production memory write composes a `SealedMemoryEnvelope` via
+  `composeMemoryEnvelope(input, ctx, opts?)` in
+  `packages/remnic-core/src/write-envelope.ts` and persists through
+  `storage.writeSealedMemory(envelope, extras)`. `StorageManager.writeMemory`
+  remains the single persistence engine — `writeSealedMemory` delegates
+  through the exported `sealedWriteToLegacyArgs` mapper, which test doubles
+  also use so stub behavior cannot drift (§21).
+- **Strict vs salvage:** operator/system-built input composes STRICT (an
+  invalid value is a caller bug that must surface — explicit capture,
+  coding surfaces, audit trails). Machine-generated or replayed-from-store
+  input composes with `{ salvage: true }` (extraction, wearables,
+  consolidation, promotions, corrections, admin replays): invalid OPTIONAL
+  fields drop with notes on `envelope.salvageNotes`, which callers warn-log —
+  visible, never silent. Content/category/source/validAt stay fatal in both
+  modes.
+- **Adding a cross-cutting field is a ONE-MODULE change:** add it to
+  `MemoryWriteInput`/`SealedMemoryEnvelope` with normalization in the
+  composer, classify it in exactly one of `WRITE_FINGERPRINT_FIELDS`
+  (identity) or `FINGERPRINT_EXEMPT_FIELDS` (provenance), and map it in
+  `sealedWriteToLegacyArgs`. Compile-time assertions refuse unclassified or
+  doubly-classified fields, and `UncoveredAccessFingerprintField` forces an
+  explicit access-surface fingerprint decision.
+  `write-envelope.extension.test.ts` is the living demonstration.
+- **Idempotency fingerprints:** the access surfaces' stored hashes are
+  load-bearing state (no TTL). Their payloads build through the per-surface
+  builders in write-envelope.ts (`buildAccessWriteRequestFingerprint`,
+  `buildObserveRequestFingerprint`) which reproduce the historical shapes
+  byte-for-byte; `access-fingerprint-parity.test.ts` is the safety net.
+  Unifying onto the versioned `buildWriteIdempotencyPayload` shape requires
+  an explicit stored-state migration.
+
 ## À-la-carte packaging
 
 Remnic ships as a family of packages that compose. Every install surface must respect this contract:

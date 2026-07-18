@@ -1,5 +1,7 @@
+import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import type { MemoryFile, StorageManager } from "@remnic/core";
 import { sanitizeMemoryContent } from "@remnic/core/sanitize";
+import { STRUCTURED_ATTRIBUTE_LIMITS } from "@remnic/core/write-envelope";
 import { ContentHashIndex, normalizeAttributePairs } from "@remnic/core/storage";
 import {
   claimFromMemory,
@@ -16,6 +18,43 @@ import type { LedgerClaim, LedgerClaimKind, LedgerClaimStatus, LedgerStore } fro
 function serializeClaimMemoryContent(claim: LedgerClaim): string {
   const attributes = normalizeAttributePairs(claimToStructuredAttributes(claim));
   return `${serializeClaimBody(claim)}\n[Attributes: ${attributes}]`;
+}
+
+const JSON_ARRAY_ATTRIBUTES = new Set([
+  "ledger.entities",
+  "ledger.parentIds",
+  "ledger.evidenceLinks",
+]);
+const ATTRIBUTE_TRUNCATION_SUFFIX = " [truncated]";
+
+function boundClaimAttributesForEnvelope(
+  attributes: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(attributes).map(([key, value]) => {
+      if (value.length <= STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) return [key, value];
+
+      if (JSON_ARRAY_ATTRIBUTES.has(key)) {
+        try {
+          const parsed = JSON.parse(value);
+          if (Array.isArray(parsed)) {
+            const retained: unknown[] = [];
+            for (const item of parsed) {
+              const candidate = JSON.stringify([...retained, item]);
+              if (candidate.length > STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength) break;
+              retained.push(item);
+            }
+            return [key, JSON.stringify(retained)];
+          }
+        } catch {
+        }
+      }
+
+      const contentLength =
+        STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength - ATTRIBUTE_TRUNCATION_SUFFIX.length;
+      return [key, `${value.slice(0, contentLength)}${ATTRIBUTE_TRUNCATION_SUFFIX}`];
+    }),
+  );
 }
 
 export class RemnicLedgerTombstoneBlockedError extends Error {
@@ -55,17 +94,28 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    const { id: memoryId, tombstoneBlocked } = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
+    // Sealed-envelope write (issue #1989 PR4): claims are system-serialized
+    // but structured attributes (ledger.sourceText, evidence excerpts) may
+    // exceed the envelope's value-length limit — SALVAGE keeps oversized
+    // fields from aborting a valid claim; drops warn-logged.
+    const claimEnvelope = composeSalvagedEnvelope(
+      "belief-ledger",
+      {
+        content: serializeClaimBody(pending),
+        category: "fact",
+        confidence: pending.confidence,
+        tags: claimTags(pending),
+        entityRef: pending.scope.entities[0],
+        validAt: pending.createdAt,
+        structuredAttributes: boundClaimAttributesForEnvelope(claimToStructuredAttributes(pending)),
+      },
+      { source: this.source },
+    );
+    const { id: memoryId, tombstoneBlocked } = await this.storage.writeSealedMemory(claimEnvelope, {
       actor: this.source,
-      confidence: pending.confidence,
-      tags: claimTags(pending),
-      entityRef: pending.scope.entities[0],
-      source: this.source,
       supersedes: pending.supersedes,
       lineage: pending.parentIds.length > 0 ? pending.parentIds : undefined,
       memoryKind: "note",
-      validAt: pending.createdAt,
-      structuredAttributes: claimToStructuredAttributes(pending),
       status: remnicMemoryStatusForClaim(pending),
     });
 
@@ -231,16 +281,21 @@ export class RemnicLedgerStore implements LedgerStore {
     reason: string
   ): Promise<void> {
     try {
-      await this.storage.writeMemory(
-        "correction",
-        `Superseded: ${prior.statement}\n\nReplacement: ${next.statement}\n\nReason: ${reason}`,
-        {
-          actor: this.source,
-          confidence: 1,
-          tags: ["belief-ledger:audit", "supersession", "auto-resolved"],
-          source: this.source,
-          lineage: [prior.id, next.id],
-        }
+      // Sealed-envelope write (issue #1989 PR4): system-built audit body.
+      // Audit-trail correction — system-built body, salvage for the same
+      // attribute-limit reason as the claim write.
+      await this.storage.writeSealedMemory(
+        composeSalvagedEnvelope(
+          "belief-ledger:audit",
+          {
+            content: `Superseded: ${prior.statement}\n\nReplacement: ${next.statement}\n\nReason: ${reason}`,
+            category: "correction",
+            confidence: 1,
+            tags: ["belief-ledger:audit", "supersession", "auto-resolved"],
+          },
+          { source: this.source },
+        ),
+        { actor: this.source, lineage: [prior.id, next.id] },
       );
     } catch {
       // The ledger link is already durable; correction memory is an audit side effect.

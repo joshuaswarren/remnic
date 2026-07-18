@@ -93,7 +93,7 @@ export interface WearableStorageIo {
       content: string;
     }>
   >;
-  writeMemory: WearableMemoryGenDeps["writer"]["writeMemory"];
+  writeSealedMemory: WearableMemoryGenDeps["writer"]["writeSealedMemory"];
   hasFactContentHash(content: string): Promise<boolean>;
   findWearableMemoryByContent(
     content: string,
@@ -176,7 +176,7 @@ export function createWearableMemoryWriter(
   storage: WearableStorageIo,
 ): WearableMemoryGenDeps["writer"] {
   return {
-    writeMemory: storage.writeMemory.bind(storage),
+    writeSealedMemory: storage.writeSealedMemory.bind(storage),
     findWearableMemoryByContent: async (content: string) =>
       (await storage.findWearableMemoryByContent(content)) as
         | { id: string; status: import("../types.js").MemoryStatus | undefined }

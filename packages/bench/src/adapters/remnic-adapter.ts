@@ -35,6 +35,8 @@ import {
   serializeEntityFile,
   StorageManager,
 } from "@remnic/core";
+import { withBenchCoreMemorySource } from "./with-bench-core-memory-source.js";
+
 import type {
   EntityStructuredSection,
   EvidencePackSelectionReceipt,
@@ -1337,38 +1339,6 @@ async function rememberNewBenchCoreMemories(
   }
 }
 
-async function withBenchCoreMemorySource(
-  orchestrator: Orchestrator,
-  sessionId: string,
-  task: () => Promise<void>,
-): Promise<void> {
-  type BenchWriteMemory = Orchestrator["storage"]["writeMemory"];
-  const storage = orchestrator.storage as unknown as { writeMemory: BenchWriteMemory };
-  const originalWriteMemory = storage.writeMemory;
-  const writeMemory = originalWriteMemory.bind(orchestrator.storage);
-  const source = benchCoreMemorySource(sessionId);
-
-  storage.writeMemory = async (
-    ...args: Parameters<BenchWriteMemory>
-  ): ReturnType<BenchWriteMemory> => {
-    const [category, content, options] = args;
-    const requestedSource = options?.source;
-    return writeMemory(category, content, {
-      ...(options ?? {}),
-      source:
-        !requestedSource || requestedSource === "extraction"
-          ? source
-          : requestedSource,
-    });
-  };
-
-  try {
-    await task();
-  } finally {
-    storage.writeMemory = originalWriteMemory;
-  }
-}
-
 async function clearBenchCoreSessionMemories(
   orchestrator: Orchestrator,
   sessionId: string,
@@ -2065,7 +2035,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           try {
             replayIngestion = withBenchCoreMemorySource(
               replayOrchestrator,
-              sessionId,
+              benchCoreMemorySource(sessionId),
               () => withBenchEntityStructuredFactCapture(
                 replayOrchestrator,
                 sessionId,

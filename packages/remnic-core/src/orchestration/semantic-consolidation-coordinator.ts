@@ -49,6 +49,7 @@ import type { LocalLlmClient } from "../local-llm.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
 import type { PluginConfig, MemoryFile, AgentPersonaModelConfig } from "../types.js";
 import { log } from "../logger.js";
+import { composeMemoryEnvelope } from "../write-envelope.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 
 /** Dependencies injected by the orchestrator. All stable references or
@@ -289,18 +290,30 @@ export class SemanticConsolidationCoordinator {
         }
 
         // Write the canonical memory
-        const { id: canonicalId, tombstoneBlocked: canonicalBlocked } = await targetStorage.writeMemory(
-          newest.frontmatter.category,
-          canonicalContent,
+        // Sealed-envelope write (issue #1989 PR4): canonical content is
+        // LLM-merged and tags are unioned from stored rows — salvage so a
+        // limit-violating union cannot abort consolidation (warn-logged).
+        const canonicalEnvelope = composeMemoryEnvelope(
           {
-            actor: "semantic-consolidation",
+            content: canonicalContent,
+            category: newest.frontmatter.category,
             confidence: newest.frontmatter.confidence,
             tags: [
               ...new Set(
                 cluster.memories.flatMap((m) => m.frontmatter.tags ?? []),
               ),
             ],
-            source: "semantic-consolidation",
+          },
+          { source: "semantic-consolidation" },
+          { salvage: true },
+        );
+        if (canonicalEnvelope.salvageNotes.length > 0) {
+          log.warn(`semantic-consolidation write salvaged invalid fields: ${canonicalEnvelope.salvageNotes.join("; ")}`);
+        }
+        const { id: canonicalId, tombstoneBlocked: canonicalBlocked } = await targetStorage.writeSealedMemory(
+          canonicalEnvelope,
+          {
+            actor: "semantic-consolidation",
             lineage: lineageIds,
             derivedFrom: derivedFromEntries.length > 0 ? derivedFromEntries : undefined,
             derivedVia: operator,
