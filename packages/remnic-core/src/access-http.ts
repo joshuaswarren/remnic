@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
+import { WriteRateLimiter } from "./write-rate-limiter.js";
 import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import {
@@ -220,10 +221,6 @@ const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
   ["replay.json", "application/json; charset=utf-8"],
 ]);
 
-// Defaults for the write rate limit; overridable per instance via
-// `writeRateLimitWindowMs` / `writeRateLimitMaxRequests` (issue #1937).
-const WRITE_RATE_LIMIT_WINDOW_MS = 60_000;
-const WRITE_RATE_LIMIT_MAX_REQUESTS = 30;
 const TRUST_ZONE_RECORD_KINDS = ["memory", "artifact", "state", "trajectory", "external"] as const;
 const TRUST_ZONE_SOURCE_CLASSES = ["tool_output", "web_content", "subagent_trace", "system_memory", "user_input", "manual"] as const;
 
@@ -401,9 +398,7 @@ export class EngramAccessHttpServer {
     res: ServerResponse,
     ctx: { authorized: boolean },
   ) => Promise<boolean>;
-  private readonly writeRequestSlots: Array<{ readonly recordedAt: number }> = [];
-  private readonly writeRateLimitMaxRequests: number;
-  private readonly writeRateLimitWindowMs: number;
+  private readonly writeLimiter: WriteRateLimiter;
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
   private boundPort = 0;
@@ -440,20 +435,10 @@ export class EngramAccessHttpServer {
     this.maxBodyBytes = Number.isFinite(options.maxBodyBytes)
       ? Math.max(1, Math.floor(options.maxBodyBytes ?? 131072))
       : 131072;
-    // Defensive inline validation (config parsers reject invalid values
-    // loudly upstream; this only guards direct programmatic constructions).
-    this.writeRateLimitMaxRequests =
-      typeof options.writeRateLimitMaxRequests === "number" &&
-      Number.isInteger(options.writeRateLimitMaxRequests) &&
-      options.writeRateLimitMaxRequests >= 1
-        ? options.writeRateLimitMaxRequests
-        : WRITE_RATE_LIMIT_MAX_REQUESTS;
-    this.writeRateLimitWindowMs =
-      typeof options.writeRateLimitWindowMs === "number" &&
-      Number.isInteger(options.writeRateLimitWindowMs) &&
-      options.writeRateLimitWindowMs >= 1
-        ? options.writeRateLimitWindowMs
-        : WRITE_RATE_LIMIT_WINDOW_MS;
+    this.writeLimiter = new WriteRateLimiter(
+      options.writeRateLimitMaxRequests,
+      options.writeRateLimitWindowMs,
+    );
     this.adminConsoleEnabled = options.adminConsoleEnabled !== false;
     this.adminConsolePublicDir = options.adminConsolePublicDir ?? defaultAdminConsolePublicDir;
     this.adminConsolePrefillToken = options.adminConsolePrefillToken === true ? this.authToken : undefined;
@@ -3875,33 +3860,21 @@ export class EngramAccessHttpServer {
   }
 
   private ensureWriteRateLimitAvailable(): void {
-    const now = Date.now();
-    while (
-      this.writeRequestSlots.length > 0 &&
-      now - (this.writeRequestSlots[0]?.recordedAt ?? 0) > this.writeRateLimitWindowMs
-    ) {
-      this.writeRequestSlots.shift();
-    }
-    if (this.writeRequestSlots.length >= this.writeRateLimitMaxRequests) {
+    if (!this.writeLimiter.hasCapacity()) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
   }
 
   private recordWriteRateLimitHit(): void {
-    this.writeRequestSlots.push({ recordedAt: Date.now() });
+    this.writeLimiter.record();
   }
 
   private reserveWriteRateLimitSlot(): () => void {
-    this.ensureWriteRateLimitAvailable();
-    const slot = { recordedAt: Date.now() };
-    this.writeRequestSlots.push(slot);
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      const index = this.writeRequestSlots.indexOf(slot);
-      if (index >= 0) this.writeRequestSlots.splice(index, 1);
-    };
+    const release = this.writeLimiter.reserve();
+    if (!release) {
+      throw new HttpError(429, "write_rate_limited", "write_rate_limited");
+    }
+    return release;
   }
 
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {

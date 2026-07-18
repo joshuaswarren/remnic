@@ -367,25 +367,25 @@ test("Relay write quota releases the exact reservation when timestamps collide",
     adminConsoleEnabled: false,
   });
   const internals = server as unknown as {
-    writeRequestSlots: Array<{ readonly recordedAt: number }>;
+    writeLimiter: { slots: Array<{ readonly recordedAt: number }> };
     reserveWriteRateLimitSlot: () => () => void;
   };
   const originalNow = Date.now;
   try {
     Date.now = () => 1_754_000_000_000;
     const releaseCommitted = internals.reserveWriteRateLimitSlot();
-    const committedSlot = internals.writeRequestSlots[0];
+    const committedSlot = internals.writeLimiter.slots[0];
     const releaseFailed = internals.reserveWriteRateLimitSlot();
-    const failedSlot = internals.writeRequestSlots[1];
+    const failedSlot = internals.writeLimiter.slots[1];
     assert.ok(committedSlot);
     assert.ok(failedSlot);
     assert.notEqual(committedSlot, failedSlot);
 
     releaseFailed();
-    assert.deepEqual(internals.writeRequestSlots, [committedSlot]);
+    assert.deepEqual(internals.writeLimiter.slots, [committedSlot]);
 
     releaseCommitted();
-    assert.deepEqual(internals.writeRequestSlots, []);
+    assert.deepEqual(internals.writeLimiter.slots, []);
   } finally {
     Date.now = originalNow;
   }
