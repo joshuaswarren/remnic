@@ -116,7 +116,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git fetch --quiet --depth=1 origin "$BASE_REF"
-          git -c core.quotePath=off diff --name-only -z FETCH_HEAD HEAD > /tmp/ratchet-changed-files.txt
+          # Merge base (three-dot), not two-tree: a queued run's merge commit can
+          # predate BASE_REF advancing, and a two-tree diff would then pull
+          # base-branch-only changes into this PR's scope (round-9 finding).
+          git -c core.quotePath=off diff --name-only -z FETCH_HEAD...HEAD > /tmp/ratchet-changed-files.txt
           echo "changed files: $(tr -cd "\0" < /tmp/ratchet-changed-files.txt | wc -c)"
           echo "REMNIC_RATCHET_CHANGED_FILES_PATH=/tmp/ratchet-changed-files.txt" >> "$GITHUB_ENV"
         env:

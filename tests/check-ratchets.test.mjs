@@ -665,3 +665,32 @@ test("file-size ratchet: .mts and .cts sources are counted; their test/declarati
     assert.match(check.stderr, /legacy-big\.mts/);
   });
 });
+
+test("file-size ratchet: symlinked scan roots fail loudly instead of evading the scan (round 9)", () => {
+  withFixture((fixture) => {
+    // Baseline first, from a clean tree.
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    // A symlinked package src root: packages/evil-pkg/src -> elsewhere.
+    const outside = path.join(fixture.root, "outside-tree");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, "huge.ts"), "pad\n".repeat(2000));
+    const evilPkg = path.join(fixture.root, "packages", "evil-pkg");
+    mkdirSync(evilPkg, { recursive: true });
+    symlinkSync(outside, path.join(evilPkg, "src"), "dir");
+    const srcLinked = runRatchets([], fixture);
+    assert.equal(srcLinked.status, 1, "symlinked pkg src root must fail the check");
+    assert.match(srcLinked.stderr, /packages\/evil-pkg\/src/);
+    rmSync(evilPkg, { recursive: true, force: true });
+
+    // A symlinked package ENTRY: packages/evil-link -> elsewhere.
+    symlinkSync(outside, path.join(fixture.root, "packages", "evil-link"), "dir");
+    const entryLinked = runRatchets([], fixture);
+    assert.equal(entryLinked.status, 1, "symlinked package entry must fail the check");
+    assert.match(entryLinked.stderr, /packages\/evil-link/);
+    rmSync(path.join(fixture.root, "packages", "evil-link"), { force: true });
+
+    // Clean tree passes again.
+    assert.equal(runRatchets([], fixture).status, 0);
+  });
+});

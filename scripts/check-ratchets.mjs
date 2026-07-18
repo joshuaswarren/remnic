@@ -122,31 +122,49 @@ const NEW_FILE_SIZE_CAP_LOC = 1200;
 
 /** Roots scanned by the file-size ratchet (repo-relative). */
 function sizeCapScanRoots() {
-  // Symlinked roots are REJECTED, not followed: statSync follows links, so a
-  // committed `packages/<pkg>/src` (or root `src`) symlink could point the
-  // scan outside the checkout (review finding on PR #2000, P1). lstat first.
+  // Symlinked roots are VIOLATIONS, not silently skipped (round-9 finding):
+  // skipping a symlinked `packages/<pkg>`, `packages/<pkg>/src`, `packages`,
+  // or root `src` would let every file behind it evade the cap while the
+  // check stays green. Each symlinked candidate is reported and fails the
+  // metrics collection alongside in-root symlinked sources. statSync follows
+  // links, so lstat first (round-3 finding).
+  const isSymlink = (candidate) => existsSync(candidate) && lstatSync(candidate).isSymbolicLink();
   const isRealDirectory = (candidate) =>
     existsSync(candidate) &&
     !lstatSync(candidate).isSymbolicLink() &&
     statSync(candidate).isDirectory();
   const roots = [];
+  const symlinkedRoots = [];
   const packagesDir = path.join(ROOT, "packages");
-  // The discovery root itself gets the same treatment (round-3 finding):
-  // a committed `packages` symlink must not redirect the entire scan.
-  if (isRealDirectory(packagesDir)) {
+  if (isSymlink(packagesDir)) {
+    symlinkedRoots.push(toPosix(path.relative(ROOT, packagesDir)));
+  } else if (isRealDirectory(packagesDir)) {
     for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const src = path.join(packagesDir, entry.name, "src");
+      const pkgPath = path.join(packagesDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        // A symlinked package entry hides everything under it — violation,
+        // whether or not it resolves to a directory with a src/.
+        symlinkedRoots.push(toPosix(path.relative(ROOT, pkgPath)));
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      const src = path.join(pkgPath, "src");
+      if (isSymlink(src)) {
+        symlinkedRoots.push(toPosix(path.relative(ROOT, src)));
+        continue;
+      }
       if (isRealDirectory(src)) {
         roots.push(src);
       }
     }
   }
   const rootSrc = path.join(ROOT, "src");
-  if (isRealDirectory(rootSrc)) {
+  if (isSymlink(rootSrc)) {
+    symlinkedRoots.push(toPosix(path.relative(ROOT, rootSrc)));
+  } else if (isRealDirectory(rootSrc)) {
     roots.push(rootSrc);
   }
-  return roots.sort();
+  return { roots: roots.sort(), symlinkedRoots: symlinkedRoots.sort() };
 }
 
 /** Repo-relative watchlist paths, always stored with forward slashes. */
@@ -374,8 +392,11 @@ function collectMetrics(oversizeThresholdLoc) {
   // File-size ratchet (issue #1995): every source file over the cap, across
   // ALL package src roots + root src/, keyed by repo-relative posix path.
   const oversizeByFile = {};
-  const symlinkedSourceEntries = [];
-  for (const rootDir of sizeCapScanRoots()) {
+  const scanRoots = sizeCapScanRoots();
+  // Symlinked roots fail the check exactly like symlinked sources inside a
+  // real root (round-9 finding): both are counting-evasion vectors.
+  const symlinkedSourceEntries = [...scanRoots.symlinkedRoots];
+  for (const rootDir of scanRoots.roots) {
     const { files: rootFiles, symlinkedSources } = walkSourceFilesStrict(rootDir);
     symlinkedSourceEntries.push(...symlinkedSources);
     for (const file of rootFiles) {
