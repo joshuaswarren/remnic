@@ -24,13 +24,18 @@ const ADDITIONAL_REPLACEMENT_PATTERN =
 const NO_REPLACEMENT_PATTERN =
   /\bno\s+(?:(?:additional|extra|further|second|new|replacement)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?(?:replacements?|tokens?)\b/;
 const ROTATION_ACTION_PATTERN =
-  /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
+  /\b(?:mint(?:s|ed|ing)?|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|provision(?:s|ed|ing)?|allocat(?:e|es|ed|ing)|rotat(?:e|es|ed|ing)|refresh(?:es|ed|ing)?|replac(?:e|es|ed|ing)|renew(?:s|ed|ing)?|regenerat(?:e|es|ed|ing))\b/;
 const ROTATION_OBJECT_PATTERN =
   /\b(?:(?:new|fresh|replacement|current)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?tokens?\b/;
 const ANAPHORIC_TOKEN_OBJECT_PATTERN =
   /\b(?:(?:(?:a|the)\s+)?(?:new|fresh|replacement|additional|second|next)\s+one|another(?:\s+one)?|one(?:\s+more)?|anew|(?:it|this|that)(?:\s+one)?|(?:something|anything)\s+(?:new|fresh|different|separate|distinct|alternate)|(?:(?:a|the)\s+)?(?:new|fresh|different|distinct|alternate|separate|replacement|another)\s+(?:value|object|item|thing|secret|identifier|id|handle))\b(?=\s*(?:$|\b(?:on|for|during|across|after|before|prior|ahead|while|when|per|at|each|every)\b))/;
 const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
+const OBJECTLESS_ROTATION_FILLER_PATTERN =
+  /\b(?:a|an|the|then|we|system|agent|keep|keeps|keeping|continue|continues|continued|continuing|to|will|would|should|must|can|could|may|might|always|more|again|another|additional|extra|several|multiple|many|twice|two|2|batch|batches|anew|afresh|repeatedly|repetitively|continuously|indefinitely|endlessly)\b/g;
+const OBJECTLESS_ADDITIONAL_ROTATION_PATTERN =
+  /\b(?:keep|keeps|keeping|continue|continues|continued|continuing|always|more|again|another|additional|extra|several|multiple|many|twice|two|2|batch|batches|repeatedly|repetitively|continuously|indefinitely|endlessly)\b/;
+const EXPLICIT_ROTATION_CADENCE_PATTERN = /\b(?:every|each|all)\b|\bper[-\s]+/;
 const ALLOWED_REUSE_CLAUSE_PATTERN =
   /^(?:then\s+)?reuse\s+(?:(?:the\s+)?(?:(?:current|existing|valid|unexpired)\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?token|(?:it|this|that)(?:\s+replacement)?|(?:the\s+)?replacement)(?:\s+(?:for|on|during|across)\s+(?:(?:every|each|all)\s+)?(?:(?:checkout\s+)?requests?|(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?))?(?:\s+while\s+(?:it\s+is\s+)?valid)?$/;
 const ALLOWED_INITIAL_TOKEN_MINT_CLAUSE_PATTERN =
@@ -127,12 +132,38 @@ function hasRotationActionAndObject(clause) {
   );
 }
 
+function hasObjectlessRotationAction(clause) {
+  if (
+    ROTATION_OBJECT_PATTERN.test(clause) ||
+    ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause) ||
+    PRE_EXPIRY_REPLACEMENT_OBJECT_PATTERN.test(clause) ||
+    !ROTATION_ACTION_PATTERN.test(clause)
+  ) {
+    return false;
+  }
+  const residual = clause
+    .replace(PER_REQUEST_ROTATION_PATTERN, " ")
+    .replace(PER_RETRY_ROTATION_PATTERN, " ")
+    .replace(ROTATION_ACTION_PATTERN, " ")
+    .replace(OBJECTLESS_ROTATION_FILLER_PATTERN, " ")
+    .replace(/[\s-]+/g, "");
+  return residual.length === 0;
+}
+
+function hasRotationActionSignal(clause) {
+  return hasRotationActionAndObject(clause) || hasObjectlessRotationAction(clause);
+}
+
 function hasTokenLifecycleTarget(clause) {
   return TOKEN_LIFECYCLE_TARGET_PATTERN.test(clause) || ANAPHORIC_TOKEN_OBJECT_PATTERN.test(clause);
 }
 
 function hasRotationTarget(clause) {
   return PER_REQUEST_ROTATION_PATTERN.test(clause) || PER_RETRY_ROTATION_PATTERN.test(clause);
+}
+
+function hasExplicitRotationCadence(clause) {
+  return hasRotationTarget(clause) && EXPLICIT_ROTATION_CADENCE_PATTERN.test(clause);
 }
 
 function rotationPredicateClauses(clause) {
@@ -143,15 +174,11 @@ function rotationPredicateClauses(clause) {
 }
 
 function isAffirmativeRotationClause(clause) {
-  return (
-    hasRotationActionAndObject(clause) &&
-    hasRotationTarget(clause) &&
-    !NEGATION_PATTERN.test(clause)
-  );
+  return hasRotationActionSignal(clause) && hasRotationTarget(clause) && !NEGATION_PATTERN.test(clause);
 }
 
 function hasAffirmativeRotationPolicy(value) {
-  return decisionClauseGroups(value).some((clauses) => {
+  const groupedMatch = decisionClauseGroups(value).some((clauses) => {
     const predicateGroups = clauses.map(rotationPredicateClauses);
     if (predicateGroups.flat().some(isAffirmativeRotationClause)) return true;
     return predicateGroups.some((predicates, index) => {
@@ -161,12 +188,23 @@ function hasAffirmativeRotationPolicy(value) {
         nextPredicates.some((nextPredicate) => {
           if (NEGATION_PATTERN.test(predicate) || NEGATION_PATTERN.test(nextPredicate)) return false;
           return (
-            (hasRotationActionAndObject(predicate) && hasRotationTarget(nextPredicate)) ||
-            (hasRotationTarget(predicate) && hasRotationActionAndObject(nextPredicate))
+            (hasRotationActionSignal(predicate) && hasRotationTarget(nextPredicate)) ||
+            (hasRotationTarget(predicate) && hasRotationActionSignal(nextPredicate))
           );
         })
       );
     });
+  });
+  if (groupedMatch) return true;
+
+  const clauses = decisionClauses(value);
+  return clauses.some((clause, index) => {
+    const nextClause = clauses[index + 1];
+    if (!nextClause || NEGATION_PATTERN.test(clause) || NEGATION_PATTERN.test(nextClause)) return false;
+    return (
+      (hasExplicitRotationCadence(clause) && hasObjectlessRotationAction(nextClause)) ||
+      (hasObjectlessRotationAction(clause) && hasExplicitRotationCadence(nextClause))
+    );
   });
 }
 
@@ -242,7 +280,13 @@ function postExpiryReplacementSignalCount(value) {
 function hasAffirmativeAdditionalReplacementPolicy(value) {
   return decisionClauseGroups(value)
     .flatMap((clauses) => clauses.flatMap(rotationPredicateClauses))
-    .some(isAffirmativeAdditionalReplacementClause);
+    .some(
+      (clause) =>
+        isAffirmativeAdditionalReplacementClause(clause) ||
+        (!hasReplacementPolicyNegation(clause) &&
+          OBJECTLESS_ADDITIONAL_ROTATION_PATTERN.test(clause) &&
+          hasObjectlessRotationAction(clause))
+    );
 }
 
 function isAllowedInitialTokenMintClause(clause) {
