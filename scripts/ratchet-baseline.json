@@ -6,7 +6,7 @@
     "watchlistLoc": {
       "packages/remnic-core/src/orchestrator.ts": 3979,
       "packages/remnic-core/src/cli.ts": 9428,
-      "packages/remnic-core/src/access-service.ts": 5904,
+      "packages/remnic-core/src/access-service.ts": 5911,
       "packages/remnic-core/src/storage.ts": 7061,
       "packages/remnic-core/src/config.ts": 4560
     },
@@ -30,7 +30,7 @@
       "packages/remnic-core/src/access-http.ts": 3954,
       "packages/remnic-core/src/access-mcp.ts": 2991,
       "packages/remnic-core/src/access-recall-surface.ts": 1551,
-      "packages/remnic-core/src/access-service.ts": 5904,
+      "packages/remnic-core/src/access-service.ts": 5911,
       "packages/remnic-core/src/briefing.ts": 1494,
       "packages/remnic-core/src/capabilities.ts": 1290,
       "packages/remnic-core/src/cli.ts": 9428,
@@ -44,7 +44,7 @@
       "packages/remnic-core/src/explicit-cue-recall.ts": 5764,
       "packages/remnic-core/src/extraction-faithfulness.ts": 1271,
       "packages/remnic-core/src/extraction.ts": 2979,
-      "packages/remnic-core/src/index.ts": 1456,
+      "packages/remnic-core/src/index.ts": 1462,
       "packages/remnic-core/src/local-llm.ts": 1481,
       "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": 1391,
       "packages/remnic-core/src/memory-projection-store.ts": 1288,

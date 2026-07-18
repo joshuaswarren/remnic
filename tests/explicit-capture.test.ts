@@ -1266,3 +1266,12 @@ test("review-queue fallback survives 49+ requested tags (salvage clamp, #2014)",
     `fixed review tags must survive the clamp, got: ${written[0].tags?.slice(0, 4).join(",")}`,
   );
 });
+
+test("whitespace-only sourceConnector is dropped at validation, not thrown at compose (round 14)", () => {
+  const candidate = validateExplicitCaptureInput({
+    content: "This capture supplies a whitespace-only connector value.",
+    category: "fact",
+    sourceConnector: "   ",
+  });
+  assert.equal(candidate.sourceConnector, undefined);
+});

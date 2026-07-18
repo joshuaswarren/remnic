@@ -388,7 +388,10 @@ export function validateExplicitCaptureInput(
     tags: dedupedTags,
     entityRef: asTrimmed(input.entityRef),
     sourceReason: asTrimmed(input.sourceReason),
-    sourceConnector: input.sourceConnector,
+    // Trimmed like the other optional metadata (#2017 review round): a
+    // whitespace-only connector previously passed validation and then blew
+    // up at strict compose time - validated input must always compose.
+    sourceConnector: asTrimmed(input.sourceConnector),
     expiresAt,
   };
 }
