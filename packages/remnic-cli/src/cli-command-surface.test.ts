@@ -49,7 +49,7 @@ before(async () => {
 
 after(async () => {
   if (originalHome === undefined) {
-    process.env.HOME = undefined;
+    delete process.env.HOME;
   } else {
     process.env.HOME = originalHome;
   }

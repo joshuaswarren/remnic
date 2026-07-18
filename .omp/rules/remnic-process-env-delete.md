@@ -10,6 +10,7 @@ globs:
   - "**/*.mts"
   - "**/*.js"
   - "**/*.mjs"
+  - "**/*.cjs"
 ---
 
 `process.env.X = undefined` does not unset the variable in Node — the

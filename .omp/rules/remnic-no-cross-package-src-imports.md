@@ -9,6 +9,7 @@ globs:
   - "**/*.mts"
   - "**/*.js"
   - "**/*.mjs"
+  - "**/*.cjs"
 ---
 
 You are importing another workspace package through a relative
