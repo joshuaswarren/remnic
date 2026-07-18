@@ -29,6 +29,26 @@ const ROTATION_OBJECT_PATTERN =
   /\b(?:(?:new|fresh|replacement|current)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?tokens?\b/;
 const TOKEN_LIFECYCLE_TARGET_PATTERN =
   /\b(?:replacements?|(?:(?:new|fresh|current|existing|valid|unexpired|expired|replacement)\s+)?(?:(?:checkout[- ]session|checkout|session|access|auth(?:entication|orization)?)\s+)?(?:tokens?|credentials?)|(?:(?:checkout|session)\s+)?keys?|it|this|that)\b/;
+const ALLOWED_REUSE_CLAUSE_PATTERN =
+  /^(?:then\s+)?reuse\s+(?:(?:the\s+)?(?:(?:current|existing|valid|unexpired)\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?token|(?:it|this|that)(?:\s+replacement)?|(?:the\s+)?replacement)(?:\s+(?:for|on|during|across)\s+(?:(?:every|each|all)\s+)?(?:(?:checkout\s+)?requests?|(?:(?:ordinary|subsequent|later|failed)\s+)?retr(?:y|ies)(?:\s+attempts?)?))?(?:\s+while\s+(?:it\s+is\s+)?valid)?$/;
+const ALLOWED_INITIAL_TOKEN_MINT_CLAUSE_PATTERN =
+  /^(?:mint|create|issue)\s+(?:(?:exactly\s+)?one\s+|a\s+|the\s+)?(?:(?:new|initial|first)\s+)?(?:(?:checkout[- ]session|checkout)\s+)?token\s+(?:on|for|at)\s+(?:the\s+)?(?:first|initial)\s+(?:checkout\s+)?request$/;
+const ALLOWED_POST_EXPIRY_REPLACEMENT_PATTERNS = [
+  new RegExp(
+    String.raw`^(?:after|once|upon|following)\s+(?:(?:the|a)\s+(?:checkout\s+)?token\s+)?(?:explicit\s+)?${EXPIRY_SOURCE}\s+${REPLACEMENT_ACTION_SOURCE}\s+${COUNT_SOURCE}\s+(?:replacement(?:\s+token)?|(?:new\s+)?(?:checkout\s+)?token)(?:\s+that\s+(?:later|subsequent)\s+retr(?:y|ies)\s+reuse)?$`
+  ),
+  new RegExp(
+    String.raw`^${REPLACEMENT_ACTION_SOURCE}\s+${COUNT_SOURCE}\s+(?:replacement(?:\s+token)?|(?:new\s+)?(?:checkout\s+)?token)\s+(?:only\s+)?after\s+(?:(?:the|a)\s+(?:checkout\s+)?token\s+)?(?:explicit\s+)?${EXPIRY_SOURCE}(?:\s+that\s+(?:later|subsequent)\s+retr(?:y|ies)\s+reuse)?$`
+  ),
+];
+const ALLOWED_TOKEN_OWNERSHIP_PATTERNS = [
+  /^(?:one|a\s+single|single)\s+(?:checkout\s+)?(?:token|credential|key)\s+(?:is\s+)?(?:owned|bound|scoped|assigned)\s+(?:per|to)\s+(?:(?:each|the)\s+)?(?:checkout\s+)?session$/,
+  /^(?:(?:each|the)\s+)?(?:checkout\s+)?session\s+(?:owns|has|holds)\s+(?:one|a\s+single|single)\s+(?:checkout\s+)?(?:token|credential|key)$/,
+];
+const ALLOWED_NATURAL_TOKEN_EXPIRY_PATTERNS = [
+  /^(?:let|allow)\s+(?:the\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?(?:token|credential|key)\s+(?:to\s+)?expir(?:e|es)\s+naturally$/,
+  /^(?:the\s+)?(?:(?:checkout[- ]session|checkout|session)\s+)?(?:token|credential|key)\s+expir(?:e|es)\s+naturally$/,
+];
 const PER_REQUEST_ROTATION_PATTERN =
   /\b(?:(?:on|for|at|during|across)\s+)?(?:every|each|all)\s+(?:checkout\s+)?requests?\b|\bper[-\s]+(?:checkout\s+)?request\b/;
 const PER_RETRY_ROTATION_PATTERN =
@@ -191,41 +211,28 @@ function hasAffirmativeAdditionalReplacementPolicy(value) {
 }
 
 function isAllowedInitialTokenMintClause(clause) {
-  return (
-    hasReplacementActionSignal(clause) &&
-    /\b(?:first|initial)\s+(?:checkout\s+)?request\b/.test(clause)
-  );
+  return ALLOWED_INITIAL_TOKEN_MINT_CLAUSE_PATTERN.test(clause);
 }
 
 function isAllowedPostExpiryReplacementClause(clause) {
-  return POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause));
+  return ALLOWED_POST_EXPIRY_REPLACEMENT_PATTERNS.some((pattern) => pattern.test(clause));
+}
+
+function isAllowedReuseClause(clause) {
+  return ALLOWED_REUSE_CLAUSE_PATTERN.test(clause);
 }
 
 function isAllowedTokenOwnershipClause(clause) {
-  return (
-    /\b(?:one|single|a)\b[^,.;:!?]{0,32}\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,32}\b(?:owned|belongs?|bound|scoped|assigned)\b[^,.;:!?]{0,32}\bsession\b/.test(
-      clause
-    ) ||
-    /\bsession\b[^,.;:!?]{0,32}\b(?:owns?|has|holds?)\b[^,.;:!?]{0,32}\b(?:one|single|a)\b[^,.;:!?]{0,16}\b(?:tokens?|credentials?|keys?)\b/.test(
-      clause
-    )
-  );
+  return ALLOWED_TOKEN_OWNERSHIP_PATTERNS.some((pattern) => pattern.test(clause));
 }
 
 function isAllowedNaturalTokenExpiryClause(clause) {
-  return (
-    /\b(?:let|allow)\b[^,.;:!?]{0,32}\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,24}\bexpir(?:e|es)\b[^,.;:!?]{0,16}\bnaturally\b/.test(
-      clause
-    ) ||
-    /\b(?:tokens?|credentials?|keys?)\b[^,.;:!?]{0,24}\bexpir(?:e|es)\b[^,.;:!?]{0,16}\bnaturally\b/.test(
-      clause
-    )
-  );
+  return ALLOWED_NATURAL_TOKEN_EXPIRY_PATTERNS.some((pattern) => pattern.test(clause));
 }
 
 function isAllowedAffirmativeTokenLifecycleClause(clause) {
   return (
-    REUSE_PATTERN.test(clause) ||
+    isAllowedReuseClause(clause) ||
     isAllowedInitialTokenMintClause(clause) ||
     isAllowedPostExpiryReplacementClause(clause) ||
     isAllowedTokenOwnershipClause(clause) ||
