@@ -5,6 +5,13 @@
  * connectors/index.ts can import them without creating a circular dependency.
  */
 
+import { log } from "../logger.js";
+
+const BOOL_TOKENS: Record<string, boolean> = {
+  true: true, "1": true, yes: true, on: true,
+  false: false, "0": false, no: false, off: false,
+};
+
 /**
  * Generic boolean coercion: converts string representations of booleans
  * (e.g. from CLI `--config someFlag=false`) to proper boolean values.
@@ -13,15 +20,28 @@
  * Returns `undefined` when the value is neither a boolean nor a recognised
  * string, so callers can fall back to a default.
  *
+ * A value that is PRESENT but unrecognised (a non-empty string like `"disabled"`
+ * or a typo like `"fales"`) is logged at warn level before returning `undefined`,
+ * so an operator typo does not silently take the caller's default — which is
+ * frequently a fail-open `?? true`. Absent values (`undefined`/`null`/empty
+ * string) fall through silently: absence legitimately means "use the default".
+ * Pass `label` (the config key) to make the warning actionable.
+ *
  * CLAUDE.md gotcha #36: String "false" is truthy in JavaScript.
  * CLAUDE.md gotcha #28: Coerce CLI values to expected types at input boundaries.
+ * CLAUDE.md gotcha #51: Reject/flag present-but-unrecognized values; don't
+ * silently default them.
  */
-export function coerceBool(value: unknown): boolean | undefined {
+export function coerceBool(value: unknown, label?: string): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
-    if (["false", "0", "no", "off"].includes(v)) return false;
-    if (["true", "1", "yes", "on"].includes(v)) return true;
+    if (v === "") return undefined;
+    if (Object.hasOwn(BOOL_TOKENS, v)) return BOOL_TOKENS[v];
+    log.warn(
+      `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected true|false|1|0|yes|no|on|off — using default`,
+    );
   }
   return undefined;
 }
@@ -33,7 +53,7 @@ export function coerceBool(value: unknown): boolean | undefined {
  * Delegates to the generic `coerceBool` helper. Kept for backward compatibility.
  */
 export function coerceInstallExtension(value: unknown): boolean | undefined {
-  return coerceBool(value);
+  return coerceBool(value, "installExtension");
 }
 
 /**
@@ -46,9 +66,16 @@ export function coerceInstallExtension(value: unknown): boolean | undefined {
  * - string: trimmed, parsed with `Number()`. Returns `undefined` on
  *   empty, NaN, or Infinity.
  *
+ * A PRESENT but unparseable string (a non-empty value that is not a finite
+ * number) is logged at warn level before returning `undefined`, for the same
+ * reason as `coerceBool`: a typo must not silently take the caller's default.
+ * Absent values (`undefined`/`null`/empty string) fall through silently.
+ * Pass `label` (the config key) to make the warning actionable.
+ *
  * CLAUDE.md gotcha #28: Coerce CLI values to expected types at input boundaries.
+ * CLAUDE.md gotcha #51: Flag present-but-unrecognized values.
  */
-export function coerceNumber(value: unknown): number | undefined {
+export function coerceNumber(value: unknown, label?: string): number | undefined {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : undefined;
   }
@@ -56,7 +83,11 @@ export function coerceNumber(value: unknown): number | undefined {
     const trimmed = value.trim();
     if (trimmed.length === 0) return undefined;
     const n = Number(trimmed);
-    return Number.isFinite(n) ? n : undefined;
+    if (Number.isFinite(n)) return n;
+    log.warn(
+      `ignoring unrecognized numeric value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected a finite number — using default`,
+    );
   }
   return undefined;
 }

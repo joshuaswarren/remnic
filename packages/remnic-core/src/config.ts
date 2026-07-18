@@ -348,23 +348,19 @@ function parsePortNumber(
 // fall back to their own default. Guards against the "string `false` is
 // truthy" footgun (CLAUDE.md gotcha #36) when config values arrive from
 // CLI/env/JSON sources where booleans are sometimes string-typed.
-function coerceBooleanLike(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
+//
+// The boolean/string path delegates to the canonical `coerceBool`
+// (connectors/coerce.ts), which warns on a present-but-unrecognized string
+// rather than letting a typo silently take the caller's default (often a
+// fail-open `?? true`). Numeric 1/0 is handled here because config values can
+// arrive as JSON numbers, which `coerceBool` intentionally does not accept.
+function coerceBooleanLike(value: unknown, label?: string): boolean | undefined {
   if (typeof value === "number") {
     if (value === 1) return true;
     if (value === 0) return false;
     return undefined;
   }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
-      return true;
-    }
-    if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
-      return false;
-    }
-  }
-  return undefined;
+  return coerceBool(value, label);
 }
 
 function readNestedConfig(
