@@ -3002,6 +3002,19 @@
         "default": "local-model",
         "description": "Model name for local LLM requests"
       },
+      "localLlmReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "none",
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default": "none",
+        "description": "Ollama-backend thinking suppression: reasoning_effort injected for thinking-suppressed operations (Ollama ignores chat_template_kwargs). Empty string disables injection."
+      },
       "localLlmRetry5xxCount": {
         "type": "number",
         "default": 1,
