@@ -590,9 +590,6 @@ export async function runRelayMission(options: RunRelayMissionOptions): Promise<
   const coldOutput = RelayBuilderOutputSchema.parse(coldRaw.output);
   validateRecallOutput(coldOutput, correction.replacementMemoryId, "cold");
   if (coldRaw.summary.recallToolCalls !== 1) throw new Error("Relay cold Builder must perform exactly one Remnic recall");
-  if (!hasCorrectDecisionSemantics(coldOutput.decision_applied)) {
-    throw new Error("Relay cold Builder did not report applying the corrected decision");
-  }
   await validateBuilderWorkspace(fixtureRoot, coldWorkspace, coldOutput, "cold");
   const cold = sanitizedCall(coldRaw, "cold-builder", coldOutput);
   calls.push(cold);

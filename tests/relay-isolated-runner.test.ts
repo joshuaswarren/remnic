@@ -137,7 +137,7 @@ class MockRelayExecutor implements RelayCodexExecutor {
         recall_memory_id: activeMemoryId,
         recall_provenance: `Remnic recall in namespace ${RELAY_NAMESPACE}, memory ${activeMemoryId}`,
         decision_applied: corrected
-          ? "Mint a token for the first request, reuse a current unexpired token for ordinary retries, and mint one replacement only when tokenExpired is explicitly true."
+          ? "Mint when no token exists; reuse a current token for ordinary retries; mint a replacement only when expiry is explicitly indicated."
           : "Mint a new checkout token for every request and every retry.",
         files_changed: ["src/token-policy.mjs"],
         tests_run: ["npm test"],

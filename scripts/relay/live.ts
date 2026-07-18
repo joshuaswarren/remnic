@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -156,6 +157,11 @@ async function main(): Promise<void> {
       creditBudgetUnits,
       ...(options.quarantinedLedgerPath ? { quarantinedLedgerPath: options.quarantinedLedgerPath } : {}),
     });
+    await writeFile(
+      path.join(directories.outputsDir, "live-checkpoint.json"),
+      `${JSON.stringify({ schemaVersion: 1, runId, preflight: preflight.receipt }, null, 2)}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
     if (controller.signal.aborted) throw new Error("Relay live run was cancelled after preflight");
     harness = await startRelayRemnicHarness(directories.memoryDir);
     const budget: CodexCreditBudgetConfig = {
