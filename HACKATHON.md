@@ -253,10 +253,10 @@ remnic bench run longmemeval \
 
 | Path | Support statement |
 | --- | --- |
-| Offline replay/verifier | Node 22.12+; Linux x64 independently verified on Node 22.23.1; Node built-ins only |
+| Offline replay/verifier | Node 22.12+ built-ins only; descriptor-pinned no-follow traversal on Linux with procfs, contained file-handle-checked portable snapshot elsewhere; exact mode in receipt; Linux x64 independently verified on Node 22.23.1 |
 | Live runner | Linux x64 with user/mount/PID/network namespaces, chroot, Codex CLI 0.144.4-compatible behavior, and installed development dependencies |
 | Browser | Chrome/Chromium 151 verified at 1440 × 900 and 390 × 844, keyboard-only and reduced-motion flows included |
-| Windows/macOS | Not independently claimed for the live isolation path; offline pure-Node replay is expected to be portable but only Linux x64 is claimed verified |
+| Windows/macOS | Not supported for live isolation; offline verifier has a tested portable path, but only Linux x64 is independently claimed verified for this submission |
 
 ## Submission assets
 

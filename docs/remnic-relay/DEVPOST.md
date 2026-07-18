@@ -77,7 +77,10 @@ npm run relay:demo
 
 That command first verifies the evidence and then serves Mission Control on
 loopback. It needs no install, build, account, key, dataset download, model
-call, or network access. For terminal-only proof:
+call, or network access. The verifier automatically uses descriptor-pinned
+reads on Linux with procfs and a contained, file-handle-checked portable
+snapshot elsewhere; the receipt reports which mode ran. For terminal-only
+proof:
 
 ```bash
 npm run relay:judge
@@ -101,7 +104,8 @@ Every number is re-derived by a dependency-free verifier. It rehashes the
 recording and fixtures, checks the semantic causal chain, recomputes credit use
 from per-call token counts, independently re-derives the mission receipt, pins
 the exact five-file UI root to the sealed trace, scans every copied evidence
-text file for private material, and rejects both a hand-edited frame and a
+text file for private material, verifies a single immutable filesystem
+snapshot without symlinks or hard links, and rejects both a hand-edited frame and a
 coordinated attempt to rewrite and reseal the cold Builder's decision. This is
 one synthetic mission—not a claim that Relay has eliminated stale-memory
 failures everywhere.
@@ -169,8 +173,11 @@ same correction and receipt contract.
 ## Testing instructions field
 
 ```text
-Prerequisite: Node.js 22.12+ with npm. Linux x64 is the independently verified
-offline platform (Node 22.23.1).
+Prerequisite: Node.js 22.12+ with npm. The offline verifier selects a portable
+Node-built-in filesystem path on macOS/Windows and descriptor-pinned traversal
+on Linux with procfs. Linux x64 is independently verified (Node 22.23.1); the
+portable branch is adversarially regression-tested but not independently run
+on those two hosts for this submission.
 
 1. Clone/open the repository; do not install dependencies.
 2. Run: npm run relay:demo

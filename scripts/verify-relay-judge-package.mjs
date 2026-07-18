@@ -56,6 +56,27 @@ function captureCommand(command, args, options) {
   });
 }
 
+function cleanRoomEnvironment(home, temporaryDirectory) {
+  const environment = {
+    PATH: process.env.PATH,
+    HOME: home,
+    USERPROFILE: home,
+    TMPDIR: temporaryDirectory,
+    TEMP: temporaryDirectory,
+    TMP: temporaryDirectory,
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    NODE_PATH: "",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_update_notifier: "false",
+  };
+  for (const name of ["ComSpec", "PATHEXT", "SystemDrive", "SystemRoot", "WINDIR"]) {
+    if (typeof process.env[name] === "string") environment[name] = process.env[name];
+  }
+  return environment;
+}
+
 function parseArgs(argv) {
   let keep = false;
   let json = false;
@@ -91,17 +112,7 @@ async function main() {
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
     const child = await captureCommand(npmCommand, ["run", "--silent", "relay:judge", "--", "--json"], {
       cwd: cleanRoot,
-      env: {
-        PATH: process.env.PATH,
-        HOME: isolatedHome,
-        TMPDIR: isolatedTmp,
-        LANG: "C.UTF-8",
-        LC_ALL: "C.UTF-8",
-        NODE_PATH: "",
-        npm_config_audit: "false",
-        npm_config_fund: "false",
-        npm_config_update_notifier: "false",
-      },
+      env: cleanRoomEnvironment(isolatedHome, isolatedTmp),
     });
     invariant(child.code === 0, child.stderr || `dependency-free npm verifier exited ${child.code}`);
     const receipt = JSON.parse(child.stdout.trim());
@@ -133,6 +144,10 @@ async function main() {
       invariant(replay.source.endsWith(receipt.recordingSha256), "served replay is not bound to the recording root");
       invariant(servedReceipt.recordingSha256 === receipt.recordingSha256, "served judge receipt drifted");
       invariant(
+        servedReceipt.filesystemVerification === receipt.filesystemVerification,
+        "served filesystem verification mode drifted"
+      );
+      invariant(
         servedReceipt.externalCalls === 0 && servedReceipt.productionDataRead === false,
         "served safety receipt drifted"
       );
@@ -151,6 +166,7 @@ async function main() {
       uiSha256: receipt.uiSha256,
       model: receipt.model,
       calls: receipt.calls,
+      filesystemVerification: receipt.filesystemVerification,
       externalCalls: 0,
       productionDataRead: false,
       sensitiveFilesScanned: receipt.sensitiveFilesScanned,
@@ -160,7 +176,8 @@ async function main() {
     else {
       process.stdout.write(
         `RELAY_JUDGE_CLEAN_ROOM_OK platform=${result.platform}/${result.architecture} node=${result.node} ` +
-          `root=${result.recordingSha256} ui=${result.uiSha256} dependencies=0 externalCalls=0 ` +
+          `root=${result.recordingSha256} ui=${result.uiSha256} dependencies=0 ` +
+          `filesystem=${result.filesystemVerification} externalCalls=0 ` +
           `productionDataRead=false sensitiveFiles=${result.sensitiveFilesScanned}\n`
       );
       if (options.keep) process.stdout.write(`Clean-room package preserved at ${cleanRoot}\n`);

@@ -206,8 +206,12 @@ used the replacement to turn the same hidden contract green.
 
 Run the complete judge experience from this checkout with Node 22.12+—no
 dependency install, build, account, credential, dataset download, model call,
-or network access required. The synthetic mission fixture is already committed
-under `fixtures/remnic-relay/` and verified in place:
+or network access required. The pure-Node verifier uses descriptor-pinned
+no-follow traversal on Linux with procfs and a contained, file-handle-checked
+portable snapshot on other desktop platforms; its receipt names the exact
+mode. Linux x64 is independently clean-room verified, and the portable path is
+exercised by the same adversarial test suite. The synthetic mission fixture is
+already committed under `fixtures/remnic-relay/` and verified in place:
 
 ```bash
 npm run relay:demo

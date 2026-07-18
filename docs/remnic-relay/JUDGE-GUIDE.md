@@ -23,7 +23,7 @@ npm run relay:demo
 Expected terminal output begins with:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 filesystem=descriptor-pinned-nofollow
 Remnic Relay Mission Control: http://127.0.0.1:4173/
 Verified offline replay · zero credentials · zero external calls · Ctrl+C to stop
 ```
@@ -51,7 +51,7 @@ npm run relay:judge
 Expected output:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed externalCalls=0 productionDataRead=false
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed filesystem=descriptor-pinned-nofollow externalCalls=0 productionDataRead=false
 ```
 
 The dependency-free verifier does not merely trust the final JSON. It:
@@ -69,6 +69,10 @@ The dependency-free verifier does not merely trust the final JSON. It:
 - independently recomputes the mission-receipt digest from the final snapshot;
 - pins every byte in the five-file Mission Control package to one reviewed UI
   root and verifies the browser replay against the final sealed event trace;
+- captures one immutable input snapshot before verification or serving. Linux
+  with procfs gets component-by-component descriptor-pinned no-follow reads;
+  other desktop platforms get contained realpath checks, symlink/hard-link
+  rejection, and file-handle identity checks before and after every read;
 - scans all 39 copied recording, fixture, UI, demo, and package-manifest text
   files for secret-like and host-private material; and
 - measures the demo narration at 326 words: 135 seconds at 145 words per
@@ -83,13 +87,13 @@ npm run relay:judge:clean-room
 Expected output on the verified platform:
 
 ```text
-RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 externalCalls=0 productionDataRead=false sensitiveFiles=39
+RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
 This command copies only the package manifest, five static UI files, sealed
 recording, synthetic fixtures, demo script, and verifier into a new temporary
 directory. It asserts that no symlink or `node_modules` directory exists, runs
-the exact npm verifier with isolated `HOME`, `TMPDIR`, and empty `NODE_PATH`,
+the exact npm verifier with isolated home/temp variables and empty `NODE_PATH`,
 serves the UI on ephemeral loopback, fetches the page/replay/receipt, rejects
 an unlisted path, and removes the temporary package.
 
@@ -148,9 +152,12 @@ reproducible competition evidence.
 
 ## Supported environment
 
-- Offline judge package: Node.js 22.12+, with Linux x64 verified on Node
-  22.23.1. It uses Node built-ins only. Other desktop platforms are not claimed
-  as independently verified.
+- Offline judge package: Node.js 22.12+ using Node built-ins only. It selects
+  `descriptor-pinned-nofollow` on Linux with procfs and
+  `portable-contained-nofollow` elsewhere, and includes the selected mode in
+  every receipt. Linux x64 is independently clean-room verified on Node
+  22.23.1; the portable branch runs in the adversarial test suite but macOS and
+  Windows have not been independently executed for this submission.
 - Live isolated runner: Linux x64 only; it requires `unshare`, mount namespaces,
   a network namespace, `chroot`, and loopback proxy support.
 - Browser audit: Chromium/Chrome 151 at 1440 × 900 and 390 × 844, including
