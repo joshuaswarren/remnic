@@ -4132,6 +4132,9 @@ test("access service serializes recall budget records under the hard limit", asy
       recallCrossNamespaceBudgetWindowMs: 60_000,
       recallCrossNamespaceBudgetSoftLimit: 0,
       recallCrossNamespaceBudgetHardLimit: 2,
+      // #1906: the exact serialized budget lane this test exercises is now
+      // opt-in via a width-1 per-principal semaphore (default is concurrent).
+      recallMaxConcurrentPerPrincipal: 1,
       dreamsPhases: dreamsPhasesConfig(),
     },
     recall: async () => {

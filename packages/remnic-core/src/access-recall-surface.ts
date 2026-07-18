@@ -825,7 +825,10 @@ export class AccessRecallSurface {
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
-      ...(typeof request.queueWaitMs === "number"
+      // Only surface a real wait: an uncontended recall (queueWaitMs 0) omits
+      // the field so recall-timings stays additive and byte-identical to the
+      // pre-#1906 uncontended path (acceptance: "record queueWaitMs ~0 or omit").
+      ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
     };
