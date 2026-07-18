@@ -63,8 +63,32 @@ export class RecallRerankCoordinator {
 
   private readonly trustSignalCache = new Map<
     string,
-    { version: number; signals: ReadonlyMap<string, TrustSignals> }
+    { version: number; cachedAt: number; signals: ReadonlyMap<string, TrustSignals> }
   >();
+
+  /**
+   * Cap on distinct namespaces retained in the corpus-fallback caches. Each
+   * entry holds a derived per-namespace map; on high-cardinality namespace
+   * workloads an unbounded map would grow without limit (#1905, Cursor). Map
+   * preserves insertion order, so overflow evicts the oldest namespace.
+   */
+  private static readonly CORPUS_FALLBACK_CACHE_MAX_NAMESPACES = 64;
+
+  // Trust-signal age bound (TRUST_SIGNAL_CACHE_MAX_AGE_MS) lives in
+  // trust-score-stage.ts — that module owns the signal cache's read/write and
+  // the TTL check (signals bake `now` into their values). This coordinator only
+  // owns the memory-worth counter cache, whose values are raw (no `now`), so it
+  // is version-keyed only.
+
+
+  /** Insert-ordered bounded set: evict the oldest namespace on overflow. */
+  private static capCache<K, V>(cache: Map<K, V>, max: number): void {
+    while (cache.size > max) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }
 
   constructor(options: {
     getConfig: () => PluginConfig;
@@ -91,6 +115,13 @@ export class RecallRerankCoordinator {
   ): Promise<QmdSearchResult[]> {
     const config = this.getConfig();
     const counters = new Map<string, MemoryWorthCounters>();
+    // Paths examined via preloaded frontmatter (issue #1905, Codex). A candidate
+    // whose frontmatter is present but has no mw_success/mw_fail is a NEUTRAL
+    // prior — it must NOT be treated as "missing", otherwise the corpus scan +
+    // direct-read fallback fire for every uninstrumented hot-QMD candidate and
+    // the O(candidates) fast path is defeated. Track preloaded paths separately
+    // from counters and exclude them from every fallback.
+    const preloadedPaths = new Set<string>();
 
     // O(candidates) fast path (issue #1905): seed counters directly from
     // frontmatter already loaded on the hot path. The
@@ -101,6 +132,7 @@ export class RecallRerankCoordinator {
       for (const r of results) {
         const mem = preloadedFrontmatter.get(r.path);
         if (!mem) continue;
+        preloadedPaths.add(r.path);
         const fm = mem.frontmatter;
         if (fm.mw_success === undefined && fm.mw_fail === undefined) continue;
         counters.set(r.path, {
@@ -121,7 +153,7 @@ export class RecallRerankCoordinator {
       for (const ns of namespaces) {
         if (seenNamespaces.has(ns)) continue;
         seenNamespaces.add(ns);
-        if (results.every((r) => counters.has(r.path))) break;
+        if (results.every((r) => counters.has(r.path) || preloadedPaths.has(r.path))) break;
         try {
           const storage = await this.getStorage(ns);
           const version = storage.getMemoryCorpusVersion();
@@ -133,9 +165,15 @@ export class RecallRerankCoordinator {
             const memories = await storage.readAllMemories();
             nsMap = buildMemoryWorthCounterMap(memories);
             this.memoryWorthCounterCache.set(ns, { version, counters: nsMap });
+            RecallRerankCoordinator.capCache(
+              this.memoryWorthCounterCache,
+              RecallRerankCoordinator.CORPUS_FALLBACK_CACHE_MAX_NAMESPACES,
+            );
           }
           for (const r of results) {
-            if (counters.has(r.path)) continue;
+            // Skip candidates already satisfied by a counter OR already examined
+            // via preloaded frontmatter (neutral prior — no corpus lookup needed).
+            if (counters.has(r.path) || preloadedPaths.has(r.path)) continue;
             const c = nsMap.get(r.path);
             if (c) counters.set(r.path, c);
           }
@@ -152,7 +190,7 @@ export class RecallRerankCoordinator {
     // disabled), try a direct per-path read. Bounded-parallel (≤16) to match
     // loadSearchResultMemoryMap's batch size (issue #1905). Errors are swallowed
     // so a single unreadable archive entry can't break the whole recall.
-    const missing = results.filter((r) => !counters.has(r.path));
+    const missing = results.filter((r) => !counters.has(r.path) && !preloadedPaths.has(r.path));
     if (missing.length > 0) {
       // Use the first-seen namespace's storage as the reader — all
       // StorageManagers share the same on-disk format, and readMemoryByPath

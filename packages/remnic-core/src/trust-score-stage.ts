@@ -319,10 +319,29 @@ export interface TrustScoreRerankDeps {
 /**
  * Per-namespace signal cache the host owns and the builder mutates. Keyed on
  * the shared corpus version (issue #1905): an entry is valid iff its `version`
- * still equals the namespace's current corpus version.
+ * still equals the namespace's current corpus version AND it is younger than
+ * TRUST_SIGNAL_CACHE_MAX_AGE_MS. The age bound is required because trust
+ * signals bake wall-clock time into their values (ageDays,
+ * computeMemoryWorth(..., now) with recency half-life) — pure version
+ * invalidation would serve stale decay on a read-only corpus (#1905, Codex).
  */
 export interface TrustScoreSignalCache {
-  cache: Map<string, { version: number; signals: ReadonlyMap<string, TrustSignals> }>;
+  cache: Map<string, { version: number; cachedAt: number; signals: ReadonlyMap<string, TrustSignals> }>;
+}
+
+/** See TrustScoreSignalCache — bounds time-based staleness of cached signals. */
+export const TRUST_SIGNAL_CACHE_MAX_AGE_MS = 300_000;
+
+/** Bound on distinct namespaces retained; overflow evicts the oldest. */
+export const TRUST_SIGNAL_CACHE_MAX_NAMESPACES = 64;
+
+/** Insert-ordered bounded set: evict the oldest namespace on overflow. */
+function capTrustSignalCache(cache: TrustScoreSignalCache["cache"], max: number): void {
+  while (cache.size > max) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
 }
 
 /**
@@ -396,13 +415,22 @@ export async function buildTrustSignalsForRerank(
       try {
         const version = await deps.getNamespaceVersion(ns);
         const cached = signalCache.cache.get(ns);
+        const nowMs = now.getTime();
         let nsMap: ReadonlyMap<string, TrustSignals>;
-        if (cached && cached.version === version) {
+        // Valid iff the corpus version still matches AND the entry is younger
+        // than the max age: trust signals bake `now` into their values, so an
+        // unchanged corpus still goes stale as wall-clock advances (#1905, Codex).
+        if (
+          cached &&
+          cached.version === version &&
+          nowMs - cached.cachedAt < TRUST_SIGNAL_CACHE_MAX_AGE_MS
+        ) {
           nsMap = cached.signals;
         } else {
           const memories = await deps.readNamespaceMemories(ns);
           nsMap = buildTrustSignalMap(memories, now, halfLife);
-          signalCache.cache.set(ns, { version, signals: nsMap });
+          signalCache.cache.set(ns, { version, cachedAt: nowMs, signals: nsMap });
+          capTrustSignalCache(signalCache.cache, TRUST_SIGNAL_CACHE_MAX_NAMESPACES);
         }
         for (const p of candidatePaths) {
           if (signals.has(p)) continue;

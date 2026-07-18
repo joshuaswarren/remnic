@@ -107,6 +107,42 @@ test("O(candidates): preloaded frontmatter covers candidates → no corpus scan,
   );
 });
 
+test("preloaded-but-neutral candidates do not trigger the corpus scan or direct read (#1905, Codex)", async () => {
+  const config = await baseConfig();
+  const corpus = makeFakes([]);
+  let directReads = 0;
+  const coord = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => {
+      directReads += 1;
+      return null;
+    },
+  });
+
+  // Both candidates are preloaded but carry NO mw counters — the typical
+  // uninstrumented hot-QMD result. They are neutral priors: the stage must
+  // treat them as EXAMINED, not "missing", so neither the corpus fallback nor
+  // the direct-read fallback fires. Before this guard, every neutral candidate
+  // re-triggered readAllMemories() after each corpus-version bump, defeating
+  // the O(candidates) fast path.
+  const results = [result("a", 2), result("b", 1)];
+  const preloaded = new Map<string, MemoryFile>([
+    ["/facts/a.md", mem("a")],
+    ["/facts/b.md", mem("b")],
+  ]);
+
+  const out = await coord.applyMemoryWorthRerank(results, ["default"], preloaded);
+
+  assert.equal(corpus.calls.readAll, 0, "neutral preloaded candidates must not trigger readAllMemories");
+  assert.equal(directReads, 0, "neutral preloaded candidates must not trigger direct reads");
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["/facts/a.md", "/facts/b.md"],
+    "order unchanged for neutral candidates (neutral prior does not rerank)",
+  );
+});
+
 test("golden parity: preloaded path ranks identically to the corpus-scan path (#1905)", async () => {
   const config = await baseConfig();
   const results = [result("bad", 3), result("mid", 2), result("good", 1)];
