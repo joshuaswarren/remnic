@@ -1,0 +1,298 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import {
+  FINGERPRINT_EXEMPT_FIELDS,
+  STRUCTURED_ATTRIBUTE_LIMITS,
+  TAG_LIMITS,
+  WRITE_FINGERPRINT_FIELDS,
+  buildWriteIdempotencyPayload,
+  composeMemoryEnvelope,
+  isSealedMemoryEnvelope,
+  type FingerprintScope,
+  type MemoryWriteInput,
+  type SealedMemoryEnvelope,
+} from "./write-envelope.js";
+
+const FIXED_NOW = new Date("2026-07-17T12:00:00.000Z");
+const CTX = { source: "extraction", now: () => FIXED_NOW };
+const SCOPE: FingerprintScope = { surface: "memory_store", namespace: "default" };
+
+function minimalInput(overrides: Partial<MemoryWriteInput> = {}): MemoryWriteInput {
+  return { content: "User prefers dark mode", category: "preference", ...overrides };
+}
+
+// ---------------------------------------------------------------------------
+// Composition + normalization
+// ---------------------------------------------------------------------------
+
+test("composeMemoryEnvelope seals a minimal input with defaults", () => {
+  const env = composeMemoryEnvelope(minimalInput(), CTX);
+  assert.equal(isSealedMemoryEnvelope(env), true);
+  assert.equal(env.content, "User prefers dark mode");
+  assert.equal(env.category, "preference");
+  assert.deepEqual([...env.tags], []);
+  assert.equal(env.structuredAttributes, undefined);
+  assert.equal(env.source, "extraction");
+  assert.equal(env.composedAt, FIXED_NOW.toISOString());
+  assert.ok(Object.isFrozen(env));
+});
+
+test("tags are trimmed, deduplicated, and order-preserved", () => {
+  const env = composeMemoryEnvelope(
+    minimalInput({ tags: [" beta ", "alpha", "beta", "", "alpha "] }),
+    CTX,
+  );
+  assert.deepEqual([...env.tags], ["beta", "alpha"]);
+});
+
+test("tag limits are enforced, not clamped", () => {
+  const tooMany = Array.from({ length: TAG_LIMITS.maxTags + 1 }, (_, i) => `t${i}`);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ tags: tooMany }), CTX), /50-tag limit/);
+  const tooLong = "x".repeat(TAG_LIMITS.maxTagLength + 1);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ tags: [tooLong] }), CTX), /256 characters/);
+  // Exactly at the limits passes.
+  const atLimit = Array.from({ length: TAG_LIMITS.maxTags }, (_, i) => `t${i}`);
+  const env = composeMemoryEnvelope(
+    minimalInput({ tags: [...atLimit.slice(0, 49), "y".repeat(TAG_LIMITS.maxTagLength)] }),
+    CTX,
+  );
+  assert.equal(env.tags.length, TAG_LIMITS.maxTags);
+});
+
+test("structured attributes reject non-string values with the offending key", () => {
+  assert.throws(
+    () =>
+      composeMemoryEnvelope(
+        minimalInput({
+          structuredAttributes: { good: "yes", bad: 42 as unknown as string },
+        }),
+        CTX,
+      ),
+    /"bad" must be a string \(got number\)/,
+  );
+});
+
+test("structured attributes reject empty, duplicate-after-trim, and oversized keys", () => {
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: { " ": "x" } }), CTX),
+    /empty key/,
+  );
+  assert.throws(
+    () =>
+      composeMemoryEnvelope(
+        minimalInput({ structuredAttributes: { "a ": "1", a: "2" } }),
+        CTX,
+      ),
+    /duplicate key/,
+  );
+  const bigKey = "k".repeat(STRUCTURED_ATTRIBUTE_LIMITS.maxKeyLength + 1);
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ structuredAttributes: { [bigKey]: "v" } }), CTX),
+    /key exceeds/,
+  );
+});
+
+test("empty structuredAttributes object normalizes to undefined", () => {
+  const env = composeMemoryEnvelope(minimalInput({ structuredAttributes: {} }), CTX);
+  assert.equal(env.structuredAttributes, undefined);
+});
+
+test("invalid category is rejected naming the allowed set", () => {
+  assert.throws(
+    () => composeMemoryEnvelope(minimalInput({ category: "vibe" as MemoryWriteInput["category"] }), CTX),
+    /category must be one of: .*decision.*\(got "vibe"\)/,
+  );
+});
+
+test("content, ctx.source, confidence, validAt, and optional strings are validated", () => {
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ content: "   " }), CTX), /content/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput(), { source: " " }), /ctx\.source/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ confidence: 1.5 }), CTX), /within \[0, 1\]/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ confidence: Number.NaN }), CTX), /finite/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ validAt: "not-a-date" }), CTX), /ISO 8601/);
+  assert.throws(() => composeMemoryEnvelope(minimalInput({ sourceConnector: "  " }), CTX), /non-empty/);
+  // Boundary confidence values are accepted.
+  assert.equal(composeMemoryEnvelope(minimalInput({ confidence: 0 }), CTX).confidence, 0);
+  assert.equal(composeMemoryEnvelope(minimalInput({ confidence: 1 }), CTX).confidence, 1);
+});
+
+test("optional strings are trimmed on the envelope", () => {
+  const env = composeMemoryEnvelope(
+    minimalInput({ sourceConnector: " limitless ", entityRef: " person-jane-doe " }),
+    CTX,
+  );
+  assert.equal(env.sourceConnector, "limitless");
+  assert.equal(env.entityRef, "person-jane-doe");
+});
+
+// ---------------------------------------------------------------------------
+// Brand enforcement
+// ---------------------------------------------------------------------------
+
+test("isSealedMemoryEnvelope rejects hand-built lookalikes", () => {
+  const forged = {
+    content: "x",
+    category: "fact",
+    tags: [],
+    source: "extraction",
+    composedAt: FIXED_NOW.toISOString(),
+  };
+  assert.equal(isSealedMemoryEnvelope(forged), false);
+  assert.equal(isSealedMemoryEnvelope(null), false);
+  assert.equal(isSealedMemoryEnvelope(undefined), false);
+});
+
+test("buildWriteIdempotencyPayload refuses unsealed envelopes at runtime", () => {
+  const forged = { content: "x" } as unknown as SealedMemoryEnvelope;
+  assert.throws(() => buildWriteIdempotencyPayload(forged, SCOPE), /minted by composeMemoryEnvelope/);
+});
+
+// Negative-compile assertions: a hand-built object literal is NOT assignable
+// to SealedMemoryEnvelope. These lines fail `check-types` if the brand fence
+// ever weakens (issue #1989 acceptance criterion).
+test("the sealed brand is not constructible outside the composer (compile-time)", () => {
+  // @ts-expect-error — object literal cannot satisfy the non-exported brand symbol
+  const forged: SealedMemoryEnvelope = {
+    content: "x",
+    category: "fact",
+    tags: [],
+    structuredAttributes: undefined,
+    entityRef: undefined,
+    confidence: undefined,
+    ttl: undefined,
+    validAt: undefined,
+    sourceConnector: undefined,
+    sourceReason: undefined,
+    source: "extraction",
+    composedAt: FIXED_NOW.toISOString(),
+  };
+  void forged;
+
+  // @ts-expect-error — a plain cast from an unbranded literal type is rejected too
+  const cast: SealedMemoryEnvelope = { content: "x" } as {
+    content: string;
+  };
+  void cast;
+  assert.ok(true);
+});
+
+// ---------------------------------------------------------------------------
+// Fingerprint registry + payload builder
+// ---------------------------------------------------------------------------
+
+test("registry and exempt list disjointly cover every MemoryWriteInput field", () => {
+  const classified = new Set<string>([...WRITE_FINGERPRINT_FIELDS, ...FINGERPRINT_EXEMPT_FIELDS]);
+  // Runtime mirror of the compile-time exhaustiveness guard: every key on a
+  // fully-populated input object is classified exactly once.
+  const populated: Required<MemoryWriteInput> = {
+    content: "c",
+    category: "fact",
+    tags: ["t"],
+    structuredAttributes: { k: "v" },
+    entityRef: "e",
+    confidence: 0.5,
+    ttl: "90d",
+    validAt: FIXED_NOW.toISOString(),
+    sourceConnector: "bee",
+    sourceReason: "r",
+  };
+  for (const key of Object.keys(populated)) {
+    assert.ok(classified.has(key), `field ${key} is not classified`);
+  }
+  const overlap = WRITE_FINGERPRINT_FIELDS.filter((f) =>
+    (FINGERPRINT_EXEMPT_FIELDS as readonly string[]).includes(f),
+  );
+  assert.deepEqual(overlap, []);
+});
+
+test("payload includes registry fields and omits exempt/undefined fields", () => {
+  const env = composeMemoryEnvelope(
+    minimalInput({
+      tags: ["b", "a"],
+      structuredAttributes: { city: "Austin" },
+      entityRef: "person-jane-doe",
+      confidence: 0.9,
+      sourceConnector: "bee",
+      sourceReason: "wearable sync",
+      validAt: "2026-07-16T09:00:00.000Z",
+      ttl: "90d",
+    }),
+    CTX,
+  );
+  const payload = buildWriteIdempotencyPayload(env, SCOPE) as {
+    v: number;
+    kind: string;
+    fields: Record<string, unknown>;
+    scope: Record<string, string>;
+  };
+  assert.equal(payload.v, 1);
+  assert.equal(payload.kind, "memory-write");
+  assert.deepEqual(payload.fields.tags, ["a", "b"]); // sorted
+  assert.equal(payload.fields.sourceConnector, "bee");
+  assert.equal(payload.fields.ttl, "90d");
+  assert.equal(payload.fields.validAt, "2026-07-16T09:00:00.000Z");
+  assert.ok(!("confidence" in payload.fields), "exempt field leaked into payload");
+  assert.ok(!("sourceReason" in payload.fields), "exempt field leaked into payload");
+  assert.deepEqual(payload.scope, { surface: "memory_store", namespace: "default" });
+});
+
+test("fingerprints are stable across tag order and attribute key order", () => {
+  const a = composeMemoryEnvelope(
+    minimalInput({ tags: ["x", "y"], structuredAttributes: { a: "1", b: "2" } }),
+    CTX,
+  );
+  const b = composeMemoryEnvelope(
+    minimalInput({ tags: ["y", "x"], structuredAttributes: { b: "2", a: "1" } }),
+    CTX,
+  );
+  const ha = hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(a, SCOPE));
+  const hb = hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(b, SCOPE));
+  assert.equal(ha, hb);
+});
+
+test("registry fields change the fingerprint; exempt fields do not", () => {
+  const base = composeMemoryEnvelope(minimalInput({ sourceConnector: "bee" }), CTX);
+  const differentConnector = composeMemoryEnvelope(minimalInput({ sourceConnector: "omi" }), CTX);
+  const differentExempt = composeMemoryEnvelope(
+    minimalInput({ sourceConnector: "bee", confidence: 0.2, sourceReason: "different note" }),
+    CTX,
+  );
+  const h = (e: SealedMemoryEnvelope) =>
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(e, SCOPE));
+  assert.notEqual(h(base), h(differentConnector));
+  assert.equal(h(base), h(differentExempt));
+});
+
+test("scope participates in the fingerprint and is validated", () => {
+  const env = composeMemoryEnvelope(minimalInput(), CTX);
+  const h = (s: FingerprintScope) =>
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(env, s));
+  assert.notEqual(h({ surface: "memory_store" }), h({ surface: "observe" }));
+  assert.notEqual(
+    h({ surface: "memory_store", namespace: "a" }),
+    h({ surface: "memory_store", namespace: "b" }),
+  );
+  assert.throws(
+    () => buildWriteIdempotencyPayload(env, { surface: " " }),
+    /scope\.surface/,
+  );
+  assert.throws(
+    () =>
+      buildWriteIdempotencyPayload(env, {
+        surface: "observe",
+        namespace: 3 as unknown as string,
+      }),
+    /scope\.namespace must be a string/,
+  );
+});
+
+test("payload is deterministic for identical inputs (two composes, one hash)", () => {
+  const one = composeMemoryEnvelope(minimalInput({ tags: ["a"] }), CTX);
+  const two = composeMemoryEnvelope(minimalInput({ tags: ["a"] }), CTX);
+  assert.equal(
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(one, SCOPE)),
+    hashAccessIdempotencyPayload(buildWriteIdempotencyPayload(two, SCOPE)),
+  );
+});
