@@ -47,6 +47,18 @@ function eligibleThreadIds(threads) {
   return [...new Set(threads.filter(threadIsRoundEligible).map(currentThreadId).filter(Boolean))];
 }
 
+function mergeThreadIds(state, threads) {
+  const next = copyState(state);
+  const ids = new Set(next.threadIds);
+  for (const id of eligibleThreadIds(threads)) {
+    if (!ids.has(id)) {
+      ids.add(id);
+      next.threadIds.push(id);
+    }
+  }
+  return next;
+}
+
 function copyState(state) {
   return state ? { ...state, threadIds: [...(state.threadIds ?? [])] } : null;
 }
@@ -65,7 +77,7 @@ function noteHead(state, headSha, now) {
   return next;
 }
 
-function openRound({ state, headSha, now, threads }) {
+function openRound({ state, headSha, now, threads, botActivity }) {
   return {
     version: 1,
     status: "open",
@@ -79,6 +91,7 @@ function openRound({ state, headSha, now, threads }) {
     dispatchIssuedAt: null,
     closeReason: null,
     autoClosed: false,
+    lastBotActivity: botActivity,
   };
 }
 
@@ -97,6 +110,26 @@ function wait(state, reason) {
   return { action: "wait", reason, state: copyState(state) };
 }
 
+function normalizeBotActivity(value) {
+  if (!value || typeof value !== "object") return null;
+  const id = typeof value.id === "string" && value.id.length > 0 ? value.id : null;
+  const at = typeof value.at === "string" && parseTime(value.at) > 0 ? value.at : null;
+  return id || at ? { id, at } : null;
+}
+
+function isNewBotActivity(activity, state) {
+  if (!activity) return false;
+  const activityTime = parseTime(activity.at);
+  const dispatchTime = parseTime(state?.dispatchIssuedAt);
+  if (dispatchTime > 0 && activityTime > 0) return activityTime > dispatchTime;
+  const previous = state?.lastBotActivity;
+  if (!previous) return true;
+  if (activity.id && previous.id) return activity.id !== previous.id;
+  const previousTime = parseTime(previous.at);
+  if (activityTime > 0 && previousTime > 0) return activityTime > previousTime;
+  return dispatchTime === 0;
+}
+
 /**
  * Decide the next round action from a snapshot of GitHub activity.
  * The reducer is pure so fixture replay can validate the state machine without GitHub.
@@ -106,7 +139,7 @@ export function decideRound({
   headSha,
   now,
   threads = [],
-  botActivity = false,
+  botActivity = null,
   botAliases = [],
   forceDispatch = false,
   debounceMs = DEFAULT_ROUND_DEBOUNCE_MS,
@@ -119,15 +152,20 @@ export function decideRound({
     throw new Error("now must be a valid ISO timestamp");
   }
 
+  const activity = normalizeBotActivity(botActivity);
   if (!state) {
-    return botActivity
-      ? { action: "open", reason: "first-bot-activity", state: openRound({ state, headSha, now, threads }) }
+    return activity
+      ? { action: "open", reason: "first-bot-activity", state: openRound({ state, headSha, now, threads, botActivity: activity }) }
       : wait(null, "awaiting-first-bot-activity");
   }
 
   if (state.status === "closed") {
-    if (botActivity && state.dispatchIssuedAt) {
-      return { action: "open", reason: "next-bot-activity", state: openRound({ state, headSha, now, threads }) };
+    if (isNewBotActivity(activity, state)) {
+      return {
+        action: "open",
+        reason: "next-bot-activity",
+        state: openRound({ state, headSha, now, threads, botActivity: activity }),
+      };
     }
     if (forceDispatch && !state.dispatchIssuedAt) {
       return {
@@ -139,7 +177,9 @@ export function decideRound({
     return wait(state, "round-dispatched");
   }
 
-  const next = noteHead(state, headSha, now);
+  let next = noteHead(state, headSha, now);
+  next = mergeThreadIds(next, threads);
+  if (activity && isNewBotActivity(activity, next)) next.lastBotActivity = activity;
   const age = parseTime(now) - parseTime(next.openedAt);
   if (age >= maxAgeMs) {
     return {
@@ -193,14 +233,47 @@ export function renderRoundLedger(state) {
   return `<!-- ${ROUND_COMMENT_MARKER}\n${JSON.stringify(state)}\n-->`;
 }
 
+
+function isValidBotActivity(value) {
+  if (value === null) return true;
+  return value && typeof value === "object" &&
+    (value.id === null || typeof value.id === "string") &&
+    (value.at === null || typeof value.at === "string") &&
+    (value.id !== null || value.at !== null) &&
+    (value.at === null || parseTime(value.at) > 0);
+}
+
+function isValidRoundState(state) {
+  if (!state || state.version !== 1 || !["open", "closed"].includes(state.status)) return false;
+  if (!Number.isInteger(state.round) || state.round < 1) return false;
+  if (!Number.isInteger(state.pushes) || state.pushes < 0) return false;
+  if (!Array.isArray(state.threadIds) || state.threadIds.some((id) => typeof id !== "string" || id.length === 0)) return false;
+  if (new Set(state.threadIds).size !== state.threadIds.length) return false;
+  if (typeof state.openedAt !== "string" || parseTime(state.openedAt) === 0) return false;
+  if (typeof state.openedHeadSha !== "string" || state.openedHeadSha.length === 0) return false;
+  if (typeof state.headSha !== "string" || state.headSha.length === 0) return false;
+  if (typeof state.lastHeadChangedAt !== "string" || parseTime(state.lastHeadChangedAt) === 0) return false;
+  if (!isValidBotActivity(state.lastBotActivity ?? null)) return false;
+  if (state.status === "open") {
+    return state.dispatchIssuedAt === null &&
+      state.closeReason === null &&
+      state.autoClosed === false &&
+      state.closedAt === undefined;
+  }
+  return typeof state.closedAt === "string" &&
+    parseTime(state.closedAt) > 0 &&
+    typeof state.dispatchIssuedAt === "string" &&
+    parseTime(state.dispatchIssuedAt) > 0 &&
+    ["round-complete", "force-label", "max-age"].includes(state.closeReason) &&
+    typeof state.autoClosed === "boolean";
+}
 export function parseRoundLedger(body) {
   if (typeof body !== "string") return null;
   const match = body.match(ledgerPattern());
   if (!match) return null;
   try {
     const state = JSON.parse(match[1]);
-    if (state?.version !== 1 || !Array.isArray(state.threadIds)) return null;
-    return state;
+    return isValidRoundState(state) ? state : null;
   } catch {
     return null;
   }
@@ -214,15 +287,47 @@ export function upsertRoundLedgerComment(body, state) {
     : `${existing}${existing.length > 0 ? "\n\n" : ""}${rendered}\n`;
 }
 
-function isCurrentActivity(activity, headSha, headCommittedAt) {
-  if (activity?.commit_id && headSha) return activity.commit_id === headSha;
-  if (activity?.original_commit_id && headSha) return activity.original_commit_id === headSha;
-  const activityTime = parseTime(activity?.submitted_at ?? activity?.created_at ?? activity?.updated_at);
-  const headTime = parseTime(headCommittedAt);
-  return activityTime > 0 && (headTime === 0 || activityTime >= headTime);
+function activityTime(activity) {
+  return activity?.submitted_at ?? activity?.submittedAt ??
+    activity?.created_at ?? activity?.createdAt ??
+    activity?.updated_at ?? activity?.updatedAt ??
+    activity?.completed_at ?? activity?.completedAt ?? null;
 }
 
-/** Detect any current-head activity from an alias in the configured bot groups. */
+function activityId(activity, kind) {
+  const raw = activity?.node_id ?? activity?.database_id ?? activity?.databaseId ?? activity?.id;
+  if (typeof raw === "string" && raw.length > 0) return `${kind}:${raw}`;
+  const commit = activity?.commit_id ?? activity?.original_commit_id ?? activity?.head_sha ?? activity?.headSha;
+  const at = activityTime(activity);
+  return commit || at ? `${kind}:${commit ?? ""}:${at ?? ""}` : null;
+}
+
+function activityMentionsHead(activity, headSha) {
+  if (!headSha) return false;
+  const commit = activity?.commit_id ?? activity?.original_commit_id;
+  if (commit) return commit === headSha;
+  const body = [activity?.body, activity?.text].find((value) => typeof value === "string");
+  return typeof body === "string" && body.includes(headSha);
+}
+
+function isCurrentActivity(activity, headSha, headCommittedAt) {
+  if (activityMentionsHead(activity, headSha)) return true;
+  const activityTimeValue = parseTime(activityTime(activity));
+  const headTime = parseTime(headCommittedAt);
+  return activityTimeValue > 0 && headTime > 0 && activityTimeValue >= headTime;
+}
+
+function toActivityMarker(activity, kind) {
+  const id = activityId(activity, kind);
+  const at = activityTime(activity);
+  if (!id && !at) return null;
+  return {
+    id,
+    at: typeof at === "string" && parseTime(at) > 0 ? at : null,
+  };
+}
+
+/** Return the newest current-head activity from configured bot groups. */
 export function hasCurrentBotActivity({
   aliases = [],
   headSha,
@@ -233,16 +338,36 @@ export function hasCurrentBotActivity({
   checkRuns = [],
 } = {}) {
   const configured = new Set(aliases.map(normalizeLogin).filter(Boolean));
-  const activities = [...reviews, ...issueComments, ...reviewComments];
-  if (activities.some((activity) => {
-    const login = normalizeLogin(activity?.user?.login ?? activity?.author?.login);
-    return configured.has(login) && isCurrentActivity(activity, headSha, headCommittedAt);
-  })) return true;
-
-  return checkRuns.some((checkRun) => {
+  const matches = [];
+  for (const [kind, activities] of [
+    ["review", reviews],
+    ["issue-comment", issueComments],
+    ["review-comment", reviewComments],
+  ]) {
+    for (const activity of Array.isArray(activities) ? activities : []) {
+      const login = normalizeLogin(activity?.user?.login ?? activity?.author?.login);
+      if (configured.has(login) && isCurrentActivity(activity, headSha, headCommittedAt)) {
+        const marker = toActivityMarker(activity, kind);
+        if (marker) matches.push(marker);
+      }
+    }
+  }
+  for (const checkRun of Array.isArray(checkRuns) ? checkRuns : []) {
     const checkHead = checkRun?.head_sha ?? checkRun?.headSha;
     const current = checkHead ? checkHead === headSha : isCurrentActivity(checkRun, headSha, headCommittedAt);
     const checkAliases = [checkRun?.app?.slug, checkRun?.app?.name].map(normalizeLogin);
-    return current && checkAliases.some((alias) => configured.has(alias));
-  });
+    if (current && checkAliases.some((alias) => configured.has(alias))) {
+      const marker = toActivityMarker(checkRun, "check-run");
+      if (marker) matches.push(marker);
+    }
+  }
+  return matches.reduce((newest, candidate) => {
+    if (!newest) return candidate;
+    const newestTime = parseTime(newest.at);
+    const candidateTime = parseTime(candidate.at);
+    return candidateTime > newestTime ||
+      (candidateTime === newestTime && String(candidate.id) > String(newest.id))
+      ? candidate
+      : newest;
+  }, null);
 }

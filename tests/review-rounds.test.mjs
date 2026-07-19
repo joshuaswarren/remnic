@@ -13,6 +13,7 @@ import {
   parseRoundLedger,
   renderRoundLedger,
   upsertRoundLedgerComment,
+  hasCurrentBotActivity,
 } from "../scripts/review-rounds.mjs";
 
 const botAliases = ["cursor", "cursor-bugbot", "cursor[bot]", "cursor-bugbot[bot]"];
@@ -24,7 +25,7 @@ const base = {
     { id: "thread-2", isResolved: false, comments: [{ author: { login: "cursor" } }] },
   ],
   botAliases,
-  botActivity: true,
+  botActivity: { id: "review-1", at: "2026-07-18T12:00:00.000Z" },
   debounceMs: 600_000,
   maxAgeMs: 86_400_000,
 };
@@ -40,11 +41,11 @@ function replayFixture(fixture) {
     comments: [{ author: { login: "cursor[bot]" } }],
   }));
   const resolvedThreads = openThreads.map((thread) => ({ ...thread, isResolved: true }));
-  const commits = fixture.commits.map(([headSha, now]) => ({ headSha, now, botActivity: false }));
-  const reviewEvents = fixture.botActivityAt.map((now) => {
+  const commits = fixture.commits.map(([headSha, now]) => ({ headSha, now, botActivity: null }));
+  const reviewEvents = fixture.botActivityAt.map((now, index) => {
     const headSha = commits.findLast((commit) => Date.parse(commit.now) <= Date.parse(now))?.headSha;
     if (!headSha) throw new Error(`fixture bot activity precedes commits: ${now}`);
-    return { headSha, now, botActivity: true };
+    return { headSha, now, botActivity: { id: `fixture-review-${index}`, at: now } };
   });
   const events = [...commits, ...reviewEvents].sort((left, right) => Date.parse(left.now) - Date.parse(right.now));
   let state = null;
@@ -196,7 +197,7 @@ test("a bot response after dispatch opens the next round", () => {
     state: dispatched,
     now: "2026-07-18T12:11:00.000Z",
     threads: [{ id: "thread-3", isResolved: false, comments: [{ author: { login: "cursor" } }] }],
-    botActivity: true,
+    botActivity: { id: "review-2", at: "2026-07-18T12:11:00.000Z" },
   });
 
   assert.equal(next.action, "open");
@@ -228,4 +229,86 @@ After`;
   assert.match(replaced, /After/);
   assert.equal(parseRoundLedger(replaced).pushes, 3);
   assert.equal(replaced.matchAll(new RegExp(ROUND_COMMENT_MARKER, "g")).toArray().length, 1);
+});
+
+test("repeated activity snapshot after dispatch does not reopen a round", () => {
+  const state = openRound();
+  const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const dispatched = decideRound({
+    ...base,
+    state,
+    threads: addressed,
+    now: "2026-07-18T12:10:00.000Z",
+    botActivity: null,
+  }).state;
+
+  const result = decideRound({
+    ...base,
+    state: dispatched,
+    now: "2026-07-18T12:11:00.000Z",
+    threads: addressed,
+    botActivity: base.botActivity,
+  });
+  assert.equal(result.action, "wait");
+  assert.equal(result.reason, "round-dispatched");
+});
+
+test("new bot activity after dispatch opens the next round", () => {
+  const state = openRound();
+  const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const dispatched = decideRound({
+    ...base,
+    state,
+    threads: addressed,
+    now: "2026-07-18T12:10:00.000Z",
+    botActivity: null,
+  }).state;
+
+  const result = decideRound({
+    ...base,
+    state: dispatched,
+    now: "2026-07-18T12:11:00.000Z",
+    threads: addressed,
+    botActivity: { id: "review-2", at: "2026-07-18T12:11:00.000Z" },
+  });
+  assert.equal(result.action, "open");
+  assert.equal(result.state.round, 2);
+});
+
+test("threads added during an open round join the same round", () => {
+  const state = openRound();
+  const threads = [...base.threads, {
+    id: "thread-3",
+    isResolved: false,
+    comments: [{ author: { login: "cursor" } }],
+  }];
+  const result = decideRound({
+    ...base,
+    state,
+    threads,
+    now: "2026-07-18T12:01:00.000Z",
+    botActivity: null,
+  });
+  assert.equal(result.action, "wait");
+  assert.deepEqual(result.state.threadIds, ["thread-1", "thread-2", "thread-3"]);
+});
+
+test("missing head time does not make dated activity current", () => {
+  assert.equal(hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "head-2",
+    headCommittedAt: undefined,
+    reviews: [{
+      id: "review-old",
+      author: { login: "cursor" },
+      submitted_at: "2026-07-18T12:00:00.000Z",
+    }],
+  }), null);
+});
+
+test("ledger parser rejects malformed persisted state", () => {
+  const state = openRound();
+  assert.equal(parseRoundLedger(renderRoundLedger({ ...state, status: "unknown" })), null);
+  assert.equal(parseRoundLedger(renderRoundLedger({ ...state, threadIds: ["thread-1", "thread-1"] })), null);
+  assert.equal(parseRoundLedger(renderRoundLedger({ ...state, lastHeadChangedAt: "not-a-date" })), null);
 });
