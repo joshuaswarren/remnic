@@ -111,7 +111,11 @@
     "src/verified-recall.ts",
     "packages/remnic-core/src/maintenance/namespace-planner.ts",
     "packages/remnic-core/src/maintenance/namespace-maintenance-fanout.ts",
-    "packages/remnic-core/src/maintenance/**"
+    "packages/remnic-core/src/maintenance/**",
+    "packages/remnic-core/src/storage/memory-lifecycle-ledger-access.ts",
+    "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts",
+    "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger-cli.ts",
+    "packages/remnic-core/src/maintenance/dreams-ledger.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -125,7 +129,11 @@
     "packages/remnic-core/src/orchestration/extraction-queue-coordinator.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/turn-ingestion.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/session-context.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/persistence-index.ts": "extraction-lifecycle"
+    "packages/remnic-core/src/orchestration/persistence-index.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/memory-lifecycle-ledger-access.ts": "lifecycle-ledger",
+    "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts": "lifecycle-ledger",
+    "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger-cli.ts": "lifecycle-ledger",
+    "packages/remnic-core/src/maintenance/dreams-ledger.ts": "dreams-ledger"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
