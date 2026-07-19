@@ -6,7 +6,7 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 
 import { StorageManager } from "./storage.js";
-import { encryptFileBody, filePathAad, isEncryptedFile, readMaybeEncryptedFile } from "./secure-store/secure-fs.js";
+import { encryptFileBody, filePathAad, isEncryptedFile, readMaybeEncryptedFile, readMaybeEncryptedFileBuffer } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
 import {
   appendLifecycleEventsSerialized,
@@ -17,6 +17,7 @@ import {
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { listContainedSpillFiles } from "./utils/path-containment.js";
 import { rebuildMemoryLifecycleLedger } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
+import type { RebuildMemoryLifecycleLedgerResult } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
 import {
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
@@ -1005,6 +1006,95 @@ test("encrypted rebuild backup retains raw malformed/truncated/future rows verba
     assert.ok(activeIds.includes("evt-a") && activeIds.includes("evt-b"), "valid rows preserved in active ledger");
     assert.ok(!activeIds.includes("evt-broken"), "malformed row absent from active ledger");
   } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("encrypted rebuild backup never materializes the raw ledger as one giant string and stays byte-identical (#2033)", async () => {
+  // Regression for the P2 raw-backup thread: the secure-store backup path once
+  // read the decrypted ledger via `Buffer.toString("utf8")`. For a ledger that
+  // already grew past V8's ~512MB string ceiling — the exact corruption this PR
+  // recovers from — that throw aborted BOTH auto-compaction and
+  // `rebuild-memory-lifecycle-ledger --write`, leaving the oversized ledger
+  // unrepairable. The raw bytes must now flow Buffer -> re-encrypt without a
+  // whole-buffer decode. We prove it deterministically (no 512MB allocation) by
+  // trapping any whole-buffer utf8 decode above a small cap while the rebuild
+  // runs; a single such decode fails the test.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-rebuild-raw-nostring-"));
+  const originalToString = Buffer.prototype.toString;
+  try {
+    const key = Buffer.alloc(32, 7);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key);
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+
+    // A ~2MB encrypted ledger: two valid rows plus many non-JSON garbage lines
+    // the fail-open parser drops. The active rewrite stays tiny (two rows) while
+    // the RAW backup must retain every byte.
+    const validA = JSON.stringify(lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z"));
+    const validB = JSON.stringify(lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z"));
+    const garbageLine = `not-json-${"x".repeat(200)}`;
+    const garbage = `${garbageLine}\n`.repeat(10_000); // ~2MB of undroppable-verbatim noise
+    const rawContent = `${validA}\n${garbage}${validB}\n`;
+    const rawBytes = Buffer.from(rawContent, "utf8");
+    assert.ok(rawBytes.byteLength > 2_000_000, "precondition: raw ledger is multi-megabyte");
+    await writeFile(ledgerPath, encryptFileBody(rawContent, key, filePathAad(ledgerPath, memoryDir)));
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: ledger encrypted at rest");
+
+    // Trap ONLY a whole-buffer utf8 decode larger than the cap. Ranged decodes
+    // (the per-line ledger reader) produce small strings and pass, exactly as
+    // V8's real "Invalid string length" limit fires on the result length — not
+    // the receiver's size. If the raw-backup path still stringified the whole
+    // decrypted buffer, this throws and the rebuild rejects.
+    const STRING_CAP = 1_000_000;
+    let trippedGiantDecode = false;
+    Buffer.prototype.toString = function patchedToString(this: Buffer, ...args: unknown[]): string {
+      const encoding = args[0];
+      const start = typeof args[1] === "number" ? args[1] : 0;
+      const end = typeof args[2] === "number" ? args[2] : this.length;
+      const span = Math.max(0, end - start);
+      const isUtf8 = encoding === undefined || /^utf-?8$/i.test(String(encoding));
+      if (isUtf8 && span > STRING_CAP) {
+        trippedGiantDecode = true;
+        throw new Error(
+          "Cannot create a string longer than 0x1fffffe8 characters (simulated V8 string cap)",
+        );
+      }
+      return originalToString.apply(this, args as never) as string;
+    } as typeof Buffer.prototype.toString;
+
+    let result: RebuildMemoryLifecycleLedgerResult;
+    try {
+      result = await rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        storage,
+        preserveExistingEvents: true,
+      });
+    } finally {
+      Buffer.prototype.toString = originalToString;
+    }
+
+    assert.equal(
+      trippedGiantDecode,
+      false,
+      "rebuild must never decode the whole raw ledger buffer to a string",
+    );
+
+    // The backup, decrypted under its OWN path AAD, is byte-for-byte the raw
+    // pre-compaction ledger — compared as buffers to avoid materializing a giant
+    // string in the assertion itself.
+    assert.ok(result.backupPath, "a backup path was produced");
+    assert.ok(isEncryptedFile(await readFile(result.backupPath!)), "backup encrypted at rest");
+    const backupBytes = await readMaybeEncryptedFileBuffer(result.backupPath!, key, memoryDir);
+    assert.equal(Buffer.compare(backupBytes, rawBytes), 0, "backup preserves raw decrypted bytes verbatim");
+
+    // The active ledger normalized down to the two valid rows.
+    const activeIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.deepEqual(activeIds.sort(), ["evt-a", "evt-b"], "active ledger keeps only the valid rows");
+  } finally {
+    Buffer.prototype.toString = originalToString;
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

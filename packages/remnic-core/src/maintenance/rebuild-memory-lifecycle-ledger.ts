@@ -395,8 +395,8 @@ export async function rebuildMemoryLifecycleLedger(
         // readable, so a verbatim copy is correct. Then rewrite the active ledger
         // through the secure writer.
         if (desiredBackup && await probeEncryptedRegularFileHeader(outputPath)) {
-          const priorRawContent = await storage.readMemoryLifecycleLedgerRawContentForCompaction();
-          await storage.writeMemoryLifecycleLedgerContent(priorRawContent, desiredBackup);
+          const priorRawBuffer = await storage.readMemoryLifecycleLedgerRawBufferForCompaction();
+          await storage.writeMemoryLifecycleLedgerContent(priorRawBuffer, desiredBackup);
           backupPath = desiredBackup;
         } else {
           backupPath = desiredBackup

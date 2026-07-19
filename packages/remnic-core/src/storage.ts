@@ -5551,8 +5551,9 @@ export class StorageManager {
   }
 
   /** Rewrite the ledger through the secure writer (#1910); re-encrypts when unlocked, throws when locked.
-   *  Optional `targetPath` re-encrypts under a different path's own AAD for a decryptable backup (#2033). */
-  async writeMemoryLifecycleLedgerContent(content: string, targetPath: string = this.memoryLifecycleLedgerPath): Promise<void> {
+   *  `targetPath` re-encrypts under a decryptable backup path's own AAD;
+   *  Buffer content passes through verbatim (#2033). */
+  async writeMemoryLifecycleLedgerContent(content: string | Buffer, targetPath: string = this.memoryLifecycleLedgerPath): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(targetPath, content);
   }
@@ -5725,9 +5726,10 @@ export class StorageManager {
     return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
   }
 
-  async readMemoryLifecycleLedgerRawContentForCompaction(): Promise<string> {
-    return (await readMaybeEncryptedFileBuffer(
-      this.memoryLifecycleLedgerPath, this._secureStoreKey, this.baseDir)).toString("utf8");
+  /** Raw decrypted ledger bytes as a Buffer, never a string, so an oversized
+   *  ledger cannot throw on decode before recovery (#2033). */
+  async readMemoryLifecycleLedgerRawBufferForCompaction(): Promise<Buffer> {
+    return readMaybeEncryptedFileBuffer(this.memoryLifecycleLedgerPath, this._secureStoreKey, this.baseDir);
   }
   async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
     return readAllLifecycleEventsFromLedgerBuffer(
