@@ -1,10 +1,11 @@
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { withHeldFileLock, type HeldFileLockOptions } from "./utils/serialize-mutations.js";
+import { listContainedSpillFiles } from "./utils/path-containment.js";
 import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
@@ -421,11 +422,25 @@ export class LastRecallStore {
    * would land the impression in a rotated archive that offline-sync excludes,
    * silently dropping it from active-state/sync consumers.
    *
-   * Rotation failure must NOT drop the current impression: a failed rotation is
-   * logged and the append still runs, so the in-hand row is never lost to a
-   * rename error. Callers invoke this only through `impressionsWriteChain` so
-   * the rotate-then-append sequence is also serialized in-process.
+   * On lock-acquisition timeout the impression is NEVER written to the active
+   * file unlocked (#2033): a peer holding the lock is likely mid-rotation, so an
+   * unlocked append can land in the inode it is about to rename to `.1` — the
+   * exact silent-drop this lock prevents. Instead the row is spilled to a
+   * durable node-local per-event file under `<impressions>.pending.d/` and
+   * folded back into the active file by the next append that DOES hold the lock,
+   * preserving durability without racing rotation. Rotation failure under the
+   * held lock is logged and the append still runs. Callers invoke this only
+   * through `impressionsWriteChain` so the sequence is serialized in-process.
    */
+  private get impressionsPendingDir(): string {
+    return `${this.impressionsPath}.pending.d`;
+  }
+
+  private async spillImpression(line: string): Promise<void> {
+    await mkdir(this.impressionsPendingDir, { recursive: true });
+    await writeFile(path.join(this.impressionsPendingDir, `${randomUUID()}.jsonl`), line, "utf-8");
+  }
+
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
     // Rotation disabled (`0`): the active file is never renamed, so there is no
@@ -440,13 +455,14 @@ export class LastRecallStore {
       { staleMs: 30_000, ...this.impressionsLockOptions },
       async (acquired) => {
         // withHeldFileLock falls back to task(false) when it cannot acquire the
-        // lock within the budget. Refuse to rotate unlocked (a rename racing a
-        // peer's rename is exactly what this lock prevents), but still append
-        // the current row best-effort so the impression is never dropped (the
-        // #1910 invariant). This degrades only under sustained lock contention.
+        // lock within the budget. Do NOT append to the active file unlocked: a
+        // peer holding the lock may be mid-rotation, so an unlocked append could
+        // land in the inode it renames to `.1` (an offline-sync-excluded
+        // archive), silently dropping the impression. Spill it to the durable
+        // pending queue instead — the next lock holder folds it back in (#2033).
         if (!acquired) {
-          log.debug("recall impressions rotation lock not acquired; appending without rotation");
-          await appendFile(this.impressionsPath, line, "utf-8");
+          log.debug("recall impressions rotation lock not acquired; spilling impression to the durable pending queue");
+          await this.spillImpression(line);
           return;
         }
         try {
@@ -454,7 +470,25 @@ export class LastRecallStore {
         } catch (err) {
           log.debug(`recall impressions rotation failed (append preserved): ${err}`);
         }
-        await appendFile(this.impressionsPath, line, "utf-8");
+        // Fold any durable pending spills (impressions a prior lock-timed-out
+        // append queued) back into the active file, oldest-name first, then
+        // append the current row — all under the held lock so nothing races a
+        // rotation rename. listContainedSpillFiles rejects symlinked/escaping
+        // entries before read/unlink (#2033).
+        const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
+        let payload = line;
+        if (spillFiles.length > 0) {
+          const parts: string[] = [];
+          for (const filePath of spillFiles) {
+            const content = await readFile(filePath, "utf-8");
+            parts.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
+          }
+          payload = `${parts.join("")}${line}`;
+        }
+        await appendFile(this.impressionsPath, payload, "utf-8");
+        for (const filePath of spillFiles) {
+          await unlink(filePath).catch(() => undefined);
+        }
       },
     );
   }

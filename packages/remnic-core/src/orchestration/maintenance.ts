@@ -23,7 +23,7 @@ import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { existsSync, type Dirent } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -50,6 +50,12 @@ import {
   graphEdgeDecayCadenceToCronExpr,
 } from "../maintenance/memory-governance-cron.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
+import {
+  drainPendingLifecycleLedgerIfAny,
+  pendingLifecycleLedgerDir,
+  type LifecyclePendingIo,
+} from "../storage/memory-lifecycle-ledger-access.js";
+import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -141,6 +147,12 @@ export class MaintenanceScheduler {
   // ── Lifecycle-ledger auto-compaction state (issue #1910) ──
   private lifecycleCompactionInFlight = false;
   private lastLifecycleCompactionAtMs = 0;
+  // Upper bound on a rewritten ledger; a preserving compaction is bounded to
+  // this so it can never leave the ledger over the whole-file read/decrypt cap
+  // (#2033). Defaults to the decrypt cap; overridable in focused tests to drive
+  // the bounding + post-write verification deterministically without a 400MB
+  // fixture.
+  private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
 
   constructor(private readonly deps: MaintenanceSchedulerDeps) {}
 
@@ -648,7 +660,14 @@ export class MaintenanceScheduler {
       for (const target of await this.resolveLifecycleCompactionTargets()) {
         // Drain this target's pending spill before compacting so rows that
         // spilled during a prior rewrite are read into the compacted ledger.
-        await this.drainPendingLifecycleAppends(target.storage);
+        // A catalog-backed target drains through its secure StorageManager; a
+        // filesystem-fallback target (no storage) drains through a path-scoped
+        // plaintext context so its pending events are not stranded (#2033).
+        if (target.storage) {
+          await this.drainPendingLifecycleAppends(target.storage);
+        } else {
+          await this.drainPendingLifecycleAppendsForPath(target.memoryDir);
+        }
         const outcome = await this.compactLifecycleLedgerTarget(target, threshold);
         if (outcome === "compacted") compacted += 1;
         else if (outcome === "failed") failed += 1;
@@ -675,6 +694,62 @@ export class MaintenanceScheduler {
       await storage.drainPendingMemoryLifecycleEvents();
     } catch (err) {
       log.debug(`lifecycle pending drain failed (non-fatal): ${err}`);
+    }
+  }
+
+  /**
+   * Drain a filesystem-fallback target's pending lifecycle-append spill when no
+   * secure StorageManager is available (catalog-disabled namespace; issue
+   * #2033). Uses the safe path-scoped PLAINTEXT context this fallback already
+   * operates in: a keyless drain can only fold plaintext spills into a plaintext
+   * ledger, so it refuses when the ledger or ANY spill is encrypted at rest,
+   * leaving those pending for a keyed (catalog-path) drain — exactly mirroring
+   * the fallback compaction's encrypted-ledger deferral. Non-fatal; a fast
+   * no-op when nothing is pending. The shared spill lister enforces the symlink/
+   * containment guard on every spill file it reads or deletes.
+   */
+  private async drainPendingLifecycleAppendsForPath(memoryDir: string): Promise<void> {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    let spillNames: string[];
+    try {
+      spillNames = (await readdir(spillDir)).filter((name) => name.endsWith(".jsonl")).sort();
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) {
+        log.debug(`fallback lifecycle pending scan failed (non-fatal) for ${memoryDir}: ${err}`);
+      }
+      return; // no pending dir — nothing to drain.
+    }
+    if (spillNames.length === 0) return;
+    try {
+      // A keyless plaintext drain would corrupt/downgrade an encrypted ledger or
+      // spill; defer those to the keyed path instead (#2033).
+      if (await ledgerEncryptedOnDisk(ledgerPath)) return;
+      for (const name of spillNames) {
+        if (await ledgerEncryptedOnDisk(path.join(spillDir, name))) return;
+      }
+    } catch (err) {
+      log.debug(`fallback lifecycle pending encryption probe failed (non-fatal) for ${memoryDir}: ${err}`);
+      return;
+    }
+    const io: LifecyclePendingIo = {
+      writeSecure: async (filePath, payload) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, payload, "utf-8");
+      },
+      readSecure: (filePath) => readFile(filePath, "utf-8"),
+    };
+    try {
+      await drainPendingLifecycleLedgerIfAny(
+        ledgerPath,
+        io,
+        (payload) => appendFile(ledgerPath, payload, "utf-8"),
+        async () => {
+          await mkdir(path.dirname(ledgerPath), { recursive: true });
+        },
+      );
+    } catch (err) {
+      log.debug(`fallback lifecycle pending drain failed (non-fatal) for ${memoryDir}: ${err}`);
     }
   }
 
@@ -781,12 +856,14 @@ export class MaintenanceScheduler {
   /**
    * Compact one lifecycle ledger when it is at/over `threshold`. Returns
    * `"skipped"` (absent or below threshold — nothing to do), `"compacted"`
-   * (rewritten), `"failed"` (rebuild/probe threw — non-fatal, retried next
-   * pass), or `"deferred"` (oversized but its encrypted ledger cannot be
-   * rewritten because no unlocked secure store is available — real work still
-   * pending, so the caller must NOT arm the throttle). #2033: a deferred target
-   * is distinct from a genuine no-op so one namespace compacting cannot suppress
-   * retries for an untouched oversized encrypted ledger.
+   * (rewritten and verified under the read/decrypt cap), `"failed"`
+   * (rebuild/probe threw, or the rewritten ledger is STILL over the cap — an
+   * ineffective compaction — non-fatal, retried next pass), or `"deferred"`
+   * (oversized but its encrypted ledger cannot be rewritten because no unlocked
+   * secure store is available — real work still pending, so the caller must NOT
+   * arm the throttle). #2033: a deferred/failed target is distinct from a genuine
+   * no-op so one namespace compacting cannot suppress retries for another, and
+   * an over-cap rewrite never arms the throttle.
    */
   private async compactLifecycleLedgerTarget(
     target: { memoryDir: string; storage?: StorageManager },
@@ -837,11 +914,35 @@ export class MaintenanceScheduler {
         // frontmatter cannot reconstruct (issue #1910) — unlike the manual
         // CLI repair rebuild, which reconstructs purely from frontmatter.
         preserveExistingEvents: true,
+        // Bound the rewrite so preserved append-only history can never leave the
+        // ledger over the whole-file read/decrypt cap; overflow lands in the
+        // verbatim backup (#2033).
+        maxLedgerBytes: this.lifecycleLedgerMaxBytes,
       });
+      // Verify the rewritten ledger is actually bounded. A compaction that left
+      // the ledger at/over the read/decrypt cap is ineffective (the ledger would
+      // be unreadable) — report "failed" so the throttle stays un-armed and the
+      // next pass retries rather than declaring success (#2033).
+      let rewrittenSize = 0;
+      try {
+        rewrittenSize = (await stat(ledgerPath)).size;
+      } catch (err) {
+        log.warn(`lifecycle ledger post-compaction size check failed (non-fatal) for ${target.memoryDir}: ${err}`);
+        return "failed";
+      }
+      if (rewrittenSize >= this.lifecycleLedgerMaxBytes) {
+        log.warn(
+          `lifecycle ledger auto-compaction ineffective for ${target.memoryDir}: rewritten `
+          + `ledger is ${rewrittenSize}B, still at/over the ${this.lifecycleLedgerMaxBytes}-byte `
+          + `read/decrypt cap; leaving the throttle un-armed to retry.`,
+        );
+        return "failed";
+      }
       log.info(
         `lifecycle ledger auto-compacted (${target.memoryDir}): ${size}B -> `
-        + `${result.rebuiltRows} rows `
-        + `(${result.preservedAppendOnlyRows ?? 0} append-only preserved), `
+        + `${rewrittenSize}B, ${result.rebuiltRows} rows `
+        + `(${result.preservedAppendOnlyRows ?? 0} append-only preserved, `
+        + `${result.archivedOverflowRows ?? 0} overflow archived), `
         + `backup=${result.backupPath ?? "none"}`,
       );
       return "compacted";

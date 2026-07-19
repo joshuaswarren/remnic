@@ -744,9 +744,13 @@ test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regre
 // Lifecycle-ledger auto-compaction (issue #1910)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Access the private size-gated compaction trigger for focused testing. */
+/** Access the private size-gated compaction trigger for focused testing. The
+ *  `lifecycleLedgerMaxBytes` seam lets a test inject a tiny bound so the
+ *  bounding + post-write verification path is exercised without a 400MB fixture
+ *  (#2033). */
 interface CompactableScheduler {
   maybeCompactMemoryLifecycleLedger(): Promise<void>;
+  lifecycleLedgerMaxBytes: number;
   dispose(): void;
 }
 
@@ -1417,6 +1421,120 @@ test("auto-compaction bounds per-namespace ledgers via filesystem fallback when 
     );
     const rebuilt = (await readFile(nsLedger, "utf-8")).trim().split("\n").map((l) => JSON.parse(l));
     assert.deepEqual(rebuilt.map((r) => r.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction bounds a large append-only history under the read/decrypt cap and arms the throttle (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-bound-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Many VALID append-only events with no frontmatter equivalent: a preserving
+    // compaction must keep them, so bounding — not junk-discard — is what keeps
+    // the ledger under the cap. Distinct ascending timestamps make "newest"
+    // precise.
+    const total = 200;
+    const events = Array.from({ length: total }, (_unused, i) => ({
+      eventId: `cap-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const original = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    await writeFile(ledgerPath, original, "utf-8");
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    const cap = rowBytes * 20 + Math.floor(rowBytes / 2); // admits ~20 rows.
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: rowBytes * 5, // threshold << ledger size.
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    scheduler.lifecycleLedgerMaxBytes = cap;
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+
+      const rewritten = await readFile(ledgerPath, "utf-8");
+      assert.ok(
+        Buffer.byteLength(rewritten, "utf8") < cap,
+        "compacted ledger must be bounded under the read/decrypt cap",
+      );
+      const keptIds = rewritten.trim().split("\n").map((l) => JSON.parse(l).eventId);
+      assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest append-only event survives");
+      assert.ok(!keptIds.includes("cap-000"), "oldest append-only event archived out of the active ledger");
+
+      // The bounding archive lives in the timestamped backup, so nothing is lost.
+      const backups = await readdir(path.join(memoryDir, "archive", "memory-lifecycle-ledger")).catch(() => []);
+      assert.ok(backups.length > 0, "a backup archive was written for the overflow");
+
+      // Effective (under cap) compaction armed the throttle: a second in-window
+      // pass after re-growing the ledger must NOT recompact.
+      await writeFile(ledgerPath, original, "utf-8");
+      const regrown = (await stat(ledgerPath)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.equal(
+        (await stat(ledgerPath)).size,
+        regrown,
+        "throttle armed after an effective bounded compaction: second in-window pass is a no-op",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("filesystem-fallback compaction drains a pending lifecycle append even when no storage is wired (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-drain-"));
+  try {
+    // Namespaces enabled but NO catalog storage wired: only the filesystem
+    // fallback finds this per-namespace ledger, so target.storage is absent.
+    const token = namespaceIdentityToken("project-fallback");
+    const nsDir = path.join(root, "namespaces", token);
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    await writeFile(nsLedger, "", "utf-8");
+    // A plaintext pending spill, exactly as a lock-timed-out append leaves it.
+    const spillDir = pendingLifecycleLedgerDir(nsLedger);
+    await mkdir(spillDir, { recursive: true });
+    const spillPath = path.join(spillDir, "spill.jsonl");
+    const spilled = {
+      eventId: "evt-fallback-spilled",
+      memoryId: "mem-ns",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(spillPath, `${JSON.stringify(spilled)}\n`, "utf-8");
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const ledger = await readFile(nsLedger, "utf-8");
+    assert.ok(
+      ledger.includes("evt-fallback-spilled"),
+      "the pending spill must be drained into the namespace ledger via the fallback path",
+    );
+    await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after the fallback drain");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -428,13 +428,14 @@ test("LastRecallStore preserves the current impression when rotation fails (#191
   }
 });
 
-test("LastRecallStore refuses to rotate when the rotation lock cannot be acquired but still appends (#2033)", async () => {
+test("LastRecallStore spills an impression to the durable pending queue on rotation-lock timeout, never writing the active file unlocked (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-lock-timeout-"));
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
     await mkdir(path.dirname(impressionsPath), { recursive: true });
     // Seed the active file over the threshold so rotation WOULD be attempted.
-    await writeFile(impressionsPath, `${"x".repeat(256)}\n`, "utf8");
+    const seeded = `${"x".repeat(256)}\n`;
+    await writeFile(impressionsPath, seeded, "utf8");
     // Hold the cross-process rotation lock from a foreign owner with a fresh
     // mtime so it is not broken as stale within the acquisition budget. Our
     // record() must then observe acquired=false.
@@ -449,7 +450,7 @@ test("LastRecallStore refuses to rotate when the rotation lock cannot be acquire
       impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
     });
     await store.load();
-    await store.record({ sessionKey: "unlocked-append", query: "q", memoryIds: [] });
+    await store.record({ sessionKey: "spilled-append", query: "q", memoryIds: [] });
 
     // Rotation was refused because the lock could not be acquired: no archive
     // shift ran, so an unlocked rename never raced a peer's rotation.
@@ -458,11 +459,34 @@ test("LastRecallStore refuses to rotate when the rotation lock cannot be acquire
       false,
       "rotation must be skipped when the cross-process lock is not acquired",
     );
-    // The current impression is never dropped — it still lands in the active file.
-    const active = await readFile(impressionsPath, "utf8");
+    // The impression is NEVER written to the active file unlocked — that could
+    // land it in the inode a peer renames to `.1`. The active file is untouched.
+    assert.equal(
+      await readFile(impressionsPath, "utf8"),
+      seeded,
+      "active file must not be written while the rotation lock is held elsewhere",
+    );
+    // It is durably queued in the pending spill instead, not dropped.
+    const pendingDir = `${impressionsPath}.pending.d`;
+    const spillNames = await readdir(pendingDir);
+    assert.equal(spillNames.length, 1, "exactly one impression spilled to the pending queue");
     assert.ok(
-      active.includes('"sessionKey":"unlocked-append"'),
-      "impression appended best-effort despite the lock-acquisition timeout",
+      (await readFile(path.join(pendingDir, spillNames[0]!), "utf8")).includes('"sessionKey":"spilled-append"'),
+      "spilled impression durably queued",
+    );
+
+    // Release the lock; the next record() DOES acquire it and folds the spill
+    // back into the active file (after rotation) before appending its own row.
+    await rm(lockPath, { force: true });
+    await store.record({ sessionKey: "drained-append", query: "q2", memoryIds: [] });
+    const active = await readFile(`${impressionsPath}.1`, "utf8").catch(() => "")
+      + await readFile(impressionsPath, "utf8");
+    assert.ok(active.includes('"sessionKey":"spilled-append"'), "spilled impression folded back in");
+    assert.ok(active.includes('"sessionKey":"drained-append"'), "current impression appended");
+    assert.equal(
+      (await readdir(pendingDir)).length,
+      0,
+      "pending spill drained empty after a successful locked append",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

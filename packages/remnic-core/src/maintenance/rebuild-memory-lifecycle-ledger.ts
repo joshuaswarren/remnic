@@ -7,6 +7,7 @@ import { toBackupStamp } from "./backup-stamp.js";
 import { copyExistingFileToBackup, writeFileAtomically } from "./atomic-file.js";
 import {
   buildLifecycleEventsForMemory,
+  compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
@@ -60,6 +61,19 @@ export interface RebuildMemoryLifecycleLedgerOptions {
    * without a multi-second wait.
    */
   lockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">;
+  /**
+   * Upper bound (bytes) on the rewritten ledger when preserving events (issue
+   * #2033). A preserving compaction carries over ALL append-only history, which
+   * — if the history alone is large — could leave the rewritten ledger over the
+   * whole-file read/decrypt cap (STATE_FILE_MAX_DECRYPT_BYTES), the exact
+   * unreadable-ledger failure compaction exists to prevent. When set and the
+   * preserved payload would exceed it, the OLDEST rows are dropped from the
+   * active ledger until it fits; because the full pre-compaction ledger is
+   * copied verbatim to the timestamped backup first, those rows are archived,
+   * not lost. Ignored when `preserveExistingEvents` is off (a frontmatter-only
+   * rebuild is already bounded by the corpus). `0`/undefined disables bounding.
+   */
+  maxLedgerBytes?: number;
 }
 
 export interface SkippedLifecycleBlankIdMemory {
@@ -88,10 +102,60 @@ export interface RebuildMemoryLifecycleLedgerResult {
    * reproduced by the reconstruction (#2033).
    */
   preservedAppendOnlyRows?: number;
+  /**
+   * Count of oldest rows dropped from the ACTIVE ledger to keep it under
+   * `maxLedgerBytes` (issue #2033). They remain in the verbatim timestamped
+   * backup, so this is a bound-and-archive, not a loss. Set only when bounding
+   * actually trimmed rows.
+   */
+  archivedOverflowRows?: number;
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
+}
+
+/** Serialized on-disk size (bytes, incl. trailing newline) of one ledger row. */
+function lifecycleRowBytes(event: MemoryLifecycleEvent): number {
+  return Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8");
+}
+
+/**
+ * Keep the NEWEST canonically-ordered events whose serialized payload fits
+ * strictly under `cap` bytes, dropping the oldest overflow (issue #2033). Recency
+ * is by `timestamp` (newest first), tie-broken by the canonical comparator, so a
+ * large append-only history is trimmed to its most recent rows rather than to a
+ * single memoryId group (the ledger's on-disk order is by memoryId then time).
+ * The kept subset is returned in the input's canonical order; the caller relies
+ * on the verbatim backup to retain the dropped rows.
+ */
+export function boundLifecycleEventsToByteCap(
+  events: MemoryLifecycleEvent[],
+  cap: number,
+): { kept: MemoryLifecycleEvent[]; dropped: number } {
+  if (!(cap > 0)) return { kept: events, dropped: 0 };
+  const sizes = new Map<MemoryLifecycleEvent, number>();
+  let total = 0;
+  for (const event of events) {
+    const bytes = lifecycleRowBytes(event);
+    sizes.set(event, bytes);
+    total += bytes;
+  }
+  if (total <= cap) return { kept: events, dropped: 0 };
+  const byRecency = [...events].sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return b.timestamp.localeCompare(a.timestamp);
+    return -compareMemoryLifecycleEvents(a, b);
+  });
+  const keep = new Set<MemoryLifecycleEvent>();
+  let running = 0;
+  for (const event of byRecency) {
+    const bytes = sizes.get(event)!;
+    if (running + bytes > cap) break; // stop at the first newest row that would overflow
+    running += bytes;
+    keep.add(event);
+  }
+  const kept = events.filter((event) => keep.has(event));
+  return { kept, dropped: events.length - kept.length };
 }
 
 export async function backupExistingLedger(
@@ -182,6 +246,7 @@ export async function rebuildMemoryLifecycleLedger(
 
   let finalEvents = events;
   let preservedAppendOnlyRows: number | undefined;
+  let archivedOverflowRows: number | undefined;
   let backupPath: string | undefined;
   // Serialize the preserve-read and the whole-file rewrite against concurrent
   // lifecycle appends (issue #1910, codex). appendMemoryLifecycleEvents holds
@@ -263,6 +328,23 @@ export async function rebuildMemoryLifecycleLedger(
       }
       finalEvents = [...mergedById.values()];
       preservedAppendOnlyRows = finalEvents.length - events.length;
+      // Bound the rewritten ledger so a preserving compaction can never leave it
+      // over the whole-file read/decrypt cap (#2033). Overflow (oldest) rows are
+      // dropped from the active ledger but survive in the verbatim timestamped
+      // backup written below, which requires the existing ledger to have had
+      // rows — guaranteed here since `existing.length > 0`.
+      if (options.maxLedgerBytes && options.maxLedgerBytes > 0 && existing.length > 0) {
+        const bounded = boundLifecycleEventsToByteCap(finalEvents, options.maxLedgerBytes);
+        if (bounded.dropped > 0) {
+          finalEvents = bounded.kept;
+          archivedOverflowRows = bounded.dropped;
+          log.warn(
+            `lifecycle ledger rebuild bounded to ${options.maxLedgerBytes} bytes: `
+            + `dropped ${bounded.dropped} oldest row(s) from the active ledger `
+            + `(preserved in the backup) to stay under the read/decrypt cap.`,
+          );
+        }
+      }
     }
 
     if (!dryRun) {
@@ -302,5 +384,6 @@ export async function rebuildMemoryLifecycleLedger(
     skippedBlankIdMemories,
     skippedDuplicateEvents,
     preservedAppendOnlyRows,
+    archivedOverflowRows,
   };
 }

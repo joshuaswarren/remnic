@@ -15,8 +15,14 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   "**/state/memory-governance/runs/**",
   // Rotated recall-impression archives (issue #1910). The active
   // recall_impressions.jsonl stays remote-authoritative; only the .1..N
-  // archives are node-local and never pushed/hashed.
+  // archives and the .lock are node-local and never pushed/hashed.
   "**/state/recall_impressions.jsonl.*",
+  // Durable recall-impression pending spill directory (issue #2033). Node-local:
+  // an impression spills a per-event file here when its rotation lock cannot be
+  // acquired, and the next lock holder folds them back into the synced active
+  // recall_impressions.jsonl. The `.*` glob above matches the directory name but
+  // not its children, so exclude the contents explicitly.
+  "**/state/recall_impressions.jsonl.pending.d/**",
   // Durable lifecycle-append pending spill directory (issue #2033). Node-local:
   // an append spills a per-event file here when it cannot get the ledger lock,
   // and the next lock holder folds them back into the synced

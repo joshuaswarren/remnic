@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -587,5 +587,57 @@ test("StorageManager drains an encrypted pending spill into the encrypted-at-res
     assert.equal(await storage.drainPendingMemoryLifecycleEvents(), false, "no pending → no drain");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("pending drain rejects a symlinked spill entry pointing outside the pending dir (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-symlink-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-outside-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+
+    // A legitimate plaintext spill that MUST drain.
+    await pending.writeSecure(
+      path.join(spillDir, "legit.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-legit", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+    );
+    // A hostile secret OUTSIDE the pending dir, reached via a symlink whose name
+    // ends in .jsonl so a naive drain would readSecure (and later unlink) it.
+    const outsideSecret = path.join(outsideDir, "secret.txt");
+    const outsideContent = "top-secret-outside-the-store\n";
+    await writeFile(outsideSecret, outsideContent, "utf8");
+    await symlink(outsideSecret, path.join(spillDir, "evil.jsonl"));
+
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+
+    assert.equal(drained, true, "the legitimate spill still drained");
+    const ledger = await readFile(ledgerPath, "utf8");
+    assert.ok(ledger.includes("evt-legit"), "legit spill folded into the ledger");
+    assert.ok(
+      !ledger.includes("top-secret-outside-the-store"),
+      "symlinked outside file must NOT be read into the ledger",
+    );
+    // The outside target must be untouched: never read into the ledger, never
+    // unlinked through the symlink.
+    assert.equal(
+      await readFile(outsideSecret, "utf8"),
+      outsideContent,
+      "outside symlink target must survive the drain intact",
+    );
+    // The legit spill was drained (deleted); the hostile symlink was skipped
+    // (never read, never deleted) so it remains.
+    const remaining = await readdir(spillDir);
+    assert.deepEqual(remaining, ["evil.jsonl"], "only the skipped hostile symlink remains");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });

@@ -903,3 +903,58 @@ test("compaction preserves a frontmatter-derived lifecycle row that raced the co
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("rebuild bounds a large append-only history under maxLedgerBytes, archiving the overflow to the backup (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-bound-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Many append-only events with no frontmatter equivalent — a preserving
+    // rebuild would otherwise carry ALL of them and could leave the ledger over
+    // the read/decrypt cap. Distinct ascending timestamps make "newest" precise.
+    const total = 200;
+    const events: MemoryLifecycleEvent[] = [];
+    for (let i = 0; i < total; i += 1) {
+      events.push({
+        eventId: `cap-${String(i).padStart(3, "0")}`,
+        memoryId: "mem-a",
+        eventType: "explicit_capture_accepted",
+        // Monotonic ascending ISO timestamps so "newest" is unambiguous.
+        timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+        actor: "explicit-capture",
+        ruleVersion: "memory-lifecycle-ledger.v1",
+      });
+    }
+    const originalLedger = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap admits only ~20 rows so bounding must drop the rest.
+    const cap = rowBytes * 20 + Math.floor(rowBytes / 2);
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      preserveExistingEvents: true,
+      maxLedgerBytes: cap,
+    });
+
+    const rewritten = await readFile(ledgerPath, "utf-8");
+    assert.ok(Buffer.byteLength(rewritten, "utf8") < cap, "rewritten ledger is under the byte cap");
+    assert.ok((result.archivedOverflowRows ?? 0) > 0, "overflow rows were archived, not all kept");
+    assert.equal(
+      result.rebuiltRows + (result.archivedOverflowRows ?? 0),
+      total,
+      "kept + archived rows account for every original row",
+    );
+    // The NEWEST events survive in the active ledger; the oldest were dropped.
+    const keptIds = rewritten.trim().split("\n").map((l) => (JSON.parse(l) as MemoryLifecycleEvent).eventId);
+    assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event kept");
+    assert.ok(!keptIds.includes("cap-000"), "oldest event dropped from the active ledger");
+    // The dropped rows are archived in the verbatim backup, so nothing is lost.
+    assert.ok(result.backupPath, "a backup was written");
+    const backup = await readFile(result.backupPath!, "utf-8");
+    assert.equal(backup, originalLedger, "backup holds every original row verbatim");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

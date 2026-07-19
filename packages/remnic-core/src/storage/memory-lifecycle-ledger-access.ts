@@ -1,6 +1,6 @@
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { mkdir, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryLifecycleEvent } from "../types.js";
@@ -12,6 +12,7 @@ import {
   MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
 } from "../memory-lifecycle-ledger-utils.js";
 import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
+import { listContainedSpillFiles } from "../utils/path-containment.js";
 import {
   readMaybeEncryptedLines,
   readMemoryLifecycleEventsFromLines,
@@ -245,21 +246,14 @@ async function collectPendingSpills(
   ledgerPath: string,
   io: LifecyclePendingIo,
 ): Promise<{ content: string; files: string[] } | null> {
-  const dir = pendingLifecycleLedgerDir(ledgerPath);
-  let names: string[];
-  try {
-    names = (await readdir(dir)).filter((name) => name.endsWith(".jsonl")).sort();
-  } catch (err) {
-    if (isErrnoCode(err, "ENOENT")) return null; // no pending dir — nothing spilled.
-    throw err;
-  }
-  if (names.length === 0) return null;
+  // listContainedSpillFiles rejects a symlinked pending dir and skips any
+  // symlinked/escaping entry BEFORE we secure-read or later unlink it (#2033),
+  // so a poisoned link cannot redirect a decrypt/delete outside the spill dir.
+  const files = await listContainedSpillFiles(pendingLifecycleLedgerDir(ledgerPath));
+  if (files.length === 0) return null;
   const parts: string[] = [];
-  const files: string[] = [];
-  for (const name of names) {
-    const filePath = path.join(dir, name);
+  for (const filePath of files) {
     parts.push(withTrailingNewline(await io.readSecure(filePath)));
-    files.push(filePath);
   }
   return { content: parts.join(""), files };
 }
