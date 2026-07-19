@@ -903,11 +903,35 @@ export class MaintenanceScheduler {
           log.debug(`lifecycle compaction: skipping out-of-root namespace dir ${childPath}: ${err}`);
           continue;
         }
-        // The at-rest format is preserved at the rebuild chokepoint: the
-        // compaction guard refuses to rewrite an encrypted-at-rest ledger through
-        // a keyless plaintext StorageManager (#2033 Cursor Medium), so this
-        // fallback (which has no secure storage for a catalog-disabled namespace)
-        // never downgrades an encrypted namespace ledger to plaintext.
+        // Resolve the namespace's secure-store-aware storage so an encrypted
+        // fallback ledger compacts through the correct root key/context instead
+        // of deferring forever behind a keyless plaintext StorageManager (#2033
+        // thread PRRT_kwDORJXyws6SEvWo). The on-disk dir name IS the namespace's
+        // routed segment, so the router resolves it straight back to THIS dir
+        // (legacy-name match) and installs the root-keyed secure context — the
+        // secure store keys one master key per memory ROOT, not per namespace.
+        // Accept the resolved storage only when it actually roots at this dir so
+        // an unexpected re-route can never compact the wrong ledger. With no
+        // resolver wired (focused tests / plaintext deployments) the keyless
+        // target stands: the rebuild chokepoint still refuses to downgrade an
+        // encrypted ledger, so plaintext behavior and namespace isolation hold.
+        if (resolveNamespaceStorage) {
+          try {
+            const storage = await resolveNamespaceStorage(entry.name);
+            if (path.resolve(storage.dir) === path.resolve(childPath)) {
+              addTarget(storage.dir, storage);
+              continue;
+            }
+            log.debug(
+              `lifecycle compaction: fallback resolver routed ${childPath} to ${storage.dir}; `
+              + "using keyless target",
+            );
+          } catch (err) {
+            log.debug(
+              `lifecycle compaction: fallback storage resolve failed for ${childPath} (non-fatal): ${err}`,
+            );
+          }
+        }
         addTarget(childPath);
       }
     }
@@ -1027,13 +1051,26 @@ export class MaintenanceScheduler {
         );
         return "failed";
       }
-      log.info(
-        `lifecycle ledger auto-compacted (${target.memoryDir}): ${size}B -> `
-        + `${rewrittenSize}B, ${result.rebuiltRows} rows `
-        + `(${result.preservedAppendOnlyRows ?? 0} append-only preserved, `
-        + `${result.archivedOverflowRows ?? 0} overflow archived), `
-        + `backup=${result.backupPath ?? "none"}`,
-      );
+      if (result.rewritten === false) {
+        // No-op pass (#2033 thread PRRT_kwDORJXyws6SExst): a preserving rebuild
+        // would reproduce the current ledger byte-for-byte, so it skipped the
+        // backup+rewrite. The ledger stays over the trigger but under the cap;
+        // report "compacted" so the throttle still arms (nothing more can be
+        // done until the ledger grows), which stops the periodic re-archive/
+        // rewrite churn the review flagged — the archive no longer grows.
+        log.debug(
+          `lifecycle ledger already compact for ${target.memoryDir}: ${rewrittenSize}B, `
+          + `no rewrite needed (throttle armed to avoid re-archiving an unchanged ledger).`,
+        );
+      } else {
+        log.info(
+          `lifecycle ledger auto-compacted (${target.memoryDir}): ${size}B -> `
+          + `${rewrittenSize}B, ${result.rebuiltRows} rows `
+          + `(${result.preservedAppendOnlyRows ?? 0} append-only preserved, `
+          + `${result.archivedOverflowRows ?? 0} overflow archived), `
+          + `backup=${result.backupPath ?? "none"}`,
+        );
+      }
       return "compacted";
     } catch (err) {
       log.warn(

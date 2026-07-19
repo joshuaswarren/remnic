@@ -40,6 +40,7 @@ import {
   SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
 } from "../secure-store/secure-fs.js";
 import { pendingLifecycleLedgerDir } from "../storage/memory-lifecycle-ledger-access.js";
+import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
  *  contract — only the fields the scheduler/planner read are populated. */
@@ -1535,6 +1536,205 @@ test("catalog-disabled fallback never downgrades an encrypted namespace ledger t
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger through the keyed store (#2033 thread PRRT_kwDORJXyws6SEvWo)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-secure-keyed-"));
+  try {
+    // Catalog disabled but namespaces + secure-store enabled: only the
+    // filesystem fallback finds this per-namespace ledger. With a namespace
+    // storage resolver wired (the production orchestrator wiring), the fallback
+    // must resolve the namespace's root-keyed secure StorageManager so the
+    // encrypted, over-cap ledger COMPACTS — instead of deferring forever behind
+    // a keyless plaintext target (the pre-fix behavior asserted by the sibling
+    // "never downgrades" test, which wires no resolver).
+    const key = Buffer.alloc(32, 5);
+    const token = namespaceIdentityToken("project-secure-keyed");
+    const nsDir = path.join(root, "namespaces", token);
+    // A plaintext frontmatter memory the rebuild reconstructs into created +
+    // updated events (read fine under a keyed store — the reader probes per
+    // file), so the compacted ledger has real, bounded content.
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-ns.md"),
+      `---\nid: fact-ns\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["secure"]\n---\n\nsecure\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}\n';
+    const encrypted = encryptFileBody(
+      junk.repeat(Math.ceil(4096 / junk.length)), key, filePathAad(nsLedger, nsDir),
+    );
+    await writeFile(nsLedger, encrypted);
+    assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    // The resolver is consulted with the on-disk segment (the routed token) and
+    // returns the namespace's root-keyed, unlocked secure storage rooted AT the
+    // fallback dir — exactly what the live router's storageFor(segment) yields.
+    const nsStorage = new StorageManager(nsDir);
+    nsStorage.setSecureStoreRequired(true);
+    nsStorage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ rewrite stays encrypted.
+    let resolverCalls = 0;
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        secureStoreEnabled: true,
+        secureStoreEncryptOnWrite: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root), // root has no ledger ⇒ skipped.
+      async (namespace) => {
+        resolverCalls += 1;
+        assert.equal(namespace, token, "fallback resolves by the on-disk routed segment");
+        return nsStorage;
+      },
+      undefined, // catalog disabled.
+    );
+    // Named seam cast (reason: assert the resolved target and its compaction
+    // outcome directly), mirroring the extended casts used by the singleflight
+    // and request-wiring tests above.
+    const seam = scheduler as unknown as CompactableScheduler & {
+      resolveLifecycleCompactionTargets: () => Promise<
+        Array<{ memoryDir: string; storage?: StorageManager }>
+      >;
+      compactLifecycleLedgerTarget: (
+        target: unknown,
+        threshold: number,
+      ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
+    };
+    try {
+      const targets = await seam.resolveLifecycleCompactionTargets();
+      assert.ok(resolverCalls > 0, "the fallback consulted the namespace storage resolver");
+      const nsTarget = targets.find(
+        (t) => path.resolve(t.memoryDir) === path.resolve(nsDir),
+      );
+      assert.ok(nsTarget, "fallback discovered the per-namespace ledger dir");
+      assert.ok(nsTarget?.storage, "fallback target carries a keyed StorageManager, not a keyless dir");
+      assert.ok(
+        nsTarget?.storage?.isSecureStoreUnlocked(),
+        "fallback target storage is unlocked so the encrypted ledger can be rewritten",
+      );
+
+      // The core proof: the encrypted over-cap ledger COMPACTS, it does not defer.
+      const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
+      assert.equal(
+        outcome,
+        "compacted",
+        "encrypted fallback ledger compacts through the keyed store, never deferred forever",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+
+    // On disk: rewritten, still encrypted at rest (no plaintext downgrade), and
+    // decrypts back to the reconstructed events via the same key.
+    assert.notDeepEqual(
+      await readFile(nsLedger),
+      encrypted,
+      "ledger was rewritten (not left byte-for-byte intact, i.e. not deferred)",
+    );
+    assert.ok((await stat(nsLedger)).size < beforeSize, "compacted ledger is smaller");
+    assert.ok(
+      isEncryptedFile(await readFile(nsLedger)),
+      "compacted ledger stays encrypted at rest (namespace isolation + at-rest format preserved)",
+    );
+    const rebuilt = await nsStorage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserving rebuild skips the backup+rewrite for an already-compact ledger, ending the periodic re-archive churn (#2033 thread PRRT_kwDORJXyws6SExst)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-noop-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Valid append-only history (no frontmatter equivalent) that stays well below
+    // the read/decrypt cap, plus junk rows the first rebuild discards. The first
+    // rebuild therefore genuinely rewrites (drops the junk) and archives a backup;
+    // every later rebuild would reproduce the now-canonical ledger byte-for-byte.
+    // Pre-fix that reproduced identical content and archived a NEW backup every
+    // interval, growing archive/memory-lifecycle-ledger without reducing the
+    // active file. The no-op skip must leave both the ledger and the archive
+    // untouched on the second pass.
+    const events = Array.from({ length: 30 }, (_unused, i) => ({
+      eventId: `noop-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const junk = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    await writeFile(
+      ledgerPath,
+      junk.repeat(4) + `${events.map((e) => JSON.stringify(e)).join("\n")}\n`,
+      "utf-8",
+    );
+
+    const storage = new StorageManager(memoryDir);
+    const bigCap = 10 * 1024 * 1024; // far above the tiny ledger: nothing is bounded away.
+    const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
+
+    // First rebuild: discards the junk, canonicalizes, and archives one backup.
+    const first = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+      maxLedgerBytes: bigCap,
+      now: new Date("2026-03-08T00:00:00.000Z"),
+    });
+    assert.equal(first.rewritten, true, "first rebuild rewrites (junk discarded)");
+    assert.ok(first.backupPath, "first rebuild archives a backup");
+    const afterFirst = await readFile(ledgerPath);
+    assert.equal(
+      (await readdir(archiveRoot)).length,
+      1,
+      "exactly one backup after the first (effective) rebuild",
+    );
+
+    // Second rebuild at a DISTINCT timestamp: a real re-archive would create a
+    // second stamped backup dir. The no-op skip must create none and leave the
+    // ledger byte-for-byte.
+    const second = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+      maxLedgerBytes: bigCap,
+      now: new Date("2026-03-08T01:00:00.000Z"),
+    });
+    assert.equal(second.rewritten, false, "already-compact ledger: rebuild is a no-op");
+    assert.equal(second.backupPath, undefined, "no-op rebuild archives no backup");
+    assert.deepEqual(await readFile(ledgerPath), afterFirst, "no-op leaves the ledger byte-for-byte");
+    assert.equal(
+      (await readdir(archiveRoot)).length,
+      1,
+      "no second backup archived across intervals (churn eliminated)",
+    );
+
+    // A third pass at yet another timestamp stays a no-op: the archive never grows.
+    const third = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+      maxLedgerBytes: bigCap,
+      now: new Date("2026-03-08T02:00:00.000Z"),
+    });
+    assert.equal(third.rewritten, false, "still a no-op on the third interval");
+    assert.equal((await readdir(archiveRoot)).length, 1, "archive still holds exactly one backup");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
 

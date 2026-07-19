@@ -110,6 +110,16 @@ export interface RebuildMemoryLifecycleLedgerResult {
    * actually trimmed rows.
    */
   archivedOverflowRows?: number;
+  /**
+   * Whether the active ledger was actually backed up and rewritten (issue #2033
+   * thread PRRT_kwDORJXyws6SExst). A preserving write-mode rebuild that would
+   * reproduce the current ledger byte-for-byte (same decrypted content AND same
+   * at-rest format) skips the backup+rewrite, so callers can distinguish a real
+   * compaction from a no-op and avoid re-archiving an unchanged ledger every
+   * interval. `true` for every dry run's non-write preview is never set — only
+   * write-mode results carry it; defaults to `false` when no rewrite happened.
+   */
+  rewritten?: boolean;
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
@@ -253,6 +263,7 @@ export async function rebuildMemoryLifecycleLedger(
   let preservedAppendOnlyRows: number | undefined;
   let archivedOverflowRows: number | undefined;
   let backupPath: string | undefined;
+  let rewritten = false;
   // The preserve-read + whole-file rewrite are serialized against concurrent
   // lifecycle appends ONLY in write mode (issue #1910, codex):
   // appendMemoryLifecycleEvents holds this same cross-process lock, so an event
@@ -382,35 +393,71 @@ export async function rebuildMemoryLifecycleLedger(
       );
     };
     if (!dryRun) {
-      const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
       const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
       const content = payload.length > 0 ? `${payload}\n` : "";
-      if (secureRewrite) {
-        // Preserve encrypted-at-rest (issue #1910). The BACKUP needs care under
-        // secure-store (#2033): when the existing ledger is encrypted, its bytes
-        // are path-bound via AAD, so a byte-for-byte copy to the archive path
-        // cannot be decrypted there — it would silently orphan the overflow rows
-        // a bounded rewrite claims to preserve. Read the RAW decrypted ledger
-        // content (no event parsing, so malformed/truncated/future rows survive
-        // exactly as the plaintext verbatim copy keeps them) and re-encrypt it
-        // under the backup path's own AAD, yielding a directly decryptable backup
-        // that retains every original byte. A PLAINTEXT existing ledger is already
-        // readable, so a verbatim copy is correct. Then rewrite the active ledger
-        // through the secure writer.
-        if (desiredBackup && await probeEncryptedRegularFileHeader(outputPath)) {
-          const priorRawBuffer = await storage.readMemoryLifecycleLedgerRawBufferForCompaction();
-          await storage.writeMemoryLifecycleLedgerContent(priorRawBuffer, desiredBackup);
-          backupPath = desiredBackup;
-        } else {
-          backupPath = desiredBackup
-            ? await copyExistingFileToBackup(outputPath, desiredBackup)
-            : undefined;
-        }
-        await abortIfLockLost();
-        await storage.writeMemoryLifecycleLedgerContent(content);
+      // No-op skip (#2033 thread PRRT_kwDORJXyws6SExst): a preserving rebuild
+      // bounds the ACTIVE ledger to the read/decrypt cap, so a VALID ledger that
+      // sits above the configured compaction trigger but below the cap would
+      // otherwise be rewritten to identical content and re-archived on every
+      // maintenance interval — unbounded growth of archive/memory-lifecycle-ledger
+      // plus pointless disk/CPU churn. Skip the backup+rewrite when it would
+      // change neither the logical (decrypted) content NOR the at-rest format.
+      // The raw read here doubles as the source for the encrypted verbatim backup
+      // below, so the current ledger is read at most once. An absent ledger reads
+      // as ENOENT (a create is always a real change) and any other read/probe
+      // error propagates rather than masking a needed rewrite.
+      const replacementEncrypted = secureRewrite && storage.willEncryptStateWrites();
+      let currentEncrypted = false;
+      let priorRawBuffer: Buffer | null = null;
+      try {
+        currentEncrypted = await probeEncryptedRegularFileHeader(outputPath);
+        priorRawBuffer = await storage.readMemoryLifecycleLedgerRawBufferForCompaction();
+      } catch (err) {
+        if (!isNodeError(err) || err.code !== "ENOENT") throw err;
+      }
+      // Compare as buffers, never decoding the raw ledger to one giant string:
+      // a multi-hundred-MB decrypted ledger can exceed V8's max string length,
+      // so `priorRawBuffer.equals(...)` (byte compare) must be used, NOT
+      // `.toString()` (#2033 giant-string invariant). `content` is the freshly
+      // serialized replacement, already a string; Buffer.from() reuses it.
+      if (
+        priorRawBuffer !== null &&
+        currentEncrypted === replacementEncrypted &&
+        priorRawBuffer.equals(Buffer.from(content, "utf8"))
+      ) {
+        // Nothing to change: leave the active ledger and archive untouched.
+        rewritten = false;
       } else {
-        await abortIfLockLost();
-        backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
+        const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
+        if (secureRewrite) {
+          // Preserve encrypted-at-rest (issue #1910). The BACKUP needs care under
+          // secure-store (#2033): when the existing ledger is encrypted, its bytes
+          // are path-bound via AAD, so a byte-for-byte copy to the archive path
+          // cannot be decrypted there — it would silently orphan the overflow rows
+          // a bounded rewrite claims to preserve. Reuse the RAW decrypted ledger
+          // content read above (no event parsing, so malformed/truncated/future
+          // rows survive exactly as the plaintext verbatim copy keeps them) and
+          // re-encrypt it under the backup path's own AAD, yielding a directly
+          // decryptable backup that retains every original byte. A PLAINTEXT
+          // existing ledger is already readable, so a verbatim copy is correct.
+          // Then rewrite the active ledger through the secure writer.
+          if (desiredBackup && currentEncrypted) {
+            const rawForBackup =
+              priorRawBuffer ?? (await storage.readMemoryLifecycleLedgerRawBufferForCompaction());
+            await storage.writeMemoryLifecycleLedgerContent(rawForBackup, desiredBackup);
+            backupPath = desiredBackup;
+          } else {
+            backupPath = desiredBackup
+              ? await copyExistingFileToBackup(outputPath, desiredBackup)
+              : undefined;
+          }
+          await abortIfLockLost();
+          await storage.writeMemoryLifecycleLedgerContent(content);
+        } else {
+          await abortIfLockLost();
+          backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
+        }
+        rewritten = true;
       }
     }
   };
@@ -441,5 +488,6 @@ export async function rebuildMemoryLifecycleLedger(
     skippedDuplicateEvents,
     preservedAppendOnlyRows,
     archivedOverflowRows,
+    rewritten,
   };
 }
