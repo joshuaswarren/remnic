@@ -63,6 +63,18 @@ const REGEX_ALLOWED_AFTER = new Set([
 const STATEMENT_CONTINUATION = new Set([
   "&", "|", "?", ":", "=", ",", "(", "[", "+", "-", "*", "/", "%", "^", "~", "<", ">", "!", ".",
 ]);
+/** Keywords whose `(...)` is a control-flow header — the following statement is
+ *  its BODY, not a new statement (so a newline before it is not an ASI boundary). */
+const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch"]);
+
+/** The identifier immediately preceding `source[idx]` (skips trailing whitespace). */
+function precedingWord(source, idx) {
+  let k = idx - 1;
+  while (k >= 0 && /\s/.test(source[k])) k -= 1;
+  const end = k;
+  while (k >= 0 && SUBJECT_IDENT.test(source[k])) k -= 1;
+  return source.slice(k + 1, end + 1);
+}
 
 /**
  * From a `/` that starts a regex literal, return the index just past the closing
@@ -120,6 +132,8 @@ export function discoverSubjectRegistrations(source) {
   let bracketDepth = 0;
   let prevSig = "";
   let nlSincePrev = false;
+  const controlParen = [];
+  let lastCloseWasControlHeader = false;
   while (i < n) {
     const ch = source[i];
     if (quote) {
@@ -177,13 +191,16 @@ export function discoverSubjectRegistrations(source) {
       continue;
     }
     if (ch === "(") {
+      controlParen.push(CONTROL_KEYWORDS.has(precedingWord(source, i)));
       parenDepth += 1;
       prevSig = ch;
       i += 1;
       continue;
     }
     if (ch === ")") {
+      const wasControl = controlParen.pop() ?? false;
       if (parenDepth > 0) parenDepth -= 1;
+      if (parenDepth === 0) lastCloseWasControlHeader = wasControl;
       prevSig = ch;
       i += 1;
       continue;
@@ -212,7 +229,9 @@ export function discoverSubjectRegistrations(source) {
       (prevSig === "" ||
         prevSig === ";" ||
         prevSig === "}" ||
-        (sawNewlineBeforeToken && !STATEMENT_CONTINUATION.has(prevSig))) &&
+        (sawNewlineBeforeToken &&
+          !STATEMENT_CONTINUATION.has(prevSig) &&
+          !(prevSig === ")" && lastCloseWasControlHeader))) &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&
