@@ -638,6 +638,44 @@ test("a terse subset/superset restatement still merges", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "only one side diverges -> real duplicate folds");
 });
 
+test("swapped 'before'/'after' ordering directives do NOT merge", () => {
+  // "before"/"after" are directional markers too; a reversed ordering directive
+  // is a contradiction even with shared trailing context.
+  const a = mkThread({
+    id: 651, path: "a.ts", startLine: 4, line: 8, author: "cursor",
+    body: "Move validation before write for request path",
+  });
+  const b = mkThread({
+    id: 652, path: "a.ts", startLine: 4, line: 8, author: "chatgpt-codex-connector",
+    body: "Move write before validation for request path",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped before/after operands must not merge");
+});
+
+test("a non-reversed 'before' directive still merges", () => {
+  const a = mkThread({
+    id: 653, path: "a.ts", startLine: 4, line: 8, author: "cursor",
+    body: "Validate input before processing the request",
+  });
+  const b = mkThread({
+    id: 654, path: "a.ts", startLine: 4, line: 8, author: "chatgpt-codex-connector",
+    body: "Validate input before processing the request now",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same-order before directive folds");
+});
+
+test("a near-identical polarity flip (differs only by a context word) does NOT merge", () => {
+  const a = mkThread({
+    id: 655, path: "a.ts", startLine: 4, line: 8, author: "cursor",
+    body: "Do not call deleteAll before backup in the reset path because it revokes all cached user sessions",
+  });
+  const b = mkThread({
+    id: 656, path: "a.ts", startLine: 4, line: 8, author: "chatgpt-codex-connector",
+    body: "Call deleteAll before backup in the reset handler because it revokes all cached user sessions",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "near-match opposite polarity must not merge");
+});
+
 test("an unrelated directive phrase is not falsely blocked or merged", () => {
   const a = mkThread({
     id: 615, path: "a.ts", startLine: 10, line: 12, author: "cursor",

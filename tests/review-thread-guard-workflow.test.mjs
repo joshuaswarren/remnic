@@ -167,7 +167,7 @@ test("review-thread guard inline mirrors the directional operand-swap detector",
   // "X instead of Y" vs "Y instead of X" (even with shared context) must not
   // fold; mirrors directionalOperandsSwapped in review-dedup.mjs.
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  assert.match(workflow, /const DIRECTIONAL_MARKERS = new Set\(\["instead", "rather"\]\);/);
+  assert.match(workflow, /const DIRECTIONAL_MARKERS = new Set\(\["instead", "rather", "before", "after"\]\);/);
   assert.match(workflow, /const directionalOperandsSwapped =/);
   assert.match(workflow, /const directionalPhrases =/, "must slice operand phrases around the marker");
   assert.match(
@@ -202,6 +202,7 @@ test("review-thread guard inline rejects polarity-mismatch duplicates", () => {
   const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(guard, /const NEGATION_TOKENS = new Set\(\["not", "no", "cannot", "never", "none"\]\);/);
   assert.match(guard, /const polarityMismatch =/);
+  assert.match(guard, /contentSim >= DEDUP\.polarityContentSim/, "polarity fold must use the near-match threshold");
   assert.match(guard, /polarityMismatch\(body, c\.body\)/, "match loop must reject polarity mismatches");
 });
 

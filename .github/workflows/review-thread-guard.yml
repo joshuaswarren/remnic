@@ -146,7 +146,7 @@ jobs:
             // effective-diff mirror). Precision beats recall: two threads merge
             // ONLY on same file + overlapping line range + lexical fingerprint
             // at or above threshold. Nothing is deleted or hidden.
-            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1, smallFingerprintMax: 6 };
+            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1, smallFingerprintMax: 6, polarityContentSim: 0.7 };
             const NON_DEDUP_LOGINS = new Set([
               "github-advanced-security",
               "github-advanced-security[bot]",
@@ -214,7 +214,7 @@ jobs:
             // instead of Y" vs "Y instead of X" is a contradiction, not a dup,
             // even with multi-word operands and shared context. "of"/"than" are
             // stopwords so the marker is the bare "instead"/"rather".
-            const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
+            const DIRECTIONAL_MARKERS = new Set(["instead", "rather", "before", "after"]);
             const directionalPhrases = (toks) => {
               for (let i = 1; i < toks.length - 1; i++) {
                 if (DIRECTIONAL_MARKERS.has(toks[i])) return { before: toks.slice(0, i), after: toks.slice(i + 1) };
@@ -253,11 +253,16 @@ jobs:
               const aNeg = [...sa].some((t) => NEGATION_TOKENS.has(t));
               const bNeg = [...sb].some((t) => NEGATION_TOKENS.has(t));
               if (aNeg === bNeg) return false;
-              const strip = (s) => [...s].filter((t) => !NEGATION_TOKENS.has(t));
+              const strip = (s) => new Set([...s].filter((t) => !NEGATION_TOKENS.has(t)));
               const na = strip(sa);
-              const nb = new Set(strip(sb));
-              // Exact non-negation content match: only a true polarity flip.
-              return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
+              const nb = strip(sb);
+              if (na.size === 0 || nb.size === 0) return false;
+              // Near-match non-negation content => a true polarity flip (differs only
+              // by context), not an incidental negation in a differently-worded dup.
+              let inter = 0;
+              for (const t of na) if (nb.has(t)) inter += 1;
+              const contentSim = inter / (na.size + nb.size - inter);
+              return contentSim >= DEDUP.polarityContentSim;
             };
             // Terse-fingerprint guard (mirrors terseDistinctFindings in
             // review-dedup.mjs): for short comments a single differing word is the

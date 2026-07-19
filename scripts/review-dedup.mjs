@@ -41,6 +41,11 @@ export const REVIEW_DEDUP_CONFIG = Object.freeze({
   // Jaccard scores them above threshold. Subset/superset or longer paraphrase
   // duplicates are unaffected (codex P2).
   smallFingerprintMax: 6,
+  // Polarity guard: reject a merge when exactly one side is negated AND the
+  // non-negation content is at least this similar — a true prohibition/affirmative
+  // flip. Set between a real duplicate that merely carries an incidental negation
+  // (measured ~0.52) and a genuine flip differing only by context (~0.85).
+  polarityContentSim: 0.7,
 });
 
 // Reviewers whose findings are never deduplicated. CodeQL threads cannot be
@@ -173,9 +178,11 @@ export function contentTokens(body) {
 }
 
 // Directional markers whose two flanking operands carry the meaning: "X instead
-// of Y" / "X rather than Y". ("of"/"than" are stopwords, so in the content-token
-// stream the marker is the bare "instead"/"rather".)
-const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
+// of Y" / "X rather than Y" / "X before/after Y". ("of"/"than" are stopwords, so
+// the marker is the bare "instead"/"rather"; "before"/"after" are ordering
+// markers whose operand ORDER is the meaning. The swap detector only fires on a
+// genuine operand reversal, so common before/after phrasings are never mis-flagged.
+const DIRECTIONAL_MARKERS = new Set(["instead", "rather", "before", "after"]);
 
 /** The {before, after} operand token PHRASES flanking the first directional
  * marker, or null. Phrases (not single tokens) so multi-word operands like
@@ -227,24 +234,28 @@ const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none"]);
 
 /**
  * True when two bodies are the SAME finding at OPPOSITE polarity — one is a
- * prohibition, the other an affirmative ("Do not call deleteAll" vs "Call
- * deleteAll"). Preserving the negation token is not enough: the k=1 Jaccard
- * still scores such pairs above threshold. Reject only when exactly one side
- * carries a negation AND the non-negation content is otherwise IDENTICAL, so a
- * genuine duplicate with an incidental negation (different wording) is unaffected.
+ * prohibition, the other an affirmative ("Do not call deleteAll before backup"
+ * vs "Call deleteAll before backup"). Preserving the negation token is not
+ * enough: the k=1 Jaccard still scores such pairs above threshold. Reject when
+ * exactly one side carries a negation AND the non-negation content is at least
+ * `nearMatch` similar (default 0.7) — high enough to spare a real duplicate that
+ * merely carries an incidental negation (~0.52), low enough to catch a genuine
+ * flip that differs only by a context word (~0.85).
  */
-function polarityMismatch(bodyA, bodyB) {
+function polarityMismatch(bodyA, bodyB, nearMatch = REVIEW_DEDUP_CONFIG.polarityContentSim) {
   const a = new Set(contentTokens(bodyA));
   const b = new Set(contentTokens(bodyB));
   const aNeg = [...a].some((t) => NEGATION_TOKENS.has(t));
   const bNeg = [...b].some((t) => NEGATION_TOKENS.has(t));
   if (aNeg === bNeg) return false;
-  const strip = (s) => [...s].filter((t) => !NEGATION_TOKENS.has(t));
+  const strip = (s) => new Set([...s].filter((t) => !NEGATION_TOKENS.has(t)));
   const na = strip(a);
-  const nb = new Set(strip(b));
-  // Exact non-negation content match: only a true polarity flip, never an
-  // incidental negation inside an otherwise differently-worded duplicate.
-  return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
+  const nb = strip(b);
+  if (na.size === 0 || nb.size === 0) return false;
+  let inter = 0;
+  for (const t of na) if (nb.has(t)) inter += 1;
+  const contentSim = inter / (na.size + nb.size - inter);
+  return contentSim >= nearMatch;
 }
 
 /**
