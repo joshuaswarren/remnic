@@ -473,6 +473,21 @@ export function deletedOrRenamedPaths(records) {
 }
 
 /**
+ * Paths DELETED in the diff (status `D`). A rename SOURCE is excluded (the
+ * rename-bypass hardening still evaluates it). A deleted file has no code left
+ * to cover, so it must be filtered from the effective diff before the gate —
+ * otherwise deleting a file under a broad catch-all would violate as unmapped.
+ */
+export function deletedPaths(records) {
+  const set = new Set();
+  for (const r of records) {
+    if (!r || typeof r === "string") continue;
+    if (typeof r.status === "string" && r.status.startsWith("D") && r.filename) set.add(r.filename);
+  }
+  return set;
+}
+
+/**
  * Removed manifest globs that are NOT explained by a deletion/rename. An
  * exact-file entry is explained when its path was deleted or renamed away; a
  * glob entry (contains `*`) is never auto-explained, so the shrink-only ratchet
@@ -660,7 +675,11 @@ function main() {
   }
 
   const ignorePatterns = readBaseIgnorePatterns();
-  const { effective } = splitEffectiveDiff(flattenChangedPaths(changed), ignorePatterns);
+  const deleted = deletedPaths(changed);
+  const { effective } = splitEffectiveDiff(
+    flattenChangedPaths(changed).filter((p) => !deleted.has(p)),
+    ignorePatterns,
+  );
 
   const { covered, warnings, violations } = evaluateCoverage(effective, manifest);
 

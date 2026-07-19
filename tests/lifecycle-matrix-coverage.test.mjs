@@ -22,6 +22,7 @@ import {
   classifyGlob,
   discoverSubjectRegistrations,
   deletedOrRenamedPaths,
+  deletedPaths,
   evaluateCoverage,
   flattenChangedPaths,
   grandfatherGrowth,
@@ -662,6 +663,23 @@ test("manifest removal is permitted only when the diff proves deletion/rename", 
   );
   // With nothing deleted/renamed, every removal is unexplained.
   assert.deepEqual(unexplainedRemovals(removed, deletedOrRenamedPaths([])), removed);
+});
+
+test("a deleted file under a catch-all is filtered from the gate, not a violation", () => {
+  const manifest = loadReal();
+  // Deleting a storage file (matches storage/** catch-all) must NOT violate:
+  // the deleted path has no code left to cover. A rename SOURCE still evaluates.
+  const records = parseNameStatusZ(
+    "D\0packages/remnic-core/src/storage/old-store.ts\0M\0packages/remnic-core/src/orchestrator.ts\0",
+  );
+  const deleted = deletedPaths(records);
+  assert.ok(deleted.has("packages/remnic-core/src/storage/old-store.ts"));
+  assert.ok(!deleted.has("packages/remnic-core/src/orchestrator.ts"));
+  const effective = flattenChangedPaths(records).filter((p) => !deleted.has(p));
+  const { covered, violations } = evaluateCoverage(effective, manifest);
+  assert.equal(violations.length, 0, "deleting a tracked file must not fail the gate");
+  assert.equal(covered.length, 1, "the co-changed live path is still evaluated");
+  assert.equal(covered[0].file, "packages/remnic-core/src/orchestrator.ts");
 });
 
 test("a NEW namespace file fails the gate via the namespaces/** catch-all", () => {
