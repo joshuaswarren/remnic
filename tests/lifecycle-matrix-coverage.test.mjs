@@ -373,11 +373,15 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     'runLifecycleMatrix("nested-call-arg", makeSubject(a, b));',
     'const re = /runLifecycleMatrix("regex-literal", subject)/;',
     'runLifecycleMatrix("after-regex", subject);',
+    'process.env.RUN_MATRIX && runLifecycleMatrix("env-gated", subject);',
+    'false && runLifecycleMatrix("short-circuit", subject);',
+    'if (false) runLifecycleMatrix("braceless-if", subject);',
+    'const assigned = runLifecycleMatrix("assigned-not-statement", subject);',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
     ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg", "after-regex"],
-    "only top-level 2-arg production calls count; comments, strings, template/regex literals, brace-nested calls, and any third (options) argument — inline OR aliased — are ignored",
+    "only genuine module-load standalone 2-arg registrations count; comments, strings, template/regex literals, brace-nested calls, options args (inline/aliased), and non-standalone wrappers (env/boolean short-circuit, braceless if, assignment) are all ignored",
   );
 });
 

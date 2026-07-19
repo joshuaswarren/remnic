@@ -93,9 +93,13 @@ function skipRegexLiteral(source, start) {
  * regex literals, so none of a commented-out example, a docs string like
  * `const doc = 'runLifecycleMatrix("fake", subject)'`, or a regex literal like
  * `/runLifecycleMatrix("fake", subject)/` is mistaken for a real registration.
- * Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
- * `if (false) { … }` or an uncalled helper never runs at module load, so
- * `node:test` registers nothing for it. Only a two-argument call
+ * Only a TOP-LEVEL (brace-depth 0) STANDALONE expression statement counts — the
+ * call must start a statement, never be a wrapper that may not run at module
+ * load: a call nested in `if (false) { … }`, a braceless `if (false)
+ * runLifecycleMatrix(...)`, an env/boolean short-circuit
+ * (`cond && runLifecycleMatrix(...)`), an assignment, or an uncalled helper is
+ * NOT recorded, because `node:test` may register nothing for it. Only a
+ * two-argument call
  * (`runLifecycleMatrix("name", subject)`) counts — ANY third argument is the
  * test-only options seam (rows / register / registerSkipped), inline OR aliased
  * via a variable, which narrows or redirects the canonical MATRIX_ROWS, so a
@@ -163,6 +167,11 @@ export function discoverSubjectRegistrations(source) {
     }
     if (
       depth === 0 &&
+      // Standalone expression statement only: the call must start a statement
+      // (prevSig is a statement boundary), never be part of a larger expression
+      // like `cond && runLifecycleMatrix(...)`, `if (x) runLifecycleMatrix(...)`,
+      // or `const s = runLifecycleMatrix(...)` — those may not run at module load.
+      (prevSig === "" || prevSig === ";" || prevSig === "}") &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&
