@@ -22,4 +22,7 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // and the next lock holder folds them back into the synced
   // memory-lifecycle-ledger.jsonl. Pushing them would duplicate rows remotely.
   "**/state/memory-lifecycle-ledger.jsonl.pending.d/**",
+  // The active lifecycle ledger lock is node-local and must never be
+  // transferred to another node during an offline snapshot.
+  "**/state/memory-lifecycle-ledger.jsonl.lock",
 ];
