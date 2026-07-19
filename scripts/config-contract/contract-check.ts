@@ -425,8 +425,10 @@ export function runContractCheck(options: {
   for (const entry of extraction.unparseable) {
     violations.push({
       kind: "unparseable-construct",
-      key: `${entry.file}:${entry.line}`,
-      detail: entry.reason,
+      // Stable construct id (line-independent) so an unrelated edit above the
+      // construct does not restyle its grandfather key (issue #1990 review).
+      key: entry.id,
+      detail: `${entry.file}:${entry.line} — ${entry.reason}`,
     });
   }
 

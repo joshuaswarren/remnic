@@ -65,6 +65,10 @@ test("unparseable fixture: dynamic constructs are reported loudly, never silentl
   assert.ok(fromFixture.some((u) => u.reason.includes("computed element access")));
   for (const entry of fromFixture) {
     assert.ok(entry.line > 0, "every unparseable construct carries a line number");
+    // Stable, line-independent construct id (issue #1990 review): keyed by
+    // <file>#<hash>, never file:line, so unrelated edits don't restyle it.
+    assert.match(entry.id, /^scripts\/config-contract\/fixtures\/unparseable\.ts#[0-9a-f]{12}$/);
+    assert.equal(entry.id.includes(`:${entry.line}`), false, "id must not embed the line number");
   }
 });
 
@@ -81,7 +85,11 @@ test("real config.ts extraction matches the committed snapshot (config-surface c
   const actual = extractReal();
   const snapshot = JSON.parse(
     readFileSync(path.join(REPO_ROOT, "scripts", "config-contract", "parsed-keys.snapshot.json"), "utf8"),
-  ) as { keys: string[]; unparseable: Array<{ file: string; line: number; reason: string }>; ambiguousValueMembers: string[] };
+  ) as {
+    keys: string[];
+    unparseable: Array<{ file: string; line: number; reason: string; id: string }>;
+    ambiguousValueMembers: string[];
+  };
   assert.deepEqual(
     actual.keys,
     snapshot.keys,

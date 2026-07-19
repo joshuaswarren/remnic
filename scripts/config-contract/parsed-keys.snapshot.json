@@ -957,37 +957,44 @@
     {
       "file": "packages/remnic-core/src/coding/coding-knowledge-config.ts",
       "line": 164,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/coding/coding-knowledge-config.ts#a310f33cfc0c"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
       "line": 118,
-      "reason": "Object.keys() over parser input — dynamic key set"
+      "reason": "Object.keys() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/config.ts#5d8da91b4674"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
       "line": 2722,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/config.ts#e0fdc039e7a0"
     },
     {
       "file": "packages/remnic-core/src/entity-schema.ts",
       "line": 91,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/entity-schema.ts#0c0f2214aa0d"
     },
     {
       "file": "packages/remnic-core/src/namespaces/scope-profile-config.ts",
       "line": 102,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#d6e909a14090"
     },
     {
       "file": "packages/remnic-core/src/namespaces/scope-profile-config.ts",
       "line": 209,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#d6e909a14090"
     },
     {
       "file": "packages/remnic-core/src/wearables/config.ts",
       "line": 468,
-      "reason": "Object.entries() over parser input — dynamic key set"
+      "reason": "Object.entries() over parser input — dynamic key set",
+      "id": "packages/remnic-core/src/wearables/config.ts#d2e5943b27e2"
     }
   ],
   "ambiguousValueMembers": [

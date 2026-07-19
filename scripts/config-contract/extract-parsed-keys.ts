@@ -32,11 +32,18 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 
 export interface UnparseableConstruct {
   file: string;
   line: number;
   reason: string;
+  /**
+   * Stable identity keyed by construct text + reason, NOT file:line — so an
+   * unrelated edit above the construct does not restyle its grandfather key
+   * (issue #1990 review). `line` remains for human-readable reporting only.
+   */
+  id: string;
 }
 
 export interface ExtractedConfigKeys {
@@ -77,6 +84,26 @@ interface AliasInfo {
 
 function relPath(repoRoot: string, fileName: string): string {
   return path.relative(repoRoot, fileName).split(path.sep).join("/");
+}
+
+/**
+ * Record a loud unparseable construct with a stable, line-independent id
+ * (`<relFile>#<hash(reason + normalized construct text)>`). Keeping the id keyed
+ * by construct identity means a grandfather entry survives unrelated edits that
+ * merely shift line numbers (issue #1990 review).
+ */
+function pushUnparseable(
+  out: { unparseable: UnparseableConstruct[] },
+  repoRoot: string,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  reason: string,
+): void {
+  const file = relPath(repoRoot, sourceFile.fileName);
+  const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+  const normalized = node.getText(sourceFile).replace(/\s+/g, " ").trim();
+  const hash = createHash("sha1").update(`${reason}\u0000${normalized}`).digest("hex").slice(0, 12);
+  out.unparseable.push({ file, line: pos.line + 1, reason, id: `${file}#${hash}` });
 }
 
 export function resolveStaticStringSet(
@@ -437,19 +464,21 @@ function extractParserKeys(
             for (const key of keys) recordKey([...resolved.info.prefix, ...resolved.segments], key);
             return;
           }
-          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-          out.unparseable.push({
-            file: relPath(repoRoot, sourceFile.fileName),
-            line: pos.line + 1,
-            reason: "computed element access on parser input — key not statically derivable",
-          });
+          pushUnparseable(
+            out,
+            repoRoot,
+            sourceFile,
+            node,
+            "computed element access on parser input — key not statically derivable",
+          );
         } else {
-          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-          out.unparseable.push({
-            file: relPath(repoRoot, sourceFile.fileName),
-            line: pos.line + 1,
-            reason: "computed element access on parser input — key not statically derivable",
-          });
+          pushUnparseable(
+            out,
+            repoRoot,
+            sourceFile,
+            node,
+            "computed element access on parser input — key not statically derivable",
+          );
         }
         return;
       }
@@ -523,12 +552,13 @@ function extractParserKeys(
     ) {
       const resolved = resolveAliasChain(node.arguments[0]);
       if (resolved) {
-        const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-        out.unparseable.push({
-          file: relPath(repoRoot, sourceFile.fileName),
-          line: pos.line + 1,
-          reason: `Object.${node.expression.name.text}() over parser input — dynamic key set`,
-        });
+        pushUnparseable(
+          out,
+          repoRoot,
+          sourceFile,
+          node,
+          `Object.${node.expression.name.text}() over parser input — dynamic key set`,
+        );
         return;
       }
     }
@@ -707,12 +737,13 @@ export function extractParsedKeyPaths(options: {
           if (helper) {
             extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments, recursion);
           } else {
-            const pos = entry.sourceFile.getLineAndCharacterOfPosition(prop.getStart(entry.sourceFile));
-            out.unparseable.push({
-              file: relPath(repoRoot, entry.sourceFile.fileName),
-              line: pos.line + 1,
-              reason: `delegated parser ${delegated.helperName} not found in program`,
-            });
+            pushUnparseable(
+              out,
+              repoRoot,
+              entry.sourceFile,
+              prop,
+              `delegated parser ${delegated.helperName} not found in program`,
+            );
           }
         }
       } else if (ts.isSpreadAssignment(prop)) {
@@ -724,12 +755,13 @@ export function extractParsedKeyPaths(options: {
           } else {
             // Same loudness as the property-assignment branch (review
             // finding: spread-only delegations failed quietly).
-            const pos = entry.sourceFile.getLineAndCharacterOfPosition(prop.getStart(entry.sourceFile));
-            out.unparseable.push({
-              file: relPath(repoRoot, entry.sourceFile.fileName),
-              line: pos.line + 1,
-              reason: `delegated parser ${delegated.helperName} not found in program`,
-            });
+            pushUnparseable(
+              out,
+              repoRoot,
+              entry.sourceFile,
+              prop,
+              `delegated parser ${delegated.helperName} not found in program`,
+            );
           }
         }
       }

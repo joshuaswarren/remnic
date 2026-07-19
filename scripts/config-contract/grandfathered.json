@@ -1725,41 +1725,6 @@
     "issue": "#1990"
   },
   {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/coding/coding-knowledge-config.ts:164",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:118",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/entity-schema.ts:91",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/namespaces/scope-profile-config.ts:102",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/namespaces/scope-profile-config.ts:209",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/wearables/config.ts:468",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:2722",
-    "issue": "#1990"
-  },
-  {
     "kind": "documented-nonexistent",
     "key": "maintenance.includeBranchNamespaces",
     "issue": "#1990"
@@ -1787,6 +1752,36 @@
   {
     "kind": "documented-nonexistent",
     "key": "maintenance.namespaceLockStaleMs",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/coding/coding-knowledge-config.ts#a310f33cfc0c",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts#5d8da91b4674",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts#e0fdc039e7a0",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/entity-schema.ts#0c0f2214aa0d",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/namespaces/scope-profile-config.ts#d6e909a14090",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/wearables/config.ts#d2e5943b27e2",
     "issue": "#1990"
   }
 ]

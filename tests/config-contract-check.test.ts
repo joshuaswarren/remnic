@@ -127,8 +127,9 @@ test("unparseable construct: a dynamic Object.keys loop over the parser input su
       result.violations.some(
         (v) =>
           v.kind === "unparseable-construct" &&
-          /^parser\.ts:\d+$/.test(v.key) &&
-          v.detail.length > 0,
+          // Stable construct-id key; the human-readable file:line rides in detail.
+          /^parser\.ts#[0-9a-f]+$/.test(v.key) &&
+          /parser\.ts:\d+/.test(v.detail),
       ),
       JSON.stringify(result.violations),
     );
