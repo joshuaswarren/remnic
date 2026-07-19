@@ -179,6 +179,16 @@ function renderRoundComment({ state, telemetry, unresolved }) {
   return `${summary}\n\n${ledger}\n`;
 }
 
+// Trust only the workflow bot's own ledger comment: another commenter pasting
+// the marker must never become the authoritative round state (issue #1992).
+const LEDGER_COMMENT_AUTHORS = new Set(["github-actions[bot]", "github-actions"]);
+
+function isWorkflowLedgerComment(comment) {
+  if (!(comment?.body ?? "").includes(ROUND_COMMENT_MARKER)) return false;
+  const login = (comment?.user?.login ?? "").toLowerCase();
+  return LEDGER_COMMENT_AUTHORS.has(login);
+}
+
 async function findOwnedLedgerComment(github, owner, repo, prNumber) {
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
@@ -186,7 +196,7 @@ async function findOwnedLedgerComment(github, owner, repo, prNumber) {
     issue_number: prNumber,
     per_page: 100,
   });
-  return comments.find((comment) => (comment.body ?? "").includes(ROUND_COMMENT_MARKER)) ?? null;
+  return comments.find(isWorkflowLedgerComment) ?? null;
 }
 
 async function fetchReviewThreads(github, owner, repo, prNumber) {
@@ -223,9 +233,12 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
 }
 
 function resolvePullNumber(context) {
+  // check_run.completed carries the PR under check_run.pull_requests[]; the
+  // review-thread and PR/review/comment events carry pull_request/issue.
   const candidate =
     context.payload?.pull_request?.number ??
     context.payload?.issue?.number ??
+    context.payload?.check_run?.pull_requests?.[0]?.number ??
     null;
   const pr = Number(candidate);
   return Number.isInteger(pr) && pr > 0 ? pr : null;
@@ -244,41 +257,59 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
     return null;
   }
 
-  const pull = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  if (pull.data.draft === true) {
-    core.notice(`review-round gate: PR #${prNumber} is a draft; skipping.`);
-    return null;
-  }
-
   const enforce = String(env.REVIEW_ROUND_ENFORCE ?? "").toLowerCase() === "true";
   const botAliases = parseReviewerAliases(
     env.REQUIRED_AI_REVIEWER_GROUPS || DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,
   );
+
+  // The read path must never fail the (non-blocking) gate: any GitHub API error
+  // degrades to a warning + no-op rather than an uncaught exception that would
+  // fail the github-script step (issue #1992 — the gate never fails a check).
+  let pull;
+  let reviews;
+  let issueComments;
+  let reviewComments;
+  let threads;
+  let headSha;
+  let headCommittedAt;
+  let checkRuns;
+  let existing;
+  try {
+    pull = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    if (pull.data.draft === true) {
+      core.notice(`review-round gate: PR #${prNumber} is a draft; skipping.`);
+      return null;
+    }
+    [reviews, issueComments, reviewComments, threads] = await Promise.all([
+      github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 }),
+      github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 }),
+      github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 }),
+      fetchReviewThreads(github, owner, repo, prNumber),
+    ]);
+    headSha = pull.data.head?.sha;
+    const headCommit = headSha
+      ? await github.rest.repos.getCommit({ owner, repo, ref: headSha })
+      : null;
+    headCommittedAt =
+      headCommit?.data?.commit?.committer?.date ??
+      headCommit?.data?.commit?.author?.date ??
+      null;
+    checkRuns = headSha
+      ? await github.paginate(github.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 })
+      : [];
+    existing = await findOwnedLedgerComment(github, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(
+      `review-round gate PR #${prNumber}: read path failed (${error?.message ?? error}); ` +
+        "skipping (non-blocking).",
+    );
+    return null;
+  }
+
   const labels = (pull.data.labels ?? []).map((label) =>
     (typeof label === "string" ? label : label?.name ?? "").toLowerCase(),
   );
   const forceDispatch = labels.includes(FORCE_DISPATCH_LABEL);
-
-  const [reviews, issueComments, reviewComments, threads] = await Promise.all([
-    github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 }),
-    github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 }),
-    github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 }),
-    fetchReviewThreads(github, owner, repo, prNumber),
-  ]);
-
-  const headSha = pull.data.head?.sha;
-  const headCommit = headSha
-    ? await github.rest.repos.getCommit({ owner, repo, ref: headSha })
-    : null;
-  const headCommittedAt =
-    headCommit?.data?.commit?.committer?.date ??
-    headCommit?.data?.commit?.author?.date ??
-    null;
-  const checkRuns = headSha
-    ? await github.paginate(github.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 })
-    : [];
-
-  const existing = await findOwnedLedgerComment(github, owner, repo, prNumber);
 
   const result = computeRoundGateDecision({
     ledgerBody: existing?.body ?? "",
@@ -325,7 +356,7 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
       `${result.telemetry.dryRun ? " (shadow)" : ""}`,
   );
 
-  if (result.telemetry.dispatch && result.telemetry.autoClosed) {
+  if (enforce && result.telemetry.dispatch && result.telemetry.autoClosed) {
     await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
   }
 

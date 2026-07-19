@@ -37,8 +37,18 @@ test("the round-dispatch workflow imports the tested driver rather than inlining
 });
 
 test("the round gate is non-blocking: the driver never fails a check", () => {
+  // Static guard; the behavioral companion (a throwing github client that must
+  // not propagate out of runRoundGate) lives in tests/review-round-gate.test.mjs.
   const driver = read("scripts/review-round-gate.mjs");
   assert.doesNotMatch(driver, /setFailed/, "shadow gate must never setFailed");
+});
+
+test("the round-dispatch workflow also wakes on reviewer state changes", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // A resolved last-round thread or a bot completing only a check run must wake
+  // the gate (issue #1992 P2), not just push/comment/label events.
+  assert.match(dispatch, /pull_request_review_thread:/);
+  assert.match(dispatch, /check_run:/);
 });
 
 test("the round-dispatch workflow shadows dispatch by default (enforcement flip is PR3)", () => {

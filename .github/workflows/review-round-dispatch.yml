@@ -23,6 +23,13 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  # Resolving the last round thread in the UI, or a bot completing only a check
+  # run, must also wake the gate — otherwise the ledger will not advance until an
+  # unrelated push/comment/label fires (issue #1992 P2).
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+  check_run:
+    types: [completed]
 
 permissions:
   contents: read
@@ -30,12 +37,15 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: review-round-dispatch-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  group: review-round-dispatch-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.event.issue.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   round-dispatch:
-    if: github.event.pull_request.draft == false
+    # Draft PRs are skipped in runRoundGate too; for check_run/review_thread
+    # events pull_request is absent, so `!= true` lets the job run and the
+    # driver re-checks draft via pulls.get.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

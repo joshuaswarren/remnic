@@ -146,6 +146,21 @@ test("force dispatch bypasses debounce and records the explicit reason", () => {
   assert.equal(result.reason, "force-label");
 });
 
+test("force dispatch overrides an open thread set (escape hatch for a stuck round)", () => {
+  const state = openRound();
+  const result = decideRound({
+    ...base,
+    state,
+    threads: base.threads,
+    forceDispatch: true,
+    now: "2026-07-18T12:00:01.000Z",
+    botActivity: false,
+  });
+  assert.equal(result.action, "dispatch");
+  assert.equal(result.reason, "force-label");
+  assert.equal(result.state.status, "closed");
+});
+
 test("replays the recorded high-churn PR 1852 timeline without dispatch churn", () => {
   const fixture = loadFixture("pr-1852.json");
   const replay = replayFixture(fixture);

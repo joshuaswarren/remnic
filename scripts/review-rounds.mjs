@@ -173,13 +173,6 @@ export function decideRound({
         state: openRound({ state, headSha, now, threads, botActivity: activity }),
       };
     }
-    if (forceDispatch && !state.dispatchIssuedAt) {
-      return {
-        action: "dispatch",
-        reason: "force-label",
-        state: closeForDispatch(noteHead(state, headSha, now), now, "force-label"),
-      };
-    }
     return wait(state, "round-dispatched");
   }
 
@@ -196,9 +189,9 @@ export function decideRound({
     };
   }
 
-  const unresolved = getGuardUnresolvedThreads(next, threads, botAliases);
-  if (unresolved.length > 0) return wait(next, "round-threads-open");
-
+  // Force-dispatch is a maintainer override: it must win over an open thread set
+  // and the debounce (issue #1992 escape hatch), so it is checked before the
+  // open-thread wait below. Max-age already dispatches above regardless.
   if (forceDispatch) {
     return {
       action: "dispatch",
@@ -206,6 +199,9 @@ export function decideRound({
       state: closeForDispatch(next, now, "force-label"),
     };
   }
+
+  const unresolved = getGuardUnresolvedThreads(next, threads, botAliases);
+  if (unresolved.length > 0) return wait(next, "round-threads-open");
 
   const stableAt = stableSince(next, headSha);
   if (stableAt > 0 && parseTime(now) - stableAt >= debounceMs) {

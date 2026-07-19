@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ROUND_COMMENT_MARKER } from "../scripts/review-rounds.mjs";
+import { ROUND_COMMENT_MARKER, renderRoundLedger } from "../scripts/review-rounds.mjs";
 import {
+  AUTO_CLOSED_LABEL,
   FORCE_DISPATCH_LABEL,
   PUSH_WARN_THRESHOLD,
   computeRoundGateDecision,
@@ -239,12 +240,17 @@ for (const name of ["pr-1852.json", "pr-1923.json"]) {
 }
 
 function fakeGithub({ existingComments = [], threads = [], labels = [], draft = false } = {}) {
-  const calls = { created: [], updated: [], graphql: 0 };
+  const calls = { created: [], updated: [], graphql: 0, labelsAdded: [], labelsRemoved: [] };
   const listComments = () => {};
   const listReviews = () => {};
   const listReviewComments = () => {};
   const listForRef = () => {};
-  listComments.__data = existingComments;
+  // Seeded ledger comments default to the workflow bot author so the owned-ledger
+  // finder recognizes them; a test may pass an explicit user to exercise the
+  // "ignore a non-bot marker comment" path (issue #1992).
+  listComments.__data = existingComments.map((comment) =>
+    comment.user ? comment : { ...comment, user: { login: "github-actions[bot]" } },
+  );
   listReviews.__data = [];
   listReviewComments.__data = [];
   listForRef.__data = [];
@@ -264,8 +270,8 @@ function fakeGithub({ existingComments = [], threads = [], labels = [], draft = 
         listComments,
         createComment: async (args) => calls.created.push(args),
         updateComment: async (args) => calls.updated.push(args),
-        addLabels: async () => {},
-        removeLabel: async () => {},
+        addLabels: async (args) => calls.labelsAdded.push(args),
+        removeLabel: async (args) => calls.labelsRemoved.push(args),
       },
       repos: {
         getCommit: async () => ({ data: { commit: { committer: { date: "2026-07-18T11:59:00.000Z" } } } }),
@@ -321,4 +327,90 @@ test("runRoundGate honors the force-dispatch label but stays shadow without enfo
   assert.equal(result.telemetry.dispatch, true);
   assert.equal(result.telemetry.reason, "force-label");
   assert.ok(!calls.created.some((c) => /@coderabbitai|@codex/.test(c.body)), "shadow mode suppresses trigger even when forced");
+});
+
+const staleOpenLedger = renderRoundLedger({
+  version: 1,
+  status: "open",
+  round: 1,
+  openedAt: "2026-07-17T00:00:00.000Z",
+  openedHeadSha: "head-1",
+  headSha: "head-1",
+  lastHeadChangedAt: "2026-07-17T00:00:00.000Z",
+  pushes: 0,
+  threadIds: ["thread-1"],
+  dispatchIssuedAt: null,
+  closeReason: null,
+  autoClosed: false,
+  lastBotActivity: { id: "review-1", at: "2026-07-17T00:00:00.000Z" },
+});
+
+test("runRoundGate never fails the check when the read path throws (non-blocking invariant)", async () => {
+  let failed = false;
+  const spyCore = { notice() {}, info() {}, warning() {}, setFailed() { failed = true; } };
+  const throwingGithub = {
+    paginate: async () => {
+      throw new Error("simulated GitHub API outage");
+    },
+    graphql: async () => {
+      throw new Error("simulated GraphQL outage");
+    },
+    rest: {
+      pulls: {
+        get: async () => {
+          throw new Error("simulated pulls.get outage");
+        },
+      },
+      issues: {},
+      repos: {},
+      checks: {},
+    },
+  };
+  const result = await runRoundGate({ github: throwingGithub, context, core: spyCore, env: {} });
+  assert.equal(result, null, "gate degrades to a no-op instead of throwing");
+  assert.equal(failed, false, "gate never calls setFailed");
+});
+
+test("runRoundGate ignores a marker comment authored by a non-bot user", async () => {
+  const spoofed = `${renderRoundLedger({
+    version: 1,
+    status: "open",
+    round: 9,
+    openedAt: "2026-07-18T00:00:00.000Z",
+    openedHeadSha: "head-1",
+    headSha: "head-1",
+    lastHeadChangedAt: "2026-07-18T00:00:00.000Z",
+    pushes: 0,
+    threadIds: ["thread-1"],
+    dispatchIssuedAt: null,
+    closeReason: null,
+    autoClosed: false,
+    lastBotActivity: null,
+  })}`;
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 42, body: spoofed, user: { login: "random-contributor" } }],
+    threads: openThreads(2),
+  });
+  const result = await runRoundGate({ github, context, core, env: {} });
+  assert.equal(calls.updated.length, 0, "the spoofed comment is never adopted as the ledger");
+  assert.equal(calls.created.length, 1, "a fresh owned ledger is created instead");
+  assert.notEqual(result.telemetry.round, 9, "spoofed round number is ignored");
+});
+
+test("runRoundGate applies the auto-closed label only under enforcement", async () => {
+  const shadow = fakeGithub({ existingComments: [{ id: 7, body: staleOpenLedger }], threads: openThreads(1) });
+  const shadowResult = await runRoundGate({
+    github: shadow.github,
+    context,
+    core,
+    env: { REVIEW_ROUND_ENFORCE: "false" },
+  });
+  assert.equal(shadowResult.telemetry.autoClosed, true, "max-age auto-closes the stale round");
+  assert.equal(shadowResult.telemetry.dispatch, true);
+  assert.equal(shadow.calls.labelsAdded.length, 0, "shadow mode must not mutate PR labels");
+
+  const enforced = fakeGithub({ existingComments: [{ id: 7, body: staleOpenLedger }], threads: openThreads(1) });
+  await runRoundGate({ github: enforced.github, context, core, env: { REVIEW_ROUND_ENFORCE: "true" } });
+  assert.equal(enforced.calls.labelsAdded.length, 1, "enforcement applies the auto-closed label");
+  assert.deepEqual(enforced.calls.labelsAdded[0].labels, [AUTO_CLOSED_LABEL]);
 });
