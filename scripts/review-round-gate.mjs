@@ -234,7 +234,7 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
 
 function resolvePullNumber(context) {
   // check_run.completed carries the PR under check_run.pull_requests[]; the
-  // review-thread and PR/review/comment events carry pull_request/issue.
+  // PR/review/comment events carry pull_request or issue.
   const candidate =
     context.payload?.pull_request?.number ??
     context.payload?.issue?.number ??
@@ -326,27 +326,67 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
     now: new Date().toISOString(),
   });
 
-  // The ledger comment is the visibility mechanism in v1: always upsert it,
-  // even in shadow mode. Writes can fail on fork PRs (read-only token) — that
-  // degrades to a log line rather than failing the (non-blocking) gate.
-  try {
-    if (existing) {
-      await github.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existing.id,
-        body: result.commentBody,
-      });
+  // Decide dispatch and label side effects BEFORE persisting the ledger. Under
+  // enforcement the bot round must be requested before the round is recorded as
+  // dispatched: if the trigger fails we leave the round OPEN (skip the ledger
+  // write) so the next run retries, instead of waiting for a review that was
+  // never requested and silently dropping the round (codex).
+  let persist = true;
+  const forceConsumed =
+    result.telemetry.dispatch && forceDispatch && result.telemetry.reason === "force-label";
+  if (result.telemetry.dispatch && enforce) {
+    const dispatched = await dispatchReviewers({ github, owner, repo, prNumber, core });
+    if (dispatched) {
+      if (result.telemetry.autoClosed) {
+        await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
+      }
+      if (forceConsumed) {
+        await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
+      }
     } else {
-      await github.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body: result.commentBody,
-      });
+      persist = false;
+      core.warning(
+        `review-round gate PR #${prNumber}: reviewer dispatch failed; leaving the round ` +
+          "open to retry (ledger not advanced).",
+      );
     }
-  } catch (error) {
-    core.info(`review-round gate: could not write ledger comment (${error?.message ?? error}).`);
+  } else if (result.telemetry.dispatch) {
+    // Shadow mode: never trigger reviewers or mutate the auto-closed label, but
+    // DO consume the one-shot force-dispatch label so it cannot re-fire on every
+    // later round and corrupt telemetry / defeat batching (cursor).
+    if (forceConsumed) {
+      await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
+    }
+    core.info(
+      `review-round gate PR #${prNumber}: shadow mode — would dispatch reviewers ` +
+        `(${result.telemetry.reason}); no action taken.`,
+    );
+  }
+
+  // The ledger comment is the visibility mechanism in v1: upsert it (even in
+  // shadow mode) unless an enforced dispatch failed above. Writes can fail on
+  // fork PRs (read-only token) — that degrades to a log line, never a failed
+  // (non-blocking) gate.
+  if (persist) {
+    try {
+      if (existing) {
+        await github.rest.issues.updateComment({
+          owner,
+          repo,
+          comment_id: existing.id,
+          body: result.commentBody,
+        });
+      } else {
+        await github.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body: result.commentBody,
+        });
+      }
+    } catch (error) {
+      core.info(`review-round gate: could not write ledger comment (${error?.message ?? error}).`);
+    }
   }
 
   core.notice(
@@ -356,31 +396,13 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
       `${result.telemetry.dryRun ? " (shadow)" : ""}`,
   );
 
-  if (enforce && result.telemetry.dispatch && result.telemetry.autoClosed) {
-    await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
-  }
-
-  if (result.telemetry.dispatch) {
-    if (enforce) {
-      await dispatchReviewers({ github, owner, repo, prNumber, core });
-      if (forceDispatch) {
-        await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
-      }
-    } else {
-      core.info(
-        `review-round gate PR #${prNumber}: shadow mode — would dispatch reviewers ` +
-          `(${result.telemetry.reason}); no action taken.`,
-      );
-    }
-  }
-
   return result;
 }
 
 async function dispatchReviewers({ github, owner, repo, prNumber, core }) {
-  // Request a fresh bot round against the settled head. Keep this idempotent —
-  // the round ledger records the dispatch, so a superseded rerun re-reads the
-  // closed round and waits rather than re-triggering.
+  // Request a fresh bot round against the settled head. Returns true only when
+  // the trigger comment is posted, so the caller can withhold the dispatched
+  // ledger state on failure and retry (issue #1992).
   try {
     await github.rest.issues.createComment({
       owner,
@@ -389,8 +411,10 @@ async function dispatchReviewers({ github, owner, repo, prNumber, core }) {
       body: "@coderabbitai review\n@codex review",
     });
     core.notice(`review-round gate PR #${prNumber}: dispatched next bot review round.`);
+    return true;
   } catch (error) {
     core.info(`review-round gate PR #${prNumber}: dispatch comment failed (${error?.message ?? error}).`);
+    return false;
   }
 }
 

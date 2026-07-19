@@ -239,7 +239,7 @@ for (const name of ["pr-1852.json", "pr-1923.json"]) {
   });
 }
 
-function fakeGithub({ existingComments = [], threads = [], labels = [], draft = false } = {}) {
+function fakeGithub({ existingComments = [], threads = [], labels = [], draft = false, failDispatch = false } = {}) {
   const calls = { created: [], updated: [], graphql: 0, labelsAdded: [], labelsRemoved: [] };
   const listComments = () => {};
   const listReviews = () => {};
@@ -268,7 +268,15 @@ function fakeGithub({ existingComments = [], threads = [], labels = [], draft = 
       },
       issues: {
         listComments,
-        createComment: async (args) => calls.created.push(args),
+        createComment: async (args) => {
+          // The dispatch trigger uses createComment; failDispatch simulates a
+          // transient trigger failure so tests can assert the ledger is not
+          // advanced to the dispatched state (issue #1992).
+          if (failDispatch && /@coderabbitai|@codex/.test(args.body ?? "")) {
+            throw new Error("simulated dispatch comment failure");
+          }
+          return calls.created.push(args);
+        },
         updateComment: async (args) => calls.updated.push(args),
         addLabels: async (args) => calls.labelsAdded.push(args),
         removeLabel: async (args) => calls.labelsRemoved.push(args),
@@ -413,4 +421,34 @@ test("runRoundGate applies the auto-closed label only under enforcement", async 
   await runRoundGate({ github: enforced.github, context, core, env: { REVIEW_ROUND_ENFORCE: "true" } });
   assert.equal(enforced.calls.labelsAdded.length, 1, "enforcement applies the auto-closed label");
   assert.deepEqual(enforced.calls.labelsAdded[0].labels, [AUTO_CLOSED_LABEL]);
+});
+
+test("shadow mode consumes the one-shot force-dispatch label so it cannot re-fire", async () => {
+  const seed = decide({ threads: openThreads(2) }).commentBody;
+  const addressed = openThreads(2).map((thread) => ({ ...thread, isResolved: true }));
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 5, body: seed }],
+    threads: addressed,
+    labels: [{ name: FORCE_DISPATCH_LABEL }],
+  });
+  const result = await runRoundGate({ github, context, core, env: { REVIEW_ROUND_ENFORCE: "false" } });
+  assert.equal(result.telemetry.reason, "force-label");
+  assert.equal(calls.labelsRemoved.length, 1, "the force label is removed even in shadow mode");
+  assert.equal(calls.labelsRemoved[0].name, FORCE_DISPATCH_LABEL);
+  assert.ok(!calls.created.some((c) => /@coderabbitai|@codex/.test(c.body)), "shadow still suppresses the trigger");
+});
+
+test("an enforced dispatch whose trigger fails leaves the round open to retry", async () => {
+  const seed = decide({ threads: openThreads(2) }).commentBody;
+  const addressed = openThreads(2).map((thread) => ({ ...thread, isResolved: true }));
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 8, body: seed }],
+    threads: addressed,
+    labels: [{ name: FORCE_DISPATCH_LABEL }],
+    failDispatch: true,
+  });
+  const result = await runRoundGate({ github, context, core, env: { REVIEW_ROUND_ENFORCE: "true" } });
+  assert.equal(result.telemetry.dispatch, true, "the decision still says dispatch");
+  assert.equal(calls.updated.length, 0, "the dispatched ledger state is NOT persisted on trigger failure");
+  assert.equal(calls.labelsRemoved.length, 0, "the force label is kept so the retry re-dispatches");
 });

@@ -43,12 +43,13 @@ test("the round gate is non-blocking: the driver never fails a check", () => {
   assert.doesNotMatch(driver, /setFailed/, "shadow gate must never setFailed");
 });
 
-test("the round-dispatch workflow also wakes on reviewer state changes", () => {
+test("the round-dispatch workflow also wakes on check-run completion", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
-  // A resolved last-round thread or a bot completing only a check run must wake
-  // the gate (issue #1992 P2), not just push/comment/label events.
-  assert.match(dispatch, /pull_request_review_thread:/);
+  // A bot completing only a check run must wake the gate (issue #1992 P2), not
+  // just push/comment/review events. GitHub Actions has no
+  // pull_request_review_thread trigger, so it must NOT be declared.
   assert.match(dispatch, /check_run:/);
+  assert.doesNotMatch(dispatch, /^\s*pull_request_review_thread:/m);
 });
 
 test("the round-dispatch workflow shadows dispatch by default (enforcement flip is PR3)", () => {
