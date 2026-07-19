@@ -87,8 +87,11 @@ const CODE_FENCE_PATTERN = /```([\s\S]*?)```/g;
 // merge in enforce mode. Keep the inner code minus the language line, capped so
 // a large block can't dominate the fingerprint (codex P2).
 const FENCE_TOKEN_BUDGET = 200;
+// Also flatten angle brackets so JSX/generics inside the fence (e.g. <Foo/>)
+// survive as tokens instead of being deleted by the later HTML-tag pass —
+// otherwise <Foo/> vs <Bar/> both collapse to the same tokens (codex P2).
 const preserveFencedCode = (_match, inner) =>
-  ` ${String(inner).replace(/^[^\n]*\n/, "").slice(0, FENCE_TOKEN_BUDGET)} `;
+  ` ${String(inner).replace(/^[^\n]*\n/, "").replace(/[<>]/g, " ").slice(0, FENCE_TOKEN_BUDGET)} `;
 const INLINE_CODE_PATTERN = /`([^`]*)`/g;
 const IMAGE_PATTERN = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK_PATTERN = /\[([^\]]*)\]\([^)]*\)/g;
@@ -105,11 +108,13 @@ const EMOJI_PATTERN = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/gu;
 const NON_WORD_PATTERN = /[^a-z0-9]+/g;
 
 // Common English + markdown-noise stopwords. Removing them keeps the fingerprint
-// on the finding's nouns/verbs, not connective tissue.
+// on the finding's nouns/verbs, not connective tissue. Negations (no/not/cannot)
+// are deliberately NOT stopwords: dropping them makes a prohibition and its
+// opposite recommendation look identical and false-merge (codex P2).
 const STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can",
-  "cannot", "could", "de", "do", "does", "for", "from", "has", "have", "if",
-  "in", "into", "is", "it", "its", "may", "no", "not", "of", "on", "or", "so",
+  "could", "de", "do", "does", "for", "from", "has", "have", "if",
+  "in", "into", "is", "it", "its", "may", "of", "on", "or", "so",
   "than", "that", "the", "their", "then", "there", "these", "this", "to",
   "up", "was", "we", "when", "which", "will", "with", "would", "you", "your",
   "should", "shall", "here", "how", "why", "what", "where", "who", "this",

@@ -382,6 +382,30 @@ test("identical fenced snippets with similar prose still dedupe (positive)", () 
   assert.equal(duplicateCount, 1, "same code + prose is a real duplicate and still folds");
 });
 
+test("negation tokens survive fingerprinting (no/not/cannot are not stopwords)", () => {
+  // Dropping negations makes a prohibition and its opposite recommendation
+  // share the same tokens; keeping them preserves the distinguishing signal.
+  for (const neg of ["not", "no", "cannot"]) {
+    assert.ok(fingerprint(`you must ${neg} touch this`).has(neg), `${neg} must be a fingerprint token`);
+  }
+});
+
+test("distinct JSX/generic tags in fences are not stripped as HTML (negative)", () => {
+  // Fenced code is preserved, but the later HTML-tag pass would delete <Foo/>
+  // and <Bar/> and collapse both to the same tokens; flattening angle brackets
+  // inside the fence keeps Foo/Bar as distinguishing tokens.
+  const a = mkThread({
+    id: 511, path: "a.tsx", startLine: 5, line: 5, author: "chatgpt-codex-connector",
+    body: "Return:\n```tsx\nreturn <Foo />;\n```",
+  });
+  const b = mkThread({
+    id: 512, path: "a.tsx", startLine: 5, line: 5, author: "coderabbitai",
+    body: "Return:\n```tsx\nreturn <Bar />;\n```",
+  });
+  const { duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 0, "distinct JSX tags must not merge");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);

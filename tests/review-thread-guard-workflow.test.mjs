@@ -80,14 +80,28 @@ test("review-thread guard inline hasGateReply requires the Actions-bot author", 
   assert.match(workflow, /GATE_REPLY_AUTHOR_LOGINS\.has\(c\?\.author\?\.login \?\? ""\)/);
 });
 
-test("review-thread guard inline stripMarkup preserves bounded fenced code", () => {
+test("review-thread guard inline stripMarkup preserves bounded fenced code without HTML-stripping it", () => {
   // Dropping fenced snippets collapses distinct findings that differ only in
   // their code to identical prose -> false merge (codex P2). The inline mirror
-  // must keep bounded inner code, matching preserveFencedCode in review-dedup.mjs.
+  // must keep bounded inner code AND flatten angle brackets so JSX/generics
+  // survive the later HTML pass, matching preserveFencedCode in review-dedup.mjs.
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  assert.match(
-    workflow,
-    /\.replace\(\/```\(\[\\s\\S\]\*\?\)```\/g, \(_m, inner\) => ` \$\{inner\.replace\(\/\^\[\^\\n\]\*\\n\/, ""\)\.slice\(0, 200\)\} `\)/,
-  );
+  const fence = workflow.match(/\.replace\(\/```\(\[\\s\\S\]\*\?\)```\/g,[^\n]*\)/);
+  assert.ok(fence, "guard must preserve fenced code via a replacer function");
+  assert.match(fence[0], /inner\.replace\(\/\^\[\^\\n\]\*\\n\/, ""\)/, "must drop the language line");
+  assert.match(fence[0], /\.replace\(\/\[<>\]\/g, " "\)/, "must flatten angle brackets so JSX survives");
+  assert.match(fence[0], /\.slice\(0, 200\)/, "must bound the preserved code");
   assert.doesNotMatch(workflow, /\.replace\(\/```\[\\s\\S\]\*\?```\/g, " "\)/, "must not drop fenced code to blank");
+});
+
+test("review-thread guard inline STOP set keeps negation tokens (no/not/cannot)", () => {
+  // Dropping negations makes a prohibition and its opposite recommendation look
+  // identical and false-merge (codex P2). Mirrors STOPWORDS in review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  const stop = workflow.match(/const STOP = new Set\(\s*"([^"]*)"/);
+  assert.ok(stop, "STOP set literal must exist");
+  const words = new Set(stop[1].split(" "));
+  for (const neg of ["no", "not", "cannot"]) {
+    assert.ok(!words.has(neg), `STOP must not contain the negation "${neg}"`);
+  }
 });

@@ -170,7 +170,7 @@ jobs:
                   (c?.body ?? "").includes(GATE_REPLY_MARKER),
               );
             const STOP = new Set(
-              "a an and are as at be been but by can cannot could de do does for from has have if in into is it its may no not of on or so than that the their then there these this to up was we when which will with would you your should shall here how why what where who"
+              "a an and are as at be been but by can could de do does for from has have if in into is it its may of on or so than that the their then there these this to up was we when which will with would you your should shall here how why what where who"
                 .split(" "),
             );
             const stripMarkup = (body) => {
@@ -181,7 +181,7 @@ jobs:
                 // dropping it, or two findings whose only distinct facts are in
                 // snippets collapse to identical prose and false-merge (codex P2).
                 // Mirrors preserveFencedCode/FENCE_TOKEN_BUDGET in review-dedup.mjs.
-                .replace(/```([\s\S]*?)```/g, (_m, inner) => ` ${inner.replace(/^[^\n]*\n/, "").slice(0, 200)} `)
+                .replace(/```([\s\S]*?)```/g, (_m, inner) => ` ${inner.replace(/^[^\n]*\n/, "").replace(/[<>]/g, " ").slice(0, 200)} `)
                 .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
                 .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
                 .replace(/`([^`]*)`/g, "$1")
