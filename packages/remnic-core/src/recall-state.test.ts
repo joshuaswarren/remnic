@@ -741,3 +741,66 @@ test("LastRecallStore writes an impression spill via a temp name then renames to
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("LastRecallStore.drainPendingImpressions folds pending spills into the synced active file (#2033)", async () => {
+  // Regression for the offline-sync impression-drain thread: a record() that
+  // times out on the rotation lock spills to the offline-sync-EXCLUDED
+  // recall_impressions.jsonl.pending.d/. drainPendingImpressions() folds those
+  // rows back into the synced active file so a snapshot can capture them.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    const store = new LastRecallStore(dir);
+    await store.load();
+
+    assert.equal(await store.drainPendingImpressions(), true, "drain reports rows folded");
+    assert.equal(await readFile(impressionsPath, "utf-8"), row, "spill folded verbatim into active file");
+    assert.deepEqual(await readdir(pendingDir), [], "committed spill deleted from the pending queue");
+
+    // Nothing pending now → fast no-op that reports false.
+    assert.equal(await store.drainPendingImpressions(), false, "second drain is a no-op");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore.drainPendingImpressions is a side-effect-free no-op when nothing is pending (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-noop-"));
+  try {
+    const store = new LastRecallStore(dir);
+    await store.load();
+    assert.equal(await store.drainPendingImpressions(), false, "no pending dir → no drain");
+    // A no-op drain must not create the state dir or a transient lock file.
+    await assert.rejects(() => readdir(path.join(dir, "state")), /ENOENT/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore.drainPendingImpressions recovers a crash-orphaned .claimed spill (#2033)", async () => {
+  // A crash between claim and commit leaves the rows as a `<uuid>.jsonl.claimed`
+  // orphan — the only durable copy. The drain must recover it (rename back to
+  // `.jsonl`) and fold it into the active file, never lose it.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-orphan-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl.claimed"), row, "utf-8");
+
+    const store = new LastRecallStore(dir);
+    await store.load();
+
+    assert.equal(await store.drainPendingImpressions(), true, "orphaned claim recovered and folded");
+    assert.equal(await readFile(impressionsPath, "utf-8"), row, "recovered row appended to active file");
+    assert.deepEqual(await readdir(pendingDir), [], "recovered spill finalized");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

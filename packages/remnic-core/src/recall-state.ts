@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
@@ -523,57 +523,103 @@ export class LastRecallStore {
           await this.spillImpression(line);
           return;
         }
-        // Fold any durable pending spills (impressions a prior lock-timed-out
-        // append queued) into this append with the crash-safe claim/commit
-        // protocol the lifecycle ledger uses (#2033): recover any claim a crash
-        // orphaned, read each spill, CLAIM it by renaming `<uuid>.jsonl` ->
-        // `<uuid>.jsonl.claimed` BEFORE the commit, append the claimed rows plus
-        // the current line, then FINALIZE by deleting the claimed files. A crash
-        // between claim and commit leaves the rows on disk as a `.claimed` orphan
-        // the next drain recovers — the loss the old read-then-unlink ordering
-        // could not survive. Each impression carries a unique writeNonce, so a
-        // crash-recovered re-commit is a collapsible duplicate, never a lost row.
-        // listContainedSpillFiles rejects symlinked/escaping entries before any
-        // read/rename; a spill that cannot be claimed is skipped this pass.
-        await this.recoverOrphanedImpressionClaims();
-        const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
-        const claimedRows: string[] = [];
-        const claimedPaths: string[] = [];
-        for (const filePath of spillFiles) {
-          const content = await readFile(filePath, "utf-8");
-          const claimedPath = `${filePath}${CLAIMED_IMPRESSION_SPILL_SUFFIX}`;
-          try {
-            await rename(filePath, claimedPath);
-          } catch {
-            continue; // could not claim → do not commit; a later drain retries it.
-          }
-          claimedRows.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
-          claimedPaths.push(claimedPath);
-        }
-        const payload = claimedRows.length > 0 ? `${claimedRows.join("")}${line}` : line;
-        // Rotate against the FULL drained payload so a large batch of drained
-        // spills cannot leave the active file far over recallImpressionsRotateBytes
-        // until the next record() (#2033). Runs under this same held lock, so the
-        // rename never races a peer; a rotation error is logged and the append
-        // still runs.
-        try {
-          await this.rotateImpressionsIfNeeded(Buffer.byteLength(payload, "utf-8"));
-        } catch (err) {
-          log.debug(`recall impressions rotation failed (append preserved): ${err}`);
-        }
-        try {
-          await appendFile(this.impressionsPath, payload, "utf-8");
-        } catch (err) {
-          // Roll the claims back to unclaimed spills so a failed commit retries
-          // them on the next lock holder's drain instead of losing them (#2033).
-          await this.rollbackImpressionClaims(claimedPaths);
-          throw err;
-        }
-        // Commit is durable: delete the claimed files. A delete that fails leaves
-        // a `.claimed` orphan the next drain recovers and re-commits — a
-        // writeNonce-collapsible duplicate, never a lost row (#2033).
-        await this.finalizeImpressionClaims(claimedPaths);      },
+        await this.foldPendingImpressionsAndAppend(line);
+      },
     );
+  }
+
+  /**
+   * Fold any durable pending recall-impression spills into the synced active
+   * `recall_impressions.jsonl` WITHOUT recording a new impression (#2033).
+   *
+   * The pending spill dir is offline-sync-excluded, so an impression that a
+   * lock-timed-out `record()` spilled there is absent from an offline-sync
+   * snapshot and lost if this node is discarded before the next `record()`
+   * folds it back. Offline sync calls this before building a snapshot so a
+   * recorded impression always reaches the remote. Fast no-op — no lock and no
+   * dir/lock-file creation — when nothing is pending; returns true when rows
+   * were folded into the active file.
+   */
+  async drainPendingImpressions(): Promise<boolean> {
+    let pendingCount = 0;
+    try {
+      pendingCount = (await readdir(this.impressionsPendingDir)).length;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (pendingCount === 0) return false;
+    const lockPath = `${this.impressionsPath}.lock`;
+    let folded = false;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 30_000, ...this.impressionsLockOptions },
+      async (acquired) => {
+        // A peer holds the lock (mid-rotation or mid-append); it, or the next
+        // drain, folds the spills. Never touch the active file unlocked (#2033).
+        if (!acquired) return;
+        folded = await this.foldPendingImpressionsAndAppend(null);
+      },
+    );
+    return folded;
+  }
+
+  /**
+   * Claim/commit fold of durable pending impression spills into the active file
+   * under the held rotation lock (#2033). `line` is a new impression to append
+   * after the drained rows, or null for a drain-only fold. Recovers any claim a
+   * crash orphaned, reads each spill, CLAIMs it by renaming `<uuid>.jsonl` ->
+   * `<uuid>.jsonl.claimed` BEFORE the commit, appends the claimed rows (plus
+   * `line`), then FINALIZEs by deleting the claimed files. A crash between claim
+   * and commit leaves the rows on disk as a `.claimed` orphan the next drain
+   * recovers — the loss the old read-then-unlink ordering could not survive.
+   * Each impression carries a unique writeNonce, so a crash-recovered re-commit
+   * is a collapsible duplicate, never a lost row. listContainedSpillFiles
+   * rejects symlinked/escaping entries before any read/rename; a spill that
+   * cannot be claimed is skipped this pass. Returns true when the active file
+   * was written. MUST run under the held rotation lock.
+   */
+  private async foldPendingImpressionsAndAppend(line: string | null): Promise<boolean> {
+    await this.recoverOrphanedImpressionClaims();
+    const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
+    const claimedRows: string[] = [];
+    const claimedPaths: string[] = [];
+    for (const filePath of spillFiles) {
+      const content = await readFile(filePath, "utf-8");
+      const claimedPath = `${filePath}${CLAIMED_IMPRESSION_SPILL_SUFFIX}`;
+      try {
+        await rename(filePath, claimedPath);
+      } catch {
+        continue; // could not claim → do not commit; a later drain retries it.
+      }
+      claimedRows.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
+      claimedPaths.push(claimedPath);
+    }
+    // Drain-only fold with nothing pending is a no-op — never write an empty row.
+    if (claimedRows.length === 0 && line === null) return false;
+    const payload = line === null ? claimedRows.join("") : `${claimedRows.join("")}${line}`;
+    // Rotate against the FULL drained payload so a large batch of drained spills
+    // cannot leave the active file far over recallImpressionsRotateBytes until
+    // the next record() (#2033). Runs under this same held lock, so the rename
+    // never races a peer; a rotation error is logged and the append still runs.
+    try {
+      await this.rotateImpressionsIfNeeded(Buffer.byteLength(payload, "utf-8"));
+    } catch (err) {
+      log.debug(`recall impressions rotation failed (append preserved): ${err}`);
+    }
+    try {
+      await appendFile(this.impressionsPath, payload, "utf-8");
+    } catch (err) {
+      // Roll the claims back to unclaimed spills so a failed commit retries them
+      // on the next lock holder's drain instead of losing them (#2033).
+      await this.rollbackImpressionClaims(claimedPaths);
+      throw err;
+    }
+    // Commit is durable: delete the claimed files. A delete that fails leaves a
+    // `.claimed` orphan the next drain recovers and re-commits — a
+    // writeNonce-collapsible duplicate, never a lost row (#2033).
+    await this.finalizeImpressionClaims(claimedPaths);
+    return true;
   }
 
   /**

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1287,6 +1287,65 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
 
     assert.equal(digestReads, 1);
     assert.deepEqual(snapshot.files, [baseFile]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot drains pending recall-impression spills so a recorded impression reaches the snapshot (#2033)", async () => {
+  // A record() that timed out on the rotation lock spills to the offline-sync
+  // EXCLUDED recall_impressions.jsonl.pending.d/. Without a pre-snapshot drain
+  // the impression is absent from the pushed snapshot and lost if this node is
+  // discarded. offlineSyncSnapshot() must fold the spill into the synced active
+  // recall_impressions.jsonl before building.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-impression-drain-"));
+  try {
+    const impressionsPath = path.join(root, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    const { service } = makeService();
+    (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+      };
+    }).orchestrator.getStorage = async () => ({
+      dir: root,
+      async readOfflineSyncFile(targetPath: string) {
+        return readFile(targetPath);
+      },
+      async digestOfflineSyncFile(targetPath: string) {
+        const content = await readFile(targetPath);
+        return {
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.byteLength,
+        };
+      },
+    } as unknown as StorageManager);
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    const active = snapshot.files.find((f) => f.path === "state/recall_impressions.jsonl");
+    assert.ok(active, "drained active impressions file is present in the snapshot");
+    assert.equal(
+      Buffer.from(active!.contentBase64!, "base64").toString("utf-8"),
+      row,
+      "the recorded impression was folded into the synced active file",
+    );
+    // The node-local pending spill dir stays excluded from the snapshot...
+    assert.ok(
+      !snapshot.files.some((f) => f.path.startsWith("state/recall_impressions.jsonl.pending.d")),
+      "pending spill dir remains offline-sync excluded",
+    );
+    // ...because the drain already emptied it.
+    assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
