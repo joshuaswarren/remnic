@@ -1410,6 +1410,63 @@ export class ContentHashIndex {
   }
 
   /**
+   * Rebuild-and-publish the index from an authoritative source (the durable
+   * corpus) under the SAME per-file cross-process lock the reconciling
+   * append/removal saves (`saveMergingWithDisk`) use (issue #1909 / PR #2016).
+   * The `populate` callback runs WHILE the lock is held and MUST repopulate this
+   * index from the corpus (`clear()` then `addByHash(...)` for every corpus
+   * hash); the rebuilt set is then published with a plain overwrite that is now
+   * serialized against every locked writer.
+   *
+   * This closes the finding where the previous unlocked clear→scan→save() could
+   * overwrite a peer's newer lock-merged or deferred additions: a locked writer
+   * that committed BEFORE the rebuild acquired the lock has its memory `.md` on
+   * disk and is re-scanned; one that commits AFTER the rebuild releases
+   * reconciles its additions on top of the freshly-published set. No union with
+   * the raw on-disk file is performed, so the rebuild keeps its
+   * garbage-collection property (orphaned hashes for deleted memories drop).
+   *
+   * Lock-acquisition failure is explicit and non-destructive: `populate` is NOT
+   * run and nothing is written (never an unlocked overwrite). Returns true when
+   * the rebuild was published under the lock, false when the lock timed out —
+   * the caller keeps the index non-authoritative and retries on next use. Uses
+   * the same non-reentrant file lock as the reconcile path, so it can never
+   * deadlock with the deferred reconcile-retry: a concurrent locked writer (or a
+   * fired retry) simply yields `acquired=false` after the bounded wait.
+   */
+  async rebuildUnderLock(populate: () => Promise<void>): Promise<boolean> {
+    // The advisory lock file lives beside the index — ensure the dir exists
+    // before acquiring it (the index dir may not exist on a first rebuild).
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    let published = false;
+    await withHeldFileLock(
+      `${this.filePath}.lock`,
+      {
+        staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS,
+        ...(this.lockOptions.maxWaitMs !== undefined ? { maxWaitMs: this.lockOptions.maxWaitMs } : {}),
+        ...(this.lockOptions.pollMs !== undefined ? { pollMs: this.lockOptions.pollMs } : {}),
+      },
+      async (acquired) => {
+        if (!acquired) {
+          // Never publish unlocked: a concurrent locked writer holds the lock,
+          // so overwriting now could clobber its addition. Leave the index as-is
+          // and let the caller retry the authoritative rebuild on next use.
+          log.warn(
+            `content-hash index: lock not acquired for ${this.filePath}; deferring authoritative rebuild (index left non-authoritative, retried on next use)`,
+          );
+          return;
+        }
+        await populate();
+        // Publish under the held lock. save() takes no lock (no re-entrancy) and
+        // is a full overwrite that supersedes any pending add/remove deltas.
+        await this.save();
+        published = true;
+      },
+    );
+    return published;
+  }
+
+  /**
    * True while a background durable reconcile-save retry is armed (PR #2016).
    * Test/introspection hook.
    */
@@ -3659,112 +3716,139 @@ export class StorageManager {
       // interleave therefore can never leave a stale index trusted (there is no
       // cached authoritative signal to go stale). One-time O(N) per restart,
       // amortized by the #1902 hot-memories cache after the first read.
+      //
+      // PR #2016 (this finding): serialize the corpus scan AND the publish under
+      // the SAME per-index cross-process lock the reconciling append/removal
+      // saves (saveMergingWithDisk) use, so the rebuild can never overwrite a
+      // peer's newer lock-merged or deferred additions with an unlocked
+      // overwrite. A locked writer that committed BEFORE the rebuild took the
+      // lock has its memory .md on disk and is re-scanned; one that commits
+      // AFTER the rebuild releases reconciles its additions on top. On lock
+      // failure nothing is published and the index stays non-authoritative so
+      // the next use retries — never an unlocked write, and (non-reentrant file
+      // lock) never a deadlock with the deferred reconcile-retry path.
       const factHashIndex = await this.getFactHashIndex();
-      factHashIndex.clear();
-      // #1909 review round 14: index the HOT and COLD tiers together. A fact or
-      // procedure demoted to cold/ is still active and its content-hash must
-      // survive the corpus rebuild, or a restart would drop the hash and let the
-      // next extraction re-create the demoted memory. Matches the hot+cold union
-      // that removeFactContentHashesForMemories already reconciles against.
-      const existing = [
-        ...(await this.readAllMemories()),
-        ...(await this.readAllColdMemories()),
-      ];
-      let legacyRecovered = 0;
-      for (const memory of existing) {
-        // #1909 review round 15 (PR #2016): the content-hash dedup index is
-        // SHARED across EVERY registered write category. persistExtraction calls
-        // addContentHashDedup for every writeCategory it persists — fact,
-        // procedure, preference, decision, commitment, correction, and any other
-        // extracted category — into THIS one index. A rebuild restricted to
-        // fact+procedure dropped every other category's hash on restart, so the
-        // next extraction re-created identical active preference/decision/
-        // commitment memories (the retired fact-hashes.txt load used to preserve
-        // them). Index every active memory regardless of category so the corpus
-        // rebuild covers the full registration surface. Over-inclusion is safe:
-        // the dedup consumers (hasContentHashDedup in persistExtraction, the
-        // explicit-capture negative pre-filter) confirm a hash hit with a
-        // same-category corpus scan before dropping anything, so a surplus hash
-        // only costs a scan — it can never wrongly suppress a write. Procedures
-        // keep their round-13 behaviour: they carry no frontmatter contentHash
-        // (writeMemory sets it only for facts), so they fall through to the
-        // citation-strip reconstruction below, hashing the stored persist body
-        // (title + steps) exactly as buildProcedurePersistBody registered it.
-        if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-        // Prefer the pre-computed raw-content hash stored in frontmatter
-        // (written since round 8 of issue #369). This hash was derived from
-        // the content BEFORE citation annotation, so it matches what
-        // hasFactContentHash(rawFact) would compute.
-        if (memory.frontmatter.contentHash) {
-          factHashIndex.addByHash(memory.frontmatter.contentHash);
-          continue;
-        }
-        // No frontmatter hash (procedures, non-fact categories, and legacy facts
-        // written before contentHash existed — Finding 1, Uhol). Reconstruct the
-        // registered hash from the stored body. First strip the "[Attributes: …]"
-        // enrichment suffix writeMemory appends for structuredAttributes: the
-        // registration path (addContentHashDedup) hashed the raw canonical
-        // content WITHOUT that suffix, so a non-fact category carrying attributes
-        // would otherwise rebuild to a hash that never matches. stripAttributesSuffix
-        // is a no-op when no suffix is present (procedures, plain facts), and the
-        // connector-aware dedup scan already strips it the same way. Then handle
-        // the citation:
-        //
-        //  1. Default/configured citation present → strip it and index the body.
-        //  2. No citation at all → index the body as-is.
-        //  3. Unknown/custom citation template → skip with a warning.
-        //
-        // Rationale for (3): for content annotated with a custom citation
-        // template, stripCitationForTemplate cannot reliably detect the inline
-        // marker and would hash the cited body — producing a hash that never
-        // matches what the dedup check computes. A false-negative miss (the
-        // memory is not in the index) is preferable to a wrong index entry that
-        // permanently suppresses legitimate duplicate writes.
-        //
-        // Limitation (Thread 2 — stale hash): even when contentHash IS present
-        // it may be stale if updateMemory() rewrote the body without updating
-        // the frontmatter hash. The hash is trusted as-is here; a future
-        // migration pass can recompute it from the current content.
-        //
-        // citationTemplate (Thread 1 fix) is set by the orchestrator to the
-        // active inlineSourceAttributionFormat so the rebuild strips both the
-        // default and any custom template. It falls back to DEFAULT_CITATION_FORMAT
-        // when the orchestrator has not configured one (e.g. direct StorageManager
-        // construction in tests).
-        const content = stripAttributesSuffix(memory.content);
-        const stripped = stripCitationForTemplate(content, this.citationTemplate);
-        if (stripped !== content) {
-          // Citation was stripped — index the bare body.
-          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text));
-          continue;
-        }
-        // No citation was removed. Decide whether to index or skip.
-        // Thread 4 fix: use hasCitation() rather than the too-broad endsWith("]")
-        // heuristic. Content that legitimately ends with "]" (e.g. "User prefers
-        // [dark mode]") has no citation marker and should be indexed as-is.
-        // Only skip when hasCitation() confirms a citation is present — that
-        // means the citation is from an unknown/custom template we cannot strip.
-        if (!hasCitation(content)) {
-          // Content has no recognisable citation marker — index raw body.
-          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(content).text));
-          continue;
-        }
-        // Content carries a citation from an unknown/custom template
-        // that we cannot safely strip. Skip rather than index a wrong hash.
-        legacyRecovered++;
-        continue;
-      }
-      if (legacyRecovered > 0) {
-        log.info(
-          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
+      const published = await factHashIndex.rebuildUnderLock(() =>
+        this.rebuildFactHashIndexFromCorpus(factHashIndex),
+      );
+      this.factHashIndexAuthoritative = published;
+      if (!published) {
+        log.warn(
+          `ensureFactHashIndexAuthoritative: fact-hash index lock unavailable; index left non-authoritative (will rebuild from corpus on next use)`
         );
       }
-      await factHashIndex.save();
-      this.factHashIndexAuthoritative = true;
     })().finally(() => {
       this.factHashIndexAuthoritativePromise = null;
     });
     await this.factHashIndexAuthoritativePromise;
+  }
+
+  /**
+   * Repopulate `factHashIndex` in memory from the durable HOT+COLD corpus. Runs
+   * WHILE the per-index cross-process lock is held (see
+   * ContentHashIndex.rebuildUnderLock, which publishes the rebuilt set); this
+   * method itself never writes to disk.
+   */
+  private async rebuildFactHashIndexFromCorpus(factHashIndex: ContentHashIndex): Promise<void> {
+    factHashIndex.clear();
+    // #1909 review round 14: index the HOT and COLD tiers together. A fact or
+    // procedure demoted to cold/ is still active and its content-hash must
+    // survive the corpus rebuild, or a restart would drop the hash and let the
+    // next extraction re-create the demoted memory. Matches the hot+cold union
+    // that removeFactContentHashesForMemories already reconciles against.
+    const existing = [
+      ...(await this.readAllMemories()),
+      ...(await this.readAllColdMemories()),
+    ];
+    let legacyRecovered = 0;
+    for (const memory of existing) {
+      // #1909 review round 15 (PR #2016): the content-hash dedup index is
+      // SHARED across EVERY registered write category. persistExtraction calls
+      // addContentHashDedup for every writeCategory it persists — fact,
+      // procedure, preference, decision, commitment, correction, and any other
+      // extracted category — into THIS one index. A rebuild restricted to
+      // fact+procedure dropped every other category's hash on restart, so the
+      // next extraction re-created identical active preference/decision/
+      // commitment memories (the retired fact-hashes.txt load used to preserve
+      // them). Index every active memory regardless of category so the corpus
+      // rebuild covers the full registration surface. Over-inclusion is safe:
+      // the dedup consumers (hasContentHashDedup in persistExtraction, the
+      // explicit-capture negative pre-filter) confirm a hash hit with a
+      // same-category corpus scan before dropping anything, so a surplus hash
+      // only costs a scan — it can never wrongly suppress a write. Procedures
+      // keep their round-13 behaviour: they carry no frontmatter contentHash
+      // (writeMemory sets it only for facts), so they fall through to the
+      // citation-strip reconstruction below, hashing the stored persist body
+      // (title + steps) exactly as buildProcedurePersistBody registered it.
+      if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
+      // Prefer the pre-computed raw-content hash stored in frontmatter
+      // (written since round 8 of issue #369). This hash was derived from
+      // the content BEFORE citation annotation, so it matches what
+      // hasFactContentHash(rawFact) would compute.
+      if (memory.frontmatter.contentHash) {
+        factHashIndex.addByHash(memory.frontmatter.contentHash);
+        continue;
+      }
+      // No frontmatter hash (procedures, non-fact categories, and legacy facts
+      // written before contentHash existed — Finding 1, Uhol). Reconstruct the
+      // registered hash from the stored body. First strip the "[Attributes: …]"
+      // enrichment suffix writeMemory appends for structuredAttributes: the
+      // registration path (addContentHashDedup) hashed the raw canonical
+      // content WITHOUT that suffix, so a non-fact category carrying attributes
+      // would otherwise rebuild to a hash that never matches. stripAttributesSuffix
+      // is a no-op when no suffix is present (procedures, plain facts), and the
+      // connector-aware dedup scan already strips it the same way. Then handle
+      // the citation:
+      //
+      //  1. Default/configured citation present → strip it and index the body.
+      //  2. No citation at all → index the body as-is.
+      //  3. Unknown/custom citation template → skip with a warning.
+      //
+      // Rationale for (3): for content annotated with a custom citation
+      // template, stripCitationForTemplate cannot reliably detect the inline
+      // marker and would hash the cited body — producing a hash that never
+      // matches what the dedup check computes. A false-negative miss (the
+      // memory is not in the index) is preferable to a wrong index entry that
+      // permanently suppresses legitimate duplicate writes.
+      //
+      // Limitation (Thread 2 — stale hash): even when contentHash IS present
+      // it may be stale if updateMemory() rewrote the body without updating
+      // the frontmatter hash. The hash is trusted as-is here; a future
+      // migration pass can recompute it from the current content.
+      //
+      // citationTemplate (Thread 1 fix) is set by the orchestrator to the
+      // active inlineSourceAttributionFormat so the rebuild strips both the
+      // default and any custom template. It falls back to DEFAULT_CITATION_FORMAT
+      // when the orchestrator has not configured one (e.g. direct StorageManager
+      // construction in tests).
+      const content = stripAttributesSuffix(memory.content);
+      const stripped = stripCitationForTemplate(content, this.citationTemplate);
+      if (stripped !== content) {
+        // Citation was stripped — index the bare body.
+        factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text));
+        continue;
+      }
+      // No citation was removed. Decide whether to index or skip.
+      // Thread 4 fix: use hasCitation() rather than the too-broad endsWith("]")
+      // heuristic. Content that legitimately ends with "]" (e.g. "User prefers
+      // [dark mode]") has no citation marker and should be indexed as-is.
+      // Only skip when hasCitation() confirms a citation is present — that
+      // means the citation is from an unknown/custom template we cannot strip.
+      if (!hasCitation(content)) {
+        // Content has no recognisable citation marker — index raw body.
+        factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(content).text));
+        continue;
+      }
+      // Content carries a citation from an unknown/custom template
+      // that we cannot safely strip. Skip rather than index a wrong hash.
+      legacyRecovered++;
+      continue;
+    }
+    if (legacyRecovered > 0) {
+      log.info(
+        `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
+      );
+    }
   }
   private get questionsDir(): string {
     return path.join(this.baseDir, "questions");

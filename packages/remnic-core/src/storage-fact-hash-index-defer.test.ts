@@ -536,3 +536,136 @@ test("#2016: successive lock-timed-out saves do not stack duplicate retries (ree
     assert.ok(fresh.has("second-deferred"), "second deferred addition persisted by the same single retry");
   });
 });
+
+// PR #2016 (startup hash-index rebuild race): ensureFactHashIndexAuthoritative
+// used to run its corpus scan and publish with an UNLOCKED clear→scan→save().
+// A peer process that committed a newer hash to fact-hashes.txt under the
+// per-file lock — or landed a deferred reconcile-retry — in the window between
+// the rebuild's corpus scan and its overwrite was silently clobbered, and the
+// in-process authoritative flag then suppressed any further rebuild that
+// session. The rebuild now runs its scan + publish under the SAME per-file lock
+// the reconciling saves use (ContentHashIndex.rebuildUnderLock): a concurrent
+// locked writer serializes against it and its addition is preserved (reconciled
+// on top), and a contended lock defers the rebuild rather than publishing an
+// unlocked overwrite. Same real-timer rationale as the retry tests above.
+
+test("#2016: rebuildUnderLock publishes the rebuilt set under an uncontended lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const idx = new ContentHashIndex(stateDir);
+    await idx.load();
+
+    const published = await idx.rebuildUnderLock(async () => {
+      idx.clear();
+      idx.addByHash(ContentHashIndex.computeHash("rebuilt-fact"));
+    });
+    assert.equal(published, true, "rebuild published under an uncontended lock");
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("rebuilt-fact"), "the rebuilt hash reached disk under the lock");
+  });
+});
+
+test("#2016: rebuildUnderLock refuses to publish while a peer holds the lock (no unlocked overwrite)", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    // A peer already committed a hash to disk.
+    const peerHash = ContentHashIndex.computeHash("peer-committed-fact");
+    await writeFile(path.join(stateDir, "fact-hashes.txt"), `${peerHash}\n`);
+    // The peer holds the advisory lock (fresh, non-stale, not stale-breakable).
+    const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 50,
+      pollMs: 10,
+    });
+    await idx.load();
+    let populateRan = false;
+    const published = await idx.rebuildUnderLock(async () => {
+      populateRan = true;
+      idx.clear();
+      idx.addByHash(ContentHashIndex.computeHash("rebuild-would-clobber"));
+    });
+    assert.equal(published, false, "rebuild does not publish when the lock is contended");
+    assert.equal(populateRan, false, "populate never runs without the lock — no half-cleared state");
+
+    // Disk is untouched: the peer's committed hash is preserved and the
+    // rebuild's set was NOT written unlocked.
+    const disk = new ContentHashIndex(stateDir);
+    await disk.load();
+    assert.ok(disk.has("peer-committed-fact"), "peer's committed hash preserved (not clobbered)");
+    assert.equal(disk.has("rebuild-would-clobber"), false, "no unlocked overwrite while the lock is held");
+    // The rebuilder's in-memory index is non-destructive (still the loaded set).
+    assert.ok(idx.has("peer-committed-fact"), "loaded set retained in-memory after a deferred rebuild");
+  });
+});
+
+test("#2016: a rebuild serializes with a concurrent locked writer — the peer's addition is preserved, not clobbered", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+
+    const rebuilder = new ContentHashIndex(stateDir);
+    await rebuilder.load();
+    const peer = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 50,
+      pollMs: 10,
+      retryBaseMs: 15,
+      retryMaxAttempts: 5,
+    });
+    await peer.load();
+    peer.add("peer-append-during-rebuild");
+
+    let peerBlockedDuringRebuild = false;
+    const published = await rebuilder.rebuildUnderLock(async () => {
+      rebuilder.clear();
+      rebuilder.addByHash(ContentHashIndex.computeHash("rebuilt-corpus-fact"));
+      // While the rebuild holds the lock the peer's locked publish must NOT be
+      // able to interleave: it times out and arms a durable retry instead of
+      // writing. This is also the deadlock-freedom proof — the non-reentrant
+      // file lock yields acquired=false rather than blocking forever.
+      await peer.saveMergingWithDisk();
+      peerBlockedDuringRebuild = peer.hasPendingReconcileRetry;
+    });
+    assert.equal(published, true, "the rebuild published under the lock");
+    assert.equal(
+      peerBlockedDuringRebuild,
+      true,
+      "the peer could not acquire the lock while the rebuild held it (serialized)",
+    );
+
+    // The peer's deferred retry lands after the rebuild releases the lock and
+    // reconciles ON TOP of the freshly-published set — losing neither hash.
+    await withRetryLoopAlive(() => peer.whenReconcileRetrySettled());
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("rebuilt-corpus-fact"), "the rebuild's set was published");
+    assert.ok(
+      fresh.has("peer-append-during-rebuild"),
+      "the peer's concurrent addition survived — reconciled on top of the rebuild, never clobbered",
+    );
+  });
+});
+
+test("#2016: a peer's committed fact survives a fresh-session authoritative rebuild (multi-process)", async () => {
+  await withMemoryDir(async (dir) => {
+    // Process A: writes a fact (real .md + committed hash).
+    const peer = new StorageManager(dir);
+    await peer.writeMemory("fact", "durable multiprocess fact", { source: "extraction" });
+
+    // Process B: a fresh session rebuilds authoritatively under the lock and
+    // still dedups the peer's fact (corpus scan + locked publish through
+    // ensureFactHashIndexAuthoritative → rebuildUnderLock).
+    const rebuilder = new StorageManager(dir);
+    assert.equal(
+      await rebuilder.hasFactContentHash("durable multiprocess fact"),
+      true,
+      "the peer's fact is deduped after a fresh-session locked rebuild",
+    );
+  });
+});
