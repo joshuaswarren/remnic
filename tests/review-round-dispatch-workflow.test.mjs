@@ -30,6 +30,15 @@ test("the round-dispatch workflow uses its own concurrency namespace and never f
   assert.match(dispatch, /group:\s*review-round-dispatch-/);
   assert.match(dispatch, /cancel-in-progress:\s*false/);
 });
+
+test("the round-dispatch job only runs for PR-relevant events (no repo-wide no-op runs)", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // A repo-wide check_run completion or a standalone-issue comment must not
+  // spin up a no-op run (cursor): the job if gates on an associated PR.
+  assert.match(dispatch, /github\.event\.check_run\.pull_requests\[0\] != null/);
+  assert.match(dispatch, /github\.event\.issue\.pull_request != null/);
+  assert.match(dispatch, /github\.event\.pull_request\.draft == false/);
+});
 test("the round-dispatch workflow imports the tested driver rather than inlining logic", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   assert.match(dispatch, /scripts\/review-round-gate\.mjs/);

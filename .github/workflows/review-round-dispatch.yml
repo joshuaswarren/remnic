@@ -58,10 +58,14 @@ concurrency:
 
 jobs:
   round-dispatch:
-    # Draft PRs are skipped in runRoundGate too; for check_run events
-    # pull_request is absent, so `!= true` lets the job run and the driver
-    # re-checks draft via pulls.get.
-    if: github.event.pull_request.draft != true
+    # Only run for PR-relevant events, and skip drafts, so a repo-wide check_run
+    # completion or a standalone-issue comment does not spin up a no-op run
+    # (cursor). PR/review/comment events carry github.event.pull_request;
+    # check_run must have an associated PR; issue_comment must be on a PR.
+    if: >-
+      (github.event.pull_request && github.event.pull_request.draft == false) ||
+      (github.event_name == 'check_run' && github.event.check_run.pull_requests[0] != null) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
