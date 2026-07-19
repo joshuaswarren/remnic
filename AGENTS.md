@@ -130,6 +130,31 @@ cancel those reruns. Work with this, not against it:
    audit-then-hold — commit incrementally so a killed worker leaves recoverable
    state on the branch.
 
+### Transactional review rounds (shadow — issue #1992)
+
+The `Review Round Dispatch` workflow (`review-round-dispatch.yml`) makes the
+"batch fixes, push once per round" rule mechanical instead of prose. It keeps a
+per-PR **round ledger** in an owned PR comment (marker `remnic-review-round:v1`,
+decision core in `scripts/review-rounds.mjs` + `scripts/review-round-gate.mjs`):
+
+- A **round opens** on the first bot review landing on a head SHA; the round's
+  thread set is every review thread open at that moment. Later pushes advance the
+  head and coalesce into the SAME round (commits stay incremental — background
+  runtime caps make that load-bearing) and do NOT re-dispatch reviewers.
+- The next bot round is **dispatched** only when every round thread is addressed
+  (resolved or a non-author-bot reply — existing guard semantics, unchanged) AND
+  the head has been stable for a debounce window (default 10 min), or when the
+  round exceeds its max age (default 24 h, auto-closed and labeled), or when a
+  maintainer applies the `review-round:force-dispatch` label.
+- The ledger comment tracks `pushes this round: N` and warns at N>3.
+
+This is **shadow-only in v1** (`REVIEW_ROUND_ENFORCE: 'false'`): it never fails a
+check, never blocks merge, and never hides an unresolved thread — the
+`unresolved-review-threads` guard stays the thread merge gate untouched, and its
+missing concurrency group (that `check-unsticker` depends on) is preserved. The
+enforcement flip and the guard's round-scoped pending state are a later step,
+gated on shadow data (umbrella #1988 decision D).
+
 ## Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)
 
 PRs in retrieval, session identity, compaction, cache, reset/end-of-session,
