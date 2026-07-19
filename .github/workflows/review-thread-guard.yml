@@ -293,14 +293,12 @@ jobs:
             const wouldBeLost = dupRecords.filter(
               (r) => r.t.isResolved !== true && canonicalResolved.get(r.canonicalId) !== true,
             );
-            const effectiveUnresolved = rawUnresolved.filter((t) => {
-              const rec = records.find((r) => r.id === t.id);
-              // A duplicate folds into its canonical, which carries the single
-              // obligation while unresolved; the duplicate never gates on its
-              // own — otherwise one finding blocks merge twice. Mirrors
-              // computeGuardObligations in scripts/review-dedup.mjs.
-              return !rec || rec.canonicalId === rec.id;
-            });
+            // Audit trail (enforce only): filled by the write loop below with the
+            // duplicate thread ids that carry the gate-authored canonical-link
+            // reply. effectiveUnresolved (computed after the writes) folds a
+            // duplicate only when it is audited, so a failed reply post never
+            // silently hides a folded finding.
+            const auditedDuplicateIds = new Set();
 
             const uniqueByReviewer = new Map();
             for (const r of records) {
@@ -337,7 +335,10 @@ jobs:
             if (applyInheritance && dupRecords.length > 0) {
               let posted = false;
               for (const r of dupRecords) {
-                if (hasGateReply(r.t)) continue;
+                if (hasGateReply(r.t)) {
+                  auditedDuplicateIds.add(r.id);
+                  continue;
+                }
                 const commentId = r.t.comments?.nodes?.[0]?.databaseId;
                 if (!commentId) continue;
                 const canonicalUrl =
@@ -351,6 +352,7 @@ jobs:
                     body: formatDuplicateReply(canonicalUrl),
                   });
                   posted = true;
+                  auditedDuplicateIds.add(r.id);
                 } catch (e) {
                   core.warning(`Could not post dedup reply on thread ${r.id}: ${e?.message ?? e}`);
                 }
@@ -368,6 +370,18 @@ jobs:
                 }
               }
             }
+
+            // A duplicate folds into its canonical (stops gating on its own) ONLY
+            // when its auditable gate reply is present — otherwise a failed reply
+            // post would silently hide the folded finding. Unaudited duplicates
+            // stay in the guard set so no fold is ever invisible. Canonicals and
+            // standalones always gate on their own state. Mirrors the fold math
+            // in computeGuardObligations, plus this workflow-only write fail-safe.
+            const effectiveUnresolved = rawUnresolved.filter((t) => {
+              const rec = records.find((r) => r.id === t.id);
+              if (!rec || rec.canonicalId === rec.id) return true;
+              return !auditedDuplicateIds.has(rec.id);
+            });
 
             const unresolvedThreads = applyInheritance ? effectiveUnresolved : rawUnresolved;
 
