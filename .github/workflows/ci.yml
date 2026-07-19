@@ -86,6 +86,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the v2 config-contract shrink-only grandfather ban
+          # resolves `git merge-base HEAD origin/main` (issue #1990). A default
+          # checkout fetches only the triggering commit, which would leave the
+          # ban to fail closed.
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -107,6 +113,14 @@ jobs:
 
       - name: Review pattern check
         run: bash scripts/check-review-patterns.sh
+
+      - name: Config contract (v1 + v2, issue #1990)
+        run: npm run check-config-contract
+        env:
+          # Resolve the shrink-only grandfather baseline against the PR's actual
+          # base branch, not a hardcoded origin/main — so a fork whose default
+          # branch predates grandfathered.json cannot skip the ban (issue #1990).
+          REMNIC_CONFIG_CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
 
       - name: Envelope belt (issue #1989)
         run: node scripts/check-envelope-belt.mjs

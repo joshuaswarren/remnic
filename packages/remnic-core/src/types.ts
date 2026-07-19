@@ -38,14 +38,7 @@ export type ActiveRecallPromptStyle =
   | "recall-heavy"
   | "precision-heavy"
   | "preference-only";
-export type ActiveRecallThinking =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive";
+export type ActiveRecallThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 export type ActiveRecallChatType = "direct" | "group" | "channel";
 export type ActiveRecallModelFallbackPolicy = "default-remote" | "resolved-only";
 
@@ -1171,6 +1164,8 @@ export interface PluginConfig {
   activeRecallQueryMode: ActiveRecallQueryMode;
   activeRecallPromptStyle: ActiveRecallPromptStyle;
   activeRecallCustomInstruction: string | null;
+  activeRecallPromptReplacement: string | null;
+  activeRecallPromptOverride: string | null;
   activeRecallPromptAppend: string | null;
   activeRecallMaxSummaryChars: number;
   activeRecallRecentUserTurns: number;

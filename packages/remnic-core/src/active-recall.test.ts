@@ -21,6 +21,7 @@ function baseConfig(overrides: Partial<ActiveRecallConfig> = {}): ActiveRecallCo
     queryMode: "recent",
     promptStyle: "balanced",
     customInstruction: null,
+    promptReplacement: null,
     promptAppend: null,
     maxSummaryChars: 64,
     recentUserTurns: 2,
@@ -128,6 +129,40 @@ test("buildActiveRecallPrompt varies by prompt style and optional sections", () 
   assert.match(prompt, /Bias toward precision/);
   assert.match(prompt, /Entity graph/);
   assert.match(prompt, /Prefer hard evidence/);
+});
+
+test("buildActiveRecallPrompt treats prompt replacement as a complete replacement", () => {
+  const prompt = buildActiveRecallPrompt({
+    config: baseConfig({
+      customInstruction: "ignored custom instruction",
+      promptReplacement: "Use only the supplied evidence.",
+      promptAppend: "ignored append",
+    }),
+    queryBundle: "current: What happened?",
+    recallContext: "The deploy was rolled back.",
+    graphContext: ["entity edge"],
+    causalContext: ["causal link"],
+    daySummary: "Debugged worker drain all morning.",
+    recallExplain: "graph_mode",
+  });
+  assert.equal(prompt, "Use only the supplied evidence.");
+});
+
+test("buildActiveRecallPrompt gives replacement precedence over legacy custom instruction", () => {
+  const prompt = buildActiveRecallPrompt({
+    config: baseConfig({
+      customInstruction: "legacy guidance",
+      promptReplacement: "Use only the supplied evidence.",
+    }),
+    queryBundle: "current: What happened?",
+    recallContext: "The deploy was rolled back.",
+    graphContext: [],
+    causalContext: [],
+    daySummary: null,
+    recallExplain: null,
+  });
+
+  assert.equal(prompt, "Use only the supplied evidence.");
 });
 
 test("normalizeActiveRecallSummary collapses NONE variants and truncates codepoint-safe", () => {

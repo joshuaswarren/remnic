@@ -35,7 +35,7 @@ import { expandTildePath } from "./utils/path.js";
 // boolean-coercion logic that connectors/index.ts already exports. The helper
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
-import { coerceBool, coerceInstallExtension, coerceNumber, warnUnrecognizedConfig } from "./connectors/coerce.js";
+import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
@@ -342,30 +342,6 @@ function parsePortNumber(
     );
   }
   return coerced;
-}
-
-// Coerce common string/number representations of a boolean to a real boolean.
-// Returns `undefined` when the value cannot be interpreted, so callers can
-// fall back to their own default. Guards against the "string `false` is
-// truthy" footgun (CLAUDE.md gotcha #36) when config values arrive from
-// CLI/env/JSON sources where booleans are sometimes string-typed.
-//
-// The boolean/string path delegates to the canonical `coerceBool`
-// (connectors/coerce.ts), which warns on a present-but-unrecognized string
-// rather than letting a typo silently take the caller's default (often a
-// fail-open `?? true`). Numeric 1/0 is handled here because config values can
-// arrive as JSON numbers, which `coerceBool` intentionally does not accept.
-function coerceBooleanLike(value: unknown, label?: string): boolean | undefined {
-  if (typeof value === "number") {
-    if (value === 1) return true;
-    if (value === 0) return false;
-    warnUnrecognizedConfig(
-      `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
-        `expected true|false|1|0|yes|no|on|off — using default`,
-    );
-    return undefined;
-  }
-  return coerceBool(value, label);
 }
 
 function readNestedConfig(
@@ -2283,15 +2259,31 @@ export function parseConfig(
         ? cfg.activeRecallPromptStyle
         : "balanced",
     activeRecallCustomInstruction: (() => {
-      const customInstruction =
+      const raw =
         typeof cfg.activeRecallCustomInstruction === "string"
           ? cfg.activeRecallCustomInstruction
           : typeof cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD] === "string"
             ? cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD]
             : "";
-      return customInstruction.trim().length > 0
-        ? customInstruction.trim()
-        : null;
+      return raw.trim().length > 0 ? raw.trim() : null;
+    })(),
+    activeRecallPromptReplacement: (() => {
+      const raw = cfg.activeRecallPromptReplacement;
+      if (raw !== undefined && raw !== null && typeof raw !== "string") {
+        throw new Error(
+          `activeRecallPromptReplacement must be a string; got ${JSON.stringify(raw)}`,
+        );
+      }
+      return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+    })(),
+    activeRecallPromptOverride: (() => {
+      const raw = cfg.activeRecallPromptOverride;
+      if (raw !== undefined && raw !== null && typeof raw !== "string") {
+        throw new Error(
+          `activeRecallPromptOverride must be a string; got ${JSON.stringify(raw)}`,
+        );
+      }
+      return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
     })(),
     activeRecallPromptAppend:
       typeof cfg.activeRecallPromptAppend === "string" &&
