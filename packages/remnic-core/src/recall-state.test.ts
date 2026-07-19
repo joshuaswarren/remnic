@@ -596,38 +596,60 @@ test("LastRecallStore never re-appends a drained impression when its spill unlin
   }
 });
 
-test("LastRecallStore rotates against the full drained batch so a large spill drain cannot overfill the active file (#2033)", async () => {
+test("LastRecallStore.drainPendingImpressions folds an oversized pending payload in bounded chunks so the active file stays within the cap (#2033)", async () => {
+  // Regression: a drained payload far larger than recallImpressionsRotateBytes
+  // must be folded in bounded segments — a single append of the whole payload
+  // would leave the freshly rotated active file over the cap. Every row is
+  // preserved across the active file + its rotated archives; none is dropped.
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-bound-"));
   try {
     const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
-    await mkdir(path.dirname(impressionsPath), { recursive: true });
-    // Prior active content that is UNDER the rotate threshold on its own, so the
-    // pre-fix rotation check (which ignored the drained payload) would not rotate.
-    const seed = `${"SEED".padEnd(150, "s")}\n`;
-    await writeFile(impressionsPath, seed, "utf8");
-    // A durable pending spill big enough that seed + spill + row crosses the cap.
     const pendingDir = `${impressionsPath}.pending.d`;
     await mkdir(pendingDir, { recursive: true });
-    await writeFile(
-      path.join(pendingDir, "a.jsonl"),
-      `${JSON.stringify({ sessionKey: "batch-spill", pad: "p".repeat(60) })}\n`,
-      "utf8",
+    const cap = 200;
+    // Six ~97-byte spill rows (~582 bytes total) — nearly 3x the cap — each well
+    // under the cap so the bound holds strictly (no lone oversized row).
+    const sessionKeys: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const key = `oversized-${i}`;
+      sessionKeys.push(key);
+      await writeFile(
+        path.join(pendingDir, `spill-${i}.jsonl`),
+        `${JSON.stringify({ sessionKey: key, writeNonce: `n-${i}`, pad: "p".repeat(40) })}\n`,
+        "utf-8",
+      );
+    }
+
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: cap, impressionsRotateKeep: 10 });
+    await store.load();
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: true, pendingDeferred: false },
+      "oversized payload fully folded, nothing deferred",
     );
 
-    const store = new LastRecallStore(dir, { impressionsRotateBytes: 200, impressionsRotateKeep: 5 });
-    await store.load();
-    await store.record({ sessionKey: "cur", query: "q", memoryIds: [] });
+    // The active authoritative file stays within the configured cap.
+    const activeSize = (await stat(impressionsPath)).size;
+    assert.ok(activeSize <= cap, `active file (${activeSize}B) stays within the ${cap}B cap`);
 
-    // The drained payload was accounted for in the rotation decision, so the
-    // oversized prior content was archived to .1 instead of piling onto the
-    // active file.
-    assert.equal(await fileExists(`${impressionsPath}.1`), true, "prior active content rotated to .1");
-    const active = await readFile(impressionsPath, "utf8");
-    assert.ok(!active.includes("SEED"), "pre-existing rows moved out of the active file");
-    assert.ok(active.includes("batch-spill"), "drained spill folded into the fresh active file");
-    assert.ok(active.includes("cur"), "current impression appended");
-    assert.ok((await readFile(`${impressionsPath}.1`, "utf8")).includes("SEED"), "prior content preserved in .1");
-    assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
+    // Every drained row survives across the active file + its archives, exactly
+    // once — the bounded fold rotates rather than dropping rows. Each archive
+    // generation also respects the cap.
+    let combined = await readFile(impressionsPath, "utf-8");
+    for (let i = 1; i <= 10; i += 1) {
+      const archive = await readFile(`${impressionsPath}.${i}`, "utf-8").catch(() => "");
+      combined += archive;
+      if (archive.length > 0) {
+        assert.ok(
+          Buffer.byteLength(archive, "utf-8") <= cap,
+          `archive .${i} (${Buffer.byteLength(archive, "utf-8")}B) stays within the cap`,
+        );
+      }
+    }
+    for (const key of sessionKeys) {
+      assert.equal(combined.split(key).length - 1, 1, `${key} preserved exactly once across active + archives`);
+    }
+    assert.deepEqual(await readdir(pendingDir), [], "pending queue drained empty");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -866,6 +888,47 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never 
       await readdir(pendingDir),
       ["spill-1.jsonl"],
       "deferred spill stays in the pending queue",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spill stays unclaimable even though the lock was acquired (#2033)", async () => {
+  // Regression for finding 1: acquiring the rotation lock is NOT sufficient to
+  // report a clean drain. If the fold cannot claim a spill (rename race), its
+  // durable rows stay in the offline-sync-EXCLUDED queue. The drain must report
+  // the fold INCOMPLETE (pendingDeferred=true) — even when it DID fold other
+  // spills — so the caller retries/aborts instead of snapshotting an active file
+  // that omits the leftover row.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-leftover-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const foldable = `${JSON.stringify({ sessionKey: "foldable", writeNonce: "n-ok" })}\n`;
+    const stuck = `${JSON.stringify({ sessionKey: "stuck", writeNonce: "n-stuck" })}\n`;
+    await writeFile(path.join(pendingDir, "a-foldable.jsonl"), foldable, "utf-8");
+    await writeFile(path.join(pendingDir, "b-stuck.jsonl"), stuck, "utf-8");
+    // Block ONLY b-stuck's claim: a directory sits at its `.claimed` target, so
+    // the claim rename (file -> directory) fails while a-foldable claims cleanly.
+    await mkdir(path.join(pendingDir, "b-stuck.jsonl.claimed"), { recursive: true });
+
+    const store = new LastRecallStore(dir);
+    await store.load();
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: true, pendingDeferred: true },
+      "folded the claimable spill but a leftover remains → deferred, never a clean drain",
+    );
+    // The claimable row reached the active file; the stuck row did not.
+    const active = await readFile(impressionsPath, "utf-8");
+    assert.ok(active.includes("foldable"), "claimable spill folded into the active file");
+    assert.ok(!active.includes('"sessionKey":"stuck"'), "unclaimable spill NOT folded — still excluded");
+    // The leftover live spill is preserved for a later pass.
+    assert.ok(
+      (await readdir(pendingDir)).includes("b-stuck.jsonl"),
+      "leftover spill preserved in the pending queue for a retry",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
