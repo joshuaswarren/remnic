@@ -25,6 +25,18 @@ test("parseConfig accepts a configurable profile share cap", () => {
   );
 });
 
+test("parseConfig preserves profile share cap boundaries", () => {
+  assert.equal(parseConfig({ recallProfileMaxRatio: 0 }).recallProfileMaxRatio, 0);
+  assert.equal(parseConfig({ recallProfileMaxRatio: 1 }).recallProfileMaxRatio, 1);
+});
+
+test("parseConfig rejects an explicit null profile share cap", () => {
+  assert.throws(
+    () => parseConfig({ recallProfileMaxRatio: null }),
+    /recallProfileMaxRatio must be a finite number in \[0, 1\]/,
+  );
+});
+
 test("parseConfig rejects an invalid profile share cap", () => {
   assert.throws(
     () => parseConfig({ recallProfileMaxRatio: 1.1 }),

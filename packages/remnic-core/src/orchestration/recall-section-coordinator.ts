@@ -332,27 +332,28 @@ export class RecallSectionCoordinator {
             : sectionAvailable;
         const boundedContent =
           id === "profile"
-            ? this.truncateProfileToBoundary(content, profileLimit)
+            ? this.truncateProfileToBoundary(content, Math.min(profileLimit, sectionAvailable))
             : content;
-        finalContent = this.truncateRecallSectionToBudget(
-          boundedContent,
-          sectionAvailable,
-        );
+        finalContent =
+          id === "profile"
+            ? boundedContent
+            : this.truncateRecallSectionToBudget(boundedContent, sectionAvailable);
         if (!finalContent) {
           truncated = true;
           continue;
         }
         if (finalContent.length < content.length) truncated = true;
       } else {
-        const prefix = section.chunks
+        const firstAtomicIndex = section.chunks.findIndex((chunk) => chunk.atomic);
+        const leading = section.chunks
+          .slice(0, firstAtomicIndex)
           .filter((chunk) => !chunk.atomic)
-          .map((chunk) => chunk.content)
-          .join("\n\n");
-        if (prefix.length >= sectionAvailable) {
-          truncated = true;
-          continue;
-        }
-        let rendered = prefix;
+          .map((chunk) => chunk.content);
+        const trailing = section.chunks
+          .slice(firstAtomicIndex)
+          .filter((chunk) => !chunk.atomic)
+          .map((chunk) => chunk.content);
+        let rendered = leading.join("\n\n");
         let includedAtomicCount = 0;
         for (const chunk of atomicChunks) {
           const candidate = rendered
@@ -366,6 +367,16 @@ export class RecallSectionCoordinator {
           includedAtomicCount += 1;
           if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
           if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
+        }
+        for (const chunk of trailing) {
+          const candidate = rendered
+            ? `${rendered}\n\n${chunk}`
+            : chunk;
+          if (candidate.length > sectionAvailable) {
+            truncated = true;
+            continue;
+          }
+          rendered = candidate;
         }
         if (includedAtomicCount === 0) {
           truncated = true;

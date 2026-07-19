@@ -190,6 +190,77 @@ test("assembleRecallSections reports included and omitted memory metadata", asyn
   assert.deepEqual(assembled.omittedMemoryIds, ["memory-second"]);
 });
 
+test("assembleRecallSections keeps earlier atomic memories ahead of later helper text", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-atomic-order-", {
+    recallBudgetChars: 80,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "atomic memory",
+    { atomic: true, memoryId: "memory-atomic", memoryPath: "facts/atomic.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Retrieval Feedback Helper\n\nThis later helper must not starve the memory.",
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+  const context = assembled.sections.join("\n\n---\n\n");
+
+  assert.match(context, /atomic memory/);
+  assert.doesNotMatch(context, /Retrieval Feedback Helper/);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-atomic"]);
+});
+
+test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-profile-boundary-", {
+    recallBudgetChars: 100,
+    recallProfileMaxRatio: 0.8,
+    recallPipeline: [
+      { id: "memories", enabled: true },
+      { id: "profile", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "memory content that consumes part of the budget",
+    { atomic: true, memoryId: "memory-budget", memoryPath: "facts/budget.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    `${"profile line\n".repeat(20)}`,
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+  const context = assembled.sections.join("\n\n---\n\n");
+
+  assert.match(context, /\.\.\.\(profile context trimmed\)/);
+  assert.doesNotMatch(context, /\.\.\.\(memory context trimmed\)/);
+});
+
 test("recall aborts the in-flight pipeline when the outer timeout fires", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-timeout-");
   let observedAbortSignal: AbortSignal | undefined;

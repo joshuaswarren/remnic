@@ -4100,7 +4100,7 @@ function clampNonNegativeNumber(value: unknown): number | undefined {
 }
 
 function parseRecallProfileMaxRatio(value: unknown): number {
-  if (value === undefined || value === null) return 0.3;
+  if (value === undefined) return 0.3;
   const ratio = coerceNumber(value);
   if (ratio === undefined || ratio < 0 || ratio > 1) {
     throw new Error(
