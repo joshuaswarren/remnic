@@ -104,22 +104,30 @@ const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
 const subject: LifecycleSubject<ExtractionLifecycleState> = {
   async setup(row: MatrixRow): Promise<ExtractionLifecycleState> {
     const memoryDir = await mkTempMemoryDir(`extraction-${row.id}`);
-    const cfg =
-      row.id === "sparse-metadata-with-binding" || row.id === "sparse-metadata-without-binding"
-        ? rememberedBindingConfig(memoryDir)
-        : NAMESPACE_ROWS[row.id]
-          ? namespacedConfig(memoryDir)
-          : row.id === "dedupe-replay"
-            ? makeLifecycleConfig(memoryDir, {
-                extractionDedupeEnabled: true,
-                extractionDedupeWindowMs: 60_000,
-              })
-            : makeLifecycleConfig(memoryDir);
-    const primary = new Orchestrator(cfg);
-    const calls = stubExtraction(primary, (turns) =>
-      singleFactResult(turns.map((turn) => turn.content).join(" | ")),
-    );
-    return { memoryDir, cfg, orchestrators: [primary], calls };
+    let primary: Orchestrator | undefined;
+    try {
+      const cfg =
+        row.id === "sparse-metadata-with-binding" || row.id === "sparse-metadata-without-binding"
+          ? rememberedBindingConfig(memoryDir)
+          : NAMESPACE_ROWS[row.id]
+            ? namespacedConfig(memoryDir)
+            : row.id === "dedupe-replay"
+              ? makeLifecycleConfig(memoryDir, {
+                  extractionDedupeEnabled: true,
+                  extractionDedupeWindowMs: 60_000,
+                })
+              : makeLifecycleConfig(memoryDir);
+      primary = new Orchestrator(cfg);
+      const calls = stubExtraction(primary, (turns) =>
+        singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+      );
+      return { memoryDir, cfg, orchestrators: [primary], calls };
+    } catch (err) {
+      // Transactional setup: a partial build must not leak the orchestrator or temp dir.
+      await primary?.destroy().catch(() => undefined);
+      await cleanupDir(memoryDir);
+      throw err;
+    }
   },
 
   async exercise(state: ExtractionLifecycleState, row: MatrixRow): Promise<void> {

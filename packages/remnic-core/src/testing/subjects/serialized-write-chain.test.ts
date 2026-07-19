@@ -47,8 +47,14 @@ async function readToggleFileEntries(filePath: string): Promise<Record<string, {
 const subject: LifecycleSubject<SerializedWriteState> = {
   async setup(row: MatrixRow): Promise<SerializedWriteState> {
     const dir = await mkTempMemoryDir(`toggles-${row.id}`);
-    const filePath = path.join(dir, "session-toggles.json");
-    return { dir, filePath, store: createFileToggleStore(filePath) };
+    try {
+      const filePath = path.join(dir, "session-toggles.json");
+      return { dir, filePath, store: createFileToggleStore(filePath) };
+    } catch (err) {
+      // Transactional setup: a partial build must not leak the temp dir.
+      await rm(dir, { recursive: true, force: true });
+      throw err;
+    }
   },
 
   async exercise(state: SerializedWriteState, row: MatrixRow): Promise<void> {

@@ -137,3 +137,50 @@ test("appliesTo=false registers an honest skip, never a silent pass", () => {
   assert.match(cap.skipped[0].name, /compaction-flush/);
   assert.equal(cap.skipped[0].reason, "no compaction surface in this toy");
 });
+
+test("teardown runs when a post-setup phase throws, and is skipped (no crash) when setup throws", async () => {
+  // (a) exercise throws AFTER a successful setup → teardown MUST still run.
+  let toreDown = 0;
+  const exerciseThrows: LifecycleSubject<{ id: string }> = {
+    async setup() {
+      return { id: "fixture" };
+    },
+    async exercise() {
+      throw new Error("exercise boom");
+    },
+    async invariants() {},
+    async teardown(state) {
+      assert.equal(state.id, "fixture", "teardown receives the fixture setup produced");
+      toreDown += 1;
+    },
+  };
+  const cap1 = capture();
+  runLifecycleMatrix("toy-exercise-throws", exerciseThrows, {
+    register: cap1.register,
+    registerSkipped: cap1.registerSkipped,
+    rows: [MATRIX_ROWS[0]],
+  });
+  await assert.rejects(async () => cap1.tests[0].fn(), /exercise boom/);
+  assert.equal(toreDown, 1, "teardown must run even when a post-setup phase throws");
+
+  // (b) setup throws → teardown MUST NOT be called for a fixture that never existed.
+  let toreDownAfterSetupFail = 0;
+  const setupThrows: LifecycleSubject<{ id: string }> = {
+    async setup() {
+      throw new Error("setup boom");
+    },
+    async exercise() {},
+    async invariants() {},
+    async teardown() {
+      toreDownAfterSetupFail += 1;
+    },
+  };
+  const cap2 = capture();
+  runLifecycleMatrix("toy-setup-throws", setupThrows, {
+    register: cap2.register,
+    registerSkipped: cap2.registerSkipped,
+    rows: [MATRIX_ROWS[0]],
+  });
+  await assert.rejects(async () => cap2.tests[0].fn(), /setup boom/);
+  assert.equal(toreDownAfterSetupFail, 0, "teardown must not run on a fixture setup never produced");
+});

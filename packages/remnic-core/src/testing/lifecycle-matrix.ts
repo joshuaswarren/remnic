@@ -167,16 +167,18 @@ export const MATRIX_ROWS: readonly MatrixRow[] = Object.freeze([
 ] as const);
 
 /**
- * A subsystem adapter. Each row runs `setup → exercise → invariants` and always
- * `teardown` (even when a phase throws), so a leaked temp dir or orchestrator
- * cannot poison a sibling row.
+ * A subsystem adapter. Each row runs `setup → exercise → invariants`. `setup`
+ * is transactional — it cleans up its own partial state if it throws — and once
+ * it returns a fixture, `teardown` always runs (even when `exercise` or
+ * `invariants` throws), so a leaked temp dir or orchestrator cannot poison a
+ * sibling row.
  *
  * A row a subject cannot honestly realize must NOT be faked: return a skip
  * reason from `appliesTo` and the harness registers it as an explicit skipped
  * test (a mock-only pass is a finding about the code, not the harness — #1993).
  */
 export interface LifecycleSubject<S> {
-  /** Build the row-specific fixture. */
+  /** Build the row-specific fixture; MUST clean up its own partial state if it throws. */
   setup(row: MatrixRow): Promise<S>;
   /** Drive the behavior under test. */
   exercise(subject: S, row: MatrixRow): Promise<void>;
@@ -225,7 +227,7 @@ const defaultRegisterSkipped: MatrixSkipRegistrar = (name, reason) => {
 /**
  * Register one test per matrix row for `subject`, named with the row identity
  * so a failing row is unambiguous in CI output. Runs `setup → exercise →
- * invariants` with a guaranteed `teardown`.
+ * invariants`; `teardown` runs whenever `setup` produced a fixture.
  */
 export function runLifecycleMatrix<S>(
   subjectName: string,
@@ -249,12 +251,16 @@ export function runLifecycleMatrix<S>(
     }
 
     register(name, async () => {
-      const built = await subject.setup(row);
+      let built: S | undefined;
       try {
+        built = await subject.setup(row);
         await subject.exercise(built, row);
         await subject.invariants(built, row);
       } finally {
-        await subject.teardown(built, row);
+        // `setup` is transactional, so teardown runs whenever it produced a
+        // fixture — even if exercise/invariants throw — and is skipped only
+        // when setup never returned one (it cleaned up its own partial state).
+        if (built !== undefined) await subject.teardown(built, row);
       }
     });
   }
