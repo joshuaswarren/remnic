@@ -1934,3 +1934,77 @@ test("raceAbort rejects for an already-aborted signal even when p is already ful
     "a live signal lets the fulfilled p win the race",
   );
 });
+
+test("a keyed follower joining an UNKEYED leader's flight rejects with AbortError (releasing its budget, skipping its put) when it disconnects during the shared pipeline (round 16 #1)", async () => {
+  // A keyed caller can coalesce onto a flight started by an UNKEYED leader
+  // (the idempotencyKey is excluded from the flight key). That flight carries
+  // NO `persisted` gate, so the keyed follower's existing-join could not await
+  // it. Because a keyed join is non-racing (race=false), the follower's abort
+  // is never observed during the shared-pipeline wait, so without a recheck the
+  // follower would return success — persisting its idempotency key and keeping
+  // its own cross-namespace budget event — even though its client disconnected.
+  // The existing-join must recheck the abort before returning: the follower must
+  // reject with AbortError, release its reservation, and never run its own put.
+  const pipelineGate = deferred<void>();
+  const leaderRunning = deferred<void>();
+  let pipelineRuns = 0;
+  let followerPutRan = false;
+  const h = makeService({
+    limit: 0,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      leaderRunning.resolve();
+      await pipelineGate.promise; // keep the shared pipeline running while the follower joins + aborts
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const host = h.service as unknown as {
+    handleIdempotentRead: (options: {
+      idempotencyKey?: string;
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => Promise<EngramAccessRecallResponse>;
+  };
+  host.handleIdempotentRead = async (options) => {
+    const response = await options.execute();
+    // Only a KEYED caller performs a put. With the fix, execute() throws for the
+    // aborted keyed follower, so this line never runs for it.
+    if (options.idempotencyKey) followerPutRan = true;
+    return response;
+  };
+
+  // UNKEYED leader registers the flight and runs the one gated pipeline.
+  const leader = h.service.recall({ query: "same" });
+  await leaderRunning.promise;
+
+  // KEYED follower coalesces onto the unkeyed leader's flight (no persisted gate)
+  // and parks on the shared pipeline via a non-racing consume.
+  const followerCtl = new AbortController();
+  const follower = h.service.recall({
+    query: "same",
+    idempotencyKey: "key-B",
+    abortSignal: followerCtl.signal,
+  });
+  await flushMacrotasks();
+  // Only the leader's pipeline reservation is live yet: a non-racing keyed join
+  // records its OWN event only AFTER the shared pipeline resolves, so the
+  // follower has not recorded while the pipeline is still gated.
+  assert.equal(h.liveBudget(), 1, "leader's pipeline reservation is live; the parked follower has not recorded yet");
+
+  // The follower's client disconnects while the shared pipeline is still running.
+  followerCtl.abort();
+  pipelineGate.resolve();
+
+  await assert.rejects(
+    follower,
+    (error: Error) => error.name === "AbortError",
+    "the keyed follower on an unkeyed flight rejected with its own AbortError",
+  );
+  assert.equal(followerPutRan, false, "the aborted keyed follower never ran its own idempotency.put");
+
+  const leaderResp = await leader;
+  assert.ok(leaderResp, "the unkeyed leader still completed for its own connected client");
+  assert.equal(pipelineRuns, 1, "both callers shared one pipeline");
+  assert.equal(h.liveBudget(), 1, "the aborted follower's reservation was released; only the leader's stands");
+});

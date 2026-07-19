@@ -2997,8 +2997,23 @@ export class EngramAccessService {
             // reservation. Unkeyed joins (race=true) keep existing behavior: they
             // consumed the shared result and never depend on another caller's
             // persistence, so they never block on `persisted`.
-            if (keyed && existing.persisted) {
-              await this.raceAbort(existing.persisted.promise, request.abortSignal);
+            if (keyed) {
+              if (existing.persisted) {
+                await this.raceAbort(existing.persisted.promise, request.abortSignal);
+              } else {
+                // The joined flight was started by an UNKEYED leader, so it
+                // carries no `persisted` gate. The non-racing consume (race=false
+                // for a keyed caller) never observed this follower's abort, so a
+                // keyed follower that disconnected while the shared pipeline was
+                // still running would otherwise return success here and let
+                // handleIdempotentRead persist its key + keep its recorded
+                // cross-namespace budget event. Recheck the abort before
+                // returning so it rejects with AbortError instead: the outer
+                // catch releases this follower's reservation and execute()
+                // throwing skips its own idempotency.put — matching the
+                // keyed-follower-on-keyed-leader persistence path (round 16 #1).
+                throwIfAborted(request.abortSignal);
+              }
             }
             return consumed.response;
           }
