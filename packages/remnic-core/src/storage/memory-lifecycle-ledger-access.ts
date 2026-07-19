@@ -68,13 +68,26 @@ async function collectLifecycleEvents(
 }
 
 /**
+ * Max bytes of a single ledger row we will decode to a V8 string. A malformed
+ * or truncated row with no newline can span most of an oversized buffer;
+ * decoding it whole with `buf.toString` could exceed V8's ~512MB string cap and
+ * THROW before the fail-open JSON.parse in {@link collectLifecycleEvents} can
+ * skip it, aborting a compaction that could otherwise rewrite the ledger from
+ * its remaining good rows (#2033). Comfortably above any real fixed-schema
+ * lifecycle row, far below the string cap, so a legitimate row is never dropped.
+ */
+const LEDGER_ROW_MAX_DECODE_BYTES = 64 * 1024 * 1024;
+
+/**
  * Yield ledger lines from a whole-file buffer WITHOUT ever materializing the
  * entire decrypted body as one V8 string. A decrypted Buffer can hold ~4GB
  * where a string tops out near 512MB, so this is the read compaction uses to
  * shrink an oversize encrypted ledger — the exact file the string-capped
  * `readMaybeEncryptedLines` path refuses (issue #1910, #2033 Cursor High).
- * `Buffer.indexOf` scans for the 0x0A newline natively; each yielded line is
- * small, so no single `toString` approaches the string cap.
+ * `Buffer.indexOf` scans for the 0x0A newline natively. A single oversized row
+ * with no newline (a truncated write or garbled decrypt output) is SKIPPED
+ * undecoded rather than passed to `toString`, so it can never exceed the string
+ * cap and abort the read; the fail-open reader drops it anyway (#2033).
  */
 async function* linesFromBuffer(
   readBuffer: () => Promise<Buffer>,
@@ -83,11 +96,13 @@ async function* linesFromBuffer(
   let start = 0;
   let nl = buf.indexOf(0x0a, start);
   while (nl !== -1) {
-    yield buf.toString("utf8", start, nl);
+    if (nl - start <= LEDGER_ROW_MAX_DECODE_BYTES) yield buf.toString("utf8", start, nl);
     start = nl + 1;
     nl = buf.indexOf(0x0a, start);
   }
-  if (start < buf.length) yield buf.toString("utf8", start, buf.length);
+  if (start < buf.length && buf.length - start <= LEDGER_ROW_MAX_DECODE_BYTES) {
+    yield buf.toString("utf8", start, buf.length);
+  }
 }
 
 /**
@@ -251,41 +266,19 @@ async function spillPendingAppend(
   await io.writeSecure(finalPath, payload);
 }
 
-/**
- * Read every spill file in the pending directory (in deterministic name order)
- * and return one entry per file. MUST be called while holding the ledger lock.
- * Reads at each file's ORIGINAL path so encrypted spills (path-bound AAD) still
- * decrypt. A read failure (locked key / corruption) propagates BEFORE anything is
- * claimed, leaving every spill file intact for a later retry.
- */
-async function collectPendingSpills(
-  ledgerPath: string,
-  io: LifecyclePendingIo,
-): Promise<Array<{ file: string; content: string }>> {
-  // listContainedSpillFiles rejects a symlinked pending dir and skips any
-  // symlinked/escaping entry BEFORE we secure-read or later unlink it (#2033),
-  // so a poisoned link cannot redirect a decrypt/delete outside the spill dir.
-  const files = await listContainedSpillFiles(pendingLifecycleLedgerDir(ledgerPath));
-  const out: Array<{ file: string; content: string }> = [];
-  for (const filePath of files) {
-    out.push({ file: filePath, content: withTrailingNewline(await io.readSecure(filePath)) });
-  }
-  return out;
-}
-
 /** Suffix marking a spill that has been CLAIMED for commit but not yet deleted. */
 const CLAIMED_SPILL_SUFFIX = ".claimed";
 
 /**
  * Recover claims a crashed drain left mid-flight (#2033). A crash-safe drain
  * renames `*.jsonl` → `*.jsonl.claimed` BEFORE committing (see
- * {@link claimPendingSpills}); if the process dies between that rename and the
+ * {@link claimSpillBatch}); if the process dies between that rename and the
  * ledger write, the durable `.claimed` file is the ONLY copy of those rows. This
  * renames every orphaned `*.jsonl.claimed` back to `*.jsonl` so it re-enters the
- * normal collect+claim+commit flow — nothing a crash left behind is lost. Reads
- * only ever happen at the restored `.jsonl` path, so the path-bound AAD of an
+ * normal claim+commit flow — nothing a crash left behind is lost. Reads only
+ * ever happen at the restored `.jsonl` path, so the path-bound AAD of an
  * encrypted spill stays valid. A file that vanished or cannot be renamed is left
- * for a later pass. MUST run under the held ledger lock, before collecting.
+ * for a later pass. MUST run under the held ledger lock, before draining.
  */
 async function recoverOrphanedClaims(ledgerPath: string): Promise<void> {
   const claimed = await listContainedSpillFiles(
@@ -298,24 +291,33 @@ async function recoverOrphanedClaims(ledgerPath: string): Promise<void> {
   }
 }
 
-/**
- * Claim spills for commit via a CRASH-SAFE rename (#2033): each `*.jsonl` is
- * atomically renamed to `*.jsonl.claimed` BEFORE its rows are committed. The
- * rename is durable, so a crash between the claim and the commit leaves the rows
- * on disk (recovered by {@link recoverOrphanedClaims} on the next drain) instead
- * of losing them — the failure the plain unlink-before-commit ordering could not
- * survive. Content was already read at each spill's original (AAD-bound) path by
- * {@link collectPendingSpills}, so the claimed file is never decrypted again. A
- * rename that fails (read-only dir, vanished file) skips that spill this pass; it
- * is retried later. Returns one bounded batch and its next input index. A spill
- * larger than the batch limit is committed alone so the drain always makes
- * progress.
- */
+/** Max bytes of pending-spill content folded into one append (#2033). The drain
+ *  reads and concatenates at most this many bytes of spill content per batch, so
+ *  a large pending queue folds in bounded segments instead of one giant string:
+ *  the secure-store append decrypts the active ledger and concatenates the
+ *  payload as a V8 string, and a single unbounded fold could throw before
+ *  draining or recreate an encrypted active ledger over the whole-file decrypt
+ *  cap, stranding the rows in the excluded pending queue. */
 const PENDING_SPILL_BATCH_MAX_BYTES = 1024 * 1024;
 
-async function claimPendingSpills(
-  spills: Array<{ file: string; content: string }>,
+/**
+ * Claim ONE bounded batch of spills for commit via a CRASH-SAFE rename (#2033).
+ * Content is read LAZILY here — at each spill's original (AAD-bound) path, so an
+ * encrypted spill still decrypts — and at most `PENDING_SPILL_BATCH_MAX_BYTES`
+ * (plus one spill) is held in memory or concatenated per call, bounding both the
+ * fold's memory and the payload handed to a single append. Each spill is read,
+ * then atomically renamed `*.jsonl` → `*.jsonl.claimed` BEFORE its rows are
+ * committed: a crash between the claim and the commit leaves the rows on disk
+ * (recovered by {@link recoverOrphanedClaims}) instead of losing them. A read
+ * failure propagates with the file untouched (not yet claimed), leaving it for a
+ * later retry; a rename that fails skips that spill this pass. Returns the batch
+ * payload, its claimed paths, and the next input index. A lone spill larger than
+ * the batch limit is claimed alone so the drain always makes progress.
+ */
+async function claimSpillBatch(
+  files: string[],
   startIndex: number,
+  io: LifecyclePendingIo,
 ): Promise<{
   payload: string;
   claimedPaths: string[];
@@ -325,19 +327,24 @@ async function claimPendingSpills(
   const claimedPaths: string[] = [];
   let payloadBytes = 0;
   let nextIndex = startIndex;
-  for (; nextIndex < spills.length; nextIndex++) {
-    const spill = spills[nextIndex]!;
-    const spillBytes = Buffer.byteLength(spill.content, "utf8");
+  for (; nextIndex < files.length; nextIndex++) {
+    const filePath = files[nextIndex]!;
+    // Read at the ORIGINAL (AAD-bound) path BEFORE claiming. A read failure
+    // propagates with the file untouched, so it stays for a later retry.
+    const content = withTrailingNewline(await io.readSecure(filePath));
+    const spillBytes = Buffer.byteLength(content, "utf8");
+    // Stop before a spill that would overflow a non-empty batch so peak memory
+    // and the single-append payload stay bounded; it starts the next batch.
     if (parts.length > 0 && payloadBytes + spillBytes > PENDING_SPILL_BATCH_MAX_BYTES) {
       break;
     }
-    const claimedPath = `${spill.file}${CLAIMED_SPILL_SUFFIX}`;
+    const claimedPath = `${filePath}${CLAIMED_SPILL_SUFFIX}`;
     try {
-      await rename(spill.file, claimedPath);
+      await rename(filePath, claimedPath);
     } catch {
       continue; // could not claim → do not commit; a later drain retries it.
     }
-    parts.push(spill.content);
+    parts.push(content);
     claimedPaths.push(claimedPath);
     payloadBytes += spillBytes;
   }
@@ -366,12 +373,13 @@ async function rollbackClaimedSpills(claimedPaths: string[]): Promise<void> {
 /**
  * Under the held ledger lock, fold durable pending spills into the ledger in
  * bounded batches together with `extraPayload` (a new event's rows, or "" for a
- * drain-only pass). Each batch uses the crash-safe claim/commit protocol:
- * recover orphaned claims, read each spill, CLAIM it by rename, COMMIT the
- * claimed rows, then FINALIZE by deleting the claimed files. A commit failure
+ * drain-only pass). Recover orphaned claims first, then repeatedly claim ONE
+ * bounded batch ({@link claimSpillBatch}) — reading its content lazily — COMMIT
+ * the claimed rows, and FINALIZE by deleting the claimed files. A commit failure
  * rolls the current batch's claims back to unclaimed spills and rethrows, so a
- * failed write neither loses nor double-commits rows. Returns true when spill
- * rows were committed.
+ * failed write neither loses nor double-commits rows; batches already committed
+ * stay durable (append-only, eventId-deduped on rebuild). Returns true when
+ * spill rows were committed.
  */
 async function foldPendingSpillsIntoAppend(
   ledgerPath: string,
@@ -384,15 +392,18 @@ async function foldPendingSpillsIntoAppend(
     return false;
   }
   await recoverOrphanedClaims(ledgerPath);
-  const spills = await collectPendingSpills(ledgerPath, pending);
+  // listContainedSpillFiles rejects a symlinked pending dir and skips any
+  // symlinked/escaping entry BEFORE we secure-read or later unlink it (#2033),
+  // so a poisoned link cannot redirect a decrypt/delete outside the spill dir.
+  const files = await listContainedSpillFiles(pendingLifecycleLedgerDir(ledgerPath));
   let nextIndex = 0;
   let drained = false;
 
-  while (nextIndex < spills.length) {
-    const batch = await claimPendingSpills(spills, nextIndex);
+  while (nextIndex < files.length) {
+    const batch = await claimSpillBatch(files, nextIndex, pending);
     nextIndex = batch.nextIndex;
     if (batch.claimedPaths.length === 0) {
-      if (nextIndex >= spills.length) break;
+      if (nextIndex >= files.length) break;
       continue;
     }
     try {
