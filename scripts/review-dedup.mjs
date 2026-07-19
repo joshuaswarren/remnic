@@ -138,7 +138,10 @@ export function stripMarkup(body) {
     .replace(CODE_FENCE_PATTERN, preserveFencedCode)
     .replace(IMAGE_PATTERN, " ")
     .replace(LINK_PATTERN, "$1")
-    .replace(INLINE_CODE_PATTERN, "$1")
+    // Flatten angle brackets in inline code (same as fenced code) so JSX/generic
+    // identifiers survive as tokens instead of being deleted by the HTML pass
+    // below — else `<Foo/>` vs `<Bar/>` collapse to identical tokens (codex P2).
+    .replace(INLINE_CODE_PATTERN, (_m, code) => ` ${code.replace(/[<>]/g, " ")} `)
     .replace(HTML_TAG_PATTERN, " ")
     .replace(EMOJI_PATTERN, " ")
     .toLowerCase()

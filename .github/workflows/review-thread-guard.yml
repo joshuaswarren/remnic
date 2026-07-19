@@ -188,7 +188,9 @@ jobs:
                 .replace(/```([\s\S]*?)```/g, (_m, inner) => ` ${inner.replace(/^[^\n]*\n/, "").replace(/[<>]/g, " ").slice(0, 200)} `)
                 .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
                 .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-                .replace(/`([^`]*)`/g, "$1")
+                // Flatten angle brackets in inline code (as fenced code) so JSX/generic
+                // identifiers survive the HTML pass below (codex P2). Mirrors review-dedup.mjs.
+                .replace(/`([^`]*)`/g, (_m, code) => ` ${code.replace(/[<>]/g, " ")} `)
                 .replace(/<[^>]+>/g, " ")
                 .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/gu, " ")
                 .toLowerCase()
