@@ -129,23 +129,68 @@ export function unregisteredSubjects(manifest, registered) {
   return [...missing];
 }
 
+/**
+ * Parse `git diff --name-status -z -M` output into changed-file records.
+ * Rename/copy records (R###/C###) carry both { filename, previous_filename };
+ * every other status carries { filename }. Fields are NUL-terminated (-z) so
+ * renamed and space-bearing paths survive intact.
+ */
+export function parseNameStatusZ(text) {
+  const tokens = text.split("\0").filter((t) => t.length > 0);
+  const records = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const status = tokens[i++];
+    if (/^[RC]\d*$/.test(status)) {
+      const previous_filename = tokens[i++];
+      const filename = tokens[i++];
+      if (filename) records.push({ filename, previous_filename });
+    } else {
+      const filename = tokens[i++];
+      if (filename) records.push({ filename });
+    }
+  }
+  return records;
+}
+
+/**
+ * Flatten changed-file records into individual repo-relative paths. A rename
+ * record contributes BOTH its destination and its source: moving a lifecycle
+ * path to an ignored or non-lifecycle location still changes lifecycle
+ * behavior and must not bypass the gate (rename-bypass finding on #2042).
+ */
+export function flattenChangedPaths(entries) {
+  const out = [];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      if (entry) out.push(entry);
+      continue;
+    }
+    const filename = entry?.filename ?? entry?.path;
+    if (filename) out.push(filename);
+    if (typeof entry?.previous_filename === "string" && entry.previous_filename) {
+      out.push(entry.previous_filename);
+    }
+  }
+  return [...new Set(out)];
+}
+
 function readChangedFilesFromGit() {
   const baseRef = process.env.LIFECYCLE_BASE_REF || process.env.GITHUB_BASE_REF;
+  const diffArgs = ["-c", "core.quotePath=off", "diff", "--name-status", "-z", "-M"];
   try {
     if (baseRef) {
       execFileSync("git", ["fetch", "--quiet", "--depth=1", "origin", baseRef], { cwd: repoRoot, stdio: "ignore" });
       const range = execFileSync("git", ["merge-base", "FETCH_HEAD", "HEAD"], { cwd: repoRoot })
         .toString()
         .trim();
-      return execFileSync("git", ["diff", "--name-only", `${range}...HEAD`], { cwd: repoRoot })
-        .toString()
-        .split("\n")
-        .filter(Boolean);
+      return parseNameStatusZ(
+        execFileSync("git", [...diffArgs, `${range}...HEAD`], { cwd: repoRoot }).toString(),
+      );
     }
-    return execFileSync("git", ["diff", "--name-only", "HEAD~1...HEAD"], { cwd: repoRoot })
-      .toString()
-      .split("\n")
-      .filter(Boolean);
+    return parseNameStatusZ(
+      execFileSync("git", [...diffArgs, "HEAD~1...HEAD"], { cwd: repoRoot }).toString(),
+    );
   } catch {
     return [];
   }
@@ -156,9 +201,30 @@ function readChangedFiles() {
   if (filesArg) return filesArg.slice("--files=".length).split(",").map((s) => s.trim()).filter(Boolean);
   const pathEnv = process.env.REMNIC_LIFECYCLE_CHANGED_FILES_PATH;
   if (pathEnv && existsSync(pathEnv)) {
-    return readFileSync(pathEnv, "utf8").split(/\0|\n/).map((s) => s.trim()).filter(Boolean);
+    return parseNameStatusZ(readFileSync(pathEnv, "utf8"));
   }
   return readChangedFilesFromGit();
+}
+
+/**
+ * Load the base (pre-PR) coverage manifest for the shrink-only grandfather
+ * ratchet. Path comes from `--base-manifest=` or LIFECYCLE_BASE_MANIFEST_PATH.
+ * Returns null when absent/empty (manifest newly introduced → nothing to
+ * ratchet against) or unparseable (the base already passed its own gate).
+ */
+function readBaseManifest() {
+  const baseArg = process.argv.find((a) => a.startsWith("--base-manifest="));
+  const basePath = baseArg
+    ? baseArg.slice("--base-manifest=".length)
+    : process.env.LIFECYCLE_BASE_MANIFEST_PATH;
+  if (!basePath || !existsSync(basePath)) return null;
+  const raw = readFileSync(basePath, "utf8").trim();
+  if (raw.length === 0) return null;
+  try {
+    return loadCoverageManifest(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 
 function main() {
@@ -180,12 +246,25 @@ function main() {
     process.exit(1);
   }
 
+  const baseManifest = readBaseManifest();
+  if (baseManifest) {
+    const grown = grandfatherGrowth(baseManifest, manifest);
+    if (grown.length > 0) {
+      console.error(
+        `::error::lifecycle-matrix grandfather list grew: ${grown.join(", ")}. ` +
+          `The grandfather list is a shrink-only ratchet (scripts/lifecycle-matrix/coverage.json) — ` +
+          `cover new lifecycle paths with a registered LifecycleSubject instead of grandfathering them.`,
+      );
+      process.exit(1);
+    }
+  }
+
   const changed = readChangedFiles();
   const ignorePath = join(repoRoot, ".github", "ai-review-ignore");
   const ignorePatterns = existsSync(ignorePath)
     ? parseIgnoreManifest(readFileSync(ignorePath, "utf8"))
     : [];
-  const { effective } = splitEffectiveDiff(changed, ignorePatterns);
+  const { effective } = splitEffectiveDiff(flattenChangedPaths(changed), ignorePatterns);
 
   const { covered, warnings, violations } = evaluateCoverage(effective, manifest);
 

@@ -199,7 +199,8 @@ via `runLifecycleMatrix(name, subject)` (issue #1993):
 Instead of only reasoning about these rows in prose, instantiate them. The two
 reference `LifecycleSubject`s —
 `packages/remnic-core/src/testing/subjects/extraction-lifecycle.test.ts` (the
-extraction / turn-ingestion surface) and `.../serialized-write-chain.test.ts`
+extraction / turn-ingestion surface) and
+`packages/remnic-core/src/testing/subjects/serialized-write-chain.test.ts`
 (the session-toggle write chain) — exercise the REAL orchestrator/store paths
 for every row; copy one when hardening a new stateful subsystem. The
 `lifecycle-matrix` CI gate (path-triggered via

@@ -287,11 +287,17 @@ jobs:
               echo "::error::no merge base between $BASE_REF and HEAD - cannot scope the lifecycle gate safely"
               exit 1
             fi
-            git -c core.quotePath=off diff --name-only -z FETCH_HEAD...HEAD > /tmp/lifecycle-changed-files.txt
+            MB="$(git merge-base FETCH_HEAD HEAD)"
+            git -c core.quotePath=off diff --name-status -z -M "$MB"...HEAD > /tmp/lifecycle-changed-files.txt
+            git show "$MB:scripts/lifecycle-matrix/coverage.json" > /tmp/lifecycle-base-coverage.json 2>/dev/null \
+              || : > /tmp/lifecycle-base-coverage.json
           else
-            git -c core.quotePath=off diff --name-only -z HEAD~1...HEAD > /tmp/lifecycle-changed-files.txt || : > /tmp/lifecycle-changed-files.txt
+            git -c core.quotePath=off diff --name-status -z -M HEAD~1...HEAD > /tmp/lifecycle-changed-files.txt || : > /tmp/lifecycle-changed-files.txt
+            git show HEAD~1:scripts/lifecycle-matrix/coverage.json > /tmp/lifecycle-base-coverage.json 2>/dev/null \
+              || : > /tmp/lifecycle-base-coverage.json
           fi
           echo "REMNIC_LIFECYCLE_CHANGED_FILES_PATH=/tmp/lifecycle-changed-files.txt" >> "$GITHUB_ENV"
+          echo "LIFECYCLE_BASE_MANIFEST_PATH=/tmp/lifecycle-base-coverage.json" >> "$GITHUB_ENV"
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
 

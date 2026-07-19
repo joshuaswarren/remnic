@@ -10,16 +10,21 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { splitEffectiveDiff } from "../scripts/effective-diff.mjs";
 import {
   classifyGlob,
   evaluateCoverage,
+  flattenChangedPaths,
   grandfatherGrowth,
   loadCoverageManifest,
+  parseNameStatusZ,
   registeredSubjectNames,
   unregisteredSubjects,
 } from "../scripts/lifecycle-matrix/check-coverage.mjs";
@@ -146,4 +151,113 @@ test("loadCoverageManifest rejects malformed manifests", () => {
     /cannot be both covered and grandfathered/,
   );
   assert.throws(() => loadCoverageManifest({ lifecycleManifest: [], coverage: {}, grandfathered: [] }), /non-empty/);
+});
+
+const checkCoveragePath = join(repoRoot, "scripts", "lifecycle-matrix", "check-coverage.mjs");
+
+test("parseNameStatusZ splits git --name-status -z records, keeping rename sources", () => {
+  // R085\0old\0new\0M\0path\0A\0added\0
+  const text = "R085\0packages/remnic-core/src/session-toggles.ts\0bench/artifacts/moved.ts\0M\0README.md\0A\0src/new.ts\0";
+  assert.deepEqual(parseNameStatusZ(text), [
+    { filename: "bench/artifacts/moved.ts", previous_filename: "packages/remnic-core/src/session-toggles.ts" },
+    { filename: "README.md" },
+    { filename: "src/new.ts" },
+  ]);
+});
+
+test("flattenChangedPaths keeps BOTH sides of a rename and dedupes", () => {
+  const flat = flattenChangedPaths([
+    { filename: "bench/artifacts/moved.ts", previous_filename: "packages/remnic-core/src/session-toggles.ts" },
+    "packages/remnic-core/src/buffer.ts",
+    "packages/remnic-core/src/buffer.ts",
+  ]);
+  assert.deepEqual(flat, [
+    "bench/artifacts/moved.ts",
+    "packages/remnic-core/src/session-toggles.ts",
+    "packages/remnic-core/src/buffer.ts",
+  ]);
+});
+
+test("renaming a lifecycle path across an ignore boundary does NOT bypass the gate", () => {
+  const manifest = loadReal();
+  // A lifecycle path (session-toggles.ts, covered) renamed into an ignored
+  // artifact path. --name-only would surface only the ignored destination and
+  // silently drop the lifecycle change; the rename-aware pipeline preserves the
+  // source so coverage is still enforced.
+  const records = parseNameStatusZ(
+    "R100\0packages/remnic-core/src/session-toggles.ts\0bench/artifacts/session-toggles.ts\0",
+  );
+  const ignorePatterns = ["bench/artifacts/**"];
+  const { effective } = splitEffectiveDiff(flattenChangedPaths(records), ignorePatterns);
+  assert.ok(
+    effective.includes("packages/remnic-core/src/session-toggles.ts"),
+    "the lifecycle rename source must survive the ignore filter",
+  );
+  assert.ok(
+    !effective.includes("bench/artifacts/session-toggles.ts"),
+    "the ignored artifact destination must be dropped",
+  );
+  const { covered, violations } = evaluateCoverage(effective, manifest);
+  assert.equal(violations.length, 0);
+  assert.equal(covered.length, 1);
+  assert.equal(covered[0].subject, "serialized-write-chain");
+});
+
+function runCli(args, env = {}) {
+  try {
+    const stdout = execFileSync("node", [checkCoveragePath, ...args], {
+      cwd: repoRoot,
+      env: { ...process.env, ...env },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { code: 0, output: stdout };
+  } catch (err) {
+    return { code: err.status ?? 1, output: `${err.stdout ?? ""}${err.stderr ?? ""}` };
+  }
+}
+
+test("the CLI enforces the grandfather ratchet against the base manifest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lifecycle-ratchet-"));
+  try {
+    const base = {
+      lifecycleManifest: ["packages/remnic-core/src/orchestration/**", "packages/remnic-core/src/lifecycle.ts"],
+      coverage: { "packages/remnic-core/src/orchestration/**": "extraction-lifecycle" },
+      grandfathered: [],
+    };
+    const grown = {
+      ...base,
+      grandfathered: ["packages/remnic-core/src/lifecycle.ts"],
+    };
+    const basePath = join(dir, "base.json");
+    const grownPath = join(dir, "grown.json");
+    writeFileSync(basePath, JSON.stringify(base));
+    writeFileSync(grownPath, JSON.stringify(grown));
+
+    // Growth: adding a grandfather entry vs the base must fail the CLI gate.
+    const grow = runCli([`--manifest=${grownPath}`, `--base-manifest=${basePath}`, "--files="]);
+    assert.equal(grow.code, 1, "grandfather-list growth must fail the CLI");
+    assert.match(grow.output, /grandfather list grew/);
+    assert.match(grow.output, /lifecycle\.ts/);
+
+    // Same list vs base (no growth) passes.
+    const flat = runCli([`--manifest=${basePath}`, `--base-manifest=${basePath}`, "--files="]);
+    assert.equal(flat.code, 0, "an unchanged grandfather list must pass");
+
+    // Shrinking (covering a formerly grandfathered path) passes.
+    const shrunk = {
+      lifecycleManifest: base.lifecycleManifest,
+      coverage: {
+        "packages/remnic-core/src/orchestration/**": "extraction-lifecycle",
+        "packages/remnic-core/src/lifecycle.ts": "extraction-lifecycle",
+      },
+      grandfathered: [],
+    };
+    const shrunkPath = join(dir, "shrunk.json");
+    writeFileSync(shrunkPath, JSON.stringify(shrunk));
+    const shrink = runCli([`--manifest=${shrunkPath}`, `--base-manifest=${grownPath}`, "--files="]);
+    assert.equal(shrink.code, 0, "removing a grandfather entry (covering it) must pass");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
