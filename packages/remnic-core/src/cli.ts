@@ -7029,13 +7029,17 @@ export function registerCli(
           const namespace = typeof options.namespace === "string" && options.namespace.trim().length > 0
             ? options.namespace.trim()
             : undefined;
-          // Namespace-aware recovery (#2033): target the namespace's memoryDir and
-          // its secure StorageManager so an encrypted namespace ledger is rebuilt
-          // (and re-encrypted) in place; absent --namespace, the root store as before.
+          // Recover at the ROUTER-RESOLVED storage dir (#2033 finding 2): a
+          // namespace store may live at a tokenized namespaces/<token>/ path that
+          // differs from the raw namespaces/<ns>/ path resolveMemoryDirForNamespace
+          // builds; passing the raw path would reject the tokenized storage. The
+          // resolver still runs to validate the segment / unsupported override.
+          const validatedMemoryDir = await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true });
+          const storage = namespace ? await orchestrator.getStorageForNamespace(namespace) : orchestrator.storage;
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
-            memoryDir: await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true }),
+            memoryDir: namespace ? storage.dir : validatedMemoryDir,
             write: options.write === true,
-            storage: namespace ? await orchestrator.getStorageForNamespace(namespace) : orchestrator.storage,
+            storage,
           });
           console.log(`Dry run: ${result.dryRun ? "yes" : "no"}`);
           console.log(`Scanned memories: ${result.scannedMemories}`);

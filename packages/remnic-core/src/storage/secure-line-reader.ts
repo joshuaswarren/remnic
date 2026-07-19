@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
@@ -29,6 +29,18 @@ export async function* readMaybeEncryptedLines(
   readEncryptedFile: () => Promise<string>,
   maxDecryptBytes?: number,
 ): AsyncGenerator<string> {
+  // Reject a symlink/FIFO/device BEFORE opening, matching the maintenance ledger
+  // probe (probeEncryptedRegularFileHeader, #2033): opening a FIFO blocks until a
+  // writer appears and a symlink would redirect the read outside our tree. An
+  // ENOENT from the missing regular file propagates so callers keep their
+  // absent-file → [] behavior (they catch ENOENT), exactly as a missing open did.
+  const entryStat = await lstat(filePath);
+  if (!entryStat.isFile()) {
+    throw new Error(
+      `refusing to read non-regular state file ${filePath} `
+      + `(symlink/FIFO/device); opening it could block or escape containment (#2033)`,
+    );
+  }
   const file = await open(filePath, "r");
   const header = Buffer.alloc(MAGIC_HEADER_SIZE);
   try {

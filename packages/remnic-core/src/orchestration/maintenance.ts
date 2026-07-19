@@ -21,9 +21,8 @@
 
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
-import { existsSync, type Dirent, type Stats } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
-import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { appendFile, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -61,8 +60,7 @@ import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { assertPathInsideRoot, listContainedSpillFiles } from "../utils/path-containment.js";
 import {
-  isEncryptedFile,
-  MAGIC_HEADER_SIZE,
+  probeEncryptedRegularFileHeader,
   SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
 } from "../secure-store/secure-fs.js";
 
@@ -74,42 +72,6 @@ function qmdMaintenanceSkipReasonForError(
   return /^QMD (?:update|embed) skipped by .*min-interval gate$/.test(message)
     ? "throttled"
     : null;
-}
-
-/**
- * True when the file at `probePath` is encrypted at rest (its first bytes are
- * the secure-store magic header). Compaction uses this to refuse rewriting an
- * encrypted ledger through a StorageManager that cannot re-encrypt it, which
- * would downgrade it to plaintext (issue #2033). ENOENT resolves to false — an
- * absent ledger is handled as "nothing to compact" downstream. A symlink, FIFO,
- * device, or any other non-regular file is REFUSED with a throw rather than
- * opened: opening a FIFO blocks until a writer appears and a symlink would
- * redirect the probe outside our tree. A ledger/spill we manage is always a
- * regular file, so a non-regular path is an anomaly the caller must treat as
- * unsafe (its try/catch defers/skips), never follow (#2033).
- */
-async function ledgerEncryptedOnDisk(probePath: string): Promise<boolean> {
-  let entryStat: Stats;
-  try {
-    entryStat = await lstat(probePath);
-  } catch (err) {
-    if (isErrnoCode(err, "ENOENT")) return false;
-    throw err;
-  }
-  if (!entryStat.isFile()) {
-    throw new Error(
-      `refusing to probe non-regular lifecycle path ${probePath} `
-      + `(symlink/FIFO/device); opening it could block or escape containment (#2033)`,
-    );
-  }
-  const handle: FileHandle = await open(probePath, "r");
-  try {
-    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    return isEncryptedFile(header.subarray(0, bytesRead));
-  } finally {
-    await handle.close();
-  }
 }
 
 /** Dependencies injected by the orchestrator. All stable references. */
@@ -763,9 +725,9 @@ export class MaintenanceScheduler {
       // A keyless plaintext drain would corrupt/downgrade an encrypted ledger or
       // spill; defer those to the keyed path instead (#2033). The probe now only
       // opens the guarded, regular-file paths listContainedSpillFiles returned.
-      if (await ledgerEncryptedOnDisk(ledgerPath)) return;
+      if (await probeEncryptedRegularFileHeader(ledgerPath)) return;
       for (const filePath of spillFiles) {
-        if (await ledgerEncryptedOnDisk(filePath)) return;
+        if (await probeEncryptedRegularFileHeader(filePath)) return;
       }
     } catch (err) {
       log.debug(`fallback lifecycle pending encryption probe failed (non-fatal) for ${memoryDir}: ${err}`);
@@ -931,7 +893,7 @@ export class MaintenanceScheduler {
     if (size < Math.min(threshold, this.lifecycleLedgerMaxBytes)) return "skipped";
     let encrypted: boolean;
     try {
-      encrypted = await ledgerEncryptedOnDisk(ledgerPath);
+      encrypted = await probeEncryptedRegularFileHeader(ledgerPath);
     } catch (err) {
       log.warn(`lifecycle ledger encryption probe failed (non-fatal) for ${ledgerPath}: ${err}`);
       return "failed";

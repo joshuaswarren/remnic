@@ -16,6 +16,8 @@ import {
 } from "../src/cli.js";
 import { StorageManager } from "../src/storage.js";
 import { isEncryptedFile } from "../src/secure-store/index.js";
+import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
+import type { PluginConfig } from "../src/types.js";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -191,6 +193,61 @@ test("rebuild-memory-lifecycle-ledger CLI recovers a namespaced encrypted ledger
     assert.ok(
       isEncryptedFile(await readFile(ledgerPath)),
       "rebuilt namespace ledger stays encrypted at rest through the namespace secure storage",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger recovery targets the router-resolved (tokenized) namespace dir, not the raw namespaces/<ns> path (#2033)", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-ns-token-"));
+  try {
+    const config = {
+      memoryDir: rootDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      entitySchemas: {},
+      inlineSourceAttributionFormat: undefined,
+    } as unknown as PluginConfig;
+    const router = new NamespaceStorageRouter(config);
+    const namespace = "team";
+
+    // The router serves a non-default namespace from the TOKENIZED root
+    // (namespaces/ns-<hex>), which diverges from the raw namespaces/<ns> path the
+    // legacy resolver builds. Recovery must follow the router-resolved storage.dir.
+    const storage = await router.storageFor(namespace);
+    const routerDir = storage.dir;
+    const rawDir = path.join(rootDir, "namespaces", namespace);
+    assert.notEqual(
+      path.resolve(routerDir),
+      path.resolve(rawDir),
+      "precondition: router dir is tokenized and differs from the raw namespaces/<ns> path",
+    );
+    await storage.writeMemory("fact", "namespace fact for tokenized recovery");
+
+    // The FIX: recovery uses the router-resolved storage.dir and rebuilds in place.
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir: routerDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage,
+    });
+    assert.equal(
+      path.resolve(writeResult.outputPath),
+      path.resolve(path.join(routerDir, "state", "memory-lifecycle-ledger.jsonl")),
+      "rebuilt the ledger under the router-resolved tokenized namespace dir",
+    );
+
+    // The OLD wiring — raw namespaces/<ns> path as memoryDir with the tokenized
+    // storage — is the exact mismatch the fix avoids: it REJECTS the tokenized
+    // storage rather than recovering it.
+    await assert.rejects(
+      () => runRebuildMemoryLifecycleLedgerCliCommand({
+        memoryDir: rawDir,
+        write: true,
+        storage,
+      }),
+      /storage\.dir.*must match.*memoryDir/,
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });

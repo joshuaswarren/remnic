@@ -642,7 +642,7 @@ test("pending drain rejects a symlinked spill entry pointing outside the pending
   }
 });
 
-test("pending drain never re-appends a spill whose unlink fails after the ledger write (#2033)", async () => {
+test("pending drain skips an unclaimable spill and later drains it exactly once — no duplicate (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-dup-"));
   const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
   const spillDir = pendingLifecycleLedgerDir(ledgerPath);
@@ -655,10 +655,11 @@ test("pending drain never re-appends a spill whose unlink fails after the ledger
       `${JSON.stringify(lifecycleEvent("evt-dup", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
     );
 
-    // Read stays possible but the unlink (needs directory write) fails. Because
-    // the drain now CLAIMS each spill (unlinks it) before committing its rows, an
-    // unclaimable spill is skipped this pass — never appended-then-left-behind —
-    // so a later drain cannot re-read and duplicate it.
+    // A read-only spill dir lets the read succeed but blocks the rename CLAIM
+    // (`q.jsonl` → `q.jsonl.claimed`, which needs directory write). Because the
+    // drain claims by rename BEFORE committing, an unclaimable spill is skipped
+    // this pass — never committed-then-left-behind — so a later drain cannot
+    // re-read and duplicate it.
     await chmod(spillDir, 0o555);
     const first = await drainPendingLifecycleAppendsSerialized(
       ledgerPath,
@@ -685,6 +686,72 @@ test("pending drain never re-appends a spill whose unlink fails after the ledger
     assert.equal((await readdir(spillDir)).length, 0, "pending spill drained empty");
   } finally {
     await chmod(spillDir, 0o755).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pending drain recovers a claim orphaned by a crash before commit — the row is never lost (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-crash-"));
+  const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+  const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+  try {
+    await mkdir(spillDir, { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    // Simulate a drain that CLAIMED a spill (renamed q.jsonl → q.jsonl.claimed)
+    // and then the process CRASHED before committing the rows to the ledger. The
+    // .claimed file is the ONLY durable copy of the event — plain unlink-before-
+    // commit would have already deleted it and lost the row.
+    await writeFile(
+      path.join(spillDir, "q.jsonl.claimed"),
+      `${JSON.stringify(lifecycleEvent("evt-orphan", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+      "utf8",
+    );
+
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+
+    assert.equal(drained, true, "orphaned claim is recovered and committed");
+    const ledger = await readFile(ledgerPath, "utf8");
+    assert.ok(ledger.includes("evt-orphan"), "orphaned event folded into the ledger — not lost to the crash");
+    assert.equal(ledger.split("evt-orphan").length - 1, 1, "committed exactly once");
+    assert.equal((await readdir(spillDir)).length, 0, "recovered claim cleaned up after commit");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an append recovers a crash-orphaned claim alongside the new event (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-crash-fold-"));
+  const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+  const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+  try {
+    await mkdir(spillDir, { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    // A claim orphaned by a crashed prior drain, plus a brand-new append: the
+    // append path must recover the orphan AND write the new event, losing neither.
+    await writeFile(
+      path.join(spillDir, "orphan.jsonl.claimed"),
+      `${JSON.stringify(lifecycleEvent("evt-orphan", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+      "utf8",
+    );
+
+    await appendLifecycleEventsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      `${JSON.stringify(lifecycleEvent("evt-new", "memory-b", "2026-03-08T01:00:00.000Z"))}\n`,
+      pending,
+    );
+
+    const ledger = await readFile(ledgerPath, "utf8");
+    assert.ok(ledger.includes("evt-orphan"), "crash-orphaned claim recovered into the ledger");
+    assert.ok(ledger.includes("evt-new"), "new event appended");
+    assert.equal((await readdir(spillDir)).length, 0, "spill dir drained empty");
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

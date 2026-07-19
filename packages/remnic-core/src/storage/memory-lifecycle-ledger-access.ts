@@ -1,6 +1,6 @@
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { mkdir, stat, unlink } from "node:fs/promises";
+import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryLifecycleEvent } from "../types.js";
@@ -256,51 +256,118 @@ async function collectPendingSpills(
   return out;
 }
 
+/** Suffix marking a spill that has been CLAIMED for commit but not yet deleted. */
+const CLAIMED_SPILL_SUFFIX = ".claimed";
+
 /**
- * Claim spills by unlinking each one BEFORE its rows are committed to the ledger
- * (#2033). This is the ordering that prevents duplicates: if a delete fails, that
- * file's rows are simply excluded from this append and retried on a later pass,
- * so a swallowed unlink error can never let the next drain re-read and re-append
- * an already-committed row. Returns the concatenated rows of the files that were
- * successfully claimed.
+ * Recover claims a crashed drain left mid-flight (#2033). A crash-safe drain
+ * renames `*.jsonl` → `*.jsonl.claimed` BEFORE committing (see
+ * {@link claimPendingSpills}); if the process dies between that rename and the
+ * ledger write, the durable `.claimed` file is the ONLY copy of those rows. This
+ * renames every orphaned `*.jsonl.claimed` back to `*.jsonl` so it re-enters the
+ * normal collect+claim+commit flow — nothing a crash left behind is lost. Reads
+ * only ever happen at the restored `.jsonl` path, so the path-bound AAD of an
+ * encrypted spill stays valid. A file that vanished or cannot be renamed is left
+ * for a later pass. MUST run under the held ledger lock, before collecting.
  */
-async function claimPendingSpills(spills: Array<{ file: string; content: string }>): Promise<string> {
-  const parts: string[] = [];
-  for (const spill of spills) {
-    try {
-      await unlink(spill.file);
-    } catch {
-      continue; // could not claim → do not append; a later drain retries it.
-    }
-    parts.push(spill.content);
+async function recoverOrphanedClaims(ledgerPath: string): Promise<void> {
+  const claimed = await listContainedSpillFiles(
+    pendingLifecycleLedgerDir(ledgerPath),
+    `.jsonl${CLAIMED_SPILL_SUFFIX}`,
+  );
+  for (const claimedPath of claimed) {
+    const original = claimedPath.slice(0, -CLAIMED_SPILL_SUFFIX.length);
+    await rename(claimedPath, original).catch(() => undefined);
   }
-  return parts.join("");
 }
 
 /**
- * Under the held ledger lock: fold any pending spills and the new payload into
- * the ledger in one write, so spilled events rejoin the canonical ledger as soon
- * as the lock is free. Spills are CLAIMED (unlinked) before the write so a later
- * failed delete cannot duplicate them; if the write itself fails after claiming,
- * the claimed rows are re-spilled so they are never lost (#2033).
+ * Claim spills for commit via a CRASH-SAFE rename (#2033): each `*.jsonl` is
+ * atomically renamed to `*.jsonl.claimed` BEFORE its rows are committed. The
+ * rename is durable, so a crash between the claim and the commit leaves the rows
+ * on disk (recovered by {@link recoverOrphanedClaims} on the next drain) instead
+ * of losing them — the failure the plain unlink-before-commit ordering could not
+ * survive. Content was already read at each spill's original (AAD-bound) path by
+ * {@link collectPendingSpills}, so the claimed file is never decrypted again. A
+ * rename that fails (read-only dir, vanished file) skips that spill this pass; it
+ * is retried later. Returns the rows of every successfully-claimed spill plus the
+ * claimed paths, which the caller deletes only AFTER the commit succeeds.
  */
-async function drainThenAppend(
+async function claimPendingSpills(
+  spills: Array<{ file: string; content: string }>,
+): Promise<{ payload: string; claimedPaths: string[] }> {
+  const parts: string[] = [];
+  const claimedPaths: string[] = [];
+  for (const spill of spills) {
+    const claimedPath = `${spill.file}${CLAIMED_SPILL_SUFFIX}`;
+    try {
+      await rename(spill.file, claimedPath);
+    } catch {
+      continue; // could not claim → do not commit; a later drain retries it.
+    }
+    parts.push(spill.content);
+    claimedPaths.push(claimedPath);
+  }
+  return { payload: parts.join(""), claimedPaths };
+}
+
+/** Delete claimed spill files after their rows are durably committed. A delete
+ *  that fails leaves an orphan the next drain recovers and re-commits — a
+ *  duplicate the eventId-deduping rebuild collapses, never a lost row (#2033). */
+async function finalizeClaimedSpills(claimedPaths: string[]): Promise<void> {
+  for (const claimedPath of claimedPaths) {
+    await unlink(claimedPath).catch(() => undefined);
+  }
+}
+
+/** Roll a failed commit's claims back to unclaimed `*.jsonl` spills so they are
+ *  retried as normal spills (#2033). Best-effort: an un-renamable claim is
+ *  instead recovered by the next drain's orphan sweep. */
+async function rollbackClaimedSpills(claimedPaths: string[]): Promise<void> {
+  for (const claimedPath of claimedPaths) {
+    const original = claimedPath.slice(0, -CLAIMED_SPILL_SUFFIX.length);
+    await rename(claimedPath, original).catch(() => undefined);
+  }
+}
+
+/**
+ * Under the held ledger lock, fold any durable pending spills into the ledger
+ * together with `extraPayload` (a new event's rows, or "" for a drain-only pass)
+ * using the crash-safe claim/commit protocol (#2033): recover orphaned claims,
+ * read each spill, CLAIM it by rename, COMMIT the claimed rows plus the extra
+ * payload, then FINALIZE by deleting the claimed files. A commit failure rolls
+ * the claims back to unclaimed spills and rethrows, so a failed write neither
+ * loses nor double-commits rows. Returns true when spill rows were committed.
+ */
+async function foldPendingSpillsIntoAppend(
   ledgerPath: string,
   append: (payload: string) => Promise<void>,
-  payload: string,
+  extraPayload: string,
   pending: LifecyclePendingIo | undefined,
-): Promise<void> {
-  const spills = pending ? await collectPendingSpills(ledgerPath, pending) : [];
-  const claimed = spills.length > 0 ? await claimPendingSpills(spills) : "";
-  const combined = claimed.length > 0 ? `${claimed}${payload}` : payload;
+): Promise<boolean> {
+  if (!pending) {
+    if (extraPayload.length > 0) await append(extraPayload);
+    return false;
+  }
+  await recoverOrphanedClaims(ledgerPath);
+  const spills = await collectPendingSpills(ledgerPath, pending);
+  const { payload: claimed, claimedPaths } =
+    spills.length > 0 ? await claimPendingSpills(spills) : { payload: "", claimedPaths: [] };
+  const combined = `${claimed}${extraPayload}`;
+  if (combined.length === 0) {
+    // Drain-only pass with no claimable rows: still delete any (empty) files we
+    // claimed so they do not linger, then report nothing drained.
+    await finalizeClaimedSpills(claimedPaths);
+    return false;
+  }
   try {
     await append(combined);
   } catch (err) {
-    if (claimed.length > 0 && pending) {
-      await spillPendingAppend(ledgerPath, pending, claimed).catch(() => undefined);
-    }
+    await rollbackClaimedSpills(claimedPaths);
     throw err;
   }
+  await finalizeClaimedSpills(claimedPaths);
+  return claimed.length > 0;
 }
 
 /**
@@ -350,7 +417,7 @@ export async function appendLifecycleEventsSerialized(
         await spillPendingAppend(ledgerPath, pending, payload);
         return;
       }
-      await drainThenAppend(ledgerPath, append, payload, pending);
+      await foldPendingSpillsIntoAppend(ledgerPath, append, payload, pending);
     },
   );
 }
@@ -360,9 +427,11 @@ export async function appendLifecycleEventsSerialized(
  * appending a new event (#2033). Maintenance calls this so events that spilled
  * while a long compaction held the lock are eventually written even when no
  * further append arrives. A non-acquired lock is a no-op (retried next pass).
- * Spills are claimed (unlinked) before the write so a later failed delete cannot
- * duplicate them; a ledger-write failure re-spills the claimed rows so they are
- * never lost and are retried next pass. Returns true when rows were drained.
+ * Uses the crash-safe claim/commit protocol ({@link foldPendingSpillsIntoAppend}):
+ * spills are claimed by rename before the write and deleted only after it, an
+ * orphaned claim from an earlier crash is recovered first, and a write failure
+ * rolls the claims back — so a process crash mid-drain can never lose a row.
+ * Returns true when rows were drained.
  */
 export async function drainPendingLifecycleAppendsSerialized(
   ledgerPath: string,
@@ -380,16 +449,7 @@ export async function drainPendingLifecycleAppendsSerialized(
     },
     async (acquired) => {
       if (!acquired) return; // lock busy; the next maintenance pass retries.
-      const spills = await collectPendingSpills(ledgerPath, pending);
-      const claimed = spills.length > 0 ? await claimPendingSpills(spills) : "";
-      if (claimed.length === 0) return;
-      try {
-        await append(withTrailingNewline(claimed));
-      } catch (err) {
-        await spillPendingAppend(ledgerPath, pending, claimed).catch(() => undefined);
-        throw err;
-      }
-      drained = true;
+      drained = await foldPendingSpillsIntoAppend(ledgerPath, append, "", pending);
     },
   );
   return drained;

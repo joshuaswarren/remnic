@@ -75,6 +75,7 @@ import {
   filePathAad,
   isEncryptedFile,
   migrateMemoryDirToEncrypted,
+  probeEncryptedRegularFileHeader,
   readMaybeEncryptedFile,
 } from "./secure-fs.js";
 
@@ -961,5 +962,44 @@ test("secure-store migration encrypts memory category dirs but leaves the questi
     assert.match(await readFile(questionPath, "utf8"), /What DB\?/, "question body remains readable UTF-8");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("probeEncryptedRegularFileHeader detects encryption, treats absent as false, and refuses non-regular paths (#2033)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-probe-header-"));
+  try {
+    // Plaintext regular file → not encrypted.
+    const plainPath = path.join(dir, "plain.jsonl");
+    await writeFile(plainPath, "row-1\nrow-2\n", "utf8");
+    assert.equal(await probeEncryptedRegularFileHeader(plainPath), false, "plaintext file is not encrypted");
+
+    // Encrypted-at-rest regular file → encrypted.
+    const encPath = path.join(dir, "enc.jsonl");
+    const key = Buffer.alloc(32, 5);
+    await writeFile(encPath, encryptFileBody("secret\n", key, filePathAad(encPath, dir)));
+    assert.equal(await probeEncryptedRegularFileHeader(encPath), true, "encrypted file detected via magic header");
+
+    // Absent file → false (nothing to probe), not a throw.
+    assert.equal(await probeEncryptedRegularFileHeader(path.join(dir, "missing.jsonl")), false);
+
+    // A symlink (even to a regular file) is REFUSED before opening — a poisoned
+    // link must never redirect the probe outside our tree (#2033).
+    const linkPath = path.join(dir, "link.jsonl");
+    await symlink(plainPath, linkPath);
+    await assert.rejects(
+      () => probeEncryptedRegularFileHeader(linkPath),
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        assert.match(message, /non-regular state path/);
+        assert.match(message, /symlink\/FIFO\/device/);
+        assert.ok(message.includes(linkPath));
+        return true;
+      },
+    );
+
+    // A directory is likewise non-regular and refused.
+    await assert.rejects(() => probeEncryptedRegularFileHeader(dir), /non-regular state path/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

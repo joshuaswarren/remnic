@@ -1,8 +1,6 @@
-import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
-import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
-import { isErrnoCode } from "../utils/errno.js";
+import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
 import type { StorageManager } from "../index.js";
 import {
   rebuildMemoryLifecycleLedger,
@@ -23,29 +21,6 @@ export interface RebuildMemoryLifecycleLedgerCliCommandOptions {
   storage?: StorageManager;
 }
 
-/**
- * True when the lifecycle ledger at `ledgerPath` is encrypted at rest (its first
- * bytes are the secure-store magic header). ENOENT resolves to false — an absent
- * ledger has nothing to recover. Mirrors the auto-compaction probe so the CLI
- * recovery refuses the same encrypted-without-key case (#2033).
- */
-async function ledgerEncryptedOnDisk(ledgerPath: string): Promise<boolean> {
-  let handle: FileHandle;
-  try {
-    handle = await open(ledgerPath, "r");
-  } catch (err) {
-    if (isErrnoCode(err, "ENOENT")) return false;
-    throw err;
-  }
-  try {
-    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    return isEncryptedFile(header.subarray(0, bytesRead));
-  } finally {
-    await handle.close();
-  }
-}
-
 export async function runRebuildMemoryLifecycleLedgerCliCommand(
   options: RebuildMemoryLifecycleLedgerCliCommandOptions,
 ): Promise<RebuildMemoryLifecycleLedgerResult> {
@@ -55,7 +30,7 @@ export async function runRebuildMemoryLifecycleLedgerCliCommand(
   // without an unlocked secure StorageManager the rebuild would read encrypted
   // memories with no key and rewrite the ledger as plaintext, defeating
   // encryption-at-rest. Fail safely and point the operator at the unlock step.
-  if ((await ledgerEncryptedOnDisk(ledgerPath)) && !(storage?.isSecureStoreUnlocked() ?? false)) {
+  if ((await probeEncryptedRegularFileHeader(ledgerPath)) && !(storage?.isSecureStoreUnlocked() ?? false)) {
     throw new Error(
       "rebuild-memory-lifecycle-ledger: secure store is locked; refusing to rebuild the "
       + "lifecycle ledger, which would read encrypted memories with no key and rewrite the "

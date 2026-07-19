@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, open, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -160,6 +160,37 @@ test("readMaybeEncryptedLines does not refuse an oversized encrypted file withou
     }
     assert.equal(decryptCalled, true, "decrypt runs when no ceiling is supplied");
     assert.deepEqual(lines, ["row-1", "row-2"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMaybeEncryptedLines refuses a symlinked state file before opening it (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-slr-symlink-"));
+  try {
+    const realTarget = path.join(dir, "real.jsonl");
+    await writeFile(realTarget, "one\ntwo\n", "utf8");
+    const linkPath = path.join(dir, "link.jsonl");
+    await symlink(realTarget, linkPath);
+    let decryptCalled = false;
+    await assert.rejects(
+      async () => {
+        for await (const _line of readMaybeEncryptedLines(linkPath, async () => {
+          decryptCalled = true;
+          return "";
+        })) {
+          // no-op — the symlink must be refused before any line is yielded.
+        }
+      },
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        assert.match(message, /non-regular state file/);
+        assert.match(message, /symlink\/FIFO\/device/);
+        assert.ok(message.includes(linkPath));
+        return true;
+      },
+    );
+    assert.equal(decryptCalled, false, "never opened or decrypted the symlink target");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
