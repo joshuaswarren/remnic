@@ -168,10 +168,11 @@ test("review-thread guard inline mirrors the directional operand-swap detector",
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(workflow, /const DIRECTIONAL_MARKERS = new Set\(\["instead", "rather"\]\);/);
   assert.match(workflow, /const directionalOperandsSwapped =/);
+  assert.match(workflow, /const directionalPhrases =/, "must slice operand phrases around the marker");
   assert.match(
     workflow,
-    /return oa\.before !== oa\.after && oa\.before === ob\.after && oa\.after === ob\.before;/,
-    "operand-swap detection must compare reversed operands",
+    /return seqEqual\(aBefore, bAfter\) && seqEqual\(aAfter, bBefore\);/,
+    "operand-swap detection must compare reversed multi-word operand phrases",
   );
 });
 

@@ -211,20 +211,34 @@ jobs:
               stripMarkup(body).split(/[^a-z0-9]+/).filter((t) => t.length >= 2 && !STOP.has(t));
             // Directional operand-swap detector (mirrors review-dedup.mjs): "X
             // instead of Y" vs "Y instead of X" is a contradiction, not a dup,
-            // even with shared surrounding context. "of"/"than" are stopwords so
-            // the marker is the bare "instead"/"rather" in the token stream.
+            // even with multi-word operands and shared context. "of"/"than" are
+            // stopwords so the marker is the bare "instead"/"rather".
             const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
-            const directionalOperands = (toks) => {
+            const directionalPhrases = (toks) => {
               for (let i = 1; i < toks.length - 1; i++) {
-                if (DIRECTIONAL_MARKERS.has(toks[i])) return { before: toks[i - 1], after: toks[i + 1] };
+                if (DIRECTIONAL_MARKERS.has(toks[i])) return { before: toks.slice(0, i), after: toks.slice(i + 1) };
               }
               return null;
             };
+            const seqEqual = (a, b) => a.length === b.length && a.every((t, i) => t === b[i]);
+            const dropCommonPrefix = (a, b) => {
+              let i = 0;
+              while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+              return [a.slice(i), b.slice(i)];
+            };
+            const dropCommonSuffix = (a, b) => {
+              let i = 0;
+              while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1;
+              return [a.slice(0, a.length - i), b.slice(0, b.length - i)];
+            };
             const directionalOperandsSwapped = (a, b) => {
-              const oa = directionalOperands(tokensOf(a));
-              const ob = directionalOperands(tokensOf(b));
-              if (!oa || !ob) return false;
-              return oa.before !== oa.after && oa.before === ob.after && oa.after === ob.before;
+              const pa = directionalPhrases(tokensOf(a));
+              const pb = directionalPhrases(tokensOf(b));
+              if (!pa || !pb) return false;
+              const [aBefore, bBefore] = dropCommonPrefix(pa.before, pb.before);
+              const [aAfter, bAfter] = dropCommonSuffix(pa.after, pb.after);
+              if (aBefore.length === 0 || aAfter.length === 0) return false;
+              return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
             };
             const fingerprint = (body, k = DEDUP.shingleSize) => {
               const toks = tokensOf(body);

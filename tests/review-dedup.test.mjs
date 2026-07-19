@@ -538,6 +538,32 @@ test("swapped 'rather than' operands do NOT merge", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped rather-than operands must not merge");
 });
 
+test("swapped MULTI-WORD directional operands do NOT merge", () => {
+  // The distinguishing operands are two-word phrases; the phrase-based detector
+  // must compare whole operands, not just the single tokens adjacent to the marker.
+  const a = mkThread({
+    id: 621, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use memory cache instead of disk store for reads",
+  });
+  const b = mkThread({
+    id: 622, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Use disk store instead of memory cache for reads",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped multi-word operands must not merge");
+});
+
+test("same-direction multi-word directive still merges", () => {
+  const a = mkThread({
+    id: 623, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use memory cache instead of disk store for reads",
+  });
+  const b = mkThread({
+    id: 624, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Use memory cache instead of disk store in this path",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same-direction multi-word restatement folds");
+});
+
 test("contracted negations are normalized so the negation survives tokenizing", () => {
   // can't/won't/don't/isn't ... expand so 'not' is kept and a prohibition stays
   // lexically distinct from its opposite.

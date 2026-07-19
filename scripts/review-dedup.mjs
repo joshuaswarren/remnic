@@ -170,27 +170,48 @@ export function contentTokens(body) {
 // stream the marker is the bare "instead"/"rather".)
 const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
 
-/** The {before, after} operand tokens flanking the first directional marker, or null. */
-function directionalOperands(tokens) {
+/** The {before, after} operand token PHRASES flanking the first directional
+ * marker, or null. Phrases (not single tokens) so multi-word operands like
+ * "memory cache" vs "disk store" are compared whole. */
+function directionalPhrases(tokens) {
   for (let i = 1; i < tokens.length - 1; i++) {
     if (DIRECTIONAL_MARKERS.has(tokens[i])) {
-      return { before: tokens[i - 1], after: tokens[i + 1] };
+      return { before: tokens.slice(0, i), after: tokens.slice(i + 1) };
     }
   }
   return null;
 }
 
+const seqEqual = (a, b) => a.length === b.length && a.every((t, i) => t === b[i]);
+// Drop the shared leading framing (verb) common to both `before` phrases and the
+// shared trailing context common to both `after` phrases, leaving just the
+// operands to compare.
+const dropCommonPrefix = (a, b) => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  return [a.slice(i), b.slice(i)];
+};
+const dropCommonSuffix = (a, b) => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1;
+  return [a.slice(0, a.length - i), b.slice(0, b.length - i)];
+};
+
 /**
- * True when two bodies state the SAME directive with its operands SWAPPED
- * ("use cache instead of store" vs "use store instead of cache"). This is a
- * contradiction, not a duplicate, even when they share trailing/leading context
- * that keeps the ordered-bigram score just above the reversed-order cutoff.
+ * True when two bodies state the SAME directive with its operand PHRASES SWAPPED
+ * ("use memory cache instead of disk store" vs "use disk store instead of memory
+ * cache"). A contradiction, not a duplicate — even with multi-word operands and
+ * shared leading/trailing context that keeps the ordered-bigram score above the
+ * reversed-order cutoff.
  */
 function directionalOperandsSwapped(bodyA, bodyB) {
-  const a = directionalOperands(contentTokens(bodyA));
-  const b = directionalOperands(contentTokens(bodyB));
+  const a = directionalPhrases(contentTokens(bodyA));
+  const b = directionalPhrases(contentTokens(bodyB));
   if (!a || !b) return false;
-  return a.before !== a.after && a.before === b.after && a.after === b.before;
+  const [aBefore, bBefore] = dropCommonPrefix(a.before, b.before);
+  const [aAfter, bAfter] = dropCommonSuffix(a.after, b.after);
+  if (aBefore.length === 0 || aAfter.length === 0) return false;
+  return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
 }
 
 /** Deterministic set of word k-shingles over content tokens. */
