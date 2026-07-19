@@ -42,3 +42,14 @@ test("review-thread guard inline mirror excludes resolved+outdated threads from 
   );
   assert.match(workflow, /if \(!isStaleCanonical\(t\)\) canonicals\.push\(\{ id: t\.id, anchor, body \}\);/);
 });
+
+test("check-unsticker query selects isOutdated so its dedup matches the guard", () => {
+  // check-unsticker imports dedupeThreads, which now excludes resolved+outdated
+  // threads from canonicals; if its GraphQL query omits isOutdated the field is
+  // always undefined and its dedup diverges from review-thread-guard.yml on
+  // stale resolved threads (cursor bugbot L82-L94).
+  const unsticker = readFileSync(".github/workflows/check-unsticker.yml", "utf8");
+  const queryBlock = unsticker.match(/reviewThreads\(first: 100, after: \$after\) \{[\s\S]*?comments\(first: 100\)/);
+  assert.ok(queryBlock, "check-unsticker reviewThreads query block must exist");
+  assert.match(queryBlock[0], /\bisOutdated\b/, "check-unsticker thread nodes must request isOutdated");
+});

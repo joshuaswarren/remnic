@@ -83,6 +83,7 @@ jobs:
                         nodes {
                           id
                           isResolved
+                          isOutdated
                           line
                           startLine
                           originalLine
