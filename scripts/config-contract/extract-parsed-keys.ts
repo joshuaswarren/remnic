@@ -63,6 +63,12 @@ const JS_VALUE_MEMBERS = new Set([
   "toString", "startsWith", "endsWith", "replace", "concat",
   "keys", "values", "entries", "hasOwnProperty",
 ]);
+/**
+ * Array methods that take a per-item callback. When the receiver is a config
+ * input array, the callback reads item fields, so the extractor follows it to
+ * surface `<arrayKey>.<itemField>` keys (issue #1990 review).
+ */
+const ARRAY_CALLBACK_METHODS = new Set(["map", "flatMap", "forEach", "filter"]);
 
 interface AliasInfo {
   /** Path prefix segments from the parser input to this alias ("" = root). */
@@ -261,6 +267,39 @@ function extractParserKeys(
           if (resolved.segments.length > 0) {
             out.keys.add([...prefix, ...resolved.info.prefix, ...resolved.segments].join("."));
           }
+          // Array item-field traversal: `alias.arrayKey.map(parseItemFn)` — the
+          // callback reads each item's fields, so recurse into it with the
+          // array-key prefix so item-field drift surfaces (issue #1990 review).
+          if (
+            recursion &&
+            recursion.depth < 6 &&
+            resolved.info.prefix.length + resolved.segments.length > 0 &&
+            ARRAY_CALLBACK_METHODS.has(method.name.text) &&
+            node.arguments.length >= 1
+          ) {
+            const itemPrefix = [...prefix, ...resolved.info.prefix, ...resolved.segments];
+            const callback = node.arguments[0];
+            if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) {
+              extractParserKeys(callback, sourceFile, repoRoot, out, itemPrefix, {
+                program: recursion.program,
+                depth: recursion.depth + 1,
+                seen: recursion.seen,
+              });
+            } else if (ts.isIdentifier(callback)) {
+              const recursionKey = `map:${callback.text}@${itemPrefix.join(".")}`;
+              if (!recursion.seen.has(recursionKey)) {
+                recursion.seen.add(recursionKey);
+                const helper = findFunctionForCall(recursion.program, callback.text, 0);
+                if (helper) {
+                  extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, itemPrefix, {
+                    program: recursion.program,
+                    depth: recursion.depth + 1,
+                    seen: recursion.seen,
+                  });
+                }
+              }
+            }
+          }
           for (const argument of node.arguments) visit(argument);
           return;
         }
@@ -452,7 +491,11 @@ function extractParserKeys(
     ts.forEachChild(node, visit);
   };
 
-  ts.forEachChild(fn.body, visit);
+  // visit(fn.body) — not forEachChild — so an expression-bodied arrow
+  // (`(item) => item.trim()`) is handled at the top expression, routing
+  // value-member calls to ambiguousValueMembers instead of recording a false
+  // `item.trim` key. Block bodies fall through to forEachChild unchanged.
+  visit(fn.body);
 
   // Zod arm: static walk of z.object({ … }) literals in the body.
   extractZodObjectKeys(fn.body, prefix, out);

@@ -4514,6 +4514,26 @@
             },
             "forceGeneric": {
               "type": "boolean"
+            },
+            "maxHints": {
+              "type": "number",
+              "description": "Per-section cap on injected hint lines."
+            },
+            "maxSupportingFacts": {
+              "type": "number",
+              "description": "Per-section cap on supporting facts."
+            },
+            "maxRelatedEntities": {
+              "type": "number",
+              "description": "Per-section cap on related entities."
+            },
+            "recentTurns": {
+              "type": "number",
+              "description": "Per-section recent-turn scan window."
+            },
+            "maxRubrics": {
+              "type": "number",
+              "description": "Per-section cap on injected rubrics."
             }
           },
           "required": [

@@ -110,3 +110,29 @@ test("real extraction covers the #1923 class: parser-only keys are visible", () 
   assert.ok(keys.some((k) => k.startsWith("wearables.")), "delegated module parser keys must extract");
   assert.ok(keys.length > 500, `expected a substantial key surface, got ${keys.length}`);
 });
+
+test("array item-field traversal: named `.map(parseItemFn)` callbacks surface item keys", () => {
+  const { keys } = extractReal();
+  // recallPipeline items are parsed via rawPipeline.map(parseRecallSectionEntry);
+  // the callback's per-item reads must surface as recallPipeline.<field> keys.
+  for (const field of ["maxChars", "maxResults", "maxRubrics", "forceGeneric"]) {
+    assert.ok(
+      keys.includes(`recallPipeline.${field}`),
+      `recallPipeline.${field} must extract from the .map callback`,
+    );
+  }
+  // namespacePolicies is another config array parsed with a per-item callback.
+  assert.ok(keys.includes("namespacePolicies.name"), "namespacePolicies.name must extract");
+});
+
+test("array item-field traversal: primitive-item arrays do not mint value-member keys", () => {
+  const { keys } = extractReal();
+  // taskModelChain.fallbacks is a string[]; its `.map((f) => f.trim())` callback
+  // must NOT record a bogus taskModelChain.fallbacks.trim key.
+  assert.ok(keys.includes("taskModelChain.fallbacks"), "the array key itself must extract");
+  assert.equal(
+    keys.includes("taskModelChain.fallbacks.trim"),
+    false,
+    "a primitive item's value-member call must not become a key",
+  );
+});

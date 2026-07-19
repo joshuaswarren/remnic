@@ -1676,6 +1676,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `recallPipeline[].topK` | (unset) | (unset) |
 | `recallPipeline[].timeoutMs` | (unset) | (unset) |
 | `recallPipeline[].maxPatterns` | (unset) | (unset) |
+| `recallPipeline[].maxRubrics` | (unset) | (unset) |
+| `recallPipeline[].forceGeneric` | (unset) | (unset) |
 | `extractionJudgeEnabled` | `false` | `false` |
 | `extractionJudgeModel` | `""` | `""` |
 | `extractionJudgeBatchSize` | `20` | `20` |

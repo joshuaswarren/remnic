@@ -161,11 +161,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "agentAccessHttp.principal",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "briefing",
     "issue": "#1990"
   },

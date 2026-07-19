@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
+import type { ContractCheckResult } from "../scripts/config-contract/contract-check.ts";
 
 /**
  * check-config-contract v2 comparisons (issue #1990 PR2) — the falsifiable
@@ -299,6 +300,125 @@ test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1
       () => fixture.run(),
       /new grandfather entry missing-schema:codingKnowledge\.sneaky is not allowed/,
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+function makeArrayFixtureRepo(schema: unknown): { run: () => ContractCheckResult; cleanup: () => void } {
+  const root = mkdtempSync(path.join(os.tmpdir(), "config-contract-array-"));
+  const parserPath = path.join(root, "parser.ts");
+  writeFileSync(
+    parserPath,
+    `
+type Rec = Record<string, unknown>;
+export function parseItem(raw: unknown): Rec {
+  const e = raw && typeof raw === "object" ? (raw as Rec) : {};
+  return { id: e.id, weight: e.weight };
+}
+export function parseRootConfig(raw: unknown): Rec {
+  const cfg = raw && typeof raw === "object" ? (raw as Rec) : {};
+  return {
+    parsedList: Array.isArray(cfg.parsedList) ? cfg.parsedList.map(parseItem) : [],
+    passThroughList: Array.isArray(cfg.passThroughList) ? (cfg.passThroughList as unknown[]) : [],
+    combo: cfg.combo && typeof cfg.combo === "object" ? { keep: (cfg.combo as Rec).keep } : {},
+    altBlock: cfg.altBlock,
+  };
+}
+`,
+  );
+  const manifest = path.join(root, "manifest.json");
+  writeFileSync(manifest, JSON.stringify(schema, null, 2));
+  const docsPath = path.join(root, "docs.md");
+  writeFileSync(
+    docsPath,
+    "Config: `parsedList[].id`, `parsedList[].weight`, `passThroughList`, `combo`, `combo.keep`, `altBlock`.\n",
+  );
+  return {
+    run: () =>
+      runContractCheck({
+        repoRoot: root,
+        entryFile: parserPath,
+        entryFunction: "parseRootConfig",
+        includeFiles: [],
+        manifestPaths: [manifest],
+        docsPath,
+      }),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+test("array item flattening: parsed-array item drift surfaces dead + missing schema (#1990)", () => {
+  const fixture = makeArrayFixtureRepo({
+    configSchema: {
+      properties: {
+        // parser reads item.id + item.weight; schema omits weight (missing) and
+        // declares a bogus deadItem (dead) — both must surface for a parsed array.
+        parsedList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, deadItem: { type: "string" } } } },
+        passThroughList: { type: "array", items: { type: "object", properties: {} } },
+        combo: { type: "object", properties: { keep: { type: "string" } } },
+      },
+    },
+  });
+  try {
+    const result = fixture.run();
+    const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
+    assert.ok(kinds.includes("dead-schema:parsedList.deadItem"), JSON.stringify(kinds));
+    assert.ok(kinds.includes("missing-schema:parsedList.weight"), JSON.stringify(kinds));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("array item flattening: pass-through arrays are not dead-schema-flagged (#1990)", () => {
+  const fixture = makeArrayFixtureRepo({
+    configSchema: {
+      properties: {
+        parsedList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, weight: { type: "number" } } } },
+        // passThroughList items are never parsed (raw hand-off) — declared item
+        // fields must NOT surface as dead-schema.
+        passThroughList: { type: "array", items: { type: "object", properties: { rootDir: { type: "string" } } } },
+        combo: { type: "object", properties: { keep: { type: "string" } } },
+      },
+    },
+  });
+  try {
+    const result = fixture.run();
+    assert.equal(
+      result.violations.some((v) => v.key.startsWith("passThroughList.")),
+      false,
+      JSON.stringify(result.violations),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("composition: allOf props are enforced, anyOf/oneOf alternatives are absorbed (#1990)", () => {
+  const fixture = makeArrayFixtureRepo({
+    configSchema: {
+      properties: {
+        parsedList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, weight: { type: "number" } } } },
+        passThroughList: { type: "array", items: { type: "object", properties: {} } },
+        combo: {
+          type: "object",
+          // allOf sibling `enforced` has no parser counterpart → dead-schema.
+          allOf: [{ type: "object", properties: { enforced: { type: "string" } } }],
+          properties: { keep: { type: "string" } },
+        },
+        altBlock: {
+          type: "object",
+          // anyOf alternative `alt` is a shape the parser may not implement → absorbed.
+          anyOf: [{ type: "object", properties: { alt: { type: "string" } } }],
+        },
+      },
+    },
+  });
+  try {
+    const result = fixture.run();
+    const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
+    assert.ok(kinds.includes("dead-schema:combo.enforced"), JSON.stringify(kinds));
+    assert.equal(kinds.includes("dead-schema:altBlock.alt"), false, JSON.stringify(kinds));
   } finally {
     fixture.cleanup();
   }

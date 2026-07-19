@@ -129,18 +129,32 @@ interface JsonSchemaNode {
 }
 
 /** Flatten a configSchema into dotted paths + prefixes for arbitrary objects. */
-function flattenSchema(schema: JsonSchemaNode): { paths: Set<string>; opaque: Set<string> } {
+function flattenSchema(schema: JsonSchemaNode): {
+  paths: Set<string>;
+  opaque: Set<string>;
+  arrayPrefixes: Set<string>;
+} {
   const paths = new Set<string>();
   const opaque = new Set<string>();
-  const walk = (node: JsonSchemaNode, prefix: string[], fromComposition = false): void => {
-    for (const branchName of ["anyOf", "oneOf", "allOf"]) {
+  const arrayPrefixes = new Set<string>();
+  const walk = (node: JsonSchemaNode, prefix: string[], fromAlternative = false): void => {
+    // anyOf/oneOf branches describe ALTERNATIVE shapes: a property in one branch
+    // may legitimately have no parser counterpart, so their object descendants
+    // are absorbed rather than dead-schema-checked. allOf is an INTERSECTION —
+    // every branch applies — so its properties are enforced like normal object
+    // properties, surfacing manifest-only siblings (issue #1990 review).
+    for (const branchName of ["anyOf", "oneOf"]) {
       const branches = node[branchName];
       if (Array.isArray(branches)) {
         for (const branch of branches) {
-          if (branch && typeof branch === "object") {
-            walk(branch as JsonSchemaNode, prefix, true);
-          }
+          if (branch && typeof branch === "object") walk(branch as JsonSchemaNode, prefix, true);
         }
+      }
+    }
+    const allOfBranches = node.allOf;
+    if (Array.isArray(allOfBranches)) {
+      for (const branch of allOfBranches) {
+        if (branch && typeof branch === "object") walk(branch as JsonSchemaNode, prefix, fromAlternative);
       }
     }
     const schemaType = node.type;
@@ -151,9 +165,20 @@ function flattenSchema(schema: JsonSchemaNode): { paths: Set<string>; opaque: Se
       prefix.length > 0 &&
       isObjectType &&
       node.additionalProperties !== false &&
-      (!props || fromComposition)
+      (!props || fromAlternative)
     ) {
       opaque.add(prefix.join("."));
+    }
+    // Array item objects flatten their declared fields under the array key so
+    // item-field drift (a manifest-only or parser-only item property) surfaces
+    // (issue #1990 review): `recallPipeline` items declare fields under
+    // items.properties → recallPipeline.<field>.
+    const isArrayType =
+      schemaType === "array" || (Array.isArray(schemaType) && schemaType.includes("array"));
+    const items = node.items;
+    if (prefix.length > 0 && isArrayType && items && typeof items === "object" && !Array.isArray(items)) {
+      arrayPrefixes.add(prefix.join("."));
+      walk(items as JsonSchemaNode, prefix, fromAlternative);
     }
     if (!props || typeof props !== "object") return;
     for (const [key, child] of Object.entries(props)) {
@@ -163,7 +188,7 @@ function flattenSchema(schema: JsonSchemaNode): { paths: Set<string>; opaque: Se
     }
   };
   walk(schema, []);
-  return { paths, opaque };
+  return { paths, opaque, arrayPrefixes };
 }
 
 /** A parsed path is schema-covered when declared or absorbed by an arbitrary object. */
@@ -184,13 +209,37 @@ function isUnderOpaqueSchema(keyPath: string, schema: { opaque: Set<string> }): 
   return false;
 }
 
+/**
+ * True when a schema item path lives under an array whose items the parser never
+ * parses (no parsed key below the array key). Such arrays are pass-through: the
+ * parser hands the raw array on and the items are consumed downstream, so their
+ * declared item fields are not parser drift and must not be dead-schema-flagged
+ * (issue #1990). Arrays whose items ARE parsed (e.g. recallPipeline) keep full
+ * dead-schema enforcement so a bogus item property still surfaces.
+ */
+function isUnderUnparsedArray(
+  keyPath: string,
+  arrayPrefixes: Set<string>,
+  parsedKeys: Set<string>,
+): boolean {
+  const segments = keyPath.split(".");
+  for (let i = segments.length - 1; i >= 1; i -= 1) {
+    const ancestor = segments.slice(0, i).join(".");
+    if (!arrayPrefixes.has(ancestor)) continue;
+    const prefix = `${ancestor}.`;
+    const parserParsesItems = [...parsedKeys].some((parsed) => parsed.startsWith(prefix));
+    if (!parserParsesItems) return true;
+  }
+  return false;
+}
 
-/** Backticked dotted identifiers mentioned in the docs. */
+
+/** Backticked dotted identifiers mentioned in the docs (array-item `key[].field` → `key.field`). */
 function collectDocsKeys(docsText: string): Set<string> {
   const out = new Set<string>();
-  const re = /`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+|[A-Za-z_$][\w$]*)`/g;
+  const re = /`([A-Za-z_$][\w$]*(?:\[\])?(?:\.[A-Za-z_$][\w$]*(?:\[\])?)*)`/g;
   for (const match of docsText.matchAll(re)) {
-    out.add(match[1]);
+    out.add(match[1].replaceAll("[]", ""));
   }
   return out;
 }
@@ -202,7 +251,7 @@ function collectDocsKeys(docsText: string): Set<string> {
  * block must not document `otherBlock.enabled` (issue #1990 review).
  */
 function collectDocsSections(docsText: string): Array<Set<string>> {
-  const re = /`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+|[A-Za-z_$][\w$]*)`/g;
+  const re = /`([A-Za-z_$][\w$]*(?:\[\])?(?:\.[A-Za-z_$][\w$]*(?:\[\])?)*)`/g;
   const sections: Array<Set<string>> = [];
   let current = new Set<string>();
   sections.push(current);
@@ -212,10 +261,9 @@ function collectDocsSections(docsText: string): Array<Set<string>> {
       sections.push(current);
     }
     for (const match of line.matchAll(re)) {
-      const identifier = match[1];
+      const identifier = match[1].replaceAll("[]", "");
       current.add(identifier);
-      const leaf = identifier.split(".").pop() as string;
-      current.add(leaf);
+      current.add(identifier.split(".").pop() as string);
     }
   }
   return sections;
@@ -300,6 +348,7 @@ export function runContractCheck(options: {
     const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
     for (const schemaPath of schema.flat.paths) {
       if (isUnderOpaqueSchema(schemaPath, schema.flat)) continue;
+      if (isUnderUnparsedArray(schemaPath, schema.flat.arrayPrefixes, parsedKeys)) continue;
       const hasParsedCounterpart = [...parsedKeys].some(
         (parsedKey) => parsedKey === schemaPath || parsedKey.startsWith(`${schemaPath}.`),
       );
