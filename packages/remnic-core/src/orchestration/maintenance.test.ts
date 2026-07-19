@@ -1893,6 +1893,84 @@ test("auto-compaction reserves the secure-store envelope so an encrypted rewrite
   }
 });
 
+test("auto-compaction reserves the envelope when a PLAINTEXT ledger will be rewritten encrypted (write-mode budget, #2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-plaintext-encrypt-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const total = 200;
+    const events = Array.from({ length: total }, (_unused, i) => ({
+      eventId: `cap-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const plaintext = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    // The on-disk ledger is PLAINTEXT (header not encrypted). The pre-fix budget
+    // keyed off this header and skipped the reserve, but the rewrite below
+    // encrypts (secureStoreEncryptOnWrite + unlocked key), so the envelope must
+    // still be reserved.
+    await writeFile(ledgerPath, plaintext, "utf-8");
+    assert.ok(!isEncryptedFile(await readFile(ledgerPath)), "precondition: existing ledger is plaintext");
+
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap so the UNRESERVED budget (cap − 1) keeps 20 rows whose encrypted size
+    // (20 rows + envelope) reaches the cap, while the reserving budget
+    // (cap − envelope − 1) keeps 19 rows that land strictly below it.
+    const cap = rowBytes * 20 + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES;
+    assert.ok(
+      20 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES >= cap,
+      "sanity: an unreserved 20-row plaintext budget encrypts to at/over the cap",
+    );
+    assert.ok(
+      19 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES < cap,
+      "sanity: a reserved 19-row budget encrypts to strictly below the cap",
+    );
+
+    const key = Buffer.alloc(32, 5);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ the rewrite encrypts.
+    assert.ok(storage.willEncryptStateWrites(), "precondition: writes will be encrypted at rest");
+
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: rowBytes * 5,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    scheduler.lifecycleLedgerMaxBytes = cap;
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      const onDisk = (await stat(ledgerPath)).size;
+      assert.ok(isEncryptedFile(await readFile(ledgerPath)), "rewritten ledger encrypted at rest");
+      assert.ok(onDisk < cap, `encrypted on-disk ledger (${onDisk}B) must be strictly below the cap (${cap}B)`);
+      const keptIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+      assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event survives");
+      assert.ok(!keptIds.includes("cap-000"), "oldest event archived out of the active ledger");
+
+      // Throttle armed only after an EFFECTIVE compaction: an unreserved budget
+      // would have reported "failed" (over-cap) and recompacted on this pass.
+      await writeFile(ledgerPath, plaintext, "utf-8");
+      const regrown = (await stat(ledgerPath)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.equal(
+        (await stat(ledgerPath)).size,
+        regrown,
+        "throttle armed after an effective compaction: second in-window pass is a no-op",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("catalog-disabled fallback pending drain skips unsafe spill entries (symlink/FIFO/dir) without following or blocking (#2033)", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-unsafe-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-outside-"));

@@ -2723,17 +2723,17 @@ export class StorageManager {
     return this._secureStoreKey !== null;
   }
 
+  /** Whether a state-file write encrypts at rest (encrypt-on-write on AND key
+   *  set) — the write mode lifecycle compaction reserves the envelope for (#2033). */
+  willEncryptStateWrites(): boolean {
+    return this._secureStoreEncryptOnWrite && this._secureStoreKey !== null;
+  }
+
   /**
-   * Resolve the effective write key.
-   *
-   * - If `_secureStoreEncryptOnWrite` is false: returns null (plain write).
-   * - If `_secureStoreEncryptOnWrite` is true AND key is set: returns key.
-   * - If `_secureStoreEncryptOnWrite` is true AND key is null AND
-   *   `_secureStoreRequired` is true: throws SecureStoreLockedError so the
-   *   write fails loudly rather than silently writing plaintext (P1 finding
-   *   from Cursor review of PR #767).
-   * - If `_secureStoreEncryptOnWrite` is true AND key is null AND
-   *   `_secureStoreRequired` is false: returns null (unencrypted store).
+   * Resolve the effective write key: null when encrypt-on-write is off or the
+   * store is unlocked-optional; the key when set; else throws
+   * SecureStoreLockedError under a required-but-locked store (PR #767) instead
+   * of silently writing plaintext.
    */
   private resolveWriteKey(): Buffer | null {
     if (!this._secureStoreEncryptOnWrite) return null;

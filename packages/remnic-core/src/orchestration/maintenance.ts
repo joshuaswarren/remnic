@@ -927,12 +927,19 @@ export class MaintenanceScheduler {
       return "deferred";
     }
     // #2033 findings (2)+(4): the rewrite budget bounds the PLAINTEXT payload, but
-    // an encrypted target adds a fixed secure-store envelope on disk. Reserve that
-    // envelope (plus one byte) from the plaintext budget so the encrypted file
-    // lands STRICTLY below the reader's refusal cap and the post-write check —
-    // which stats the on-disk (encrypted) size against the cap — cannot fail
-    // forever on a plaintext budget that equals the cap (the endless-retry bug).
-    const plaintextBudget = encrypted
+    // an encrypted-at-rest target adds a fixed secure-store envelope on disk.
+    // Reserve that envelope (plus one byte) from the plaintext budget so the
+    // encrypted file lands STRICTLY below the reader's refusal cap and the
+    // post-write check — which stats the on-disk (encrypted) size against the cap
+    // — cannot fail forever on a plaintext budget that equals the cap (the
+    // endless-retry bug). Base this on whether the REPLACEMENT will be encrypted
+    // (the storage write mode), NOT only on the current file header: a
+    // plaintext ledger rewritten under `secureStoreEncryptOnWrite` with the key
+    // set becomes encrypted, so it needs the reserve even though its current
+    // header is plaintext (#2033 write-mode finding).
+    const replacementEncrypted =
+      encrypted || (target.storage?.willEncryptStateWrites() ?? false);
+    const plaintextBudget = replacementEncrypted
       ? this.lifecycleLedgerMaxBytes - SECURE_STORE_ENVELOPE_OVERHEAD_BYTES - 1
       : this.lifecycleLedgerMaxBytes - 1;
     try {

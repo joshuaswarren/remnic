@@ -12,7 +12,7 @@ import {
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
-import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
+import { withHeldFileLock, type HeldFileLockOptions, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
 
 /**
@@ -256,7 +256,10 @@ export async function rebuildMemoryLifecycleLedger(
   // instead of being clobbered by the rename that replaces the file. The
   // corpus scan above stays outside the lock — frontmatter-derived rows are
   // reconstructed from the memory files, not the ledger.
-  const runLedgerCriticalSection = async (acquired: boolean): Promise<void> => {
+  const runLedgerCriticalSection = async (
+    acquired: boolean,
+    lock: HeldFileLockController,
+  ): Promise<void> => {
     // withHeldFileLock falls back to task(false) when it cannot acquire the
     // lock within the budget. A rebuild that read or rewrote the ledger without
     // the lock could race a concurrent append/rewrite and lose data, so REFUSE
@@ -354,6 +357,23 @@ export async function rebuildMemoryLifecycleLedger(
       }
     }
 
+    // Re-assert the lock immediately before the destructive active-ledger
+    // rewrite. Everything above (the preserve read, merge, sort, byte-cap
+    // bound, and JSON serialize) is CPU-bound and blocks the event loop, so the
+    // timer heartbeat inside withHeldFileLock cannot refresh the lock's mtime;
+    // a peer that judged the lock stale within the 30s window could have broken
+    // it and appended to the current ledger. `lock.refresh()` (a) reports the
+    // lock LOST so we ABORT rather than rename our compacted file over that
+    // peer's append, and (b) when still held, re-stamps the mtime so the bounded
+    // write below cannot itself be judged stale mid-rename (issue #1910/#2033).
+    const abortIfLockLost = async (): Promise<void> => {
+      if (await lock.refresh()) return;
+      throw new Error(
+        "lifecycle ledger rebuild aborted: lost the ledger lock during the compaction "
+        + "rewrite (a peer stale-broke it while the event loop was blocked by CPU-bound "
+        + "merge/serialize); refusing to clobber a concurrent append (issue #1910/#2033).",
+      );
+    };
     if (!dryRun) {
       const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
       const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
@@ -381,8 +401,10 @@ export async function rebuildMemoryLifecycleLedger(
             ? await copyExistingFileToBackup(outputPath, desiredBackup)
             : undefined;
         }
+        await abortIfLockLost();
         await storage.writeMemoryLifecycleLedgerContent(content);
       } else {
+        await abortIfLockLost();
         backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
       }
     }

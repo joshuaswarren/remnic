@@ -14,6 +14,7 @@ import {
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import { rebuildMemoryLifecycleLedger } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
 import {
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
@@ -800,5 +801,72 @@ test("appendLifecycleEventsSerialized refuses to write a spill into a symlinked 
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild aborts the compaction rewrite when a peer stale-breaks the ledger lock mid-section (#1910/#2033)", async () => {
+  // The preserve+merge+serialize inside the lock is CPU-bound and blocks the
+  // timer heartbeat, so within the 30s stale window a peer can judge the lock
+  // stale, break it, and hold its own. The rewrite MUST re-assert ownership
+  // right before its destructive write and ABORT — not rename its compacted
+  // file over the peer's append. We drive the peer break deterministically as a
+  // side effect of the under-lock preserve read.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-rebuild-lock-lost-"));
+  try {
+    await mkdir(path.join(memoryDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", "2026-03-08", "fact-1.md"),
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf8",
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const originalRow =
+      `${JSON.stringify(lifecycleEvent("evt-original", "fact-1", "2026-03-08T00:30:00.000Z"))}\n`;
+    await writeFile(ledgerPath, originalRow, "utf8");
+
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    const foreignOwner = "00000000-0000-4000-8000-000000000000";
+    const storage = new StorageManager(memoryDir);
+    // Simulate a peer stale-breaking our lock DURING the under-lock preserve
+    // read: overwrite the lock content with a foreign owner id (a peer that now
+    // holds it). The rewrite's pre-write ownership re-check must then see the
+    // lock is no longer ours and abort.
+    const origRead = storage.readAllMemoryLifecycleEventsForCompaction.bind(storage);
+    let broken = false;
+    storage.readAllMemoryLifecycleEventsForCompaction = async () => {
+      const events = await origRead();
+      if (!broken) {
+        broken = true;
+        await writeFile(lockPath, `999999 ${foreignOwner} ${new Date().toISOString()}\n`, "utf8");
+      }
+      return events;
+    };
+
+    await assert.rejects(
+      rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        storage,
+        preserveExistingEvents: true,
+      }),
+      /lost the ledger lock during the compaction rewrite/,
+      "rewrite must abort rather than clobber a peer that stale-broke the lock",
+    );
+
+    assert.match(
+      await readFile(lockPath, "utf8"),
+      new RegExp(foreignOwner),
+      "foreign (peer) lock left intact — the aborted rewrite never released it",
+    );
+    assert.equal(
+      await readFile(ledgerPath, "utf8"),
+      originalRow,
+      "active ledger not clobbered by the aborted rewrite",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
