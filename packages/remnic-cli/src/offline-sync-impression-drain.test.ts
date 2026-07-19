@@ -194,18 +194,16 @@ test("offline sync drains pending impression spills before the post-direct-push 
   }
 });
 
-test("offline sync drains through a LastRecallStore configured with the caller's rotation bounds, not defaults (#2033)", async () => {
+test("offline sync honors configured impression bounds without rotating into excluded archives (#2033)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-rotation-"));
   const originalFetch = globalThis.fetch;
   try {
-    // Seed an active impressions file already larger than the configured cap so
-    // folding one more spilled row must rotate it. With the LastRecallStore
-    // default (impressionsRotateBytes = 0, rotation disabled) no `.1` archive
-    // would ever appear — its presence proves runOfflineSyncOnce propagated the
-    // configured cap into the store instead of falling back to defaults.
+    // The active file fits below the configured cap, but the pending row would
+    // exceed it. A configured bound must defer the spill rather than silently
+    // falling back to rotation-off or moving rows into an excluded archive.
     const activePath = path.join(root, IMPRESSIONS_REL);
     await mkdir(path.dirname(activePath), { recursive: true });
-    const seeded = `${JSON.stringify({ seeded: "x".repeat(200) })}\n`;
+    const seeded = `${JSON.stringify({ seeded: "x".repeat(40) })}\n`;
     await writeFile(activePath, seeded, "utf-8");
     const nonce = await seedPendingImpression(root);
 
@@ -237,25 +235,27 @@ test("offline sync drains through a LastRecallStore configured with the caller's
       throw new Error(`unexpected fetch: ${url.pathname}`);
     }) as typeof fetch;
 
-    await runOfflineSyncOnce({
-      memoryDir: root,
-      remoteUrl: "http://remnic.test",
-      token: "test-token",
-      namespace: "generalist",
-      includeTranscripts: true,
-      statePath,
-      statePathExplicit: true,
-      impressionsRotateBytes: 128,
-      impressionsRotateKeep: 2,
-    });
 
-    // The fold appended the spill under the configured cap, rotating the
-    // over-cap active generation into `.1`.
-    const archive = await stat(`${activePath}.1`).then(() => true, () => false);
-    assert.equal(archive, true, "configured rotation bytes propagated: the over-cap active file rotated into .1");
-    // The spilled row was still folded (never dropped) — it lives in the current
-    // active generation.
-    await assertImpressionFolded(root, nonce);
+    await assert.rejects(
+      () =>
+        runOfflineSyncOnce({
+          memoryDir: root,
+          remoteUrl: "http://remnic.test",
+          token: "test-token",
+          namespace: "generalist",
+          includeTranscripts: true,
+          statePath,
+          statePathExplicit: true,
+          impressionsRotateBytes: 128,
+          impressionsRotateKeep: 2,
+        }),
+      /offline-sync impression drain could not fold pending recall impressions/,
+    );
+    const pendingEntries = await readdir(path.join(root, PENDING_DIR_REL));
+    assert.equal(pendingEntries.length, 1, "the oversized pending spill must remain durable");
+    const activeContent = await readFile(activePath, "utf-8");
+    assert.equal(activeContent.includes(nonce), false, "deferred rows must not enter the active file");
+    assert.equal(await stat(`${activePath}.1`).then(() => true, () => false), false);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });
