@@ -59,7 +59,6 @@ export interface RecallEntryDeps {
   ): Promise<string>;
   readonly storage: StorageManager;
   suppressedRecallFailures: number;
-  trackMemoryAccess(memoryIds: string[]): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
 }
 
@@ -283,7 +282,6 @@ export class RecallEntryCoordinator {
       ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
       : options.results;
     const memoryIds = this.deps.extractMemoryIdsFromResults(injectable);
-    this.deps.trackMemoryAccess(memoryIds);
     if (injectable.length === 0) return;
 
     const formatted = this.deps.formatQmdResultEntries(

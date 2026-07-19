@@ -226,7 +226,7 @@ test("assembleRecallSections keeps earlier atomic memories ahead of later helper
 
 test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-profile-boundary-", {
-    recallBudgetChars: 100,
+    recallBudgetChars: 140,
     recallProfileMaxRatio: 0.8,
     recallPipeline: [
       { id: "memories", enabled: true },

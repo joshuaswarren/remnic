@@ -345,6 +345,7 @@ export interface RecallInternalDeps {
   ): number | undefined;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly handleHistory: RecallHandleHistoryStore;
+  trackMemoryAccess(memoryIds: string[]): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   isRecallSectionEnabled(
     sectionId: string,
@@ -569,7 +570,6 @@ export class RecallInternalCoordinator {
       .update(retrievalQuery)
       .digest("hex");
     const policyVersion = this.deps.currentPolicyVersion();
-    let impressionRecorded = false;
     let recallSource:
       | "none"
       | "hot_qmd"
@@ -4529,7 +4529,6 @@ export class RecallInternalCoordinator {
           .map((result) => result.path)
           .filter(Boolean);
         xrayRecalledResults = memoryResults;
-        impressionRecorded = true;
       } else if (!confidenceGateRejected) {
         // Only attempt fallback paths if the confidence gate did NOT fire.
         // When the gate rejects, all recall pathways are skipped to prevent
@@ -4640,7 +4639,6 @@ export class RecallInternalCoordinator {
             .map((result) => result.path)
             .filter(Boolean);
           xrayRecalledResults = scoped;
-          impressionRecorded = true;
         } else {
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
@@ -4691,7 +4689,6 @@ export class RecallInternalCoordinator {
               .map((result) => result.path)
               .filter(Boolean);
             xrayRecalledResults = longTerm;
-            impressionRecorded = true;
           }
         }
         }
@@ -4838,7 +4835,6 @@ export class RecallInternalCoordinator {
           .map((result) => result.path)
           .filter(Boolean);
         xrayRecalledResults = scoped;
-        impressionRecorded = true;
       } else {
         const memories = await awaitAssemblyStep(
           "recent-memory-read",
@@ -4949,7 +4945,6 @@ export class RecallInternalCoordinator {
                 .map((result) => result.path)
                 .filter(Boolean);
               xrayRecalledResults = longTerm;
-              impressionRecorded = true;
             }
           } else {
             let recent = await awaitAssemblyStep(
@@ -5063,7 +5058,6 @@ export class RecallInternalCoordinator {
                 .map((result) => result.path)
                 .filter(Boolean);
               xrayRecalledResults = recent;
-              impressionRecorded = true;
             } else {
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
@@ -5113,7 +5107,6 @@ export class RecallInternalCoordinator {
                   .map((result) => result.path)
                   .filter(Boolean);
                 xrayRecalledResults = longTerm;
-                impressionRecorded = true;
               }
             }
           }
@@ -5165,7 +5158,6 @@ export class RecallInternalCoordinator {
               .map((result) => result.path)
               .filter(Boolean);
             xrayRecalledResults = longTerm;
-            impressionRecorded = true;
           }
         }
       }
@@ -5340,6 +5332,7 @@ export class RecallInternalCoordinator {
     );
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
+    this.deps.trackMemoryAccess(assembledRecall.includedMemoryIds);
     const context =
       assembledRecall.sections.length === 0
         ? ""
@@ -5576,7 +5569,6 @@ export class RecallInternalCoordinator {
           resultPaths: recalledMemoryPaths,
           policyVersion,
           appendImpression:
-            impressionRecorded ||
             recalledMemoryIds.length > 0 ||
             this.deps.config.recordEmptyRecallImpressions,
           identityInjection: {
