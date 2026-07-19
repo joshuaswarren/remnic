@@ -4,6 +4,10 @@ import test from "node:test";
 
 import { EngramAccessHttpServer } from "./access-http.js";
 import { EngramAccessService, type EngramAccessRecallRequest } from "./access-service.js";
+import {
+  type RecallCoordinatorHost,
+  withRecallConcurrency,
+} from "./access-recall-concurrency.js";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -92,66 +96,75 @@ test("HTTP recall aborts in-flight work when the client disconnects", async () =
   }
 });
 
-test("a disconnected recall queued on the principal budget lock never starts", async () => {
+test("a queued recall rejects immediately on abort — before the holder releases — and never starts", async () => {
   const firstStarted = deferred<void>();
   const releaseFirst = deferred<void>();
   let secondStarted = false;
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const lockHost = service as unknown as {
-    budgetLocks: Map<string, Promise<void>>;
-    withBudgetLock<T>(
+    recallSemaphores: Map<string, unknown>;
+    orchestrator: { config: Record<string, unknown> };
+    withRecallConcurrency<T>(
       principal: string,
       abortSignal: AbortSignal | undefined,
-      operation: () => Promise<T>,
+      operation: (queueWaitMs: number) => Promise<T>,
     ): Promise<T>;
   };
-  lockHost.budgetLocks = new Map();
+  lockHost.recallSemaphores = new Map();
+  // limit=1 => the second recall must queue behind the first.
+  lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
-  const first = lockHost.withBudgetLock("principal", undefined, async () => {
+  const first = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     firstStarted.resolve();
     await releaseFirst.promise;
   });
   await firstStarted.promise;
 
   const controller = new AbortController();
-  const second = lockHost.withBudgetLock("principal", controller.signal, async () => {
+  const second = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", controller.signal, async () => {
     secondStarted = true;
   });
   controller.abort();
-  releaseFirst.resolve();
 
-  await first;
+  // The queued recall rejects on abort WITHOUT waiting for the holder to
+  // release — the #1906 behavior change (the old width-1 lock only re-checked
+  // the abort signal after acquiring). The holder is still held here.
   await assert.rejects(waitFor(second), (error: Error) => error.name === "AbortError");
   assert.equal(secondStarted, false);
+
+  releaseFirst.resolve();
+  await first;
 });
 
-test("an aborted queued recall does not poison the principal budget lock", async () => {
+test("an aborted queued recall does not poison the per-principal recall lane", async () => {
   const firstStarted = deferred<void>();
   const releaseFirst = deferred<void>();
   let secondStarted = false;
   let thirdStarted = false;
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
   const lockHost = service as unknown as {
-    budgetLocks: Map<string, Promise<void>>;
-    withBudgetLock<T>(
+    recallSemaphores: Map<string, unknown>;
+    orchestrator: { config: Record<string, unknown> };
+    withRecallConcurrency<T>(
       principal: string,
       abortSignal: AbortSignal | undefined,
-      operation: () => Promise<T>,
+      operation: (queueWaitMs: number) => Promise<T>,
     ): Promise<T>;
   };
-  lockHost.budgetLocks = new Map();
+  lockHost.recallSemaphores = new Map();
+  lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
-  const first = lockHost.withBudgetLock("principal", undefined, async () => {
+  const first = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     firstStarted.resolve();
     await releaseFirst.promise;
   });
   await firstStarted.promise;
 
   const controller = new AbortController();
-  const second = lockHost.withBudgetLock("principal", controller.signal, async () => {
+  const second = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", controller.signal, async () => {
     secondStarted = true;
   });
-  const third = lockHost.withBudgetLock("principal", undefined, async () => {
+  const third = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     thirdStarted = true;
   });
   controller.abort();
@@ -175,18 +188,24 @@ function makeRecallServiceProbe(): {
   let capturedFingerprint: unknown;
   let didStore = false;
   const host = service as unknown as {
-    budgetLocks: Map<string, Promise<void>>;
+    recallSemaphores: Map<string, unknown>;
+    recallInFlight: Map<string, unknown>;
     orchestrator: { config: Record<string, unknown> };
     resolveRequestPrincipal: () => string;
+    budget: { record: () => { allowed: boolean }; release: () => void };
     executeRecall: () => Promise<{ response: Record<string, never>; budgetRecordPrincipal: null }>;
     handleIdempotentRead: (options: {
       requestFingerprint: unknown;
       execute: () => Promise<Record<string, never>>;
     }) => Promise<Record<string, never>>;
   };
-  host.budgetLocks = new Map();
-  host.orchestrator = { config: {} };
+  host.recallSemaphores = new Map();
+  host.recallInFlight = new Map();
+  host.orchestrator = {
+    config: { recallMaxConcurrentPerPrincipal: 4, recallSingleFlightEnabled: true },
+  };
   host.resolveRequestPrincipal = () => "principal";
+  host.budget = { record: () => ({ allowed: true }), release: () => {} };
   host.executeRecall = async () => {
     await executeRecall();
     return { response: {}, budgetRecordPrincipal: null };
@@ -221,7 +240,11 @@ test("recall excludes its abort signal from the idempotency fingerprint", async 
   );
 });
 
-test("recall does not store a result when the pipeline consumes an abort", async () => {
+test("a keyed recall persists its completed result even when the caller disconnects (#1906 r5 #1)", async () => {
+  // The pipeline runs to completion; the caller aborts mid-flight. Idempotent
+  // persistence must be decoupled from the caller's connection, so the result
+  // IS stored (a retry of the key returns it) while the caller still sees the
+  // AbortError for its own disconnected request.
   const probe = makeRecallServiceProbe();
   const controller = new AbortController();
   probe.setExecuteRecall(async () => {
@@ -235,6 +258,21 @@ test("recall does not store a result when the pipeline consumes an abort", async
       abortSignal: controller.signal,
     }),
     (error: Error) => error.name === "AbortError",
+  );
+  assert.equal(probe.stored(), true);
+});
+
+test("a keyed recall does not store when the pipeline itself throws", async () => {
+  // When the underlying pipeline fails/aborts (throws), nothing is persisted —
+  // a retry re-executes rather than replaying a failed result.
+  const probe = makeRecallServiceProbe();
+  probe.setExecuteRecall(async () => {
+    throw new Error("pipeline failed");
+  });
+
+  await assert.rejects(
+    probe.service.recall({ query: "boom", idempotencyKey: "boom-key" }),
+    /pipeline failed/,
   );
   assert.equal(probe.stored(), false);
 });

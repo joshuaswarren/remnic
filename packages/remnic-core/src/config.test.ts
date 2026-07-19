@@ -405,6 +405,55 @@ test("parseConfig coerces boolean-like strings for all recallPlanner gates (issu
   assert.equal(parseConfig({}).recallPlannerEnabled, true);
 });
 
+test("parseConfig recall concurrency + single-flight knobs (issue #1906)", () => {
+  // Defaults: cap 4, single-flight on.
+  assert.equal(parseConfig({}).recallMaxConcurrentPerPrincipal, 4);
+  assert.equal(parseConfig({}).recallSingleFlightEnabled, true);
+  // 0 (unlimited) is honored, not coerced to the default.
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: 0 }).recallMaxConcurrentPerPrincipal,
+    0,
+  );
+  // 1 restores exact serialization.
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: 1 }).recallMaxConcurrentPerPrincipal,
+    1,
+  );
+  // CLI/env surfaces pass strings — integer-like strings are accepted.
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: "8" }).recallMaxConcurrentPerPrincipal,
+    8,
+  );
+  // Fractional values are NOT floored (a typo like 0.5 must not become 0 =
+  // unlimited): they fall back to the default 4 (issue #1906 review round 3 #4).
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: 0.5 }).recallMaxConcurrentPerPrincipal,
+    4,
+  );
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: 3.9 }).recallMaxConcurrentPerPrincipal,
+    4,
+  );
+  // Negative / NaN fall back to the default 4.
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: -1 }).recallMaxConcurrentPerPrincipal,
+    4,
+  );
+  assert.equal(
+    parseConfig({ recallMaxConcurrentPerPrincipal: "abc" }).recallMaxConcurrentPerPrincipal,
+    4,
+  );
+  // Single-flight disable via boolean and boolean-like string.
+  assert.equal(
+    parseConfig({ recallSingleFlightEnabled: false }).recallSingleFlightEnabled,
+    false,
+  );
+  assert.equal(
+    parseConfig({ recallSingleFlightEnabled: "false" }).recallSingleFlightEnabled,
+    false,
+  );
+});
+
 test("parseConfig dreaming.maxEntries=0 preserves the runtime disable switch", () => {
   const result = parseConfig({ dreaming: { maxEntries: 0 } });
   assert.equal(result.dreaming.maxEntries, 0);

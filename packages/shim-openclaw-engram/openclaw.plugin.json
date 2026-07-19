@@ -4399,6 +4399,12 @@
         "default": 5,
         "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
       },
+      "recallMaxConcurrentPerPrincipal": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 4,
+        "description": "Maximum concurrent recalls executed per principal (issue #1906). Recalls beyond this cap queue FIFO; an aborted waiter leaves the queue immediately. 0 = unlimited (no cap). Replaces the former width-1 budget-lock serialization; budget accounting stays correct because peek/record are synchronous. Set 1 to restore exact serialization."
+      },
       "recallMemoryHandles": {
         "type": "boolean",
         "default": false,
@@ -4574,6 +4580,11 @@
         "type": "boolean",
         "default": false,
         "description": "Boost stored reasoning_trace memories in recall results when the incoming query reads like a problem-solving ask (e.g. 'how do I...', 'step by step', 'walk me through...'). Default false - opt in after benchmarking (issue #564)."
+      },
+      "recallSingleFlightEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), identical concurrent recalls for the same principal share a single in-flight execution (single-flight coalescing, issue #1906); each caller still receives its own cloned response and records its own budget event. Set false to restore per-request execution."
       },
       "recallTranscriptRetentionDays": {
         "type": "integer",

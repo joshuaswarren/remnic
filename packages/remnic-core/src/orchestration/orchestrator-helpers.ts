@@ -249,6 +249,13 @@ export interface RecallInvocationOptions {
    * against the caller's real context.
    */
   currentContextScopes?: readonly unknown[];
+  /**
+   * Wall-clock ms the caller waited to begin execution — per-principal
+   * semaphore queue + single-flight wait (issue #1906). Folded into
+   * recall-timings additively as `queueWaitMs`; omitted phases are simply
+   * absent, so existing timing consumers are unaffected.
+   */
+  queueWaitMs?: number;
 }
 
 export type QueryAwarePrefilter = {

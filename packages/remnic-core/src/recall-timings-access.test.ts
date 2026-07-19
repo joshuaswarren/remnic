@@ -225,6 +225,23 @@ test("trustStage is allowlisted and its ms is parsed (issue #1905)", () => {
   assert.equal(records[1]?.timingsMs.trustStage, 3, "\"3ms\" parses to numeric 3");
 });
 
+test("queueWaitMs is allowlisted and parsed while a non-allowlisted sibling is dropped (issue #1906)", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-queuewait"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "42ms",
+    queueWaitMs: "12ms",
+    queueWaitDebug: "99ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+  });
+  const record = getRecallTimings(config)[0];
+  assert.ok(record);
+  assert.equal(record.timingsMs.queueWaitMs, 12);
+  assert.equal("queueWaitDebug" in record.timingsMs, false);
+});
+
 test("phases that did not run are omitted while measured zeros survive", () => {
   const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-phases"));
   recordRecallTiming(config, {

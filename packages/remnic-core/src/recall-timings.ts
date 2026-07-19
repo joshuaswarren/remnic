@@ -45,6 +45,7 @@ const TIMING_FIELD_ALLOWLIST = [
   "graphShadow",
   "qmdPost",
   "trustStage",
+  "queueWaitMs",
 ] as const;
 // The ring buffer is process-local: a daemon restart or haproxy failover to
 // the other backend starts an empty history. processStartedAt lets consumers
@@ -84,6 +85,20 @@ function sanitizeRecallTiming(
     queryPolicy: typeof input.queryPolicy === "string" ? input.queryPolicy : "",
     timingsMs,
   };
+}
+
+/**
+ * Build the recall `timings` map, seeding the additive queue-wait phase (issue
+ * #1906) when the caller measured a real per-principal slot / single-flight
+ * wait. `queueWaitMs` 0/undefined/non-finite omits the phase so recall-timings
+ * stays byte-identical to the uncontended pre-#1906 path.
+ */
+export function foldQueueWaitTiming(queueWaitMs?: number): Record<string, string> {
+  const timings: Record<string, string> = {};
+  if (typeof queueWaitMs === "number" && Number.isFinite(queueWaitMs) && queueWaitMs >= 0) {
+    timings.queueWaitMs = `${queueWaitMs}ms`;
+  }
+  return timings;
 }
 
 export function recordRecallTiming(

@@ -4132,6 +4132,9 @@ test("access service serializes recall budget records under the hard limit", asy
       recallCrossNamespaceBudgetWindowMs: 60_000,
       recallCrossNamespaceBudgetSoftLimit: 0,
       recallCrossNamespaceBudgetHardLimit: 2,
+      // #1906: the exact serialized budget lane this test exercises is now
+      // opt-in via a width-1 per-principal semaphore (default is concurrent).
+      recallMaxConcurrentPerPrincipal: 1,
       dreamsPhases: dreamsPhasesConfig(),
     },
     recall: async () => {
@@ -4185,6 +4188,549 @@ test("access service serializes recall budget records under the hard limit", asy
     assert.equal(recallCalls, 1);
   } finally {
     releaseFirstRecall?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("single-flight idempotent replay returns the stored response with zero new pipeline or budget events", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-sf-replay-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "sf-replay-key",
+  };
+
+  try {
+    const first = await service.recall(request);
+    assert.equal(first.context, "ctx");
+    assert.equal(first.budgetWarning?.reason, "warn-over-soft");
+    assert.equal(recallCalls, 1);
+
+    // Replay: stored response, ZERO new pipeline execution.
+    const replay = await service.recall(request);
+    assert.equal(replay.context, "ctx");
+    assert.equal(recallCalls, 1, "replay must not spawn a pipeline");
+
+    // A fresh distinct cross-namespace recall now sees count=2 (first + fresh),
+    // proving the replay recorded ZERO new budget events (else it would be 3).
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(fresh.context, "ctx");
+    assert.equal(recallCalls, 2);
+    assert.equal(fresh.budgetWarning?.count, 2, "replay consumed no budget");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a post-retrieval failure releases the reserved cross-namespace budget (issue #1906 review #5)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-postfail-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  try {
+    // orchestrator.recall SUCCEEDS (budget reserved) but response assembly
+    // throws on the invalid tagMatch — a POST-retrieval failure. The widened
+    // rollback must release the reserved budget entry.
+    await assert.rejects(
+      () =>
+        service.recall({
+          query: "hello",
+          sessionKey: "agent:project-x:chat",
+          namespace: "shared",
+          // Deliberately out-of-domain value to force parseTagMatch to reject
+          // during response assembly (a post-retrieval failure). Cast via the
+          // branch's `as unknown as` idiom so the runtime still receives it
+          // without weakening the production `tagMatch: "any" | "all"` type.
+          tagMatch: "bogus" as unknown as "any" | "all",
+        }),
+    );
+    assert.equal(recallCalls, 1, "the pipeline ran (reserve happened) before assembly failed");
+
+    // If the reserve leaked, this would be count=2. Released => count=1.
+    const ok = await service.recall({
+      query: "hello-2",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(ok.budgetWarning?.count, 1, "the failed recall's reservation was rolled back");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a keyed recall persists even when the caller disconnects mid-pipeline; a retry replays with zero new pipeline or budget (#1906 r5 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r5-persist-"));
+  let recallCalls = 0;
+  let releaseRecall: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const firstEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      if (recallCalls === 1) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseRecall = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r5-persist-key",
+  };
+
+  try {
+    const controller = new AbortController();
+    const first = service.recall({ ...request, abortSignal: controller.signal });
+    await firstEntered;
+    // Caller disconnects mid-pipeline, THEN the pipeline completes.
+    controller.abort();
+    releaseRecall?.();
+    await assert.rejects(first, (error: Error) => error.name === "AbortError");
+    assert.equal(recallCalls, 1);
+
+    // The completed result was persisted despite the disconnect: a retry of the
+    // key replays it with ZERO new pipeline executions.
+    const retry = await service.recall(request);
+    assert.equal(retry.context, "ctx");
+    assert.equal(recallCalls, 1, "retry must not re-execute the pipeline");
+
+    // And ZERO new budget events: a fresh cross-namespace recall sees count=2
+    // (the persisted first + this fresh one), not 3.
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(recallCalls, 2);
+    assert.equal(fresh.budgetWarning?.count, 2, "the replay consumed no budget");
+  } finally {
+    releaseRecall?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("two concurrent identical keyed recalls coalesce to a single pipeline (#1906 r6 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r6-coalesce-"));
+  let recallCalls = 0;
+  let releaseRecall: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const firstEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      if (recallCalls === 1) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseRecall = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r6-coalesce-key",
+  };
+
+  try {
+    const a = service.recall({ ...request });
+    const b = service.recall({ ...request });
+    await firstEntered;
+    releaseRecall?.();
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(ra.context, "ctx");
+    assert.equal(rb.context, "ctx");
+    assert.equal(recallCalls, 1, "concurrent identical keyed recalls run the pipeline once");
+  } finally {
+    releaseRecall?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a keyed caller joining a live flight still hits the idempotency guard: key reuse raises a conflict, not a silent join (#1906 r12 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-conflict-"));
+  let recallCalls = 0;
+  let releaseFlight: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const flightEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      // The keyless "new-payload" flight (call #2) gates so it stays live while
+      // the reused-key request arrives.
+      if (recallCalls === 2) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseFlight = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const base = { sessionKey: "agent:project-x:chat", namespace: "shared" };
+  try {
+    // 1. Key "B" is first used for one payload — stored under B.
+    await service.recall({ ...base, query: "old-payload", idempotencyKey: "B" });
+    assert.equal(recallCalls, 1);
+
+    // 2. A DIFFERENT, keyless recall for "new-payload" is in flight (gated).
+    const flight = service.recall({ ...base, query: "new-payload" });
+    await flightEntered;
+
+    // 3. Key "B" is REUSED for the "new-payload" request while that flight is
+    //    live. It shares the flight key (idempotencyKey is not in it), so the old
+    //    fast-path would have silently JOINED and succeeded. It must instead enter
+    //    the idempotency guard and raise a reuse CONFLICT (B was stored for a
+    //    different payload).
+    await assert.rejects(
+      service.recall({ ...base, query: "new-payload", idempotencyKey: "B" }),
+      (error: Error) => /idempotencyKey reuse conflict/.test(error.message),
+    );
+
+    releaseFlight?.();
+    const flightResp = await flight;
+    assert.equal(flightResp.context, "ctx");
+    assert.equal(recallCalls, 2, "the conflicting request ran no pipeline");
+  } finally {
+    releaseFlight?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a keyed retry of a cached key during a live flight replays from the store with zero new pipeline or budget (#1906 r12 #1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-replay-"));
+  let recallCalls = 0;
+  let releaseFlight: (() => void) | undefined;
+  let markEntered: (() => void) | undefined;
+  const flightEntered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 30,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      // The keyless flight (call #2) gates so the cached-key retry arrives while
+      // it is live.
+      if (recallCalls === 2) {
+        markEntered?.();
+        await new Promise<void>((resolve) => {
+          releaseFlight = resolve;
+        });
+      }
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const base = { sessionKey: "agent:project-x:chat", namespace: "shared" };
+  try {
+    // 1. Cache key "A" for the "hello" payload (budget count -> 1).
+    await service.recall({ ...base, query: "hello", idempotencyKey: "A" });
+    assert.equal(recallCalls, 1);
+
+    // 2. An identical keyless flight for "hello" is live (budget count -> 2).
+    const flight = service.recall({ ...base, query: "hello" });
+    await flightEntered;
+
+    // 3. A retry of the cached key "A" arrives while that flight is live. The old
+    //    fast-path would JOIN the flight and record a NEW budget event. It must
+    //    instead REPLAY from the store: zero new pipeline, zero new budget.
+    const replay = await service.recall({ ...base, query: "hello", idempotencyKey: "A" });
+    assert.equal(replay.context, "ctx");
+    assert.equal(recallCalls, 2, "the cached-key retry ran no pipeline");
+
+    releaseFlight?.();
+    await flight;
+
+    // A fresh distinct cross-namespace recall now sees count=3 (call #1 + the
+    // flight + this fresh one). If the retry had joined and recorded, it would be 4.
+    const fresh = await service.recall({ ...base, query: "different" });
+    assert.equal(recallCalls, 3);
+    assert.equal(fresh.budgetWarning?.count, 3, "the cached-key retry recorded zero budget");
+  } finally {
+    releaseFlight?.();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a keyed recall whose idempotency.put FAILS rejects, persists nothing, and releases its budget; a retry re-executes cleanly (#1906 r12, put failure)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-recall-r12-putfail-"));
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "shared", readPrincipals: ["project-x"], writePrincipals: [] },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 10,
+      recallSingleFlightEnabled: true,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    getStorage: async () => ({
+      dir: memoryDir,
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+  // Fail the FIRST idempotency.put only; later puts (the retry) succeed. This is
+  // the real-store analogue of the stubbed put-failure concurrency test: it must
+  // NOT leave a phantom cache entry and must release the reserved budget.
+  // The idempotency store is private; bind a typed structural view once (unchecked
+  // cast to a test-only internal shape, not external input) then read the store.
+  const internals = service as unknown as {
+    idempotency: { put: (key: string, requestHash: string, response: unknown) => Promise<void> };
+  };
+  const store = internals.idempotency;
+  const realPut = store.put.bind(store);
+  const putError = new Error("idempotency store write failed");
+  let putCalls = 0;
+  store.put = async (key: string, requestHash: string, response: unknown) => {
+    putCalls += 1;
+    if (putCalls === 1) throw putError;
+    return realPut(key, requestHash, response);
+  };
+
+  const request = {
+    query: "hello",
+    sessionKey: "agent:project-x:chat",
+    namespace: "shared",
+    idempotencyKey: "r12-putfail-key", // gitleaks:allow — test-only idempotency key, not a secret
+  };
+
+  try {
+    // 1. The keyed leader completes its pipeline (budget count -> 1) but its put
+    //    fails: it must reject, persist nothing, and release its reservation.
+    await assert.rejects(service.recall({ ...request }), (error: Error) => error === putError);
+    assert.equal(recallCalls, 1);
+
+    // 2. A retry of the same key finds NO stored response (put failed) and
+    //    re-executes the pipeline — no phantom success from a half-persisted entry.
+    const retry = await service.recall({ ...request });
+    assert.equal(retry.context, "ctx");
+    assert.equal(recallCalls, 2, "retry re-executes because nothing was persisted");
+
+    // 3. Budget is intact: the failed leader released its reservation, so a fresh
+    //    cross-namespace recall sees count=2 (the successful retry + this fresh
+    //    one), not 3 — proving the failed put did not leak quota.
+    const fresh = await service.recall({
+      query: "different",
+      sessionKey: "agent:project-x:chat",
+      namespace: "shared",
+    });
+    assert.equal(recallCalls, 3);
+    assert.equal(fresh.budgetWarning?.count, 2, "the failed keyed recall consumed no budget");
+  } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
