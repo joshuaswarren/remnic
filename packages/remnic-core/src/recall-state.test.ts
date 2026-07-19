@@ -427,3 +427,44 @@ test("LastRecallStore preserves the current impression when rotation fails (#191
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("LastRecallStore refuses to rotate when the rotation lock cannot be acquired but still appends (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-lock-timeout-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // Seed the active file over the threshold so rotation WOULD be attempted.
+    await writeFile(impressionsPath, `${"x".repeat(256)}\n`, "utf8");
+    // Hold the cross-process rotation lock from a foreign owner with a fresh
+    // mtime so it is not broken as stale within the acquisition budget. Our
+    // record() must then observe acquired=false.
+    const lockPath = `${impressionsPath}.lock`;
+    await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
+
+    // Tiny maxWaitMs so the acquisition times out deterministically instead of
+    // blocking for the default multi-second budget.
+    const store = new LastRecallStore(dir, {
+      impressionsRotateBytes: 128,
+      impressionsRotateKeep: 5,
+      impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
+    });
+    await store.load();
+    await store.record({ sessionKey: "unlocked-append", query: "q", memoryIds: [] });
+
+    // Rotation was refused because the lock could not be acquired: no archive
+    // shift ran, so an unlocked rename never raced a peer's rotation.
+    assert.equal(
+      await fileExists(`${impressionsPath}.1`),
+      false,
+      "rotation must be skipped when the cross-process lock is not acquired",
+    );
+    // The current impression is never dropped — it still lands in the active file.
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(
+      active.includes('"sessionKey":"unlocked-append"'),
+      "impression appended best-effort despite the lock-acquisition timeout",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

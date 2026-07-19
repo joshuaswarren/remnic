@@ -3,7 +3,7 @@ import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
   runArchiveObservationsCliCommand,
   runMemoryTimelineCliCommand,
@@ -14,6 +14,8 @@ import {
   runRebuildObservationsCliCommand,
   runVerifyMemoryProjectionCliCommand,
 } from "../src/cli.js";
+import { StorageManager } from "../src/storage.js";
+import { isEncryptedFile } from "../src/secure-store/index.js";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -95,6 +97,61 @@ alpha
   });
   assert.equal(writeResult.dryRun, false);
   await stat(writeResult.outputPath);
+});
+
+test("rebuild-memory-lifecycle-ledger CLI refuses a locked secure store instead of a keyless plaintext rewrite (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-secure-"));
+  const key = Buffer.alloc(32, 0x3c);
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  try {
+    // Seed an encrypted-at-rest store: an encrypted memory to reconstruct from
+    // plus an encrypted lifecycle ledger on disk.
+    const unlocked = new StorageManager(memoryDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key, true);
+    await unlocked.ensureDirectories();
+    await unlocked.writeMemory("fact", "encrypted lifecycle fact");
+    await unlocked.writeMemoryLifecycleLedgerContent(
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId: "evt-seed",
+        memoryId: "m-seed",
+        eventType: "created",
+        timestamp: "2026-03-08T00:00:00.000Z",
+      }) + "\n",
+    );
+    const encryptedBefore = await readFile(ledgerPath);
+    assert.ok(isEncryptedFile(encryptedBefore), "precondition: ledger encrypted at rest");
+
+    // A locked secure store (required, no key) must be refused, never rewritten
+    // — a keyless rewrite would downgrade the ledger to plaintext.
+    const locked = new StorageManager(memoryDir);
+    locked.setSecureStoreRequired(true);
+    await assert.rejects(
+      () => runRebuildMemoryLifecycleLedgerCliCommand({ memoryDir, write: true, storage: locked }),
+      /secure store is locked/,
+    );
+    assert.deepEqual(
+      await readFile(ledgerPath),
+      encryptedBefore,
+      "locked refusal must leave the encrypted ledger untouched",
+    );
+
+    // With the unlocked secure store the rebuild proceeds and stays encrypted.
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage: unlocked,
+    });
+    assert.equal(writeResult.dryRun, false);
+    assert.ok(
+      isEncryptedFile(await readFile(ledgerPath)),
+      "rebuilt ledger stays encrypted at rest through the unlocked secure storage",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("rebuild-memory-projection CLI wrapper respects dry-run default and write mode", { skip: skipUnlessBetterSqlite3() }, async () => {

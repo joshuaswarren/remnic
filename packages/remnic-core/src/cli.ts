@@ -51,7 +51,11 @@ import {
   type ProcessBatchFn,
 } from "./bulk-import/index.js";
 import { archiveObservations } from "./maintenance/archive-observations.js";
-import { rebuildMemoryLifecycleLedger } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
+import {
+  runRebuildMemoryLifecycleLedgerCliCommand,
+  type RebuildMemoryLifecycleLedgerCliCommandOptions,
+} from "./maintenance/rebuild-memory-lifecycle-ledger-cli.js";
+export { runRebuildMemoryLifecycleLedgerCliCommand, type RebuildMemoryLifecycleLedgerCliCommandOptions };
 import {
   listMemoryGovernanceRuns,
   readMemoryGovernanceRunArtifact,
@@ -460,12 +464,6 @@ export interface ArchiveObservationsCliCommandOptions {
 }
 
 export interface RebuildObservationsCliCommandOptions {
-  memoryDir: string;
-  write?: boolean;
-  now?: Date;
-}
-
-export interface RebuildMemoryLifecycleLedgerCliCommandOptions {
   memoryDir: string;
   write?: boolean;
   now?: Date;
@@ -1018,16 +1016,6 @@ export async function runRebuildObservationsCliCommand(
   options: RebuildObservationsCliCommandOptions,
 ) {
   return rebuildObservations({
-    memoryDir: options.memoryDir,
-    dryRun: options.write !== true,
-    now: options.now,
-  });
-}
-
-export async function runRebuildMemoryLifecycleLedgerCliCommand(
-  options: RebuildMemoryLifecycleLedgerCliCommandOptions,
-) {
-  return rebuildMemoryLifecycleLedger({
     memoryDir: options.memoryDir,
     dryRun: options.write !== true,
     now: options.now,
@@ -7040,6 +7028,10 @@ export function registerCli(
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             write: options.write === true,
+            // Live secure-store manager so encrypted-ledger recovery reads and
+            // rewrites through the active key instead of a keyless plaintext
+            // rewrite (#2033); refuses safely when the store is locked.
+            storage: orchestrator.storage,
           });
 
           console.log(`Dry run: ${result.dryRun ? "yes" : "no"}`);

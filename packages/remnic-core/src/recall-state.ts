@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import { withHeldFileLock, type HeldFileLockOptions } from "./utils/serialize-mutations.js";
 import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
@@ -235,6 +235,10 @@ export class LastRecallStore {
   private readonly writeStateFile: StateFileWriter;
   private readonly impressionsRotateBytes: number;
   private readonly impressionsRotateKeep: number;
+  // Lock-acquisition timing for the cross-process impression rotation lock.
+  // Only tests set this (small maxWaitMs) to force the acquisition-timeout
+  // (`acquired=false`) branch deterministically; production uses the defaults.
+  private readonly impressionsLockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">;
   private state: LastRecallState = {};
   private stateWriteChain: Promise<void> = Promise.resolve();
   // Serializes the rotate-then-append critical section so concurrent record()
@@ -247,6 +251,7 @@ export class LastRecallStore {
       writeStateFile?: StateFileWriter;
       impressionsRotateBytes?: number;
       impressionsRotateKeep?: number;
+      impressionsLockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">;
     } = {},
   ) {
     this.statePath = path.join(memoryDir, "state", "last_recall.json");
@@ -254,6 +259,7 @@ export class LastRecallStore {
     // 0 disables rotation (never coerced to a default); keep floors at 1.
     this.impressionsRotateBytes = Math.max(0, Math.floor(options.impressionsRotateBytes ?? 0));
     this.impressionsRotateKeep = Math.max(1, Math.floor(options.impressionsRotateKeep ?? 5));
+    this.impressionsLockOptions = options.impressionsLockOptions;
     this.writeStateFile =
       options.writeStateFile ??
       (async (filePath, content) => {
@@ -408,29 +414,62 @@ export class LastRecallStore {
   }
 
   /**
-   * Rotate (best-effort) then append one impression line. Rotation failure must
-   * NOT drop the current impression (#1910): a failed rotation is logged and
-   * the append still runs, so the in-hand row is never lost to a rename error.
-   * Callers invoke this only through `impressionsWriteChain` so the
-   * rotate-then-append sequence is serialized against concurrent record() calls.
+   * Rotate (best-effort) then append one impression line under ONE shared
+   * cross-process lock (#1910, #2033). Both the archive-shift renames AND the
+   * append run inside the same held lock so a peer process holding the lock can
+   * never rename the active inode to `.1` between our open and write — which
+   * would land the impression in a rotated archive that offline-sync excludes,
+   * silently dropping it from active-state/sync consumers.
+   *
+   * Rotation failure must NOT drop the current impression: a failed rotation is
+   * logged and the append still runs, so the in-hand row is never lost to a
+   * rename error. Callers invoke this only through `impressionsWriteChain` so
+   * the rotate-then-append sequence is also serialized in-process.
    */
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
-    try {
-      await this.rotateImpressionsIfNeeded();
-    } catch (err) {
-      log.debug(`recall impressions rotation failed (append preserved): ${err}`);
+    // Rotation disabled (`0`): the active file is never renamed, so there is no
+    // append-vs-rename race — append lock-free and keep the hot path cheap.
+    if (this.impressionsRotateBytes <= 0) {
+      await appendFile(this.impressionsPath, line, "utf-8");
+      return;
     }
-    await appendFile(this.impressionsPath, line, "utf-8");
+    const lockPath = `${this.impressionsPath}.lock`;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 30_000, ...this.impressionsLockOptions },
+      async (acquired) => {
+        // withHeldFileLock falls back to task(false) when it cannot acquire the
+        // lock within the budget. Refuse to rotate unlocked (a rename racing a
+        // peer's rename is exactly what this lock prevents), but still append
+        // the current row best-effort so the impression is never dropped (the
+        // #1910 invariant). This degrades only under sustained lock contention.
+        if (!acquired) {
+          log.debug("recall impressions rotation lock not acquired; appending without rotation");
+          await appendFile(this.impressionsPath, line, "utf-8");
+          return;
+        }
+        try {
+          await this.rotateImpressionsIfNeeded();
+        } catch (err) {
+          log.debug(`recall impressions rotation failed (append preserved): ${err}`);
+        }
+        await appendFile(this.impressionsPath, line, "utf-8");
+      },
+    );
   }
 
   /**
    * Size-based rotation of `recall_impressions.jsonl` (issue #1910). When the
-   * active file exceeds `impressionsRotateBytes`, shift `.1..N` down one slot,
-   * move the active file to `.1`, and drop anything beyond `keep`. The active
-   * file name and format are unchanged; only historical rows move to archives.
-   * `0` disables. A rotation error is caught by the caller
-   * (`appendImpressionSerialized`) so the current impression is still appended.
+   * active file is at/over `impressionsRotateBytes`, shift `.1..N` down one
+   * slot, move the active file to `.1`, and drop anything beyond `keep`. The
+   * active file name and format are unchanged; only historical rows move to
+   * archives. `0` disables.
+   *
+   * The caller (`appendImpressionSerialized`) invokes this ONLY while holding
+   * the cross-process rotation lock, so the stat + archive shift here need no
+   * lock of their own and cannot race a peer's rename (#2033). A rotation error
+   * is caught by the caller so the current impression is still appended.
    */
   private async rotateImpressionsIfNeeded(): Promise<void> {
     if (this.impressionsRotateBytes <= 0) return;
@@ -442,28 +481,7 @@ export class LastRecallStore {
       throw err;
     }
     if (size < this.impressionsRotateBytes) return;
-    // Cross-process lock (issue #1910): two processes sharing memoryDir can both
-    // cross the threshold and interleave the archive-shift renames, stomping
-    // each other's `.1` and losing rows the old append-only path preserved. Hold
-    // a sibling lock around the rename sequence so only one process rotates at a
-    // time. The append in `appendImpressionSerialized` stays lock-free — O_APPEND
-    // is atomic across processes, so only rotation needs serializing and the hot
-    // path pays nothing until the file is actually at/over the threshold.
-    const lockPath = `${this.impressionsPath}.lock`;
-    await withHeldFileLock(lockPath, { staleMs: 30_000 }, async () => {
-      // Re-check under the lock: another process may have rotated between our
-      // stat and lock acquisition, leaving the active file small. Without this a
-      // queued waiter would rotate a second time and stomp the fresh `.1`.
-      let currentSize = 0;
-      try {
-        currentSize = (await stat(this.impressionsPath)).size;
-      } catch (err) {
-        if (isErrnoCode(err, "ENOENT")) return;
-        throw err;
-      }
-      if (currentSize < this.impressionsRotateBytes) return;
-      await this.shiftImpressionArchives();
-    });
+    await this.shiftImpressionArchives();
   }
 
   /**
