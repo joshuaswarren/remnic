@@ -80,7 +80,15 @@ const DETACH_PATTERN = /\bnot-a-duplicate\b/i;
 
 // Markup/boilerplate stripped before fingerprinting so badge shields, feedback
 // footers, severity tags, and emphasis never dominate the lexical signal.
-const CODE_FENCE_PATTERN = /```[\s\S]*?```/g;
+const CODE_FENCE_PATTERN = /```([\s\S]*?)```/g;
+// Preserve fenced code (bounded) instead of dropping it: two findings on the
+// same lines can carry their only distinguishing facts inside fenced snippets,
+// and deleting them collapses both fingerprints to identical prose -> false
+// merge in enforce mode. Keep the inner code minus the language line, capped so
+// a large block can't dominate the fingerprint (codex P2).
+const FENCE_TOKEN_BUDGET = 200;
+const preserveFencedCode = (_match, inner) =>
+  ` ${String(inner).replace(/^[^\n]*\n/, "").slice(0, FENCE_TOKEN_BUDGET)} `;
 const INLINE_CODE_PATTERN = /`([^`]*)`/g;
 const IMAGE_PATTERN = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK_PATTERN = /\[([^\]]*)\]\([^)]*\)/g;
@@ -112,7 +120,7 @@ export function stripMarkup(body) {
   if (typeof body !== "string") return "";
   return body
     .replace(FEEDBACK_BOILERPLATE_PATTERN, " ")
-    .replace(CODE_FENCE_PATTERN, " ")
+    .replace(CODE_FENCE_PATTERN, preserveFencedCode)
     .replace(IMAGE_PATTERN, " ")
     .replace(LINK_PATTERN, "$1")
     .replace(INLINE_CODE_PATTERN, "$1")

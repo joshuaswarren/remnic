@@ -351,6 +351,37 @@ test("a resolved+outdated canonical never anchors a later active finding (stale 
   assert.equal(enforce.effectiveUnresolvedCount, 1, "active finding still gates; stale resolution cannot satisfy it");
 });
 
+test("distinct fenced snippets with identical prose do NOT dedupe (negative)", () => {
+  // Two terse findings on the same overlapping lines whose only distinguishing
+  // fact is the fenced snippet. Dropping fences would collapse both to "use"
+  // and false-merge at 1.0; preserving them keeps the fingerprints distinct.
+  const a = mkThread({
+    id: 501, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "This should use:\n```js\nawait store.close();\n```",
+  });
+  const b = mkThread({
+    id: 502, path: "a.ts", startLine: 10, line: 12, author: "coderabbitai",
+    body: "This should use:\n```js\nawait queue.flush();\n```",
+  });
+  const { records, duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 0, "distinct code snippets must not merge");
+  assert.equal(records.find((r) => r.id === "t502").canonicalId, "t502", "second finding stays its own canonical");
+});
+
+test("identical fenced snippets with similar prose still dedupe (positive)", () => {
+  // A genuine cross-reviewer duplicate: same fenced fix on the same lines.
+  const a = mkThread({
+    id: 503, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "This should use:\n```js\nawait store.close();\n```",
+  });
+  const b = mkThread({
+    id: 504, path: "a.ts", startLine: 10, line: 12, author: "coderabbitai",
+    body: "This should use:\n```js\nawait store.close();\n```",
+  });
+  const { duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 1, "same code + prose is a real duplicate and still folds");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);

@@ -79,3 +79,15 @@ test("review-thread guard inline hasGateReply requires the Actions-bot author", 
   );
   assert.match(workflow, /GATE_REPLY_AUTHOR_LOGINS\.has\(c\?\.author\?\.login \?\? ""\)/);
 });
+
+test("review-thread guard inline stripMarkup preserves bounded fenced code", () => {
+  // Dropping fenced snippets collapses distinct findings that differ only in
+  // their code to identical prose -> false merge (codex P2). The inline mirror
+  // must keep bounded inner code, matching preserveFencedCode in review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(
+    workflow,
+    /\.replace\(\/```\(\[\\s\\S\]\*\?\)```\/g, \(_m, inner\) => ` \$\{inner\.replace\(\/\^\[\^\\n\]\*\\n\/, ""\)\.slice\(0, 200\)\} `\)/,
+  );
+  assert.doesNotMatch(workflow, /\.replace\(\/```\[\\s\\S\]\*\?```\/g, " "\)/, "must not drop fenced code to blank");
+});
