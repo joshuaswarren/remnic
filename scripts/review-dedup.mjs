@@ -243,9 +243,35 @@ function directionalOperandsSwapped(bodyA, bodyB) {
   return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
 }
 
+// Antonym ordering markers: flipping one for the other reverses the directive.
+const ANTONYM_MARKERS = { before: "after", after: "before" };
+
+/**
+ * True when two bodies keep the SAME operands but flip an ordering marker
+ * ("Move validation BEFORE write" vs "Move validation AFTER write") — an
+ * opposite ordering recommendation, not a duplicate. The operand-swap detector
+ * misses this because the operands are not swapped; here the marker itself is
+ * the reversal. Reject only when the markers are antonyms AND the non-marker
+ * content is near-identical, so unrelated before/after comments are unaffected.
+ */
+function directionalMarkerFlipped(bodyA, bodyB, nearMatch = REVIEW_DEDUP_CONFIG.polarityContentSim) {
+  const ta = directionalTokens(bodyA);
+  const tb = directionalTokens(bodyB);
+  const ma = ta.find((t) => t in ANTONYM_MARKERS);
+  const mb = tb.find((t) => t in ANTONYM_MARKERS);
+  if (!ma || !mb || ANTONYM_MARKERS[ma] !== mb) return false;
+  const strip = (toks, marker) => new Set(toks.filter((t) => t !== marker && t.length >= 2 && !STOPWORDS.has(t)));
+  const na = strip(ta, ma);
+  const nb = strip(tb, mb);
+  if (na.size === 0 || nb.size === 0) return false;
+  let inter = 0;
+  for (const t of na) if (nb.has(t)) inter += 1;
+  return inter / (na.size + nb.size - inter) >= nearMatch;
+}
+
 // Negation tokens that flip a finding's polarity (contractions are already
 // expanded to "not"/"will not"/... before tokenizing).
-const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none"]);
+const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none", "without"]);
 
 /**
  * True when two bodies are the SAME finding at OPPOSITE polarity — one is a
@@ -455,7 +481,8 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
         reversedOrder ||
         directionalOperandsSwapped(body, canonical.body) ||
         polarityMismatch(body, canonical.body) ||
-        distinctBySingleToken(body, canonical.body)
+        distinctBySingleToken(body, canonical.body) ||
+        directionalMarkerFlipped(body, canonical.body)
       ) {
         continue;
       }

@@ -250,12 +250,33 @@ jobs:
               if (aBefore.length === 0 || aAfter.length === 0) return false;
               return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
             };
+            // Antonym ordering markers: flipping one reverses the directive.
+            // "Move validation before write" vs "...after write" is an opposite
+            // ordering recommendation the operand-swap detector misses (operands
+            // are the same; the marker is the reversal). Reject when the markers
+            // are antonyms AND the non-marker content is near-identical. Mirrors
+            // directionalMarkerFlipped in review-dedup.mjs.
+            const ANTONYM_MARKERS = { before: "after", after: "before" };
+            const directionalMarkerFlipped = (a, b) => {
+              const ta = directionalTokensOf(a);
+              const tb = directionalTokensOf(b);
+              const ma = ta.find((t) => t in ANTONYM_MARKERS);
+              const mb = tb.find((t) => t in ANTONYM_MARKERS);
+              if (!ma || !mb || ANTONYM_MARKERS[ma] !== mb) return false;
+              const strip = (toks, marker) => new Set(toks.filter((t) => t !== marker && t.length >= 2 && !STOP.has(t)));
+              const na = strip(ta, ma);
+              const nb = strip(tb, mb);
+              if (na.size === 0 || nb.size === 0) return false;
+              let inter = 0;
+              for (const t of na) if (nb.has(t)) inter += 1;
+              return inter / (na.size + nb.size - inter) >= DEDUP.polarityContentSim;
+            };
             // Same finding at OPPOSITE polarity ("Do not call X" vs "Call X") —
             // preserving the negation token isn't enough, k=1 Jaccard still scores
             // it above threshold. Reject only when exactly one side carries a
             // negation and the non-negation content is otherwise near-identical.
             // Mirrors polarityMismatch in review-dedup.mjs.
-            const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none"]);
+            const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none", "without"]);
             const polarityMismatch = (a, b) => {
               const sa = new Set(tokensOf(a));
               const sb = new Set(tokensOf(b));
@@ -382,7 +403,8 @@ jobs:
                   reversedOrder ||
                   directionalOperandsSwapped(body, c.body) ||
                   polarityMismatch(body, c.body) ||
-                  distinctBySingleToken(body, c.body)
+                  distinctBySingleToken(body, c.body) ||
+                  directionalMarkerFlipped(body, c.body)
                 ) continue;
                 match = c;
                 best = sim;

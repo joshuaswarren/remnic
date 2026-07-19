@@ -199,7 +199,7 @@ test("review-thread guard inline rejects polarity-mismatch duplicates", () => {
   // A prohibition and its affirmative on the same lines must not fold; mirrors
   // polarityMismatch in review-dedup.mjs (codex P2).
   const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  assert.match(guard, /const NEGATION_TOKENS = new Set\(\["not", "no", "cannot", "never", "none"\]\);/);
+  assert.match(guard, /const NEGATION_TOKENS = new Set\(\["not", "no", "cannot", "never", "none", "without"\]\);/);
   assert.match(guard, /const polarityMismatch =/);
   assert.match(guard, /contentSim >= DEDUP\.polarityContentSim/, "polarity fold must use the near-match threshold");
   assert.match(guard, /polarityMismatch\(body, c\.body\)/, "match loop must reject polarity mismatches");
@@ -221,4 +221,14 @@ test("review-thread guard inline preserves one-character directional operands", 
   const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(guard, /t\.length >= 1/, "directional tokenizer must keep single-character tokens");
   assert.match(guard, /directionalPhrases\(directionalTokensOf\(a\)\)/, "swap detector must use the 1-char tokenizer");
+});
+
+test("review-thread guard inline treats 'without' as a negation and flips before/after markers", () => {
+  // 'without' must be a negation token, and a flipped before/after marker on the
+  // same operands must be rejected (codex P2). Mirrors review-dedup.mjs.
+  const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(guard, /const NEGATION_TOKENS = new Set\(\["not", "no", "cannot", "never", "none", "without"\]\);/);
+  assert.match(guard, /const ANTONYM_MARKERS = \{ before: "after", after: "before" \};/);
+  assert.match(guard, /const directionalMarkerFlipped =/);
+  assert.match(guard, /directionalMarkerFlipped\(body, c\.body\)/, "match loop must reject flipped ordering markers");
 });

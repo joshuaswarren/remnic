@@ -705,6 +705,34 @@ test("swapped 'before'/'after' ordering directives do NOT merge", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped before/after operands must not merge");
 });
 
+test("'without' vs 'with' is a polarity flip and does NOT merge", () => {
+  // 'without' is a negation token; 'with' is a stopword. The pair is otherwise
+  // identical, so it is a true polarity flip, not a subset duplicate.
+  const a = mkThread({
+    id: 661, path: "a.ts", startLine: 4, line: 8, author: "cursor",
+    body: "Call save without auth guard before writing",
+  });
+  const b = mkThread({
+    id: 662, path: "a.ts", startLine: 4, line: 8, author: "chatgpt-codex-connector",
+    body: "Call save with auth guard before writing",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "with/without is opposite polarity");
+});
+
+test("a flipped before/after marker (same operands) does NOT merge", () => {
+  // Same operands, antonym marker: 'before write' vs 'after write' is opposite
+  // ordering; the operand-swap detector misses it, the marker-flip guard catches it.
+  const a = mkThread({
+    id: 663, path: "a.ts", startLine: 4, line: 8, author: "cursor",
+    body: "Move validation before write in reset path",
+  });
+  const b = mkThread({
+    id: 664, path: "a.ts", startLine: 4, line: 8, author: "chatgpt-codex-connector",
+    body: "Move validation after write in reset handler path",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "flipped ordering marker must not merge");
+});
+
 test("a non-reversed 'before' directive still merges", () => {
   const a = mkThread({
     id: 653, path: "a.ts", startLine: 4, line: 8, author: "cursor",
