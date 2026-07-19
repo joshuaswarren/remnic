@@ -593,6 +593,13 @@
         "default": 5,
         "description": "Max turns before forced extraction"
       },
+      "bufferSaveDebounceMs": {
+        "type": "integer",
+        "default": 3000,
+        "minimum": 0,
+        "maximum": 2147483647,
+        "description": "Debounce window (ms) for persisting the smart buffer to state/buffer.json. Steady-state buffering coalesces the whole-state write onto a trailing-edge timer instead of rewriting every turn; extraction trigger/clear and shutdown force an immediate flush. 0 restores save-every-turn. Capped at 2147483647 (Node's 32-bit setTimeout limit)."
+      },
       "bufferSurpriseK": {
         "type": "number",
         "default": 5,

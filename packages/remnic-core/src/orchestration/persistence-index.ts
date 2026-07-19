@@ -81,13 +81,23 @@ export class PersistenceIndexCoordinator {
 
     if (memory.frontmatter.contentHash) {
       index.removeByHash(memory.frontmatter.contentHash);
-      return;
+    } else {
+      log.warn(
+        `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
+      );
+      index.remove(memory.content);
     }
-
-    log.warn(
-      `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
-    );
-    index.remove(memory.content);
+    // PR #2016 threads SDzOP / SDzOR: the shared index above is category-
+    // agnostic, but StorageManager.hasFactContentHash answers from a fact-ONLY
+    // membership set. Removing from the shared index alone left that set holding
+    // the removed fact's hash, so hasFactContentHash returned a stale `true`
+    // until the next corpus rebuild and wearable / promotion callers skipped a
+    // valid write. Keep the fact-only set in lockstep with the shared removal.
+    // Round 11: no fact-hashes.ready marker exists — the fact-hash index is
+    // rebuilt from the corpus on every restart, so an archived/superseded
+    // memory's .md is gone by then and the removal lands regardless of whether
+    // this run's reconciling save published.
+    targetStorage.removeFactOnlyHashForMemory(memory);
   }
 
   /**
@@ -157,7 +167,16 @@ export class PersistenceIndexCoordinator {
       const incomingEntityNorm = entityRef
         ? normalizeSupersessionKey(entityRef)
         : undefined;
-      const all = await targetStorage.readAllMemories();
+      // #2016 cold-tier finding: the authoritative content-hash rebuild unions
+      // the hot and cold tiers, so a dedup hit can name an active fact whose
+      // only copy was demoted to cold/. Scan both tiers (hot first, so a hot
+      // copy is still preferred) or the corrected valid_at/invalid_at write is
+      // suppressed while the cold copy keeps stale bounds in recall.
+      const [hotMems, coldMems] = await Promise.all([
+        targetStorage.readAllMemories(),
+        targetStorage.readAllColdMemories(),
+      ]);
+      const all = coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
       const existing = all.find((m) => {
         if (m.frontmatter.category !== "fact") return false;
         if ((m.frontmatter.status ?? "active") !== "active") return false;
@@ -264,6 +283,16 @@ export class PersistenceIndexCoordinator {
     }
   }
 
+  /**
+   * Persist the touched content-hash indexes via the removal-aware, lock-held
+   * RECONCILING save (issue #1909 review round 8 thread 3). Both append batches
+   * (extraction persist) and removal batches (archival / semantic consolidation)
+   * go through the SAME operation so they serialize against each other on the
+   * per-file lock: each reconciles `(on-disk \ removed) ∪ additions`, so a
+   * removal never resurrects a hash (a plain union would) and never clobbers a
+   * concurrent extraction's appended hash (a blind overwrite would). Untouched
+   * indexes dirty-short-circuit and are skipped entirely (finding 3).
+   */
   async saveContentHashIndexes(): Promise<void> {
     const indexes = new Set<ContentHashIndex>();
     if (this.deps.contentHashIndex) indexes.add(this.deps.contentHashIndex);
@@ -271,7 +300,32 @@ export class PersistenceIndexCoordinator {
       indexes.add(index);
     }
     for (const index of indexes) {
-      await index.save();
+      await index.saveMergingWithDisk();
+    }
+  }
+
+  /**
+   * Drive any deferred lock-timeout reconcile-save retries to completion at a
+   * lifecycle boundary (PR #2016 finding 3). Each per-index background retry is
+   * `unref`'d so it never keeps a long-lived host alive; a short-lived writer (a
+   * one-shot CLI) can exit before it fires, leaving a durable fact `.md` whose
+   * hash never reached disk for peers. `orchestrator.destroy()` calls this so the
+   * addition publishes before the process exits. Long-lived hosts only reach it
+   * at their own shutdown, so their in-flight retries keep running in the
+   * background until then. Best-effort: `flushReconcileRetry` is a no-op on a
+   * clean index and a permanently contended lock falls back to the
+   * corpus-rebuild-on-restart safety net.
+   */
+  async drainContentHashReconcileRetries(): Promise<void> {
+    const indexes = new Set<ContentHashIndex>();
+    if (this.deps.contentHashIndex) indexes.add(this.deps.contentHashIndex);
+    for (const index of this.deps.contentHashIndexesByStorageDir.values()) {
+      indexes.add(index);
+    }
+    for (const index of indexes) {
+      await index.flushReconcileRetry().catch((err) =>
+        log.warn(`content-hash index reconcile drain failed: ${err}`),
+      );
     }
   }
 

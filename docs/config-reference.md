@@ -103,6 +103,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json` on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
@@ -1176,6 +1177,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `triggerMode` | `smart` | `smart` |
 | `bufferMaxTurns` | `5` | `5` |
 | `bufferMaxMinutes` | `15` | `15` |
+| `bufferSaveDebounceMs` | `3000` | `3000` |
 | `consolidateEveryN` | `3` | `3` |
 | `highSignalPatterns` | `[]` | `[]` |
 | `maxMemoryTokens` | `2000` | `2000` |

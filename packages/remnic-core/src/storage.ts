@@ -24,6 +24,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
@@ -138,6 +139,35 @@ import type {
   ProvenanceSource,
 } from "./types.js";
 import { confidenceTier, SPECULATIVE_TTL_DAYS } from "./types.js";
+import {
+  collectStructuredSectionFacts,
+  compareEntityTimestamps,
+  compileEntityFacts,
+  isEntitySynthesisStale,
+  isEntitySynthesisTimelinePromotionBullet,
+  latestEntityTimelineTimestamp,
+  normalizeEntitySectionFact,
+  normalizeStructuredSectionFacts,
+  parseEntityTimelineBullet,
+  partitionEntityStructuredSections,
+  serializeEntityTimelineEntry,
+} from "./storage/entity-timeline.js";
+import {
+  ContentHashIndex,
+  FactHashIndexNotAuthoritativeError,
+  CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
+  type ContentHashIndexLockOptions,
+} from "./storage/content-hash-index.js";
+export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
+export type { ContentHashIndexLockOptions };
+export {
+  compareEntityTimestamps,
+  compileEntityFacts,
+  countEntityStructuredFacts,
+  fingerprintEntityStructuredFacts,
+  isEntitySynthesisStale,
+  normalizeStructuredSectionFacts,
+} from "./storage/entity-timeline.js";
 import {
   type ProjectedMemoryBrowseOptions,
   type ProjectedMemoryBrowsePage,
@@ -1121,138 +1151,10 @@ function dehyphenate(s: string): string {
   return s.replace(/-/g, "");
 }
 
-/**
- * Content-hash dedup index for facts.
- * Normalizes content (lowercase, strip punctuation, collapse whitespace),
- * computes SHA-256, and stores hashes in a line-delimited file.
- * Prevents writing semantically identical facts.
- */
-export class ContentHashIndex {
-  private hashes: Set<string> = new Set();
-  private dirty = false;
-  private readonly filePath: string;
-  private readonly secureStoreKeyProvider: () => Buffer | null;
-  private readonly secureStoreWriteKeyProvider: () => Buffer | null;
-  private readonly memoryDir: string;
-
-  constructor(
-    stateDir: string,
-    secureStoreKeyProvider: () => Buffer | null = () => null,
-    secureStoreWriteKeyProvider: () => Buffer | null = secureStoreKeyProvider,
-    memoryDir: string = path.dirname(stateDir)
-  ) {
-    this.filePath = path.join(stateDir, "fact-hashes.txt");
-    this.secureStoreKeyProvider = secureStoreKeyProvider;
-    this.secureStoreWriteKeyProvider = secureStoreWriteKeyProvider;
-    this.memoryDir = memoryDir;
-  }
-
-  /** Load existing hashes from disk. Safe to call multiple times. */
-  async load(): Promise<void> {
-    try {
-      const raw = await readMaybeEncryptedFile(this.filePath, this.secureStoreKeyProvider(), this.memoryDir);
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-          this.hashes.add(trimmed);
-        }
-      }
-      log.debug(`content-hash index: loaded ${this.hashes.size} hashes`);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug("content-hash index: no existing index — starting fresh");
-    }
-  }
-
-  /** Check if content already exists in the index. */
-  has(content: string): boolean {
-    return this.hashes.has(ContentHashIndex.computeHash(content));
-  }
-
-  /** Add content hash to the index. */
-  add(content: string): void {
-    const hash = ContentHashIndex.computeHash(content);
-    if (!this.hashes.has(hash)) {
-      this.hashes.add(hash);
-      this.dirty = true;
-    }
-  }
-
-  get size(): number {
-    return this.hashes.size;
-  }
-
-  /** Clear all loaded hashes so the next save rewrites the index from scratch. */
-  clear(): void {
-    if (this.hashes.size > 0) {
-      this.hashes.clear();
-    }
-    this.dirty = true;
-  }
-
-  /** Persist index to disk if changed. */
-  async save(): Promise<void> {
-    if (!this.dirty) return;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeMaybeEncryptedFile(
-      this.filePath,
-      [...this.hashes].join("\n") + "\n",
-      this.secureStoreWriteKeyProvider(),
-      {},
-      this.memoryDir
-    );
-    this.dirty = false;
-    log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
-  }
-
-  /** Remove a hash from the index (used when archiving/deleting). */
-  remove(content: string): void {
-    const hash = ContentHashIndex.computeHash(content);
-    if (this.hashes.delete(hash)) {
-      this.dirty = true;
-    }
-  }
-
-  /**
-   * Remove a pre-computed SHA-256 hash directly from the index without
-   * re-hashing.  Use this when the caller already holds the stored hash
-   * (e.g. `memory.frontmatter.contentHash`) to avoid the double-hash bug
-   * where `remove(hash)` would compute `hash(hash)` and never match the
-   * entry.
-   */
-  removeByHash(hash: string): void {
-    if (this.hashes.delete(hash)) {
-      this.dirty = true;
-    }
-  }
-
-  /**
-   * Add a pre-computed SHA-256 hash directly to the index without re-hashing.
-   * Use this when the caller already holds the stored hash
-   * (e.g. `memory.frontmatter.contentHash`) so that the index records the raw
-   * content hash rather than re-hashing the citation-annotated body.
-   *
-   * @internal Only called from `StorageManager.ensureFactHashIndexAuthoritative`.
-   * Not part of the public API — prefer `add(content)` for external callers.
-   */
-  addByHash(hash: string): void {
-    if (!this.hashes.has(hash)) {
-      this.hashes.add(hash);
-      this.dirty = true;
-    }
-  }
-
-  /** Normalize content (delegates to content-hash.ts for a single source of truth). */
-  static normalizeContent(content: string): string {
-    return normalizeContent(content);
-  }
-
-  /** Compute SHA-256 hash (delegates to content-hash.ts for a single source of truth). */
-  static computeHash(content: string): string {
-    return computeContentHash(content);
-  }
-}
+/** Bounded attempts to acquire the rebuild lock before ensureFactHashIndexAuthoritative surrenders authority (PR #2016). */
+const FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS = 3;
+/** Base backoff (ms) between rebuild-lock attempts; doubles each attempt, capped at CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS. */
+const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 
 // ---------------------------------------------------------------------------
 // Attribute normalization helper
@@ -1431,471 +1333,6 @@ function readEntitySectionText(
   }
   if (sectionLines.length === 0) return undefined;
   return sectionLines.join(options.preserveBullets === true ? "\n" : " ");
-}
-
-function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: string): EntityTimelineEntry | null {
-  const trimmed = bullet.trim();
-  if (!trimmed) return null;
-
-  let rest = trimmed;
-  const entry: EntityTimelineEntry = {
-    timestamp: trimmed.startsWith("[") ? "" : fallbackTimestamp,
-    text: "",
-  };
-  const consumedMetadataSegments: string[] = [];
-  let literalSingleSourceSegment: string | undefined;
-
-  if (!trimmed.startsWith("[")) {
-    entry.text = trimmed;
-    return entry.text ? entry : null;
-  }
-
-  const firstEnd = trimmed.indexOf("]");
-  if (firstEnd === -1) {
-    entry.text = trimmed;
-    return entry.text ? entry : null;
-  }
-
-  const firstToken = trimmed.slice(1, firstEnd).trim();
-  const parsedTimestamp = Date.parse(firstToken);
-  if (Number.isFinite(parsedTimestamp)) {
-    entry.timestamp = firstToken || fallbackTimestamp;
-    rest = trimmed.slice(firstEnd + 1).trimStart();
-  }
-
-  while (rest.startsWith("[")) {
-    const end = findEntityTimelineTokenEnd(rest);
-    if (end === -1) break;
-    const rawSegment = rest.slice(0, end + 1);
-    const token = rest.slice(1, end).trim();
-    const equalsIdx = token.indexOf("=");
-    if (equalsIdx === -1) {
-      if (rest === trimmed) {
-        entry.text = trimmed;
-        return entry.text ? entry : null;
-      }
-      break;
-    }
-    const key = token.slice(0, equalsIdx).trim().toLowerCase();
-    const value = unescapeEntityTimelineMetadataValue(token.slice(equalsIdx + 1).trim());
-    if (!value) break;
-    const nextRest = rest.slice(end + 1).trimStart();
-    switch (key) {
-      case "source_meta":
-        entry.source = value;
-        break;
-      case "source":
-        if (
-          consumedMetadataSegments.length === 0 &&
-          !nextRest.startsWith("[") &&
-          nextRest.length > 0 &&
-          !isManagedEntityTimelineSource(value)
-        ) {
-          literalSingleSourceSegment = rawSegment;
-          rest = nextRest;
-          break;
-        }
-        entry.source = value;
-        break;
-      case "session":
-      case "sessionkey":
-        entry.sessionKey = value;
-        break;
-      case "principal":
-        entry.principal = value;
-        break;
-      default:
-        entry.text = rest.trim();
-        return entry.text ? entry : null;
-    }
-    if (literalSingleSourceSegment) break;
-    consumedMetadataSegments.push(rawSegment);
-    rest = nextRest;
-  }
-
-  if (literalSingleSourceSegment) {
-    return {
-      timestamp: entry.timestamp,
-      text: `${literalSingleSourceSegment} ${rest}`.trim(),
-    };
-  }
-
-  entry.text = rest.trim();
-  if (!entry.text) return null;
-  return entry;
-}
-
-function isEntitySynthesisTimelinePromotionBullet(bullet: string): boolean {
-  const trimmed = bullet.trim();
-  if (!trimmed.startsWith("[")) return false;
-
-  const firstEnd = findEntityTimelineTokenEnd(trimmed);
-  if (firstEnd === -1) return false;
-
-  const firstToken = trimmed.slice(1, firstEnd).trim();
-  return looksLikeEntityTimelineTimestamp(firstToken);
-}
-
-function looksLikeEntityTimelineTimestamp(token: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/.test(token)) return false;
-  return Number.isFinite(Date.parse(token));
-}
-
-function isManagedEntityTimelineSource(source: string): boolean {
-  switch (source.trim().toLowerCase()) {
-    case "artifact":
-    case "chunking":
-    case "cli-migrate":
-    case "compounding-promotion":
-    case "consolidation":
-    case "contradiction-detection":
-    case "entity_extraction":
-    case "explicit":
-    case "explicit-inline":
-    case "explicit-inline-review":
-    case "explicit-review":
-    case "extraction":
-    case "extraction-shared-promotion":
-    case "manual":
-    case "migration":
-    case "migration-rechunk":
-    case "proactive":
-    case "replay":
-    case "semantic-consolidation":
-    case "unknown":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function findEntityTimelineTokenEnd(input: string): number {
-  let escaped = false;
-  for (let index = 0; index < input.length; index += 1) {
-    const char = input[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === "]") return index;
-  }
-  return -1;
-}
-
-function escapeEntityTimelineMetadataValue(value: string): string {
-  let escaped = "";
-  for (const char of value) {
-    switch (char) {
-      case "\\":
-        escaped += "\\\\";
-        break;
-      case "]":
-        escaped += "\\]";
-        break;
-      case "\n":
-        escaped += "\\n";
-        break;
-      case "\r":
-        escaped += "\\r";
-        break;
-      case "\t":
-        escaped += "\\t";
-        break;
-      default: {
-        const codePoint = char.codePointAt(0) ?? 0;
-        if (codePoint < 0x20) {
-          escaped += `\\u${codePoint.toString(16).padStart(4, "0")}`;
-        } else {
-          escaped += char;
-        }
-      }
-    }
-  }
-  return escaped;
-}
-
-function unescapeEntityTimelineMetadataValue(value: string): string {
-  if (!value.includes("\\")) return value;
-
-  let result = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-    if (char !== "\\") {
-      result += char;
-      continue;
-    }
-
-    const next = value[index + 1];
-    if (!next) {
-      result += "\\";
-      break;
-    }
-
-    switch (next) {
-      case "n":
-        result += "\n";
-        index += 1;
-        break;
-      case "r":
-        result += "\r";
-        index += 1;
-        break;
-      case "t":
-        result += "\t";
-        index += 1;
-        break;
-      case "u": {
-        const hex = value.slice(index + 2, index + 6);
-        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-          result += String.fromCharCode(parseInt(hex, 16));
-          index += 5;
-          break;
-        }
-        result += "u";
-        index += 1;
-        break;
-      }
-      default:
-        result += next;
-        index += 1;
-        break;
-    }
-  }
-  return result;
-}
-
-function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
-  const tokens: string[] = [];
-  if (entry.timestamp.trim().length > 0) {
-    tokens.push(`[${entry.timestamp}]`);
-  }
-  if (entry.source) {
-    const sourceKey = isManagedEntityTimelineSource(entry.source) ? "source" : "source_meta";
-    tokens.push(`[${sourceKey}=${escapeEntityTimelineMetadataValue(entry.source)}]`);
-  }
-  if (entry.sessionKey) {
-    tokens.push(`[session=${escapeEntityTimelineMetadataValue(entry.sessionKey)}]`);
-  }
-  if (entry.principal) {
-    tokens.push(`[principal=${escapeEntityTimelineMetadataValue(entry.principal)}]`);
-  }
-  const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
-  return `- ${serializedMetadata}${entry.text}`.trimEnd();
-}
-
-function dedupeEntityTimelineFacts(timeline: EntityTimelineEntry[]): string[] {
-  return [...new Set(timeline.map((entry) => entry.text.trim()).filter((entry) => entry.length > 0))];
-}
-
-function normalizeEntitySectionFact(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-export function normalizeStructuredSectionFacts(facts: string[]): string[] {
-  return [...new Set(facts.map((fact) => normalizeEntitySectionFact(fact)).filter((fact) => fact.length > 0))];
-}
-
-function collectStructuredSectionFacts(structuredSections: EntityStructuredSection[]): string[] {
-  const facts: string[] = [];
-  for (const section of structuredSections) {
-    for (const fact of section.facts) {
-      const normalized = normalizeEntitySectionFact(fact);
-      if (!normalized) continue;
-      facts.push(normalized);
-    }
-  }
-  return [...new Set(facts)];
-}
-
-export function compileEntityFacts(
-  timeline: EntityTimelineEntry[],
-  structuredSections: EntityStructuredSection[]
-): string[] {
-  const facts: string[] = [];
-  const seen = new Set<string>();
-  for (const fact of dedupeEntityTimelineFacts(timeline)) {
-    if (seen.has(fact)) continue;
-    seen.add(fact);
-    facts.push(fact);
-  }
-  for (const fact of collectStructuredSectionFacts(structuredSections)) {
-    if (seen.has(fact)) continue;
-    seen.add(fact);
-    facts.push(fact);
-  }
-  return facts;
-}
-
-function parseEntityStructuredSectionFacts(lines: string[]): string[] {
-  const facts: string[] = [];
-  let currentBlock: string[] = [];
-
-  const flushCurrentBlock = (): void => {
-    const normalized = normalizeEntitySectionFact(currentBlock.join(" "));
-    if (normalized.length > 0) facts.push(normalized);
-    currentBlock = [];
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      flushCurrentBlock();
-      continue;
-    }
-    if (line.startsWith("- ")) {
-      flushCurrentBlock();
-      currentBlock = [line.slice(2).trim()];
-      continue;
-    }
-    currentBlock.push(line);
-  }
-
-  flushCurrentBlock();
-  return [...new Set(facts)];
-}
-
-function looksLikeStructuredSectionFactList(lines: string[]): boolean {
-  const firstNonBlank = lines.find((line) => line.trim().length > 0)?.trim() ?? "";
-  return firstNonBlank.startsWith("- ");
-}
-
-function partitionEntityStructuredSections(
-  entityType: string,
-  extraSections: Array<{ title: string; lines: string[] }>,
-  entitySchemas?: PluginConfig["entitySchemas"]
-): {
-  structuredSections: EntityStructuredSection[];
-  remainingExtraSections: Array<{ title: string; lines: string[] }>;
-} {
-  const structuredSections: EntityStructuredSection[] = [];
-  const remainingExtraSections: Array<{ title: string; lines: string[] }> = [];
-  const structuredSectionIndex = new Map<string, EntityStructuredSection>();
-
-  for (const section of extraSections) {
-    const matchedSection = matchEntitySchemaSection(entityType, section.title, entitySchemas);
-    if (!matchedSection && !looksLikeStructuredSectionFactList(section.lines)) {
-      remainingExtraSections.push(section);
-      continue;
-    }
-    const facts = parseEntityStructuredSectionFacts(section.lines);
-    if (!matchedSection && facts.length === 0) {
-      remainingExtraSections.push(section);
-      continue;
-    }
-    const normalizedSection = matchedSection
-      ? { key: matchedSection.key, title: matchedSection.title }
-      : normalizeEntityStructuredSection(entityType, { key: section.title, title: section.title }, entitySchemas);
-    if (facts.length === 0) {
-      remainingExtraSections.push(section);
-      continue;
-    }
-    const existing = structuredSectionIndex.get(normalizedSection.key);
-    if (existing) {
-      existing.facts = normalizeStructuredSectionFacts([...existing.facts, ...facts]);
-      continue;
-    }
-    const structuredSection: EntityStructuredSection = {
-      key: normalizedSection.key,
-      title: normalizedSection.title,
-      facts: normalizeStructuredSectionFacts(facts),
-    };
-    structuredSections.push(structuredSection);
-    structuredSectionIndex.set(normalizedSection.key, structuredSection);
-  }
-
-  return {
-    structuredSections,
-    remainingExtraSections,
-  };
-}
-
-function latestEntityTimelineTimestamp(entity: EntityFile): string | undefined {
-  let latestRaw: string | undefined;
-  for (const entry of entity.timeline) {
-    const timestamp = entry.timestamp.trim();
-    if (!timestamp) continue;
-    if (!latestRaw || compareEntityTimestamps(timestamp, latestRaw) > 0) {
-      latestRaw = timestamp;
-    }
-  }
-  return latestRaw;
-}
-
-export function compareEntityTimestamps(left?: string, right?: string): number {
-  const leftValue = left?.trim() ?? "";
-  const rightValue = right?.trim() ?? "";
-
-  if (!leftValue && !rightValue) return 0;
-  if (!leftValue) return -1;
-  if (!rightValue) return 1;
-
-  const leftMs = Date.parse(leftValue);
-  const rightMs = Date.parse(rightValue);
-  const leftParsed = Number.isFinite(leftMs);
-  const rightParsed = Number.isFinite(rightMs);
-
-  if (leftParsed && rightParsed) {
-    if (leftMs === rightMs) return 0;
-    return leftMs > rightMs ? 1 : -1;
-  }
-  if (leftParsed) return 1;
-  if (rightParsed) return -1;
-  return leftValue.localeCompare(rightValue);
-}
-
-export function countEntityStructuredFacts(entity: EntityFile): number {
-  return (entity.structuredSections ?? []).reduce((count, section) => count + section.facts.length, 0);
-}
-
-export function fingerprintEntityStructuredFacts(entity: Pick<EntityFile, "structuredSections">): string | undefined {
-  const normalizedSections = (entity.structuredSections ?? [])
-    .map((section) => ({
-      key: section.key.trim().toLowerCase(),
-      title: section.title.replace(/\s+/g, " ").trim(),
-      facts: normalizeStructuredSectionFacts(section.facts)
-        .slice()
-        .sort((left, right) => left.localeCompare(right)),
-    }))
-    .filter((section) => section.facts.length > 0)
-    .sort(
-      (left, right) =>
-        left.key.localeCompare(right.key) ||
-        left.title.localeCompare(right.title) ||
-        left.facts.join("\n").localeCompare(right.facts.join("\n"))
-    );
-  if (normalizedSections.length === 0) return undefined;
-  return createHash("sha256").update(JSON.stringify(normalizedSections)).digest("hex");
-}
-
-export function isEntitySynthesisStale(entity: EntityFile): boolean {
-  const structuredFactCount = countEntityStructuredFacts(entity);
-  const structuredFactDigest = fingerprintEntityStructuredFacts(entity);
-  const storedStructuredFactDigest = entity.synthesisStructuredFactDigest?.trim() || undefined;
-  if (entity.timeline.length === 0 && structuredFactCount === 0) return false;
-  if (!entity.synthesis?.trim()) return true;
-  if (entity.synthesisTimelineCount === undefined) return true;
-  if (structuredFactCount > 0 && entity.synthesisStructuredFactCount === undefined) return true;
-  if (structuredFactCount > 0 && !storedStructuredFactDigest) return true;
-  const latestTimelineTimestamp = latestEntityTimelineTimestamp(entity);
-  if (!latestTimelineTimestamp) {
-    return (
-      entity.timeline.length > entity.synthesisTimelineCount ||
-      structuredFactCount > (entity.synthesisStructuredFactCount ?? 0) ||
-      structuredFactDigest !== storedStructuredFactDigest
-    );
-  }
-  if (!entity.synthesisUpdatedAt?.trim()) return true;
-  const timelineFreshness = compareEntityTimestamps(latestTimelineTimestamp, entity.synthesisUpdatedAt);
-  if (timelineFreshness > 0) return true;
-  return (
-    entity.timeline.length > entity.synthesisTimelineCount ||
-    structuredFactCount > (entity.synthesisStructuredFactCount ?? 0) ||
-    structuredFactDigest !== storedStructuredFactDigest
-  );
 }
 
 /**
@@ -2364,6 +1801,17 @@ export interface WriteMemoryOptions {
    * even when their citation timestamp differs.
    */
   contentHashSource?: string;
+  /**
+   * When true, writeMemory marks the fact-hash index dirty via `.add(...)`
+   * but does NOT flush it to disk — the caller is responsible for a
+   * subsequent batch save (issue #1909). The extraction persist path sets
+   * this and relies on the orchestrator's authoritative
+   * `saveContentHashIndexes()` batch save plus a per-storage union flush,
+   * avoiding a whole-index (which grows with corpus size) rewrite per fact.
+   * Default false: every
+   * other (single-write) caller keeps the immediate, crash-safe save.
+   */
+  deferHashIndexSave?: boolean;
   status?: MemoryStatus;
   /**
    * Consolidation provenance (issue #561 PR 2).  When the caller is a
@@ -2534,8 +1982,39 @@ export class StorageManager {
   private factHashIndex: ContentHashIndex | null = null;
   private factHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
   private factHashIndexAuthoritative: boolean | null = null;
-  private factHashIndexAuthoritativePromise: Promise<void> | null = null;
+  private factHashIndexAuthoritativePromise: Promise<boolean> | null = null;
+  /**
+   * Fact-ONLY hash membership (PR #2016). The shared `factHashIndex` above is
+   * category-agnostic (the round-15 corpus rebuild + addContentHashDedup index
+   * every category), so it cannot answer a fact-only question. This set carries
+   * only `category === "fact"` hashes and is the sole source for
+   * `hasFactContentHash`, so an over-included non-fact body can never suppress a
+   * real fact candidate. Kept in lockstep with the shared index on EVERY path:
+   * the authoritative corpus rebuild (repopulated in place), the write path
+   * (`writeMemory` / `addActiveFactContentHash`), the storage-owned removal
+   * (`removeFactContentHashesForMemories`), AND the orchestrator's archival /
+   * consolidation removal (`removeContentHashForMemory` ->
+   * `removeFactOnlyHashForMemory`). In-memory only; never persisted.
+   */
+  private factOnlyHashes: Set<string> = new Set();
+  /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
+  factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
+  /**
+   * Cache of "is this file encrypted?" keyed by absolute path, VALIDATED by file
+   * identity (size + mtimeMs) — issue #1909 review round 10 finding 1. A prior
+   * design cached only a boolean and relied on this instance's own writes to
+   * invalidate it; a PEER process encrypting the file would not invalidate,
+   * leaving a stale `false` that made the append path write RAW bytes into an
+   * encrypted file (corruption). Now each entry records the (size, mtime) the
+   * classification was read at; `isEncryptedFileHeader` re-sniffs (header-only)
+   * whenever the on-disk identity no longer matches, so a foreign rewrite is
+   * detected. The whole-file read is still never performed.
+   */
+  private readonly secureFileEncryptionSniffCache = new Map<
+    string,
+    { identity: { size: number; mtimeMs: number }; encrypted: boolean }
+  >();
   private offlineSyncDigestCache: Map<string, OfflineSyncDigestCacheEntry> | null = null;
   private offlineSyncDigestCacheLoadPromise: Promise<Map<string, OfflineSyncDigestCacheEntry>> | null = null;
   private offlineSyncDigestCacheWriteChain: Promise<void> = Promise.resolve();
@@ -2642,6 +2121,12 @@ export class StorageManager {
     // decrypted under the previous key, not just the entity layer.
     invalidateAllForDir(this.baseDir);
     this.invalidateKnowledgeIndexCache();
+    // A key change flips resolveWriteKey(), so a file's plain/encrypted class on
+    // the next full rewrite may differ from what was cached (issue #1909).
+    this.secureFileEncryptionSniffCache.clear();
+    // Same rationale for the behavior-signals dedup key cache (issue #1909):
+    // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
+    this.behaviorSignalsKeyCache = null;
   }
 
   private getEntityCacheSecureStoreKey(): string {
@@ -3222,14 +2707,20 @@ export class StorageManager {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
-    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWriteForPath(filePath)
-    );
+    const writeKey = this.resolveWriteKey();
+    return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
+      // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
+      // changes the file's (size, mtime), so isEncryptedFileHeader re-sniffs on
+      // the next append when its identity check misses. Identity validation also
+      // covers PEER rewrites that this hook never sees.
+      this.notifyCatalogWriteForPath(filePath);
+    });
   }
   private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir).then(() =>
-      this.notifyCatalogWriteForPath(filePath)
-    );
+    const writeKey = this.resolveWriteKey();
+    return writeMaybeEncryptedFileFromChunks(filePath, chunks, writeKey, {}, this.baseDir).then(() => {
+      this.notifyCatalogWriteForPath(filePath);
+    });
   }
 
   private assertManagedStoragePath(filePath: string, method: string): string {
@@ -3435,11 +2926,9 @@ export class StorageManager {
     // chokepoint, which also covers the entity cache (issue #1535).
     this.invalidateAllMemoriesCache();
     this.invalidateKnowledgeIndexCache();
+    // Force a corpus rebuild of the fact-hash index on next use (round 11: no
+    // on-disk ready marker — the in-memory authoritative flag is the only gate).
     this.factHashIndexAuthoritative = false;
-    await unlink(this.factHashIndexReadyPath).catch((error: unknown) => {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    });
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -3454,7 +2943,8 @@ export class StorageManager {
       this.stateDir,
       () => this._secureStoreKey,
       () => this.resolveWriteKey(),
-      this.baseDir
+      this.baseDir,
+      this.factHashIndexLockOptions,
     );
   }
 
@@ -3472,12 +2962,60 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Classify a file as encrypted by reading ONLY the fixed-size magic header
+   * (issue #1909), never the whole file. The result is cached per-path but
+   * VALIDATED against the file's (size, mtime) identity (review round 10 finding
+   * 1): a `stat` on each call is O(1), and the 12-byte header read happens only
+   * on a cache miss or when the on-disk identity changed — so a PEER process
+   * rewriting/encrypting the file is detected and we never append raw bytes into
+   * an encrypted body. ENOENT and short/empty files classify as not-encrypted
+   * (fall through to a plain `appendFile`).
+   */
+  private async isEncryptedFileHeader(filePath: string): Promise<boolean> {
+    let st;
+    try {
+      st = await stat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    const cached = this.secureFileEncryptionSniffCache.get(filePath);
+    if (cached && cached.identity.size === st.size && cached.identity.mtimeMs === st.mtimeMs) {
+      return cached.encrypted;
+    }
+    let handle;
+    try {
+      handle = await open(filePath, "r");
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    try {
+      const header = Buffer.alloc(MAGIC_HEADER_SIZE);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      const encrypted = isEncryptedFile(header.subarray(0, bytesRead));
+      this.secureFileEncryptionSniffCache.set(filePath, {
+        identity: { size: st.size, mtimeMs: st.mtimeMs },
+        encrypted,
+      });
+      return encrypted;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
   private async appendStorageSecureFileUnlocked(filePath: string, content: string): Promise<void> {
     const writeKey = this.resolveWriteKey();
     await mkdir(path.dirname(filePath), { recursive: true });
     if (writeKey === null) {
       try {
-        if (isEncryptedFile(await readFile(filePath))) {
+        // Header-only sniff (issue #1909): reads at most MAGIC_HEADER_SIZE bytes
+        // instead of the whole target file (a lifecycle ledger can grow to
+        // hundreds of MB on a large corpus) to decide "is this encrypted?". A
+        // plaintext append below cannot flip the classification, so a cached
+        // `false` stays valid across appends.
+        if (await this.isEncryptedFileHeader(filePath)) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
           this.notifyCatalogWriteForPath(filePath);
@@ -3486,11 +3024,21 @@ export class StorageManager {
       } catch (err) {
         if (!isErrnoCode(err, "ENOENT")) throw err;
       }
+      // Plaintext append does not touch the header. isEncryptedFileHeader is now
+      // (size, mtime)-identity-validated (issue #1909 round 10), so a PEER
+      // process that encrypted this file since our last sniff is detected on the
+      // stat above and re-sniffed — we will NOT append raw bytes into an
+      // encrypted body. A residual sub-call TOCTOU (a peer encrypts between this
+      // stat and the appendFile below) is inherent to any check-then-act and is
+      // out of scope; the identity check closes the long-lived stale-cache hole.
       await appendFile(filePath, content, "utf-8");
       this.notifyCatalogWriteForPath(filePath);
       return;
     }
 
+    // Encrypted-store branch (issue #1909, known limitation): the sealed format
+    // has no append primitive, so this inherently decrypts + concatenates +
+    // rewrites the whole file. Only the plaintext-path sniff read was wasteful.
     let existing = "";
     try {
       existing = await this.readStorageSecureFile(filePath);
@@ -3509,10 +3057,6 @@ export class StorageManager {
   private get entitySynthesisQueuePath(): string {
     return path.join(this.stateDir, "entity-synthesis-queue.json");
   }
-  private get factHashIndexReadyPath(): string {
-    return path.join(this.stateDir, "fact-hashes.ready");
-  }
-
   // ── Tombstone store access (issue #1579) ─────────────────────────────────
   /**
    * The on-disk tombstone log path. Lives under `<stateDir>/tombstones.jsonl`
@@ -3710,101 +3254,200 @@ export class StorageManager {
     return this.factHashIndexLoadPromise;
   }
 
-  private async ensureFactHashIndexAuthoritative(): Promise<void> {
+  /**
+   * Return the fact-hash index after ensuring it is authoritative — i.e. rebuilt
+   * from the durable fact corpus (issue #1909 review round 12). This is the ONE
+   * coherent dedup source: the orchestrator's dedup layer
+   * (contentHashIndexForStorage) shares THIS instance instead of loading a raw,
+   * possibly-stale fact-hashes.txt, so after a crash+restart the orchestrator's
+   * hasContentHashDedup sees the same corpus-rebuilt hashes StorageManager does
+   * and never re-creates a fact whose per-write flush was deferred and lost.
+   */
+  async getAuthoritativeFactHashIndex(): Promise<ContentHashIndex> {
+    if (!(await this.ensureFactHashIndexAuthoritative())) {
+      throw new FactHashIndexNotAuthoritativeError(this.stateDir);
+    }
+    return this.getFactHashIndex();
+  }
+
+  /**
+   * Return the shared fact-hash index instance, corpus-rebuilt under the lock
+   * when the lock is free. Unlike {@link getAuthoritativeFactHashIndex} this
+   * NEVER throws on lock contention — it returns the shared instance (the loaded
+   * snapshot when a locked rebuild could not run) so registration writes still
+   * land in the one shared index and reconcile to disk. Callers that trust a
+   * dedup MISS MUST also consult {@link isFactContentHashAuthoritative} and
+   * confirm against the corpus when it is false (PR #2016).
+   */
+  async getSharedFactHashIndex(): Promise<ContentHashIndex> {
+    await this.ensureFactHashIndexAuthoritative();
+    return this.getFactHashIndex();
+  }
+
+  private async ensureFactHashIndexAuthoritative(): Promise<boolean> {
     if (this.factHashIndexAuthoritative === true) {
-      return;
+      // PR #2016 review: authority is NOT permanent. A peer process can advance
+      // the durable fact-hash index after our rebuild, leaving our in-memory
+      // snapshot stale but still flagged authoritative — so a dedup MISS is
+      // wrongly trusted and a duplicate active memory is written. Gate the fast
+      // path on a cheap one-stat freshness check: when the durable index file is
+      // unchanged since our last sync we stay authoritative (hot path preserved);
+      // when a peer advanced it (or freshness cannot be established) drop
+      // authority and rebuild from the corpus below so the miss confirms against
+      // ground truth.
+      if (this.factHashIndex && (await this.factHashIndex.isDiskFingerprintCurrent())) {
+        return true;
+      }
+      this.factHashIndexAuthoritative = null;
     }
     if (this.factHashIndexAuthoritativePromise) {
-      await this.factHashIndexAuthoritativePromise;
-      return;
+      return this.factHashIndexAuthoritativePromise;
     }
 
+    this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
-      try {
-        await access(this.factHashIndexReadyPath);
-        this.factHashIndexAuthoritative = true;
-        return;
-      } catch {
-        // Fall through and backfill from the live fact corpus once.
-      }
-
+      // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
+      // first use per process — no on-disk "ready" marker is written or trusted,
+      // so a deferred write, crash, or multi-process interleave can never leave a
+      // stale index trusted. The scan AND publish run under the SAME per-index
+      // cross-process lock the reconciling saves use (rebuildUnderLock), so the
+      // rebuild can never overwrite a peer's newer lock-merged or deferred
+      // additions with an unlocked overwrite.
+      //
+      // PR #2016 (findings 1-2): bounded-retry the LOCKED rebuild so transient
+      // contention (a peer mid reconcile-save) clears within a short budget
+      // instead of surrendering authority on the first miss. Each attempt uses
+      // the same non-reentrant, bounded-wait file lock, so it can never deadlock
+      // with a deferred reconcile-retry. On exhaustion the index is left
+      // non-authoritative: getAuthoritativeFactHashIndex() fails explicitly and
+      // hasFactContentHash()/isFactContentHashAuthoritative() fall back to the
+      // durable corpus so a stale loaded snapshot never answers as current.
       const factHashIndex = await this.getFactHashIndex();
-      factHashIndex.clear();
-      const existing = await this.readAllMemories();
-      let legacyRecovered = 0;
-      for (const memory of existing) {
-        if (memory.frontmatter.category !== "fact") continue;
-        if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-        // Prefer the pre-computed raw-content hash stored in frontmatter
-        // (written since round 8 of issue #369). This hash was derived from
-        // the content BEFORE citation annotation, so it matches what
-        // hasFactContentHash(rawFact) would compute.
-        if (memory.frontmatter.contentHash) {
-          factHashIndex.addByHash(memory.frontmatter.contentHash);
-          continue;
-        }
-        // Legacy fact written before contentHash was introduced (Finding 1 —
-        // Uhol). Apply nuanced handling based on whether the citation can be
-        // reliably stripped:
-        //
-        //  1. Default citation present → strip it and index the raw body.
-        //  2. No citation at all → index the raw body as-is.
-        //  3. Unknown/custom citation template → skip with a warning.
-        //
-        // Rationale for (3): for facts annotated with a custom citation
-        // template, stripCitationForTemplate cannot reliably detect the inline
-        // marker and would hash the cited body — producing a hash that never
-        // matches what hasFactContentHash(rawContent) computes. A
-        // false-negative miss (the fact is not in the index) is preferable to
-        // a wrong index entry that permanently suppresses legitimate duplicate
-        // writes.
-        //
-        // Limitation (Thread 2 — stale hash): even when contentHash IS present
-        // it may be stale if updateMemory() rewrote the body without updating
-        // the frontmatter hash. The hash is trusted as-is here; a future
-        // migration pass can recompute it from the current content.
-        const content = memory.content;
-        // Use the configured template (Thread 1 fix): citationTemplate is set
-        // by the orchestrator to the active inlineSourceAttributionFormat so
-        // the rebuild can strip both the default and any custom template.
-        // Falls back to DEFAULT_CITATION_FORMAT when the orchestrator has not
-        // configured a custom template (e.g. direct StorageManager construction
-        // in tests).
-        const stripped = stripCitationForTemplate(content, this.citationTemplate);
-        if (stripped !== content) {
-          // Citation was stripped — index the bare body.
-          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text));
-          continue;
-        }
-        // No citation was removed. Decide whether to index or skip.
-        // Thread 4 fix: use hasCitation() rather than the too-broad endsWith("]")
-        // heuristic. Facts that legitimately end with "]" (e.g. "User prefers
-        // [dark mode]") have no citation marker and should be indexed as-is.
-        // Only skip when hasCitation() confirms a citation is present — that
-        // means the citation is from an unknown/custom template we cannot strip.
-        if (!hasCitation(content)) {
-          // Content has no recognisable citation marker — index raw body.
-          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(content).text));
-          continue;
-        }
-        // Content carries a citation from an unknown/custom template
-        // that we cannot safely strip. Skip rather than index a wrong hash.
-        legacyRecovered++;
-        continue;
+      const maxAttempts =
+        this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
+      const baseMs =
+        this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
+      let published = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        published = await factHashIndex.rebuildUnderLock(() =>
+          this.rebuildFactHashIndexFromCorpus(factHashIndex),
+        );
+        if (published || attempt === maxAttempts - 1) break;
+        const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
+        await new Promise<void>((resolve) => setTimeout(resolve, wait));
       }
-      if (legacyRecovered > 0) {
-        log.info(
-          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy fact(s) with no contentHash in frontmatter`
+      this.factHashIndexAuthoritative = published;
+      if (!published) {
+        log.warn(
+          `ensureFactHashIndexAuthoritative: fact-hash index lock unavailable after ${maxAttempts} attempt(s); ` +
+            `index left non-authoritative (reads verify against the durable corpus; next use retries the locked rebuild)`,
         );
       }
-      await factHashIndex.save();
-      await mkdir(path.dirname(this.factHashIndexReadyPath), { recursive: true });
-      await writeFile(this.factHashIndexReadyPath, "v1\n", "utf-8");
-      this.factHashIndexAuthoritative = true;
+      return published;
     })().finally(() => {
       this.factHashIndexAuthoritativePromise = null;
     });
-    await this.factHashIndexAuthoritativePromise;
+    return this.factHashIndexAuthoritativePromise;
+  }
+
+  /**
+   * Repopulate `factHashIndex` in memory from the durable HOT+COLD corpus. Runs
+   * WHILE the per-index cross-process lock is held (see
+   * ContentHashIndex.rebuildUnderLock, which publishes the rebuilt set); this
+   * method itself never writes to disk.
+   */
+  private async rebuildFactHashIndexFromCorpus(factHashIndex: ContentHashIndex): Promise<void> {
+    factHashIndex.clear();
+    // Fact-ONLY membership rebuilt in lockstep (PR #2016): hasFactContentHash
+    // reads THIS set, never the category-agnostic shared index below, so an
+    // over-included non-fact body can never satisfy a fact-hash check. Repopulate
+    // the LIVE set in place (clear + add) rather than building a fresh set and
+    // reassigning: a concurrent in-process writeMemory that adds a fact hash
+    // during the corpus-read awaits below would be lost by a publish-time
+    // reassignment (PR #2016 thread SDzOT), exactly as the shared index avoids
+    // by mutating its `hashes` set in place.
+    this.factOnlyHashes.clear();
+    // #1909 review round 14: index the HOT and COLD tiers together. A fact or
+    // procedure demoted to cold/ is still active and its content-hash must
+    // survive the corpus rebuild, or a restart would drop the hash and let the
+    // next extraction re-create the demoted memory. Matches the hot+cold union
+    // that removeFactContentHashesForMemories already reconciles against.
+    const existing = [
+      ...(await this.readAllMemories()),
+      ...(await this.readAllColdMemories()),
+    ];
+    let legacyRecovered = 0;
+    for (const memory of existing) {
+      // #1909 review round 15 (PR #2016): the content-hash dedup index is
+      // SHARED across EVERY registered write category. persistExtraction calls
+      // addContentHashDedup for every writeCategory it persists — fact,
+      // procedure, preference, decision, commitment, correction, and any other
+      // extracted category — into THIS one index. A rebuild restricted to
+      // fact+procedure dropped every other category's hash on restart, so the
+      // next extraction re-created identical active preference/decision/
+      // commitment memories (the retired fact-hashes.txt load used to preserve
+      // them). Index every active memory regardless of category so the corpus
+      // rebuild covers the full registration surface. Over-inclusion is safe:
+      // the dedup consumers (hasContentHashDedup in persistExtraction, the
+      // explicit-capture negative pre-filter) confirm a hash hit with a
+      // same-category corpus scan before dropping anything, so a surplus hash
+      // only costs a scan — it can never wrongly suppress a write. Procedures
+      // keep their round-13 behaviour: they carry no frontmatter contentHash
+      // (writeMemory sets it only for facts), so they fall through to the
+      // citation-strip reconstruction below, hashing the stored persist body
+      // (title + steps) exactly as buildProcedurePersistBody registered it.
+      if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
+      const hash = this.corpusRegisteredHash(memory);
+      if (hash === null) {
+        // Body carries a citation from an unknown/custom template we cannot
+        // safely strip — skip rather than register a wrong hash. A
+        // false-negative miss beats a wrong entry that would permanently
+        // suppress legitimate duplicate writes (see corpusRegisteredHash).
+        legacyRecovered++;
+        continue;
+      }
+      factHashIndex.addByHash(hash);
+      if (memory.frontmatter.category === "fact") this.factOnlyHashes.add(hash);
+    }
+    if (legacyRecovered > 0) {
+      log.info(
+        `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
+      );
+    }
+  }
+
+  /**
+   * The content-hash the corpus rebuild registers for `memory`, or null when the
+   * body carries a citation from an unknown/custom template that cannot be
+   * safely stripped. Shared by the authoritative rebuild and the fact-only
+   * corpus confirmation (`hasFactContentHash`) so both derive the identical
+   * hash for a given stored body.
+   *
+   * Preference order:
+   *  1. frontmatter.contentHash — the raw pre-citation hash writeMemory records
+   *     for facts (issue #369 round 8); matches hasFactContentHash(rawFact).
+   *  2. Reconstruct from the stored body: strip the "[Attributes: …]" suffix
+   *     writeMemory appends for structuredAttributes (registration hashed the
+   *     raw canonical content WITHOUT it — a no-op when absent), then strip a
+   *     recognised citation and hash the bare body, or hash a citation-free
+   *     body as-is.
+   *  3. A body with a citation from an unknown/custom template → null: a
+   *     false-negative miss beats a wrong hash that would permanently suppress
+   *     legitimate duplicate writes.
+   */
+  private corpusRegisteredHash(memory: MemoryFile): string | null {
+    if (memory.frontmatter.contentHash) {
+      return memory.frontmatter.contentHash;
+    }
+    const content = stripAttributesSuffix(memory.content);
+    const stripped = stripCitationForTemplate(content, this.citationTemplate);
+    if (stripped !== content) {
+      return ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text);
+    }
+    if (!hasCitation(content)) {
+      return ContentHashIndex.computeHash(sanitizeMemoryContent(content).text);
+    }
+    return null;
   }
   private get questionsDir(): string {
     return path.join(this.baseDir, "questions");
@@ -3857,6 +3500,27 @@ export class StorageManager {
   private get behaviorSignalsPath(): string {
     return path.join(this.stateDir, "behavior-signals.jsonl");
   }
+  /**
+   * In-memory dedup key set for behavior-signals appends (issue #1909),
+   * validated by (size, mtime) file identity like the catalog `compactedCache`.
+   * Avoids re-reading + JSON.parsing the whole `behavior-signals.jsonl` on
+   * every append. A foreign write changes size/mtime, forcing a reload; this
+   * process's own appends refresh the identity in place. null => reload.
+   */
+  private behaviorSignalsKeyCache:
+    | { identity: { size: number; mtimeMs: number }; keys: Set<string> }
+    | null = null;
+  /**
+   * Per-instance serializer for `appendBehaviorSignals` (issue #1909 review
+   * round 3). The read→dedup→append→cache-commit transaction must run to
+   * completion before the next append starts; otherwise two concurrent callers
+   * each snapshot their own `existingKeys`, and the later one commits an
+   * INCOMPLETE set under the final file identity, so a subsequent call
+   * cache-hits a set missing the earlier batch and writes duplicate signals.
+   * The `.catch` links keep the chain alive after a rejected append
+   * (AGENTS.md #28).
+   */
+  private behaviorSignalsAppendChain: Promise<unknown> = Promise.resolve();
   /**
    * Buffer surprise telemetry ledger (issue #563 PR 3).
    *
@@ -4176,13 +3840,31 @@ export class StorageManager {
         // fact text before citation annotation), index THAT string so that
         // hasFactContentHash(rawFact) returns true on subsequent extractions.
         // Otherwise fall back to the sanitized persisted body as before.
-        if (options.contentHashSource !== undefined && options.contentHashSource.length > 0) {
-          const hashSourceSanitized = sanitizeMemoryContent(options.contentHashSource);
-          factHashIndex.add(hashSourceSanitized.text);
-        } else {
-          factHashIndex.add(sanitized.text);
+        const hashText =
+          options.contentHashSource !== undefined && options.contentHashSource.length > 0
+            ? sanitizeMemoryContent(options.contentHashSource).text
+            : sanitized.text;
+        factHashIndex.add(hashText);
+        this.factOnlyHashes.add(ContentHashIndex.computeHash(hashText));
+        // Gate only the flush (issue #1909): the `.add(...)` above already set
+        // dirty=true. When the caller defers, it owns the batch save
+        // (extraction persist -> saveContentHashIndexes()). Single-write callers
+        // (explicit capture, import, wearable, native writes) flush immediately —
+        // via the SAME cross-process locked reconcile the batch/append and
+        // rebuild paths use (PR #2016 thread SDyCk), never the unlocked whole-file
+        // save() that could clobber, or be clobbered by, a peer's concurrent
+        // locked rebuild/reconcile and drop this durable fact from the index.
+        if (!options.deferHashIndexSave) {
+          await factHashIndex.saveMergingWithDisk();
+          // A locked reconcile that times out defers to an unref'd background
+          // retry and returns WITHOUT publishing (dirty retained). A single-write
+          // caller must not observe that as durable (PR #2016 thread SD7Tk):
+          // drain the deferred retry inline so the addition lands on disk (or
+          // exhausts its bounded attempts, falling back to the corpus-rebuild
+          // safety net) before writeMemory returns. No-op when the save already
+          // published (not dirty).
+          await factHashIndex.flushReconcileRetry();
         }
-        await factHashIndex.save();
       } catch (err) {
         log.warn(`storage.writeMemory completed but failed to update fact hash index: ${err}`);
       }
@@ -4224,10 +3906,40 @@ export class StorageManager {
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {
-    await this.ensureFactHashIndexAuthoritative();
-    const factHashIndex = await this.getFactHashIndex();
+    const authoritative = await this.ensureFactHashIndexAuthoritative();
     const sanitized = sanitizeMemoryContent(content);
-    return factHashIndex.has(sanitized.text);
+    const hash = ContentHashIndex.computeHash(sanitized.text);
+    // Fact-ONLY answer (PR #2016). The shared content-hash index is
+    // category-agnostic — the round-15 authoritative rebuild indexes EVERY
+    // active category and addContentHashDedup registers all of them — so it
+    // cannot tell a FACT from an unrelated preference/decision/note/moment with
+    // the same normalized body. Direct consumers
+    // (createWearableMemoryWriter.hasFactContentHash, the explicit-capture
+    // negative pre-filter) treat a hit as terminal BEFORE their own source/
+    // category confirmation, so answering from the shared index would let a
+    // non-fact suppress a real fact candidate. Only category === "fact" registers
+    // a fact-content hash at write time (writeMemory), so answer from the
+    // fact-only membership rebuilt in lockstep with the shared index. When the
+    // index is authoritative that set is current (rebuild + write/removal
+    // upkeep); otherwise the snapshot may be stale, so verify against the durable
+    // fact corpus (ground truth) so a lock-contended read never suppresses a fact.
+    if (authoritative) {
+      return this.factOnlyHashes.has(hash);
+    }
+    return await this.factContentHashPresentInCorpus(hash);
+  }
+
+  private async factContentHashPresentInCorpus(targetHash: string): Promise<boolean> {
+    const existing = [
+      ...(await this.readAllMemories()),
+      ...(await this.readAllColdMemories()),
+    ];
+    for (const memory of existing) {
+      if (memory.frontmatter.category !== "fact") continue;
+      if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
+      if (this.corpusRegisteredHash(memory) === targetHash) return true;
+    }
+    return false;
   }
 
   private factContentHashForRemoval(memory: MemoryFile): string | null {
@@ -4252,7 +3964,22 @@ export class StorageManager {
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     factHashIndex.addByHash(hash);
-    await factHashIndex.save();
+    this.factOnlyHashes.add(hash);
+    // PR #2016 thread SDzOP: flush through the SAME cross-process locked
+    // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
+    // save() — an unlocked overwrite drops a concurrent extraction's appended
+    // hash and can be clobbered by a peer's locked publish. saveMergingWithDisk
+    // republishes only OUR delta ((on-disk \ removed) ∪ added) under the lock.
+    await factHashIndex.saveMergingWithDisk();
+    // A locked reconcile that times out defers to an unref'd background retry
+    // and returns WITHOUT publishing (dirty retained). The reactivation path is
+    // a lifecycle boundary just like writeMemory (PR #2016 thread
+    // PRRT_kwDORJXyws6SEHvh): a short-lived caller must not observe the deferral
+    // as durable. Drain the deferred retry inline so the reintroduced hash lands
+    // on disk (or exhausts its bounded attempts, falling back to the
+    // corpus-rebuild safety net) before returning. No-op — no duplicated retry
+    // work — when the save already published (not dirty).
+    await factHashIndex.flushReconcileRetry();
   }
 
   /**
@@ -4321,14 +4048,38 @@ export class StorageManager {
     for (const hash of removedHashes.values()) {
       if (!remainingActiveHashes.has(hash)) {
         factHashIndex.removeByHash(hash);
+        this.factOnlyHashes.delete(hash);
       }
     }
-    await factHashIndex.save();
+    // PR #2016 thread SDzOP: serialize the removal with the per-index lock via
+    // the removal-aware reconcile, never the unlocked whole-file save(). The
+    // unlocked overwrite republished this instance's stale in-memory set,
+    // silently clobbering a concurrent extraction's appended hash; the reconcile
+    // reads the latest on-disk state, drops only OUR removed hashes, and keeps a
+    // peer's concurrent append.
+    await factHashIndex.saveMergingWithDisk();
+  }
+
+  /**
+   * Remove a memory's fact-ONLY hash membership in lockstep with the shared,
+   * category-agnostic index removal the orchestrator's
+   * `removeContentHashForMemory` performs on archival / semantic consolidation
+   * (PR #2016 threads SDzOP / SDzOR). Without this, `factOnlyHashes` kept a
+   * removed/superseded fact's hash and `hasFactContentHash` returned a stale
+   * `true` until the next corpus rebuild, so wearable / explicit-capture /
+   * promotion callers skipped a valid write. In-memory only — `factOnlyHashes`
+   * is never persisted; it is rebuilt from the corpus. No-op for non-facts.
+   * Matches the shared index's unconditional per-hash removal so the two stay
+   * coherent.
+   */
+  removeFactOnlyHashForMemory(memory: MemoryFile): void {
+    if (memory.frontmatter.category !== "fact") return;
+    const hash = this.factContentHashForRemoval(memory);
+    if (hash) this.factOnlyHashes.delete(hash);
   }
 
   async isFactContentHashAuthoritative(): Promise<boolean> {
-    await this.ensureFactHashIndexAuthoritative();
-    return true;
+    return await this.ensureFactHashIndexAuthoritative();
   }
 
   async writeArtifact(
@@ -5547,45 +5298,112 @@ export class StorageManager {
 
   async appendBehaviorSignals(events: BehaviorSignalEvent[]): Promise<number> {
     if (events.length === 0) return 0;
+    // Serialize the whole read→dedup→append→cache-commit transaction per
+    // instance (issue #1909 review round 3) so concurrent callers cannot each
+    // commit an incomplete dedup set. The chain recovers after a rejection.
+    const run = this.behaviorSignalsAppendChain
+      .catch(() => undefined)
+      .then(() => this.appendBehaviorSignalsUnlocked(events));
+    this.behaviorSignalsAppendChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async appendBehaviorSignalsUnlocked(events: BehaviorSignalEvent[]): Promise<number> {
+    if (events.length === 0) return 0;
     await this.ensureDirectories();
 
-    let existingKeys = new Set<string>();
+    let existingKeys: Set<string>;
+    let identity: { size: number; mtimeMs: number } | null = null;
     try {
-      const raw = await this.readStorageSecureFile(this.behaviorSignalsPath);
-      const lines = raw.split("\n");
-      for (const line of lines) {
-        const row = line.trim();
-        if (!row) continue;
-        try {
-          const parsed = JSON.parse(row) as Partial<BehaviorSignalEvent>;
-          if (typeof parsed.memoryId === "string" && typeof parsed.signalHash === "string") {
-            existingKeys.add(`${parsed.memoryId}:${parsed.signalHash}`);
+      const st = await stat(this.behaviorSignalsPath);
+      identity = { size: st.size, mtimeMs: st.mtimeMs };
+      if (
+        this.behaviorSignalsKeyCache &&
+        this.behaviorSignalsKeyCache.identity.size === identity.size &&
+        this.behaviorSignalsKeyCache.identity.mtimeMs === identity.mtimeMs
+      ) {
+        // Cache hit (issue #1909): reuse the dedup set — no read, no parse.
+        existingKeys = this.behaviorSignalsKeyCache.keys;
+      } else {
+        // Foreign change (or first load): rebuild by streaming the file so we
+        // never materialize the whole (unbounded) ledger as one string.
+        existingKeys = new Set<string>();
+        for await (const line of readMaybeEncryptedLines(this.behaviorSignalsPath, () =>
+          this.readStorageSecureFile(this.behaviorSignalsPath)
+        )) {
+          const row = line.trim();
+          if (!row) continue;
+          try {
+            const parsed = JSON.parse(row) as Partial<BehaviorSignalEvent>;
+            if (typeof parsed.memoryId === "string" && typeof parsed.signalHash === "string") {
+              existingKeys.add(`${parsed.memoryId}:${parsed.signalHash}`);
+            }
+          } catch {
+            // Ignore malformed rows (fail-open).
           }
-        } catch {
-          // Ignore malformed rows (fail-open).
         }
       }
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;
       existingKeys = new Set<string>();
+      identity = null;
     }
 
     const nowIso = new Date().toISOString();
+    // Collect newly-seen keys in a SEPARATE set — never mutate `existingKeys`
+    // (which may alias the cached set) before the append is durable. A failed
+    // append must leave the cached dedup set matching what is actually on disk,
+    // otherwise a retry would cache-hit a poisoned set and silently drop the
+    // events forever (issue #1909 review: pre-durability aliasing).
+    const pending = new Set<string>();
     const deduped: BehaviorSignalEvent[] = [];
     for (const event of events) {
       const key = `${event.memoryId}:${event.signalHash}`;
-      if (existingKeys.has(key)) continue;
-      existingKeys.add(key);
+      if (existingKeys.has(key) || pending.has(key)) continue;
+      pending.add(key);
       deduped.push({
         ...event,
         timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
       });
     }
 
-    if (deduped.length === 0) return 0;
+    if (deduped.length === 0) {
+      // Nothing appended — the file identity is unchanged and `existingKeys` was
+      // not mutated, so caching it lets the next append hit (issue #1909).
+      if (identity) this.behaviorSignalsKeyCache = { identity, keys: existingKeys };
+      return 0;
+    }
     const payload = deduped.map((event) => `${JSON.stringify(event)}\n`).join("");
+    // May throw (I/O error, SecureStoreLockedError). If it does, we fall through
+    // to the caller WITHOUT having touched `existingKeys` or the cache, so the
+    // dropped events can be retried.
     await this.appendStorageSecureFile(this.behaviorSignalsPath, payload);
+    // Durable now: fold the new keys into the set (in place, O(new keys) — keeps
+    // the per-append win). Only cache the refreshed identity if the file grew by
+    // EXACTLY our payload — otherwise a foreign writer (another instance/process)
+    // interleaved and the file now holds rows whose keys are NOT in existingKeys;
+    // caching that identity would let a later same-instance append cache-hit an
+    // incomplete set and write duplicates (review round 8 thread 5). On any
+    // mismatch, invalidate so the next append reloads from disk.
+    for (const key of pending) existingKeys.add(key);
+    try {
+      const st = await stat(this.behaviorSignalsPath);
+      const expectedSize = (identity?.size ?? 0) + Buffer.byteLength(payload, "utf-8");
+      if (st.size === expectedSize) {
+        this.behaviorSignalsKeyCache = {
+          identity: { size: st.size, mtimeMs: st.mtimeMs },
+          keys: existingKeys,
+        };
+      } else {
+        // Foreign interleave (or encrypted whole-file rewrite): our key set may
+        // be missing peer rows — force a reload on the next append.
+        this.behaviorSignalsKeyCache = null;
+      }
+    } catch {
+      // Fail-open: force a reload on the next append.
+      this.behaviorSignalsKeyCache = null;
+    }
     return deduped.length;
   }
 

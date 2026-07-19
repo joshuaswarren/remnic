@@ -25,6 +25,7 @@ import { NamespaceSearchRouter } from "../namespaces/search.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { mergeArtifactRecallCandidates, tokenizeRecallQuery } from "./orchestrator-helpers.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
+import { qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix } from "./orchestrator-namespace-scope.js";
 import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult } from "../types.js";
@@ -59,7 +60,6 @@ export interface NamespaceReadFanoutDeps {
     configured: Set<string>,
   ): { namespace: string; identityToken: string; storageDir: string };
   readonly qmd: SearchBackend;
-  qmdCollectionNamespaceFromPrefix(collectionPrefix: string): string | null;
   rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void;
   storageDirMatchesNamespaceHint(namespace: string, storageDir: string): boolean;
   readonly storageRouter: NamespaceStorageRouter;
@@ -434,7 +434,7 @@ export class NamespaceReadFanoutCoordinator {
     if (!resolveNamespaceCapabilities(this.deps.config).namespaces) return this.deps.config.defaultNamespace;
     const parts = qmdCollectionPathParts(p);
     const collectionNamespace = parts
-      ? this.deps.qmdCollectionNamespaceFromPrefix(parts.collection)
+      ? computeQmdCollectionNamespaceFromPrefix(parts.collection, this.deps.config)
       : null;
     if (collectionNamespace) return collectionNamespace;
     const m = p.match(/[\\/]+namespaces[\\/]+([^\\/]+)(?:[\\/]|$)/);

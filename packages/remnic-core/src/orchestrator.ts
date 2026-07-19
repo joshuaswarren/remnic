@@ -127,6 +127,10 @@ import { SessionContextCoordinator } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
 import {
+  computeSemanticDedupScope,
+  qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix,
+} from "./orchestration/orchestrator-namespace-scope.js";
+import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
@@ -437,7 +441,6 @@ import {
   type NamespaceMaintenanceHealthSummary,
 } from "./maintenance/namespace-maintenance-fanout.js";
 import {
-  namespaceIdentityFromToken,
   namespaceIdentityToken,
   normalizeNamespaceIdentity,
 } from "./namespaces/identity.js";
@@ -822,6 +825,7 @@ export class Orchestrator {
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
         backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
           this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef, sourceConnector),
+        // Removal-aware reconciling save serializes append vs removal (issue #1909).
         saveContentHashIndexes: () => this.saveContentHashIndexes(),
         artifactTypeForCategory: (category) => this.artifactTypeForCategory(category),
         loadRoutingRules: () => this.loadRoutingRules(),
@@ -948,16 +952,52 @@ export class Orchestrator {
     }
     this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
-    // Issue #1903: flush any coalesced namespace-catalog touches before teardown
-    // so a long-lived host does not drop buffered read/write timestamps.
-    await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
-    await this.namespaceSearchRouter.dispose();
-    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
-    if (this.conversationQmd && this.conversationQmd !== this.qmd) {
-      await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
+    // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
+    // short-lived writer's durable fact hash reaches disk before the process
+    // exits. The per-index background retry is unref'd (it never keeps a
+    // long-lived host alive), so a one-shot CLI could exit before it fires; this
+    // drives it to completion inline at the shutdown boundary. Best-effort.
+    await this.persistenceIndexCoordinator
+      .drainContentHashReconcileRetries()
+      .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
+    // Issue #1909: persist any turns buffered within the debounce window BEFORE
+    // flushing catalog touches (review round 11 finding 2). The buffer save fires
+    // a coalesced namespace-catalog touch on an unref'd timer; flushing touches
+    // first would let that shutdown-time touch queue after the flush and be lost.
+    // Ordering it before flushPendingTouches folds the buffer-save's touch into
+    // the flush below so both settle before destroy() returns.
+    //
+    // Graceful-shutdown durability contract (review round 14): the flush runs
+    // with throwOnFailure so a failed buffer write is NOT silently swallowed.
+    // flushPendingSave keeps the save pending on failure (in-memory turns are
+    // retained), so we finish the rest of teardown in a finally block and then
+    // rethrow — the host learns buffered turns did not reach disk instead of
+    // destroy() reporting a clean shutdown and losing them on exit.
+    let bufferFlushError: unknown;
+    try {
+      await this.buffer.flushPendingSave({ throwOnFailure: true });
+    } catch (err) {
+      bufferFlushError = err;
     }
-    // Issue #1674: terminate archive-scoring worker threads on destroy.
-    await disposeDefaultArchiveScoring();
+    try {
+      // Issue #1903: flush any coalesced namespace-catalog touches before teardown
+      // so a long-lived host does not drop buffered read/write timestamps.
+      await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
+      await this.namespaceSearchRouter.dispose();
+      await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
+      if (this.conversationQmd && this.conversationQmd !== this.qmd) {
+        await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
+      }
+      // Issue #1674: terminate archive-scoring worker threads on destroy.
+      await disposeDefaultArchiveScoring();
+    } finally {
+      if (bufferFlushError !== undefined) {
+        log.warn(
+          `orchestrator.destroy: buffer flush failed; pending turns retained in memory but not persisted: ${String(bufferFlushError)}`,
+        );
+        throw bufferFlushError;
+      }
+    }
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */
@@ -1249,23 +1289,26 @@ export class Orchestrator {
   ): Promise<ContentHashIndex | null> {
     if (!resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) return null;
 
+    // Round 12: share the StorageManager's corpus-AUTHORITATIVE fact-hash index
+    // (rebuilt from the .md corpus on first use per process) instead of loading a
+    // separate, possibly-stale fact-hashes.txt. This makes the orchestrator's
+    // dedup layer and StorageManager.hasFactContentHash() one coherent source:
+    // after a crash before the deferred batch save, the restart rebuild includes
+    // the durable fact, so hasContentHashDedup() sees it and persistExtraction
+    // does not re-create it. We still cache the reference so saveContentHashIndexes
+    // persists exactly the shared instance.
+    // PR #2016: use the shared (best-effort) accessor, not the throwing
+    // authoritative one — the shared instance must be available for registration
+    // add/remove even under lock contention (it reconciles to disk via the
+    // deferred retry). The dedup READ path (extraction-persist) gates a MISS on
+    // isFactContentHashAuthoritative() and confirms against the corpus, so a
+    // non-authoritative snapshot never causes a false dedup miss.
+    const index = await targetStorage.getSharedFactHashIndex();
     if (targetStorage.dir === this.storage.dir) {
-      if (!this.contentHashIndex) {
-        this.contentHashIndex = this.storage.createContentHashIndex();
-        await this.contentHashIndex.load();
-      }
-      return this.contentHashIndex;
+      this.contentHashIndex = index;
+    } else {
+      this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
     }
-
-    const cached = this.contentHashIndexesByStorageDir.get(targetStorage.dir);
-    if (cached) return cached;
-
-    const index = targetStorage.createContentHashIndex();
-    await index.load();
-    this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
-    log.info(
-      `content-hash dedup: loaded ${index.size} hashes for storage ${targetStorage.dir}`,
-    );
     return index;
   }
 
@@ -1327,8 +1370,7 @@ export class Orchestrator {
   }
 
   private async saveContentHashIndexes(): Promise<void> {
-    return this.persistenceIndexCoordinator.saveContentHashIndexes(
-    );
+    return this.persistenceIndexCoordinator.saveContentHashIndexes();
   }
 
   constructor(config: PluginConfig) {
@@ -1536,7 +1578,7 @@ export class Orchestrator {
       getConfig: () => this.config,
       storageFor: (namespace) => this.storageRouter.storageFor(namespace),
       storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
-      qmdCollectionNamespaceFromPrefix: (prefix) => this.qmdCollectionNamespaceFromPrefix(prefix),
+      qmdCollectionNamespaceFromPrefix: (prefix) => computeQmdCollectionNamespaceFromPrefix(prefix, this.config),
       namespaceFromPath: (p) => this.namespaceFromPath(p),
     });
 
@@ -3375,33 +3417,6 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Apply MMR over the pre-truncation recall candidate pool and then slice
-   * the result to `limit`. This is the single place in the pipeline where
-   * MMR runs, and it must be called *before* callers throw away candidates
-   * that would otherwise sit below the final cutoff. Running MMR post-slice
-   * is a no-op in the cases we care about — diverse candidates just below
-   * the cutoff are already gone and can never be promoted.
-   *
-   * Callers must pass the full candidate pool (post-rerank, pre-slice).
-   */
-  private qmdCollectionNamespaceFromPrefix(collectionPrefix: string): string | null {
-    const baseCollection = this.config.qmdCollection;
-    if (collectionPrefix === baseCollection) return this.config.defaultNamespace;
-    const namespaceSuffix = collectionPrefix.startsWith(`${baseCollection}--`)
-      ? collectionPrefix.slice(baseCollection.length + 2)
-      : "";
-    if (!namespaceSuffix) return null;
-
-    const decoded = namespaceIdentityFromToken(namespaceSuffix);
-    if (decoded !== null) return decoded || this.config.defaultNamespace;
-    if (namespaceSuffix.startsWith("ns--")) {
-      const legacyNamespace = namespaceSuffix.slice("ns--".length).trim();
-      return legacyNamespace || null;
-    }
-    return null;
-  }
-
   // Issue #1526 seam 11: QMD result-resolution methods moved to QmdResultResolver.
   // Thin delegation keeps the private API stable for callers + tests.
   private async readQmdResultMemory(
@@ -3546,34 +3561,7 @@ export class Orchestrator {
     pathPrefix?: string;
     pathExcludePrefixes?: readonly string[];
   } {
-    if (!resolveNamespaceCapabilities(this.config).namespaces) return {};
-    const memoryDir = path.resolve(this.config.memoryDir);
-    const storageDir = path.resolve(targetStorage.dir);
-    if (storageDir === memoryDir) {
-      // Default namespace at legacy root. Include everything that isn't
-      // under `namespaces/*` (those belong to other namespaces).
-      return { pathExcludePrefixes: ["namespaces/"] };
-    }
-    let rel = path.relative(memoryDir, storageDir);
-    if (!rel || rel.startsWith("..")) {
-      // Round 12 fix (PR #399 thread PRRT_kwDORJXyws56U6Gj): when
-      // targetStorage.dir is outside memoryDir (custom namespace routing),
-      // toMemoryRelativePath() stores the absolute file path in the index
-      // rather than a memoryDir-relative path. Return the absolute storageDir
-      // as the pathPrefix so the search() filter still scopes the lookup to
-      // the correct tenant's files. Previously this returned {} (no scoping),
-      // which let high-similarity hits from other namespaces' absolute-path
-      // entries suppress writes in the target namespace — a cross-tenant
-      // dedup suppression path.
-      log.debug(
-        `semantic dedup: target storage dir ${storageDir} is outside memoryDir ${memoryDir}; scoping lookup to absolute path prefix`,
-      );
-      const absPrefix = storageDir.replace(/\\/g, "/");
-      return { pathPrefix: absPrefix.endsWith("/") ? absPrefix : `${absPrefix}/` };
-    }
-    rel = rel.replace(/\\/g, "/");
-    if (!rel.endsWith("/")) rel = `${rel}/`;
-    return { pathPrefix: rel };
+    return computeSemanticDedupScope(targetStorage, this.config);
   }
 
   private async searchEmbeddingFallback(

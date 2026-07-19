@@ -44,6 +44,7 @@ import {
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
   resolveConversationContextCapabilities,
+  resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
@@ -109,7 +110,12 @@ import type {
   ProvenanceSource,
   MemoryCategory,
 } from "../types.js";
-import { confidenceTier } from "../types.js";
+import {
+  flushDeferredFactHashOnFailure,
+  profileAutoPromotionAllows,
+  readActiveMemoriesBothTiers,
+  shouldPromoteToShared,
+} from "./extraction-persist-promotion.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   buildMemoryPathById,
@@ -239,6 +245,15 @@ export class ExtractionPersistCoordinator {
     // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
+    // #1909: the main-path fact writes defer their per-fact fact-hash-index flush
+    // to the orchestrator's end-of-persist reconciling batch save ONLY when fact
+    // deduplication is enabled (with it off, contentHashIndexForStorage() returns
+    // null and the batch save is a no-op, so the write must save immediately).
+    // Round 11: there is NO fact-hashes.ready marker anymore — the fact-hash
+    // index is ALWAYS rebuilt from the corpus on restart (see
+    // ensureFactHashIndexAuthoritative), so a deferred write, crash, or
+    // multi-process interleave is safe by construction with no marker to guard.
+    const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -356,12 +371,6 @@ export class ExtractionPersistCoordinator {
         events: [...events],
       });
     };
-    const confidenceTierOrder = [
-      "explicit",
-      "implied",
-      "inferred",
-      "speculative",
-    ] as const;
     const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
       (layer) =>
         layer.id === "serverShared" &&
@@ -385,59 +394,6 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
-    const profileAutoPromotionAllows = (
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (!scopeProfileWritePlan) return false;
-      const actualTier = confidenceTier(confidence);
-      const actualRank = confidenceTierOrder.indexOf(actualTier);
-      if (actualRank === -1) return false;
-      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
-      if (!autoPromote.enabled) return false;
-      if (!autoPromote.categories.includes(category as any)) return false;
-      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
-      return minimumRank !== -1 && actualRank <= minimumRank;
-    };
-    const sharedAutoPromotionAllows = (
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (!scopeProfileWritePlan) {
-        const actualTier = confidenceTier(confidence);
-        const actualRank = confidenceTierOrder.indexOf(actualTier);
-        if (actualRank === -1) return false;
-        if (!resolveRecallEnhancementCapabilities(this.deps.config).autoPromoteToShared) return false;
-        if (!this.deps.config.autoPromoteToSharedCategories.includes(category as any))
-          return false;
-        const minimumRank = confidenceTierOrder.indexOf(
-          this.deps.config.autoPromoteMinConfidenceTier,
-        );
-        return minimumRank !== -1 && actualRank <= minimumRank;
-      }
-      return (
-        scopeProfileWritePlan.profile.autoPromote.targets.includes("serverShared") &&
-        profileAutoPromotionAllows(category, confidence)
-      );
-    };
-    const shouldPromoteToShared = (
-      targetStorage: StorageManager,
-      category: string,
-      confidence: number,
-    ): boolean => {
-      if (
-        !resolveNamespaceCapabilities(this.deps.config).namespaces ||
-        !profileAllowsSharedWrites ||
-        !sharedAutoPromotionAllows(category, confidence)
-      )
-        return false;
-      if (
-        this.deps.storageDirNamespace(targetStorage.dir) ===
-        this.deps.config.sharedNamespace
-      )
-        return false;
-      return true;
-    };
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -464,7 +420,7 @@ export class ExtractionPersistCoordinator {
     }): Promise<void> => {
       if (
         !scopeProfileWritePlan ||
-        !profileAutoPromotionAllows(options.category, options.confidence)
+        !profileAutoPromotionAllows(scopeProfileWritePlan, options.category, options.confidence)
       )
         return;
       const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
@@ -520,7 +476,7 @@ export class ExtractionPersistCoordinator {
             // Different connectors with same content should NOT be deduped.
             let skipPromotion = true;
             try {
-              const allMems = await targetStorage.readAllMemories();
+              const allMems = await readActiveMemoriesBothTiers(targetStorage);
               const nc = sourceContext?.sourceConnector?.trim() || undefined;
               skipPromotion = allMems.some((m) => {
                 if (m.frontmatter.category !== options.category) return false;
@@ -658,6 +614,10 @@ export class ExtractionPersistCoordinator {
       await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(
+          this.deps.config,
+          scopeProfileWritePlan,
+          profileAllowsSharedWrites,
+          (dir) => this.deps.storageDirNamespace(dir),
           options.sourceStorage,
           options.category,
           options.confidence,
@@ -749,7 +709,7 @@ export class ExtractionPersistCoordinator {
           let sharedSameConnector = true;
           if (options.invalidAt || options.validAt) {
             try {
-              const sharedMems = await sharedStorage.readAllMemories();
+              const sharedMems = await readActiveMemoriesBothTiers(sharedStorage);
               const snc = sourceContext?.sourceConnector?.trim() || undefined;
               sharedSameConnector = sharedMems.some((m) => {
                 if (m.frontmatter.category !== "fact") return false;
@@ -825,7 +785,7 @@ export class ExtractionPersistCoordinator {
               // sanitization redacted the content, causing the candidate lookup to
               // return undefined and leaving stale facts active.
               const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
-              const allShared = await sharedStorage.readAllMemories();
+              const allShared = await readActiveMemoriesBothTiers(sharedStorage);
               // PR #402 round-12 (Finding Uybg): restrict hash-dedup matching to
               // the SAME entity.  Content-hash equality alone can collide across
               // entities when two entities share identical fact text.  Using an
@@ -941,7 +901,7 @@ export class ExtractionPersistCoordinator {
             // fact gets its own promoted copy.
             let skipSharedPromotion = true;
             try {
-              const allSharedMems = await sharedStorage.readAllMemories();
+              const allSharedMems = await readActiveMemoriesBothTiers(sharedStorage);
               const snc = sourceContext?.sourceConnector?.trim() || undefined;
               const sharedNormalized = ContentHashIndex.normalizeContent(dedupContent);
               skipSharedPromotion = allSharedMems.some((m) => {
@@ -1724,26 +1684,47 @@ export class ExtractionPersistCoordinator {
         fact.tags,
       );
       let exactDuplicate = false;
+      let needsCorpusConfirm = false;
       try {
-        exactDuplicate = await this.deps.hasContentHashDedup(
-          targetStorage,
-          contentHashDedupKey,
-        );
+        exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
+        if (factDedupEnabled && !exactDuplicate) {
+          // Fact dedup disabled → skip the authority check AND (via the guarded
+          // corpus block below) corpus confirmation, so a disabled deployment
+          // never suppresses a write via dedup (PR #2016 thread SD-nH). Enabled:
+          // a MISS is trustworthy only against an AUTHORITATIVE index — re-check.
+          if (await targetStorage.isFactContentHashAuthoritative()) {
+            exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
+          } else {
+            needsCorpusConfirm = true;
+          }
+        }
       } catch (err) {
+        // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
+        // NOT fail-open into a possible duplicate — confirm against the corpus.
+        needsCorpusConfirm = true;
         log.warn(
-          `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
+          `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,
         );
       }
-      // Connector-aware dedup (QOjlB): if the hash says duplicate, verify
-      // a same-content, same-connector active fact exists. Different
-      // connectors with same content should NOT be deduped. Fail open
-      // (write) on scan failure so an unverifiable hash hit cannot
-      // silently drop content.
-      if (exactDuplicate) {
+      // Connector-aware dedup (QOjlB): if the hash says duplicate — or the index
+      // could not authoritatively confirm a miss — verify a same-content,
+      // same-connector active fact exists across the hot+cold tiers. Different
+      // connectors with the same content are NOT duplicates. Fail open (write) on
+      // scan failure so an unverifiable state cannot silently drop content.
+      if (factDedupEnabled && (exactDuplicate || needsCorpusConfirm)) {
         try {
-          const allMems = await targetStorage.readAllMemories();
+          // #2016 cold-tier finding: the authoritative content-hash rebuild
+          // unions the HOT and COLD tiers, so a hash hit can name an active copy
+          // that was demoted to cold/. A hot-only confirmation scan misses it,
+          // flips exactDuplicate back to false, and writes a second active hot
+          // copy of the same content. Scan both tiers so a cold-only active copy
+          // still confirms the duplicate and suppresses the redundant hot write.
+          const [hotMems, coldMems] = await Promise.all([
+            targetStorage.readAllMemories(),
+            targetStorage.readAllColdMemories(),
+          ]);
           const nc = sourceContext?.sourceConnector?.trim() || undefined;
-          exactDuplicate = allMems.some((m) => {
+          const matchesActiveDuplicate = (m: MemoryFile): boolean => {
             if (m.frontmatter.category !== writeCategory) return false;
             if ((m.frontmatter.status ?? "active") !== "active") return false;
             // Thread 5 (QPDE5): for procedures the hash is keyed on the full
@@ -1756,7 +1737,9 @@ export class ExtractionPersistCoordinator {
             if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
               ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
             return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
-          });
+          };
+          exactDuplicate =
+            hotMems.some(matchesActiveDuplicate) || coldMems.some(matchesActiveDuplicate);
         } catch (err) {
           log.warn(
             `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
@@ -2243,6 +2226,9 @@ export class ExtractionPersistCoordinator {
             // Claim-level provenance spans (issue #1575 PR 2).
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
+            // PR #2016: never defer here — fallible chunk/artifact writes follow this
+            // durable parent .md; flush the hash now so a throw can't strand it (dup).
+            deferHashIndexSave: false,
           });
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
@@ -2609,6 +2595,9 @@ export class ExtractionPersistCoordinator {
         // through to frontmatter so they survive end-to-end.
         ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
         ...(fact.provenance ? { provenance: fact.provenance } : {}),
+        // #1909: defer the per-fact index flush to the batch save only when
+        // fact dedup is on (the batch saver is a no-op otherwise).
+        deferHashIndexSave: factDedupEnabled,
       });
       const memoryId = factWrite.id;
       // #1645: surface the tombstone block; gate active post-write paths like #1576
@@ -2618,12 +2607,12 @@ export class ExtractionPersistCoordinator {
         faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
-      await this.deps.applyDeferredContradictionResolve(
-        contradiction,
-        targetStorage,
-        memoryId,
-        postWriteGuard,
-      );
+      try {
+        await this.deps.applyDeferredContradictionResolve(contradiction, targetStorage, memoryId, postWriteGuard);
+      } catch (err) {
+        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        throw err;
+      }
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -2796,6 +2785,11 @@ export class ExtractionPersistCoordinator {
             `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
           );
         }
+      } catch (err) {
+        // PR #2016: flush the deferred fact-hash before propagating so a durable
+        // .md never outlives a missing shared fact-hash index entry.
+        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        throw err;
       } finally {
         // Catalog touch (issue #1499): record AFTER every synchronous
         // source-namespace mutation in the non-chunked path: writeMemory,
@@ -2948,10 +2942,15 @@ export class ExtractionPersistCoordinator {
       touchBaseNonFactNamespace();
     }
 
-    // Save any content-hash indexes touched during the batch.
-    await this.deps.saveContentHashIndexes().catch((err) =>
-      log.warn(`content-hash index save failed: ${err}`),
-    );
+    // Save any content-hash indexes touched during the batch via the removal-
+    // aware, lock-held reconciling save (issue #1909). Round 11: the fact-hash
+    // index is rebuilt from the corpus on every restart (no ready marker), so
+    // this on-disk write is the in-process persisted view — never a cross-restart
+    // trust anchor. A deferred write whose addContentHashDedup threw is still
+    // safe: the fact .md is durable and the next restart's rebuild includes it.
+    await this.deps.saveContentHashIndexes().catch((err) => {
+      log.warn(`content-hash index save failed: ${err}`);
+    });
 
     for (const {
       storage: targetStorage,
