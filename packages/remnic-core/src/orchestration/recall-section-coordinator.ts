@@ -254,7 +254,13 @@ export class RecallSectionCoordinator {
     }
 
     for (const [id, chunks] of sectionBuckets.entries()) {
-      if (seen.has(id) || chunks.length === 0) continue;
+      if (
+        seen.has(id) ||
+        chunks.length === 0 ||
+        !this.resolveSectionEnabled(id, true)
+      ) {
+        continue;
+      }
       orderedSections.push({
         id,
         chunks: chunks.map(normalizeChunk),
@@ -413,6 +419,7 @@ export class RecallSectionCoordinator {
     const emittedIds = new Set<string>();
     for (const section of orderedSections) {
       if (emittedIds.has(section.id)) continue;
+      emittedIds.add(section.id);
       const content = selected.get(section.id);
       if (content) {
         sections.push(content);
