@@ -312,3 +312,43 @@ test("ledger parser rejects malformed persisted state", () => {
   assert.equal(parseRoundLedger(renderRoundLedger({ ...state, threadIds: ["thread-1", "thread-1"] })), null);
   assert.equal(parseRoundLedger(renderRoundLedger({ ...state, lastHeadChangedAt: "not-a-date" })), null);
 });
+
+test("a distinct activity id reopens even when timestamps are not later", () => {
+  const state = openRound();
+  const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const dispatched = decideRound({
+    ...base,
+    state,
+    threads: addressed,
+    now: "2026-07-18T12:10:00.000Z",
+    botActivity: null,
+  }).state;
+
+  const result = decideRound({
+    ...base,
+    state: dispatched,
+    now: "2026-07-18T12:11:00.000Z",
+    threads: addressed,
+    botActivity: { id: "review-2", at: "2026-07-18T12:09:00.000Z" },
+  });
+  assert.equal(result.action, "open");
+});
+
+test("empty bot aliases fail closed for unresolved bot-only threads", () => {
+  const state = openRound();
+  assert.deepEqual(getGuardUnresolvedThreads(state, base.threads, []), base.threads);
+});
+
+test("numeric activity ids produce distinct markers", () => {
+  const marker = hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "head-1",
+    headCommittedAt: "2026-07-18T11:00:00.000Z",
+    reviews: [{
+      id: 12345,
+      author: { login: "cursor" },
+      submitted_at: "2026-07-18T12:00:00.000Z",
+    }],
+  });
+  assert.deepEqual(marker, { id: "review:12345", at: "2026-07-18T12:00:00.000Z" });
+});

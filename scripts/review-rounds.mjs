@@ -36,6 +36,7 @@ function threadComments(thread) {
 function threadIsAddressed(thread, botAliases) {
   if (thread?.isResolved === true) return true;
   const bots = new Set(botAliases.map(normalizeLogin).filter(Boolean));
+  if (bots.size === 0) return false;
   return threadComments(thread).some((comment) => {
     const author = normalizeLogin(comment?.author?.login ?? comment?.user?.login);
     return author.length > 0 && !bots.has(author);
@@ -121,13 +122,16 @@ function isNewBotActivity(activity, state) {
   if (!activity) return false;
   const activityTime = parseTime(activity.at);
   const dispatchTime = parseTime(state?.dispatchIssuedAt);
-  if (dispatchTime > 0 && activityTime > 0) return activityTime > dispatchTime;
   const previous = state?.lastBotActivity;
+  if (dispatchTime > 0) {
+    if (activityTime > dispatchTime) return true;
+    return Boolean(activity.id && previous?.id && activity.id !== previous.id);
+  }
   if (!previous) return true;
   if (activity.id && previous.id) return activity.id !== previous.id;
   const previousTime = parseTime(previous.at);
   if (activityTime > 0 && previousTime > 0) return activityTime > previousTime;
-  return dispatchTime === 0;
+  return true;
 }
 
 /**
@@ -296,7 +300,9 @@ function activityTime(activity) {
 
 function activityId(activity, kind) {
   const raw = activity?.node_id ?? activity?.database_id ?? activity?.databaseId ?? activity?.id;
-  if (typeof raw === "string" && raw.length > 0) return `${kind}:${raw}`;
+  const hasId = (typeof raw === "string" && raw.length > 0) ||
+    (typeof raw === "number" && Number.isSafeInteger(raw));
+  if (hasId) return `${kind}:${String(raw)}`;
   const commit = activity?.commit_id ?? activity?.original_commit_id ?? activity?.head_sha ?? activity?.headSha;
   const at = activityTime(activity);
   return commit || at ? `${kind}:${commit ?? ""}:${at ?? ""}` : null;
