@@ -411,10 +411,13 @@ export async function rebuildMemoryLifecycleLedger(
       }
     }
   };
-  // Only hold the lock when the ledger is actually read or rewritten. A
-  // no-preserve dry run touches nothing, so it must not create the state dir or
-  // a transient lock file as a side effect.
-  if (options.preserveExistingEvents || !dryRun) {
+  // Hold the ledger lock only in write mode. A dry run reconstructs purely from
+  // memory frontmatter and never reads or rewrites the ledger, so it must not
+  // acquire the shared lifecycle lock — doing so would block concurrent
+  // lifecycle appends and pending-spill paths for the length of the run (#2033
+  // Cursor). This also keeps a dry run side-effect free: no state dir or
+  // transient lock file is created.
+  if (!dryRun) {
     await withHeldFileLock(
       memoryLifecycleLedgerLockPath(outputPath),
       { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, ...options.lockOptions },
