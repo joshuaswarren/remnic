@@ -24,6 +24,7 @@ import { executeResolution, isValidResolutionVerb } from "./resolution.js";
 import { ACTIVE_STATUSES, runContradictionScan } from "./contradiction-scan.js";
 import { parseConfig } from "../config.js";
 import type { StorageManager } from "../storage.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryCategory, MemoryFile, MemoryFrontmatter } from "../types.js";
 
 type FrontmatterLifecycleOptions = Parameters<StorageManager["writeMemoryFrontmatter"]>[2];
@@ -117,12 +118,15 @@ function makeResolutionStorage(options: {
       const memory = memories.get(id);
       return memory ? cloneMemory(memory) : null;
     },
-    async writeMemory(category: MemoryCategory, content: string, writeOptions: {
-      lineage?: string[];
-      derivedFrom?: string[];
-      derivedVia?: string;
-      tags?: string[];
-    }) {
+    // Production mapper keeps this legacy-shaped double faithful (§21).
+    async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) {
+      const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+      const writeOptions = options as {
+        lineage?: string[];
+        derivedFrom?: string[];
+        derivedVia?: string;
+        tags?: string[];
+      };
       const id = `merged-created-${memories.size}`;
       const memory = makeMemory(id, category);
       memory.content = content;

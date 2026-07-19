@@ -6,6 +6,7 @@
  */
 
 import { log } from "../logger.js";
+import { composeMemoryEnvelope } from "../write-envelope.js";
 import type { StorageManager } from "../storage.js";
 import type { MemoryCategory, MemoryFile } from "../types.js";
 import type { ResolutionVerb } from "./contradiction-review.js";
@@ -386,11 +387,23 @@ async function prepareMergeReplacement(
   const category = options.mergedCategory ?? mergedMemoryCategory(sourceA, sourceB);
   let mergedId: string;
   try {
-    const mergeResult = await storage.writeMemory(category, mergedContent, {
+    // Sealed-envelope write (issue #1989 PR4): merged content is
+    // LLM-produced — salvage; drops are warn-logged.
+    const mergeEnvelope = composeMemoryEnvelope(
+      {
+        content: mergedContent,
+        category,
+        confidence: Math.min(sourceA.frontmatter.confidence ?? 0.8, sourceB.frontmatter.confidence ?? 0.8),
+        tags: ["contradiction-resolution", "merge"],
+      },
+      { source: "contradiction-resolution" },
+      { salvage: true },
+    );
+    if (mergeEnvelope.salvageNotes.length > 0) {
+      log.warn(`contradiction-resolution write salvaged invalid fields: ${mergeEnvelope.salvageNotes.join("; ")}`);
+    }
+    const mergeResult = await storage.writeSealedMemory(mergeEnvelope, {
       actor: "contradiction-resolution",
-      confidence: Math.min(sourceA.frontmatter.confidence ?? 0.8, sourceB.frontmatter.confidence ?? 0.8),
-      tags: ["contradiction-resolution", "merge"],
-      source: "contradiction-resolution",
       lineage: [idA, idB],
       derivedVia: "merge",
     });

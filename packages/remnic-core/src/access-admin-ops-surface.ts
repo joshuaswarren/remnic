@@ -17,6 +17,7 @@ import { type CapsuleListEntry, defaultCapsulesDir } from "./capsule-cli.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { type GraphSnapshotNodeMetadata, type GraphSnapshotRequest, type GraphSnapshotResponse, buildGraphSnapshot } from "./graph-snapshot.js";
 import { log } from "./logger.js";
+import { composeMemoryEnvelope } from "./write-envelope.js";
 import { buildQualityScore, groupActionsByStatus, listMemoryGovernanceRuns, readMemoryGovernanceRunArtifact, runMemoryGovernance } from "./maintenance/memory-governance.js";
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import type { Orchestrator } from "./orchestrator.js";
@@ -779,21 +780,30 @@ export class AccessAdminOpsSurface {
       },
       writePromotedMemory: async (namespace, memory) => {
         const resolved = await this.deps.orchestrator.getStorage(namespace);
-        const { id, tombstoneBlocked } = await resolved.writeMemory(
-          memory.category,
-          memory.content,
+        // Sealed-envelope write (issue #1989 PR4): an admin promotion
+        // REPLAYS a stored memory into another namespace — legacy rows may
+        // predate current field limits, so salvage (drops warn-logged).
+        const promotionEnvelope = composeMemoryEnvelope(
           {
+            content: memory.content,
+            category: memory.category,
             confidence: memory.confidence,
             tags: memory.tags,
             entityRef: memory.entityRef,
-            source: `admin-promotion:${memory.sourceNamespace}:${memory.reason.slice(0, 120)}`,
-            lineage: memory.lineage,
-            sourceMemoryId: memory.sourceMemoryId,
-            actor: memory.actor,
             validAt: memory.validAt,
             ...(memory.sourceConnector ? { sourceConnector: memory.sourceConnector } : {}),
           },
+          { source: `admin-promotion:${memory.sourceNamespace}:${memory.reason.slice(0, 120)}` },
+          { salvage: true },
         );
+        if (promotionEnvelope.salvageNotes.length > 0) {
+          log.warn(`admin-promotion write salvaged invalid fields: ${promotionEnvelope.salvageNotes.join("; ")}`);
+        }
+        const { id, tombstoneBlocked } = await resolved.writeSealedMemory(promotionEnvelope, {
+          lineage: memory.lineage,
+          sourceMemoryId: memory.sourceMemoryId,
+          actor: memory.actor,
+        });
         // #1645: a tombstone-blocked promotion lands pending_review (no active
         // copy in the target). Report it as a failed promotion so the admin
         // sees an honest result — the content is queued for review, not

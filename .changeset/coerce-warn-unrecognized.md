@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Warn on present-but-unrecognized config values instead of silently defaulting them. The shared `coerceBool` / `coerceNumber` helpers (`connectors/coerce.ts`) now log a warning when a value is present but unrecognized (e.g. a typo like `"fales"` or an unsupported token like `"disabled"`) before returning `undefined`, so an operator misconfiguration no longer silently takes the caller's default — frequently a fail-open `?? true`. Absent values (`undefined`/`null`/empty string) still fall through silently, since absence legitimately means "use the default". Both helpers accept an optional `label` (the config key) for an actionable message. `config.ts`'s duplicate `coerceBooleanLike` now delegates its boolean/string path to the canonical `coerceBool` (retaining numeric `1`/`0` handling), inheriting the warning and removing the duplicated parser. The already-loud edge coercers (`access-boundary.ts`, `emit-legacy-tools.ts`) that throw on unrecognized input are unchanged.

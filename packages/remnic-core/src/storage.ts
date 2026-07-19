@@ -157,6 +157,7 @@ import {
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
+  composeMemoryEnvelope,
   isSealedMemoryEnvelope,
   sealedWriteToLegacyArgs,
   type SealedMemoryEnvelope,
@@ -6835,13 +6836,11 @@ export class StorageManager {
         }
       }
 
-      // Also write a correction entry for the audit trail
-      await this.writeMemory("correction", `Superseded: ${oldMemory.content}\n\nReason: ${reason}`, {
-        confidence: 1.0,
-        tags: ["supersession", "auto-resolved"],
-        source: "contradiction-detection",
-        lineage: [oldMemoryId, newMemoryId],
-      });
+      // Audit-trail correction — sealed even INSIDE the engine (#2022 review).
+      const auditBody = `Superseded: ${oldMemory.content}\n\nReason: ${reason}`;
+      const auditInput = { content: auditBody, category: "correction" as const, confidence: 1.0, tags: ["supersession", "auto-resolved"] };
+      const auditEnvelope = composeMemoryEnvelope(auditInput, { source: "contradiction-detection" });
+      await this.writeSealedMemory(auditEnvelope, { lineage: [oldMemoryId, newMemoryId] });
 
       return true;
     } catch (err) {

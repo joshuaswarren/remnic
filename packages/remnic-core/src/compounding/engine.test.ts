@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { StorageManager, type PluginConfig } from "../index.js";
 import { CompoundingEngine, type CompoundingPromotionReport } from "./engine.js";
+import { isSealedMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 
 /**
  * Issue #1645 — a tombstone-blocked promotion write lands pending_review (no
@@ -66,8 +67,11 @@ test("#1645: tombstone-blocked promotion is diverted, not reported as promoted",
       async readAllMemories() {
         return [];
       },
-      async writeMemory() {
+      async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) {
         writeCallCount += 1;
+        // §21 mock fidelity: assert the production-shaped arguments arrive.
+        assert.equal(isSealedMemoryEnvelope(envelope), true, "promotion must pass a sealed envelope");
+        assert.equal(extras.memoryKind, "note", "promotion extras must carry memoryKind");
         return { id: "blocked-promo-1", tombstoneBlocked: true, blockedBy: "tomb-1" };
       },
     } as unknown as StorageManager;

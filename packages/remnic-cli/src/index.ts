@@ -34,6 +34,7 @@
  *   oauth <cmd>       Manage pending OAuth authorizations (ChatGPT MCP)
  */
 
+import { persistEnrichmentCandidate } from "./enrichment-persist.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6125,12 +6126,8 @@ async function cmdEnrich(rest: string[]): Promise<void> {
       // warning instead of masking the successful persist (PR #425 review).
       let persisted = false;
       try {
-        await storage.writeMemory(candidate.category, candidate.text, {
-          confidence: candidate.confidence,
-          tags: [...(candidate.tags ?? []), "enrichment", candidate.source],
-          entityRef: result.entityName,
-          source: `enrichment:${candidate.source}`,
-        });
+        // Sealed-envelope write (issue #1989 PR4) — see enrichment-persist.ts.
+        await persistEnrichmentCandidate(storage, result.entityName, candidate);
         persisted = true;
         totalPersisted++;
       } catch (err) {

@@ -59,6 +59,26 @@ describe("RemnicLedgerStore", () => {
     });
   });
 
+  it("retains bounded source text when sealing long claim provenance", async () => {
+    await withStore(async (store) => {
+      const input = normalizeClaimDraft(
+        {
+          statement: "Long claim provenance must remain recoverable.",
+          stance: "for",
+          confidence: 0.8,
+          scope: { entities: ["Envelope"], domain: "storage" },
+        },
+        { now: "2026-06-03T12:00:00Z", sourceText: "source ".repeat(900) },
+      );
+
+      const claim = await store.createClaim(input);
+
+      assert.ok(claim.sourceText);
+      assert.equal(claim.sourceText.length, 1_024);
+      assert.match(claim.sourceText, /\[truncated\]$/);
+    });
+  });
+
   it("preserves multiline claim statements when reading through Remnic storage", async () => {
     await withStore(async (store) => {
       const input = normalizeClaimDraft(

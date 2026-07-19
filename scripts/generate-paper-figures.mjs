@@ -27,7 +27,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve, basename } from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -96,13 +96,21 @@ function trackedResultsNames() {
   if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null; // temp seam: fixtures are deliberate
   return readManifestNames() ?? trackedResultsNamesFromGit();
 }
-// Refresh the manifest from git BEFORE reading it into the filter cache, so a
-// newly-tracked artifact is reflected in THIS run (cursor thread: manifest
-// refresh stale filter cache). No-op when git is unavailable (CI) — the
-// committed manifest is the source of truth. Function declarations below are
-// hoisted, so this call is safe above their definition.
-refreshArtifactManifest();
-const TRACKED_RESULTS_NAMES = trackedResultsNames();
+// NOTE: the manifest refresh + tracked-name resolution are NOT run at module
+// load. Running them at import time (a) performs a git write side effect and
+// (b) couples selection to the ambient env of whoever imported the module
+// (tests import this file to unit-test the pure comparators). main() refreshes
+// the manifest before rendering; the tracked-name filter is resolved lazily and
+// cached on first use.
+let _trackedNamesResolved = false;
+let _trackedNamesCache = null;
+function trackedResultsNamesCached() {
+  if (!_trackedNamesResolved) {
+    _trackedNamesCache = trackedResultsNames();
+    _trackedNamesResolved = true;
+  }
+  return _trackedNamesCache;
+}
 
 // Keep the committed manifest in sync with git when git is available (local dev).
 // No-op in CI (git not reliably callable there) — the committed manifest is the
@@ -125,6 +133,48 @@ function loadJson(absPath) {
 }
 
 /**
+ * Parse an ISO-8601 `finishedAt` to epoch-ms. Unparseable / missing values sort
+ * OLDEST (`-Infinity`) so a malformed artifact can never win the newest slot.
+ */
+function finishedAtEpoch(v) {
+  const t = Date.parse(String(v ?? ""));
+  return Number.isNaN(t) ? -Number.POSITIVE_INFINITY : t;
+}
+
+/**
+ * Deterministic "newest first" ordering for committed artifacts (issue #2004).
+ *
+ * Primary key: `finishedAt` as an EPOCH-MS number (never String.localeCompare —
+ * ICU collation depends on the LANG/LC_ALL the process inherits, and the root
+ * test runner's spawned workers inherit a different env than an isolated run,
+ * so a locale-sensitive compare made figure selection env-dependent).
+ *
+ * Secondary key: the FILENAME in descending codepoint order. This is a STABLE
+ * tiebreaker: two artifacts that share a `finishedAt` must never resolve by
+ * `readdirSync` order, which is filesystem/OS/load dependent — the exact class
+ * of nondeterminism that made the byte-identical figure test flake in the full
+ * suite but pass in isolation. Filenames are `<iso-date>-<benchmark>-…` so the
+ * codepoint-max filename is also the chronologically-latest-labelled run.
+ *
+ * Operates on `{ name, doc }` entries.
+ */
+function compareArtifactsByRecency(a, b) {
+  const ea = finishedAtEpoch(a.doc?.finishedAt);
+  const eb = finishedAtEpoch(b.doc?.finishedAt);
+  // Newest finishedAt first — but ONLY trust the epoch delta when both values
+  // are finite and differ. If both are missing/unparseable, `eb - ea` would be
+  // (-Infinity) - (-Infinity) = NaN, which Array.sort treats as equality and
+  // resolves by input/readdir order — the exact flake we are removing. When
+  // exactly one is finite, the finite (real) run wins. Otherwise fall through to
+  // the stable filename tiebreak so selection is ALWAYS deterministic (#2004).
+  if (Number.isFinite(ea) && Number.isFinite(eb) && ea !== eb) return eb - ea;
+  if (Number.isFinite(ea) !== Number.isFinite(eb)) return Number.isFinite(ea) ? -1 : 1;
+  if (a.name < b.name) return 1;
+  if (a.name > b.name) return -1;
+  return 0;
+}
+
+/**
  * Find the real (non-mock) published artifact for a benchmark id + tier. Returns
  * the newest matching artifact, or null when none is committed. Mocks
  * (*-mock000.json) are NEVER returned — they are placeholders, not results.
@@ -138,10 +188,11 @@ function loadJson(absPath) {
  */
 function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
   if (!existsSync(RESULTS_DIR)) return null;
+  const tracked = trackedResultsNamesCached();
   const candidates = readdirSync(RESULTS_DIR)
     .filter((name) => name.endsWith(".json"))
     .filter((name) => !name.includes("mock000"))
-    .filter((name) => !TRACKED_RESULTS_NAMES || TRACKED_RESULTS_NAMES.has(name))
+    .filter((name) => !tracked || tracked.has(name))
     .map((name) => ({ name, abs: join(RESULTS_DIR, name) }))
     .map(({ name, abs }) => {
       try {
@@ -162,7 +213,15 @@ function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
       if (systemName === undefined) return true;
       return sn === systemName;
     })
-    .sort((a, b) => String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt)));
+    .sort(compareArtifactsByRecency);
+  if (process.env.REMNIC_FIGURES_DEBUG) {
+    const line = `[figdebug] find ${benchmarkId}/${tier ?? "-"}/${model ?? "-"}/${systemName ?? "-"} ` +
+      `RESULTS_DIR=${RESULTS_DIR} LANG=${process.env.LANG ?? ""} LC_ALL=${process.env.LC_ALL ?? ""} ` +
+      `collator=${Intl.Collator().resolvedOptions().locale} ` +
+      `candidates=[${candidates.map((c) => `${c.name}@${c.doc.finishedAt}`).join(", ")}] ` +
+      `-> ${candidates[0]?.name ?? "NONE"}`;
+    process.stderr.write(line + "\n");
+  }
   return candidates[0] ?? null;
 }
 
@@ -183,10 +242,11 @@ function findMemCorrectArtifacts() {
   // sorted last in readdirSync, so multiple committed seeds for one adapter
   // could plot stale metrics and mislabel the legend "real" (cursor thread:
   // MemCorrect map picks arbitrary run).
+  const tracked = trackedResultsNamesCached();
   const byAdapter = new Map();
   for (const name of readdirSync(RESULTS_DIR).sort()) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
-    if (TRACKED_RESULTS_NAMES && !TRACKED_RESULTS_NAMES.has(name)) continue;
+    if (tracked && !tracked.has(name)) continue;
     const abs = join(RESULTS_DIR, name);
     let doc;
     try {
@@ -221,11 +281,15 @@ function findMemCorrectArtifacts() {
     };
     const key = String(adapter).toLowerCase();
     // finishedAt lives at doc.finishedAt (published) or meta.timestamp (nested
-    // BenchmarkResult); both are ISO-8601 so lexicographic compare orders them.
+    // BenchmarkResult). Keep the NEWEST per adapter using the SAME deterministic
+    // comparator as findArtifact, so every selection path shares one tiebreak
+    // direction (largest-filename-wins on an exact tie) — never localeCompare or
+    // readdir order (#2004).
     const finishedAt = String(doc?.finishedAt ?? doc?.meta?.timestamp ?? "");
+    const cand = { name, doc: { finishedAt } };
     const prev = byAdapter.get(key);
-    if (!prev || String(prev.finishedAt).localeCompare(finishedAt) < 0) {
-      byAdapter.set(key, { entry, finishedAt });
+    if (!prev || compareArtifactsByRecency(cand, prev.cand) < 0) {
+      byAdapter.set(key, { entry, cand });
     }
   }
   return [...byAdapter.values()].map((x) => x.entry);
@@ -889,6 +953,13 @@ function writeFigure(filename, svg) {
 }
 
 function main() {
+  // Refresh the committed manifest from git (local dev) BEFORE the tracked-name
+  // filter is resolved, so a newly-tracked artifact is reflected in THIS run.
+  // No-op in CI / under the RESULTS_DIR seam. Deferred here (not module load)
+  // so importing this file for its pure comparators has no git write side
+  // effect (issue #2004).
+  refreshArtifactManifest();
+  _trackedNamesResolved = false;
   mkdirSync(FIGURES_DIR, { recursive: true });
 
   const f1 = figure1();
@@ -922,4 +993,11 @@ function main() {
   console.log(`  fig3 TrustScore components: REAL (source-extracted)`);
 }
 
-main();
+// Run only when invoked directly (`node scripts/generate-paper-figures.mjs`).
+// When imported (tests exercising the pure comparators) main() must NOT run —
+// it would render figures + write the manifest as an import side effect.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
+
+export { compareArtifactsByRecency, finishedAtEpoch };
