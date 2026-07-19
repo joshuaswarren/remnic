@@ -238,6 +238,27 @@ const DEFAULT_TIER_MIGRATION_STATUS: TierMigrationStatusSnapshot = {
  */
 const CLAIMED_IMPRESSION_SPILL_SUFFIX = ".claimed";
 
+/**
+ * Outcome of {@link LastRecallStore.drainPendingImpressions}. Distinguishes a
+ * completed drain (or nothing pending) from a DEFERRED drain that could not
+ * acquire the rotation lock while spills remained, so the caller can tell the
+ * data-safe cases apart from the one where an offline-sync snapshot would
+ * silently omit recorded impressions (#2033).
+ */
+export interface DrainPendingImpressionsResult {
+  /** Pending spill rows were folded into the synced active file this call. */
+  folded: boolean;
+  /**
+   * Pending spill rows remain in the offline-sync-EXCLUDED pending queue
+   * because the rotation lock could not be acquired within the budget. A
+   * snapshot taken now would silently omit them (#2033): the caller MUST treat
+   * the active file as INCOMPLETE and retry or abort the snapshot rather than
+   * report success. `false` means the active file is complete — either the
+   * spills were folded or nothing was pending.
+   */
+  pendingDeferred: boolean;
+}
+
 export class LastRecallStore {
   private readonly statePath: string;
   private readonly impressionsPath: string;
@@ -537,31 +558,43 @@ export class LastRecallStore {
    * snapshot and lost if this node is discarded before the next `record()`
    * folds it back. Offline sync calls this before building a snapshot so a
    * recorded impression always reaches the remote. Fast no-op — no lock and no
-   * dir/lock-file creation — when nothing is pending; returns true when rows
-   * were folded into the active file.
+   * dir/lock-file creation — when nothing is pending.
+   *
+   * Returns a {@link DrainPendingImpressionsResult}: `folded` is true when rows
+   * were folded into the active file; `pendingDeferred` is true when the
+   * rotation lock could NOT be acquired while spills remained, so the spills
+   * are still in the offline-sync-EXCLUDED queue and a snapshot taken now would
+   * silently drop them. The caller MUST NOT report a clean snapshot while
+   * `pendingDeferred` is true — it either retries or aborts.
    */
-  async drainPendingImpressions(): Promise<boolean> {
+  async drainPendingImpressions(): Promise<DrainPendingImpressionsResult> {
     let pendingCount = 0;
     try {
       pendingCount = (await readdir(this.impressionsPendingDir)).length;
     } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return false;
+      if (isErrnoCode(err, "ENOENT")) return { folded: false, pendingDeferred: false };
       throw err;
     }
-    if (pendingCount === 0) return false;
+    if (pendingCount === 0) return { folded: false, pendingDeferred: false };
     const lockPath = `${this.impressionsPath}.lock`;
     let folded = false;
+    let acquiredLock = false;
     await withHeldFileLock(
       lockPath,
       { staleMs: 30_000, ...this.impressionsLockOptions },
       async (acquired) => {
-        // A peer holds the lock (mid-rotation or mid-append); it, or the next
-        // drain, folds the spills. Never touch the active file unlocked (#2033).
+        // A peer holds the lock (mid-rotation or mid-append). We MUST NOT touch
+        // the active file unlocked (#2033), so the spills stay in the
+        // offline-sync-EXCLUDED pending queue. Report the drain as DEFERRED
+        // (pendingDeferred=true) so the caller does not build a snapshot that
+        // silently omits them; the next lock holder — or a caller retry — folds
+        // them in.
         if (!acquired) return;
+        acquiredLock = true;
         folded = await this.foldPendingImpressionsAndAppend(null);
       },
     );
-    return folded;
+    return { folded, pendingDeferred: !acquiredLock };
   }
 
   /**

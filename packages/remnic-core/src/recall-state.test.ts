@@ -758,12 +758,20 @@ test("LastRecallStore.drainPendingImpressions folds pending spills into the sync
     const store = new LastRecallStore(dir);
     await store.load();
 
-    assert.equal(await store.drainPendingImpressions(), true, "drain reports rows folded");
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: true, pendingDeferred: false },
+      "drain reports rows folded and nothing deferred",
+    );
     assert.equal(await readFile(impressionsPath, "utf-8"), row, "spill folded verbatim into active file");
     assert.deepEqual(await readdir(pendingDir), [], "committed spill deleted from the pending queue");
 
-    // Nothing pending now → fast no-op that reports false.
-    assert.equal(await store.drainPendingImpressions(), false, "second drain is a no-op");
+    // Nothing pending now → fast no-op that folds nothing and defers nothing.
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: false, pendingDeferred: false },
+      "second drain is a no-op",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -774,7 +782,11 @@ test("LastRecallStore.drainPendingImpressions is a side-effect-free no-op when n
   try {
     const store = new LastRecallStore(dir);
     await store.load();
-    assert.equal(await store.drainPendingImpressions(), false, "no pending dir → no drain");
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: false, pendingDeferred: false },
+      "no pending dir → no drain, nothing deferred",
+    );
     // A no-op drain must not create the state dir or a transient lock file.
     await assert.rejects(() => readdir(path.join(dir, "state")), /ENOENT/);
   } finally {
@@ -797,9 +809,64 @@ test("LastRecallStore.drainPendingImpressions recovers a crash-orphaned .claimed
     const store = new LastRecallStore(dir);
     await store.load();
 
-    assert.equal(await store.drainPendingImpressions(), true, "orphaned claim recovered and folded");
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: true, pendingDeferred: false },
+      "orphaned claim recovered and folded",
+    );
     assert.equal(await readFile(impressionsPath, "utf-8"), row, "recovered row appended to active file");
     assert.deepEqual(await readdir(pendingDir), [], "recovered spill finalized");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never claims success when the rotation lock is held (#2033)", async () => {
+  // Regression for the offline-sync lock-timeout thread (PRRT_kwDORJXyws6SE4Ac):
+  // a pending spill exists but a PEER holds the rotation lock, so the drain
+  // cannot fold it into the synced active file. The drain MUST report
+  // pendingDeferred=true (a distinct deferred signal) and MUST NOT touch the
+  // offline-sync-EXCLUDED spill — otherwise a snapshot taken now would silently
+  // omit the recorded impression while the caller believes the drain succeeded.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-locked-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    // Foreign-owner lock with a far-future timestamp so it is NOT broken as
+    // stale within the acquisition budget; the drain must observe acquired=false.
+    const lockPath = `${impressionsPath}.lock`;
+    await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
+
+    // Tiny maxWaitMs so acquisition times out deterministically.
+    const store = new LastRecallStore(dir, {
+      impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
+    });
+    await store.load();
+
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: false, pendingDeferred: true },
+      "lock held → drain is deferred, never reports a fold",
+    );
+    // The active file was NEVER written unlocked: a snapshot now would miss the
+    // spilled impression, which is exactly why the caller must not treat a
+    // deferred drain as a clean snapshot.
+    assert.equal(
+      await fileExists(impressionsPath),
+      false,
+      "pending spill must NOT be folded into the active file while the lock is held",
+    );
+    // The spill is preserved in the offline-sync-EXCLUDED queue for a later
+    // lock holder (or caller retry) to fold — deferred, never dropped.
+    assert.deepEqual(
+      await readdir(pendingDir),
+      ["spill-1.jsonl"],
+      "deferred spill stays in the pending queue",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
