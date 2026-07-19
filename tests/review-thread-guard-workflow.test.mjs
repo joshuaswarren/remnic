@@ -105,3 +105,20 @@ test("review-thread guard inline STOP set keeps negation tokens (no/not/cannot)"
     assert.ok(!words.has(neg), `STOP must not contain the negation "${neg}"`);
   }
 });
+
+test("review-thread guard inline boilerplate strip is footer-anchored, not any mention", () => {
+  // A real finding line that merely mentions a footer phrase must survive; only
+  // lines that START (after markup/emoji/HTML) with a footer phrase are stripped
+  // (codex P2). Mirrors FEEDBACK_BOILERPLATE_PATTERN in review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(
+    workflow,
+    /\.replace\(\/\^\(\?:<\[\^>\]\*>\|\[\^A-Za-z\\n\]\)\*\(\?:was this/,
+    "boilerplate strip must be anchored to a footer-phrase line start",
+  );
+  assert.doesNotMatch(
+    workflow,
+    /\.replace\(\/\^\.\*\\b\(\?:was this/,
+    "must not strip any line merely containing a footer phrase",
+  );
+});
