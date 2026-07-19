@@ -81,7 +81,7 @@ test("real config.ts extraction matches the committed snapshot (config-surface c
   const actual = extractReal();
   const snapshot = JSON.parse(
     readFileSync(path.join(REPO_ROOT, "scripts", "config-contract", "parsed-keys.snapshot.json"), "utf8"),
-  ) as { keys: string[]; unparseable: Array<{ file: string; line: number; reason: string }> };
+  ) as { keys: string[]; unparseable: Array<{ file: string; line: number; reason: string }>; ambiguousValueMembers: string[] };
   assert.deepEqual(
     actual.keys,
     snapshot.keys,

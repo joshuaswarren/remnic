@@ -21,6 +21,7 @@
     "activeRecallPersistTranscripts",
     "activeRecallPromptAppend",
     "activeRecallPromptOverride",
+    "activeRecallPromptReplacement",
     "activeRecallPromptStyle",
     "activeRecallQueryMode",
     "activeRecallRecentAssistantChars",
@@ -927,22 +928,22 @@
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 384,
+      "line": 360,
       "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 398,
+      "line": 374,
       "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 399,
+      "line": 375,
       "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 2735,
+      "line": 2728,
       "reason": "Object.entries() over parser input — dynamic key set"
     },
     {
@@ -975,7 +976,7 @@
     "activeRecallCustomInstruction.trim",
     "activeRecallModel.trim",
     "activeRecallPromptAppend.trim",
-    "activeRecallPromptOverride.trim",
+    "activeRecallPromptReplacement.trim",
     "activeRecallTranscriptDir.trim",
     "agentAccessHttp.authToken.replace",
     "agentAccessHttp.host.trim",

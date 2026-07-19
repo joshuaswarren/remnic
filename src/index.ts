@@ -1955,8 +1955,7 @@ const pluginDefinition = {
         cacheTtlMs: cfg.activeRecallCacheTtlMs,
         persistTranscripts: cfg.activeRecallPersistTranscripts,
         transcriptDir: path.isAbsolute(cfg.activeRecallTranscriptDir)
-          ? cfg.activeRecallTranscriptDir
-          : path.join(pluginStateDir, cfg.activeRecallTranscriptDir),
+          ? cfg.activeRecallTranscriptDir : path.join(pluginStateDir, cfg.activeRecallTranscriptDir),
         entityGraphDepth: cfg.activeRecallEntityGraphDepth,
         includeCausalTrajectories: cfg.activeRecallIncludeCausalTrajectories,
         includeDaySummary: cfg.activeRecallIncludeDaySummary,

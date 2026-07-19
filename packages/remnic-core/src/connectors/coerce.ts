@@ -111,3 +111,25 @@ export function coerceNumber(value: unknown, label?: string): number | undefined
   }
   return undefined;
 }
+
+/**
+ * Config-layer boolean coercion. Adds numeric 1/0 handling on top of the
+ * canonical `coerceBool` because config values can arrive as JSON numbers,
+ * which `coerceBool` intentionally does not accept. Any other present-but-
+ * unrecognized value (string typo or out-of-range number) warns and returns
+ * `undefined` so a caller's fail-open `?? true` default is not taken silently.
+ *
+ * CLAUDE.md gotcha #36: string "false" is truthy in JavaScript.
+ */
+export function coerceBooleanLike(value: unknown, label?: string): boolean | undefined {
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    warnUnrecognizedConfig(
+      `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected true|false|1|0|yes|no|on|off — using default`,
+    );
+    return undefined;
+  }
+  return coerceBool(value, label);
+}
