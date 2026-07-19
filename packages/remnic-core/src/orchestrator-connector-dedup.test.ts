@@ -1630,3 +1630,93 @@ test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered cate
 
   await rm(memoryDir, { recursive: true, force: true });
 });
+
+test("#1909 (PR #2016): a fact demoted to cold is not re-created as a duplicate hot copy after restart", async () => {
+  // The authoritative content-hash rebuild unions the HOT and COLD tiers, so a
+  // restart's hash index reports a hit for a fact whose only active copy was
+  // demoted to cold/. The connector-aware confirmation scan in
+  // ExtractionPersistCoordinator previously scanned readAllMemories() (hot)
+  // only, found no matching row, flipped exactDuplicate back to false, and
+  // wrote a SECOND active hot copy. It must scan the cold tier too so the
+  // cold-only active copy still suppresses the redundant hot write.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cold-dedup-"));
+  const body =
+    "The disaster-recovery drill runs on the first Sunday of every quarter.";
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+
+  // Phase 1 — persist a fact, then demote its only active copy to cold/.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    const ids = await orch.persistExtraction(factResult(body), storage, null, {
+      sourceConnector: "chatgpt",
+    });
+    assert.equal(ids.length, 1, "fact persisted to hot in phase 1");
+
+    const [hotMemory] = await storage.readAllMemories();
+    assert.ok(hotMemory, "the persisted fact is readable from the hot tier");
+    const { changed } = await storage.migrateMemoryToTier(hotMemory, "cold");
+    assert.equal(changed, true, "the fact was demoted to cold");
+
+    assert.equal(
+      (await storage.readAllMemories()).length,
+      0,
+      "no active copy remains in the hot tier after demotion",
+    );
+    const cold = await storage.readAllColdMemories();
+    assert.equal(cold.length, 1, "the demoted fact is now in the cold tier");
+    assert.equal(
+      cold[0]?.frontmatter.status ?? "active",
+      "active",
+      "the cold copy is still active",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the authoritative rebuild unions hot+cold, so the hash
+  // index reports a hit for the cold-only copy.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, body),
+    true,
+    "the demoted fact's hash survives the hot+cold rebuild",
+  );
+
+  // Re-extraction of the same content with the same connector must be deduped
+  // against the cold copy — no second hot copy is created.
+  const reIds = await orch2.persistExtraction(factResult(body), storage2, null, {
+    sourceConnector: "chatgpt",
+  });
+  assert.equal(
+    reIds.length,
+    0,
+    "cold-only active copy suppresses the duplicate hot write (would be 1 without the fix)",
+  );
+
+  assert.equal(
+    (await storage2.readAllMemories()).filter((m: MemoryFile) => m.content.includes(body))
+      .length,
+    0,
+    "no duplicate hot copy was written",
+  );
+  assert.equal(
+    (await storage2.readAllColdMemories()).filter((m: MemoryFile) => m.content.includes(body))
+      .length,
+    1,
+    "the single cold copy remains the only copy of the fact",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});

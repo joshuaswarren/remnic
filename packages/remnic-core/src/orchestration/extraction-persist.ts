@@ -1699,9 +1699,18 @@ export class ExtractionPersistCoordinator {
       // silently drop content.
       if (exactDuplicate) {
         try {
-          const allMems = await targetStorage.readAllMemories();
+          // #2016 cold-tier finding: the authoritative content-hash rebuild
+          // unions the HOT and COLD tiers, so a hash hit can name an active copy
+          // that was demoted to cold/. A hot-only confirmation scan misses it,
+          // flips exactDuplicate back to false, and writes a second active hot
+          // copy of the same content. Scan both tiers so a cold-only active copy
+          // still confirms the duplicate and suppresses the redundant hot write.
+          const [hotMems, coldMems] = await Promise.all([
+            targetStorage.readAllMemories(),
+            targetStorage.readAllColdMemories(),
+          ]);
           const nc = sourceContext?.sourceConnector?.trim() || undefined;
-          exactDuplicate = allMems.some((m) => {
+          const matchesActiveDuplicate = (m: MemoryFile): boolean => {
             if (m.frontmatter.category !== writeCategory) return false;
             if ((m.frontmatter.status ?? "active") !== "active") return false;
             // Thread 5 (QPDE5): for procedures the hash is keyed on the full
@@ -1714,7 +1723,9 @@ export class ExtractionPersistCoordinator {
             if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
               ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
             return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
-          });
+          };
+          exactDuplicate =
+            hotMems.some(matchesActiveDuplicate) || coldMems.some(matchesActiveDuplicate);
         } catch (err) {
           log.warn(
             `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
