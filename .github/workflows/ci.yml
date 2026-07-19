@@ -312,8 +312,11 @@ jobs:
           git -c core.quotePath=off diff --name-status -z -M "$MB"...HEAD > /tmp/lifecycle-changed-files.txt
           git show "$MB:scripts/lifecycle-matrix/coverage.json" > /tmp/lifecycle-base-coverage.json 2>/dev/null \
             || : > /tmp/lifecycle-base-coverage.json
+          git show "$MB:.github/ai-review-ignore" > /tmp/lifecycle-base-ignore.txt 2>/dev/null \
+            || : > /tmp/lifecycle-base-ignore.txt
           echo "REMNIC_LIFECYCLE_CHANGED_FILES_PATH=/tmp/lifecycle-changed-files.txt" >> "$GITHUB_ENV"
           echo "LIFECYCLE_BASE_MANIFEST_PATH=/tmp/lifecycle-base-coverage.json" >> "$GITHUB_ENV"
+          echo "LIFECYCLE_BASE_IGNORE_PATH=/tmp/lifecycle-base-ignore.txt" >> "$GITHUB_ENV"
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
 

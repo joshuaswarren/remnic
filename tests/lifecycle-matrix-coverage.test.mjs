@@ -387,3 +387,29 @@ test("retrieval/intent/config paths are tracked (grandfathered), not silently ig
     assert.equal(warnings.length, 1, `${p} must warn, not be silently ignored by the gate`);
   }
 });
+
+test("the CLI reads ai-review-ignore from the base path, not the head checkout", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lifecycle-baseignore-"));
+  try {
+    const lifecyclePath = "packages/remnic-core/src/orchestrator.ts";
+    const manifest = { lifecycleManifest: [lifecyclePath], coverage: {}, grandfathered: [] };
+    const manifestPath = join(dir, "coverage.json");
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const emptyIgnore = join(dir, "empty-ignore.txt");
+    writeFileSync(emptyIgnore, "");
+    const listingIgnore = join(dir, "listing-ignore.txt");
+    writeFileSync(listingIgnore, `${lifecyclePath}\n`);
+
+    // Base ignore does NOT list the path → it is evaluated → unmapped violation.
+    const notIgnored = runCli([`--manifest=${manifestPath}`, `--base-ignore=${emptyIgnore}`, `--files=${lifecyclePath}`]);
+    assert.equal(notIgnored.code, 1, "a touched, unmapped lifecycle path must fail when the base does not ignore it");
+    assert.match(notIgnored.output, /NO coverage mapping/);
+
+    // Base ignore lists the path → dropped before evaluateCoverage → passes.
+    // (In CI this file comes from the BASE ref, so a head-side ignore edit cannot bypass the gate.)
+    const ignored = runCli([`--manifest=${manifestPath}`, `--base-ignore=${listingIgnore}`, `--files=${lifecyclePath}`]);
+    assert.equal(ignored.code, 0, "only the base-ref ignore rules may drop a path from the gate");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

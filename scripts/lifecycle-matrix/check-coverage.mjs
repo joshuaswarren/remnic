@@ -333,6 +333,26 @@ function readBaseManifest() {
   }
 }
 
+/**
+ * Load the base-ref ai-review-ignore patterns. Path comes from `--base-ignore=`
+ * or LIFECYCLE_BASE_IGNORE_PATH (CI writes `git show <base>:.github/ai-review-ignore`
+ * there). Read from the BASE ref, never the head checkout: otherwise a PR could
+ * add a lifecycle path (e.g. orchestrator.ts) to `.github/ai-review-ignore` and
+ * the gate would drop it from the effective diff before evaluateCoverage,
+ * bypassing the required-subject check. Absent/empty base → no patterns (fail
+ * safe: ignore nothing rather than trust head-side rules).
+ */
+function readBaseIgnorePatterns() {
+  const baseArg = process.argv.find((a) => a.startsWith("--base-ignore="));
+  const basePath = baseArg
+    ? baseArg.slice("--base-ignore=".length)
+    : process.env.LIFECYCLE_BASE_IGNORE_PATH;
+  if (!basePath || !existsSync(basePath)) return [];
+  const raw = readFileSync(basePath, "utf8");
+  if (raw.trim().length === 0) return [];
+  return parseIgnoreManifest(raw);
+}
+
 function main() {
   const manifestArg = process.argv.find((a) => a.startsWith("--manifest="));
   const manifestPath = manifestArg
@@ -375,10 +395,7 @@ function main() {
   }
 
   const changed = readChangedFiles();
-  const ignorePath = join(repoRoot, ".github", "ai-review-ignore");
-  const ignorePatterns = existsSync(ignorePath)
-    ? parseIgnoreManifest(readFileSync(ignorePath, "utf8"))
-    : [];
+  const ignorePatterns = readBaseIgnorePatterns();
   const { effective } = splitEffectiveDiff(flattenChangedPaths(changed), ignorePatterns);
 
   const { covered, warnings, violations } = evaluateCoverage(effective, manifest);

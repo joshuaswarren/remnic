@@ -223,11 +223,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           .flushSession("session-reset", { reason: "before_reset", abortSignal: controller.signal })
           .catch(() => undefined);
 
-        // A fresh, non-aborted flush must find the turn still buffered.
+        // A fresh, non-aborted flush must find the turn still buffered AND must
+        // itself succeed — swallowing its failure would let a recovery-flush
+        // regression pass vacuously (the extraction call still bumps the count).
         state.secondFlushCalls = stubExtraction(primary, (turns) =>
           singleFactResult(turns.map((turn) => turn.content).join(" | ")),
         );
-        await primary.flushSession("session-reset", { reason: "before_reset" }).catch(() => undefined);
+        await primary.flushSession("session-reset", { reason: "before_reset" });
         return;
       }
       case "session-end": {
