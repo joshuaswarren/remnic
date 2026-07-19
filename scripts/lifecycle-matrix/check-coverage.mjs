@@ -58,6 +58,11 @@ const SUBJECT_CALL = "runLifecycleMatrix";
 const REGEX_ALLOWED_AFTER = new Set([
   "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "^", "~", "<", ">",
 ]);
+/** Chars after which a following identifier CONTINUES the expression (so a
+ *  runLifecycleMatrix there is not a new statement, even across a newline). */
+const STATEMENT_CONTINUATION = new Set([
+  "&", "|", "?", ":", "=", ",", "(", "[", "+", "-", "*", "/", "%", "^", "~", "<", ">", "!", ".",
+]);
 
 /**
  * From a `/` that starts a regex literal, return the index just past the closing
@@ -114,6 +119,7 @@ export function discoverSubjectRegistrations(source) {
   let parenDepth = 0;
   let bracketDepth = 0;
   let prevSig = "";
+  let nlSincePrev = false;
   while (i < n) {
     const ch = source[i];
     if (quote) {
@@ -126,9 +132,12 @@ export function discoverSubjectRegistrations(source) {
       continue;
     }
     if (/\s/.test(ch)) {
+      if (ch === "\n") nlSincePrev = true;
       i += 1;
       continue;
     }
+    const sawNewlineBeforeToken = nlSincePrev;
+    nlSincePrev = false;
     if (ch === '"' || ch === "'" || ch === "`") {
       quote = ch;
       prevSig = ch;
@@ -195,11 +204,15 @@ export function discoverSubjectRegistrations(source) {
       depth === 0 &&
       parenDepth === 0 &&
       bracketDepth === 0 &&
-      // Standalone expression statement only: the call must start a statement
-      // (prevSig is a statement boundary), never be part of a larger expression
-      // like `cond && runLifecycleMatrix(...)`, `if (x) runLifecycleMatrix(...)`,
-      // or `const s = runLifecycleMatrix(...)` — those may not run at module load.
-      (prevSig === "" || prevSig === ";" || prevSig === "}") &&
+      // Standalone statement: a hard boundary (start, `;`, `}`), OR an ASI
+      // boundary — a newline after a value-ending token (`)`, `]`, identifier,
+      // string, `z` from a regex) that is NOT an expression-continuation
+      // operator. This accepts adjacent newline-separated registrations while
+      // rejecting same-line wrappers (`if (x) run(...)`, `cond && run(...)`).
+      (prevSig === "" ||
+        prevSig === ";" ||
+        prevSig === "}" ||
+        (sawNewlineBeforeToken && !STATEMENT_CONTINUATION.has(prevSig))) &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&

@@ -395,6 +395,20 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
   );
 });
 
+test("discoverSubjectRegistrations records ASI-separated (newline, no semicolon) registrations", () => {
+  const source = [
+    'runLifecycleMatrix("asi-first", subject)',
+    'runLifecycleMatrix("asi-second", subject)',
+    'if (false) runLifecycleMatrix("same-line-if", subject)',
+    'false && runLifecycleMatrix("short-circuit", subject)',
+  ].join("\n");
+  assert.deepEqual(
+    discoverSubjectRegistrations(source),
+    ["asi-first", "asi-second"],
+    "adjacent newline-separated registrations are both recorded (ASI); same-line wrappers stay rejected",
+  );
+});
+
 test("registeredSubjectNames ignores commented-out and string-literal runLifecycleMatrix examples", () => {
   const dir = mkdtempSync(join(tmpdir(), "lifecycle-subjects-"));
   try {
