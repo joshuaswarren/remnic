@@ -17,4 +17,9 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // recall_impressions.jsonl stays remote-authoritative; only the .1..N
   // archives are node-local and never pushed/hashed.
   "**/state/recall_impressions.jsonl.*",
+  // Durable lifecycle-append pending spill directory (issue #2033). Node-local:
+  // an append spills a per-event file here when it cannot get the ledger lock,
+  // and the next lock holder folds them back into the synced
+  // memory-lifecycle-ledger.jsonl. Pushing them would duplicate rows remotely.
+  "**/state/memory-lifecycle-ledger.jsonl.pending.d/**",
 ];

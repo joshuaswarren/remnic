@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
-import { encryptFileBody, filePathAad } from "./secure-store/secure-fs.js";
+import { encryptFileBody, filePathAad, isEncryptedFile } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
-import { appendLifecycleEventsSerialized } from "./storage/memory-lifecycle-ledger-access.js";
+import {
+  appendLifecycleEventsSerialized,
+  drainPendingLifecycleAppendsSerialized,
+  pendingLifecycleLedgerDir,
+  type LifecyclePendingIo,
+} from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import {
   memoryLifecycleLedgerLockPath,
@@ -327,6 +332,7 @@ test("appendLifecycleEventsSerialized waits out a held ledger lock instead of dr
         await appendFile(ledgerPath, payload, "utf8");
       },
       `${JSON.stringify(lifecycleEvent("evt-wait", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+      undefined,
       { maxWaitMs: 2_000, pollMs: 20 },
     );
 
@@ -369,6 +375,7 @@ test("appendLifecycleEventsSerialized refuses to append unlocked when the lock c
           appended = true;
         },
         "x\n",
+        undefined,
         { maxWaitMs: 100, pollMs: 20 },
       ),
       /could not acquire the ledger lock/,
@@ -393,4 +400,192 @@ test("lifecycle append lock budget outlasts a compaction that holds the lock pas
     MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS > 5_000,
     "append budget must exceed the 5s default that previously dropped events",
   );
+});
+
+/** Plaintext pending IO for the access-layer tests (the StorageManager
+ *  integration test below exercises the encrypted-at-rest path). */
+function plaintextPendingIo(): LifecyclePendingIo {
+  return {
+    writeSecure: async (p, c) => {
+      await mkdir(path.dirname(p), { recursive: true });
+      await writeFile(p, c, "utf8");
+    },
+    readSecure: (p) => readFile(p, "utf8"),
+  };
+}
+
+test("appendLifecycleEventsSerialized spills to the durable pending queue instead of dropping when the lock is unavailable (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    // A fresh (non-stale) foreign lock held for the whole test so acquisition
+    // times out within the tiny budget and never stale-breaks.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf8");
+
+    const pending = plaintextPendingIo();
+    let ledgerAppended = false;
+    // MUST NOT throw: the event is durably queued, not dropped fail-open.
+    await appendLifecycleEventsSerialized(
+      ledgerPath,
+      async () => { ledgerAppended = true; },
+      `${JSON.stringify(lifecycleEvent("evt-spill", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+      pending,
+      { maxWaitMs: 100, pollMs: 20 },
+    );
+    assert.equal(ledgerAppended, false, "lock unavailable — ledger not written directly");
+    assert.equal(await readFile(ledgerPath, "utf8"), "", "ledger untouched while lock held");
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    const files = await readdir(spillDir);
+    assert.equal(files.length, 1, "exactly one spill file queued");
+    assert.ok(
+      (await readFile(path.join(spillDir, files[0]!), "utf8")).includes("evt-spill"),
+      "event durably queued in the pending spill",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a later append drains queued pending spills into the ledger (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    // Pre-seed two spilled events (as prior lock-timed-out appends would leave).
+    await pending.writeSecure(
+      path.join(pendingLifecycleLedgerDir(ledgerPath), "a.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-old-1", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+    );
+    await pending.writeSecure(
+      path.join(pendingLifecycleLedgerDir(ledgerPath), "b.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-old-2", "memory-a", "2026-03-08T00:30:00.000Z"))}\n`,
+    );
+
+    await appendLifecycleEventsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      `${JSON.stringify(lifecycleEvent("evt-new", "memory-b", "2026-03-08T01:00:00.000Z"))}\n`,
+      pending,
+    );
+
+    const ledger = await readFile(ledgerPath, "utf8");
+    assert.ok(ledger.includes("evt-old-1"), "first spilled event folded into ledger");
+    assert.ok(ledger.includes("evt-old-2"), "second spilled event folded into ledger");
+    assert.ok(ledger.includes("evt-new"), "new event appended");
+    assert.equal(
+      (await readdir(pendingLifecycleLedgerDir(ledgerPath))).length,
+      0,
+      "drained spill files removed",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("drainPendingLifecycleAppendsSerialized folds queued events into the ledger without a new append (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drainonly-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    await pending.writeSecure(
+      path.join(pendingLifecycleLedgerDir(ledgerPath), "q.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-queued", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+    );
+
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+    assert.equal(drained, true, "reports rows drained");
+    assert.ok((await readFile(ledgerPath, "utf8")).includes("evt-queued"), "queued event in ledger");
+    assert.equal(
+      (await readdir(pendingLifecycleLedgerDir(ledgerPath))).length,
+      0,
+      "drained spill files removed",
+    );
+
+    // Nothing pending → no-op that reports false.
+    const again = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+    assert.equal(again, false, "no pending rows → no drain");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed ledger write leaves pending spills intact for retry (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drainfail-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    await pending.writeSecure(
+      path.join(pendingLifecycleLedgerDir(ledgerPath), "q.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-keep", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+    );
+
+    await assert.rejects(
+      () => drainPendingLifecycleAppendsSerialized(
+        ledgerPath,
+        async () => { throw new Error("disk full"); },
+        pending,
+      ),
+      /disk full/,
+    );
+    assert.equal(
+      (await readdir(pendingLifecycleLedgerDir(ledgerPath))).length,
+      1,
+      "spill file NOT deleted when the ledger write failed",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager drains an encrypted pending spill into the encrypted-at-rest ledger (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-enc-drain-"));
+  try {
+    const key = Buffer.alloc(32, 7);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key);
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Seed an encrypted-at-rest ledger with a base event through the storage API.
+    await storage.appendMemoryLifecycleEvents([
+      lifecycleEvent("evt-base", "memory-a", "2026-03-08T00:00:00.000Z"),
+    ]);
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: ledger encrypted");
+
+    // Pre-seed an encrypted spill file exactly as a lock-timed-out append leaves
+    // it: encrypted at its own path-bound AAD.
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    const spillPath = path.join(spillDir, "spill.jsonl");
+    await mkdir(spillDir, { recursive: true });
+    const spillRow = `${JSON.stringify(lifecycleEvent("evt-spilled", "memory-b", "2026-03-08T01:00:00.000Z"))}\n`;
+    await writeFile(spillPath, encryptFileBody(spillRow, key, filePathAad(spillPath, memoryDir)));
+
+    const drained = await storage.drainPendingMemoryLifecycleEvents();
+    assert.equal(drained, true, "drain reports rows folded");
+    const ids = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.ok(ids.includes("evt-base") && ids.includes("evt-spilled"), "both events readable from ledger");
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "ledger stays encrypted at rest after drain");
+    await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after drain");
+
+    // No pending → fast no-op.
+    assert.equal(await storage.drainPendingMemoryLifecycleEvents(), false, "no pending → no drain");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

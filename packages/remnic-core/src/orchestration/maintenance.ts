@@ -609,12 +609,27 @@ export class MaintenanceScheduler {
    * through the existing `rebuildMemoryLifecycleLedger` so the
    * archive-then-atomic-write discipline is reused verbatim. `0` disables.
    *
+   * Before compacting, drain each target's durable pending-append spill so a
+   * lifecycle event that spilled while a prior long rewrite held the lock is
+   * folded back into the ledger and cannot be silently lost (issue #2033). The
+   * root drain runs unconditionally (even when compaction is disabled) so a
+   * spill from a manual rebuild still lands eventually.
+   *
    * The min-interval throttle timestamp advances ONLY after real, fully
-   * successful compaction work (Cursor Medium): a failed target leaves the
-   * throttle un-advanced so it stays eligible on the next maintenance pass,
-   * while `lifecycleCompactionInFlight` still prevents overlapping runs.
+   * successful compaction work: a failed OR deferred target leaves the throttle
+   * un-advanced so it stays eligible on the next maintenance pass, while
+   * `lifecycleCompactionInFlight` still prevents overlapping runs. A "deferred"
+   * target is oversized but could not be compacted because its encrypted ledger
+   * has no unlocked secure store — arming the throttle for it would suppress the
+   * retry of that still-oversized ledger for the whole interval (#2033).
    */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
+    // Always fold any durable pending spill back into the root ledger first
+    // (#2033), independent of the compaction threshold: events spill there when
+    // an append cannot get the lock during a long rewrite and must eventually
+    // land even if size-based compaction is disabled.
+    await this.drainPendingLifecycleAppends(this.deps.getStorage?.());
+
     const threshold = this.deps.config.memoryLifecycleLedgerCompactBytes;
     if (!(threshold > 0)) return; // 0 / negative / non-numeric disables compaction.
     if (this.lifecycleCompactionInFlight) return;
@@ -629,19 +644,37 @@ export class MaintenanceScheduler {
     try {
       let compacted = 0;
       let failed = 0;
+      let deferred = 0;
       for (const target of await this.resolveLifecycleCompactionTargets()) {
+        // Drain this target's pending spill before compacting so rows that
+        // spilled during a prior rewrite are read into the compacted ledger.
+        await this.drainPendingLifecycleAppends(target.storage);
         const outcome = await this.compactLifecycleLedgerTarget(target, threshold);
         if (outcome === "compacted") compacted += 1;
         else if (outcome === "failed") failed += 1;
+        else if (outcome === "deferred") deferred += 1;
       }
-      // Arm the throttle only when at least one ledger was actually compacted and
-      // nothing failed. A below-threshold no-op (compacted === 0) or any failure
-      // leaves the throttle where it was so the next pass retries.
-      if (compacted > 0 && failed === 0) {
+      // Arm the throttle only when at least one ledger actually compacted AND
+      // nothing failed AND nothing was deferred. A below-threshold no-op
+      // (compacted === 0), any failure, or a deferred oversized ledger (locked
+      // encrypted store, still pending) leaves the throttle where it was so the
+      // next pass retries the untouched targets (#2033).
+      if (compacted > 0 && failed === 0 && deferred === 0) {
         this.lastLifecycleCompactionAtMs = now;
       }
     } finally {
       this.lifecycleCompactionInFlight = false;
+    }
+  }
+
+  /** Drain a target's durable pending lifecycle-append spill into its ledger
+   *  (issue #2033); non-fatal and a fast no-op when nothing is pending. */
+  private async drainPendingLifecycleAppends(storage: StorageManager | undefined): Promise<void> {
+    if (!storage) return;
+    try {
+      await storage.drainPendingMemoryLifecycleEvents();
+    } catch (err) {
+      log.debug(`lifecycle pending drain failed (non-fatal): ${err}`);
     }
   }
 
@@ -747,13 +780,18 @@ export class MaintenanceScheduler {
 
   /**
    * Compact one lifecycle ledger when it is at/over `threshold`. Returns
-   * `"skipped"` (absent or below threshold), `"compacted"` (rewritten), or
-   * `"failed"` (rebuild threw — kept non-fatal and eligible to retry).
+   * `"skipped"` (absent or below threshold — nothing to do), `"compacted"`
+   * (rewritten), `"failed"` (rebuild/probe threw — non-fatal, retried next
+   * pass), or `"deferred"` (oversized but its encrypted ledger cannot be
+   * rewritten because no unlocked secure store is available — real work still
+   * pending, so the caller must NOT arm the throttle). #2033: a deferred target
+   * is distinct from a genuine no-op so one namespace compacting cannot suppress
+   * retries for an untouched oversized encrypted ledger.
    */
   private async compactLifecycleLedgerTarget(
     target: { memoryDir: string; storage?: StorageManager },
     threshold: number,
-  ): Promise<"skipped" | "compacted" | "failed"> {
+  ): Promise<"skipped" | "compacted" | "failed" | "deferred"> {
     const ledgerPath = path.join(target.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     let size = 0;
     try {
@@ -769,9 +807,11 @@ export class MaintenanceScheduler {
     // No plaintext rewrite of an encrypted-at-rest ledger (#2033): rebuilding an
     // encrypted ledger without an unlocked secure StorageManager would either
     // fail the preserve-read (locked store) or downgrade the ledger to plaintext.
-    // Refuse instead and point the operator at the manual remedy. Leaving it
-    // "skipped" (not "failed") keeps the throttle un-armed so the next pass
-    // retries once a key is available.
+    // Refuse instead and point the operator at the manual remedy. Report
+    // "deferred" (NOT "skipped"): the ledger is over threshold and still needs
+    // compaction, so the throttle must stay un-armed and retry once a key is
+    // available — a "skipped" here would let another target's success arm the
+    // throttle and suppress this pending work for the whole interval (#2033).
     try {
       if (
         (await ledgerEncryptedOnDisk(ledgerPath))
@@ -779,10 +819,10 @@ export class MaintenanceScheduler {
       ) {
         log.warn(
           `lifecycle ledger at ${ledgerPath} is encrypted at rest but no unlocked secure `
-          + `storage is available; skipping auto-compaction to avoid a plaintext rewrite. `
+          + `storage is available; deferring auto-compaction to avoid a plaintext rewrite. `
           + `Run 'remnic rebuild-memory-lifecycle-ledger --write' after unlocking.`,
         );
-        return "skipped";
+        return "deferred";
       }
     } catch (err) {
       log.warn(`lifecycle ledger encryption probe failed (non-fatal) for ${ledgerPath}: ${err}`);

@@ -22,9 +22,11 @@ import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
   appendLifecycleEventsSerialized,
+  drainPendingLifecycleLedgerIfAny,
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
   readBoundedLifecycleEventsFromLedger,
+  serializeLifecycleAppendPayload,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
@@ -5526,27 +5528,26 @@ export class StorageManager {
   async appendMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): Promise<number> {
     if (events.length === 0) return 0;
     await this.ensureDirectories();
-
-    const nowIso = new Date().toISOString();
-    const payload = events
-      .map((event) => {
-        const normalized: MemoryLifecycleEvent = {
-          ...event,
-          timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
-        };
-        return `${JSON.stringify(normalized)}\n`;
-      })
-      .join("");
-
-    // Serialize against compaction's whole-file rewrite through the shared
-    // ledger lock; refuses to append unlocked when the lock cannot be acquired
-    // (issue #1910, #2033). Extracted to the ledger-access sibling.
+    // Lock-serialized against compaction; on lock-budget exhaustion the event
+    // spills to a durable encrypted pending queue, not dropped (#1910, #2033).
     await appendLifecycleEventsSerialized(
       this.memoryLifecycleLedgerPath,
       (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
-      payload,
+      serializeLifecycleAppendPayload(events),
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
     );
     return events.length;
+  }
+
+  /** Drain the durable pending lifecycle-append spill into the ledger (#2033);
+   *  fast no-op when nothing is pending. Returns true when rows were drained. */
+  async drainPendingMemoryLifecycleEvents(): Promise<boolean> {
+    return drainPendingLifecycleLedgerIfAny(
+      this.memoryLifecycleLedgerPath,
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      () => this.ensureDirectories(),
+    );
   }
 
   /** Rewrite the ledger through the secure writer (#1910): re-encrypts with the

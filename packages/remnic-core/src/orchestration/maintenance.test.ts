@@ -32,6 +32,7 @@ import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
 import { StorageManager } from "../storage.js";
 import { encryptFileBody, filePathAad, isEncryptedFile } from "../secure-store/secure-fs.js";
+import { pendingLifecycleLedgerDir } from "../storage/memory-lifecycle-ledger-access.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
  *  contract — only the fields the scheduler/planner read are populated. */
@@ -1072,6 +1073,121 @@ test("auto-compaction rewrites the ledger encrypted at rest under a secure store
       ),
       before,
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("mixed pass: a deferred encrypted target keeps the throttle un-armed so untouched ledgers retry (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-mixed-"));
+  try {
+    const junk = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    const junkBlob = junk.repeat(Math.ceil(4096 / junk.length));
+
+    // Root: plaintext oversized ledger with a reconstructable memory → compacts.
+    await mkdir(path.join(root, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(root, "facts", "2026-03-08", "fact-root.md"),
+      `---\nid: fact-root\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const rootLedger = path.join(root, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(rootLedger), { recursive: true });
+    await writeFile(rootLedger, junkBlob, "utf-8");
+
+    // Namespace: encrypted-at-rest oversized ledger whose secure store is LOCKED
+    // (required, no key). Compaction must DEFER it (not skip) so this untouched,
+    // still-oversized ledger keeps its retry eligibility.
+    const key = Buffer.alloc(32, 5);
+    const nsDir = path.join(root, "namespaces", namespaceIdentityToken("locked-ns"));
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const encrypted = encryptFileBody(junkBlob, key, filePathAad(nsLedger, nsDir));
+    await writeFile(nsLedger, encrypted);
+
+    const catalog = {
+      enabled: true,
+      listNamespaces: async (): Promise<NamespaceRecord[]> =>
+        [{ namespace: "locked-ns", storageDir: nsDir } as unknown as NamespaceRecord],
+    } as unknown as NamespaceCatalog;
+    const nsStorage = new StorageManager(nsDir);
+    nsStorage.setSecureStoreRequired(true); // required + no key → locked (deferred).
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root),
+      async () => nsStorage,
+      catalog,
+    );
+    try {
+      const rootBefore = (await stat(rootLedger)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.ok((await stat(rootLedger)).size < rootBefore, "root ledger compacted");
+      assert.deepEqual(
+        await readFile(nsLedger),
+        encrypted,
+        "encrypted+locked namespace ledger deferred, left byte-for-byte intact",
+      );
+
+      // Re-grow the root within the min-interval window. Because a target was
+      // DEFERRED (not a genuine no-op), the throttle must NOT have armed, so this
+      // second in-window pass still recompacts — the #2033 throttle fix.
+      await writeFile(rootLedger, junkBlob, "utf-8");
+      const regrown = (await stat(rootLedger)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.ok(
+        (await stat(rootLedger)).size < regrown,
+        "deferred target left the throttle un-armed: the second in-window pass recompacts",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("maintenance drains a pending lifecycle-append spill even when compaction is disabled (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-drain-"));
+  try {
+    const key = Buffer.alloc(32, 7);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key);
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // An encrypted pending spill, exactly as a lock-timed-out append leaves it.
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    await mkdir(spillDir, { recursive: true });
+    const spillPath = path.join(spillDir, "spill.jsonl");
+    const row =
+      `{"eventId":"evt-spilled","memoryId":"m","eventType":"created",`
+      + `"timestamp":"2026-03-08T00:00:00.000Z","actor":"t","ruleVersion":"1"}\n`;
+    await writeFile(spillPath, encryptFileBody(row, key, filePathAad(spillPath, memoryDir)));
+
+    // Compaction disabled (threshold 0): the unconditional root drain must still
+    // fold the spill back into the ledger so no lifecycle row is lost.
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 0,
+        memoryLifecycleLedgerCompactMinIntervalMs: 1,
+      }),
+      () => storage,
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const ids = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.ok(ids.includes("evt-spilled"), "spill drained into the ledger with compaction disabled");
+    await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after drain");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
