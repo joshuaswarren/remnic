@@ -188,6 +188,7 @@ import {
   readHeader,
   secureStoreDir,
 } from "@remnic/core/secure-store";
+import { LastRecallStore } from "@remnic/core/recall-state";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -9048,6 +9049,21 @@ export async function runOfflineSyncOnce(options: {
   const baseCapturedAt = priorState ? new Date(priorState.lastSyncedAt) : undefined;
   const storageIo = await createOfflineStorageIo(options.memoryDir);
   const localSourceId = localOfflineSourceId(options.memoryDir);
+  // Fold durable pending recall-impression spills into the synced active
+  // `recall_impressions.jsonl` before any push snapshot is built (#2033). A
+  // recall `record()` that timed out on the rotation lock spills the row into
+  // the offline-sync-EXCLUDED `recall_impressions.jsonl.pending.d/`, so without
+  // this drain the impression is filtered out of every snapshot below (the
+  // initial push snapshot, the post-direct-push changeset snapshot, and the
+  // volatile-file retry rebuild) and lost if this node is discarded before a
+  // later `record()` folds it back. One drain suffices: it mutates the on-disk
+  // active file, later snapshot rebuilds read the folded rows, and a second
+  // drain is a fast no-op. Best-effort — a drain failure must never block sync.
+  try {
+    await new LastRecallStore(options.memoryDir).drainPendingImpressions();
+  } catch {
+    // non-fatal: proceed with the snapshot even if the fold could not run
+  }
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
