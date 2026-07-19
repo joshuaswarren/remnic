@@ -789,9 +789,10 @@ export class MaintenanceScheduler {
     // keyed compaction that rewrites the ledger encrypted — while this fallback
     // waits would defeat any pre-lock probe (#2033). Probe each file at the
     // moment of use inside the held lock instead: readSecure refuses an
-    // encrypted spill (collectPendingSpills propagates the throw BEFORE claiming,
-    // leaving every spill intact) and the append refuses a ledger that became
-    // encrypted (the fold rolls the claims back). Either way the plaintext IO
+    // encrypted spill (the fold reads each spill lazily and propagates the throw
+    // BEFORE claiming that spill, leaving it intact) and the append refuses a
+    // ledger that became encrypted (the fold rolls the claims back). Either way
+    // the plaintext IO
     // never reads or writes ciphertext; the keyed catalog-path drain handles the
     // deferred rows.
     const io: LifecyclePendingIo = {

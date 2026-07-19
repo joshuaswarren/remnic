@@ -12,6 +12,7 @@ import {
   appendLifecycleEventsSerialized,
   drainPendingLifecycleAppendsSerialized,
   pendingLifecycleLedgerDir,
+  readAllLifecycleEventsFromLedgerBuffer,
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
@@ -474,7 +475,7 @@ test("a concurrent drain never folds a partial spill; the finished spill is vali
     const row = `${JSON.stringify(lifecycleEvent("evt-atomic", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`;
 
     // Capture exactly what a concurrent fold-under-lock would enumerate + read
-    // (collectPendingSpills uses listContainedSpillFiles + readSecure) WHILE the
+    // (the fold uses listContainedSpillFiles + a lazy readSecure) WHILE the
     // spill write is still in progress. An atomic writeSecure stages the full
     // payload under a temp name the `*.jsonl` lister skips, so the drain sees
     // nothing to fold until the rename lands the complete file (#2033).
@@ -1178,4 +1179,74 @@ test("encrypted rebuild backup never materializes the raw ledger as one giant st
     Buffer.prototype.toString = originalToString;
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("pending drain reads spills lazily per batch, not all up front — memory-bounded (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-lazy-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    await mkdir(spillDir, { recursive: true });
+    // Four ~400KB spills. Bounded 1MB batches commit two per append, so with a
+    // LAZY per-batch read the second batch's reads happen AFTER the first
+    // batch's append. An eager collect-all would read EVERY spill before any
+    // append, holding the whole queue in memory at once (the memory the bound
+    // exists to cap, #2033).
+    const chunk = "z".repeat(400 * 1024);
+    for (const name of ["a", "b", "c", "d"]) {
+      await writeFile(path.join(spillDir, `${name}.jsonl`), `${name}:${chunk}\n`, "utf8");
+    }
+    const events: string[] = [];
+    const io: LifecyclePendingIo = {
+      writeSecure: async () => { throw new Error("writeSecure unused in this drain test"); },
+      readSecure: async (p) => {
+        events.push("read");
+        return readFile(p, "utf8");
+      },
+    };
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { events.push("append"); await appendFile(ledgerPath, payload, "utf8"); },
+      io,
+    );
+    assert.equal(drained, true, "rows drained");
+    assert.ok(events.includes("append"), "at least one append happened");
+    assert.ok(
+      events.indexOf("append") < events.lastIndexOf("read"),
+      `a spill was read AFTER an append (lazy per-batch read), not all up front: ${events.join(",")}`,
+    );
+    const ledger = await readFile(ledgerPath, "utf8");
+    for (const name of ["a", "b", "c", "d"]) {
+      assert.ok(ledger.includes(`${name}:`), `${name} folded into the ledger`);
+    }
+    assert.equal((await readdir(spillDir)).length, 0, "all spills drained");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("compaction buffer reader skips an oversized unterminated row instead of throwing (#2033)", async () => {
+  const validA = lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z");
+  const validB = lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z");
+  // A single malformed row far larger than the per-row decode cap (64MB) with no
+  // newline: decoding it whole as one string could exceed V8's string limit and
+  // THROW before the fail-open parser can drop it, aborting a compaction that
+  // could otherwise rewrite the ledger from its good rows. It MUST be skipped
+  // undecoded; the valid rows on either side still parse.
+  const oversized = Buffer.alloc(64 * 1024 * 1024 + 1, 0x41); // 'A' * (cap+1), no newline
+  const buf = Buffer.concat([
+    oversized,
+    Buffer.from(`\n${JSON.stringify(validA)}\n${JSON.stringify(validB)}\n`, "utf8"),
+  ]);
+  const events = await readAllLifecycleEventsFromLedgerBuffer(
+    path.join("state", "memory-lifecycle-ledger.jsonl"),
+    async () => buf,
+  );
+  assert.deepEqual(
+    events.map((e) => e.eventId),
+    ["evt-a", "evt-b"],
+    "valid rows returned; the oversized row is skipped without throwing",
+  );
 });
