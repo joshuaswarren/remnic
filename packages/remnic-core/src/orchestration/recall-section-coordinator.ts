@@ -239,11 +239,16 @@ export class RecallSectionCoordinator {
       ? this.getConfig().recallPipeline
       : [];
     const orderedIds = pipeline
-      .filter((entry) => entry.enabled !== false)
+      .filter(
+        (entry) =>
+          entry.enabled !== false &&
+          this.resolveSectionEnabled(entry.id, true),
+      )
       .map((entry) => entry.id);
     const seen = new Set<string>();
 
     for (const id of orderedIds) {
+      if (seen.has(id)) continue;
       const chunks = sectionBuckets.get(id);
       if (!chunks || chunks.length === 0) continue;
       orderedSections.push({
@@ -265,6 +270,7 @@ export class RecallSectionCoordinator {
         id,
         chunks: chunks.map(normalizeChunk),
       });
+      seen.add(id);
     }
 
     const budget = this.getRecallBudgetChars(budgetOverride);
@@ -291,13 +297,7 @@ export class RecallSectionCoordinator {
     const sectionById = new Map(
       orderedSections.map((section) => [section.id, section]),
     );
-    const allocationOrder = [
-      "memories",
-      "knowledge-index",
-      ...orderedSections
-        .map((section) => section.id)
-        .filter((id) => id !== "memories" && id !== "knowledge-index"),
-    ];
+    const allocationOrder = orderedSections.map((section) => section.id);
     const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
     const includedMemoryPaths: string[] = [];
@@ -424,7 +424,6 @@ export class RecallSectionCoordinator {
       if (content) {
         sections.push(content);
         includedIds.push(section.id);
-        emittedIds.add(section.id);
       } else {
         omittedIds.push(section.id);
       }

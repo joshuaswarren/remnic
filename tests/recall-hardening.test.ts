@@ -124,6 +124,44 @@ test("assembleRecallSections preserves memories within the recall budget", async
   assert.ok(context.length <= 220);
 });
 
+test("assembleRecallSections allocates budget in configured pipeline order", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-pipeline-order-", {
+    recallBudgetChars: 80,
+    recallProfileMaxRatio: 1,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(25),
+    { atomic: true, memoryId: "memory-pipeline", memoryPath: "facts/pipeline.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedIds, ["profile"]);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.equal(assembled.includedMemoryIds.length, 0);
+  assert.match(assembled.sections.join("\n\n---\n\n"), /^P{40}$/);
+});
+
 test("assembleRecallSections does not omit earlier sections when protected sections will truncate anyway", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-tight-", {
     recallBudgetChars: 60,
