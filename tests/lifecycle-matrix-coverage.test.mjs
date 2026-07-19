@@ -731,3 +731,13 @@ test("a NEW namespace file fails the gate via the namespaces/** catch-all", () =
   assert.equal(existing.warnings.length, 1);
   assert.equal(existing.violations.length, 0);
 });
+
+test("the lifecycle/ directory is gated: tombstones grandfathered, a new file violates", () => {
+  const manifest = loadReal();
+  const existing = evaluateCoverage(["packages/remnic-core/src/lifecycle/tombstones.ts"], manifest);
+  assert.equal(existing.warnings.length, 1, "tombstones.ts must warn (grandfathered), not be silently ignored");
+  assert.equal(existing.violations.length, 0);
+  const fresh = evaluateCoverage(["packages/remnic-core/src/lifecycle/brand-new.ts"], manifest);
+  assert.equal(fresh.violations.length, 1, "a new lifecycle/ file must fail as unmapped via the catch-all");
+  assert.equal(fresh.warnings.length, 0);
+});

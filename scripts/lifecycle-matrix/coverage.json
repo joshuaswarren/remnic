@@ -95,7 +95,9 @@
     "src/namespaces/**",
     "packages/remnic-core/src/retrieval-agents.ts",
     "src/retrieval-agents.ts",
-    "packages/remnic-core/src/retrieval-tiers.ts"
+    "packages/remnic-core/src/retrieval-tiers.ts",
+    "packages/remnic-core/src/lifecycle/**",
+    "packages/remnic-core/src/lifecycle/tombstones.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -189,6 +191,7 @@
     "packages/remnic-core/src/storage/secure-line-reader.ts",
     "packages/remnic-core/src/retrieval-agents.ts",
     "src/retrieval-agents.ts",
-    "packages/remnic-core/src/retrieval-tiers.ts"
+    "packages/remnic-core/src/retrieval-tiers.ts",
+    "packages/remnic-core/src/lifecycle/tombstones.ts"
   ]
 }
