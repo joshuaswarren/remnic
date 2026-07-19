@@ -54,21 +54,52 @@ function validateManifestGlob(glob) {
 
 const SUBJECT_IDENT = /[A-Za-z0-9_$]/;
 const SUBJECT_CALL = "runLifecycleMatrix";
+/** Chars after which a `/` begins a regex literal rather than a division. */
+const REGEX_ALLOWED_AFTER = new Set([
+  "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "^", "~", "<", ">",
+]);
+
+/**
+ * From a `/` that starts a regex literal, return the index just past the closing
+ * `/` and any flags. Honors `\` escapes and `[...]` char classes (a `/` inside a
+ * class does not close the regex).
+ */
+function skipRegexLiteral(source, start) {
+  const n = source.length;
+  let k = start + 1;
+  let inClass = false;
+  while (k < n) {
+    const c = source[k];
+    if (c === "\\") {
+      k += 2;
+      continue;
+    }
+    if (c === "\n") break;
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) {
+      k += 1;
+      break;
+    }
+    k += 1;
+  }
+  while (k < n && /[a-z]/i.test(source[k])) k += 1;
+  return k;
+}
 
 /**
  * Discover `runLifecycleMatrix("<name>", ...)` registrations in JS/TS source at
- * the CODE level: a single scan skips comments AND string/template literals, so
- * neither a commented-out example nor a docs string like
- * `const doc = 'runLifecycleMatrix("fake", subject)'` is mistaken for a real
- * registration. Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
+ * the CODE level: a single lexer skips comments, string/template literals, AND
+ * regex literals, so none of a commented-out example, a docs string like
+ * `const doc = 'runLifecycleMatrix("fake", subject)'`, or a regex literal like
+ * `/runLifecycleMatrix("fake", subject)/` is mistaken for a real registration.
+ * Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
  * `if (false) { … }` or an uncalled helper never runs at module load, so
- * `node:test` registers nothing for it; recording it would let a coverage
- * mapping pass with no matrix tests. Only a two-argument call
+ * `node:test` registers nothing for it. Only a two-argument call
  * (`runLifecycleMatrix("name", subject)`) counts — ANY third argument is the
  * test-only options seam (rows / register / registerSkipped), inline OR aliased
  * via a variable, which narrows or redirects the canonical MATRIX_ROWS, so a
- * production subject must register every canonical row. A raw regex over the
- * file text counts all of these.
+ * production subject must register every canonical row.
  */
 export function discoverSubjectRegistrations(source) {
   const names = [];
@@ -76,6 +107,7 @@ export function discoverSubjectRegistrations(source) {
   let i = 0;
   let quote = null;
   let depth = 0;
+  let prevSig = "";
   while (i < n) {
     const ch = source[i];
     if (quote) {
@@ -87,8 +119,13 @@ export function discoverSubjectRegistrations(source) {
       i += 1;
       continue;
     }
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
     if (ch === '"' || ch === "'" || ch === "`") {
       quote = ch;
+      prevSig = ch;
       i += 1;
       continue;
     }
@@ -102,13 +139,25 @@ export function discoverSubjectRegistrations(source) {
       i += 2;
       continue;
     }
+    if (ch === "/") {
+      if (prevSig === "" || REGEX_ALLOWED_AFTER.has(prevSig)) {
+        i = skipRegexLiteral(source, i);
+        prevSig = "z"; // a regex literal is an operand → a following `/` is division
+        continue;
+      }
+      prevSig = "/";
+      i += 1;
+      continue;
+    }
     if (ch === "{") {
       depth += 1;
+      prevSig = ch;
       i += 1;
       continue;
     }
     if (ch === "}") {
       if (depth > 0) depth -= 1;
+      prevSig = ch;
       i += 1;
       continue;
     }
@@ -138,19 +187,18 @@ export function discoverSubjectRegistrations(source) {
             j += 1;
           }
           j += 1; // past the closing quote of the subject name
-          // Scan the rest of the call's arguments (we are inside its `(`, paren
-          // depth 1), skipping strings/comments, and count TOP-LEVEL argument
+          // Scan the rest of the call's arguments (inside its `(`, paren depth 1),
+          // skipping strings/comments/regex, and count TOP-LEVEL argument
           // separators. A production registration is exactly
           // `runLifecycleMatrix("name", subject)` — two arguments. ANY third
-          // argument is the test-only options seam (rows / register /
-          // registerSkipped), whether inline OR aliased via a variable, which
-          // narrows or redirects the canonical MATRIX_ROWS; such a call is NOT a
-          // full production registration and must not count as coverage.
+          // argument is the test-only options seam (inline OR aliased), so such a
+          // call is not a full production registration and must not count.
           let callDepth = 1;
           let braceDepth = 0;
           let bracketDepth = 0;
           let topCommas = 0;
           let argQuote = null;
+          let argPrev = "(";
           while (j < n && callDepth > 0) {
             const c = source[j];
             if (argQuote) {
@@ -162,8 +210,13 @@ export function discoverSubjectRegistrations(source) {
               j += 1;
               continue;
             }
+            if (/\s/.test(c)) {
+              j += 1;
+              continue;
+            }
             if (c === '"' || c === "'" || c === "`") {
               argQuote = c;
+              argPrev = c;
               j += 1;
               continue;
             }
@@ -177,6 +230,16 @@ export function discoverSubjectRegistrations(source) {
               j += 2;
               continue;
             }
+            if (c === "/") {
+              if (argPrev === "" || REGEX_ALLOWED_AFTER.has(argPrev)) {
+                j = skipRegexLiteral(source, j);
+                argPrev = "z";
+                continue;
+              }
+              argPrev = "/";
+              j += 1;
+              continue;
+            }
             if (c === "(") callDepth += 1;
             else if (c === ")") callDepth -= 1;
             else if (c === "{") braceDepth += 1;
@@ -188,18 +251,22 @@ export function discoverSubjectRegistrations(source) {
             } else if (c === "," && callDepth === 1 && braceDepth === 0 && bracketDepth === 0) {
               topCommas += 1;
             }
+            argPrev = c;
             j += 1;
           }
           // Exactly two arguments (one top-level separator) is a production call;
           // zero (no subject) or two-plus (an options arg) is not recorded.
           if (name.length > 0 && topCommas === 1) names.push(name);
+          prevSig = ")";
           i = j;
           continue;
         }
       }
+      prevSig = SUBJECT_CALL[SUBJECT_CALL.length - 1];
       i += SUBJECT_CALL.length;
       continue;
     }
+    prevSig = ch;
     i += 1;
   }
   return names;

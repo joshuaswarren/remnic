@@ -371,11 +371,13 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     'runLifecycleMatrix("inline-two-arg", { async setup() {}, async exercise() {} });',
     'const opts = { rows: [MATRIX_ROWS[0]] }; runLifecycleMatrix("aliased-opts", subject, opts);',
     'runLifecycleMatrix("nested-call-arg", makeSubject(a, b));',
+    'const re = /runLifecycleMatrix("regex-literal", subject)/;',
+    'runLifecycleMatrix("after-regex", subject);',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
-    ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg"],
-    "only top-level 2-arg production calls count; comments, strings, brace-nested calls, and any third (options) argument — inline OR aliased — are ignored, while a nested call in the subject arg is fine",
+    ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg", "after-regex"],
+    "only top-level 2-arg production calls count; comments, strings, template/regex literals, brace-nested calls, and any third (options) argument — inline OR aliased — are ignored",
   );
 });
 
@@ -557,8 +559,12 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",
+    "packages/remnic-core/src/namespaces/principal.ts",
+    "packages/remnic-core/src/namespaces/scope-profiles.ts",
+    "packages/remnic-core/src/namespaces/identity.ts",
     "src/namespaces/storage.ts",
     "src/namespaces/search.ts",
+    "src/namespaces/principal.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
     const { covered, warnings, violations } = evaluateCoverage([p], manifest);

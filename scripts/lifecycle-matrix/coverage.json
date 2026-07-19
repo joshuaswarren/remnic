@@ -78,7 +78,15 @@
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",
     "src/namespaces/storage.ts",
-    "src/namespaces/search.ts"
+    "src/namespaces/search.ts",
+    "packages/remnic-core/src/namespaces/identity.ts",
+    "packages/remnic-core/src/namespaces/migrate.ts",
+    "packages/remnic-core/src/namespaces/path.ts",
+    "packages/remnic-core/src/namespaces/principal.ts",
+    "packages/remnic-core/src/namespaces/scope-profile-config.ts",
+    "packages/remnic-core/src/namespaces/scope-profiles.ts",
+    "src/namespaces/migrate.ts",
+    "src/namespaces/principal.ts"
   ],
   "coverage": {
     "src/orchestrator.ts": "extraction-lifecycle",
@@ -158,6 +166,14 @@
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",
     "src/namespaces/storage.ts",
-    "src/namespaces/search.ts"
+    "src/namespaces/search.ts",
+    "packages/remnic-core/src/namespaces/identity.ts",
+    "packages/remnic-core/src/namespaces/migrate.ts",
+    "packages/remnic-core/src/namespaces/path.ts",
+    "packages/remnic-core/src/namespaces/principal.ts",
+    "packages/remnic-core/src/namespaces/scope-profile-config.ts",
+    "packages/remnic-core/src/namespaces/scope-profiles.ts",
+    "src/namespaces/migrate.ts",
+    "src/namespaces/principal.ts"
   ]
 }
