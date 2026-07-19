@@ -433,7 +433,23 @@ export class SmartBuffer {
     }
     if (!this.pendingSave) return;
     try {
-      await this.enqueueMutation(async () => this.saveUnlocked());
+      await this.enqueueMutation(async () => {
+        // Re-check under the serializer: a concurrent flush may have already
+        // persisted this pending save. Skip the redundant write (no phantom
+        // writes).
+        if (!this.pendingSave) return;
+        await this.saveUnlocked();
+        // Clear the pending flag INSIDE the same serialized mutation as the
+        // write (issue #1909 review). Clearing it after the enqueue await
+        // resolved raced an addTurn interleaving between the write and the
+        // clear: that turn's scheduleSave re-armed pendingSave + a timer, then
+        // this clear wiped it and the debounced flush was lost. Atomic
+        // write+clear means any addTurn runs wholly before (its turn is in the
+        // write) or wholly after (its pendingSave survives and its timer
+        // persists it).
+        this.pendingSave = false;
+        this.firstPendingAtMs = null;
+      });
     } catch (err) {
       // The write failed: memory and disk diverge (issue #1909 review round 2).
       // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
@@ -454,9 +470,6 @@ export class SmartBuffer {
       if (opts?.throwOnFailure) throw err;
       return; // fail-open for timer/shutdown callers
     }
-    // Only mark clean AFTER the write succeeds.
-    this.pendingSave = false;
-    this.firstPendingAtMs = null;
   }
 
   async addTurn(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {

@@ -868,3 +868,111 @@ test("debounce on: a failed clearAfterExtraction save keeps pending so other ses
     "session B's turns were cleared by the extraction",
   );
 });
+
+/**
+ * Storage that can hold ONE saveBuffer call open on a gate so a test can
+ * interleave other buffer mutations while a flush's write is in flight. The
+ * persisted snapshot is captured at call time (matching FakeStorage), so it
+ * reflects exactly the state the flush intended to write.
+ */
+class GatedSaveStorage {
+  public saved: BufferState | null = null;
+  public saveCount = 0;
+  private blockNext = false;
+  private release: (() => void) | null = null;
+  private signalStarted: (() => void) | null = null;
+  private startedPromise: Promise<void> | null = null;
+
+  constructor(private readonly initial: BufferState) {}
+
+  async loadBuffer(): Promise<BufferState> {
+    return structuredClone(this.initial);
+  }
+
+  blockNextSave(): void {
+    this.blockNext = true;
+    this.startedPromise = new Promise<void>((resolve) => {
+      this.signalStarted = resolve;
+    });
+  }
+
+  saveStarted(): Promise<void> {
+    return this.startedPromise ?? Promise.resolve();
+  }
+
+  releaseSave(): void {
+    this.release?.();
+    this.release = null;
+  }
+
+  async saveBuffer(state: BufferState): Promise<void> {
+    this.saveCount += 1;
+    const snapshot = structuredClone(state);
+    if (this.blockNext) {
+      this.blockNext = false;
+      const gate = new Promise<void>((resolve) => {
+        this.release = resolve;
+      });
+      this.signalStarted?.();
+      await gate;
+    }
+    this.saved = snapshot;
+  }
+}
+
+test("debounce on: a turn recorded around a forced flush is not dropped by the flush's clear (PR #2016)", async () => {
+  // Issue #1909 PR #2016 review: flushPendingSave used to clear
+  // pendingSave/firstPendingAtMs AFTER the serialized write mutation resolved,
+  // i.e. OUTSIDE the serializer. A turn recorded around that flush re-arms a
+  // debounced save (pendingSave = true); if the flush's late clear then wiped
+  // that flag, the interleaved turn's own scheduled flush would early-return
+  // and its persistence would be lost. The fix makes write + clear atomic on
+  // the existing serializer mutex. This drives the interleave deterministically
+  // and proves BOTH the pre-flush turn and the interleaved turn reach disk.
+  const storage = new GatedSaveStorage(emptyBufferState());
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  // Pre-flush turn: schedules a debounced save (pendingSave = true, timer armed).
+  assert.equal(
+    await buffer.addTurn("thread-a", makeTurn("thread-a", "pre-flush")),
+    "keep_buffering",
+  );
+
+  // Force a flush whose write blocks mid-flight, holding the serializer.
+  storage.blockNextSave();
+  const flushP = buffer.flushPendingSave();
+  await storage.saveStarted();
+
+  // Interleave a turn while the flush write is in flight. It queues behind the
+  // flush's write mutation on the serializer and records only after it settles.
+  const addP = buffer.addTurn("thread-a", makeTurn("thread-a", "post-flush"));
+
+  // Let the flush write land and everything settle.
+  storage.releaseSave();
+  await Promise.all([flushP, addP]);
+
+  const internals = buffer as unknown as DebouncedBufferInternals;
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((t) => t.content),
+    ["pre-flush", "post-flush"],
+    "both turns are held in memory",
+  );
+  assert.equal(
+    internals.pendingSave,
+    true,
+    "the interleaved turn's debounced save survives the flush's clear (owns its own flush)",
+  );
+
+  // The interleaved turn's pending save must still land — the flush's clear must
+  // not have silently dropped it.
+  await buffer.flushPendingSave();
+  assert.deepEqual(
+    storage.saved?.entries?.["thread-a"]?.turns.map((t) => t.content) ?? [],
+    ["pre-flush", "post-flush"],
+    "the pre-flush turn and the interleaved turn both persist",
+  );
+  assert.equal(internals.pendingSave, false, "pending is cleared only after the durable write");
+});
