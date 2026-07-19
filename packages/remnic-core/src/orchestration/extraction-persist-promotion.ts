@@ -16,7 +16,7 @@ import {
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
 } from "../capabilities.js";
-import type { PluginConfig } from "../types.js";
+import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 export const confidenceTierOrder = [
@@ -87,4 +87,26 @@ export function shouldPromoteToShared(
   )
     return false;
   return true;
+}
+
+/**
+ * Read the active-copy corpus across BOTH storage tiers (hot + cold).
+ *
+ * #2016 cold-tier finding: the authoritative content-hash rebuild unions the
+ * hot and cold tiers, so `hasFactContentHash()` can report a hit for a
+ * fact/procedure whose only active copy was demoted to `cold/`. A promotion or
+ * dedup confirmation scan that reads `readAllMemories()` (hot) alone misses
+ * that copy, so it either writes a duplicate hot copy or skips a needed
+ * temporal backfill. Scanning both tiers keeps the confirmation coherent with
+ * the hash index. Cold reads are folded in only when the cold tier is
+ * non-empty so hot-only namespaces incur no extra allocation.
+ */
+export async function readActiveMemoriesBothTiers(
+  storage: StorageManager,
+): Promise<MemoryFile[]> {
+  const [hotMems, coldMems] = await Promise.all([
+    storage.readAllMemories(),
+    storage.readAllColdMemories(),
+  ]);
+  return coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
 }
