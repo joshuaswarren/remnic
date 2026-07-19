@@ -78,6 +78,10 @@ function namespacedConfig(memoryDir: string): PluginConfig {
  */
 const REMEMBERED_SESSION = "restored-session-9f2a";
 
+/** A sparse, opaque session id with NO remembered binding — resolves to no
+ *  principal, so it must never reach another principal's memory. */
+const UNBOUND_SESSION = "unbound-session-0000";
+
 /** Map-mode config where {@link REMEMBERED_SESSION} is bound to alice. */
 function rememberedBindingConfig(memoryDir: string): PluginConfig {
   return makeLifecycleConfig(memoryDir, {
@@ -94,7 +98,6 @@ function rememberedBindingConfig(memoryDir: string): PluginConfig {
 const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
   "explicit-provider-identity": true,
   "sparse-metadata-with-binding": true,
-  "sparse-metadata-without-binding": true,
   "provider-rebinding": true,
 };
 
@@ -102,7 +105,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
   async setup(row: MatrixRow): Promise<ExtractionLifecycleState> {
     const memoryDir = await mkTempMemoryDir(`extraction-${row.id}`);
     const cfg =
-      row.id === "sparse-metadata-with-binding"
+      row.id === "sparse-metadata-with-binding" || row.id === "sparse-metadata-without-binding"
         ? rememberedBindingConfig(memoryDir)
         : NAMESPACE_ROWS[row.id]
           ? namespacedConfig(memoryDir)
@@ -140,9 +143,10 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "sparse-metadata-without-binding": {
-        // Sparse session, nothing remembered — recall must not fabricate a
-        // binding or leave phantom writes behind.
-        await primary.recall("Which region does alice pin deploys to?", "alice:chat");
+        // Alice's memory exists on disk, but THIS session's opaque key has no
+        // remembered binding to her — recall must not fabricate one to reach it.
+        const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
+        await seedFactFile(aliceRoot, "unbound", "alice pins deploys to the us-east-2 region.");
         return;
       }
       case "provider-rebinding": {
@@ -271,11 +275,16 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
       }
       case "sparse-metadata-without-binding": {
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
-        const context = await primary.recall("Which region does alice pin deploys to?", "alice:chat");
-        assert.doesNotMatch(context, /us-east-2/i, "no binding was remembered — recall must not fabricate one");
+        const seededFiles = (await markdownFilesUnder(aliceRoot)).length;
+        const context = await primary.recall("Which region does alice pin deploys to?", UNBOUND_SESSION);
+        assert.doesNotMatch(
+          context,
+          /us-east-2/i,
+          "an unbound sparse session must NOT reach alice's memory — no binding may be fabricated",
+        );
         assert.equal(
           (await markdownFilesUnder(aliceRoot)).length,
-          0,
+          seededFiles,
           "a recall with no binding must not create phantom memory files",
         );
         return;
