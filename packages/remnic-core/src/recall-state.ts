@@ -24,6 +24,9 @@ export interface LastRecallBudgetSummary {
   truncated?: boolean;
   includedSections?: string[];
   omittedSections?: string[];
+  includedMemoryIds?: string[];
+  includedMemoryPaths?: string[];
+  omittedMemoryIds?: string[];
 }
 
 export interface LastRecallSnapshot {

@@ -1863,6 +1863,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   entitySchemas?: Record<string, EntitySchemaDefinition>;
   // Recall assembly controls
   recallBudgetChars: number;
+  /** Maximum fraction of the total recall budget that the behavioral profile may consume. */
+  recallProfileMaxRatio: number;
   recallOuterTimeoutMs: number;
   recallCoreDeadlineMs: number;
   recallEnrichmentDeadlineMs: number;

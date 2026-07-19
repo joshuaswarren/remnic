@@ -98,12 +98,18 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 
+import type {
+  RecallSectionAppendOptions,
+  RecallSectionBuckets,
+} from "./recall-section-coordinator.js";
+
 export interface RecallInternalDeps {
   readonly _recallWorkspaceOverrides: Map<string, string>;
   appendRecallSection(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     sectionId: string,
     content: string,
+    options?: RecallSectionAppendOptions,
   ): boolean;
   applyColdFallbackPipeline(options: {
     prompt: string;
@@ -158,7 +164,7 @@ export interface RecallInternalDeps {
     trustByPath: Map<string, TrustStageResultItem> | null;
   }>;
   assembleRecallSections(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     budgetOverride?: number,
   ): {
     sections: string[];
@@ -166,6 +172,9 @@ export interface RecallInternalDeps {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    omittedMemoryIds: string[];
   };
   boostSearchResults(
     results: QmdSearchResult[],
@@ -214,13 +223,16 @@ export interface RecallInternalDeps {
     truncated?: boolean;
     includedSections?: string[];
     omittedSections?: string[];
+    includedMemoryIds?: string[];
+    includedMemoryPaths?: string[];
+    omittedMemoryIds?: string[];
   }): LastRecallBudgetSummary;
   buildQueryAwarePrefilter(
     prompt: string,
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter>;
   collectLastRecallSources(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     recallSource:
       | "none"
       | "hot_qmd"
@@ -352,7 +364,7 @@ export interface RecallInternalDeps {
   publishRecallResults(options: {
     title: string;
     results: QmdSearchResult[];
-    sectionBuckets: Map<string, string[]>;
+    sectionBuckets: RecallSectionBuckets;
     retrievalQuery: string;
     sessionKey: string | undefined;
     identityInjection?: {
@@ -539,7 +551,7 @@ export class RecallInternalCoordinator {
       .update(`${sessionKey ?? "default"}:${recallStart}:${promptHash}`)
       .digest("hex")
       .slice(0, 16);
-    const sectionBuckets = new Map<string, string[]>();
+    const sectionBuckets: RecallSectionBuckets = new Map();
     // The effective LCM read session_id SET is computed below from
     // `recallNamespaces` (the SAME read-authorized namespace set normal QMD/file
     // recall searches, incl. coding `readFallbacks`). See the
@@ -5326,6 +5338,8 @@ export class RecallInternalCoordinator {
       sectionBuckets,
       options.budgetCharsOverride,
     );
+    recalledMemoryIds = assembledRecall.includedMemoryIds;
+    recalledMemoryPaths = assembledRecall.includedMemoryPaths;
     const context =
       assembledRecall.sections.length === 0
         ? ""
@@ -5343,6 +5357,9 @@ export class RecallInternalCoordinator {
       truncated: assembledRecall.truncated,
       includedSections: assembledRecall.includedIds,
       omittedSections: assembledRecall.omittedIds,
+      includedMemoryIds: assembledRecall.includedMemoryIds,
+      includedMemoryPaths: assembledRecall.includedMemoryPaths,
+      omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
 
     // X-ray capture (issue #570 PR 1).  Only fires when the caller

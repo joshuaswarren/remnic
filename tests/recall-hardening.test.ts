@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
+import type { RecallSectionBuckets } from "../src/orchestration/recall-section-coordinator.js";
 import {
   buildQmdRecallCacheKey,
   clearQmdRecallCache,
@@ -153,6 +154,40 @@ test("assembleRecallSections does not omit earlier sections when protected secti
   assert.equal(assembled.omittedIds.length, 0);
   assert.equal(assembled.truncated, true);
   assert.ok(context.length <= 60);
+});
+
+test("assembleRecallSections reports included and omitted memory metadata", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-metadata-", {
+    recallBudgetChars: 55,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+
+  const sectionBuckets: RecallSectionBuckets = new Map();
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "first memory",
+    { atomic: true, memoryId: "memory-first", memoryPath: "facts/first.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "second memory that exceeds the remaining budget",
+    { atomic: true, memoryId: "memory-second", memoryPath: "facts/second.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-first"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/first.md"]);
+  assert.deepEqual(assembled.omittedMemoryIds, ["memory-second"]);
 });
 
 test("recall aborts the in-flight pipeline when the outer timeout fires", async () => {

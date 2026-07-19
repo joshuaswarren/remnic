@@ -80,37 +80,29 @@ export class RecallResultFormatter {
 
   // ── QMD results (memory handles + epistemic hedge) ──────────────────────
 
-  formatQmdResults(
+  formatQmdResultEntries(
     title: string,
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
-  ): string {
-    // Issue #1582 — handles are only rendered when a session key is available:
-    // resolution requires the handle history to have been recorded for this
-    // session, which only happens when sessionKey is present. Rendering handles
-    // without recording would show tokens a user can never resolve (cursor
-    // review). The rendering logic itself lives in the pure handles module.
+  ): { heading: string; entries: string[] } {
     const handleByIndex = buildHandleIndexForResults(
       results,
       this.config.recallMemoryHandles === true && sessionKey != null,
     );
-    // Issue #1577 — epistemic hedge. Append a deterministic, component-derived
-    // suffix so the downstream model knows each memory's trust status (the
-    // cheap lever against confident-stale-answer failures). Gated separately
-    // from scoring so rendering can ship after the stage is stable. High-band
-    // and neutral items get no suffix (don't waste tokens on the common case).
-    const renderHedge = this.config.trustScoreEpistemicRendering && trustByPath !== null && trustByPath !== undefined;
+    const renderHedge =
+      this.config.trustScoreEpistemicRendering &&
+      trustByPath !== null &&
+      trustByPath !== undefined;
     const hedgeMap = renderHedge ? trustByPath : null;
-    const lines = results.map((r, i) => {
+    const entries = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
       const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      const hedged = head.replace(/\s+$/, "");
-      const withHandle = handle ? `${hedged} ${handle}` : hedged;
+      const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
       if (hedgeMap) {
         const item = hedgeMap.get(r.path);
         if (item) {
@@ -120,7 +112,22 @@ export class RecallResultFormatter {
       }
       return withHandle;
     });
-    return `## ${title}\n\n${lines.join("\n\n")}`;
+    return { heading: `## ${title}`, entries };
+  }
+
+  formatQmdResults(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
+  ): string {
+    const formatted = this.formatQmdResultEntries(
+      title,
+      results,
+      sessionKey,
+      trustByPath,
+    );
+    return [formatted.heading, ...formatted.entries].join("\n\n");
   }
 
   // ── Specialized recall result formatters ────────────────────────────────

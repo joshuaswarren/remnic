@@ -103,7 +103,11 @@ import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coo
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
-import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
+import {
+  RecallSectionCoordinator,
+  type RecallSectionAppendOptions,
+  type RecallSectionBuckets,
+} from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
 import {
@@ -2652,14 +2656,16 @@ export class Orchestrator {
   }
 
   private appendRecallSection(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     sectionId: string,
     content: string,
+    options?: RecallSectionAppendOptions,
   ): boolean {
     return this.recallSectionCoordinator.appendRecallSection(
       sectionBuckets,
       sectionId,
       content,
+      options,
     );
   }
 
@@ -2678,7 +2684,7 @@ export class Orchestrator {
   }
 
   private assembleRecallSections(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     budgetOverride?: number,
   ): {
     sections: string[];
@@ -2686,6 +2692,9 @@ export class Orchestrator {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    omittedMemoryIds: string[];
   } {
     return this.recallSectionCoordinator.assembleRecallSections(
       sectionBuckets,
@@ -3294,6 +3303,19 @@ export class Orchestrator {
   ): string {
     return this.recallResultFormatter.formatQmdResults(title, results, sessionKey, trustByPath);
   }
+  private formatQmdResultEntries(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
+  ): { heading: string; entries: string[] } {
+    return this.recallResultFormatter.formatQmdResultEntries(
+      title,
+      results,
+      sessionKey,
+      trustByPath,
+    );
+  }
 
   private formatObjectiveStateResults(
     results: ObjectiveStateSearchResult[],
@@ -3392,7 +3414,7 @@ export class Orchestrator {
   private publishRecallResults(options: {
     title: string;
     results: QmdSearchResult[];
-    sectionBuckets: Map<string, string[]>;
+    sectionBuckets: RecallSectionBuckets;
     retrievalQuery: string;
     sessionKey: string | undefined;
     identityInjection?: {
@@ -3511,13 +3533,16 @@ export class Orchestrator {
     finalContextChars?: number;
     truncated?: boolean;
     includedSections?: string[];
+    includedMemoryIds?: string[];
+    includedMemoryPaths?: string[];
+    omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
     return this.recallSectionCoordinator.buildLastRecallBudgetSummary(options);
   }
 
   private collectLastRecallSources(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     recallSource:
       | "none"
       | "hot_qmd"
