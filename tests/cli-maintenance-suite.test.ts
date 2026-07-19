@@ -101,6 +101,49 @@ alpha
   await stat(writeResult.outputPath);
 });
 
+test("rebuild-memory-lifecycle-ledger CLI recovery preserves append-only history frontmatter cannot reconstruct (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-preserve-"));
+  try {
+    // A memory file the rebuild reconstructs created/updated events from.
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+    );
+    // An APPEND-ONLY ledger row with NO backing memory file: frontmatter cannot
+    // reconstruct it, so a frontmatter-only recovery rebuild would silently drop
+    // this history. The recovery command must preserve it (#2033).
+    const appendOnly = {
+      schemaVersion: 1,
+      eventId: "evt-capture",
+      memoryId: "m-ghost",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-07T00:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeText(memoryDir, "state/memory-lifecycle-ledger.jsonl", `${JSON.stringify(appendOnly)}\n`);
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+    });
+    assert.equal(writeResult.dryRun, false);
+
+    const ledger = await readFile(writeResult.outputPath, "utf-8");
+    assert.ok(
+      ledger.includes("evt-capture"),
+      "append-only history preserved by the recovery rebuild — not dropped",
+    );
+    assert.ok(ledger.includes("fact-1"), "frontmatter-derived events still reconstructed");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("rebuild-memory-lifecycle-ledger CLI refuses a locked secure store instead of a keyless plaintext rewrite (#2033)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-secure-"));
   const key = Buffer.alloc(32, 0x3c);

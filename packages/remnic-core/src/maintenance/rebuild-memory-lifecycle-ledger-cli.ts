@@ -1,6 +1,7 @@
 import path from "node:path";
 
-import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
+import { probeEncryptedRegularFileHeader, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "../secure-store/secure-fs.js";
+import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import type { StorageManager } from "../index.js";
 import {
   rebuildMemoryLifecycleLedger,
@@ -26,17 +27,29 @@ export async function runRebuildMemoryLifecycleLedgerCliCommand(
 ): Promise<RebuildMemoryLifecycleLedgerResult> {
   const storage = options.storage;
   const ledgerPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  const encrypted = await probeEncryptedRegularFileHeader(ledgerPath);
   // Refuse a keyless plaintext rewrite of an encrypted-at-rest ledger (#2033):
   // without an unlocked secure StorageManager the rebuild would read encrypted
   // memories with no key and rewrite the ledger as plaintext, defeating
   // encryption-at-rest. Fail safely and point the operator at the unlock step.
-  if ((await probeEncryptedRegularFileHeader(ledgerPath)) && !(storage?.isSecureStoreUnlocked() ?? false)) {
+  if (encrypted && !(storage?.isSecureStoreUnlocked() ?? false)) {
     throw new Error(
       "rebuild-memory-lifecycle-ledger: secure store is locked; refusing to rebuild the "
       + "lifecycle ledger, which would read encrypted memories with no key and rewrite the "
       + "ledger as plaintext. Run `remnic secure-store unlock` first, then re-run with --write.",
     );
   }
+  // This command is the advertised recovery for an over-cap ledger, so it must
+  // give the SAME guarantees as background compaction (#2033): (1) preserve
+  // append-only history frontmatter cannot reconstruct (explicit_capture_accepted,
+  // imported, promoted) instead of silently dropping it, and (2) bound the
+  // rewritten ledger under the read/decrypt cap so the repaired ledger is
+  // readable. Bound the PLAINTEXT payload, reserving the secure-store envelope
+  // (+1 byte) when the ledger is encrypted so the on-disk file lands STRICTLY
+  // under the cap.
+  const maxLedgerBytes = encrypted
+    ? STATE_FILE_MAX_DECRYPT_BYTES - SECURE_STORE_ENVELOPE_OVERHEAD_BYTES - 1
+    : STATE_FILE_MAX_DECRYPT_BYTES - 1;
   return rebuildMemoryLifecycleLedger({
     memoryDir: options.memoryDir,
     dryRun: options.write !== true,
@@ -45,5 +58,7 @@ export async function runRebuildMemoryLifecycleLedgerCliCommand(
     // decrypt on read and the rewritten ledger stays encrypted at rest; a
     // plaintext store passes a plaintext manager here, which is correct.
     storage,
+    preserveExistingEvents: true,
+    maxLedgerBytes,
   });
 }

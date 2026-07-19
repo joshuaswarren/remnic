@@ -941,8 +941,8 @@ export class MaintenanceScheduler {
         dryRun: false,
         storage: target.storage,
         // Background compaction must not lose append-only history that
-        // frontmatter cannot reconstruct (issue #1910) — unlike the manual
-        // CLI repair rebuild, which reconstructs purely from frontmatter.
+        // frontmatter cannot reconstruct (issue #1910); the manual CLI repair
+        // rebuild now preserves and bounds identically (#2033).
         preserveExistingEvents: true,
         // Bound the PLAINTEXT rewrite to a budget that reserves the secure-store
         // envelope, so the on-disk ledger (plaintext, or plaintext+envelope when
