@@ -42,7 +42,8 @@ export const AUTO_CLOSED_LABEL = "review-round:auto-closed";
 /** Micro-push telemetry warns once the round crosses this many pushes (issue #1992 §4). */
 export const PUSH_WARN_THRESHOLD = 3;
 export const DEFAULT_REQUIRED_AI_REVIEWER_GROUPS =
-  "cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor";
+  "cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|" +
+  "coderabbitai[bot]|coderabbitai|chatgpt-codex-connector[bot]|chatgpt-codex-connector";
 
 function parseReviewerAliases(raw) {
   return [
@@ -332,11 +333,13 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
   // write) so the next run retries, instead of waiting for a review that was
   // never requested and silently dropping the round (codex).
   let persist = true;
+  let dispatchedThisRun = false;
   const forceConsumed =
     result.telemetry.dispatch && forceDispatch && result.telemetry.reason === "force-label";
   if (result.telemetry.dispatch && enforce) {
     const dispatched = await dispatchReviewers({ github, owner, repo, prNumber, core });
     if (dispatched) {
+      dispatchedThisRun = true;
       if (result.telemetry.autoClosed) {
         await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
       }
@@ -385,7 +388,13 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
         });
       }
     } catch (error) {
-      core.info(`review-round gate: could not write ledger comment (${error?.message ?? error}).`);
+      // A ledger write that fails AFTER reviewers were already pinged means the
+      // next run may re-dispatch (non-atomic two-write; reviewer bots coalesce
+      // duplicate requests). Surface it loudly for the PR3 enforcement rollout;
+      // in shadow mode it is a benign visibility miss (cursor).
+      const note = `review-round gate: could not write ledger comment (${error?.message ?? error}).`;
+      if (dispatchedThisRun) core.warning(`${note} Reviewers were already dispatched; a retry may re-dispatch.`);
+      else core.info(note);
     }
   }
 

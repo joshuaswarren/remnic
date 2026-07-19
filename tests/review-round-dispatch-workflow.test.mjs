@@ -52,6 +52,14 @@ test("the round-dispatch workflow also wakes on check-run completion", () => {
   assert.doesNotMatch(dispatch, /^\s*pull_request_review_thread:/m);
 });
 
+test("the round-dispatch workflow wakes on top-level PR comments and has Checks read", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // Top-level bot verdicts (issue_comment) must wake the gate, and
+  // checks.listForRef needs the Checks read permission (issue #1992).
+  assert.match(dispatch, /^\s*issue_comment:\s*\n\s*types:\s*\[created, edited\]/m);
+  assert.match(dispatch, /^\s*checks:\s*read/m);
+});
+
 test("the round-dispatch workflow shadows dispatch by default (enforcement flip is PR3)", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   assert.match(dispatch, /REVIEW_ROUND_ENFORCE:\s*'false'/);

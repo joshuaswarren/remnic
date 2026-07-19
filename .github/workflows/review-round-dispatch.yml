@@ -23,6 +23,12 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  # Top-level PR comments (a bot verdict posted as an issue comment) are read by
+  # the gate as bot activity, so wake on them too (GitHub files PR comments under
+  # issue_comment). The gate's own comments use GITHUB_TOKEN, which does not
+  # re-trigger workflows, so this cannot self-loop (issue #1992 P2).
+  issue_comment:
+    types: [created, edited]
   # A bot completing only a check run (Cursor-style verdict) must also wake the
   # gate — otherwise the ledger will not advance until an unrelated
   # push/comment/label fires (issue #1992 P2). GitHub Actions has NO
@@ -61,8 +67,11 @@ jobs:
           # Shadow by default (decision D): enforcement flip is PR3, after
           # shadow data lands. Set to 'true' only after the sandbox check.
           REVIEW_ROUND_ENFORCE: 'false'
+          # Detection aliases MUST cover every bot the round dispatches
+          # (@coderabbitai + @codex) plus Cursor's check-run, or their responses
+          # would not be recognized as round activity (issue #1992).
           REQUIRED_AI_REVIEWER_GROUPS: >-
-            cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor
+            cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|coderabbitai[bot]|coderabbitai|chatgpt-codex-connector[bot]|chatgpt-codex-connector
         with:
           script: |
             const { pathToFileURL } = require('node:url');

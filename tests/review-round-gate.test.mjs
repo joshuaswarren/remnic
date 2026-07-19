@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ROUND_COMMENT_MARKER, renderRoundLedger } from "../scripts/review-rounds.mjs";
 import {
   AUTO_CLOSED_LABEL,
+  DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,
   FORCE_DISPATCH_LABEL,
   PUSH_WARN_THRESHOLD,
   computeRoundGateDecision,
@@ -451,4 +452,31 @@ test("an enforced dispatch whose trigger fails leaves the round open to retry", 
   assert.equal(result.telemetry.dispatch, true, "the decision still says dispatch");
   assert.equal(calls.updated.length, 0, "the dispatched ledger state is NOT persisted on trigger failure");
   assert.equal(calls.labelsRemoved.length, 0, "the force label is kept so the retry re-dispatches");
+});
+
+test("every dispatched reviewer bot is covered by the default detection aliases", () => {
+  // dispatchReviewers pings @coderabbitai + @codex; the default alias list must
+  // recognize their (and Cursor's) activity as round activity, or their
+  // responses would never open the next round (issue #1992).
+  for (const login of ["coderabbitai[bot]", "chatgpt-codex-connector[bot]", "cursor[bot]"]) {
+    assert.ok(
+      DEFAULT_REQUIRED_AI_REVIEWER_GROUPS.includes(login),
+      `${login} missing from default detection aliases`,
+    );
+  }
+});
+
+test("an enforced dispatch pings exactly the reviewers the aliases recognize", async () => {
+  const seed = decide({ threads: openThreads(2) }).commentBody;
+  const addressed = openThreads(2).map((thread) => ({ ...thread, isResolved: true }));
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 3, body: seed }],
+    threads: addressed,
+    labels: [{ name: FORCE_DISPATCH_LABEL }],
+  });
+  await runRoundGate({ github, context, core, env: { REVIEW_ROUND_ENFORCE: "true" } });
+  const trigger = calls.created.find((c) => /@coderabbitai|@codex/.test(c.body));
+  assert.ok(trigger, "a reviewer trigger comment is posted under enforcement");
+  assert.match(trigger.body, /@coderabbitai/);
+  assert.match(trigger.body, /@codex/);
 });
