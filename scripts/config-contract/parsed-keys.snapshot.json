@@ -523,6 +523,13 @@
     "localLlmUrl",
     "localLmsBinDir",
     "localLmsCliPath",
+    "maintenance",
+    "maintenanceIncludeBranchNamespaces",
+    "maintenanceIncludeProjectNamespaces",
+    "maintenanceIncludeTeamProjectNamespaces",
+    "maintenanceMaxNamespacesPerCycle",
+    "maintenanceNamespaceFanoutEnabled",
+    "maintenanceNamespaceLockStaleMs",
     "maxCompressionTokensPerHour",
     "maxEntityGraphEdgesPerMemory",
     "maxGraphTraversalSteps",
@@ -956,21 +963,6 @@
       "file": "packages/remnic-core/src/config.ts",
       "line": 118,
       "reason": "Object.keys() over parser input — dynamic key set"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 361,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 375,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 376,
-      "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/config.ts",

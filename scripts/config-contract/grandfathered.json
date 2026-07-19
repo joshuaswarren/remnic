@@ -1,42 +1,17 @@
 [
   {
     "kind": "dead-schema",
-    "key": "maintenanceIncludeBranchNamespaces",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "maintenanceIncludeProjectNamespaces",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "maintenanceIncludeTeamProjectNamespaces",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "maintenanceMaxNamespacesPerCycle",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "maintenanceNamespaceFanoutEnabled",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
-    "key": "maintenanceNamespaceLockStaleMs",
-    "issue": "#1990"
-  },
-  {
-    "kind": "dead-schema",
     "key": "openclawFlushPlanProcessingEnabled",
     "issue": "#1990"
   },
   {
     "kind": "missing-schema",
     "key": "gatewayConfig",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "maintenance",
     "issue": "#1990"
   },
   {
@@ -1761,21 +1736,6 @@
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:361",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:375",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:376",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/entity-schema.ts:91",
     "issue": "#1990"
   },
@@ -1797,6 +1757,36 @@
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:2722",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.includeBranchNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.includeProjectNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.includeTeamProjectNamespaces",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.maxNamespacesPerCycle",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.namespaceFanoutEnabled",
+    "issue": "#1990"
+  },
+  {
+    "kind": "documented-nonexistent",
+    "key": "maintenance.namespaceLockStaleMs",
     "issue": "#1990"
   }
 ]

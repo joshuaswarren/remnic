@@ -165,6 +165,9 @@ function extractParserKeys(
   out: { keys: Set<string>; unparseable: UnparseableConstruct[]; ambiguousValueMembers: Set<string> },
   prefix: string[] = [],
   recursion: { program: ts.Program; depth: number; seen: Set<string> } | null = null,
+  // param name -> literal string value, for helpers that receive key names as
+  // string-literal arguments and read `cfg[keyParam]` (issue #1990 review).
+  literalBindings: Map<string, string> = new Map(),
 ): void {
   if (!fn.body) return;
   const param = fn.parameters[0];
@@ -237,6 +240,18 @@ function extractParserKeys(
         ts.isStringLiteral(current.argumentExpression)
       ) {
         segments.unshift(current.argumentExpression.text);
+        current = current.expression;
+        continue;
+      }
+      // `cfg[keyParam]` where keyParam is bound to a string literal at the call
+      // site (issue #1990 review): resolve it to that literal key segment.
+      if (
+        ts.isElementAccessExpression(current) &&
+        current.argumentExpression &&
+        ts.isIdentifier(current.argumentExpression) &&
+        literalBindings.has(current.argumentExpression.text)
+      ) {
+        segments.unshift(literalBindings.get(current.argumentExpression.text) as string);
         current = current.expression;
         continue;
       }
@@ -391,6 +406,11 @@ function extractParserKeys(
             : node.argumentExpression;
         if (argument && ts.isStringLiteral(argument)) {
           recordKey([...resolved.info.prefix, ...resolved.segments], argument.text);
+        } else if (argument && ts.isIdentifier(argument) && literalBindings.has(argument.text)) {
+          recordKey(
+            [...resolved.info.prefix, ...resolved.segments],
+            literalBindings.get(argument.text) as string,
+          );
         } else if (argument && ts.isIdentifier(argument)) {
           const ancestor = findEnclosingForOf(sourceFile, node);
           if (
@@ -443,20 +463,45 @@ function extractParserKeys(
     // (`readLspField` → `parseLspConfig`) — review findings on #1990.
     if (recursion && recursion.depth < 6 && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       const helperName = node.expression.text;
+      // Key-name arguments passed as string literals bind to the helper's
+      // params so `cfg[keyParam]` resolves (issue #1990 review). The literal
+      // signature also keys the dedup so distinct-literal calls to the same
+      // reader (readFlatOrNestedConfig(cfg, "a", …) vs (cfg, "b", …)) are all
+      // followed instead of collapsing to one.
+      const literalArgs = node.arguments
+        .map((arg) => (ts.isStringLiteral(arg) ? arg.text : ""))
+        .join(",");
       for (let argIndex = 0; argIndex < node.arguments.length; argIndex++) {
         const resolved = resolveAliasChain(node.arguments[argIndex]);
         if (!resolved) continue;
         const argPrefix = [...prefix, ...resolved.info.prefix, ...resolved.segments];
-        const recursionKey = `${helperName}@${argIndex}@${argPrefix.join(".")}`;
+        const recursionKey = `${helperName}@${argIndex}@${argPrefix.join(".")}@${literalArgs}`;
         if (recursion.seen.has(recursionKey)) continue;
         recursion.seen.add(recursionKey);
         const helper = findFunctionForCall(recursion.program, helperName, argIndex);
         if (helper) {
-          extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, argPrefix, {
-            program: recursion.program,
-            depth: recursion.depth + 1,
-            seen: recursion.seen,
-          });
+          const bindings = new Map<string, string>(literalBindings);
+          for (let i = 0; i < node.arguments.length; i++) {
+            const arg = node.arguments[i];
+            const helperParam = helper.fn.parameters[i];
+            if (!arg || !helperParam || !ts.isIdentifier(helperParam.name)) continue;
+            if (ts.isStringLiteral(arg)) {
+              bindings.set(helperParam.name.text, arg.text);
+            } else if (ts.isIdentifier(arg) && literalBindings.has(arg.text)) {
+              // Propagate a binding one hop further (readFlatOrNestedConfig →
+              // readNestedConfig passes its own key params on).
+              bindings.set(helperParam.name.text, literalBindings.get(arg.text) as string);
+            }
+          }
+          extractParserKeys(
+            helper.fn,
+            helper.sourceFile,
+            repoRoot,
+            out,
+            argPrefix,
+            { program: recursion.program, depth: recursion.depth + 1, seen: recursion.seen },
+            bindings,
+          );
         }
         // Reading the sub-block to hand it over is itself a key read.
         if (resolved.segments.length > 0) {

@@ -136,3 +136,14 @@ test("array item-field traversal: primitive-item arrays do not mint value-member
     "a primitive item's value-member call must not become a key",
   );
 });
+
+test("literal key-name binding: `readFlatOrNestedConfig(cfg, \"flatKey\", …)` surfaces the flat key", () => {
+  const { keys } = extractReal();
+  // The flat form is passed as a string literal into a reader helper that does
+  // cfg[flatKey]; binding the literal makes it a real key instead of an
+  // unparseable computed access (issue #1990 review).
+  assert.ok(
+    keys.includes("maintenanceNamespaceFanoutEnabled"),
+    "the flat maintenanceNamespaceFanoutEnabled key must bind through the reader helper",
+  );
+});
