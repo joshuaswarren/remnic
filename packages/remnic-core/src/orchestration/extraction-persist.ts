@@ -2247,9 +2247,9 @@ export class ExtractionPersistCoordinator {
             // Claim-level provenance spans (issue #1575 PR 2).
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
-            // #1909: defer the per-fact index flush to the batch save only when
-            // fact dedup is on (the batch saver is a no-op otherwise).
-            deferHashIndexSave: factDedupEnabled,
+            // PR #2016: never defer here — fallible chunk/artifact writes follow this
+            // durable parent .md; flush the hash now so a throw can't strand it (dup).
+            deferHashIndexSave: false,
           });
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
