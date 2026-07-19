@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
@@ -501,6 +501,29 @@ export class LastRecallStore {
     }
   }
 
+  /**
+   * Recover a crash-orphaned spill temp after its write completed but before
+   * the atomic `.tmp` → `.jsonl` rename. Valid JSONL temps are promoted back
+   * into the normal queue; incomplete temps remain pending and keep offline sync
+   * deferred rather than being discarded.
+   */
+  private async recoverOrphanedImpressionTemps(): Promise<void> {
+    const temps = await listContainedSpillFiles(this.impressionsPendingDir, ".jsonl.tmp");
+    for (const tempPath of temps) {
+      let content: string;
+      try {
+        content = await readFile(tempPath, "utf-8");
+        for (const line of content.split("\n")) {
+          if (line.trim().length > 0) JSON.parse(line);
+        }
+      } catch {
+        continue;
+      }
+      const finalPath = tempPath.slice(0, -".tmp".length);
+      await rename(tempPath, finalPath).catch(() => undefined);
+    }
+  }
+
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
     // Every active-file write goes under the shared cross-process rotation lock,
@@ -552,14 +575,9 @@ export class LastRecallStore {
    * NOT report a clean snapshot — it either retries or aborts.
    */
   async drainPendingImpressions(): Promise<DrainPendingImpressionsResult> {
-    let pendingCount = 0;
-    try {
-      pendingCount = (await readdir(this.impressionsPendingDir)).length;
-    } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return { folded: false, pendingDeferred: false };
-      throw err;
+    if (!(await this.pendingSpillsRemain())) {
+      return { folded: false, pendingDeferred: false };
     }
-    if (pendingCount === 0) return { folded: false, pendingDeferred: false };
     const lockPath = `${this.impressionsPath}.lock`;
     let folded = false;
     let acquiredLock = false;
@@ -621,6 +639,7 @@ export class LastRecallStore {
    * rotation lock.
    */
   private async foldPendingImpressionsAndAppend(line: string | null): Promise<boolean> {
+    await this.recoverOrphanedImpressionTemps();
     await this.recoverOrphanedImpressionClaims();
     const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
     const drainOnly = line === null;
@@ -706,16 +725,20 @@ export class LastRecallStore {
   }
 
   /**
-   * True when any live `<uuid>.jsonl` spill or crash-orphaned
-   * `<uuid>.jsonl.claimed` file remains in the offline-sync-EXCLUDED pending
-   * queue (#2033). After a drain acquires the rotation lock, a spill the fold
-   * could not claim (rename race / read-only dir) or a `.claimed` orphan a
-   * failed commit left behind means durable rows are STILL excluded from a
-   * snapshot — the drain must report itself INCOMPLETE so the caller retries or
-   * aborts rather than snapshotting an active file that omits them.
+   * True when any live `<uuid>.jsonl` spill, crash-orphaned `.claimed` file,
+   * or crash-orphaned `.jsonl.tmp` spill remains in the offline-sync-EXCLUDED
+   * pending queue (#2033). After a drain acquires the rotation lock, a spill
+   * the fold could not claim (rename race / read-only dir) or a `.claimed`
+   * orphan a failed commit left behind means durable rows are STILL excluded
+   * from a snapshot — the drain must report itself INCOMPLETE so the caller
+   * retries or aborts rather than snapshotting an active file that omits them.
    */
   private async pendingSpillsRemain(): Promise<boolean> {
-    if ((await listContainedSpillFiles(this.impressionsPendingDir)).length > 0) return true;
+    if ((await listContainedSpillFiles(this.impressionsPendingDir, ".jsonl.tmp")).length > 0) {
+      return true;
+    }
+    const liveSpills = await listContainedSpillFiles(this.impressionsPendingDir);
+    if (liveSpills.length > 0) return true;
     const claimed = await listContainedSpillFiles(
       this.impressionsPendingDir,
       `.jsonl${CLAIMED_IMPRESSION_SPILL_SUFFIX}`,

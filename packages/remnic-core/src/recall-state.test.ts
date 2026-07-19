@@ -902,6 +902,53 @@ test("LastRecallStore.drainPendingImpressions recovers a crash-orphaned .claimed
   }
 });
 
+test("LastRecallStore.drainPendingImpressions recovers a completed spill temp after a crash (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-temp-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s-temp", writeNonce: "n-temp", memoryIds: ["m-temp"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl.tmp"), row, "utf-8");
+
+    const store = new LastRecallStore(dir);
+    await store.load();
+
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: true, pendingDeferred: false },
+      "completed temp is promoted and folded",
+    );
+    assert.equal(await readFile(impressionsPath, "utf-8"), row, "recovered temp appended verbatim");
+    assert.deepEqual(await readdir(pendingDir), [], "recovered temp finalized");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore.drainPendingImpressions defers an incomplete spill temp (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-temp-incomplete-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    await writeFile(path.join(pendingDir, "spill-1.jsonl.tmp"), '{"sessionKey":"incomplete"', "utf-8");
+
+    const store = new LastRecallStore(dir);
+    await store.load();
+
+    assert.deepEqual(
+      await store.drainPendingImpressions(),
+      { folded: false, pendingDeferred: true },
+      "incomplete temp remains deferred rather than being discarded",
+    );
+    assert.deepEqual(await readdir(pendingDir), ["spill-1.jsonl.tmp"], "incomplete temp is preserved");
+    assert.equal(await fileExists(impressionsPath), false, "incomplete temp is never appended");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("LastRecallStore.drainPendingImpressions reports pendingDeferred and never claims success when the rotation lock is held (#2033)", async () => {
   // Regression for the offline-sync lock-timeout thread (PRRT_kwDORJXyws6SE4Ac):
   // a pending spill exists but a PEER holds the rotation lock, so the drain
