@@ -2071,15 +2071,12 @@ export class EngramAccessService {
         codingOverlay: null,
         legacyRecallNamespaces,
       });
-      const defaultAtFlatRoot = await defaultNamespaceAtFlatRoot(
-        (n) => this.orchestrator.getStorage(n),
-        this.orchestrator.config,
-      );
-      const fallback = resolveMemorySearchDefaultFallback({
+      const fallback = await resolveMemorySearchDefaultFallback({
         profilePlan,
         config: this.orchestrator.config,
         principal,
-        defaultAtFlatRoot,
+        defaultAtFlatRootProvider: () =>
+          defaultNamespaceAtFlatRoot((n) => this.orchestrator.getStorage(n), this.orchestrator.config),
       });
       return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
     }

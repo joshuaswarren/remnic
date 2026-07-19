@@ -29,29 +29,29 @@ import type { PluginConfig } from "./types.js";
  *     (otherwise it is already in the set);
  *   - the principal is authorized to read the default namespace.
  *
- * Pure and side-effect-free so callers can unit-test the decision directly.
+ * The flat-root signal is resolved lazily via {@link defaultAtFlatRootProvider}
+ * — the provider is only invoked once the cheap gates (readOrder consent,
+ * resolved-layer readability, principal-self, self-resolved-away, ACL) all
+ * pass, so a project-only / serverShared-only / unreadable-userGlobal
+ * profile never touches the default store (#2056 r6).
  */
-export function resolveMemorySearchDefaultFallback(options: {
+export async function resolveMemorySearchDefaultFallback(options: {
   profilePlan: ResolvedScopeProfilePlan;
   config: PluginConfig;
   principal: string | undefined;
   /**
    * True only when the configured default namespace's storage root equals
-   * `config.memoryDir` (the legacy flat-root layout), i.e. the bulk corpus
-   * genuinely lives under the default namespace's base collection. This is
-   * the explicit legacy-flat-root/migration signal — without it the fallback
-   * must not fire, so a hosted scope-profile deployment (per-principal
-   * self namespaces, default under `namespaces/<default>`) never reaches
-   * into the default corpus (#2056 r4).
+   * `config.memoryDir` (the legacy flat-root layout). Invoked ONLY after the
+   * cheap gates pass, so ineligible profiles never probe the default store.
    */
-  defaultAtFlatRoot: boolean;
-}): string | null {
-  const { profilePlan, config, principal, defaultAtFlatRoot } = options;
-  // Defense-in-depth: principalSelfIsDefault is only ever true alongside
-  // defaultAtFlatRoot on legacy flat-root deployments (a hosted scope-profile
-  // principal with its own policy fails this even when default is at the flat
-  // root). It is NOT redundant — it keeps a policy-having principal isolated
-  // from the flat default corpus.
+  defaultAtFlatRootProvider: () => Promise<boolean>;
+}): Promise<string | null> {
+  const { profilePlan, config, principal } = options;
+  // Defense-in-depth: principalSelfIsDefault is only ever true alongside a
+  // flat-root default on legacy deployments (a hosted scope-profile principal
+  // with its own policy fails this even when default is at the flat root). It
+  // is NOT redundant — it keeps a policy-having principal isolated from the
+  // flat default corpus.
   const principalSelfIsDefault =
     defaultNamespaceForPrincipal(principal, config) === config.defaultNamespace;
   // readOrder must explicitly intend userGlobal (resolveScopeProfilePlan
@@ -67,16 +67,19 @@ export function resolveMemorySearchDefaultFallback(options: {
   const selfResolvedAwayFromDefault =
     profilePlan.baseNamespace !== config.defaultNamespace;
   if (
-    defaultAtFlatRoot &&
-    profileIntendsUserGlobal &&
-    userGlobalLayerReadable &&
-    principalSelfIsDefault &&
-    selfResolvedAwayFromDefault &&
-    canReadNamespace(principal, config.defaultNamespace, config)
+    !(
+      profileIntendsUserGlobal &&
+      userGlobalLayerReadable &&
+      principalSelfIsDefault &&
+      selfResolvedAwayFromDefault &&
+      canReadNamespace(principal, config.defaultNamespace, config)
+    )
   ) {
-    return config.defaultNamespace;
+    // Cheap gates failed — never probe the default store.
+    return null;
   }
-  return null;
+  const defaultAtFlatRoot = await options.defaultAtFlatRootProvider();
+  return defaultAtFlatRoot ? config.defaultNamespace : null;
 }
 
 /**

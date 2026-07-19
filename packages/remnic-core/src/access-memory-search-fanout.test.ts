@@ -73,28 +73,39 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
 // Wrapper that defaults defaultAtFlatRoot=true so each gate condition is
 // exercised independently (a `null` result means a NON-flat-root gate blocked,
 // not the flat-root gate). The dedicated flat-root-false test covers that gate.
-function applyFallback(
+// `probed` records whether the provider was invoked, so the lazy-probe tests
+// can assert ineligible profiles never touch the default store.
+async function applyFallback(
   plan: ResolvedScopeProfilePlan,
   config: PluginConfig,
   principal: string | undefined,
   defaultAtFlatRoot = true,
-): string | null {
-  return resolveMemorySearchDefaultFallback({ profilePlan: plan, config, principal, defaultAtFlatRoot });
+  probed: { value: boolean } = { value: false },
+): Promise<{ fallback: string | null; probed: boolean }> {
+  const result = await resolveMemorySearchDefaultFallback({
+    profilePlan: plan,
+    config,
+    principal,
+    defaultAtFlatRootProvider: () => {
+      probed.value = true;
+      return Promise.resolve(defaultAtFlatRoot);
+    },
+  });
+  return { fallback: result, probed: probed.value };
 }
 
-test("resolveMemorySearchDefaultFallback returns the default namespace on a flat-root legacy deployment (#2018)", () => {
-  const fallback = applyFallback(profilePlan(), pluginConfig(), "operator-x");
+test("resolveMemorySearchDefaultFallback returns the default namespace on a flat-root legacy deployment (#2018)", async () => {
+  const { fallback, probed } = await applyFallback(profilePlan(), pluginConfig(), "operator-x");
   assert.equal(fallback, "default");
+  assert.equal(probed, true, "the flat-root provider must be probed when cheap gates pass");
 });
 
-test("resolveMemorySearchDefaultFallback returns null when the default namespace is not at the flat root (#2056 r4)", () => {
-  // Hosted scope-profile deployment: default lives under namespaces/<default>,
-  // so reaching it would mix memories across the profile stack.
-  const fallback = applyFallback(profilePlan(), pluginConfig(), "operator-x", false);
+test("resolveMemorySearchDefaultFallback returns null when the default namespace is not at the flat root (#2056 r4)", async () => {
+  const { fallback } = await applyFallback(profilePlan(), pluginConfig(), "operator-x", false);
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback returns null for a project-only lockdown (#1501)", () => {
+test("resolveMemorySearchDefaultFallback returns null for a project-only lockdown and never probes storage (#1501, #2056 r6)", async () => {
   const plan = profilePlan({
     profile: {
       readOrder: ["userProject"],
@@ -108,16 +119,17 @@ test("resolveMemorySearchDefaultFallback returns null for a project-only lockdow
       },
     },
   });
-  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
+  const { fallback, probed } = await applyFallback(plan, pluginConfig(), "operator-x");
+  assert.equal(fallback, null);
+  assert.equal(probed, false, "ineligible profiles must not probe the default store");
+});
+
+test("resolveMemorySearchDefaultFallback returns null when the profile self is already the default", async () => {
+  const { fallback } = await applyFallback(profilePlan({ baseNamespace: "default" }), pluginConfig(), "default");
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback returns null when the profile self is already the default", () => {
-  const fallback = applyFallback(profilePlan({ baseNamespace: "default" }), pluginConfig(), "default");
-  assert.equal(fallback, null);
-});
-
-test("resolveMemorySearchDefaultFallback returns null when only serverShared (no userGlobal) is in readOrder", () => {
+test("resolveMemorySearchDefaultFallback returns null when only serverShared (no userGlobal) is in readOrder", async () => {
   // serverShared maps to sharedNamespace, NOT the default: a profile that
   // reads only userProject + serverShared deliberately reads the shared
   // namespace, not the default, so the fallback must not fire.
@@ -134,16 +146,14 @@ test("resolveMemorySearchDefaultFallback returns null when only serverShared (no
       },
     },
   });
-  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
+  const { fallback } = await applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback returns null when readOrder omits userGlobal even if a readable userGlobal layer is materialized (#2056 r3)", () => {
+test("resolveMemorySearchDefaultFallback returns null when readOrder omits userGlobal even if a readable userGlobal layer is materialized (#2056 r3)", async () => {
   // resolveScopeProfilePlan always materializes a userGlobal layer regardless
-  // of readOrder (scope-profiles.ts adds "userGlobal" to layerIds
-  // unconditionally). A profile that intentionally omits userGlobal from
-  // readOrder must not get the default-namespace fallback just because the
-  // materialized layer resolved readable — consent lives in readOrder.
+  // of readOrder. A profile that intentionally omits userGlobal from readOrder
+  // must not get the fallback just because the materialized layer is readable.
   const plan = profilePlan({
     profile: {
       readOrder: ["userProject"],
@@ -161,22 +171,22 @@ test("resolveMemorySearchDefaultFallback returns null when readOrder omits userG
       { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: true, writable: true, promotable: true, reason: "materialized but not in readOrder" },
     ],
   });
-  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
+  const { fallback } = await applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", () => {
+test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", async () => {
   const config = pluginConfig({
     defaultNamespace: "root",
     namespacePolicies: [
       { name: "root", readPrincipals: ["owner"], writePrincipals: ["owner"] },
     ],
   } as Partial<PluginConfig>);
-  const fallback = applyFallback(profilePlan(), config, "operator-x");
+  const { fallback } = await applyFallback(profilePlan(), config, "operator-x");
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback returns null when the resolved userGlobal layer is unreadable (#2056 r2)", () => {
+test("resolveMemorySearchDefaultFallback returns null when the resolved userGlobal layer is unreadable (#2056 r2)", async () => {
   // userGlobal is listed in readOrder but resolved unreadable (e.g. a policy
   // withholding the principal): a deliberate omission must not trigger the
   // fallback.
@@ -185,11 +195,11 @@ test("resolveMemorySearchDefaultFallback returns null when the resolved userGlob
       { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: false, writable: false, promotable: false, reason: "policy withholds principal" },
     ],
   });
-  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
+  const { fallback } = await applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
-test("resolveMemorySearchDefaultFallback returns null when the principal owns a dedicated namespace (#2056 r2 / #1501 privateOnly)", () => {
+test("resolveMemorySearchDefaultFallback returns null when the principal owns a dedicated namespace (#2056 r2 / #1501 privateOnly)", async () => {
   // Multi-tenant scope-profile deployment: the principal has its own policy,
   // so its self namespace is NOT the configured default. Reaching into the
   // default would read another namespace — the fallback must not fire even
@@ -199,7 +209,7 @@ test("resolveMemorySearchDefaultFallback returns null when the principal owns a 
       { name: "operator-x", readPrincipals: ["operator-x"], writePrincipals: ["operator-x"] },
     ],
   } as Partial<PluginConfig>);
-  const fallback = applyFallback(profilePlan(), config, "operator-x");
+  const { fallback } = await applyFallback(profilePlan(), config, "operator-x");
   assert.equal(fallback, null);
 });
 
