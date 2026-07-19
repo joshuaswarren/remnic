@@ -260,12 +260,53 @@ jobs:
       - name: Release artifact smoke test
         run: node scripts/check-release-artifacts.mjs
 
+  # Lifecycle scenario-matrix coverage gate (issue #1993, umbrella #1988 phase 5).
+  # Path-triggered: when the PR's effective diff touches a lifecycle-critical
+  # path (scripts/lifecycle-matrix/coverage.json), that path must be covered by
+  # a registered LifecycleSubject. Grandfathered paths warn; a new manifest path
+  # without coverage fails. Node-only (the gate uses builtins + effective-diff).
+  lifecycle-matrix:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+
+      - name: Compute changed files
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet --unshallow origin "$BASE_REF" 2>/dev/null \
+              || git fetch --quiet origin "$BASE_REF"
+            if ! git merge-base FETCH_HEAD HEAD >/dev/null 2>&1; then
+              echo "::error::no merge base between $BASE_REF and HEAD - cannot scope the lifecycle gate safely"
+              exit 1
+            fi
+            git -c core.quotePath=off diff --name-only -z FETCH_HEAD...HEAD > /tmp/lifecycle-changed-files.txt
+          else
+            git -c core.quotePath=off diff --name-only -z HEAD~1...HEAD > /tmp/lifecycle-changed-files.txt || : > /tmp/lifecycle-changed-files.txt
+          fi
+          echo "REMNIC_LIFECYCLE_CHANGED_FILES_PATH=/tmp/lifecycle-changed-files.txt" >> "$GITHUB_ENV"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+      - name: Lifecycle-matrix coverage gate
+        run: node scripts/lifecycle-matrix/check-coverage.mjs
+
+      - name: Lifecycle-matrix coverage self-test
+        run: node --test tests/lifecycle-matrix-coverage.test.mjs
+
   # Aggregator that preserves the required status-check context `quality`
   # (branch ruleset) while the real work runs in parallel jobs above. Fails
   # unless every dependency succeeded — skipped/cancelled deps are failures,
   # never silently accepted.
   quality:
-    needs: [checks, tests, build-artifacts]
+    needs: [checks, tests, build-artifacts, lifecycle-matrix]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5

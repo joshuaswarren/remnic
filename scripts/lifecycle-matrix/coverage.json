@@ -1,0 +1,41 @@
+{
+  "$comment": "Lifecycle scenario-matrix coverage manifest (issue #1993, umbrella #1988 phase 5, decisions A + C). `lifecycleManifest` is the set of lifecycle-critical path globs that trigger the `lifecycle-matrix` CI gate (gitignore-subset syntax, repo-root-relative, forward slashes). Every manifest glob MUST be classified as either `coverage` (mapped to a registered LifecycleSubject in packages/remnic-core/src/testing/subjects) or `grandfathered` (warn-only, ratchet: may shrink, never grow). A PR that touches a covered path passes; a manifest glob with no mapping and no grandfather entry fails the gate. See packages/remnic-core/src/testing/lifecycle-matrix.ts.",
+  "lifecycleManifest": [
+    "src/orchestration/**",
+    "src/buffer.ts",
+    "src/storage.ts",
+    "src/session-toggles.ts",
+    "packages/remnic-core/src/orchestration/**",
+    "packages/remnic-core/src/buffer.ts",
+    "packages/remnic-core/src/storage.ts",
+    "packages/remnic-core/src/session-toggles.ts",
+    "packages/remnic-core/src/lifecycle.ts",
+    "packages/remnic-core/src/qmd-recall-cache.ts",
+    "packages/remnic-core/src/access-observe-write-surface.ts",
+    "packages/remnic-core/src/session-identity.ts",
+    "packages/remnic-core/src/session-integrity.ts",
+    "packages/remnic-core/src/session-observer-bands.ts",
+    "packages/remnic-core/src/session-observer-state.ts",
+    "packages/remnic-core/src/session-transcript-migration.ts"
+  ],
+  "coverage": {
+    "src/orchestration/**": "extraction-lifecycle",
+    "src/buffer.ts": "extraction-lifecycle",
+    "src/storage.ts": "extraction-lifecycle",
+    "src/session-toggles.ts": "serialized-write-chain",
+    "packages/remnic-core/src/orchestration/**": "extraction-lifecycle",
+    "packages/remnic-core/src/buffer.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/session-toggles.ts": "serialized-write-chain"
+  },
+  "grandfathered": [
+    "packages/remnic-core/src/lifecycle.ts",
+    "packages/remnic-core/src/qmd-recall-cache.ts",
+    "packages/remnic-core/src/access-observe-write-surface.ts",
+    "packages/remnic-core/src/session-identity.ts",
+    "packages/remnic-core/src/session-integrity.ts",
+    "packages/remnic-core/src/session-observer-bands.ts",
+    "packages/remnic-core/src/session-observer-state.ts",
+    "packages/remnic-core/src/session-transcript-migration.ts"
+  ]
+}
