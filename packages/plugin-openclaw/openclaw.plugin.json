@@ -227,7 +227,11 @@
       },
       "activeRecallPromptOverride": {
         "type": "string",
-        "description": "Optional complete prompt override for the active-recall builder."
+        "description": "Legacy optional custom instruction for the active-recall builder."
+      },
+      "activeRecallPromptReplacement": {
+        "type": "string",
+        "description": "Optional complete replacement prompt for the active-recall builder."
       },
       "activeRecallPromptStyle": {
         "type": "string",

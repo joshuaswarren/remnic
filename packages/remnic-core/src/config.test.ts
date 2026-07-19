@@ -430,6 +430,41 @@ test("parseConfig activeRecallCacheTtlMs=500 preserves the explicit positive ttl
   assert.equal(result.activeRecallCacheTtlMs, 500);
 });
 
+test("parseConfig separates legacy custom instruction from full prompt replacement", () => {
+  assert.equal(
+    parseConfig({ activeRecallPromptOverride: "  legacy guidance  " }).activeRecallCustomInstruction,
+    "legacy guidance",
+  );
+  assert.equal(
+    parseConfig({ activeRecallPromptOverride: "  legacy guidance  " }).activeRecallPromptOverride,
+    "legacy guidance",
+  );
+  assert.equal(
+    parseConfig({ activeRecallPromptReplacement: "  Use the evidence.  " })
+      .activeRecallPromptReplacement,
+    "Use the evidence.",
+  );
+  const combined = parseConfig({
+    activeRecallPromptOverride: "legacy guidance",
+    activeRecallPromptReplacement: "replacement prompt",
+  });
+  assert.equal(combined.activeRecallCustomInstruction, "legacy guidance");
+  assert.equal(combined.activeRecallPromptOverride, "legacy guidance");
+  assert.equal(combined.activeRecallPromptReplacement, "replacement prompt");
+  for (const [key, value] of [
+    ["activeRecallPromptOverride", false],
+    ["activeRecallPromptReplacement", 0],
+    ["activeRecallPromptReplacement", {}],
+    ["activeRecallPromptOverride", []],
+  ] as const) {
+    assert.throws(
+      () => parseConfig({ [key]: value } as never),
+      new RegExp(`${key} must be a string`),
+      `invalid ${key} ${JSON.stringify(value)} must be rejected`,
+    );
+  }
+});
+
 test("parseConfig validates commitmentDecayDays as a positive integer", () => {
   assert.equal(parseConfig({}).commitmentDecayDays, 90);
   assert.equal(parseConfig({ commitmentDecayDays: 30 }).commitmentDecayDays, 30);

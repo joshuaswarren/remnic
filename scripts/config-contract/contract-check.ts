@@ -84,16 +84,34 @@ interface JsonSchemaNode {
   [key: string]: unknown;
 }
 
-/** Flatten a configSchema into dotted paths + the set of OPAQUE prefixes. */
+/** Flatten a configSchema into dotted paths + prefixes for arbitrary objects. */
 function flattenSchema(schema: JsonSchemaNode): { paths: Set<string>; opaque: Set<string> } {
   const paths = new Set<string>();
   const opaque = new Set<string>();
-  const walk = (node: JsonSchemaNode, prefix: string[]): void => {
-    const props = node.properties;
-    if (!props || typeof props !== "object") {
-      if (prefix.length > 0) opaque.add(prefix.join("."));
-      return;
+  const walk = (node: JsonSchemaNode, prefix: string[], fromComposition = false): void => {
+    for (const branchName of ["anyOf", "oneOf", "allOf"]) {
+      const branches = node[branchName];
+      if (Array.isArray(branches)) {
+        for (const branch of branches) {
+          if (branch && typeof branch === "object") {
+            walk(branch as JsonSchemaNode, prefix, true);
+          }
+        }
+      }
     }
+    const schemaType = node.type;
+    const isObjectType =
+      schemaType === "object" || (Array.isArray(schemaType) && schemaType.includes("object"));
+    const props = node.properties;
+    if (
+      prefix.length > 0 &&
+      isObjectType &&
+      node.additionalProperties !== false &&
+      (!props || fromComposition)
+    ) {
+      opaque.add(prefix.join("."));
+    }
+    if (!props || typeof props !== "object") return;
     for (const [key, child] of Object.entries(props)) {
       const keyPath = [...prefix, key];
       paths.add(keyPath.join("."));
@@ -104,23 +122,24 @@ function flattenSchema(schema: JsonSchemaNode): { paths: Set<string>; opaque: Se
   return { paths, opaque };
 }
 
-/** A parsed path is schema-covered when the schema declares it or an opaque ancestor absorbs it. */
+/** A parsed path is schema-covered when declared or absorbed by an arbitrary object. */
 function coveredBySchema(keyPath: string, schema: { paths: Set<string>; opaque: Set<string> }): boolean {
   if (schema.paths.has(keyPath)) return true;
   const segments = keyPath.split(".");
-  for (let i = segments.length - 1; i >= 1; i--) {
-    const prefix = segments.slice(0, i).join(".");
-    if (schema.opaque.has(prefix)) return true;
-    // A declared ancestor WITHOUT nested properties also absorbs deeper paths.
-    if (schema.paths.has(prefix) && !schema.paths.has(`${prefix}.${segments[i]}`)) {
-      // Ancestor exists; whether it absorbs depends on it being opaque —
-      // opaque set already covers that. A structured ancestor that simply
-      // lacks this child is NOT coverage.
-      break;
-    }
+  for (let i = segments.length - 1; i >= 1; i -= 1) {
+    if (schema.opaque.has(segments.slice(0, i).join("."))) return true;
   }
   return false;
 }
+
+function isUnderOpaqueSchema(keyPath: string, schema: { opaque: Set<string> }): boolean {
+  const segments = keyPath.split(".");
+  for (let i = segments.length - 1; i >= 1; i -= 1) {
+    if (schema.opaque.has(segments.slice(0, i).join("."))) return true;
+  }
+  return false;
+}
+
 
 /** Backticked dotted identifiers mentioned in the docs. */
 function collectDocsKeys(docsText: string): Set<string> {
@@ -199,12 +218,12 @@ export function runContractCheck(options: {
   // B. Dead schema: a schema path must have a parser counterpart at the same
   // path or below it. Matching an arbitrary parsed ancestor is too broad:
   // `block.enabled` must not make a manifest-only `block.typo` appear live.
-  // Opaque schema leaves are handled by `coveredBySchema` for the parsed-key
-  // direction; they still need a parser path here so structured siblings
-  // cannot hide behind their parent.
+  // Opaque schema branches absorb their documented properties; closed schema
+  // branches still require a parser counterpart for every declared path.
   for (const schema of schemas) {
     const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
     for (const schemaPath of schema.flat.paths) {
+      if (isUnderOpaqueSchema(schemaPath, schema.flat)) continue;
       const hasParsedCounterpart = [...parsedKeys].some(
         (parsedKey) => parsedKey === schemaPath || parsedKey.startsWith(`${schemaPath}.`),
       );

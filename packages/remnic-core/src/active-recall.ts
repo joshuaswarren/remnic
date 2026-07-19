@@ -30,7 +30,7 @@ export interface ActiveRecallConfig {
   queryMode: ActiveRecallQueryMode;
   promptStyle: ActiveRecallPromptStyle;
   customInstruction: string | null;
-  promptOverride: string | null;
+  promptReplacement: string | null;
   promptAppend: string | null;
   maxSummaryChars: number;
   recentUserTurns: number;
@@ -134,7 +134,7 @@ function buildCacheKey(input: ActiveRecallInput, config: ActiveRecallConfig, que
     queryMode: config.queryMode,
     promptStyle: config.promptStyle,
     customInstruction: config.customInstruction,
-    promptOverride: config.promptOverride,
+    promptReplacement: config.promptReplacement,
     promptAppend: config.promptAppend,
     maxSummaryChars: config.maxSummaryChars,
     entityGraphDepth: config.entityGraphDepth,
@@ -264,9 +264,9 @@ export function buildActiveRecallPrompt(params: {
   daySummary: string | null;
   recallExplain: string | null;
 }): string {
-  const promptOverride = params.config.promptOverride?.trim();
-  if (promptOverride) {
-    return promptOverride;
+  const promptReplacement = params.config.promptReplacement?.trim();
+  if (promptReplacement) {
+    return promptReplacement;
   }
 
   const sections = [

@@ -24,7 +24,10 @@ OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `activeRecallPromptAppend` | `(unset)` | Optional guidance appended to the active-recall prompt |
-| `activeRecallPromptOverride` | `(unset)` | Optional complete replacement prompt for the active-recall builder |
+| `activeRecallPromptOverride` | `(unset)` | Legacy custom instruction retained for compatibility |
+| `activeRecallPromptReplacement` | `(unset)` | Optional complete replacement prompt for the active-recall builder |
+
+`activeRecallPromptReplacement` takes precedence over `activeRecallPromptOverride` when both are set.
 
 ## External connectors
 

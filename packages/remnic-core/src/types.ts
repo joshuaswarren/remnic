@@ -1171,6 +1171,7 @@ export interface PluginConfig {
   activeRecallQueryMode: ActiveRecallQueryMode;
   activeRecallPromptStyle: ActiveRecallPromptStyle;
   activeRecallCustomInstruction: string | null;
+  activeRecallPromptReplacement: string | null;
   activeRecallPromptOverride: string | null;
   activeRecallPromptAppend: string | null;
   activeRecallMaxSummaryChars: number;
