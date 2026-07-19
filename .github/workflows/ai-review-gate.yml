@@ -41,6 +41,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Checkout review helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
       - name: Check AI review bot activity
         uses: actions/github-script@v7
         env:
@@ -112,82 +117,17 @@ jobs:
                 );
             }
 
-            // --- AI-review scope fence (issue #1991, umbrella #1988) -------
-            // Inline mirror of scripts/effective-diff.mjs (tested there —
-            // keep the two copies in sync, same convention as the gate lib).
-            const IGNORE_MANIFEST_PATH = '.github/ai-review-ignore';
-            const MANIFEST_UNSUPPORTED_PREFIXES = ['!', '/'];
+            // Keep effective-diff semantics in the tested repository module. The
+            // workflow imports the base revision so a PR cannot change the
+            // evaluator that decides whether its own review is required.
+            const { pathToFileURL } = require("node:url");
+            const {
+              parseIgnoreManifest,
+              splitEffectiveDiff,
+              isArtifactOnlyPullRequest,
+            } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/effective-diff.mjs`).href);
+            const IGNORE_MANIFEST_PATH = ".github/ai-review-ignore";
 
-            function parseIgnoreManifest(text) {
-              if (typeof text !== 'string') throw new Error('ai-review-ignore manifest must be a string');
-              const patterns = [];
-              const lines = text.split('\n');
-              for (let i = 0; i < lines.length; i++) {
-                const raw = lines[i].trim();
-                if (raw.length === 0 || raw.startsWith('#')) continue;
-                for (const prefix of MANIFEST_UNSUPPORTED_PREFIXES) {
-                  if (raw.startsWith(prefix)) {
-                    throw new Error(`ai-review-ignore line ${i + 1}: unsupported pattern ${JSON.stringify(raw)}`);
-                  }
-                }
-                if (raw.includes('\\')) {
-                  throw new Error(`ai-review-ignore line ${i + 1}: use forward slashes`);
-                }
-                patterns.push(raw);
-              }
-              return patterns;
-            }
-
-            function patternToRegExp(pattern) {
-              const normalized = pattern.endsWith('/') ? `${pattern}**` : pattern;
-              let out = '';
-              let i = 0;
-              while (i < normalized.length) {
-                const ch = normalized[i];
-                if (ch === '*') {
-                  if (normalized[i + 1] === '*') {
-                    if (normalized[i + 2] === '/') { out += '(?:[^/]+/)*'; i += 3; }
-                    else { out += '.*'; i += 2; }
-                  } else { out += '[^/]*'; i += 1; }
-                  continue;
-                }
-                if (ch === '?') { out += '[^/]'; i += 1; continue; }
-                out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-                i += 1;
-              }
-              return new RegExp(`^${out}$`);
-            }
-
-            function isIgnoredPath(path, patterns) {
-              if (typeof path !== 'string' || path.length === 0) return false;
-              const normalized = path.replaceAll('\\', '/');
-              return patterns.some((pattern) => patternToRegExp(pattern).test(normalized));
-            }
-
-            function splitEffectiveDiff(files, patterns) {
-              const effective = [];
-              const ignored = [];
-              for (const entry of files) {
-                const filePath = typeof entry === 'string' ? entry : (entry?.filename ?? entry?.path ?? '');
-                if (typeof filePath !== 'string' || filePath.length === 0) {
-                  throw new Error(`splitEffectiveDiff: file entry has no usable path: ${JSON.stringify(entry)}`);
-                }
-                // Renames count as ignored only when BOTH sides are ignored —
-                // a source file renamed into an artifact path stays effective.
-                const previousPath = typeof entry === 'object' && typeof entry?.previous_filename === 'string'
-                  ? entry.previous_filename
-                  : null;
-                const entirelyIgnored = isIgnoredPath(filePath, patterns) &&
-                  (previousPath === null || isIgnoredPath(previousPath, patterns));
-                (entirelyIgnored ? ignored : effective).push(filePath);
-              }
-              return { effective, ignored };
-            }
-
-            function isArtifactOnlyPullRequest(files, patterns) {
-              if (!Array.isArray(files) || files.length === 0) return false;
-              return splitEffectiveDiff(files, patterns).effective.length === 0;
-            }
 
             // Load the manifest from the PR's BASE ref: a PR can never exempt
             // itself by editing the manifest in the same PR — pattern changes

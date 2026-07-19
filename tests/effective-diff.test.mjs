@@ -120,3 +120,11 @@ test("published bench inputs (profiles, baselines) are no longer ignored (rounds
   assert.equal(isIgnoredPath("packages/bench/baselines/coding-graph-baseline.json", patterns), false);
   assert.equal(isIgnoredPath("packages/bench/src/benchmarks/published/beam/artifacts/out.json", patterns), true);
 });
+
+test("AI review gate imports the tested effective-diff evaluator", () => {
+  const workflow = readFileSync(path.join(REPO_ROOT, ".github", "workflows", "ai-review-gate.yml"), "utf8");
+  assert.match(workflow, /scripts\/effective-diff\.mjs/);
+  assert.match(workflow, /actions\/checkout@v4/);
+  assert.doesNotMatch(workflow, /function splitEffectiveDiff\(/);
+  assert.doesNotMatch(workflow, /function patternToRegExp\(/);
+});

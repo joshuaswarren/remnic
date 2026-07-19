@@ -525,8 +525,9 @@ function isStaleResolvedCanonical(thread) {
  * - applyInheritance=false (shadow mode): the unresolved COUNT is byte-identical
  *   to today's raw unresolved count, but ledger/measurement data is still
  *   produced so a false-merge would be visible before enforcement flips.
- * - applyInheritance=true (enforce): a duplicate whose canonical is resolved no
- *   longer contributes an obligation; resolving the canonical auto-satisfies it.
+ * - applyInheritance=true (enforce): a duplicate whose canonical is resolved
+ *   contributes no obligation only after a gate-authored audit reply is present
+ *   or its id appears in `options.auditedDuplicateIds`.
  *
  * `wouldBeLostUniqueFindings` reports duplicates whose canonical is UNRESOLVED —
  * i.e. findings enforcement would still surface, proving no distinct finding is
@@ -534,6 +535,9 @@ function isStaleResolvedCanonical(thread) {
  */
 export function computeGuardObligations(threads, config = REVIEW_DEDUP_CONFIG, options = {}) {
   const applyInheritance = options.applyInheritance === true;
+  const auditedDuplicateIds = options.auditedDuplicateIds instanceof Set
+    ? options.auditedDuplicateIds
+    : new Set();
   const { records, duplicateCount } = dedupeThreads(threads, config);
   const byId = new Map(records.map((r) => [r.id, r]));
 
@@ -572,7 +576,7 @@ export function computeGuardObligations(threads, config = REVIEW_DEDUP_CONFIG, o
     }
     if (!applyInheritance) {
       if (!selfResolved) effectiveUnresolved.push(thread); // Shadow: preserve raw count.
-    } else if (!selfResolved && canonicalIsResolved && !hasGateReply(thread)) {
+    } else if (!selfResolved && canonicalIsResolved && !auditedDuplicateIds.has(record.id) && !hasGateReply(thread)) {
       // Enforce: a resolved canonical folds a duplicate ONLY with audit evidence
       // (the gate-authored reply). Without it, folding would let a transient or
       // read-only reply-post failure pass enforce with no gate-authored
