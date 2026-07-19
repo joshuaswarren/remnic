@@ -105,17 +105,16 @@ test("review-thread guard inline hasGateReply requires the Actions-bot author", 
   assert.match(workflow, /GATE_REPLY_AUTHOR_LOGINS\.has\(c\?\.author\?\.login \?\? ""\)/);
 });
 
-test("review-thread guard inline stripMarkup preserves bounded fenced code without HTML-stripping it", () => {
-  // Dropping fenced snippets collapses distinct findings that differ only in
-  // their code to identical prose -> false merge (codex P2). The inline mirror
-  // must keep bounded inner code AND flatten angle brackets so JSX/generics
-  // survive the later HTML pass, matching preserveFencedCode in review-dedup.mjs.
+test("review-thread guard inline protects and preserves bounded fenced code", () => {
+  // Fenced code is pulled to placeholders BEFORE the footer strip (so a fenced
+  // line starting with a footer phrase survives), kept bounded, and angle
+  // brackets flattened so JSX survives the HTML pass. Mirrors review-dedup.mjs.
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  const fence = workflow.match(/\.replace\(\/```\(\[\\s\\S\]\*\?\)```\/g,[^\n]*\)/);
-  assert.ok(fence, "guard must preserve fenced code via a replacer function");
-  assert.match(fence[0], /inner\.replace\(\/\^\[\^\\n\]\*\\n\/, ""\)/, "must drop the language line");
-  assert.match(fence[0], /\.replace\(\/\[<>\]\/g, " "\)/, "must flatten angle brackets so JSX survives");
-  assert.match(fence[0], /\.slice\(0, 200\)/, "must bound the preserved code");
+  assert.match(workflow, /body\.replace\(\/```\(\[\\s\\S\]\*\?\)```\/g,/, "fenced code must be matched");
+  assert.match(workflow, /fences\.push\(/, "fenced code must be pulled to a placeholder before the footer strip");
+  assert.match(workflow, /inner\.replace\(\/\^\[\^\\n\]\*\\n\/, ""\)/, "must drop the language line");
+  assert.match(workflow, /\.slice\(0, 200\)/, "must bound the preserved code");
+  assert.match(workflow, /\\u0000F\(\\d\+\)\\u0000/, "must restore fenced content after the footer strip");
   assert.doesNotMatch(workflow, /\.replace\(\/```\[\\s\\S\]\*\?```\/g, " "\)/, "must not drop fenced code to blank");
 });
 
