@@ -21,3 +21,24 @@ test("review-thread guard excludes CodeQL bot review-thread authors", () => {
   // The gating branch must exclude non-dedup authors via the concrete expression.
   assert.match(workflow, /return !NON_DEDUP_LOGINS\.has\(loginOf\(t\) \?\? ""\);/);
 });
+
+test("review-thread guard inline mirror excludes resolved+outdated threads from canonicals", () => {
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+
+  // The stale-canonical predicate must mirror isStaleResolvedCanonical in
+  // scripts/review-dedup.mjs so a resolved+outdated thread cannot anchor a
+  // later active finding (codex P2 false-merge fix).
+  assert.match(
+    workflow,
+    /const isStaleCanonical = \(t\) => t\.isResolved === true && t\.isOutdated === true;/,
+  );
+
+  // Both canonical-push sites (detached/non-dedup branch and the new-canonical
+  // else branch) must be guarded by the predicate — mirror drift on either
+  // reopens the hiding bug.
+  assert.match(
+    workflow,
+    /if \(!NON_DEDUP_LOGINS\.has\(loginOf\(t\) \?\? ""\) && !isStaleCanonical\(t\)\) \{/,
+  );
+  assert.match(workflow, /if \(!isStaleCanonical\(t\)\) canonicals\.push\(\{ id: t\.id, anchor, body \}\);/);
+});

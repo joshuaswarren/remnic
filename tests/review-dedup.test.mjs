@@ -323,6 +323,34 @@ test("a real finding is never folded into a CodeQL thread (CodeQL is not a canon
   assert.equal(enforce.effectiveUnresolvedCount, 1, "real finding still gates; CodeQL never counts");
 });
 
+test("a resolved+outdated canonical never anchors a later active finding (stale canonical)", () => {
+  // An earlier thread was resolved, then its anchor's code changed (isOutdated).
+  const staleCanonical = {
+    ...mkThread({
+      id: 401, path: "packages/coding-graph/src/lsp/reindex.ts", startLine: 210, line: 214,
+      author: "coderabbitai", body: firstBody(dup1923A1), isResolved: true,
+    }),
+    isOutdated: true,
+  };
+  // A NEW active finding lands on the same range with similar text.
+  const laterActive = mkThread({
+    id: 402, path: "packages/coding-graph/src/lsp/reindex.ts", startLine: 211, line: 215,
+    author: "chatgpt-codex-connector", body: firstBody(dup1923A2), isResolved: false,
+  });
+  const { records, duplicateCount } = dedupeThreads([staleCanonical, laterActive]);
+  assert.equal(duplicateCount, 0, "the active finding must not fold into a stale (resolved+outdated) canonical");
+  assert.equal(
+    records.find((r) => r.id === "t402").canonicalId,
+    "t402",
+    "active finding stays its own canonical",
+  );
+  // Under enforcement the stale resolution must NOT satisfy the new finding.
+  const enforce = computeGuardObligations([staleCanonical, laterActive], REVIEW_DEDUP_CONFIG, {
+    applyInheritance: true,
+  });
+  assert.equal(enforce.effectiveUnresolvedCount, 1, "active finding still gates; stale resolution cannot satisfy it");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);

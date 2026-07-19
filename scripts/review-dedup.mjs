@@ -250,7 +250,12 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
       // finding can anchor later duplicates. A CodeQL/non-dedup thread must NOT
       // — the guard excludes it entirely, so folding a real finding into it
       // would silently hide that finding (the failure mode this design fears).
-      if (!isNonDedupThread(thread)) canonicals.push({ id, anchor, body });
+      // A resolved+outdated thread must NOT anchor either: its anchor's code
+      // changed, so a NEW active finding on the same range must not inherit its
+      // stale resolution (codex P2 — false merge via a stale canonical).
+      if (!isNonDedupThread(thread) && !isStaleResolvedCanonical(thread)) {
+        canonicals.push({ id, anchor, body });
+      }
       continue;
     }
 
@@ -269,7 +274,10 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
       records.push({ id, thread, canonicalId: match.id, similarity: matchSimilarity });
     } else {
       records.push({ id, thread, canonicalId: id, similarity: null });
-      canonicals.push({ id, anchor, body });
+      // Skip anchoring later duplicates to a resolved+outdated thread (see the
+      // detached-branch note above): stale resolution must not fold in a new
+      // active finding on the same range.
+      if (!isStaleResolvedCanonical(thread)) canonicals.push({ id, anchor, body });
     }
   }
 
@@ -280,6 +288,13 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
 
 function isThreadResolved(thread) {
   return thread?.isResolved === true;
+}
+
+// A resolved thread whose anchor's code has since changed (isOutdated) must not
+// serve as a canonical: a NEW active finding on the same file/range would
+// otherwise inherit its stale resolution and pass the merge gate unresolved.
+function isStaleResolvedCanonical(thread) {
+  return isThreadResolved(thread) && thread?.isOutdated === true;
 }
 
 /**

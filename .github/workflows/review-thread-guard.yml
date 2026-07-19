@@ -231,6 +231,11 @@ jobs:
               const p = Date.parse(t.comments?.nodes?.[0]?.createdAt ?? t.createdAt ?? "");
               return Number.isFinite(p) ? p : 0;
             };
+            // A resolved+outdated thread must not anchor later duplicates: its
+            // anchor's code changed, so a NEW active finding on the same range
+            // must not inherit its stale resolution (mirrors isStaleResolvedCanonical
+            // in scripts/review-dedup.mjs — codex P2 false-merge fix).
+            const isStaleCanonical = (t) => t.isResolved === true && t.isOutdated === true;
             const ordered = threads
               .map((t, i) => ({ t, i }))
               .sort((x, y) => createdOf(x.t) - createdOf(y.t) || x.i - y.i)
@@ -245,8 +250,9 @@ jobs:
                 // Detached threads stay canonical candidates (a distinct finding
                 // can anchor later duplicates); CodeQL/non-dedup threads must NOT
                 // — the guard excludes them, so folding a real finding into a
-                // CodeQL "canonical" would hide it. Mirrors dedupeThreads.
-                if (!NON_DEDUP_LOGINS.has(loginOf(t) ?? "")) {
+                // CodeQL "canonical" would hide it. Resolved+outdated threads must
+                // NOT anchor either (stale resolution). Mirrors dedupeThreads.
+                if (!NON_DEDUP_LOGINS.has(loginOf(t) ?? "") && !isStaleCanonical(t)) {
                   canonicals.push({ id: t.id, anchor, body });
                 }
                 continue;
@@ -265,7 +271,7 @@ jobs:
                 records.push({ id: t.id, t, canonicalId: match.id, similarity: best });
               } else {
                 records.push({ id: t.id, t, canonicalId: t.id, similarity: null });
-                canonicals.push({ id: t.id, anchor, body });
+                if (!isStaleCanonical(t)) canonicals.push({ id: t.id, anchor, body });
               }
             }
             const dupRecords = records.filter((r) => r.canonicalId !== r.id);
