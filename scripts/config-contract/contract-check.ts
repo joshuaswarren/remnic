@@ -134,16 +134,19 @@ function flattenSchema(schema: JsonSchemaNode): {
   paths: Set<string>;
   opaque: Set<string>;
   arrayPrefixes: Set<string>;
+  compositionTolerated: Set<string>;
 } {
   const paths = new Set<string>();
   const opaque = new Set<string>();
   const arrayPrefixes = new Set<string>();
+  const compositionTolerated = new Set<string>();
   const walk = (node: JsonSchemaNode, prefix: string[], fromAlternative = false): void => {
-    // anyOf/oneOf branches describe ALTERNATIVE shapes: a property in one branch
-    // may legitimately have no parser counterpart, so their object descendants
-    // are absorbed rather than dead-schema-checked. allOf is an INTERSECTION —
-    // every branch applies — so its properties are enforced like normal object
-    // properties, surfacing manifest-only siblings (issue #1990 review).
+    // anyOf/oneOf branches are ALTERNATIVE shapes: their declared props are
+    // recorded (so a parsed key matching one is schema-covered) but marked
+    // composition-tolerated so the dead-schema pass does not demand a parser
+    // counterpart. allOf is an INTERSECTION — enforced like normal properties.
+    // Opacity is NOT applied to the parent prefix, so a real sibling property of
+    // a block that also carries an anyOf branch still surfaces drift (#1990).
     for (const branchName of ["anyOf", "oneOf"]) {
       const branches = node[branchName];
       if (Array.isArray(branches)) {
@@ -169,15 +172,13 @@ function flattenSchema(schema: JsonSchemaNode): {
       typeof addl === "object" &&
       !Array.isArray(addl) &&
       !!(addl as JsonSchemaNode).properties;
-    // Free-form object (additionalProperties allowed, no declared child shape) →
-    // opaque. A typed map (additionalProperties is a shaped object) is NOT
-    // opaque; its value fields flatten under a `*` wildcard below so map-child
-    // drift stays visible (issue #1990 review).
+    // Genuine free-form object (additionalProperties allowed, no declared child
+    // shape) → opaque. A typed map flattens its value fields under `*` below.
     if (
       prefix.length > 0 &&
       isObjectType &&
       node.additionalProperties !== false &&
-      (!props || fromAlternative) &&
+      !props &&
       !isTypedMap
     ) {
       opaque.add(prefix.join("."));
@@ -202,13 +203,14 @@ function flattenSchema(schema: JsonSchemaNode): {
     }
     if (!props || typeof props !== "object") return;
     for (const [key, child] of Object.entries(props)) {
-      const keyPath = [...prefix, key];
-      paths.add(keyPath.join("."));
-      if (child && typeof child === "object") walk(child, keyPath);
+      const keyPath = [...prefix, key].join(".");
+      paths.add(keyPath);
+      if (fromAlternative) compositionTolerated.add(keyPath);
+      if (child && typeof child === "object") walk(child, [...prefix, key], fromAlternative);
     }
   };
   walk(schema, []);
-  return { paths, opaque, arrayPrefixes };
+  return { paths, opaque, arrayPrefixes, compositionTolerated };
 }
 
 /** A parsed path is schema-covered when declared or absorbed by an arbitrary object. */
@@ -378,6 +380,9 @@ export function runContractCheck(options: {
     for (const schemaPath of schema.flat.paths) {
       if (isUnderOpaqueSchema(schemaPath, schema.flat)) continue;
       if (isUnderUnparsedArray(schemaPath, schema.flat.arrayPrefixes, parsedKeys)) continue;
+      // anyOf/oneOf alternative-shape props: recorded/covered but not required to
+      // have a parser counterpart (issue #1990 review).
+      if (schema.flat.compositionTolerated.has(schemaPath)) continue;
       const hasParsedCounterpart = [...parsedKeys].some(
         (parsedKey) => parsedKey === schemaPath || parsedKey.startsWith(`${schemaPath}.`),
       );

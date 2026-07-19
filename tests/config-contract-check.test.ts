@@ -489,7 +489,11 @@ test("composition: allOf props are enforced, anyOf/oneOf alternatives are absorb
         },
         altBlock: {
           type: "object",
-          // anyOf alternative `alt` is a shape the parser may not implement → absorbed.
+          // A real declared sibling must still be enforced (dead-schema) even
+          // though the block also carries an anyOf branch (issue #1990 review):
+          // the alternative's opacity must not swallow the parent's siblings.
+          properties: { realSibling: { type: "string" } },
+          // anyOf alternative `alt` is a shape the parser may not implement → tolerated.
           anyOf: [{ type: "object", properties: { alt: { type: "string" } } }],
         },
       },
@@ -499,6 +503,7 @@ test("composition: allOf props are enforced, anyOf/oneOf alternatives are absorb
     const result = fixture.run();
     const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
     assert.ok(kinds.some((k) => k.startsWith("dead-schema:combo.enforced@")), JSON.stringify(kinds));
+    assert.ok(kinds.some((k) => k.startsWith("dead-schema:altBlock.realSibling@")), JSON.stringify(kinds));
     assert.equal(kinds.some((k) => k.startsWith("dead-schema:altBlock.alt@")), false, JSON.stringify(kinds));
   } finally {
     fixture.cleanup();
