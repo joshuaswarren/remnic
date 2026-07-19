@@ -7029,15 +7029,15 @@ export function registerCli(
           const namespace = typeof options.namespace === "string" && options.namespace.trim().length > 0
             ? options.namespace.trim()
             : undefined;
-          // Recover at the ROUTER-RESOLVED storage dir (#2033 finding 2): a
-          // namespace store may live at a tokenized namespaces/<token>/ path that
-          // differs from the raw namespaces/<ns>/ path resolveMemoryDirForNamespace
-          // builds; passing the raw path would reject the tokenized storage. The
-          // resolver still runs to validate the segment / unsupported override.
-          const validatedMemoryDir = await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true });
-          const storage = namespace ? await orchestrator.getStorageForNamespace(namespace) : orchestrator.storage;
+          // Route BOTH the undefined/default and explicit namespace through the
+          // router (#2033 finding 2): a store may live at a tokenized
+          // namespaces/<token>/ path, and the default can migrate off the legacy
+          // root, so storage.dir keeps the rebuild aligned with the namespace
+          // router and secure store. The raw resolver still validates the segment.
+          await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true });
+          const storage = await orchestrator.getStorageForNamespace(namespace);
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
-            memoryDir: namespace ? storage.dir : validatedMemoryDir,
+            memoryDir: storage.dir,
             write: options.write === true,
             storage,
           });
