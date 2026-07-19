@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { parseConfig, resolveRemnicConfigRecord, drainPendingImpressionsForOfflineSync } from "@remnic/core";
+import { parseConfig, resolveRemnicConfigRecord, drainPendingImpressionsForOfflineSync, type PluginConfig } from "@remnic/core";
 import { LastRecallStore } from "@remnic/core/recall-state";
 
 /**
@@ -16,8 +16,12 @@ export interface OfflineImpressionRotation {
 /**
  * Resolve the recall-impression rotation bounds the daemon writer uses so a
  * standalone CLI push drains through an identically-configured store (#2033).
- * Uses the same config parser as the writer; unparseable config surfaces loudly
- * rather than silently falling back to LastRecallStore defaults.
+ * Uses the same config parser as the writer, but a config read/parse or
+ * validation failure aborts with a GENERIC, path-scoped error - never the
+ * underlying error's message. Both `JSON.parse` (Node quotes surrounding input)
+ * and `parseConfig` (embeds offending values, e.g. `got "<value>"`) can leak
+ * raw config secrets such as API keys into a user-facing CLI error (#2033), so
+ * the detail is dropped rather than surfaced.
  */
 export function resolveOfflineImpressionRotation(configPath: string): OfflineImpressionRotation {
   let raw: unknown;
@@ -25,13 +29,19 @@ export function resolveOfflineImpressionRotation(configPath: string): OfflineImp
     raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(`cannot read recall-impression rotation from ${configPath}: ${error.message}`);
-    }
-    throw error;
+  } catch {
+    throw new Error(
+      `cannot read recall-impression rotation from ${configPath}: config file could not be read as JSON`,
+    );
   }
-  const config = parseConfig(resolveRemnicConfigRecord(raw));
+  let config: PluginConfig;
+  try {
+    config = parseConfig(resolveRemnicConfigRecord(raw));
+  } catch {
+    throw new Error(
+      `cannot read recall-impression rotation from ${configPath}: config failed validation`,
+    );
+  }
   return {
     impressionsRotateBytes: config.recallImpressionsRotateBytes,
     impressionsRotateKeep: config.recallImpressionsRotateKeep,

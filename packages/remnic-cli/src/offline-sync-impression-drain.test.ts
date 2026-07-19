@@ -314,3 +314,129 @@ test("offline sync aborts (never pushes) when the pending impression drain canno
     await rm(root, { recursive: true, force: true });
   }
 });
+
+const LIFECYCLE_LEDGER_REL = "state/memory-lifecycle-ledger.jsonl";
+const LIFECYCLE_PENDING_REL = "state/memory-lifecycle-ledger.jsonl.pending.d";
+
+// Write one durable pending memory-lifecycle spill exactly as
+// appendLifecycleEventsSerialized() does when the ledger lock is held (#2033): a
+// `<uuid>.jsonl` file inside the offline-sync-EXCLUDED pending dir. The nonce
+// proves this specific append-only row was folded rather than dropped.
+async function seedPendingLifecycle(root: string): Promise<string> {
+  const nonce = randomUUID();
+  const line = `${JSON.stringify({ type: "promotion", memoryId: "mem-1", timestamp: "2026-01-01T00:00:00.000Z", nonce })}\n`;
+  const pendingDir = path.join(root, LIFECYCLE_PENDING_REL);
+  await mkdir(pendingDir, { recursive: true });
+  await writeFile(path.join(pendingDir, `${randomUUID()}.jsonl`), line, "utf-8");
+  return nonce;
+}
+
+test("offline sync folds pending lifecycle spills before building the push snapshot (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-inline-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    // Only the excluded lifecycle pending spill exists. If the snapshot were
+    // built before the lifecycle drain, this promotion row would be stranded in
+    // the excluded pending dir and dropped on a push-then-discard.
+    const nonce = await seedPendingLifecycle(root);
+    const statePath = path.join(root, ".offline-sync", "state", "test.json");
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [],
+    });
+
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        const request = JSON.parse(String(init?.body ?? "{}")) as { changeset?: OfflineSyncChangeset };
+        return new Response(JSON.stringify({
+          namespace: "generalist",
+          appliedUpserts: request.changeset?.changes.length ?? 0,
+          appliedDeletes: 0,
+          skipped: 0,
+          conflicts: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify(EMPTY_REMOTE_SNAPSHOT), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    await runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+
+    const pendingEntries = await readdir(path.join(root, LIFECYCLE_PENDING_REL)).catch(() => [] as string[]);
+    assert.deepEqual(pendingEntries, [], "every pending lifecycle spill must be folded and finalized");
+    const activeContent = await readFile(path.join(root, LIFECYCLE_LEDGER_REL), "utf-8");
+    assert.ok(activeContent.includes(nonce), "folded lifecycle row must land in the synced active ledger");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync aborts (never pushes) when the lifecycle drain cannot complete (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-abort-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedPendingLifecycle(root);
+    // The active ledger path is a DIRECTORY, so the fold's append fails on every
+    // attempt: the durable row can never be committed, so the drain aborts rather
+    // than let runOfflineSyncOnce build and push a snapshot that omits it.
+    await mkdir(path.join(root, LIFECYCLE_LEDGER_REL), { recursive: true });
+
+    const statePath = path.join(root, ".offline-sync", "state", "test.json");
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [],
+    });
+
+    let applyCalled = false;
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        applyCalled = true;
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        runOfflineSyncOnce({
+          memoryDir: root,
+          remoteUrl: "http://remnic.test",
+          token: "test-token",
+          namespace: "generalist",
+          includeTranscripts: true,
+          statePath,
+          statePathExplicit: true,
+          impressionsRotateBytes: 0,
+          impressionsRotateKeep: 5,
+        }),
+      /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+      "runOfflineSyncOnce aborts when the lifecycle drain cannot complete",
+    );
+    assert.equal(applyCalled, false, "no snapshot was pushed after the lifecycle drain aborted");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -138,6 +138,7 @@ import {
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
   buildOfflineSyncChangesetFromSnapshot,
+  drainPendingLifecycleForOfflineSync,
   compileOfflineSyncExcludeGlobs,
   buildOfflineSyncSnapshotFromBase,
   defaultOfflineSyncStatePath,
@@ -9049,6 +9050,12 @@ export async function runOfflineSyncOnce(options: {
   const storageIo = await createOfflineStorageIo(options.memoryDir);
   const localSourceId = localOfflineSourceId(options.memoryDir);
   await drainOfflineSyncImpressions(options.memoryDir, options);
+  // Fold pending memory-lifecycle spills into the active ledgers before building
+  // any push snapshot (#2033). The default exclude globs keep the pending queue
+  // out of the push, and every snapshot build below reads from this same
+  // memoryDir, so one drain here covers them all; a deferred/failed drain aborts
+  // the sync rather than pushing a snapshot that omits durable lifecycle rows.
+  await drainPendingLifecycleForOfflineSync(options.memoryDir);
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
