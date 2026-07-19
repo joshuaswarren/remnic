@@ -303,6 +303,26 @@ test("CodeQL threads are never deduplicated", () => {
   assert.equal(duplicateCount, 0);
 });
 
+test("a real finding is never folded into a CodeQL thread (CodeQL is not a canonical candidate)", () => {
+  // CodeQL files first on the range, then a real reviewer files the same finding.
+  const codeql = mkThread({
+    id: 311, path: "packages/coding-graph/src/lsp/reindex.ts", startLine: 210, line: 214,
+    author: "github-advanced-security", body: firstBody(dup1923A1), isResolved: false,
+  });
+  const realFinding = mkThread({
+    id: 312, path: "packages/coding-graph/src/lsp/reindex.ts", startLine: 211, line: 215,
+    author: "chatgpt-codex-connector", body: firstBody(dup1923A2), isResolved: false,
+  });
+  const { records, duplicateCount } = dedupeThreads([codeql, realFinding]);
+  assert.equal(duplicateCount, 0, "the real finding must not become a duplicate of a CodeQL thread");
+  assert.equal(records.find((r) => r.id === "t312").canonicalId, "t312", "real finding stays its own canonical");
+  // Under enforcement it must still gate — a CodeQL 'canonical' cannot hide it.
+  const enforce = computeGuardObligations([codeql, realFinding], REVIEW_DEDUP_CONFIG, {
+    applyInheritance: true,
+  });
+  assert.equal(enforce.effectiveUnresolvedCount, 1, "real finding still gates; CodeQL never counts");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);

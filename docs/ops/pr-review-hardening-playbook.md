@@ -348,8 +348,8 @@ unenforced prose rules).
 
 ### What the dedup guard does
 
-`scripts/review-dedup.mjs` (unit-tested against fixtures harvested from the real
-#1923 and #1852 duplicate threads) is mirrored inline in
+`scripts/review-dedup.mjs` (unit-tested against fixtures harvested from the
+real #1923 and #1852 duplicate threads) is mirrored inline in
 `.github/workflows/review-thread-guard.yml`. After the guard fetches a PR's
 review threads it normalizes each finding (badge/markup/feedback footers
 stripped), fingerprints the first comment with a deterministic lexical shingle

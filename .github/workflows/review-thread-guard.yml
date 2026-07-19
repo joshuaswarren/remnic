@@ -76,7 +76,11 @@ jobs:
                         startLine
                         originalLine
                         originalStartLine
-                        comments(first: 30) {
+                        comments(first: 100) {
+                          pageInfo {
+                            hasNextPage
+                            endCursor
+                          }
                           nodes {
                             path
                             body
@@ -101,6 +105,38 @@ jobs:
               threads = threads.concat(conn.nodes || []);
               if (!conn.pageInfo?.hasNextPage) break;
               after = conn.pageInfo.endCursor;
+            }
+            // Page each thread's comments so a `not-a-duplicate` detach reply or
+            // the gate's idempotency marker on a long thread (>100 comments) is
+            // never missed — detach detection and hasGateReply scan every reply.
+            const commentPageQuery = `
+              query($id: ID!, $after: String) {
+                node(id: $id) {
+                  ... on PullRequestReviewThread {
+                    comments(first: 100, after: $after) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        path
+                        body
+                        databaseId
+                        author { login }
+                        url
+                        createdAt
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            for (const t of threads) {
+              let pageInfo = t.comments?.pageInfo;
+              while (pageInfo?.hasNextPage) {
+                const more = await github.graphql(commentPageQuery, { id: t.id, after: pageInfo.endCursor });
+                const conn = more.node?.comments;
+                if (!conn) break;
+                t.comments.nodes = (t.comments.nodes || []).concat(conn.nodes || []);
+                pageInfo = conn.pageInfo;
+              }
             }
             // --- Cross-reviewer dedup (issue #1994, umbrella #1988) --------
             // Inline mirror of scripts/review-dedup.mjs (tested there — keep
@@ -168,9 +204,10 @@ jobs:
             const anchorOf = (t) => {
               const c = t.comments?.nodes?.[0];
               const end = t.line ?? c?.line ?? t.originalLine ?? c?.originalLine;
-              const startRaw = t.startLine ?? t.originalStartLine ?? end;
+              const startRaw =
+                t.startLine ?? c?.startLine ?? t.originalStartLine ?? c?.originalStartLine ?? end;
               return {
-                path: c?.path ?? null,
+                path: c?.path ?? t.path ?? null,
                 start: Number.isInteger(startRaw) ? startRaw : null,
                 end: Number.isInteger(end) ? end : null,
               };
@@ -182,8 +219,8 @@ jobs:
               const [blo, bhi] = b.start <= b.end ? [b.start, b.end] : [b.end, b.start];
               return alo <= bhi && blo <= ahi;
             };
-            const loginOf = (t) => t.comments?.nodes?.[0]?.author?.login ?? null;
-            const bodyOf = (t) => t.comments?.nodes?.[0]?.body ?? "";
+            const loginOf = (t) => t.comments?.nodes?.[0]?.author?.login ?? t.author?.login ?? null;
+            const bodyOf = (t) => t.comments?.nodes?.[0]?.body ?? t.body ?? "";
             const isDetached = (t) =>
               (t.comments?.nodes ?? []).slice(1).some((c) => {
                 const body = c?.body ?? "";
@@ -191,7 +228,7 @@ jobs:
                 return /\bnot-a-duplicate\b/i.test(body);
               });
             const createdOf = (t) => {
-              const p = Date.parse(t.comments?.nodes?.[0]?.createdAt ?? "");
+              const p = Date.parse(t.comments?.nodes?.[0]?.createdAt ?? t.createdAt ?? "");
               return Number.isFinite(p) ? p : 0;
             };
             const ordered = threads
@@ -205,7 +242,13 @@ jobs:
               const body = bodyOf(t);
               if (NON_DEDUP_LOGINS.has(loginOf(t) ?? "") || isDetached(t)) {
                 records.push({ id: t.id, t, canonicalId: t.id, similarity: null });
-                canonicals.push({ id: t.id, anchor, body });
+                // Detached threads stay canonical candidates (a distinct finding
+                // can anchor later duplicates); CodeQL/non-dedup threads must NOT
+                // — the guard excludes them, so folding a real finding into a
+                // CodeQL "canonical" would hide it. Mirrors dedupeThreads.
+                if (!NON_DEDUP_LOGINS.has(loginOf(t) ?? "")) {
+                  canonicals.push({ id: t.id, anchor, body });
+                }
                 continue;
               }
               let match = null;
@@ -252,8 +295,11 @@ jobs:
             );
             const effectiveUnresolved = rawUnresolved.filter((t) => {
               const rec = records.find((r) => r.id === t.id);
-              if (!rec || rec.canonicalId === rec.id) return true;
-              return canonicalResolved.get(rec.canonicalId) !== true;
+              // A duplicate folds into its canonical, which carries the single
+              // obligation while unresolved; the duplicate never gates on its
+              // own — otherwise one finding blocks merge twice. Mirrors
+              // computeGuardObligations in scripts/review-dedup.mjs.
+              return !rec || rec.canonicalId === rec.id;
             });
 
             const uniqueByReviewer = new Map();

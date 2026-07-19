@@ -241,9 +241,12 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
     const body = firstBody(thread);
 
     if (isNonDedupThread(thread) || isDetached(thread)) {
-      const record = { id, thread, canonicalId: id, similarity: null };
-      records.push(record);
-      canonicals.push({ id, anchor, body });
+      records.push({ id, thread, canonicalId: id, similarity: null });
+      // A detached thread stays a canonical candidate: a genuinely distinct
+      // finding can anchor later duplicates. A CodeQL/non-dedup thread must NOT
+      // — the guard excludes it entirely, so folding a real finding into it
+      // would silently hide that finding (the failure mode this design fears).
+      if (!isNonDedupThread(thread)) canonicals.push({ id, anchor, body });
       continue;
     }
 
