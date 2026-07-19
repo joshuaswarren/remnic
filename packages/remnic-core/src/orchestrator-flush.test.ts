@@ -8,9 +8,10 @@ import {
   Orchestrator,
 } from "./orchestrator.js";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
-import type { BufferTurn } from "./types.js";
+import type { BufferState, BufferTurn } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
@@ -142,6 +143,75 @@ test("flushSession waits for queued extraction task completion", async () => {
   await flushPromise;
 
   assert.equal(flushSettled, true);
+});
+
+test("flushSession flushes the pending debounced buffer save before extraction, so keep_buffering turns survive a failed/timed-out extraction (issue #1909, PR #2016)", async () => {
+  // Regression: in steady-state debounced buffering a `keep_buffering` turn only
+  // SCHEDULES a trailing-edge save, so the newest turns live only in memory
+  // behind an unref'd timer. The lifecycle force-drain (before_reset /
+  // session_end) queues extraction with clearBufferAfterExtraction; if that
+  // extraction fails or times out and the host then exits, the debounce timer
+  // never fires and those turns are lost. flushSession must force the pending
+  // save durable BEFORE reading/clearing turns.
+  let saved: BufferState | null = null;
+  const storage = {
+    async loadBuffer(): Promise<BufferState> {
+      return saved
+        ? structuredClone(saved)
+        : { turns: [], lastExtractionAt: null, extractionCount: 0 };
+    },
+    async saveBuffer(state: BufferState): Promise<void> {
+      saved = structuredClone(state);
+    },
+  };
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 100 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
+  // Debounced keep_buffering: buffered in memory but NOT yet durable.
+  assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
+  assert.equal(buffer.getTurns("thread-a").length, 1);
+
+  interface FlushFake {
+    buffer: SmartBuffer;
+    queueBufferedExtraction: (
+      turns: BufferTurn[],
+      reason: string,
+      options?: Record<string, unknown>,
+    ) => Promise<void>;
+    flushSession(sessionKey: string, options: { reason: string }): Promise<void>;
+  }
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as FlushFake;
+  orchestrator.buffer = buffer;
+  let extractionAttempted = false;
+  orchestrator.queueBufferedExtraction = async (
+    _turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    extractionAttempted = true;
+    // Extraction fails/times out: the buffer is NOT cleared.
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.(
+      new Error("simulated extraction timeout"),
+    );
+  };
+
+  await assert.rejects(
+    orchestrator.flushSession("thread-a", { reason: "before_reset" }),
+    /simulated extraction timeout/,
+  );
+
+  assert.equal(extractionAttempted, true);
+  // The pending debounced save was forced durable BEFORE the failing
+  // extraction, so the keep_buffering turn is on disk for re-extraction even
+  // though extraction failed and (in production) the host would now exit.
+  assert.ok(saved, "pending debounced save was flushed before extraction");
+  const persisted = saved as BufferState;
+  const entryTurns = persisted.entries?.["thread-a"]?.turns ?? [];
+  assert.equal(entryTurns.length, 1, "keep_buffering turn is durable after failed flush");
+  assert.equal(entryTurns[0]?.content, "remember alpha");
 });
 
 test("ingestBulkImportBatch rejects when the extraction deadline expires in the queue", async () => {

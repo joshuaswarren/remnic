@@ -322,6 +322,22 @@ export class SessionContextCoordinator {
       bufferKey?: string;
     },
   ): Promise<void> {
+    // Force any pending debounced buffer save to land durably BEFORE we read
+    // and (via clearBufferAfterExtraction below) clear turns (issue #1909, PR
+    // #2016). In steady-state buffering a `keep_buffering` turn only SCHEDULES a
+    // trailing-edge save (see SmartBuffer.scheduleSave), so the newest turns
+    // live only in memory behind an unref'd timer. This lifecycle drain
+    // (before_reset / session_end / explicit flush) queues extraction with
+    // clearBufferAfterExtraction; if that extraction fails or times out and the
+    // host then exits, the debounce timer never fires and those turns are lost.
+    // Flushing first makes the in-memory turns durable, so a failed or aborted
+    // extraction leaves them on disk for re-extraction on next startup.
+    // Best-effort and durability-preserving: flushPendingSave retains the
+    // pending state (and re-arms a retry) on write failure, so it never weakens
+    // the durable-save guarantee.
+    if (typeof this.deps.buffer.flushPendingSave === "function") {
+      await this.deps.buffer.flushPendingSave();
+    }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
         ? options.bufferKey
