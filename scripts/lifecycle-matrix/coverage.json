@@ -70,7 +70,8 @@
     "src/qmd-recall-cache.ts",
     "src/session-integrity.ts",
     "src/session-observer-bands.ts",
-    "src/session-observer-state.ts"
+    "src/session-observer-state.ts",
+    "src/openclaw-flush-plan-lifecycle.ts"
   ],
   "coverage": {
     "src/orchestrator.ts": "extraction-lifecycle",
@@ -142,6 +143,7 @@
     "src/qmd-recall-cache.ts",
     "src/session-integrity.ts",
     "src/session-observer-bands.ts",
-    "src/session-observer-state.ts"
+    "src/session-observer-state.ts",
+    "src/openclaw-flush-plan-lifecycle.ts"
   ]
 }

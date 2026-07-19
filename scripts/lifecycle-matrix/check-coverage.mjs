@@ -63,8 +63,10 @@ const SUBJECT_CALL = "runLifecycleMatrix";
  * registration. Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
  * `if (false) { … }` or an uncalled helper never runs at module load, so
  * `node:test` registers nothing for it; recording it would let a coverage
- * mapping pass with no matrix tests. A raw regex over the file text counts all
- * of these.
+ * mapping pass with no matrix tests. A call that passes the test-only options
+ * seam (`rows` / `register` / `registerSkipped`) narrows or redirects the
+ * canonical MATRIX_ROWS and is NOT counted — a production subject must register
+ * every canonical row. A raw regex over the file text counts all of these.
  */
 export function discoverSubjectRegistrations(source) {
   const names = [];
@@ -133,8 +135,50 @@ export function discoverSubjectRegistrations(source) {
             name += source[j];
             j += 1;
           }
-          if (name.length > 0) names.push(name);
-          i = j + 1;
+          j += 1; // past the closing quote of the subject name
+          // Scan the rest of the call's arguments (we are inside its `(`, paren
+          // depth 1) skipping strings/comments. A production registration is
+          // `runLifecycleMatrix("name", subject)` — no options. A call that
+          // passes the test-only `rows` / `register` / `registerSkipped` seam
+          // narrows or redirects the canonical MATRIX_ROWS, so it is NOT a full
+          // production registration and must not count as coverage.
+          let callDepth = 1;
+          let argQuote = null;
+          let rest = "";
+          while (j < n && callDepth > 0) {
+            const c = source[j];
+            if (argQuote) {
+              if (c === "\\") {
+                j += 2;
+                continue;
+              }
+              if (c === argQuote) argQuote = null;
+              j += 1;
+              continue;
+            }
+            if (c === '"' || c === "'" || c === "`") {
+              argQuote = c;
+              j += 1;
+              continue;
+            }
+            if (c === "/" && source[j + 1] === "/") {
+              while (j < n && source[j] !== "\n") j += 1;
+              continue;
+            }
+            if (c === "/" && source[j + 1] === "*") {
+              j += 2;
+              while (j < n && !(source[j] === "*" && source[j + 1] === "/")) j += 1;
+              j += 2;
+              continue;
+            }
+            if (c === "(") callDepth += 1;
+            else if (c === ")") callDepth -= 1;
+            if (callDepth > 0) rest += c;
+            j += 1;
+          }
+          const narrowed = /\b(rows|register|registerSkipped)\s*:/.test(rest);
+          if (name.length > 0 && !narrowed) names.push(name);
+          i = j;
           continue;
         }
       }

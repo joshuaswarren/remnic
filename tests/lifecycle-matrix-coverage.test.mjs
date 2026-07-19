@@ -366,11 +366,14 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     "runLifecycleMatrix('single-quoted-real', subject);",
     'if (false) { runLifecycleMatrix("nested-in-dead-block", subject); }',
     'function unused() { runLifecycleMatrix("in-uncalled-helper", subject); }',
+    'runLifecycleMatrix("narrowed-rows", subject, { rows: [MATRIX_ROWS[0]] });',
+    'runLifecycleMatrix("redirected", subject, { register: fake, registerSkipped: skip });',
+    'runLifecycleMatrix("inline-two-arg", { async setup() {}, async exercise() {} });',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
-    ["real-subject", "single-quoted-real"],
-    "only top-level code calls count; comments, string/template literals, and brace-nested (dead-block/uncalled-helper) calls are ignored",
+    ["real-subject", "single-quoted-real", "inline-two-arg"],
+    "only top-level 2-arg production calls count; comments, string/template literals, brace-nested calls, and rows/register-narrowed calls are ignored",
   );
 });
 
@@ -532,4 +535,14 @@ test("co-located orchestration test files are ignored by the gate, not violation
   }
   // A production source file is still evaluated (not mistaken for a test).
   assert.equal(isLifecycleTestFile(P + "extraction-run.ts"), false);
+});
+
+test("root flush-plan lifecycle entrypoint is tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  const p = "src/openclaw-flush-plan-lifecycle.ts";
+  assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
+  const { covered, warnings, violations } = evaluateCoverage([p], manifest);
+  assert.equal(covered.length, 0);
+  assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+  assert.equal(warnings.length, 1, `${p} flush-plan lifecycle change must warn, not be silently ignored`);
 });
