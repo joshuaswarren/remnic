@@ -368,15 +368,29 @@ export class RecallSectionCoordinator {
           if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
           if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
         }
-        for (const chunk of trailing) {
-          const candidate = rendered
-            ? `${rendered}\n\n${chunk}`
-            : chunk;
-          if (candidate.length > sectionAvailable) {
-            truncated = true;
-            continue;
+        if (includedAtomicCount === 0) {
+          rendered = "";
+          for (const chunk of trailing) {
+            const candidate = rendered
+              ? `${rendered}\n\n${chunk}`
+              : chunk;
+            if (candidate.length > sectionAvailable) {
+              truncated = true;
+              continue;
+            }
+            rendered = candidate;
           }
-          rendered = candidate;
+        } else {
+          for (const chunk of trailing) {
+            const candidate = rendered
+              ? `${rendered}\n\n${chunk}`
+              : chunk;
+            if (candidate.length > sectionAvailable) {
+              truncated = true;
+              continue;
+            }
+            rendered = candidate;
+          }
         }
         if (includedAtomicCount === 0) {
           if (!rendered) {

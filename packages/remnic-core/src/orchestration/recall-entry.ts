@@ -281,7 +281,6 @@ export class RecallEntryCoordinator {
     const injectable = trustByPath
       ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
       : options.results;
-    const memoryIds = this.deps.extractMemoryIdsFromResults(injectable);
     if (injectable.length === 0) return;
 
     const formatted = this.deps.formatQmdResultEntries(

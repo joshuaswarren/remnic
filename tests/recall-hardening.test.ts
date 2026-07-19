@@ -253,6 +253,7 @@ test("assembleRecallSections keeps later helper text when no atomic memory fits"
   );
 
   assert.match(assembled.sections.join("\n\n---\n\n"), /Retrieval Feedback Helper/);
+  assert.doesNotMatch(assembled.sections.join("\n\n---\n\n"), /## Relevant Memories/);
   assert.deepEqual(assembled.includedMemoryIds, []);
   assert.deepEqual(assembled.omittedMemoryIds, ["memory-too-large"]);
 });
