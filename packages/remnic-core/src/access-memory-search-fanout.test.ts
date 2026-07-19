@@ -61,7 +61,6 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
     writeLayer: "userProject",
     writeNamespace: "",
     readNamespaces: [base, "shared"],
-
     promotionTargets: [],
     warnings: [],
     ...overrides,
@@ -71,13 +70,28 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
   } as unknown as ResolvedScopeProfilePlan;
 }
 
-test("resolveMemorySearchDefaultFallback returns the default namespace when a global layer is intended and self resolved away (#2018)", () => {
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: profilePlan(),
-    config: pluginConfig(),
-    principal: "operator-x",
-  });
+// Wrapper that defaults defaultAtFlatRoot=true so each gate condition is
+// exercised independently (a `null` result means a NON-flat-root gate blocked,
+// not the flat-root gate). The dedicated flat-root-false test covers that gate.
+function applyFallback(
+  plan: ResolvedScopeProfilePlan,
+  config: PluginConfig,
+  principal: string | undefined,
+  defaultAtFlatRoot = true,
+): string | null {
+  return resolveMemorySearchDefaultFallback({ profilePlan: plan, config, principal, defaultAtFlatRoot });
+}
+
+test("resolveMemorySearchDefaultFallback returns the default namespace on a flat-root legacy deployment (#2018)", () => {
+  const fallback = applyFallback(profilePlan(), pluginConfig(), "operator-x");
   assert.equal(fallback, "default");
+});
+
+test("resolveMemorySearchDefaultFallback returns null when the default namespace is not at the flat root (#2056 r4)", () => {
+  // Hosted scope-profile deployment: default lives under namespaces/<default>,
+  // so reaching it would mix memories across the profile stack.
+  const fallback = applyFallback(profilePlan(), pluginConfig(), "operator-x", false);
+  assert.equal(fallback, null);
 });
 
 test("resolveMemorySearchDefaultFallback returns null for a project-only lockdown (#1501)", () => {
@@ -94,20 +108,12 @@ test("resolveMemorySearchDefaultFallback returns null for a project-only lockdow
       },
     },
   });
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: plan,
-    config: pluginConfig(),
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
 test("resolveMemorySearchDefaultFallback returns null when the profile self is already the default", () => {
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: profilePlan({ baseNamespace: "default" }),
-    config: pluginConfig(),
-    principal: "default",
-  });
+  const fallback = applyFallback(profilePlan({ baseNamespace: "default" }), pluginConfig(), "default");
   assert.equal(fallback, null);
 });
 
@@ -128,17 +134,13 @@ test("resolveMemorySearchDefaultFallback returns null when only serverShared (no
       },
     },
   });
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: plan,
-    config: pluginConfig(),
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
 test("resolveMemorySearchDefaultFallback returns null when readOrder omits userGlobal even if a readable userGlobal layer is materialized (#2056 r3)", () => {
   // resolveScopeProfilePlan always materializes a userGlobal layer regardless
-  // of readOrder (scope-profiles.ts adds \"userGlobal\" to layerIds
+  // of readOrder (scope-profiles.ts adds "userGlobal" to layerIds
   // unconditionally). A profile that intentionally omits userGlobal from
   // readOrder must not get the default-namespace fallback just because the
   // materialized layer resolved readable — consent lives in readOrder.
@@ -159,11 +161,7 @@ test("resolveMemorySearchDefaultFallback returns null when readOrder omits userG
       { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: true, writable: true, promotable: true, reason: "materialized but not in readOrder" },
     ],
   });
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: plan,
-    config: pluginConfig(),
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
@@ -174,11 +172,7 @@ test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", () =>
       { name: "root", readPrincipals: ["owner"], writePrincipals: ["owner"] },
     ],
   } as Partial<PluginConfig>);
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: profilePlan(),
-    config,
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(profilePlan(), config, "operator-x");
   assert.equal(fallback, null);
 });
 
@@ -191,11 +185,7 @@ test("resolveMemorySearchDefaultFallback returns null when the resolved userGlob
       { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: false, writable: false, promotable: false, reason: "policy withholds principal" },
     ],
   });
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: plan,
-    config: pluginConfig(),
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(plan, pluginConfig(), "operator-x");
   assert.equal(fallback, null);
 });
 
@@ -209,11 +199,7 @@ test("resolveMemorySearchDefaultFallback returns null when the principal owns a 
       { name: "operator-x", readPrincipals: ["operator-x"], writePrincipals: ["operator-x"] },
     ],
   } as Partial<PluginConfig>);
-  const fallback = resolveMemorySearchDefaultFallback({
-    profilePlan: profilePlan(),
-    config,
-    principal: "operator-x",
-  });
+  const fallback = applyFallback(profilePlan(), config, "operator-x");
   assert.equal(fallback, null);
 });
 

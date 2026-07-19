@@ -35,8 +35,23 @@ export function resolveMemorySearchDefaultFallback(options: {
   profilePlan: ResolvedScopeProfilePlan;
   config: PluginConfig;
   principal: string | undefined;
+  /**
+   * True only when the configured default namespace's storage root equals
+   * `config.memoryDir` (the legacy flat-root layout), i.e. the bulk corpus
+   * genuinely lives under the default namespace's base collection. This is
+   * the explicit legacy-flat-root/migration signal — without it the fallback
+   * must not fire, so a hosted scope-profile deployment (per-principal
+   * self namespaces, default under `namespaces/<default>`) never reaches
+   * into the default corpus (#2056 r4).
+   */
+  defaultAtFlatRoot: boolean;
 }): string | null {
-  const { profilePlan, config, principal } = options;
+  const { profilePlan, config, principal, defaultAtFlatRoot } = options;
+  // Defense-in-depth: principalSelfIsDefault is only ever true alongside
+  // defaultAtFlatRoot on legacy flat-root deployments (a hosted scope-profile
+  // principal with its own policy fails this even when default is at the flat
+  // root). It is NOT redundant — it keeps a policy-having principal isolated
+  // from the flat default corpus.
   const principalSelfIsDefault =
     defaultNamespaceForPrincipal(principal, config) === config.defaultNamespace;
   // readOrder must explicitly intend userGlobal (resolveScopeProfilePlan
@@ -52,6 +67,7 @@ export function resolveMemorySearchDefaultFallback(options: {
   const selfResolvedAwayFromDefault =
     profilePlan.baseNamespace !== config.defaultNamespace;
   if (
+    defaultAtFlatRoot &&
     profileIntendsUserGlobal &&
     userGlobalLayerReadable &&
     principalSelfIsDefault &&
@@ -61,6 +77,20 @@ export function resolveMemorySearchDefaultFallback(options: {
     return config.defaultNamespace;
   }
   return null;
+}
+
+/**
+ * Issue #2018 r4: the explicit legacy-flat-root signal — the configured
+ * default namespace's storage root equals `config.memoryDir`. Resolved from
+ * storage (not inferred from config/policy shape) so a hosted scope-profile
+ * deployment never reaches into the default corpus.
+ */
+export async function defaultNamespaceAtFlatRoot(
+  getStorage: (namespace: string) => Promise<{ dir: string }>,
+  config: { defaultNamespace: string; memoryDir: string },
+): Promise<boolean> {
+  const storage = await getStorage(config.defaultNamespace);
+  return storage.dir === config.memoryDir;
 }
 
 /**

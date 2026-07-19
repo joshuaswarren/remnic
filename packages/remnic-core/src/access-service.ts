@@ -82,6 +82,7 @@ import {
 import { CrossNamespaceBudget, type BudgetWarning } from "./cross-namespace-budget.js";
 import { log } from "./logger.js";
 import {
+  defaultNamespaceAtFlatRoot,
   mergeMemorySearchDefaultFallback,
   resolveMemorySearchDefaultFallback,
   runMemorySearchFanout,
@@ -2025,7 +2026,11 @@ export class EngramAccessService {
     return resolved;
   }
 
-  private resolveReadableNamespacesForSearch(namespace: string | undefined, principal?: string): string[] {
+  private resolveReadableNamespacesForSearch(
+    namespace: string | undefined,
+    principal?: string,
+    options?: { defaultAtFlatRoot?: boolean },
+  ): string[] {
     const requested = namespace?.trim();
     if (requested) {
       return [this.resolveReadableNamespace(requested, principal)];
@@ -2068,6 +2073,7 @@ export class EngramAccessService {
         profilePlan,
         config: this.orchestrator.config,
         principal,
+        defaultAtFlatRoot: options?.defaultAtFlatRoot === true,
       });
       return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
     }
@@ -4754,7 +4760,11 @@ export class EngramAccessService {
         ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
         : await this.orchestrator.qmd.search(query, collection, maxResults);
     } else {
-      const readableNamespaces = this.resolveReadableNamespacesForSearch(namespace, principal);
+      const defaultAtFlatRoot = await defaultNamespaceAtFlatRoot(
+        (n) => this.orchestrator.getStorage(n),
+        this.orchestrator.config,
+      );
+      const readableNamespaces = this.resolveReadableNamespacesForSearch(namespace, principal, { defaultAtFlatRoot });
       const namespaces = this.resolveMemorySearchNamespacesForCollection(
         collection,
         readableNamespaces,

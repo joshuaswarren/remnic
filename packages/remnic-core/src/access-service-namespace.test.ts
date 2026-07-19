@@ -1330,7 +1330,7 @@ function makeConfigWithScopeProfile(): PluginConfig {
           enabled: false,
           targets: ["userGlobal"],
           categories: ["fact"],
-          minConfidenceTier: "medium",
+          minConfidenceTier: "inferred",
         },
       },
     },
@@ -1360,7 +1360,7 @@ function makeServiceWithConfig(config: PluginConfig): {
       async search() { throw new Error("qmd.search should not run in namespace mode"); },
       async searchGlobal() { throw new Error("qmd.searchGlobal should not run in namespace mode"); },
     },
-    async getStorage() { return {} as StorageManager; },
+    async getStorage() { return { dir: config.memoryDir } as StorageManager; },
     async searchAcrossNamespaces(params) {
       captured.namespaces = params.namespaces;
       captured.execution = params.execution;

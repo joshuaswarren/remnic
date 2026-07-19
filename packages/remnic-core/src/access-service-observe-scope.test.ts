@@ -34,6 +34,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
+import type { StorageManager } from "./storage.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import {
   combineNamespaces,
@@ -810,6 +811,7 @@ test("#1501 implicit memorySearch honors active scope profile readOrder", async 
   const orch = {
     config,
     qmd: { isAvailable: () => true },
+    getStorage: async () => ({ dir: config.memoryDir } as StorageManager),
     searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
       searchedNamespaces = options.namespaces;
       return [];
@@ -862,11 +864,13 @@ test("#1501 memorySearch collection names stay constrained to active scope profi
   const orch = {
     config,
     qmd: { isAvailable: () => true },
+    getStorage: async () => ({ dir: config.memoryDir } as StorageManager),
     searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
       searchedNamespaces = options.namespaces;
       return [];
     },
   } as unknown as Orchestrator;
+
   const service = new EngramAccessService(orch);
   const sharedCollection = namespaceCollectionName(config.qmdCollection, "shared", {
     defaultNamespace: config.defaultNamespace,
