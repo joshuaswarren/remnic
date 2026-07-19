@@ -195,6 +195,32 @@ function collectDocsKeys(docsText: string): Set<string> {
   return out;
 }
 
+/**
+ * Backticked identifiers grouped by the heading-delimited doc section they
+ * appear in. A bare leaf may only document a nested key when the leaf and the
+ * key's block co-occur in the SAME section — a generic `enabled` cell under one
+ * block must not document `otherBlock.enabled` (issue #1990 review).
+ */
+function collectDocsSections(docsText: string): Array<Set<string>> {
+  const re = /`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+|[A-Za-z_$][\w$]*)`/g;
+  const sections: Array<Set<string>> = [];
+  let current = new Set<string>();
+  sections.push(current);
+  for (const line of docsText.split("\n")) {
+    if (/^#{1,6}\s/.test(line)) {
+      current = new Set<string>();
+      sections.push(current);
+    }
+    for (const match of line.matchAll(re)) {
+      const identifier = match[1];
+      current.add(identifier);
+      const leaf = identifier.split(".").pop() as string;
+      current.add(leaf);
+    }
+  }
+  return sections;
+}
+
 export interface ContractCheckResult {
   violations: ContractViolation[];
   staleGrandfatherEntries: GrandfatherEntry[];
@@ -241,7 +267,7 @@ export function runContractCheck(options: {
 
   const docsText = fs.existsSync(docsPath) ? fs.readFileSync(docsPath, "utf8") : "";
   const docsKeys = collectDocsKeys(docsText);
-  const docsLeaves = new Set([...docsKeys].map((key) => key.split(".").pop() as string));
+  const docsSections = collectDocsSections(docsText);
 
   const violations: ContractViolation[] = [];
 
@@ -324,8 +350,9 @@ export function runContractCheck(options: {
     // WHEN the docs also mention the key's top-level block (review
     // finding: a generic \`enabled\` cell must not document every
     // *.enabled key across unrelated blocks).
-    const leafDocumented =
-      docsLeaves.has(leaf) && (key === topSegment || docsKeys.has(topSegment));
+    const leafDocumented = docsSections.some(
+      (section) => section.has(leaf) && (key === topSegment || section.has(topSegment)),
+    );
     const documented =
       docsKeys.has(key) ||
       leafDocumented ||
