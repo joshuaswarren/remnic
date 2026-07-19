@@ -5725,14 +5725,13 @@ export class StorageManager {
     return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
   }
 
-  /** Compaction-only full-ledger read via a decrypted BUFFER, bypassing the
-   *  whole-file-string decrypt cap so compaction can shrink an oversize encrypted
-   *  ledger the general capped read refuses (#1910, #2033). */
+  async readMemoryLifecycleLedgerRawContentForCompaction(): Promise<string> {
+    return (await readMaybeEncryptedFileBuffer(
+      this.memoryLifecycleLedgerPath, this._secureStoreKey, this.baseDir)).toString("utf8");
+  }
   async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
     return readAllLifecycleEventsFromLedgerBuffer(
-      this.memoryLifecycleLedgerPath,
-      (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir),
-    );
+      this.memoryLifecycleLedgerPath, (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir));
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {

@@ -383,18 +383,16 @@ export async function rebuildMemoryLifecycleLedger(
         // secure-store (#2033): when the existing ledger is encrypted, its bytes
         // are path-bound via AAD, so a byte-for-byte copy to the archive path
         // cannot be decrypted there — it would silently orphan the overflow rows
-        // a bounded rewrite claims to preserve. Re-encrypt the decrypted ledger
-        // under the backup path's own AAD instead, yielding a directly
-        // decryptable backup. A PLAINTEXT existing ledger is already readable, so
-        // a verbatim copy is correct (and preserves any malformed rows). Then
-        // rewrite the active ledger through the secure writer.
+        // a bounded rewrite claims to preserve. Read the RAW decrypted ledger
+        // content (no event parsing, so malformed/truncated/future rows survive
+        // exactly as the plaintext verbatim copy keeps them) and re-encrypt it
+        // under the backup path's own AAD, yielding a directly decryptable backup
+        // that retains every original byte. A PLAINTEXT existing ledger is already
+        // readable, so a verbatim copy is correct. Then rewrite the active ledger
+        // through the secure writer.
         if (desiredBackup && await probeEncryptedRegularFileHeader(outputPath)) {
-          const prior = await storage.readAllMemoryLifecycleEventsForCompaction();
-          const priorPayload = prior.map((event) => JSON.stringify(event)).join("\n");
-          await storage.writeMemoryLifecycleLedgerContent(
-            priorPayload.length > 0 ? `${priorPayload}\n` : "",
-            desiredBackup,
-          );
+          const priorRawContent = await storage.readMemoryLifecycleLedgerRawContentForCompaction();
+          await storage.writeMemoryLifecycleLedgerContent(priorRawContent, desiredBackup);
           backupPath = desiredBackup;
         } else {
           backupPath = desiredBackup

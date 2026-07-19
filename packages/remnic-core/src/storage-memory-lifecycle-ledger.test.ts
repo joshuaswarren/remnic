@@ -6,7 +6,7 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 
 import { StorageManager } from "./storage.js";
-import { encryptFileBody, filePathAad, isEncryptedFile } from "./secure-store/secure-fs.js";
+import { encryptFileBody, filePathAad, isEncryptedFile, readMaybeEncryptedFile } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
 import {
   appendLifecycleEventsSerialized,
@@ -945,6 +945,65 @@ test("rebuild aborts the compaction rewrite when a peer stale-breaks the ledger 
       originalRow,
       "active ledger not clobbered by the aborted rewrite",
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("encrypted rebuild backup retains raw malformed/truncated/future rows verbatim while the active ledger normalizes (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-rebuild-raw-backup-"));
+  try {
+    const key = Buffer.alloc(32, 9);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key);
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+
+    // Seed an encrypted-at-rest ledger that mixes valid rows with rows the
+    // fail-open parser silently drops: a non-JSON line, a truncated JSON line,
+    // and a valid-but-future-schema row carrying an unknown field. The backup
+    // must keep every byte; the compacted active ledger may drop the garbage.
+    const validA = JSON.stringify(lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z"));
+    const validB = JSON.stringify(lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z"));
+    const malformed = "this-is-not-json-at-all";
+    const truncated = '{"eventId":"evt-broken","memoryId":"memory-c",';
+    const future = JSON.stringify({
+      ...lifecycleEvent("evt-future", "memory-d", "9999-12-31T23:59:59.000Z"),
+      unknownFutureField: { schema: 42 },
+    });
+    const rawContent = `${validA}\n${malformed}\n${truncated}\n${validB}\n${future}\n`;
+    await writeFile(ledgerPath, encryptFileBody(rawContent, key, filePathAad(ledgerPath, memoryDir)));
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: ledger encrypted at rest");
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+    });
+
+    // A timestamped encrypted backup was written.
+    assert.ok(result.backupPath, "a backup path was produced");
+    assert.match(result.backupPath!, /archive[/\\]memory-lifecycle-ledger[/\\]/);
+    assert.ok(isEncryptedFile(await readFile(result.backupPath!)), "backup encrypted at rest");
+
+    // The backup, decrypted under its OWN path AAD, is byte-for-byte the raw
+    // pre-compaction ledger: no reserialization, no dropped garbage rows.
+    const backupDecrypted = await readMaybeEncryptedFile(result.backupPath!, key, memoryDir);
+    assert.equal(backupDecrypted, rawContent, "backup preserves raw decrypted bytes verbatim");
+    for (const raw of [malformed, truncated, future]) {
+      assert.ok(backupDecrypted.includes(raw), `backup retains raw row: ${raw}`);
+    }
+
+    // The active ledger normalized: the garbage rows are gone, the valid rows
+    // survive, and its decrypted content is NOT the raw seed.
+    const activeDecrypted = await readMaybeEncryptedFile(ledgerPath, key, memoryDir);
+    assert.notEqual(activeDecrypted, rawContent, "active ledger was compacted, not copied");
+    assert.ok(!activeDecrypted.includes(malformed), "active ledger dropped the non-JSON row");
+    assert.ok(!activeDecrypted.includes(truncated), "active ledger dropped the truncated row");
+    const activeIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.ok(activeIds.includes("evt-a") && activeIds.includes("evt-b"), "valid rows preserved in active ledger");
+    assert.ok(!activeIds.includes("evt-broken"), "malformed row absent from active ledger");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
