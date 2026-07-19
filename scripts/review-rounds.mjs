@@ -299,10 +299,18 @@ export function upsertRoundLedgerComment(body, state) {
 }
 
 function activityTime(activity) {
-  return activity?.submitted_at ?? activity?.submittedAt ??
-    activity?.created_at ?? activity?.createdAt ??
-    activity?.updated_at ?? activity?.updatedAt ??
-    activity?.completed_at ?? activity?.completedAt ?? null;
+  // Return the MOST RECENT timestamp available. A bot that edits a standing
+  // verdict comment leaves created_at at the original time and advances
+  // updated_at, so the latest timestamp (not created_at first) determines
+  // whether the edited activity is current-head (issue #1992).
+  const candidates = [
+    activity?.submitted_at, activity?.submittedAt,
+    activity?.updated_at, activity?.updatedAt,
+    activity?.created_at, activity?.createdAt,
+    activity?.completed_at, activity?.completedAt,
+  ].filter((value) => typeof value === "string" && parseTime(value) > 0);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((latest, value) => (parseTime(value) > parseTime(latest) ? value : latest));
 }
 
 function activityId(activity, kind) {
@@ -374,6 +382,17 @@ function toActivityMarker(activity, kind) {
   };
 }
 
+// A check run is a landed review only when it completed with a verdict-bearing
+// conclusion; a queued/in-progress or infra-aborted check is not bot activity
+// (issue #1992, mirroring ai-review-gate's positive-conclusion policy).
+const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
+
+function checkRunIsLandedReview(checkRun) {
+  const status = normalizeLogin(checkRun?.status);
+  if (status && status !== "completed") return false;
+  return POSITIVE_CHECK_CONCLUSIONS.has(normalizeLogin(checkRun?.conclusion));
+}
+
 /** Return the newest current-head activity from configured bot groups. */
 export function hasCurrentBotActivity({
   aliases = [],
@@ -400,6 +419,7 @@ export function hasCurrentBotActivity({
     }
   }
   for (const checkRun of Array.isArray(checkRuns) ? checkRuns : []) {
+    if (!checkRunIsLandedReview(checkRun)) continue;
     const checkHead = checkRun?.head_sha ?? checkRun?.headSha;
     const current = checkHead ? checkHead === headSha : isCurrentActivity(checkRun, headSha, headCommittedAt);
     const checkAliases = [checkRun?.app?.slug, checkRun?.app?.name].map(normalizeLogin);

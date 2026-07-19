@@ -312,6 +312,14 @@ export async function runRoundGate({ github, context, core, env = {} } = {}) {
   );
   const forceDispatch = labels.includes(FORCE_DISPATCH_LABEL);
 
+  // decideRound throws on an empty headSha; guard here so a PR with no
+  // resolvable head degrades to a no-op instead of failing the non-blocking
+  // gate (cursor).
+  if (typeof headSha !== "string" || headSha.length === 0) {
+    core.notice(`review-round gate: PR #${prNumber} has no resolvable head SHA; skipping.`);
+    return null;
+  }
+
   const result = computeRoundGateDecision({
     ledgerBody: existing?.body ?? "",
     headSha,

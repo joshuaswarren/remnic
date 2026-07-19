@@ -466,3 +466,53 @@ test("a markdown-wrapped older SHA pin is not current-head activity", () => {
     }],
   }), null);
 });
+
+test("an edited bot comment is current via updated_at even when created_at is stale", () => {
+  const marker = hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "head-9",
+    headCommittedAt: "2026-07-18T12:00:00.000Z",
+    issueComments: [{
+      id: "comment-edited",
+      user: { login: "cursor" },
+      created_at: "2026-07-18T09:00:00.000Z",
+      updated_at: "2026-07-18T12:30:00.000Z",
+    }],
+  });
+  assert.deepEqual(marker, { id: "issue-comment:comment-edited", at: "2026-07-18T12:30:00.000Z" });
+});
+
+test("a completed success check run counts as current bot activity", () => {
+  const marker = hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "head-1",
+    checkRuns: [{
+      id: 77,
+      app: { slug: "cursor" },
+      head_sha: "head-1",
+      status: "completed",
+      conclusion: "success",
+      completed_at: "2026-07-18T12:00:00.000Z",
+    }],
+  });
+  assert.deepEqual(marker, { id: "check-run:77", at: "2026-07-18T12:00:00.000Z" });
+});
+
+test("queued or non-positive check runs are not treated as bot activity", () => {
+  for (const partial of [
+    { status: "in_progress", conclusion: null },
+    { status: "completed", conclusion: "failure" },
+    { status: "completed", conclusion: "startup_failure" },
+    { status: "queued", conclusion: null },
+  ]) {
+    assert.equal(
+      hasCurrentBotActivity({
+        aliases: ["cursor"],
+        headSha: "head-1",
+        checkRuns: [{ id: 5, app: { slug: "cursor" }, head_sha: "head-1", ...partial }],
+      }),
+      null,
+      `expected ${partial.status}/${partial.conclusion} to be ignored`,
+    );
+  }
+});
