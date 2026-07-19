@@ -60,15 +60,18 @@ const SUBJECT_CALL = "runLifecycleMatrix";
  * the CODE level: a single scan skips comments AND string/template literals, so
  * neither a commented-out example nor a docs string like
  * `const doc = 'runLifecycleMatrix("fake", subject)'` is mistaken for a real
- * registration — only a genuine call, whose first string argument is the
- * subject name, is recorded. A raw regex over the file text counts both and
- * lets a coverage mapping pass while the matrix runs no such subject.
+ * registration. Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
+ * `if (false) { … }` or an uncalled helper never runs at module load, so
+ * `node:test` registers nothing for it; recording it would let a coverage
+ * mapping pass with no matrix tests. A raw regex over the file text counts all
+ * of these.
  */
 export function discoverSubjectRegistrations(source) {
   const names = [];
   const n = source.length;
   let i = 0;
   let quote = null;
+  let depth = 0;
   while (i < n) {
     const ch = source[i];
     if (quote) {
@@ -95,7 +98,18 @@ export function discoverSubjectRegistrations(source) {
       i += 2;
       continue;
     }
+    if (ch === "{") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === "}") {
+      if (depth > 0) depth -= 1;
+      i += 1;
+      continue;
+    }
     if (
+      depth === 0 &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&

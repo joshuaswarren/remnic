@@ -65,7 +65,12 @@
     "packages/remnic-core/src/orchestration/xray-capture-queue.ts",
     "src/orchestration/compression-guideline-coordinator.ts",
     "src/orchestration/maintenance.ts",
-    "src/orchestration/recall-section-coordinator.ts"
+    "src/orchestration/recall-section-coordinator.ts",
+    "src/lifecycle.ts",
+    "src/qmd-recall-cache.ts",
+    "src/session-integrity.ts",
+    "src/session-observer-bands.ts",
+    "src/session-observer-state.ts"
   ],
   "coverage": {
     "src/orchestrator.ts": "extraction-lifecycle",
@@ -132,6 +137,11 @@
     "packages/remnic-core/src/orchestration/xray-capture-queue.ts",
     "src/orchestration/compression-guideline-coordinator.ts",
     "src/orchestration/maintenance.ts",
-    "src/orchestration/recall-section-coordinator.ts"
+    "src/orchestration/recall-section-coordinator.ts",
+    "src/lifecycle.ts",
+    "src/qmd-recall-cache.ts",
+    "src/session-integrity.ts",
+    "src/session-observer-bands.ts",
+    "src/session-observer-state.ts"
   ]
 }

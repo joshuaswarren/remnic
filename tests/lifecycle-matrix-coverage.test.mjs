@@ -355,7 +355,7 @@ test("loadCoverageManifest rejects globs that can never match a repo-relative pa
   );
 });
 
-test("discoverSubjectRegistrations records only genuine calls, not comments or string literals", () => {
+test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => {
   const source = [
     'runLifecycleMatrix("real-subject", subject);',
     '// runLifecycleMatrix("commented-line", subject)',
@@ -363,11 +363,13 @@ test("discoverSubjectRegistrations records only genuine calls, not comments or s
     "const doc = 'runLifecycleMatrix(\"string-literal\", subject)';",
     'const t = `runLifecycleMatrix("template-literal", subject)`;',
     "runLifecycleMatrix('single-quoted-real', subject);",
+    'if (false) { runLifecycleMatrix("nested-in-dead-block", subject); }',
+    'function unused() { runLifecycleMatrix("in-uncalled-helper", subject); }',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
     ["real-subject", "single-quoted-real"],
-    "only genuine code-level calls count; comments and string/template literals are ignored",
+    "only top-level code calls count; comments, string/template literals, and brace-nested (dead-block/uncalled-helper) calls are ignored",
   );
 });
 
@@ -400,6 +402,22 @@ test("retrieval/intent/config paths are tracked (grandfathered), not silently ig
     const { warnings, violations } = evaluateCoverage([p], manifest);
     assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
     assert.equal(warnings.length, 1, `${p} must warn, not be silently ignored by the gate`);
+  }
+});
+
+test("root src/ lifecycle shims are tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "src/lifecycle.ts",
+    "src/qmd-recall-cache.ts",
+    "src/session-integrity.ts",
+    "src/session-observer-bands.ts",
+    "src/session-observer-state.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} root shim must be tracked so a touch warns`);
+    const { warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+    assert.equal(warnings.length, 1, `${p} shipped root shim must warn, not be silently ignored`);
   }
 });
 
