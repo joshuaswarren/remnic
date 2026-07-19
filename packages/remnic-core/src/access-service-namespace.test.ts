@@ -11,6 +11,8 @@ import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
 import type { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
+import { LastRecallStore } from "./recall-state.js";
+import type { DrainPendingImpressionsResult } from "./recall-state.js";
 
 function makeConfig(): PluginConfig {
   return {
@@ -60,6 +62,7 @@ function makeService(): {
         searchGlobal(query: string, maxResults?: number): Promise<unknown[]>;
       };
       getStorage(namespace: string): Promise<StorageManager>;
+      drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
       searchAcrossNamespaces(params: {
         query: string;
         namespaces?: string[];
@@ -80,6 +83,9 @@ function makeService(): {
     async getStorage(namespace: string): Promise<StorageManager> {
       getStorageCalls.push(namespace);
       return storage;
+    },
+    async drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult> {
+      return { folded: false, pendingDeferred: false };
     },
     async searchAcrossNamespaces() {
       return [];
@@ -1307,12 +1313,23 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
     await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
 
     const { service } = makeService();
-    (service as unknown as {
+    const orchestrator = (service as unknown as {
       orchestrator: {
         config: PluginConfig;
         getStorage(namespace: string): Promise<StorageManager>;
+        drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
       };
-    }).orchestrator.getStorage = async () => ({
+    }).orchestrator;
+    // The writer store roots at config.memoryDir — the SAME instance the drain
+    // must fold from. Here memoryDir === storage.dir (the offline-synced root),
+    // so the folded active file lands in the snapshot.
+    orchestrator.config.memoryDir = root;
+    const writerStore = new LastRecallStore(root, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+    orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
+    orchestrator.getStorage = async () => ({
       dir: root,
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
@@ -1348,5 +1365,86 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
     assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot drains pending impression spills at the writer root, not the namespace storage.dir (#2033)", async () => {
+  // Recall impressions are appended by the orchestrator's single LastRecallStore
+  // rooted at config.memoryDir, never per-namespace. A record() that times out on
+  // the rotation lock spills to config.memoryDir/state/recall_impressions.jsonl.pending.d.
+  // The pre-snapshot drain MUST fold from that writer root; draining the resolved
+  // namespace's storage.dir (which can differ, e.g. namespaces/<token>/) looks
+  // under the wrong tree and strands the impression in the offline-sync-EXCLUDED
+  // pending queue — the exact defect this regression guards.
+  const writerRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-writer-"));
+  const nsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-ns-"));
+  try {
+    const impressionsPath = path.join(writerRoot, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    const { service } = makeService();
+    const orchestrator = (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+        drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
+      };
+    }).orchestrator;
+    // Writer root (config.memoryDir) is deliberately DISTINCT from the resolved
+    // namespace's storage.dir so a storage.dir-rooted drain would miss the spill.
+    orchestrator.config.memoryDir = writerRoot;
+    const writerStore = new LastRecallStore(writerRoot, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+    orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
+    orchestrator.getStorage = async () => ({
+      dir: nsDir,
+      async readOfflineSyncFile(targetPath: string) {
+        return readFile(targetPath);
+      },
+      async digestOfflineSyncFile(targetPath: string) {
+        const content = await readFile(targetPath);
+        return {
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.byteLength,
+        };
+      },
+    } as unknown as StorageManager);
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    // Drained into the WRITER root's synced active recall_impressions.jsonl — the
+    // offline-sync-ALWAYS file — so the recorded impression is included wherever
+    // that writer root is synced, not lost in the excluded pending queue.
+    assert.equal(
+      await readFile(impressionsPath, "utf-8"),
+      row,
+      "spill folded into the writer-root active recall_impressions.jsonl",
+    );
+    assert.deepEqual(await readdir(pendingDir), [], "writer-root pending spill drained");
+    // The drain did NOT write under the namespace storage.dir (the pre-fix target).
+    await assert.rejects(
+      () => readFile(path.join(nsDir, "state", "recall_impressions.jsonl"), "utf-8"),
+      /ENOENT/,
+      "drain must not fold under the namespace storage.dir",
+    );
+    // The namespace-rooted snapshot enumerates storage.dir (nsDir), which never
+    // holds the writer-root impressions; inclusion in a writer-root snapshot is
+    // covered by the aligned-root test above.
+    assert.ok(
+      !snapshot.files.some((f) => f.path === "state/recall_impressions.jsonl"),
+      "namespace-rooted snapshot does not carry the writer-root active file",
+    );
+  } finally {
+    await rm(writerRoot, { recursive: true, force: true });
+    await rm(nsDir, { recursive: true, force: true });
   }
 });

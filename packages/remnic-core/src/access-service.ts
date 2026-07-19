@@ -139,7 +139,6 @@ import {
   type PromotionStorageProvider,
   type ScopeInspection,
 } from "./admin/admin-surfaces.js";
-import { LastRecallStore } from "./recall-state.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import type {
   GraphRecallSnapshot,
@@ -5486,20 +5485,44 @@ export class EngramAccessService {
    * offline-sync-EXCLUDED `recall_impressions.jsonl.pending.d/`, so without this
    * drain a successfully recorded impression is absent from the snapshot and
    * lost if this node is discarded before a later `record()` folds it back.
-   * Best-effort and non-fatal: a drain failure must never block the snapshot,
-   * and the drain is a fast no-op when nothing is pending. Targets the resolved
-   * namespace's own state dir via `storageDir`.
+   *
+   * Routes through the orchestrator's own writer store (rooted at
+   * `config.memoryDir`) — the SAME instance that appends impressions — rather
+   * than a store rebuilt from the namespace `storage.dir`. Recall impressions
+   * are never namespace-scoped; a `storage.dir`-rooted drain would look under
+   * `namespaces/<token>/state/` while the spill sits under the root `state/`
+   * tree, so it would silently miss it.
+   *
+   * A drain that leaves rows in the offline-sync-EXCLUDED pending queue is NOT
+   * swallowable: the snapshot that follows would silently omit those recorded
+   * impressions (#2033). When the rotation lock is held by a peer the drain
+   * reports `pendingDeferred`; we retry a bounded number of times to ride out a
+   * brief rotation window, then ABORT the snapshot by throwing so a caller
+   * never receives a snapshot that dropped data. A completed drain or a fast
+   * no-op (nothing pending — cannot lose data) returns without throwing.
    */
-  private async drainPendingImpressionsForSync(storageDir: string): Promise<void> {
-    const store = new LastRecallStore(storageDir, {
-      impressionsRotateBytes: this.orchestrator.config.recallImpressionsRotateBytes,
-      impressionsRotateKeep: this.orchestrator.config.recallImpressionsRotateKeep,
-    });
-    try {
-      await store.drainPendingImpressions();
-    } catch (err) {
-      log.debug(`offline-sync impression drain failed (non-fatal): ${err}`);
+  private async drainPendingImpressionsForSync(): Promise<void> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const result = await this.orchestrator.drainPendingRecallImpressions();
+        // Drained, or nothing was pending: the active file is complete, so the
+        // snapshot can proceed without losing data.
+        if (!result.pendingDeferred) return;
+        lastError = undefined;
+      } catch (err) {
+        // A throw leaves the active file untouched with rows possibly still
+        // pending — same data-loss risk as a deferral. Retry, then rethrow.
+        lastError = err;
+      }
     }
+    const detail = lastError
+      ? `: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+      : " (rotation lock held by a peer)";
+    throw new Error(
+      `offline-sync impression drain could not fold pending recall impressions after ${maxAttempts} attempts${detail}; aborting snapshot so the pending rows are not silently excluded (#2033)`,
+    );
   }
 
   async offlineSyncSnapshot(
@@ -5507,7 +5530,7 @@ export class EngramAccessService {
   ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    await this.drainPendingImpressionsForSync(storage.dir);
+    await this.drainPendingImpressionsForSync();
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     const snapshotBuilder = options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
       ? buildOfflineSyncSnapshotFromBase
@@ -5534,7 +5557,7 @@ export class EngramAccessService {
   ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    await this.drainPendingImpressionsForSync(storage.dir);
+    await this.drainPendingImpressionsForSync();
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     return {
       namespace: resolvedNamespace,
@@ -5560,7 +5583,7 @@ export class EngramAccessService {
   ): Promise<EngramAccessOfflineSyncFilesResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    await this.drainPendingImpressionsForSync(storage.dir);
+    await this.drainPendingImpressionsForSync();
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     try {
       const snapshot = await buildOfflineSyncSnapshotForPaths({

@@ -236,6 +236,7 @@ import {
   LastRecallStore,
   RecallHandleHistoryStore,
   type LastRecallBudgetSummary,
+  type DrainPendingImpressionsResult,
   TierMigrationStatusStore,
   clampGraphRecallExpandedEntries,
   type GraphRecallExpandedEntry,
@@ -3809,6 +3810,23 @@ export class Orchestrator {
 
   getLastRecall(sessionKey: string): LastRecallSnapshot | null {
     return this.lastRecall.get(sessionKey);
+  }
+
+  /**
+   * Fold durable pending recall-impression spills into the active
+   * `recall_impressions.jsonl` using the SAME store instance that writes
+   * impressions (#2033). Impressions are appended by this single `lastRecall`
+   * store rooted at `config.memoryDir`, never per-namespace, so an offline-sync
+   * drain MUST target this instance; a store rebuilt from a namespace
+   * `storage.dir` would look under the wrong root and miss the spill. Returns
+   * the {@link DrainPendingImpressionsResult}: `folded` (rows merged into the
+   * active file) and `pendingDeferred` (the rotation lock could not be acquired
+   * while spills remained, so a snapshot now would silently omit them). The
+   * offline-sync caller uses `pendingDeferred` to retry or abort rather than
+   * report an incomplete snapshot as success.
+   */
+  async drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult> {
+    return this.lastRecall.drainPendingImpressions();
   }
 
   /**
