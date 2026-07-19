@@ -214,6 +214,71 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
   assert.equal(entryTurns[0]?.content, "remember alpha");
 });
 
+test("flushSession rejects and skips extraction when the durable buffer save fails, leaving turns and pending state intact (issue #1909, PR #2016)", async () => {
+  // Fail-closed regression: if the pending debounced save cannot land durably,
+  // flushSession must STOP before queuing extraction with
+  // clearBufferAfterExtraction. Otherwise the drain would clear turns that never
+  // reached disk; a subsequent extraction failure + host exit loses the turn.
+  let saved: BufferState | null = null;
+  let failSave = true;
+  const storage = {
+    async loadBuffer(): Promise<BufferState> {
+      return saved
+        ? structuredClone(saved)
+        : { turns: [], lastExtractionAt: null, extractionCount: 0 };
+    },
+    async saveBuffer(state: BufferState): Promise<void> {
+      if (failSave) throw new Error("simulated durable save failure");
+      saved = structuredClone(state);
+    },
+  };
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 100 }),
+    storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
+  // Debounced keep_buffering: buffered in memory but NOT yet durable.
+  assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
+  assert.equal(buffer.getTurns("thread-a").length, 1);
+
+  interface FlushFake {
+    buffer: SmartBuffer;
+    queueBufferedExtraction: (
+      turns: BufferTurn[],
+      reason: string,
+      options?: Record<string, unknown>,
+    ) => Promise<void>;
+    flushSession(sessionKey: string, options: { reason: string }): Promise<void>;
+  }
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as FlushFake;
+  orchestrator.buffer = buffer;
+  let extractionAttempted = false;
+  orchestrator.queueBufferedExtraction = async () => {
+    extractionAttempted = true;
+  };
+
+  await assert.rejects(
+    orchestrator.flushSession("thread-a", { reason: "before_reset" }),
+    /simulated durable save failure/,
+  );
+
+  // The failed save short-circuits the drain: extraction never runs.
+  assert.equal(extractionAttempted, false, "extraction is skipped after a failed durable save");
+  assert.equal(saved, null, "nothing was written durably");
+  // In-memory turns survive: the buffer was never read/cleared.
+  assert.equal(buffer.getTurns("thread-a").length, 1, "buffered turn is retained after a failed flush");
+
+  // Pending state was retained (not cleared): once the durable write recovers,
+  // the still-pending save lands the turn on disk.
+  failSave = false;
+  await buffer.flushPendingSave();
+  assert.ok(saved, "pending save was retained and lands durably once the write recovers");
+  const entryTurns = (saved as BufferState).entries?.["thread-a"]?.turns ?? [];
+  assert.equal(entryTurns.length, 1, "retained pending save persists the keep_buffering turn");
+  assert.equal(entryTurns[0]?.content, "remember alpha");
+});
+
 test("ingestBulkImportBatch rejects when the extraction deadline expires in the queue", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});

@@ -332,11 +332,16 @@ export class SessionContextCoordinator {
     // host then exits, the debounce timer never fires and those turns are lost.
     // Flushing first makes the in-memory turns durable, so a failed or aborted
     // extraction leaves them on disk for re-extraction on next startup.
-    // Best-effort and durability-preserving: flushPendingSave retains the
-    // pending state (and re-arms a retry) on write failure, so it never weakens
-    // the durable-save guarantee.
+    // Durability-preserving AND fail-closed: pass throwOnFailure so a failed
+    // durable save stops this lifecycle drain BEFORE any extraction runs
+    // (issue #1909, PR #2016). flushPendingSave still retains the pending state
+    // and re-arms a background retry on write failure, but it now rethrows so
+    // flushSession rejects instead of clearing turns behind a non-durable save.
+    // Without this, a force-drain could queue extraction with
+    // clearBufferAfterExtraction on turns that never reached disk; if extraction
+    // then failed and the host exited, the turn was lost.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
-      await this.deps.buffer.flushPendingSave();
+      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
