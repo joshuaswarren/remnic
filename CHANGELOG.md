@@ -12,9 +12,11 @@ All notable changes to this project will be documented in this file.
   `.github/workflows/review-thread-guard.yml`) merges duplicate findings only
   when they share a file, overlapping anchored lines, and fingerprint
   similarity at or above the committed threshold; a duplicate inherits its
-  canonical's resolution, a `not-a-duplicate` reply detaches it, and the guard
-  runs in shadow mode (`REVIEW_DEDUP_MODE`, default `shadow`) so the unresolved
-  count is byte-identical until enforcement is flipped. Retired `kilo-code-bot`
+  canonical's resolution and a `not-a-duplicate` reply detaches it. In shadow
+  mode (`REVIEW_DEDUP_MODE`, default `shadow`) the unresolved count is
+  byte-identical and only the dedup ledger is logged; in `enforce` the guard
+  posts an idempotent gate-authored canonical-link reply and a
+  `duplicate-finding` label on each merged thread. Retired `kilo-code-bot`
   from the default reviewer lineup; CodeQL is untouched.
 
 ## [v9.6.24] — 2026-07-15

@@ -10,7 +10,11 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  # write scopes are used ONLY when REVIEW_DEDUP_MODE=enforce, to post the
+  # gate-authored canonical-link reply on a merged duplicate and apply the
+  # duplicate-finding label; shadow mode performs no writes.
+  pull-requests: write
+  issues: write
 
 jobs:
   unresolved-review-threads:
@@ -76,6 +80,7 @@ jobs:
                           nodes {
                             path
                             body
+                            databaseId
                             author { login }
                             url
                             createdAt
@@ -109,6 +114,17 @@ jobs:
               "github-advanced-security[bot]",
               "github-code-scanning[bot]",
             ]);
+            const GATE_REPLY_MARKER = "<!-- remnic-review-dedup:duplicate -->";
+            const DUPLICATE_LABEL = "duplicate-finding";
+            const formatDuplicateReply = (canonicalUrl) =>
+              `${GATE_REPLY_MARKER}\n` +
+              `Duplicate of ${canonicalUrl} — this finding is already tracked there, so it ` +
+              `inherits that thread's resolution for the merge gate. Nothing is hidden: if ` +
+              `the canonical is unresolved the finding still gates via it.\n\n` +
+              "If this is a distinct finding, reply `not-a-duplicate` and it detaches back " +
+              "into the round set within one gate cycle.";
+            const hasGateReply = (t) =>
+              (t.comments?.nodes ?? []).some((c) => (c?.body ?? "").includes(GATE_REPLY_MARKER));
             const STOP = new Set(
               "a an and are as at be been but by can cannot could de do does for from has have if in into is it its may no not of on or so than that the their then there these this to up was we when which will with would you your should shall here how why what where who"
                 .split(" "),
@@ -169,7 +185,11 @@ jobs:
             const loginOf = (t) => t.comments?.nodes?.[0]?.author?.login ?? null;
             const bodyOf = (t) => t.comments?.nodes?.[0]?.body ?? "";
             const isDetached = (t) =>
-              (t.comments?.nodes ?? []).slice(1).some((c) => /\bnot-a-duplicate\b/i.test(c?.body ?? ""));
+              (t.comments?.nodes ?? []).slice(1).some((c) => {
+                const body = c?.body ?? "";
+                if (body.includes(GATE_REPLY_MARKER)) return false;
+                return /\bnot-a-duplicate\b/i.test(body);
+              });
             const createdOf = (t) => {
               const p = Date.parse(t.comments?.nodes?.[0]?.createdAt ?? "");
               return Number.isFinite(p) ? p : 0;
@@ -261,6 +281,46 @@ jobs:
               core.warning(
                 `${wouldBeLost.length} deduplicated finding(s) still surface via an unresolved canonical (none hidden). Reply 'not-a-duplicate' on any thread to detach it back into the round set.`,
               );
+            }
+
+            // Enforce mode only: leave an auditable trail ON each merged thread
+            // — a gate-authored reply linking the canonical, plus a PR-level
+            // duplicate-finding label — so a false merge is visible and the
+            // one-reply not-a-duplicate escape hatch is discoverable. Idempotent
+            // (skips threads already gate-replied). Shadow mode writes nothing.
+            if (applyInheritance && dupRecords.length > 0) {
+              let posted = false;
+              for (const r of dupRecords) {
+                if (hasGateReply(r.t)) continue;
+                const commentId = r.t.comments?.nodes?.[0]?.databaseId;
+                if (!commentId) continue;
+                const canonicalUrl =
+                  records.find((x) => x.id === r.canonicalId)?.t.comments?.nodes?.[0]?.url ?? r.canonicalId;
+                try {
+                  await github.rest.pulls.createReplyForReviewComment({
+                    owner,
+                    repo,
+                    pull_number: pr,
+                    comment_id: commentId,
+                    body: formatDuplicateReply(canonicalUrl),
+                  });
+                  posted = true;
+                } catch (e) {
+                  core.warning(`Could not post dedup reply on thread ${r.id}: ${e?.message ?? e}`);
+                }
+              }
+              if (posted) {
+                try {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: pr,
+                    labels: [DUPLICATE_LABEL],
+                  });
+                } catch (e) {
+                  core.info(`duplicate-finding label not applied: ${e?.message ?? e}`);
+                }
+              }
             }
 
             const unresolvedThreads = applyInheritance ? effectiveUnresolved : rawUnresolved;

@@ -37,6 +37,33 @@ export const NON_DEDUP_AUTHOR_LOGINS = new Set([
   "github-code-scanning[bot]",
 ]);
 
+// Marker on gate-authored dedup replies: makes reply-linking idempotent and
+// keeps the gate's own "reply not-a-duplicate to detach" instruction from
+// self-triggering the detach escape hatch below.
+export const GATE_REPLY_MARKER = "<!-- remnic-review-dedup:duplicate -->";
+
+// PR-level label applied when at least one finding is merged, so the merge is
+// discoverable off the thread as well as on it.
+export const DUPLICATE_LABEL = "duplicate-finding";
+
+/** Gate-authored reply body linking a duplicate to its canonical thread. */
+export function formatDuplicateReply(canonicalUrl) {
+  return (
+    `${GATE_REPLY_MARKER}\n` +
+    `Duplicate of ${canonicalUrl} — this finding is already tracked there, so it ` +
+    `inherits that thread's resolution for the merge gate. Nothing is hidden: if ` +
+    `the canonical is unresolved the finding still gates via it.\n\n` +
+    "If this is a distinct finding, reply `not-a-duplicate` and it detaches back " +
+    "into the round set within one gate cycle."
+  );
+}
+
+/** True when the gate already posted its dedup reply on this thread (idempotency). */
+export function hasGateReply(thread) {
+  const replies = thread?.comments?.nodes ?? thread?.replies ?? [];
+  return replies.some((c) => (c?.body ?? "").includes(GATE_REPLY_MARKER));
+}
+
 // A single maintainer/agent reply carrying this token detaches a merged thread
 // back into the round set — the load-bearing escape hatch against false merges.
 const DETACH_PATTERN = /\bnot-a-duplicate\b/i;
@@ -166,7 +193,13 @@ function firstBody(thread) {
 export function isDetached(thread) {
   const replies = thread?.comments?.nodes ?? thread?.replies ?? [];
   // The first comment is the finding itself; a detach must be a reply to it.
-  return replies.slice(1).some((c) => DETACH_PATTERN.test(c?.body ?? ""));
+  // The gate's own reply mentions "not-a-duplicate" as instructions — never let
+  // that self-trigger the escape hatch, so skip replies carrying the marker.
+  return replies.slice(1).some((c) => {
+    const body = c?.body ?? "";
+    if (body.includes(GATE_REPLY_MARKER)) return false;
+    return DETACH_PATTERN.test(body);
+  });
 }
 
 function isNonDedupThread(thread) {

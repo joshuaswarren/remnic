@@ -376,9 +376,14 @@ to fear.
 The guard step reads `REVIEW_DEDUP_MODE` (default `shadow`). In `shadow` the
 unresolved count is byte-identical to pre-#1994 behavior and only the dedup
 ledger (threads filed, deduplicated, unique-by-reviewer, canonical links) is
-logged, so any false merge is visible before enforcement. Flip to `enforce`
-after the shadow window once the ledger shows a healthy dedup rate and zero
-would-have-been-lost unique findings.
+logged, so any false merge is visible before enforcement. In `enforce` the guard
+additionally leaves an auditable trail ON each merged thread: an idempotent
+gate-authored reply linking the canonical (carrying the detach instructions) and
+a PR-level `duplicate-finding` label. It also lets a resolved canonical satisfy
+its duplicates for the unresolved count. Flip to `enforce` after the shadow
+window once the ledger shows a healthy dedup rate and zero would-have-been-lost
+unique findings. The write scopes in the workflow (`pull-requests: write`,
+`issues: write`) are exercised only in `enforce`.
 
 ### Reviewer lineup
 

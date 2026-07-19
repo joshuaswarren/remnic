@@ -3,13 +3,17 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  DUPLICATE_LABEL,
+  GATE_REPLY_MARKER,
   REVIEW_DEDUP_CONFIG,
   anchorsOverlap,
   computeGuardObligations,
   dedupeThreads,
   fingerprint,
   fingerprintSimilarity,
+  formatDuplicateReply,
   formatRoundLedger,
+  hasGateReply,
   isDetached,
   stripMarkup,
   threadAnchor,
@@ -313,6 +317,44 @@ test("anchorsOverlap requires same file and intersecting known ranges", () => {
   assert.equal(anchorsOverlap({ path: "a", start: null, end: null }, { path: "a", start: 15, end: 25 }), false);
 });
 
+// --- Gate-authored reply, label, and idempotency ----------------------------
+
+test("formatDuplicateReply carries the marker, canonical link, and detach instruction", () => {
+  const url = "https://github.com/x/y/pull/1#discussion_r101";
+  const reply = formatDuplicateReply(url);
+  assert.ok(reply.startsWith(GATE_REPLY_MARKER));
+  assert.match(reply, /Duplicate of https:\/\/github\.com\/x\/y\/pull\/1#discussion_r101/);
+  assert.match(reply, /not-a-duplicate/);
+  assert.equal(DUPLICATE_LABEL, "duplicate-finding");
+});
+
+test("hasGateReply detects the gate's prior reply for idempotency", () => {
+  const withReply = mkThread({
+    id: 401, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
+    replies: [{ author: "github-actions[bot]", body: formatDuplicateReply("https://x/1") }],
+  });
+  const without = mkThread({ id: 402, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding" });
+  assert.equal(hasGateReply(withReply), true);
+  assert.equal(hasGateReply(without), false);
+});
+
+test("the gate's own reply never self-triggers the detach escape hatch", () => {
+  const gateReplied = mkThread({
+    id: 403, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
+    replies: [{ author: "github-actions[bot]", body: formatDuplicateReply("https://x/1") }],
+  });
+  assert.equal(isDetached(gateReplied), false, "gate instruction mentioning not-a-duplicate must not detach");
+
+  const maintainerDetach = mkThread({
+    id: 404, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
+    replies: [
+      { author: "github-actions[bot]", body: formatDuplicateReply("https://x/1") },
+      { author: "joshuaswarren", body: "not-a-duplicate — distinct fix" },
+    ],
+  });
+  assert.equal(isDetached(maintainerDetach), true, "a real not-a-duplicate reply still detaches");
+});
+
 // --- Workflow integration contract ------------------------------------------
 
 test("review-thread-guard workflow mirrors the dedup module and stays in shadow mode by default", () => {
@@ -324,6 +366,18 @@ test("review-thread-guard workflow mirrors the dedup module and stays in shadow 
   // Enforcement must default off: the count-changing branch is gated on an
   // explicit enforce flag so shadow mode is byte-identical to today.
   assert.match(workflow, /applyInheritance/);
+});
+
+test("review-thread-guard workflow posts the gate reply and duplicate-finding label only under enforce", () => {
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  // Write-side must exist: reply-linking + label via the REST helpers.
+  assert.match(workflow, /createReplyForReviewComment/);
+  assert.match(workflow, /addLabels/);
+  assert.match(workflow, /duplicate-finding/);
+  assert.match(workflow, /remnic-review-dedup:duplicate/);
+  // Writes require write permissions and must be guarded by the enforce flag.
+  assert.match(workflow, /pull-requests:\s*write/);
+  assert.match(workflow, /issues:\s*write/);
 });
 
 test("kilo-code-bot is retired from the reviewer lineup", () => {
