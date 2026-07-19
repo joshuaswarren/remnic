@@ -6,7 +6,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
-import { throwIfAborted } from "./abort-error.js";
+import { coordinateRecall, type RecallCoordinatorHost, type RecallExecResult } from "./access-recall-concurrency.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
@@ -79,7 +79,7 @@ import {
   type ExplicitCaptureInput,
   type ValidExplicitCapture,
 } from "./explicit-capture.js";
-import { CrossNamespaceBudget, type BudgetDecision } from "./cross-namespace-budget.js";
+import { CrossNamespaceBudget, type BudgetWarning } from "./cross-namespace-budget.js";
 import { log } from "./logger.js";
 import {
   buildQualityScore,
@@ -405,6 +405,14 @@ export interface EngramAccessRecallRequest {
   includeDebug?: boolean;
   abortSignal?: AbortSignal;
   /**
+   * Internal, server-set field (issue #1906): wall-clock ms the caller
+   * waited for a per-principal recall slot / single-flight leader before
+   * execution. Set by `recall()`, forwarded into `RecallInvocationOptions`,
+   * and folded additively into recall-timings. Not part of the zod schema
+   * (same pattern as `abortSignal`).
+   */
+  queueWaitMs?: number;
+  /**
    * Recall disclosure depth. Omitting it preserves the `"chunk"` default.
    * Other accepted values are `"section"` and `"raw"`.
    */
@@ -508,7 +516,7 @@ export interface EngramAccessRecallResponse {
   disclosure: RecallDisclosure;
   budgetsApplied?: LastRecallSnapshot["budgetsApplied"];
   auditAnomalies?: AnomalyDetectorResult;
-  budgetWarning?: BudgetDecision;
+  budgetWarning?: BudgetWarning;
   latencyMs?: number;
   debug?: {
     snapshot?: LastRecallSnapshot;
@@ -1306,7 +1314,8 @@ export function shapeMemorySummary(
 export class EngramAccessService {
   private readonly idempotency: AccessIdempotencyStore;
   private readonly idempotencyLocks = new Map<string, Promise<void>>();
-  private readonly budgetLocks = new Map<string, Promise<void>>();
+  private readonly recallSemaphores = new Map<string, unknown>();
+  private readonly recallInFlight = new Map<string, unknown>();
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
 
@@ -2421,27 +2430,6 @@ export class EngramAccessService {
     }
   }
 
-  private async withBudgetLock<T>(principal: string, abortSignal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
-    const key = principal || "__anonymous__";
-    const previous = this.budgetLocks.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.then(() => current, () => current);
-    this.budgetLocks.set(key, queued);
-    await previous.catch(() => {});
-    try {
-      throwIfAborted(abortSignal);
-      return await fn();
-    } finally {
-      release();
-      if (this.budgetLocks.get(key) === queued) {
-        this.budgetLocks.delete(key);
-      }
-    }
-  }
-
   async health(namespace?: string): Promise<EngramAccessHealthResponse> {
     const resolvedNamespace = this.resolveNamespace(namespace);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -2744,38 +2732,23 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    return this.withBudgetLock(principal ?? "default", request.abortSignal, async () => {
-      let budgetRecordPrincipal: string | null = null;
-      const response = await this.handleIdempotentRead({
-        operation: "recall",
-        idempotencyKey: request.idempotencyKey,
-        requestFingerprint,
-        execute: async () => {
-          const result = await this.executeRecall(normalizedRequest);
-          throwIfAborted(request.abortSignal);
-          budgetRecordPrincipal = result.budgetRecordPrincipal;
-          return result.response;
-        },
-        afterStore: () => {
-          if (!budgetRecordPrincipal) return;
-          const recordedBudgetDecision = this.budget.record(budgetRecordPrincipal);
-          if (!recordedBudgetDecision.allowed) {
-            throw new EngramAccessInputError(
-              `recall denied: cross-namespace budget exceeded (${recordedBudgetDecision.count}/${recordedBudgetDecision.limit.hardLimit} in ${recordedBudgetDecision.limit.windowMs}ms window)`,
-            );
-          }
-        },
-      });
-      return response;
-    });
+    const principalKey = principal ?? "default";
+    // Single-flight gate resolved through the shared access-setup capability
+    // projection so the config flag is read only in capabilities.ts (#1523).
+    const singleFlight = resolveAccessSetupCapabilities(this.orchestrator.config).recallSingleFlight;
+    return coordinateRecall(
+      this as unknown as RecallCoordinatorHost,
+      request,
+      normalizedRequest,
+      requestFingerprint,
+      principalKey,
+      singleFlight,
+    );
   }
 
   private async executeRecall(
     request: EngramAccessRecallRequest,
-  ): Promise<{
-    response: EngramAccessRecallResponse;
-    budgetRecordPrincipal: string | null;
-  }> {
+  ): Promise<RecallExecResult> {
     return this.accessRecallSurface.executeRecall(
       request,
     );

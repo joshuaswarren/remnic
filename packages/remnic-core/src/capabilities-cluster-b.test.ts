@@ -17,6 +17,7 @@ import {
 const ACCESS_FIELD_TO_FLAG: Record<keyof AccessSetupCapabilitySet, string> = {
   recallCrossNamespaceBudget: "recallCrossNamespaceBudgetEnabled",
   recallAuditAnomalyDetection: "recallAuditAnomalyDetectionEnabled",
+  recallSingleFlight: "recallSingleFlightEnabled",
 };
 
 const ACCESS_FIELDS = Object.keys(ACCESS_FIELD_TO_FLAG) as Array<

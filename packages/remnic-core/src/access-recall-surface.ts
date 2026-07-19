@@ -17,7 +17,7 @@ import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
 import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
-import { type BudgetDecision, CrossNamespaceBudget } from "./cross-namespace-budget.js";
+import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBudgetWarning } from "./cross-namespace-budget.js";
 import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
@@ -25,6 +25,7 @@ import { canReadNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrin
 import { expandScopeProfileReadNamespaces, resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
+import { assembleRecallResponse } from "./access-recall-response.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
@@ -619,6 +620,7 @@ export class AccessRecallSurface {
   ): Promise<{
     response: EngramAccessRecallResponse;
     budgetRecordPrincipal: string | null;
+    reservation?: BudgetReservation;
   }> {
     const query = request.query;
     // Disclosure depth (issue #677).  Default to `"chunk"` when omitted so
@@ -721,7 +723,7 @@ export class AccessRecallSurface {
         : legacyRecallNamespaces;
     const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
     let budgetDecision: BudgetDecision;
-    let recordBudgetAfterSuccess = false;
+    let willReserveBudget = false;
     if (modeSkipsBudget) {
       budgetDecision = {
         allowed: true as const,
@@ -736,11 +738,11 @@ export class AccessRecallSurface {
     } else {
       // Peek at every effective namespace to determine whether ANY would be
       // cross-namespace WITHOUT recording side effects (Cursor review:
-      // multi-count bug).  Record a single budget event only when at least
-      // one effective namespace differs from the principal's self namespace,
-      // and only after recall succeeds so retried transient failures do not
-      // consume budget multiple times before a successful response can be
-      // cached behind the request idempotency key.
+      // multi-count bug). When cross-namespace, the actual reserve
+      // (budget.record) happens ATOMICALLY at admission just before the
+      // pipeline runs (issue #1906) — see the reserve+rollback block below —
+      // so concurrent recalls for one principal cannot each pass a stale peek
+      // and collectively overrun the hard limit.
       let anyCrossNamespace = false;
       let denied: BudgetDecision | null = null;
       let crossNamespaceDecision: BudgetDecision | null = null;
@@ -774,7 +776,7 @@ export class AccessRecallSurface {
             windowMs: this.deps.orchestrator.config.recallCrossNamespaceBudgetWindowMs ?? 60_000,
           },
         };
-        recordBudgetAfterSuccess = true;
+        willReserveBudget = true;
       } else {
         budgetDecision = {
           allowed: true as const,
@@ -825,249 +827,62 @@ export class AccessRecallSurface {
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+      // Only surface a real wait: an uncontended recall (queueWaitMs 0) omits
+      // the field so recall-timings stays additive and byte-identical to the
+      // pre-#1906 uncontended path (acceptance: "record queueWaitMs ~0 or omit").
+      ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
+        ? { queueWaitMs: request.queueWaitMs }
+        : {}),
     };
     const startedAt = Date.now();
-    const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
-    const snapshot = request.sessionKey
-      ? this.deps.orchestrator.lastRecall.get(request.sessionKey)
-      : null;
-    const effectiveNamespace = snapshot?.namespace
-      ? this.deps.resolveNamespace(snapshot.namespace)
-      : namespace;
-    // Auto-escalation policy (issue #677 PR 4/4).  When the operator
-    // configured `recallDisclosureEscalation: "auto"` AND the caller
-    // did not explicitly choose a disclosure level AND recall produced
-    // a low-confidence result set (proxied by fill ratio: results
-    // returned / topK requested), we escalate the default `chunk`
-    // shape to `section` so the LLM gets richer context to compensate
-    // for ambiguous retrieval.  Manual mode and explicit caller
-    // disclosure both bypass the policy.  Documented in
-    // `recall-disclosure-escalation.ts` and unit-tested there.
-    // Confidence-proxy denominator: priority order is
-    //   1. `snapshot.budgetsApplied.appliedTopK` (ALWAYS wins) — this is
-    //      the limit the orchestrator actually applied after planner /
-    //      minimal-mode / section-cap narrowing.  Codex P1 rounds 2+3
-    //      on #705 emphasize that even a caller's explicit `request.topK`
-    //      is wrong when the orchestrator caps below it (e.g. topK=50
-    //      but appliedTopK=3 makes a 2-hit recall actually 0.67, not
-    //      0.04).
-    //   2. The caller's explicit `topK` when the snapshot lacks
-    //      `budgetsApplied` (early-return paths, error cases).
-    //   3. Config `qmdMaxResults` as a last-resort fallback.
-    // Floor at observed-results so the ratio stays in [0, 1] even if
-    // any of the signals drifts below the actual hit count.
-    const resultsReturned = snapshot?.memoryIds?.length ?? 0;
-    const appliedTopK = snapshot?.budgetsApplied?.appliedTopK;
-    const configMaxResults =
-      typeof this.deps.orchestrator.config.qmdMaxResults === "number" &&
-      Number.isFinite(this.deps.orchestrator.config.qmdMaxResults) &&
-      this.deps.orchestrator.config.qmdMaxResults > 0
-        ? this.deps.orchestrator.config.qmdMaxResults
-        : 0;
-    const topKDenominator =
-      typeof appliedTopK === "number" &&
-      Number.isFinite(appliedTopK) &&
-      appliedTopK > 0
-        ? Math.max(appliedTopK, resultsReturned)
-        : typeof topK === "number" && topK > 0
-          ? Math.max(topK, resultsReturned)
-          : Math.max(configMaxResults, resultsReturned, 1);
-    // When the recall produced no snapshot (sessionless / namespace
-    // mismatch / early-return path), there is no confidence signal to
-    // base escalation on.  Pass `undefined` so the helper takes its
-    // `no-top-k-confidence` branch instead of computing 0/N=0 and
-    // forcing auto-escalation on every sessionless caller (Codex P2
-    // review on PR #705).
-    const topKConfidence =
-      snapshot && topKDenominator > 0
-        ? Math.min(1, resultsReturned / topKDenominator)
-        : undefined;
-    const escalationDecision = decideDisclosureEscalation({
-      mode: this.deps.orchestrator.config.recallDisclosureEscalation,
-      threshold: this.deps.orchestrator.config.recallDisclosureEscalationThreshold,
-      originalDisclosure: requestedDisclosure,
-      callerProvidedDisclosure,
-      topKConfidence,
-    });
-    const disclosure = escalationDecision.effective;
-    // Gate the raw-excerpt LCM read with the SAME read-authorization namespace
-    // `lcmSearch` + the in-prompt LCM sections use (#1505 thread 2f7), so
-    // `disclosure: "raw"` never attaches `<principal>-project-*` overlay rows
-    // when the principal can WRITE but not READ its self base (or
-    // `defaultRecallNamespaces` omits `self`). Computed ONLY for raw disclosure:
-    // it is the sole consumer, and resolving the overlay on every chunk/section
-    // recall would be wasted work — keeping non-raw recall byte-for-byte
-    // unchanged.
-    // Trim the sessionKey to match what `orchestrator.recall(...)` already does
-    // (`request.sessionKey?.trim() || undefined`) and what the x-ray raw-excerpt
-    // path uses (cursor "Raw excerpt key not trimmed"). A whitespace-padded key
-    // otherwise drives recall under one identity but resolves the raw-excerpt
-    // overlay namespace + LCM `session_id` under a DIFFERENT (untrimmed) prefix,
-    // so excerpts are gated/queried inconsistently with recall and the x-ray path.
-    const trimmedSessionKey = request.sessionKey?.trim() || undefined;
-    const rawExcerptNamespace =
-      disclosure === "raw"
-        ? this.deps.resolveRawExcerptReadNamespace(
-            request.namespace,
-            trimmedSessionKey,
-            authenticatedPrincipal,
-          )
-        : undefined;
-    // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
-    // exists (restrictive `default` READ policy, no readable overlay/self) —
-    // suppress excerpts rather than fall back to the write/overlay namespace the
-    // read gate excludes (#1505 thread NBHWz). An EXPLICIT namespace always
-    // resolves (or throws) above, so suppression only applies to the implicit
-    // path.
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" &&
-      request.namespace.trim().length > 0;
-    const rawExcerptsSuppressed =
-      disclosure === "raw" &&
-      !hasExplicitNamespace &&
-      rawExcerptNamespace === undefined;
-    // Ordered, read-authorized LCM read key SET (#1505 fallback unification) so
-    // raw disclosure finds excerpts a branch-scoped session archived at
-    // project/root scope — exactly as recall + `lcmSearch` do. Only with a
-    // concrete sessionKey; already read-gated.
-    const rawExcerptSessionIds =
-      disclosure === "raw" && rawExcerptNamespace && trimmedSessionKey
-        ? this.deps.resolveLcmReadSessionIds(
-            request.namespace,
-            rawExcerptNamespace,
-            trimmedSessionKey,
-            authenticatedPrincipal,
-          )
-        : undefined;
-    let results = await this.deps.serializeRecallResults(snapshot, disclosure, {
-      query,
-      sessionKey: trimmedSessionKey,
-      ...(rawExcerptNamespace ? { rawExcerptNamespace } : {}),
-      ...(rawExcerptSessionIds !== undefined ? { rawExcerptSessionIds } : {}),
-      ...(rawExcerptsSuppressed ? { rawExcerptsSuppressed } : {}),
-    });
-
-    // Tag filter (issue #689). Applied post-recall, post-serialization so
-    // the actual frontmatter tags are already loaded onto each result. When
-    // `tags` is absent or empty the filter is a no-op; an invalid `tagMatch`
-    // throws via `parseTagMatch` (CLAUDE.md rule 51).
-    const filterTags = normalizeTags(request.tags);
-    let tagMatchMode: TagMatchMode | undefined;
-    try {
-      tagMatchMode = parseTagMatch(request.tagMatch);
-    } catch (err) {
-      throw new EngramAccessInputError(
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-    let effectiveContext = context;
-    if (filterTags && filterTags.length > 0) {
-      const beforeIds = results.map((r) => r.id);
-      const { results: admitted } = applyTagFilter(results, {
-        tags: filterTags,
-        tagMatch: tagMatchMode,
-      });
-      results = admitted;
-      // Codex P1: `context` was generated by orchestrator.recall(...)
-      // BEFORE the tag filter ran, so it can contain memories that don't
-      // match the requested tags. Surfaces consuming `context` (the
-      // prompt-injection string) would leak excluded content into the
-      // LLM. When the filter actually drops any result, rebuild context
-      // from the admitted set so excluded content is unreachable through
-      // any field of the response. The rebuilt context concatenates each
-      // admitted result's available text (full content at section/raw
-      // disclosure, otherwise the preview) — a different wire format
-      // than the orchestrator's native context, but a strict subset
-      // safe to inject.
-      const admittedIds = new Set(results.map((r) => r.id));
-      const droppedAny = beforeIds.some((id) => !admittedIds.has(id));
-      if (droppedAny) {
-        effectiveContext = results
-          .map((r) => {
-            const content =
-              typeof (r as { content?: unknown }).content === "string"
-                ? ((r as { content?: string }).content ?? "")
-                : "";
-            const preview =
-              typeof (r as { preview?: unknown }).preview === "string"
-                ? ((r as { preview?: string }).preview ?? "")
-                : "";
-            return content || preview;
-          })
-          .filter((s) => s.length > 0)
-          .join("\n\n");
-      }
-    }
-    const filteredMemoryIds = filterTags && filterTags.length > 0
-      ? results.map((r) => r.id)
-      : (snapshot?.memoryIds ?? []);
-    const debug = await this.deps.buildRecallDebug(
-      snapshot,
-      effectiveNamespace,
-      request.includeDebug === true,
-      request.sessionKey,
-    );
-
-    // Fire-and-forget audit recording. Must never block or crash recall.
-    let auditAnomalies: AccessAuditResult["anomalies"] | undefined;
-    if (this.deps.auditAdapter) {
-      try {
-        const resolvedAgentId = principal ?? "__anonymous__";
-        const auditEntry = {
-          ts: new Date().toISOString(),
-          sessionKey: request.sessionKey ?? "",
-          agentId: resolvedAgentId,
-          trigger: "access-surface",
-          queryText: query,
-          candidateMemoryIds: snapshot?.memoryIds ?? [],
-          // Audit must reflect what was actually injected, not what
-          // recall produced before the tag filter. Using `context`
-          // (pre-filter) overstates injectedChars and can leak content
-          // from excluded memories into the audit summary (cursor
-          // Medium on PR #712).
-          summary: effectiveContext.slice(0, 200) || null,
-          injectedChars: effectiveContext.length,
-          toggleState: "enabled" as const,
-          latencyMs: Date.now() - startedAt,
-          plannerMode: snapshot?.plannerMode ?? mode,
-          requestedMode: mode,
-          fallbackUsed: snapshot?.fallbackUsed ?? false,
-        };
-        const auditResult = await this.deps.auditAdapter.record(
-          resolvedAgentId || "__anonymous__",
-          auditEntry,
+    // #1906 atomic budget admission: the peek loop above and this record are
+    // one synchronous JS turn (no await between them), so record()'s own
+    // atomic project-and-push denies the Nth concurrent cross-namespace recall
+    // for a principal BEFORE its pipeline runs — no over-admission. On a
+    // pipeline failure/abort the reservation is rolled back (budget.release)
+    // so an errored recall does not consume budget permanently.
+    let reservedBudgetPrincipal: string | null = null;
+    let reservedBudget: BudgetReservation | undefined;
+    if (willReserveBudget) {
+      const reserveDecision = this.deps.budget.record(principal);
+      budgetDecision = reserveDecision;
+      if (!reserveDecision.allowed) {
+        throw new EngramAccessInputError(
+          `recall denied: cross-namespace budget exceeded (${reserveDecision.count}/${reserveDecision.limit.hardLimit} in ${reserveDecision.limit.windowMs}ms window)`,
         );
-        auditAnomalies = auditResult.anomalies;
-      } catch {
-        // Audit failures must never crash the recall path.
       }
+      reservedBudgetPrincipal = principal;
+      reservedBudget = reserveDecision.reservation;
     }
-
-    return {
-      response: {
+    // #1906 review #5: the rollback covers the ENTIRE post-reservation
+    // operation — orchestrator.recall AND serialization / debug / response
+    // construction — so ANY failure after the reserve releases the exact
+    // budget entry (by token, review #4) instead of leaking it.
+    try {
+      const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+      const assembled = await assembleRecallResponse(this.deps, {
+        request,
+        context,
         query,
-        sessionKey: request.sessionKey,
-        namespace: effectiveNamespace,
-        context: effectiveContext,
-        count: filterTags && filterTags.length > 0
-          ? results.length
-          : (snapshot?.memoryIds.length ?? results.length),
-        memoryIds: filteredMemoryIds,
-        results,
-        recordedAt: snapshot?.recordedAt,
-        traceId: snapshot?.traceId,
-        plannerMode: snapshot?.plannerMode ?? mode,
-        fallbackUsed: snapshot?.fallbackUsed ?? false,
-        sourcesUsed: snapshot?.sourcesUsed ?? [],
-        disclosure,
-        budgetsApplied: snapshot?.budgetsApplied,
-        auditAnomalies,
-        budgetWarning: budgetDecision.reason === "warn-over-soft" ? budgetDecision : undefined,
-        latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),
-        debug,
-      },
-      budgetRecordPrincipal: recordBudgetAfterSuccess ? principal : null,
-    };
+        mode,
+        namespace,
+        requestedDisclosure,
+        callerProvidedDisclosure,
+        topK,
+        principal,
+        authenticatedPrincipal,
+        startedAt,
+        budgetDecision,
+        budgetRecordPrincipal: reservedBudgetPrincipal,
+      });
+      // Expose the reservation token so a consumer that fails AFTER this
+      // returns (response clone, idempotency put) can release the exact entry
+      // (#1906 review round 3, findings #1/#3).
+      return { ...assembled, reservation: reservedBudget };
+    } catch (err) {
+      if (reservedBudget) this.deps.budget.release(reservedBudget);
+      throw err;
+    }
   }
 
   /**
