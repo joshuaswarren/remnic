@@ -789,6 +789,24 @@ test("enforce obligations fold an unresolved duplicate only with resolved canoni
   assert.equal(enforce.wouldBeLostUniqueFindings.length, 0, "nothing hidden: canonical carries the resolution");
 });
 
+test("audited duplicate ids satisfy enforce-mode inheritance without a gate reply", () => {
+  const canonical = mkThread({
+    id: 703, path: "svc.ts", startLine: 3, line: 5, author: "cursor",
+    body: "The retry loop never bounds its attempts and can spin forever on a dead host",
+    isResolved: true,
+  });
+  const duplicate = mkThread({
+    id: 704, path: "svc.ts", startLine: 3, line: 5, author: "chatgpt-codex-connector",
+    body: "The retry loop never bounds its attempts and can spin forever on a dead host",
+    isResolved: false,
+  });
+  const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, {
+    applyInheritance: true,
+    auditedDuplicateIds: new Set([duplicate.id]),
+  });
+  assert.equal(enforce.effectiveUnresolvedCount, 0);
+});
+
 test("comments on the same line but opposite diff sides do NOT merge", () => {
   // LEFT (pre-image) and RIGHT (post-image) on the same line are different
   // locations; identical text on opposite sides must not collapse.
@@ -905,15 +923,13 @@ test("the gate's own reply never self-triggers the detach escape hatch", () => {
 
 // --- Workflow integration contract ------------------------------------------
 
-test("review-thread-guard workflow mirrors the dedup module and stays in shadow mode by default", () => {
+test("review-thread-guard imports the tested dedup module and stays in shadow mode by default", () => {
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  assert.match(workflow, /dedup/i);
+  assert.match(workflow, /scripts\/review-dedup\.mjs/);
+  assert.match(workflow, /actions\/checkout@v4/);
   assert.match(workflow, /not-a-duplicate/);
   assert.match(workflow, /REVIEW_DEDUP_MODE/);
   assert.match(workflow, /shadow/);
-  // Enforcement must default off: the count-changing branch is gated on an
-  // explicit enforce flag so shadow mode is byte-identical to today.
-  assert.match(workflow, /applyInheritance/);
 });
 
 test("review-thread-guard workflow posts the gate reply and duplicate-finding label only under enforce", () => {
@@ -921,8 +937,8 @@ test("review-thread-guard workflow posts the gate reply and duplicate-finding la
   // Write-side must exist: reply-linking + label via the REST helpers.
   assert.match(workflow, /createReplyForReviewComment/);
   assert.match(workflow, /addLabels/);
-  assert.match(workflow, /duplicate-finding/);
-  assert.match(workflow, /remnic-review-dedup:duplicate/);
+  assert.match(workflow, /DUPLICATE_LABEL/);
+  assert.match(workflow, /applyInheritance && dupRecords\.length > 0/);
   // Writes require write permissions and must be guarded by the enforce flag.
   assert.match(workflow, /pull-requests:\s*write/);
   assert.match(workflow, /issues:\s*write/);
