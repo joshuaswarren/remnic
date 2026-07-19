@@ -399,3 +399,84 @@ test("deadline-bound: a trust stage exceeding the assembly budget returns the pa
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("#1907: assembly deadline aborts the losing task's injected signal but not the request signal", async () => {
+  // awaitAssemblyStep now injects a per-step AbortSignal into the task so the
+  // losing task cooperatively stops instead of running to completion after the
+  // Promise.race is lost. A task-level deadline must abort ONLY that injected
+  // step signal — never the request-level signal, which alone is allowed to
+  // reject the whole recall (#1907, fail-open guardrail).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-1907-assembly-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    multiGraphMemoryEnabled: false,
+    entityGraphEnabled: false,
+    timeGraphEnabled: false,
+    causalGraphEnabled: false,
+    extractionJudgeEnabled: false,
+    temporalSupersessionEnabled: false,
+    contradictionDetectionEnabled: false,
+    chunkingEnabled: false,
+    inlineSourceAttributionEnabled: false,
+    trustScoreEnabled: true,
+    initGateTimeoutMs: 200,
+    recallEnrichmentDeadlineMs: 2000,
+  });
+  const orchestrator = new Orchestrator(config);
+  try {
+    await writeFact(memoryDir, "Recallable fact: production DB uses pgBouncer.", [
+      "mw_success: 5",
+      "mw_fail: 0",
+    ]);
+
+    const stuck = Promise.withResolvers<{
+      results: QmdSearchResult[];
+      trustByPath: null;
+    }>();
+    let capturedStepSignal: AbortSignal | undefined;
+    const realStage = orchestrator.recallRerankCoordinator.applyTrustScoreToBranch.bind(
+      orchestrator.recallRerankCoordinator,
+    );
+    orchestrator.recallRerankCoordinator.applyTrustScoreToBranch = async (
+      results,
+      namespaces,
+      caps,
+      label,
+      preloadedFrontmatter,
+      abortSignal,
+    ) => {
+      if (label === "recent-scan") {
+        capturedStepSignal = abortSignal;
+        return stuck.promise; // never resolves — force the deadline to win
+      }
+      return realStage(results, namespaces, caps, label, preloadedFrontmatter, abortSignal);
+    };
+
+    const requestController = new AbortController();
+    const recall = await orchestrator.recall(
+      "database connection pooling",
+      "sess-1907-assembly",
+      { xrayCapture: true, abortSignal: requestController.signal },
+    );
+
+    assert.equal(typeof recall, "string", "recall resolves despite the never-resolving stage");
+    assert.ok(capturedStepSignal, "the trust stage received an injected step signal");
+    assert.equal(
+      capturedStepSignal!.aborted,
+      true,
+      "the injected step signal is aborted when the assembly deadline wins",
+    );
+    assert.equal(
+      requestController.signal.aborted,
+      false,
+      "a task-level deadline must NOT abort the request-level signal",
+    );
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

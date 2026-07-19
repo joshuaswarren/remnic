@@ -34,7 +34,7 @@ import {
   resolveCreationMemoryCapabilities,
 } from "../capabilities.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { deindexMemoryAsync } from "../temporal-index.js";
+import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { extractTopics } from "../topics.js";
 import { log } from "../logger.js";
 import path from "node:path";
@@ -304,55 +304,70 @@ export class LifecyclePolicyCoordinator {
       this.config.factArchivalProtectedCategories,
     );
     let archivedCount = 0;
+    // Collect deindex entries and remove them in one batch rather than a full
+    // index read-modify-write per archived fact. Guard is preserved: entries are
+    // only collected when queryAwareIndexing is enabled. The flush runs in
+    // `finally` so facts already archived on disk are still de-indexed if a later
+    // iteration throws; it runs exactly once and any loop error propagates after.
+    const deindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
 
-    for (const memory of allMemories) {
-      const fm = memory.frontmatter;
+    try {
+      for (const memory of allMemories) {
+        const fm = memory.frontmatter;
 
-      // Skip already-archived or superseded
-      if (fm.status && fm.status !== "active") continue;
+        // Skip already-archived or superseded
+        if (fm.status && fm.status !== "active") continue;
 
-      // Skip protected categories
-      if (protectedCategories.has(fm.category)) continue;
+        // Skip protected categories
+        if (protectedCategories.has(fm.category)) continue;
 
-      // Skip corrections (always keep)
-      if (fm.category === "correction") continue;
+        // Skip corrections (always keep)
+        if (fm.category === "correction") continue;
 
-      // Check age requirement
-      const createdMs = new Date(fm.created).getTime();
-      if (now - createdMs < ageCutoffMs) continue;
+        // Check age requirement
+        const createdMs = new Date(fm.created).getTime();
+        if (now - createdMs < ageCutoffMs) continue;
 
-      // Check importance (only archive low-importance facts)
-      const importanceScore = fm.importance?.score ?? 0.5;
-      if (importanceScore >= this.config.factArchivalMaxImportance) continue;
+        // Check importance (only archive low-importance facts)
+        const importanceScore = fm.importance?.score ?? 0.5;
+        if (importanceScore >= this.config.factArchivalMaxImportance) continue;
 
-      // Check access count
-      const accessCount = fm.accessCount ?? 0;
-      if (accessCount > this.config.factArchivalMaxAccessCount) continue;
+        // Check access count
+        const accessCount = fm.accessCount ?? 0;
+        if (accessCount > this.config.factArchivalMaxAccessCount) continue;
 
-      // All criteria met — archive
-      const result = await storage.archiveMemory(memory);
-      if (result) {
-        // Remove from the same storage-scoped content-hash index since it is
-        // no longer in hot search.
-        await this.deps.removeContentHashForMemory(
-          storage,
-          memory,
-          "fact-archival",
-        );
-        await this.deps.embeddingFallback.removeFromIndex(memory.frontmatter.id);
-        if (
-          resolveIndexingCapabilities(this.config).queryAwareIndexing &&
-          memory.path &&
-          memory.frontmatter?.created
-        ) {
-          await deindexMemoryAsync(
-            this.config.memoryDir,
-            memory.path,
-            memory.frontmatter.created,
-            memory.frontmatter.tags ?? [],
+        // All criteria met — archive
+        const result = await storage.archiveMemory(memory);
+        if (result) {
+          // Queue de-indexing immediately after a successful archive, before
+          // the secondary content-hash / embedding cleanup can throw. A fact
+          // archived on disk must always be de-indexed; the finally-flush then
+          // removes every queued fact even if a later step throws.
+          if (
+            resolveIndexingCapabilities(this.config).queryAwareIndexing &&
+            memory.path &&
+            memory.frontmatter?.created
+          ) {
+            deindexBatch.push({
+              path: memory.path,
+              createdAt: memory.frontmatter.created,
+              tags: memory.frontmatter.tags ?? [],
+            });
+          }
+          // Remove from the same storage-scoped content-hash index since it is
+          // no longer in hot search.
+          await this.deps.removeContentHashForMemory(
+            storage,
+            memory,
+            "fact-archival",
           );
+          await this.deps.embeddingFallback.removeFromIndex(memory.frontmatter.id);
+          archivedCount++;
         }
-        archivedCount++;
+      }
+    } finally {
+      if (deindexBatch.length > 0) {
+        await deindexMemoriesBatchAsync(this.config.memoryDir, deindexBatch);
       }
     }
 

@@ -18,6 +18,7 @@
 
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { abortError } from "../abort-error.js";
 import { type CapabilitySet, type GraphConstructionCapabilitySet, resolveCapabilities, resolveConversationContextCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveQmdCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { StorageManager } from "../index.js";
@@ -804,7 +805,7 @@ export class RecallSearchPipelineCoordinator {
     const runColdStepWithinDeadline = async <T>(
       label: string,
       fallback: T,
-      task: () => Promise<T>,
+      task: (stepSignal: AbortSignal) => Promise<T>,
       // Invoked when the deadline abandons this step (before it started or
       // while it runs), so callers can report the abandonment and gate off
       // late observer callbacks (#1536, cursor round-6 on #1544).
@@ -812,47 +813,48 @@ export class RecallSearchPipelineCoordinator {
     ): Promise<T> => {
       throwIfRecallAborted(options.abortSignal);
       const remainingMs = deadlineRemainingMs();
-      if (remainingMs === 0) {
+      // Step-level deadline abort (#1907): compose the caller's request signal with
+      // a per-step controller so a disconnect OR this step's deadline stops the task.
+      const stepController = new AbortController();
+      const stepSignal = options.abortSignal
+        ? AbortSignal.any([options.abortSignal, stepController.signal])
+        : stepController.signal;
+      const abandonToDeadline = () => {
+        stepController.abort(abortError(`cold-tier recall ${label} deadline exceeded`));
         try {
           onDeadline?.();
         } catch {
           // Observers must never break recall.
         }
         log.debug(`cold-tier recall ${label} skipped: shared assembly deadline expired`);
+      };
+      if (remainingMs === 0) {
+        abandonToDeadline();
         return fallback;
       }
-      if (remainingMs === null) return task();
-
+      if (remainingMs === null) return task(stepSignal);
       let timeoutHandle: NodeJS.Timeout | undefined;
       let timedOut = false;
-      const taskPromise = task().catch((err) => {
+      const taskPromise = task(stepSignal).catch((err) => {
         if (timedOut) {
           log.debug(`cold-tier recall ${label} failed after deadline: ${err}`);
           return fallback;
         }
         throw err;
       });
-
       try {
         return await Promise.race<T>([
           taskPromise,
           new Promise<T>((resolve) => {
             timeoutHandle = setTimeout(() => {
               timedOut = true;
-              try {
-                onDeadline?.();
-              } catch {
-                // Observers must never break recall.
-              }
-              log.debug(
-                `cold-tier recall ${label} skipped: shared assembly deadline expired`,
-              );
+              abandonToDeadline();
               resolve(fallback);
             }, remainingMs);
           }),
         ]);
       } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+        clearTimeout(timeoutHandle);
       }
     };
 
@@ -895,7 +897,7 @@ export class RecallSearchPipelineCoordinator {
         longTerm = await runColdStepWithinDeadline(
           "qmd lookup",
           [],
-          () =>
+          (stepSignal) =>
             this.deps.fetchQmdMemoryResultsWithArtifactTopUp(
               options.prompt,
               coldFetchLimit,
@@ -907,7 +909,7 @@ export class RecallSearchPipelineCoordinator {
                 collection: coldCollection,
                 queryAwarePrefilter: options.queryAwarePrefilter,
                 searchOptions: this.deps.buildConfiguredQmdSearchOptions(options.prompt),
-                abortSignal: options.abortSignal,
+                abortSignal: stepSignal,
                 onDegradation: (degradation) => {
                   if (coldQmdObserverActive) {
                     options.onDegradation?.(degradation);
@@ -929,17 +931,14 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (longTerm.length === 0) {
-      // Deadline-aware abort: terminate the scoring worker when the shared
-      // assembly deadline wins, not just when the caller aborts (#1674).
-      const da = new AbortController();
-      if (options.abortSignal?.aborted) da.abort();
-      else options.abortSignal?.addEventListener("abort", () => da.abort(), { once: true });
+      // The archive-scan scoring worker terminates when EITHER the caller
+      // aborts or this step's own deadline wins — both flow through the
+      // step signal injected by runColdStepWithinDeadline (#1674, #1907).
       longTerm = await runColdStepWithinDeadline(
         "archive scan", [],
-        () => this.deps.searchLongTermArchiveFallback(
+        (stepSignal) => this.deps.searchLongTermArchiveFallback(
           options.prompt, options.recallNamespaces, options.recallResultLimit,
-          options.queryAwarePrefilter, da.signal),
-        () => da.abort(),
+          options.queryAwarePrefilter, stepSignal),
       );
       if (longTerm.length > 0) {
         log.debug("cold-tier recall source=archive-scan");
