@@ -1194,6 +1194,9 @@ test("offlineSyncFiles reports invalid requested paths as input errors", async (
     };
   }).orchestrator.getStorage = async () => ({
     dir: os.tmpdir(),
+    async drainPendingMemoryLifecycleEventsForSync() {
+      return { folded: false, pendingDeferred: false };
+    },
     async readOfflineSyncFile() {
       throw new Error("should not read invalid paths");
     },
@@ -1224,6 +1227,9 @@ test("offlineSyncFiles reports symlink requested paths as input errors", async (
       };
     }).orchestrator.getStorage = async () => ({
       dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile() {
         throw new Error("should not read symlink paths");
       },
@@ -1520,8 +1526,9 @@ test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-
 test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (#2033)", async () => {
   // When the ledger lock is held by a peer the drain leaves durable rows in the
   // EXCLUDED pending queue and reports pendingDeferred. A snapshot built then
-  // would silently omit those append-only rows, so both the buffered and the
-  // streaming snapshot entrypoints MUST abort rather than report success.
+  // would silently omit those append-only rows, so the buffered snapshot, the
+  // streaming snapshot, AND the path-enumeration (offlineSyncFiles) entrypoints
+  // MUST abort rather than report success.
   const { service } = makeService();
   const orchestrator = (service as unknown as {
     orchestrator: { getStorage(namespace: string): Promise<StorageManager> };
@@ -1546,5 +1553,15 @@ test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (
     /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
     "streaming snapshot aborts on a persistent lifecycle deferral",
   );
-  assert.ok(drainAttempts >= 6, "each aborted snapshot retried the drain before giving up");
+  await assert.rejects(
+    () =>
+      service.offlineSyncFiles({
+        namespace: "team",
+        principal: "reader",
+        paths: ["state/memory-lifecycle-ledger.jsonl"],
+      }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "path enumeration aborts on a persistent lifecycle deferral",
+  );
+  assert.ok(drainAttempts >= 9, "each aborted entrypoint retried the drain before giving up");
 });

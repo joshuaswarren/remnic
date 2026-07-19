@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -100,6 +100,8 @@ test("offline sync drains pending impression spills before building the initial 
       includeTranscripts: true,
       statePath,
       statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     await assertImpressionFolded(root, nonce);
@@ -180,10 +182,133 @@ test("offline sync drains pending impression spills before the post-direct-push 
       includeTranscripts: true,
       statePath,
       statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(pushedLargeFile, true, "large file must take the direct-push path that triggers the second snapshot");
     await assertImpressionFolded(root, nonce);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync drains through a LastRecallStore configured with the caller's rotation bounds, not defaults (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-rotation-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    // Seed an active impressions file already larger than the configured cap so
+    // folding one more spilled row must rotate it. With the LastRecallStore
+    // default (impressionsRotateBytes = 0, rotation disabled) no `.1` archive
+    // would ever appear — its presence proves runOfflineSyncOnce propagated the
+    // configured cap into the store instead of falling back to defaults.
+    const activePath = path.join(root, IMPRESSIONS_REL);
+    await mkdir(path.dirname(activePath), { recursive: true });
+    const seeded = `${JSON.stringify({ seeded: "x".repeat(200) })}\n`;
+    await writeFile(activePath, seeded, "utf-8");
+    const nonce = await seedPendingImpression(root);
+
+    const statePath = path.join(root, ".offline-sync", "state", "test.json");
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [],
+    });
+
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        const request = JSON.parse(String(init?.body ?? "{}")) as { changeset?: OfflineSyncChangeset };
+        return new Response(JSON.stringify({
+          namespace: "generalist",
+          appliedUpserts: request.changeset?.changes.length ?? 0,
+          appliedDeletes: 0,
+          skipped: 0,
+          conflicts: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify(EMPTY_REMOTE_SNAPSHOT), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    await runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 128,
+      impressionsRotateKeep: 2,
+    });
+
+    // The fold appended the spill under the configured cap, rotating the
+    // over-cap active generation into `.1`.
+    const archive = await stat(`${activePath}.1`).then(() => true, () => false);
+    assert.equal(archive, true, "configured rotation bytes propagated: the over-cap active file rotated into .1");
+    // The spilled row was still folded (never dropped) — it lives in the current
+    // active generation.
+    await assertImpressionFolded(root, nonce);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync aborts (never pushes) when the pending impression drain cannot complete (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-abort-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    // A file where the pending spill DIRECTORY is expected makes the drain's
+    // readdir fail (ENOTDIR) on every attempt: the durable rows can never be
+    // folded, so the drain helper aborts rather than let runOfflineSyncOnce build
+    // and push a snapshot that silently omits them.
+    await mkdir(path.join(root, "state"), { recursive: true });
+    await writeFile(path.join(root, PENDING_DIR_REL), "not a directory", "utf-8");
+
+    const statePath = path.join(root, ".offline-sync", "state", "test.json");
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [],
+    });
+
+    let applyCalled = false;
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        applyCalled = true;
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        runOfflineSyncOnce({
+          memoryDir: root,
+          remoteUrl: "http://remnic.test",
+          token: "test-token",
+          namespace: "generalist",
+          includeTranscripts: true,
+          statePath,
+          statePathExplicit: true,
+          impressionsRotateBytes: 0,
+          impressionsRotateKeep: 5,
+        }),
+      /impression drain could not fold pending recall impressions.*aborting snapshot/s,
+      "runOfflineSyncOnce aborts when the impression drain cannot complete",
+    );
+    assert.equal(applyCalled, false, "no snapshot was pushed after the drain aborted");
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });

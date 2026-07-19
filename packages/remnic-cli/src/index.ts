@@ -9008,6 +9008,15 @@ export async function runOfflineSyncOnce(options: {
   userExcludeRegexps?: readonly RegExp[];
   /** Large files permanently skipped by the watch 3-strikes policy (#1786). */
   skipLargeFilePaths?: ReadonlySet<string>;
+  /**
+   * Recall-impression rotation bounds the daemon writer uses (#2033). A
+   * standalone CLI push drains pending impressions through its own
+   * `LastRecallStore`; passing the configured bounds keeps that drain's
+   * rotation identical to the writer's instead of silently reverting to
+   * `LastRecallStore` defaults.
+   */
+  impressionsRotateBytes: number;
+  impressionsRotateKeep: number;
 }): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
@@ -9050,7 +9059,10 @@ export async function runOfflineSyncOnce(options: {
   const storageIo = await createOfflineStorageIo(options.memoryDir);
   const localSourceId = localOfflineSourceId(options.memoryDir);
   await drainPendingImpressionsForOfflineSync(() =>
-    new LastRecallStore(options.memoryDir).drainPendingImpressions(),
+    new LastRecallStore(options.memoryDir, {
+      impressionsRotateBytes: options.impressionsRotateBytes,
+      impressionsRotateKeep: options.impressionsRotateKeep,
+    }).drainPendingImpressions(),
   );
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
@@ -9679,6 +9691,35 @@ function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
   return compileOfflineSyncExcludeGlobs(globs);
 }
 
+/**
+ * Resolve the recall-impression rotation bounds the daemon writer uses so a
+ * standalone CLI push drains through an identically-configured store (#2033).
+ * Uses the same config parser as the writer; unparseable config surfaces loudly
+ * rather than silently falling back to LastRecallStore defaults.
+ */
+function resolveOfflineImpressionRotation(): {
+  impressionsRotateBytes: number;
+  impressionsRotateKeep: number;
+} {
+  const configPath = resolveConfigPath();
+  let raw: unknown;
+  try {
+    raw = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+      : {};
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`cannot read recall-impression rotation from ${configPath}: ${error.message}`);
+    }
+    throw error;
+  }
+  const config = parseConfig(resolveRemnicConfigRecord(raw));
+  return {
+    impressionsRotateBytes: config.recallImpressionsRotateBytes,
+    impressionsRotateKeep: config.recallImpressionsRotateKeep,
+  };
+}
+
 async function cmdOffline(action: string, rest: string[], json: boolean): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic offline <prepare|sync|status|watch> [options]
@@ -9707,6 +9748,7 @@ Environment fallbacks:
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const statePathExplicit = stateOverride !== undefined;
   const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest);
+  const impressionRotation = resolveOfflineImpressionRotation();
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
@@ -9793,6 +9835,8 @@ Environment fallbacks:
       statePath,
       statePathExplicit,
       userExcludeRegexps,
+      impressionsRotateBytes: impressionRotation.impressionsRotateBytes,
+      impressionsRotateKeep: impressionRotation.impressionsRotateKeep,
     });
     if (json) {
       console.log(JSON.stringify(offlineSyncResultJsonSummary(result), null, 2));
@@ -9876,6 +9920,8 @@ Environment fallbacks:
           statePath,
           statePathExplicit,
           userExcludeRegexps,
+          impressionsRotateBytes: impressionRotation.impressionsRotateBytes,
+          impressionsRotateKeep: impressionRotation.impressionsRotateKeep,
           skipLargeFilePaths: skippedLargeFiles,
         });
         const advanced = advanceOfflineLargeFileFailureCounts({

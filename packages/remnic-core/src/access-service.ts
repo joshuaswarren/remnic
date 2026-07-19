@@ -5550,6 +5550,10 @@ export class EngramAccessService {
     await drainPendingImpressionsForOfflineSync(() =>
       this.orchestrator.drainPendingRecallImpressions(),
     );
+    // Per-namespace lifecycle ledger (#2033): fold pending spills before
+    // enumerating file records so a deferred durable drain aborts rather than
+    // emitting a path snapshot that silently omits pending lifecycle rows.
+    await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     try {
       const snapshot = await buildOfflineSyncSnapshotForPaths({
