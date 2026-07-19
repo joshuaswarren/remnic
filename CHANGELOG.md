@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Cross-reviewer review-thread deduplication for the unresolved-thread guard
+  (issue #1994, umbrella #1988). A deterministic lexical-shingle module
+  (`scripts/review-dedup.mjs`, mirrored inline in
+  `.github/workflows/review-thread-guard.yml`) merges duplicate findings only
+  when they share a file, overlapping anchored lines, and fingerprint
+  similarity at or above the committed threshold; a duplicate inherits its
+  canonical's resolution, a `not-a-duplicate` reply detaches it, and the guard
+  runs in shadow mode (`REVIEW_DEDUP_MODE`, default `shadow`) so the unresolved
+  count is byte-identical until enforcement is flipped. Retired `kilo-code-bot`
+  from the default reviewer lineup; CodeQL is untouched.
+
 ## [v9.6.24] — 2026-07-15
 
 ### Fixed

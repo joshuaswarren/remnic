@@ -340,3 +340,50 @@ If multiple comments touch the same subsystem:
 3. Push once.
 
 Avoid serial micro-fixes unless comments are independent.
+
+## Cross-Reviewer Dedup and Reviewer Lineup (issue #1994, umbrella #1988)
+
+This describes a mechanism that exists, per umbrella decision A (no new
+unenforced prose rules).
+
+### What the dedup guard does
+
+`scripts/review-dedup.mjs` (unit-tested against fixtures harvested from the real
+#1923 and #1852 duplicate threads) is mirrored inline in
+`.github/workflows/review-thread-guard.yml`. After the guard fetches a PR's
+review threads it normalizes each finding (badge/markup/feedback footers
+stripped), fingerprints the first comment with a deterministic lexical shingle
+key, and merges a new thread into an earlier one only when all three hold: same
+file, overlapping anchored line range, and fingerprint Jaccard similarity at or
+above the committed threshold (`0.5`, measured to separate every real duplicate
+pair from all 20 sampled non-duplicate pairs — precision 1.0 on the fixtures).
+
+Precision beats recall by design: a missed duplicate costs one redundant reply;
+a false merge can silence a real bug. Nothing is deleted or hidden — a duplicate
+inherits its canonical's resolution for the unresolved-thread count, so resolving
+the canonical auto-satisfies its duplicates, and a duplicate whose canonical is
+still unresolved keeps gating via that canonical.
+
+### Escape hatch (load-bearing)
+
+A single maintainer or agent reply containing `not-a-duplicate` on a merged
+thread detaches it back into the round set within one gate cycle — no config
+change. Use it the moment a merge looks wrong; a false merge is the failure mode
+to fear.
+
+### Shadow vs enforce
+
+The guard step reads `REVIEW_DEDUP_MODE` (default `shadow`). In `shadow` the
+unresolved count is byte-identical to pre-#1994 behavior and only the dedup
+ledger (threads filed, deduplicated, unique-by-reviewer, canonical links) is
+logged, so any false merge is visible before enforcement. Flip to `enforce`
+after the shadow window once the ledger shows a healthy dedup rate and zero
+would-have-been-lost unique findings.
+
+### Reviewer lineup
+
+`kilo-code-bot` is retired from the default lineup (it filed ~5% of threads with
+no unique catch in the sampled churny PRs). It is not referenced by any required
+reviewer group or dispatch workflow; re-adding it later is one revert plus
+reinstalling the App. `github-advanced-security`/CodeQL is untouched — it is a
+different finding class with near-zero overlap and is never deduplicated.
