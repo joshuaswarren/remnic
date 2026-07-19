@@ -82,6 +82,12 @@ import {
 import { CrossNamespaceBudget, type BudgetWarning } from "./cross-namespace-budget.js";
 import { log } from "./logger.js";
 import {
+  defaultNamespaceAtFlatRoot,
+  mergeMemorySearchDefaultFallback,
+  resolveMemorySearchDefaultFallback,
+  runMemorySearchFanout,
+} from "./access-memory-search-fanout.js";
+import {
   buildQualityScore,
   buildProposedActions,
   groupActionsByStatus,
@@ -2020,7 +2026,10 @@ export class EngramAccessService {
     return resolved;
   }
 
-  private resolveReadableNamespacesForSearch(namespace: string | undefined, principal?: string): string[] {
+  private async resolveReadableNamespacesForSearch(
+    namespace: string | undefined,
+    principal?: string,
+  ): Promise<string[]> {
     const requested = namespace?.trim();
     if (requested) {
       return [this.resolveReadableNamespace(requested, principal)];
@@ -2046,18 +2055,32 @@ export class EngramAccessService {
       codingContext: null,
       codingOverlay: null,
     });
-    const namespaces = profilePlan
-      ? expandScopeProfileReadNamespaces({
-          profilePlan,
-          principalSelfNamespace: profilePlan.baseNamespace,
-          config: this.orchestrator.config,
-          principal,
-          codingOverlay: null,
-          legacyRecallNamespaces,
-        })
-      : legacyRecallNamespaces;
-    if (profilePlan) return namespaces;
-    return namespaces.filter((ns) =>
+    if (profilePlan) {
+      // Issue #2018: memory_search has no sessionKey, so unlike recall it
+      // cannot resolve a coding overlay. Reach the base collection (default
+      // namespace) only when the profile intends a global layer and the
+      // principal is authorized — see access-memory-search-fanout.ts. The
+      // flat-root storage probe runs lazily HERE (after auth, no explicit
+      // namespace, profile active) so explicit-namespace queries and auth
+      // rejections never touch the default store (#2056 r5).
+      const profileNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan,
+        principalSelfNamespace: profilePlan.baseNamespace,
+        config: this.orchestrator.config,
+        principal,
+        codingOverlay: null,
+        legacyRecallNamespaces,
+      });
+      const fallback = await resolveMemorySearchDefaultFallback({
+        profilePlan,
+        config: this.orchestrator.config,
+        principal,
+        defaultAtFlatRootProvider: () =>
+          defaultNamespaceAtFlatRoot((n) => this.orchestrator.getStorage(n), this.orchestrator.config),
+      });
+      return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
+    }
+    return legacyRecallNamespaces.filter((ns) =>
       canReadNamespace(principal, ns, this.orchestrator.config),
     );
   }
@@ -4740,20 +4763,21 @@ export class EngramAccessService {
         ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
         : await this.orchestrator.qmd.search(query, collection, maxResults);
     } else {
-      const readableNamespaces = this.resolveReadableNamespacesForSearch(namespace, principal);
+      const readableNamespaces = await this.resolveReadableNamespacesForSearch(namespace, principal);
       const namespaces = this.resolveMemorySearchNamespacesForCollection(
         collection,
         readableNamespaces,
         namespace?.trim() ? undefined : principal,
       );
-      results = namespaces.length === 0
-        ? []
-        : await this.orchestrator.searchAcrossNamespaces({
-            query,
-            namespaces,
-            maxResults,
-            mode: "search",
-          });
+      results = await runMemorySearchFanout({
+        query,
+        namespaces,
+        maxResults,
+        principal,
+        requestedNamespace: namespace,
+        collection,
+        search: (params) => this.orchestrator.searchAcrossNamespaces(params),
+      });
     }
 
     return {
