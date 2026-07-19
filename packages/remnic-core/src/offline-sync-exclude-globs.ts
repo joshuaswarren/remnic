@@ -27,6 +27,10 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // an append spills a per-event file here when it cannot get the ledger lock,
   // and the next lock holder folds them back into the synced
   // memory-lifecycle-ledger.jsonl. Pushing them would duplicate rows remotely.
+  // The offline-sync snapshot entrypoints drain this queue first (access-service
+  // `drainPendingLifecycleForSync` -> `StorageManager.drainPendingMemoryLifecycleEventsForSync`),
+  // aborting the snapshot when durable rows cannot be folded, so excluding the
+  // dir never silently drops append-only lifecycle history (promotions/imports).
   "**/state/memory-lifecycle-ledger.jsonl.pending.d/**",
   // The active lifecycle ledger lock is node-local and must never be
   // transferred to another node during an offline snapshot.

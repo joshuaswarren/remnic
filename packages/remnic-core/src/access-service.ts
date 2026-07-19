@@ -244,6 +244,7 @@ import {
   type OfflineSyncFileState,
   type OfflineSyncSnapshot,
 } from "./offline-sync.js";
+import { drainPendingLifecycleForSyncOrThrow } from "./storage/memory-lifecycle-ledger-access.js";
 import {
   evaluateActionConfidence,
   type ActionConfidenceInput,
@@ -5531,6 +5532,9 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     await this.drainPendingImpressionsForSync();
+    // Per-namespace lifecycle ledger (#2033): fold pending spills into the active
+    // ledger and abort the snapshot if durable rows stay deferred (see helper).
+    await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     const snapshotBuilder = options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
       ? buildOfflineSyncSnapshotFromBase
@@ -5558,6 +5562,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     await this.drainPendingImpressionsForSync();
+    await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     return {
       namespace: resolvedNamespace,

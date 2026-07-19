@@ -494,3 +494,76 @@ export async function drainPendingLifecycleLedgerIfAny(
   await ensureReady();
   return drainPendingLifecycleAppendsSerialized(ledgerPath, append, io);
 }
+
+/** Result of a pre-snapshot lifecycle drain (#2033): `folded` is true when spill
+ *  rows were committed to the active ledger; `pendingDeferred` is true when
+ *  durable spill rows STILL remain in the offline-sync-EXCLUDED pending queue
+ *  after the attempt (the ledger lock was held by a peer, or a spill could not
+ *  be claimed). A caller MUST NOT report a clean snapshot while `pendingDeferred`
+ *  is true — those append-only rows would be silently omitted. */
+export interface DrainPendingLifecycleForSyncResult {
+  folded: boolean;
+  pendingDeferred: boolean;
+}
+
+/**
+ * Offline-sync pre-snapshot drain (#2033). Like {@link drainPendingLifecycleLedgerIfAny}
+ * but reports whether durable rows are STILL pending after the attempt so an
+ * offline snapshot never silently drops append-only lifecycle rows (promotions,
+ * imports, explicit captures) that spilled while the ledger lock was held. Fast
+ * no-op — no lock, no dir creation — when nothing is pending. Otherwise drains
+ * under the ledger lock, then re-enumerates the pending directory: any remaining
+ * live (`*.jsonl`) or crash-orphaned (`*.jsonl.claimed`) spill marks the drain as
+ * deferred. A read/append failure inside the lock (locked key, encrypted body)
+ * propagates to the caller, which retries or aborts.
+ */
+export async function drainPendingLifecycleLedgerForSync(
+  ledgerPath: string,
+  io: LifecyclePendingIo,
+  append: (payload: string) => Promise<void>,
+  ensureReady: () => Promise<void>,
+): Promise<DrainPendingLifecycleForSyncResult> {
+  const dir = pendingLifecycleLedgerDir(ledgerPath);
+  try {
+    await stat(dir);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return { folded: false, pendingDeferred: false };
+    throw err;
+  }
+  await ensureReady();
+  const folded = await drainPendingLifecycleAppendsSerialized(ledgerPath, append, io);
+  const remaining =
+    (await listContainedSpillFiles(dir)).length +
+    (await listContainedSpillFiles(dir, `.jsonl${CLAIMED_SPILL_SUFFIX}`)).length;
+  return { folded, pendingDeferred: remaining > 0 };
+}
+
+/**
+ * Bounded pre-snapshot drain driver (#2033): invoke `drain` up to `maxAttempts`
+ * times and return once it reports no pending rows; if durable rows remain
+ * deferred (ledger lock held by a peer) or every attempt throws, throw so the
+ * offline-sync caller ABORTS rather than building a snapshot that silently omits
+ * append-only lifecycle rows. Kept here (not in the access-service god-file, issue
+ * #1995) so both snapshot entrypoints share one retry/abort contract.
+ */
+export async function drainPendingLifecycleForSyncOrThrow(
+  drain: () => Promise<DrainPendingLifecycleForSyncResult>,
+  maxAttempts = 3,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await drain();
+      if (!result.pendingDeferred) return;
+      lastError = undefined;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  const detail = lastError
+    ? `: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    : " (ledger lock held by a peer)";
+  throw new Error(
+    `offline-sync lifecycle drain could not fold pending memory-lifecycle events after ${maxAttempts} attempts${detail}; aborting snapshot so the pending rows are not silently excluded (#2033)`,
+  );
+}

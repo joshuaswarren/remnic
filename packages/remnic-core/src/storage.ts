@@ -22,6 +22,8 @@ import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
   appendLifecycleEventsSerialized,
+  type DrainPendingLifecycleForSyncResult,
+  drainPendingLifecycleLedgerForSync,
   drainPendingLifecycleLedgerIfAny,
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
@@ -5543,6 +5545,19 @@ export class StorageManager {
    *  fast no-op when nothing is pending. Returns true when rows were drained. */
   async drainPendingMemoryLifecycleEvents(): Promise<boolean> {
     return drainPendingLifecycleLedgerIfAny(
+      this.memoryLifecycleLedgerPath,
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      () => this.ensureDirectories(),
+    );
+  }
+
+  /** Offline-sync pre-snapshot drain (#2033): fold pending lifecycle spills into
+   *  the active ledger and report whether durable rows STILL remain in the
+   *  offline-sync-EXCLUDED pending queue. The caller aborts the snapshot when
+   *  `pendingDeferred` is true so append-only rows are never silently omitted. */
+  async drainPendingMemoryLifecycleEventsForSync(): Promise<DrainPendingLifecycleForSyncResult> {
+    return drainPendingLifecycleLedgerForSync(
       this.memoryLifecycleLedgerPath,
       { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
       (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),

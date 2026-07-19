@@ -9,8 +9,9 @@ import { EngramAccessInputError, EngramAccessService } from "./access-service.js
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
-import type { StorageManager } from "./storage.js";
-import type { PluginConfig } from "./types.js";
+import { StorageManager } from "./storage.js";
+import { serializeLifecycleAppendPayload } from "./storage/memory-lifecycle-ledger-access.js";
+import type { MemoryLifecycleEvent, PluginConfig } from "./types.js";
 import { LastRecallStore } from "./recall-state.js";
 import type { DrainPendingImpressionsResult } from "./recall-state.js";
 
@@ -1270,6 +1271,9 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
       };
     }).orchestrator.getStorage = async () => ({
       dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
       },
@@ -1331,6 +1335,9 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
     orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
     orchestrator.getStorage = async () => ({
       dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
       },
@@ -1403,6 +1410,9 @@ test("offlineSyncSnapshot drains pending impression spills at the writer root, n
     orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
     orchestrator.getStorage = async () => ({
       dir: nsDir,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
       },
@@ -1447,4 +1457,94 @@ test("offlineSyncSnapshot drains pending impression spills at the writer root, n
     await rm(writerRoot, { recursive: true, force: true });
     await rm(nsDir, { recursive: true, force: true });
   }
+});
+
+test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-only row reaches the snapshot (#2033)", async () => {
+  // An appendMemoryLifecycleEvents() that timed out on the ledger lock spills the
+  // durable row into the offline-sync-EXCLUDED memory-lifecycle-ledger.jsonl.pending.d/.
+  // Without a pre-snapshot drain the promotion/import/explicit-capture row is
+  // absent from the pushed snapshot and lost if this node is discarded before a
+  // later append or maintenance pass folds it. Unlike recall impressions (writer
+  // root), the lifecycle ledger is per-namespace, so the drain runs on the
+  // RESOLVED-namespace storage and the folded ledger lands in the snapshot.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-lifecycle-drain-"));
+  try {
+    const storage = new StorageManager(root);
+    const ledgerPath = path.join(root, "state", "memory-lifecycle-ledger.jsonl");
+    const pendingDir = `${ledgerPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const event: MemoryLifecycleEvent = {
+      eventId: "evt-spilled-1",
+      memoryId: "memory-a",
+      eventType: "promoted",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "system",
+      ruleVersion: "v1",
+    };
+    // Spill file written exactly as a lock-timed-out append leaves it (plaintext
+    // here: no secure key is configured on this store).
+    const spillPayload = serializeLifecycleAppendPayload([event]);
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), spillPayload, "utf-8");
+
+    const { service } = makeService();
+    const orchestrator = (service as unknown as {
+      orchestrator: { config: PluginConfig; getStorage(namespace: string): Promise<StorageManager> };
+    }).orchestrator;
+    orchestrator.getStorage = async () => storage;
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    const active = snapshot.files.find((f) => f.path === "state/memory-lifecycle-ledger.jsonl");
+    assert.ok(active, "drained active lifecycle ledger is present in the snapshot");
+    assert.equal(
+      Buffer.from(active!.contentBase64!, "base64").toString("utf-8"),
+      spillPayload,
+      "the spilled lifecycle event was folded into the synced active ledger",
+    );
+    // The node-local pending spill dir stays excluded from the snapshot...
+    assert.ok(
+      !snapshot.files.some((f) => f.path.startsWith("state/memory-lifecycle-ledger.jsonl.pending.d")),
+      "pending spill dir remains offline-sync excluded",
+    );
+    // ...because the drain already folded and emptied it.
+    assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (#2033)", async () => {
+  // When the ledger lock is held by a peer the drain leaves durable rows in the
+  // EXCLUDED pending queue and reports pendingDeferred. A snapshot built then
+  // would silently omit those append-only rows, so both the buffered and the
+  // streaming snapshot entrypoints MUST abort rather than report success.
+  const { service } = makeService();
+  const orchestrator = (service as unknown as {
+    orchestrator: { getStorage(namespace: string): Promise<StorageManager> };
+  }).orchestrator;
+  let drainAttempts = 0;
+  orchestrator.getStorage = async () =>
+    ({
+      dir: "/unused",
+      async drainPendingMemoryLifecycleEventsForSync() {
+        drainAttempts++;
+        return { folded: false, pendingDeferred: true };
+      },
+    }) as unknown as StorageManager;
+
+  await assert.rejects(
+    () => service.offlineSyncSnapshot({ namespace: "team", principal: "reader" }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "buffered snapshot aborts on a persistent lifecycle deferral",
+  );
+  await assert.rejects(
+    () => service.offlineSyncSnapshotStream({ namespace: "team", principal: "reader" }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "streaming snapshot aborts on a persistent lifecycle deferral",
+  );
+  assert.ok(drainAttempts >= 6, "each aborted snapshot retried the drain before giving up");
 });
