@@ -2221,9 +2221,17 @@ export class StorageManager {
    * store is unlocked-optional; the key when set; else throws
    * SecureStoreLockedError under a required-but-locked store (PR #767) instead
    * of silently writing plaintext.
+   *
+   * `forceEncrypt` overrides the encrypt-on-write policy flag ONLY (issue
+   * #2033): a lifecycle-ledger compaction of an already-encrypted ledger/backup
+   * must preserve encryption at rest even when `secureStoreEncryptOnWrite` is
+   * paused, or it would silently downgrade encrypted state to plaintext. It
+   * never bypasses the LOCK: when the store has no key it still returns null
+   * (optional) or throws (required), so a keyless caller can never fabricate an
+   * encrypted write.
    */
-  private resolveWriteKey(): Buffer | null {
-    if (!this._secureStoreEncryptOnWrite) return null;
+  private resolveWriteKey(forceEncrypt = false): Buffer | null {
+    if (!forceEncrypt && !this._secureStoreEncryptOnWrite) return null;
     if (this._secureStoreKey !== null) return this._secureStoreKey;
     if (this._secureStoreRequired) {
       throw new SecureStoreLockedError(
@@ -2715,8 +2723,8 @@ export class StorageManager {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
-    const writeKey = this.resolveWriteKey();
+  private writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+    const writeKey = this.resolveWriteKey(forceEncrypt);
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
       // changes the file's (size, mtime), so isEncryptedFileHeader re-sniffs on
@@ -5318,10 +5326,17 @@ export class StorageManager {
 
   /** Rewrite the ledger through the secure writer (#1910); re-encrypts when unlocked, throws when locked.
    *  `targetPath` re-encrypts under a decryptable backup path's own AAD;
-   *  Buffer content passes through verbatim (#2033). */
-  async writeMemoryLifecycleLedgerContent(content: string | Buffer, targetPath: string = this.memoryLifecycleLedgerPath): Promise<void> {
+   *  Buffer content passes through verbatim (#2033). `forceEncrypt` preserves
+   *  encryption at rest for an already-encrypted ledger/backup even when the
+   *  `secureStoreEncryptOnWrite` policy is paused, so a compaction never
+   *  downgrades encrypted state to plaintext (#2033); it never bypasses the lock. */
+  async writeMemoryLifecycleLedgerContent(
+    content: string | Buffer,
+    targetPath: string = this.memoryLifecycleLedgerPath,
+    forceEncrypt = false,
+  ): Promise<void> {
     await this.ensureDirectories();
-    await this.writeStorageSecureFile(targetPath, content);
+    await this.writeStorageSecureFile(targetPath, content, forceEncrypt);
   }
 
   async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]): Promise<number> {

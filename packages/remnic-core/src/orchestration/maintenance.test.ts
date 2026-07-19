@@ -41,6 +41,7 @@ import {
   SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
 } from "../secure-store/secure-fs.js";
 import { pendingLifecycleLedgerDir } from "../storage/memory-lifecycle-ledger-access.js";
+import { listContainedSpillFiles } from "../utils/path-containment.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
@@ -1773,6 +1774,114 @@ test("catalog-disabled fallback decodes a long tokenized namespace dir so an enc
   }
 });
 
+test("catalog-disabled fallback resolves a LEGACY RAW namespace dir (not a ns- token) through the keyed store so its encrypted over-cap ledger compacts (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-legacyraw-"));
+  try {
+    // A legacy deployment wrote per-namespace data under the RAW namespace name
+    // (namespaces/<name>/), before identity tokenization existed. Such a dir name
+    // is NOT a ns-<hex> token, so namespaceIdentityFromToken returns null; the
+    // pre-fix fallback then only offered ns- token dirs to the keyed resolver and
+    // left this legacy dir on a keyless target, deferring its encrypted over-cap
+    // ledger forever. The fix treats a non-token dir as a raw namespace when it
+    // is a safe route namespace and the keyed store roots back at THIS dir.
+    const nsName = "legacy-raw-ns";
+    assert.equal(namespaceIdentityFromToken(nsName), null, "precondition: dir name is NOT a ns- identity token");
+    assert.ok(isSafeRouteNamespace(nsName), "precondition: dir name is a safe route namespace");
+
+    const key = Buffer.alloc(32, 5);
+    const nsDir = path.join(root, "namespaces", nsName);
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-legacy.md"),
+      `---\nid: fact-legacy\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["legacy"]\n---\n\nlegacy\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"}\n';
+    const encrypted = encryptFileBody(
+      junk.repeat(Math.ceil(4096 / junk.length)), key, filePathAad(nsLedger, nsDir),
+    );
+    await writeFile(nsLedger, encrypted);
+    assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    const nsStorage = new StorageManager(nsDir);
+    nsStorage.setSecureStoreRequired(true);
+    nsStorage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ rewrite stays encrypted.
+    let resolvedWith: string | null = null;
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        secureStoreEnabled: true,
+        secureStoreEncryptOnWrite: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root), // root has no ledger ⇒ skipped.
+      // The production router routes an existing legacy raw-name dir back to its
+      // namespaces/<name>/ root; mirror that by returning the keyed nsStorage for
+      // the raw name and rejecting anything unsafe.
+      async (namespace) => {
+        resolvedWith = namespace;
+        if (!isSafeRouteNamespace(namespace)) {
+          throw new Error(`invalid namespace: ${namespace}`);
+        }
+        return nsStorage;
+      },
+      undefined, // catalog disabled.
+    );
+    const seam = scheduler as unknown as CompactableScheduler & {
+      resolveLifecycleCompactionTargets: () => Promise<
+        Array<{ memoryDir: string; storage?: StorageManager }>
+      >;
+      compactLifecycleLedgerTarget: (
+        target: unknown,
+        threshold: number,
+      ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
+    };
+    try {
+      const targets = await seam.resolveLifecycleCompactionTargets();
+      assert.equal(resolvedWith, nsName, "fallback resolves by the RAW legacy namespace name");
+      const nsTarget = targets.find(
+        (t) => path.resolve(t.memoryDir) === path.resolve(nsDir),
+      );
+      assert.ok(nsTarget, "fallback discovered the legacy raw namespace ledger dir");
+      assert.ok(
+        nsTarget?.storage,
+        "legacy raw fallback target carries a keyed StorageManager, not a keyless dir",
+      );
+      assert.ok(
+        nsTarget?.storage?.isSecureStoreUnlocked(),
+        "keyed target is unlocked so the encrypted ledger can be rewritten",
+      );
+
+      const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
+      assert.equal(
+        outcome,
+        "compacted",
+        "encrypted over-cap ledger under a legacy raw namespace dir compacts through the keyed store, never deferred forever",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+
+    assert.notDeepEqual(await readFile(nsLedger), encrypted, "ledger was rewritten (not deferred)");
+    assert.ok((await stat(nsLedger)).size < beforeSize, "compacted ledger is smaller");
+    assert.ok(
+      isEncryptedFile(await readFile(nsLedger)),
+      "compacted ledger stays encrypted at rest (namespace isolation + at-rest format preserved)",
+    );
+    const rebuilt = await nsStorage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("preserving rebuild skips the backup+rewrite for an already-compact ledger, ending the periodic re-archive churn (#2033 thread PRRT_kwDORJXyws6SExst)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-noop-"));
   try {
@@ -2095,6 +2204,71 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
       "the pending spill must be drained into the namespace ledger via the fallback path",
     );
     await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after the fallback drain");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("filesystem-fallback compaction recovers a crash-orphaned *.claimed spill when no live spill remains (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-claimed-"));
+  try {
+    // Namespaces enabled but NO catalog storage wired: only the filesystem
+    // fallback finds this per-namespace ledger, so target.storage is absent.
+    const token = namespaceIdentityToken("project-fallback-claimed");
+    const nsDir = path.join(root, "namespaces", token);
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    await writeFile(nsLedger, "", "utf-8");
+    // A drain that died between claiming a spill (rename to `.claimed`) and
+    // committing it leaves the ONLY copy of those rows as a crash-orphaned
+    // `*.jsonl.claimed` file — NO live `*.jsonl` spill remains. The pre-scan
+    // must still reach the recovery drain so recoverOrphanedClaims restores and
+    // re-commits it; gating solely on live spills stranded these rows forever.
+    const spillDir = pendingLifecycleLedgerDir(nsLedger);
+    await mkdir(spillDir, { recursive: true });
+    const claimedPath = path.join(spillDir, "spill.jsonl.claimed");
+    const orphaned = {
+      eventId: "evt-claimed-orphan",
+      memoryId: "mem-ns",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(claimedPath, `${JSON.stringify(orphaned)}\n`, "utf-8");
+    // Precondition: no live spill exists — only the claimed orphan.
+    assert.equal((await listContainedSpillFiles(spillDir)).length, 0, "precondition: no live *.jsonl spill");
+    assert.equal(
+      (await listContainedSpillFiles(spillDir, ".jsonl.claimed")).length,
+      1,
+      "precondition: exactly one crash-orphaned *.jsonl.claimed file",
+    );
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const ledger = await readFile(nsLedger, "utf-8");
+    assert.ok(
+      ledger.includes("evt-claimed-orphan"),
+      "the crash-orphaned claimed spill must be recovered and folded into the namespace ledger",
+    );
+    await assert.rejects(() => stat(claimedPath), /ENOENT/, "claimed orphan removed after recovery + commit");
+    assert.equal(
+      (await listContainedSpillFiles(spillDir, ".jsonl.claimed")).length,
+      0,
+      "no claimed orphan left stranded",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

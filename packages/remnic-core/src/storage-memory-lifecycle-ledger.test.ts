@@ -1010,6 +1010,53 @@ test("encrypted rebuild backup retains raw malformed/truncated/future rows verba
   }
 });
 
+test("encrypted rebuild forces encryption for backup + active ledger even when encrypt-on-write is paused (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-rebuild-force-encrypt-"));
+  try {
+    const key = Buffer.alloc(32, 11);
+    // Store is UNLOCKED (key present) but the encrypt-on-write policy is paused.
+    // A compaction of an already-encrypted ledger must still preserve encryption
+    // at rest — a plaintext rewrite would silently downgrade encrypted state.
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key, false);
+    assert.equal(storage.willEncryptStateWrites(), false, "precondition: encrypt-on-write paused");
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+
+    // Seed an encrypted-at-rest ledger with two valid rows plus a garbage row so
+    // the compaction produces a DIFFERENT active ledger (no no-op skip) and a
+    // timestamped backup.
+    const validA = JSON.stringify(lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z"));
+    const validB = JSON.stringify(lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z"));
+    const rawContent = `${validA}\nnot-json-garbage\n${validB}\n`;
+    await writeFile(ledgerPath, encryptFileBody(rawContent, key, filePathAad(ledgerPath, memoryDir)));
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: ledger encrypted at rest");
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+    });
+
+    // The active ledger stays encrypted at rest and remains decryptable — no
+    // plaintext downgrade despite the paused encrypt-on-write policy.
+    assert.ok(result.rewritten, "a real rewrite happened");
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "active ledger stays encrypted at rest");
+    const activeDecrypted = await readMaybeEncryptedFile(ledgerPath, key, memoryDir);
+    assert.ok(!activeDecrypted.includes("not-json-garbage"), "active ledger compacted the garbage row");
+
+    // The backup is encrypted at rest too and decrypts to the raw pre-compaction
+    // bytes under its own path AAD.
+    assert.ok(result.backupPath, "a backup path was produced");
+    assert.ok(isEncryptedFile(await readFile(result.backupPath!)), "backup stays encrypted at rest");
+    const backupDecrypted = await readMaybeEncryptedFile(result.backupPath!, key, memoryDir);
+    assert.equal(backupDecrypted, rawContent, "backup preserves raw decrypted bytes verbatim");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("encrypted rebuild backup never materializes the raw ledger as one giant string and stays byte-identical (#2033)", async () => {
   // Regression for the P2 raw-backup thread: the secure-store backup path once
   // read the decrypted ledger via `Buffer.toString("utf8")`. For a ledger that

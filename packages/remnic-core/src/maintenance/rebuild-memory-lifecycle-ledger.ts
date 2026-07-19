@@ -406,7 +406,6 @@ export async function rebuildMemoryLifecycleLedger(
       // below, so the current ledger is read at most once. An absent ledger reads
       // as ENOENT (a create is always a real change) and any other read/probe
       // error propagates rather than masking a needed rewrite.
-      const replacementEncrypted = secureRewrite && storage.willEncryptStateWrites();
       let currentEncrypted = false;
       let priorRawBuffer: Buffer | null = null;
       try {
@@ -415,6 +414,19 @@ export async function rebuildMemoryLifecycleLedger(
       } catch (err) {
         if (!isNodeError(err) || err.code !== "ENOENT") throw err;
       }
+      // Preserve encryption at rest (#2033). An already-encrypted ledger (or its
+      // encrypted backup) MUST be rewritten encrypted even when the
+      // `secureStoreEncryptOnWrite` policy is paused — otherwise the compaction
+      // silently DOWNGRADES encrypted state to plaintext. Force encryption
+      // whenever the current ledger is encrypted and the store is unlocked (a
+      // key is available); reaching this point with an encrypted ledger already
+      // implies an unlocked store, since the raw read above decrypts and would
+      // have thrown under a locked key. A plaintext ledger keeps the ordinary
+      // policy (`willEncryptStateWrites`), so existing plaintext behavior holds.
+      const forceEncrypt =
+        secureRewrite && currentEncrypted && storage.isSecureStoreUnlocked();
+      const replacementEncrypted =
+        secureRewrite && (storage.willEncryptStateWrites() || forceEncrypt);
       // Compare as buffers, never decoding the raw ledger to one giant string:
       // a multi-hundred-MB decrypted ledger can exceed V8's max string length,
       // so `priorRawBuffer.equals(...)` (byte compare) must be used, NOT
@@ -444,7 +456,7 @@ export async function rebuildMemoryLifecycleLedger(
           if (desiredBackup && currentEncrypted) {
             const rawForBackup =
               priorRawBuffer ?? (await storage.readMemoryLifecycleLedgerRawBufferForCompaction());
-            await storage.writeMemoryLifecycleLedgerContent(rawForBackup, desiredBackup);
+            await storage.writeMemoryLifecycleLedgerContent(rawForBackup, desiredBackup, forceEncrypt);
             backupPath = desiredBackup;
           } else {
             backupPath = desiredBackup
@@ -452,7 +464,7 @@ export async function rebuildMemoryLifecycleLedger(
               : undefined;
           }
           await abortIfLockLost();
-          await storage.writeMemoryLifecycleLedgerContent(content);
+          await storage.writeMemoryLifecycleLedgerContent(content, undefined, forceEncrypt);
         } else {
           await abortIfLockLost();
           backupPath = await writeFileAtomically(outputPath, content, desiredBackup);

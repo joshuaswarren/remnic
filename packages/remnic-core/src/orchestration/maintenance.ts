@@ -34,6 +34,7 @@ import {
 } from "../namespaces/search.js";
 import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
 import { namespaceIdentityFromToken } from "../namespaces/identity.js";
+import { isSafeRouteNamespace } from "../routing/engine.js";
 import {
   planNamespaceMaintenance,
   runNamespaceMaintenanceBatchPlan,
@@ -764,15 +765,24 @@ export class MaintenanceScheduler {
     // and skips any symlink/FIFO/device/escaping entry, returning only regular
     // files contained in the dir. Never raw-readdir + open() an untrusted name:
     // opening a FIFO would block until a writer appears and a symlink would
-    // redirect the probe outside the dir (#2033).
+    // redirect the probe outside the dir (#2033). Enumerate BOTH live `*.jsonl`
+    // spills and crash-orphaned `*.jsonl.claimed` files: a drain that died
+    // between claiming a spill (rename to `.claimed`) and committing it leaves
+    // the ONLY copy of those rows as a claimed orphan. Gating solely on live
+    // spills would early-return here whenever the pending dir holds nothing but
+    // orphans, stranding those rows forever; proceeding lets
+    // drainPendingLifecycleLedgerIfAny -> recoverOrphanedClaims restore and
+    // re-commit them under the ledger lock (#2033).
     let spillFiles: string[];
+    let claimedOrphans: string[];
     try {
       spillFiles = await listContainedSpillFiles(spillDir);
+      claimedOrphans = await listContainedSpillFiles(spillDir, ".jsonl.claimed");
     } catch (err) {
       log.debug(`fallback lifecycle pending scan failed (non-fatal) for ${memoryDir}: ${err}`);
       return;
     }
-    if (spillFiles.length === 0) return;
+    if (spillFiles.length === 0 && claimedOrphans.length === 0) return;
     // The pending encryption state is authoritative only UNDER the ledger lock:
     // drainPendingLifecycleLedgerIfAny waits for the lock and re-enumerates the
     // pending dir, so a secure-store writer that spills an encrypted file — or a
@@ -907,25 +917,36 @@ export class MaintenanceScheduler {
         // Resolve the namespace's secure-store-aware storage so an encrypted
         // fallback ledger compacts through the correct root key/context instead
         // of deferring forever behind a keyless plaintext StorageManager (#2033
-        // thread PRRT_kwDORJXyws6SE5fv). The on-disk dir name is the namespace's
-        // identity TOKEN (ns-<hex>), NOT a route namespace. Passing the raw token
-        // to the resolver makes it re-tokenize an already-tokenized value, and for
-        // any namespace longer than 30 bytes the token exceeds the router's
-        // 64-char isSafeRouteNamespace limit, so the resolver throws and the
-        // encrypted over-cap ledger defers forever. Decode the token back to the
-        // canonical namespace and resolve THAT, so long valid namespaces still get
-        // keyed secure storage. The secure store keys one master key per memory
-        // ROOT (not per namespace), so the resolved storage routes straight back
-        // to THIS dir; accept it only when it actually roots at this dir so an
-        // unexpected re-route can never compact the wrong ledger. A token that
-        // does not decode (legacy/garbage dir), or no resolver wired (focused
-        // tests / plaintext deployments), leaves the keyless target standing: the
-        // rebuild chokepoint still refuses to downgrade an encrypted ledger, so
-        // plaintext behavior and namespace isolation hold.
+        // thread PRRT_kwDORJXyws6SE5fv). The on-disk dir name is EITHER a
+        // namespace identity TOKEN (ns-<hex>) OR a legacy raw namespace dir name
+        // written before tokenization (namespaces/<name>/). Decode a token back
+        // to its canonical namespace; treat a non-token dir as a raw namespace
+        // only when it is a safe route namespace (isSafeRouteNamespace), so a
+        // garbage/traversal dir name is never handed to the resolver. Passing the
+        // raw token to the resolver would re-tokenize an already-tokenized value
+        // and (for namespaces longer than 30 bytes) exceed the router's 64-char
+        // safe-route limit, so the resolver throws and the encrypted over-cap
+        // ledger defers forever — hence decode first. Resolve the route namespace
+        // and accept the keyed storage only when it roots at THIS dir: the secure
+        // store keys one master key per memory ROOT (not per namespace), the
+        // router routes a token to namespaces/<token>/ and an existing legacy raw
+        // name to its namespaces/<name>/ root, so a correct resolve returns THIS
+        // childPath; anything else is an unexpected re-route we refuse (keeping
+        // namespace isolation and never compacting the wrong ledger). A dir that
+        // neither decodes nor is a safe raw namespace, or no resolver wired
+        // (focused tests / plaintext deployments), leaves the keyless target
+        // standing: the rebuild chokepoint still refuses to downgrade an
+        // encrypted ledger, so plaintext behavior holds.
         const decodedNamespace = namespaceIdentityFromToken(entry.name);
-        if (resolveNamespaceStorage && decodedNamespace !== null) {
+        const routeNamespace =
+          decodedNamespace !== null
+            ? decodedNamespace
+            : isSafeRouteNamespace(entry.name)
+              ? entry.name
+              : null;
+        if (resolveNamespaceStorage && routeNamespace !== null) {
           try {
-            const storage = await resolveNamespaceStorage(decodedNamespace);
+            const storage = await resolveNamespaceStorage(routeNamespace);
             if (path.resolve(storage.dir) === path.resolve(childPath)) {
               addTarget(storage.dir, storage);
               continue;
