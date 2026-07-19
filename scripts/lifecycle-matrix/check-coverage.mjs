@@ -163,7 +163,7 @@ export function parseNameStatusZ(text) {
  * Flatten changed-file records into individual repo-relative paths. A rename
  * record contributes BOTH its destination and its source: moving a lifecycle
  * path to an ignored or non-lifecycle location still changes lifecycle
- * behavior and must not bypass the gate (rename-bypass finding on #2042).
+ * behavior and must not bypass the gate (rename-bypass hardening).
  */
 export function flattenChangedPaths(entries) {
   const out = [];
@@ -183,7 +183,7 @@ export function flattenChangedPaths(entries) {
 
 // Local-dev fallback (CI always sets REMNIC_LIFECYCLE_CHANGED_FILES_PATH).
 // Git errors are NOT swallowed: a diff that cannot be computed must fail the
-// gate loudly rather than return [] and pass vacuously (review finding on #2042).
+// gate loudly rather than return [] and pass vacuously.
 function readChangedFilesFromGit() {
   const baseRef = process.env.LIFECYCLE_BASE_REF || process.env.GITHUB_BASE_REF;
   const diffArgs = ["-c", "core.quotePath=off", "diff", "--name-status", "-z", "-M"];

@@ -47,6 +47,8 @@ interface ExtractionLifecycleState {
   restartCalls?: BufferTurn[][];
   /** Re-flush calls after an aborted before_reset flush (before-reset row). */
   secondFlushCalls?: BufferTurn[][];
+  /** Extraction-call count captured right before the dedupe row's force flush. */
+  callsBeforeForceFlush?: number;
 }
 
 /** Namespaces-on config with alice/bob principal prefix routing (identity rows). */
@@ -68,6 +70,27 @@ function namespacedConfig(memoryDir: string): PluginConfig {
   });
 }
 
+/**
+ * A sparse, opaque session id remembered (bound) to alice from a PRIOR session.
+ * The key does not encode alice; only the remembered map binding resolves it to
+ * her namespace — so the with-binding row exercises the binding, not prefix
+ * routing (review finding: a `alice:*` key resolves to alice regardless).
+ */
+const REMEMBERED_SESSION = "restored-session-9f2a";
+
+/** Map-mode config where {@link REMEMBERED_SESSION} is bound to alice. */
+function rememberedBindingConfig(memoryDir: string): PluginConfig {
+  return makeLifecycleConfig(memoryDir, {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultRecallNamespaces: ["self"],
+    principalFromSessionKeyMode: "map",
+    principalFromSessionKeyRules: [{ match: REMEMBERED_SESSION, principal: "alice" }],
+    namespacePolicies: [{ name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+  });
+}
+
 const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
   "explicit-provider-identity": true,
   "sparse-metadata-with-binding": true,
@@ -78,14 +101,17 @@ const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
 const subject: LifecycleSubject<ExtractionLifecycleState> = {
   async setup(row: MatrixRow): Promise<ExtractionLifecycleState> {
     const memoryDir = await mkTempMemoryDir(`extraction-${row.id}`);
-    const cfg = NAMESPACE_ROWS[row.id]
-      ? namespacedConfig(memoryDir)
-      : row.id === "dedupe-replay"
-        ? makeLifecycleConfig(memoryDir, {
-            extractionDedupeEnabled: true,
-            extractionDedupeWindowMs: 60_000,
-          })
-        : makeLifecycleConfig(memoryDir);
+    const cfg =
+      row.id === "sparse-metadata-with-binding"
+        ? rememberedBindingConfig(memoryDir)
+        : NAMESPACE_ROWS[row.id]
+          ? namespacedConfig(memoryDir)
+          : row.id === "dedupe-replay"
+            ? makeLifecycleConfig(memoryDir, {
+                extractionDedupeEnabled: true,
+                extractionDedupeWindowMs: 60_000,
+              })
+            : makeLifecycleConfig(memoryDir);
     const primary = new Orchestrator(cfg);
     const calls = stubExtraction(primary, (turns) =>
       singleFactResult(turns.map((turn) => turn.content).join(" | ")),
@@ -204,6 +230,9 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // An identical turn re-triggers but is suppressed inside the window.
         await primary.processTurn("user", content, "session-dedupe");
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
+        // Record the count BEFORE the force flush: the in-window duplicate must
+        // already be suppressed, so exactly one extraction has happened so far.
+        state.callsBeforeForceFlush = state.calls.length;
         // Force-flush bypasses the dedupe fingerprint (skipDedupeCheck).
         await primary.flushSession("session-dedupe", { reason: "before_reset" });
         return;
@@ -232,8 +261,12 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        const context = await primary.recall("Which region does alice pin deploys to?", "alice:chat");
-        assert.match(context, /us-east-2/i, "a remembered binding is recalled by a sparse session");
+        const context = await primary.recall("Which region does alice pin deploys to?", REMEMBERED_SESSION);
+        assert.match(
+          context,
+          /us-east-2/i,
+          "a sparse session key that does not encode alice recalls her memory ONLY through the remembered binding",
+        );
         return;
       }
       case "sparse-metadata-without-binding": {
@@ -306,7 +339,17 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "dedupe-replay": {
-        assert.equal(state.calls.length, 2, "the duplicate is suppressed; only the force-flush bypasses dedupe");
+        assert.equal(
+          state.callsBeforeForceFlush,
+          1,
+          "the in-window duplicate must be suppressed — exactly one extraction before the force flush",
+        );
+        assert.equal(state.calls.length, 2, "the force flush bypasses the dedupe fingerprint and re-extracts");
+        assert.match(
+          (state.calls[1] ?? []).map((turn) => turn.content).join(" "),
+          /canary gate/,
+          "the second extraction is the force-flushed duplicate, not a no-op",
+        );
         return;
       }
       default: {
