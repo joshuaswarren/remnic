@@ -113,12 +113,26 @@ test("review-thread guard inline boilerplate strip is footer-anchored, not any m
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(
     workflow,
-    /\.replace\(\/\^\(\?:<\[\^>\]\*>\|\[\^A-Za-z\\n\]\)\*\(\?:was this/,
-    "boilerplate strip must be anchored to a footer-phrase line start",
+    /\.replace\(\/\^\(\?:<\[\^>\]\*>\|\[\^A-Za-z\\n<\]\)\*\(\?:was this/,
+    "boilerplate strip must be footer-anchored and use the ReDoS-safe disjoint class ([^A-Za-z\\n<])",
   );
   assert.doesNotMatch(
     workflow,
     /\.replace\(\/\^\.\*\\b\(\?:was this/,
     "must not strip any line merely containing a footer phrase",
+  );
+});
+
+test("review-thread guard inline applies the directional-opposite dedup guard", () => {
+  // Identical token set in reversed order must not fold; the guard cross-checks
+  // an ordered bigram similarity (codex P2). Mirrors review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(workflow, /directionalSetMin:\s*0\.9/, "DEDUP must define directionalSetMin");
+  assert.match(workflow, /directionalOrderMax:\s*0\.1/, "DEDUP must define directionalOrderMax");
+  assert.match(workflow, /const orderSim = similarity\(body, c\.body, 2\);/, "must compute the ordered bigram similarity");
+  assert.match(
+    workflow,
+    /if \(sim >= DEDUP\.directionalSetMin && orderSim <= DEDUP\.directionalOrderMax\) continue;/,
+    "must skip folding a directional-opposite candidate",
   );
 });

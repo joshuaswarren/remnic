@@ -425,6 +425,35 @@ test("real bot-footer lines are still stripped", () => {
   assert.doesNotMatch(cleaned, /helpful/, "'Was this ... helpful' footer line stripped");
 });
 
+test("opposite directional findings (same tokens, reversed order) do NOT merge", () => {
+  // k=1 sets are identical (sim 1.0) but the order is reversed; the directional
+  // guard cross-checks the ordered bigram similarity and refuses to fold.
+  const a = mkThread({
+    id: 601, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use cache instead of store here",
+  });
+  const b = mkThread({
+    id: 602, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Use store instead of cache here",
+  });
+  const { records, duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 0, "contradictory directives must not merge");
+  assert.equal(records.find((r) => r.id === "t602").canonicalId, "t602", "second finding stays its own canonical");
+});
+
+test("equivalent findings with the same directional order still merge", () => {
+  const a = mkThread({
+    id: 603, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use cache instead of store here",
+  });
+  const b = mkThread({
+    id: 604, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Use cache instead of store in this path",
+  });
+  const { duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 1, "same-direction restatement is a real duplicate and folds");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);
