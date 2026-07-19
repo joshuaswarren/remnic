@@ -6,6 +6,7 @@ import path from "node:path";
 import test, { mock } from "node:test";
 
 import { ContentHashIndex, FactHashIndexNotAuthoritativeError, StorageManager } from "./storage.js";
+import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
 // fact-hash index (which grows with corpus size) on EVERY fact, even though
@@ -842,6 +843,93 @@ test("#2016 finding 3: flushReconcileRetry drains a deferred lock-timeout append
     assert.ok(
       fresh.has("deferred-drained-on-shutdown"),
       "the deferred hash reached disk via the inline shutdown drain",
+    );
+  });
+});
+
+// PR #2016 thread SDzOP: the storage-owned removal
+// (removeFactContentHashesForMemories) and the approval re-add
+// (addActiveFactContentHash) used to publish fact-hashes.txt with the unlocked
+// whole-file save(). That republishes THIS instance's cached in-memory set, so a
+// hash a peer appended to disk after this instance last synced — the exact
+// concurrent-index window the reconcile path exists to close — is silently
+// clobbered. Both paths now flush through the SAME cross-process locked,
+// removal-aware reconcile (saveMergingWithDisk) the write/batch/rebuild paths
+// use. This test reproduces the concurrent-append race deterministically: it
+// re-baselines the cached index freshness fingerprint to the peer-advanced file
+// so the removal keeps the authoritative fast path (no corpus rebuild) and its
+// SAVE step alone is exercised — an unlocked save() drops the peer append, the
+// locked reconcile keeps it.
+test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock, preserving a concurrent peer append", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    const storage = new StorageManager(dir);
+
+    await storage.writeMemory("fact", "alpha stays active", { source: "manual" });
+    await storage.writeMemory("fact", "beta gets archived", { source: "manual" });
+
+    // Make the shared index authoritative and cached (the production hot path).
+    assert.equal(await storage.hasFactContentHash("alpha stays active"), true);
+    // Test-only access to storage/index internals: the shape is structurally
+    // known and a runtime check would be meaningless here (private members).
+    const storageInternals = storage as unknown as {
+      getFactHashIndex: () => Promise<ContentHashIndex>;
+      readAllMemories: () => Promise<MemoryFile[]>;
+    };
+    const idx = await storageInternals.getFactHashIndex.call(storage);
+
+    // Archive beta off disk so the removal actually drops its hash (it is no
+    // longer owned by an active corpus fact).
+    const all = await storageInternals.readAllMemories.call(storage);
+    const beta = all.find((m) => (m.content ?? "").includes("beta gets archived"));
+    assert.ok(beta, "beta fact must exist in the corpus");
+    await rm(beta!.path, { force: true });
+    storage.invalidateAllMemoriesCacheForDir();
+
+    // Concurrent index activity: a peer instance appends a NEW hash under the
+    // cross-process lock. The storage's cached index does not know about it.
+    const peer = new ContentHashIndex(stateDir);
+    await peer.load();
+    peer.add("peer concurrent append");
+    await peer.saveMergingWithDisk();
+
+    // Re-baseline the cached index freshness fingerprint to the peer-advanced
+    // file so ensureFactHashIndexAuthoritative keeps the fast path (no rebuild),
+    // isolating the removal's SAVE step — the exact code the reviewer flagged.
+    const idxInternals = idx as unknown as {
+      captureSyncedFingerprint: () => Promise<void>;
+    };
+    await idxInternals.captureSyncedFingerprint.call(idx);
+
+    const saveSpy = mock.method(ContentHashIndex.prototype, "save");
+    const reconcileSpy = mock.method(ContentHashIndex.prototype, "saveMergingWithDisk");
+    try {
+      await storage.removeFactContentHashesForMemories([beta!]);
+      assert.ok(
+        reconcileSpy.mock.callCount() >= 1,
+        "the removal flushes via the locked reconcile (saveMergingWithDisk)",
+      );
+      assert.equal(
+        saveSpy.mock.callCount(),
+        0,
+        "the removal must NOT use the unlocked whole-file save()",
+      );
+    } finally {
+      saveSpy.mock.restore();
+      reconcileSpy.mock.restore();
+    }
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("alpha stays active"), "the surviving fact's hash is intact");
+    assert.equal(
+      fresh.has("beta gets archived"),
+      false,
+      "the archived fact's hash is dropped — no resurrection",
+    );
+    assert.ok(
+      fresh.has("peer concurrent append"),
+      "the concurrent peer append survives the removal (locked reconcile, not unlocked overwrite)",
     );
   });
 });

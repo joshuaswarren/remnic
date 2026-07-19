@@ -3956,7 +3956,12 @@ export class StorageManager {
     const factHashIndex = await this.getFactHashIndex();
     factHashIndex.addByHash(hash);
     this.factOnlyHashes.add(hash);
-    await factHashIndex.save();
+    // PR #2016 thread SDzOP: flush through the SAME cross-process locked
+    // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
+    // save() — an unlocked overwrite drops a concurrent extraction's appended
+    // hash and can be clobbered by a peer's locked publish. saveMergingWithDisk
+    // republishes only OUR delta ((on-disk \ removed) ∪ added) under the lock.
+    await factHashIndex.saveMergingWithDisk();
   }
 
   /**
@@ -4028,7 +4033,13 @@ export class StorageManager {
         this.factOnlyHashes.delete(hash);
       }
     }
-    await factHashIndex.save();
+    // PR #2016 thread SDzOP: serialize the removal with the per-index lock via
+    // the removal-aware reconcile, never the unlocked whole-file save(). The
+    // unlocked overwrite republished this instance's stale in-memory set,
+    // silently clobbering a concurrent extraction's appended hash; the reconcile
+    // reads the latest on-disk state, drops only OUR removed hashes, and keeps a
+    // peer's concurrent append.
+    await factHashIndex.saveMergingWithDisk();
   }
 
   /**
