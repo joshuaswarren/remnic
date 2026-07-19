@@ -1029,3 +1029,42 @@ test("#2016 thread SD7Tk: a direct fact write drains its deferred hash retry bef
     }
   });
 });
+test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still holds but a peer removed republishes it durably", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const CONTENT = "the reintroduced fact content";
+
+    // Peer A registers the hash and publishes it to the shared on-disk index.
+    const peerA = new ContentHashIndex(stateDir);
+    await peerA.load();
+    peerA.add(CONTENT);
+    await peerA.saveMergingWithDisk();
+
+    // Peer B loads the same on-disk index — its in-memory snapshot HOLDS the hash.
+    const peerB = new ContentHashIndex(stateDir);
+    await peerB.load();
+    assert.equal(peerB.has(CONTENT), true, "B loaded the hash from disk");
+
+    // Peer A removes the hash and publishes the removal — disk no longer holds
+    // it, but B's snapshot is now STALE (still holds the hash).
+    peerA.remove(CONTENT);
+    await peerA.saveMergingWithDisk();
+
+    // B directly re-adds the same content. Pre-fix this was a no-op: the local
+    // snapshot already held the hash, so add() recorded no delta and left the
+    // instance not dirty, so B's reconcile short-circuited and the reintroduced
+    // hash never reached disk — a peer view permanently lost it.
+    peerB.add(CONTENT);
+    await peerB.saveMergingWithDisk();
+
+    // A fresh reader (another peer) must now see the reintroduced hash.
+    const reader = new ContentHashIndex(stateDir);
+    await reader.load();
+    assert.equal(
+      reader.has(CONTENT),
+      true,
+      "the reintroduced hash is durably republished for peers (stale re-add recorded as a delta)",
+    );
+  });
+});

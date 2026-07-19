@@ -1133,6 +1133,59 @@ test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fa
     "the fact hash was flushed immediately despite the batch saver being a no-op",
   );
 });
+test("#2016 SD-nH: fact dedup disabled never suppresses a write via the authority/corpus-confirm path", async () => {
+  // With dedup DISABLED the entire content-hash dedup path must be
+  // short-circuited. The pre-fix code still ran hasContentHashDedup (returns
+  // false with a null index), then consulted isFactContentHashAuthoritative();
+  // when that reported NON-authoritative (e.g. a peer holds the rebuild lock)
+  // it set needsCorpusConfirm and the connector-aware corpus scan could find a
+  // same-content same-connector active fact and SUPPRESS the write — dedup
+  // behavior while dedup is turned off.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-dedup-off-nosuppress-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: false,
+    });
+    const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+
+    const body = "The billing service retries failed charges with exponential backoff.";
+    const source = { sourceConnector: "slack" };
+
+    // Seed one active same-connector copy in the corpus.
+    const first = await orchestrator.persistExtraction(factResult(body), storage, null, source);
+    assert.equal(first.length, 1, "first write lands");
+
+    // Force the storage fact-hash index NON-authoritative so the pre-fix code
+    // falls into needsCorpusConfirm and runs the corpus scan — the exact path
+    // that (wrongly) suppressed a write while dedup is DISABLED.
+    // isFactContentHashAuthoritative is a real method on StorageManager; the
+    // cast only reaches it as an overridable slot for this test.
+    const authorityStub = storage as unknown as {
+      isFactContentHashAuthoritative: () => Promise<boolean>;
+    };
+    authorityStub.isFactContentHashAuthoritative = async () => false;
+    // Read the corpus from disk so the scan sees the seeded copy.
+    clearMemoryCache();
+
+    const second = await orchestrator.persistExtraction(factResult(body), storage, null, source);
+    assert.equal(
+      second.length,
+      1,
+      "dedup disabled must not suppress the write via the authority/corpus-confirm path",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 test("#1909 round 11: deferred persist writes no ready marker and a restart rebuild still dedups", async () => {
   // With dedup ON the main-path fact write defers; there is NO fact-hashes.ready
   // marker anymore. A restart rebuilds the fact-hash index authoritatively from

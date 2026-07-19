@@ -1687,11 +1687,11 @@ export class ExtractionPersistCoordinator {
       let needsCorpusConfirm = false;
       try {
         exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
-        if (!exactDuplicate) {
-          // PR #2016: a MISS is trustworthy only against an AUTHORITATIVE index;
-          // the authority check can REBUILD from the corpus when a peer advanced
-          // it after our miss (thread SDyCj), so re-run the lookup — else a non-
-          // authoritative index confirms against the corpus below (findings 1-2).
+        if (factDedupEnabled && !exactDuplicate) {
+          // Fact dedup disabled → skip the authority check AND (via the guarded
+          // corpus block below) corpus confirmation, so a disabled deployment
+          // never suppresses a write via dedup (PR #2016 thread SD-nH). Enabled:
+          // a MISS is trustworthy only against an AUTHORITATIVE index — re-check.
           if (await targetStorage.isFactContentHashAuthoritative()) {
             exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
           } else {
@@ -1711,7 +1711,7 @@ export class ExtractionPersistCoordinator {
       // same-connector active fact exists across the hot+cold tiers. Different
       // connectors with the same content are NOT duplicates. Fail open (write) on
       // scan failure so an unverifiable state cannot silently drop content.
-      if (exactDuplicate || needsCorpusConfirm) {
+      if (factDedupEnabled && (exactDuplicate || needsCorpusConfirm)) {
         try {
           // #2016 cold-tier finding: the authoritative content-hash rebuild
           // unions the HOT and COLD tiers, so a hash hit can name an active copy
