@@ -1,0 +1,58 @@
+name: Review Round Dispatch
+
+# Transactional review rounds (issue #1992, umbrella #1988 decision E).
+#
+# Maintains a per-PR round ledger and decides when the next bot review round may
+# be dispatched. v1 is visibility-first (umbrella decision C): the ledger comment
+# is always written, but reviewer dispatch stays a no-op unless
+# REVIEW_ROUND_ENFORCE=true. This workflow NEVER fails a check and NEVER hides an
+# unresolved thread — the review-thread-guard remains the merge gate on threads.
+#
+# This is a SEPARATE workflow so it never adds concurrency to review-thread-guard
+# (whose missing concurrency group check-unsticker relies on — non-goal in #1992)
+# nor to ai-review-gate. Its own per-PR group coalesces bursts and never
+# force-cancels (cancel-in-progress: false), mirroring the gate's scheduling.
+#
+# The decision logic lives in scripts/review-round-gate.mjs + review-rounds.mjs
+# (unit-tested); the step imports it directly rather than mirroring it inline.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: review-round-dispatch-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  round-dispatch:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Evaluate transactional review round
+        uses: actions/github-script@v7
+        env:
+          # Shadow by default (decision D): enforcement flip is PR3, after
+          # shadow data lands. Set to 'true' only after the sandbox check.
+          REVIEW_ROUND_ENFORCE: 'false'
+          REQUIRED_AI_REVIEWER_GROUPS: >-
+            cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const modulePath = `${process.env.GITHUB_WORKSPACE}/scripts/review-round-gate.mjs`;
+            const mod = await import(pathToFileURL(modulePath).href);
+            await mod.runRoundGate({ github, context, core, env: process.env });
