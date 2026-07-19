@@ -627,12 +627,20 @@ export class ContentHashIndex {
    * Not part of the public API — prefer `add(content)` for external callers.
    */
   addByHash(hash: string): void {
+    // A re-add supersedes a pending removal of the same hash.
     this.removed.delete(hash);
-    if (!this.hashes.has(hash)) {
-      this.hashes.add(hash);
-      this.added.add(hash);
-      this.dirty = true;
-    }
+    // Record OUR durable delta even when the local snapshot already holds the
+    // hash (PR #2016 thread PRRT_kwDORJXyws6SEHve). Outside a rebuild
+    // (StorageManager.addActiveFactContentHash on reactivation) local
+    // membership can be STALE: a peer removed this hash on disk while this
+    // instance kept it in memory. Skipping added/dirty on that path let the
+    // reconciling save compute (on-disk \ removed) ∪ added and silently drop
+    // the reintroduced hash, so the peer never saw it again. Set semantics keep
+    // this idempotent (no duplicate entries) and the removed.delete above
+    // preserves remove/add ordering. Mirrors add().
+    this.hashes.add(hash);
+    this.added.add(hash);
+    this.dirty = true;
   }
 
   /** Normalize content (delegates to content-hash.ts for a single source of truth). */

@@ -3970,6 +3970,15 @@ export class StorageManager {
     // hash and can be clobbered by a peer's locked publish. saveMergingWithDisk
     // republishes only OUR delta ((on-disk \ removed) ∪ added) under the lock.
     await factHashIndex.saveMergingWithDisk();
+    // A locked reconcile that times out defers to an unref'd background retry
+    // and returns WITHOUT publishing (dirty retained). The reactivation path is
+    // a lifecycle boundary just like writeMemory (PR #2016 thread
+    // PRRT_kwDORJXyws6SEHvh): a short-lived caller must not observe the deferral
+    // as durable. Drain the deferred retry inline so the reintroduced hash lands
+    // on disk (or exhausts its bounded attempts, falling back to the
+    // corpus-rebuild safety net) before returning. No-op — no duplicated retry
+    // work — when the save already published (not dirty).
+    await factHashIndex.flushReconcileRetry();
   }
 
   /**

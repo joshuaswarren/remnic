@@ -1120,3 +1120,81 @@ test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still hol
     );
   });
 });
+test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local snapshot still holds but a peer removed republishes it durably", async () => {
+  // Parallel to thread SD-nG for add(): the reactivation path
+  // (StorageManager.addActiveFactContentHash) re-registers a hash via addByHash
+  // OUTSIDE a rebuild. Pre-fix, when this instance's in-memory set still held
+  // the hash but a peer had REMOVED it on disk, addByHash no-op'd (hash present
+  // in `hashes`), recording no delta and leaving the instance not dirty. The
+  // subsequent reconcile then short-circuited (not dirty), so the reintroduced
+  // hash never reached disk and the peer view lost it permanently.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const hash = ContentHashIndex.computeHash("reactivated-fact-body");
+
+    // Peer A publishes the hash to the shared on-disk index.
+    const peerA = new ContentHashIndex(stateDir);
+    await peerA.load();
+    peerA.addByHash(hash);
+    await peerA.saveMergingWithDisk();
+
+    // Peer B loads the same index — its in-memory snapshot HOLDS the hash.
+    const peerB = new ContentHashIndex(stateDir);
+    await peerB.load();
+    assert.equal(peerB.has("reactivated-fact-body"), true, "B loaded the hash from disk");
+
+    // Peer A removes the hash and publishes the removal — disk no longer holds
+    // it, but B's snapshot is now STALE (still holds the hash).
+    peerA.removeByHash(hash);
+    await peerA.saveMergingWithDisk();
+
+    // B re-registers the same hash via addByHash (the reactivation path). Pre-fix
+    // a no-op; fixed, it records the durable delta.
+    peerB.addByHash(hash);
+    await peerB.saveMergingWithDisk();
+
+    const reader = new ContentHashIndex(stateDir);
+    await reader.load();
+    assert.equal(
+      reader.has("reactivated-fact-body"),
+      true,
+      "addByHash on a stale local hit must republish the hash durably for peers",
+    );
+  });
+});
+
+test("#2016 thread PRRT_kwDORJXyws6SEHvh: reactivation drains the deferred reconcile retry inline like writeMemory", async () => {
+  // restoreFactHashAfterApproval -> addActiveFactContentHash used to publish the
+  // reintroduced hash with a bare saveMergingWithDisk() and return. On a lock
+  // timeout that call DEFERS to an unref'd background retry WITHOUT publishing,
+  // so a short-lived caller could exit before the hash reached disk. writeMemory
+  // guards this by draining the deferred retry inline (flushReconcileRetry); the
+  // reactivation path is the same lifecycle boundary and must do the same. This
+  // asserts the wiring — the drain's durability semantics are covered by the
+  // ContentHashIndex lock-timeout tests above.
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const { id } = await storage.writeMemory("fact", "reactivated fact body", { source: "manual" });
+    assert.ok(id, "wrote the fact to reactivate");
+
+    // Reset spies AFTER the write so we only measure the reactivation path
+    // (writeMemory itself also flushes).
+    const reconcileSpy = mock.method(ContentHashIndex.prototype, "saveMergingWithDisk");
+    const flushSpy = mock.method(ContentHashIndex.prototype, "flushReconcileRetry");
+    try {
+      await storage.restoreFactHashAfterApproval(id);
+      assert.ok(
+        reconcileSpy.mock.callCount() >= 1,
+        "reactivation publishes via the locked reconcile (saveMergingWithDisk)",
+      );
+      assert.ok(
+        flushSpy.mock.callCount() >= 1,
+        "reactivation drains the deferred lock-timeout retry inline (flushReconcileRetry) — same durability guarantee as writeMemory",
+      );
+    } finally {
+      reconcileSpy.mock.restore();
+      flushSpy.mock.restore();
+    }
+  });
+});
