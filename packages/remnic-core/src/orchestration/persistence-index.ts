@@ -160,7 +160,16 @@ export class PersistenceIndexCoordinator {
       const incomingEntityNorm = entityRef
         ? normalizeSupersessionKey(entityRef)
         : undefined;
-      const all = await targetStorage.readAllMemories();
+      // #2016 cold-tier finding: the authoritative content-hash rebuild unions
+      // the hot and cold tiers, so a dedup hit can name an active fact whose
+      // only copy was demoted to cold/. Scan both tiers (hot first, so a hot
+      // copy is still preferred) or the corrected valid_at/invalid_at write is
+      // suppressed while the cold copy keeps stale bounds in recall.
+      const [hotMems, coldMems] = await Promise.all([
+        targetStorage.readAllMemories(),
+        targetStorage.readAllColdMemories(),
+      ]);
+      const all = coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
       const existing = all.find((m) => {
         if (m.frontmatter.category !== "fact") return false;
         if ((m.frontmatter.status ?? "active") !== "active") return false;

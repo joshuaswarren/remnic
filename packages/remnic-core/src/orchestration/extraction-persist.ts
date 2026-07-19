@@ -121,6 +121,28 @@ import {
   resolvePersistedMemoryRelativePath,
 } from "../orchestrator.js";
 
+/**
+ * Read the active-copy corpus across BOTH storage tiers (hot + cold).
+ *
+ * #2016 cold-tier finding: the authoritative content-hash rebuild unions the
+ * hot and cold tiers, so `hasFactContentHash()` can report a hit for a
+ * fact/procedure whose only active copy was demoted to `cold/`. A promotion or
+ * dedup confirmation scan that reads `readAllMemories()` (hot) alone misses
+ * that copy, so it either writes a duplicate hot copy or skips a needed
+ * temporal backfill. Scanning both tiers keeps the confirmation coherent with
+ * the hash index. Cold reads are folded in only when the cold tier is
+ * non-empty so hot-only namespaces incur no extra allocation.
+ */
+async function readActiveMemoriesBothTiers(
+  storage: StorageManager,
+): Promise<MemoryFile[]> {
+  const [hotMems, coldMems] = await Promise.all([
+    storage.readAllMemories(),
+    storage.readAllColdMemories(),
+  ]);
+  return coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
+}
+
 export interface ExtractionPersistDeps {
   config: PluginConfig;
   getStorageRouter: () => NamespaceStorageRouter;
@@ -474,7 +496,7 @@ export class ExtractionPersistCoordinator {
             // Different connectors with same content should NOT be deduped.
             let skipPromotion = true;
             try {
-              const allMems = await targetStorage.readAllMemories();
+              const allMems = await readActiveMemoriesBothTiers(targetStorage);
               const nc = sourceContext?.sourceConnector?.trim() || undefined;
               skipPromotion = allMems.some((m) => {
                 if (m.frontmatter.category !== options.category) return false;
@@ -707,7 +729,7 @@ export class ExtractionPersistCoordinator {
           let sharedSameConnector = true;
           if (options.invalidAt || options.validAt) {
             try {
-              const sharedMems = await sharedStorage.readAllMemories();
+              const sharedMems = await readActiveMemoriesBothTiers(sharedStorage);
               const snc = sourceContext?.sourceConnector?.trim() || undefined;
               sharedSameConnector = sharedMems.some((m) => {
                 if (m.frontmatter.category !== "fact") return false;
@@ -783,7 +805,7 @@ export class ExtractionPersistCoordinator {
               // sanitization redacted the content, causing the candidate lookup to
               // return undefined and leaving stale facts active.
               const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
-              const allShared = await sharedStorage.readAllMemories();
+              const allShared = await readActiveMemoriesBothTiers(sharedStorage);
               // PR #402 round-12 (Finding Uybg): restrict hash-dedup matching to
               // the SAME entity.  Content-hash equality alone can collide across
               // entities when two entities share identical fact text.  Using an
@@ -899,7 +921,7 @@ export class ExtractionPersistCoordinator {
             // fact gets its own promoted copy.
             let skipSharedPromotion = true;
             try {
-              const allSharedMems = await sharedStorage.readAllMemories();
+              const allSharedMems = await readActiveMemoriesBothTiers(sharedStorage);
               const snc = sourceContext?.sourceConnector?.trim() || undefined;
               const sharedNormalized = ContentHashIndex.normalizeContent(dedupContent);
               skipSharedPromotion = allSharedMems.some((m) => {
