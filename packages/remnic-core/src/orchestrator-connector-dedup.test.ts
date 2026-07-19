@@ -1721,6 +1721,81 @@ test("#1909 (PR #2016): a fact demoted to cold is not re-created as a duplicate 
   await rm(memoryDir, { recursive: true, force: true });
 });
 
+test("#1909 (PR #2016) review: an authoritative instance still confirms a fact a peer flushed after its rebuild (no duplicate)", async () => {
+  // Fresh finding beyond the crash/restart tests above: those model a NEW
+  // process rebuilding from the corpus. Here BOTH instances stay live. Instance
+  // A rebuilds its fact-hash index and marks it authoritative; instance B then
+  // persists AND flushes a fact through the real persist path. A is still
+  // flagged authoritative from its earlier rebuild, so without a freshness gate
+  // its stale in-memory index answers a MISS and skips corpus confirmation —
+  // persisting a duplicate active memory. The cheap per-operation freshness
+  // check (durable index fingerprint advanced) must drop authority so A's
+  // duplicate check finds B's fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-peer-fresh-"));
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+  const orchA = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const orchB = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storageA = await orchA.getStorage("default");
+  const storageB = await orchB.getStorage("default");
+  await storageA.ensureDirectories();
+
+  const body = "The incident bridge auto-pages the on-call SRE after five minutes.";
+
+  // A rebuilds the index and becomes authoritative over a corpus without the
+  // fact — its in-memory MISS for `body` is (correctly) trusted at this point.
+  assert.equal(
+    await storageA.isFactContentHashAuthoritative(),
+    true,
+    "A's fact-hash index rebuilt authoritative",
+  );
+  assert.equal(
+    await orchA.hasContentHashDedup(storageA, body),
+    false,
+    "A has no such fact before B writes it",
+  );
+
+  // B persists and flushes the fact through the real persist path (its
+  // reconcile-save advances the durable fact-hashes.txt A rebuilt from).
+  const bIds = await orchB.persistExtraction(factResult(body), storageB, null);
+  assert.equal(bIds.length, 1, "B persisted the fact");
+
+  // A is still flagged authoritative, but the durable index advanced. The
+  // freshness gate must catch it so A's duplicate check now finds B's fact
+  // instead of trusting a stale miss.
+  assert.equal(
+    await orchA.hasContentHashDedup(storageA, body),
+    true,
+    "A sees B's flushed fact via the freshness-gated rebuild (stale-miss without the fix)",
+  );
+  assert.equal(
+    await storageA.hasFactContentHash(body),
+    true,
+    "A's fact-only membership also reflects B's flushed fact",
+  );
+
+  // Re-extracting the same fact on A is deduped — no duplicate .md is created.
+  const aIds = await orchA.persistExtraction(factResult(body), storageA, null);
+  assert.equal(aIds.length, 0, "A does not re-create B's fact (would be 1 without the fix)");
+  const all = await new StorageManager(memoryDir).readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.content.includes(body)).length,
+    1,
+    "exactly one copy of the fact exists on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
 test("#1909 (PR #2016): a re-extracted duplicate backfills temporal bounds onto a COLD-only active copy", async () => {
   // Finding: when a content-hash hit is confirmed only by the cold tier, the
   // dedup short-circuit fires but backfillTemporalBoundsOnDedupHit() scanned

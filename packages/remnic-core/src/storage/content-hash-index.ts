@@ -3,7 +3,7 @@
 // rebuild saves plus the deferred durable-retry machinery. storage.ts imports
 // these back and re-exports the class + companion types that were previously
 // part of its public API.
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -119,6 +119,16 @@ export class ContentHashIndex {
   private reconcileRetryAttempts = 0;
   private reconcileRetryBarrier: Promise<void> | null = null;
   private reconcileRetryResolve: (() => void) | null = null;
+  /**
+   * On-disk fingerprint (mtime + byte size) of `fact-hashes.txt` captured at the
+   * last point THIS instance's in-memory set matched disk — after `load()`,
+   * `save()`, or a reconcile publish (PR #2016 review). A peer process that
+   * advances the durable index changes this fingerprint;
+   * {@link isDiskFingerprintCurrent} compares a single cheap `stat` against it so
+   * a stale-but-"authoritative" snapshot is detected without an O(file-size)
+   * re-read on the hot path.
+   */
+  private lastSyncedFingerprint: { mtimeMs: number; size: number } | null = null;
 
   constructor(
     stateDir: string,
@@ -150,6 +160,54 @@ export class ContentHashIndex {
       if (!isErrnoCode(err, "ENOENT")) throw err;
       log.debug("content-hash index: no existing index — starting fresh");
     }
+    // The loaded set now reflects the on-disk file — baseline the fingerprint so
+    // a later peer write is detectable (PR #2016 review).
+    await this.captureSyncedFingerprint();
+  }
+
+  /** Cheap `stat` of the durable index file; null when it does not exist yet. */
+  private async statIndexFile(): Promise<{ mtimeMs: number; size: number } | null> {
+    try {
+      const s = await stat(this.filePath);
+      return { mtimeMs: s.mtimeMs, size: s.size };
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return null;
+      throw err;
+    }
+  }
+
+  /** Record the current on-disk fingerprint as this instance's synced baseline. */
+  private async captureSyncedFingerprint(): Promise<void> {
+    try {
+      this.lastSyncedFingerprint = await this.statIndexFile();
+    } catch (err) {
+      // A stat failure other than ENOENT leaves no baseline; the next freshness
+      // check reports non-current and the caller confirms against the corpus.
+      this.lastSyncedFingerprint = null;
+      log.debug(`content-hash index: could not fingerprint ${this.filePath}: ${err}`);
+    }
+  }
+
+  /**
+   * True when the durable index file is unchanged since this instance last
+   * synced it (load / save / reconcile). False when a peer advanced it, when the
+   * file appeared or vanished, or when freshness cannot be established (stat
+   * error) — the caller then treats the in-memory snapshot as non-authoritative
+   * and confirms a dedup miss against the durable corpus (PR #2016 review). One
+   * `stat`, never an O(file-size) read, so the hot path stays cheap.
+   */
+  async isDiskFingerprintCurrent(): Promise<boolean> {
+    let current: { mtimeMs: number; size: number } | null;
+    try {
+      current = await this.statIndexFile();
+    } catch {
+      return false;
+    }
+    const last = this.lastSyncedFingerprint;
+    if (last === null || current === null) {
+      return last === null && current === null;
+    }
+    return current.mtimeMs === last.mtimeMs && current.size === last.size;
   }
 
   /** Check if content already exists in the index. */
@@ -207,6 +265,9 @@ export class ContentHashIndex {
     this.removed.clear();
     this.dirty = false;
     this.cancelReconcileRetry();
+    // This overwrite is now the on-disk state — re-baseline the freshness
+    // fingerprint so our own write is not later mistaken for a peer's (PR #2016).
+    await this.captureSyncedFingerprint();
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
   }
 
@@ -268,6 +329,10 @@ export class ContentHashIndex {
       this.added.clear();
       this.removed.clear();
       this.dirty = false;
+      // The reconciled set is now the on-disk state — re-baseline the freshness
+      // fingerprint (captured under the held lock) so our own publish is not
+      // later mistaken for a peer's advance (PR #2016 review).
+      await this.captureSyncedFingerprint();
     };
     await withHeldFileLock(
       `${this.filePath}.lock`,

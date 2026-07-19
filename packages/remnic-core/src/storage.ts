@@ -3281,7 +3281,19 @@ export class StorageManager {
 
   private async ensureFactHashIndexAuthoritative(): Promise<boolean> {
     if (this.factHashIndexAuthoritative === true) {
-      return true;
+      // PR #2016 review: authority is NOT permanent. A peer process can advance
+      // the durable fact-hash index after our rebuild, leaving our in-memory
+      // snapshot stale but still flagged authoritative — so a dedup MISS is
+      // wrongly trusted and a duplicate active memory is written. Gate the fast
+      // path on a cheap one-stat freshness check: when the durable index file is
+      // unchanged since our last sync we stay authoritative (hot path preserved);
+      // when a peer advanced it (or freshness cannot be established) drop
+      // authority and rebuild from the corpus below so the miss confirms against
+      // ground truth.
+      if (this.factHashIndex && (await this.factHashIndex.isDiskFingerprintCurrent())) {
+        return true;
+      }
+      this.factHashIndexAuthoritative = null;
     }
     if (this.factHashIndexAuthoritativePromise) {
       return this.factHashIndexAuthoritativePromise;
