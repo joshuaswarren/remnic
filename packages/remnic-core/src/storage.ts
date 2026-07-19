@@ -1982,6 +1982,16 @@ export class StorageManager {
   private factHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
   private factHashIndexAuthoritative: boolean | null = null;
   private factHashIndexAuthoritativePromise: Promise<boolean> | null = null;
+  /**
+   * Fact-ONLY hash membership (PR #2016). The shared `factHashIndex` above is
+   * category-agnostic (the round-15 corpus rebuild + addContentHashDedup index
+   * every category), so it cannot answer a fact-only question. This set carries
+   * only `category === "fact"` hashes — rebuilt in lockstep with the shared
+   * index and kept current by the same write/removal paths — and is the sole
+   * source for `hasFactContentHash`, so an over-included non-fact body can never
+   * suppress a real fact candidate.
+   */
+  private factOnlyHashes: Set<string> = new Set();
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
   factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
@@ -3331,6 +3341,10 @@ export class StorageManager {
    */
   private async rebuildFactHashIndexFromCorpus(factHashIndex: ContentHashIndex): Promise<void> {
     factHashIndex.clear();
+    // Fact-ONLY membership rebuilt in lockstep (PR #2016): hasFactContentHash
+    // reads THIS set, never the category-agnostic shared index below, so an
+    // over-included non-fact body can never satisfy a fact-hash check.
+    const factOnly = new Set<string>();
     // #1909 review round 14: index the HOT and COLD tiers together. A fact or
     // procedure demoted to cold/ is still active and its content-hash must
     // survive the corpus rebuild, or a restart would drop the hash and let the
@@ -3361,74 +3375,58 @@ export class StorageManager {
       // citation-strip reconstruction below, hashing the stored persist body
       // (title + steps) exactly as buildProcedurePersistBody registered it.
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-      // Prefer the pre-computed raw-content hash stored in frontmatter
-      // (written since round 8 of issue #369). This hash was derived from
-      // the content BEFORE citation annotation, so it matches what
-      // hasFactContentHash(rawFact) would compute.
-      if (memory.frontmatter.contentHash) {
-        factHashIndex.addByHash(memory.frontmatter.contentHash);
+      const hash = this.corpusRegisteredHash(memory);
+      if (hash === null) {
+        // Body carries a citation from an unknown/custom template we cannot
+        // safely strip — skip rather than register a wrong hash. A
+        // false-negative miss beats a wrong entry that would permanently
+        // suppress legitimate duplicate writes (see corpusRegisteredHash).
+        legacyRecovered++;
         continue;
       }
-      // No frontmatter hash (procedures, non-fact categories, and legacy facts
-      // written before contentHash existed — Finding 1, Uhol). Reconstruct the
-      // registered hash from the stored body. First strip the "[Attributes: …]"
-      // enrichment suffix writeMemory appends for structuredAttributes: the
-      // registration path (addContentHashDedup) hashed the raw canonical
-      // content WITHOUT that suffix, so a non-fact category carrying attributes
-      // would otherwise rebuild to a hash that never matches. stripAttributesSuffix
-      // is a no-op when no suffix is present (procedures, plain facts), and the
-      // connector-aware dedup scan already strips it the same way. Then handle
-      // the citation:
-      //
-      //  1. Default/configured citation present → strip it and index the body.
-      //  2. No citation at all → index the body as-is.
-      //  3. Unknown/custom citation template → skip with a warning.
-      //
-      // Rationale for (3): for content annotated with a custom citation
-      // template, stripCitationForTemplate cannot reliably detect the inline
-      // marker and would hash the cited body — producing a hash that never
-      // matches what the dedup check computes. A false-negative miss (the
-      // memory is not in the index) is preferable to a wrong index entry that
-      // permanently suppresses legitimate duplicate writes.
-      //
-      // Limitation (Thread 2 — stale hash): even when contentHash IS present
-      // it may be stale if updateMemory() rewrote the body without updating
-      // the frontmatter hash. The hash is trusted as-is here; a future
-      // migration pass can recompute it from the current content.
-      //
-      // citationTemplate (Thread 1 fix) is set by the orchestrator to the
-      // active inlineSourceAttributionFormat so the rebuild strips both the
-      // default and any custom template. It falls back to DEFAULT_CITATION_FORMAT
-      // when the orchestrator has not configured one (e.g. direct StorageManager
-      // construction in tests).
-      const content = stripAttributesSuffix(memory.content);
-      const stripped = stripCitationForTemplate(content, this.citationTemplate);
-      if (stripped !== content) {
-        // Citation was stripped — index the bare body.
-        factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text));
-        continue;
-      }
-      // No citation was removed. Decide whether to index or skip.
-      // Thread 4 fix: use hasCitation() rather than the too-broad endsWith("]")
-      // heuristic. Content that legitimately ends with "]" (e.g. "User prefers
-      // [dark mode]") has no citation marker and should be indexed as-is.
-      // Only skip when hasCitation() confirms a citation is present — that
-      // means the citation is from an unknown/custom template we cannot strip.
-      if (!hasCitation(content)) {
-        // Content has no recognisable citation marker — index raw body.
-        factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(content).text));
-        continue;
-      }
-      // Content carries a citation from an unknown/custom template
-      // that we cannot safely strip. Skip rather than index a wrong hash.
-      legacyRecovered++;
-      continue;
+      factHashIndex.addByHash(hash);
+      if (memory.frontmatter.category === "fact") factOnly.add(hash);
     }
+    this.factOnlyHashes = factOnly;
     if (legacyRecovered > 0) {
       log.info(
         `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
       );
     }
+  }
+
+  /**
+   * The content-hash the corpus rebuild registers for `memory`, or null when the
+   * body carries a citation from an unknown/custom template that cannot be
+   * safely stripped. Shared by the authoritative rebuild and the fact-only
+   * corpus confirmation (`hasFactContentHash`) so both derive the identical
+   * hash for a given stored body.
+   *
+   * Preference order:
+   *  1. frontmatter.contentHash — the raw pre-citation hash writeMemory records
+   *     for facts (issue #369 round 8); matches hasFactContentHash(rawFact).
+   *  2. Reconstruct from the stored body: strip the "[Attributes: …]" suffix
+   *     writeMemory appends for structuredAttributes (registration hashed the
+   *     raw canonical content WITHOUT it — a no-op when absent), then strip a
+   *     recognised citation and hash the bare body, or hash a citation-free
+   *     body as-is.
+   *  3. A body with a citation from an unknown/custom template → null: a
+   *     false-negative miss beats a wrong hash that would permanently suppress
+   *     legitimate duplicate writes.
+   */
+  private corpusRegisteredHash(memory: MemoryFile): string | null {
+    if (memory.frontmatter.contentHash) {
+      return memory.frontmatter.contentHash;
+    }
+    const content = stripAttributesSuffix(memory.content);
+    const stripped = stripCitationForTemplate(content, this.citationTemplate);
+    if (stripped !== content) {
+      return ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text);
+    }
+    if (!hasCitation(content)) {
+      return ContentHashIndex.computeHash(sanitizeMemoryContent(content).text);
+    }
+    return null;
   }
   private get questionsDir(): string {
     return path.join(this.baseDir, "questions");
@@ -3821,12 +3819,12 @@ export class StorageManager {
         // fact text before citation annotation), index THAT string so that
         // hasFactContentHash(rawFact) returns true on subsequent extractions.
         // Otherwise fall back to the sanitized persisted body as before.
-        if (options.contentHashSource !== undefined && options.contentHashSource.length > 0) {
-          const hashSourceSanitized = sanitizeMemoryContent(options.contentHashSource);
-          factHashIndex.add(hashSourceSanitized.text);
-        } else {
-          factHashIndex.add(sanitized.text);
-        }
+        const hashText =
+          options.contentHashSource !== undefined && options.contentHashSource.length > 0
+            ? sanitizeMemoryContent(options.contentHashSource).text
+            : sanitized.text;
+        factHashIndex.add(hashText);
+        this.factOnlyHashes.add(ContentHashIndex.computeHash(hashText));
         // Gate only the flush (issue #1909): the `.add(...)` above already set
         // dirty=true. When the caller defers, it owns the batch save
         // (extraction persist -> saveContentHashIndexes()). Single-write callers
@@ -3876,22 +3874,39 @@ export class StorageManager {
 
   async hasFactContentHash(content: string): Promise<boolean> {
     const authoritative = await this.ensureFactHashIndexAuthoritative();
-    const factHashIndex = await this.getFactHashIndex();
     const sanitized = sanitizeMemoryContent(content);
-    if (factHashIndex.has(sanitized.text)) return true;
-    if (authoritative) return false;
-    // PR #2016 finding 1: the locked corpus rebuild could not run, so the shared
-    // index is still the loaded snapshot whose miss may be false. Never answer a
-    // miss from a stale snapshot as if authoritative — verify against the durable
-    // hot+cold corpus (ground truth) via a throwaway index so a lock-contended
-    // read can never cause a false dedup miss.
-    return await this.factContentHashPresentInCorpus(sanitized.text);
+    const hash = ContentHashIndex.computeHash(sanitized.text);
+    // Fact-ONLY answer (PR #2016). The shared content-hash index is
+    // category-agnostic — the round-15 authoritative rebuild indexes EVERY
+    // active category and addContentHashDedup registers all of them — so it
+    // cannot tell a FACT from an unrelated preference/decision/note/moment with
+    // the same normalized body. Direct consumers
+    // (createWearableMemoryWriter.hasFactContentHash, the explicit-capture
+    // negative pre-filter) treat a hit as terminal BEFORE their own source/
+    // category confirmation, so answering from the shared index would let a
+    // non-fact suppress a real fact candidate. Only category === "fact" registers
+    // a fact-content hash at write time (writeMemory), so answer from the
+    // fact-only membership rebuilt in lockstep with the shared index. When the
+    // index is authoritative that set is current (rebuild + write/removal
+    // upkeep); otherwise the snapshot may be stale, so verify against the durable
+    // fact corpus (ground truth) so a lock-contended read never suppresses a fact.
+    if (authoritative) {
+      return this.factOnlyHashes.has(hash);
+    }
+    return await this.factContentHashPresentInCorpus(hash);
   }
 
-  private async factContentHashPresentInCorpus(sanitizedText: string): Promise<boolean> {
-    const scratch = this.createContentHashIndex();
-    await this.rebuildFactHashIndexFromCorpus(scratch);
-    return scratch.has(sanitizedText);
+  private async factContentHashPresentInCorpus(targetHash: string): Promise<boolean> {
+    const existing = [
+      ...(await this.readAllMemories()),
+      ...(await this.readAllColdMemories()),
+    ];
+    for (const memory of existing) {
+      if (memory.frontmatter.category !== "fact") continue;
+      if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
+      if (this.corpusRegisteredHash(memory) === targetHash) return true;
+    }
+    return false;
   }
 
   private factContentHashForRemoval(memory: MemoryFile): string | null {
@@ -3916,6 +3931,7 @@ export class StorageManager {
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     factHashIndex.addByHash(hash);
+    this.factOnlyHashes.add(hash);
     await factHashIndex.save();
   }
 
@@ -3985,6 +4001,7 @@ export class StorageManager {
     for (const hash of removedHashes.values()) {
       if (!remainingActiveHashes.has(hash)) {
         factHashIndex.removeByHash(hash);
+        this.factOnlyHashes.delete(hash);
       }
     }
     await factHashIndex.save();

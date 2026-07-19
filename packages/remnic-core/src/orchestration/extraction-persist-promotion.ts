@@ -11,6 +11,7 @@
  */
 
 import { StorageManager } from "../index.js";
+import { log } from "../logger.js";
 import { confidenceTier } from "../types.js";
 import {
   resolveNamespaceCapabilities,
@@ -109,4 +110,25 @@ export async function readActiveMemoriesBothTiers(
     storage.readAllColdMemories(),
   ]);
   return coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
+}
+
+/**
+ * PR #2016: after `writeSealedMemory` has made a fact `.md` durable with its
+ * fact-hash flush deferred (#1909 batching), a throw in the fallible post-write
+ * work (contradiction resolve, indexing, shared promotion, artifact write)
+ * would strand the deferred parent hash — the shared fact-hash index on disk
+ * would be missing the parent until the next corpus rebuild, letting a peer
+ * re-extract a duplicate. Flush the batch save before the error propagates so
+ * the durable-hash invariant holds on every path. No-op when dedup is off
+ * (`deferred=false` → the write already flushed and the batch saver is a no-op).
+ * Best-effort: a flush failure is logged and never masks the original error.
+ */
+export async function flushDeferredFactHashOnFailure(
+  saveContentHashIndexes: () => Promise<void>,
+  deferred: boolean,
+): Promise<void> {
+  if (!deferred) return;
+  await saveContentHashIndexes().catch((err) =>
+    log.warn(`content-hash flush after post-write failure failed: ${err}`),
+  );
 }

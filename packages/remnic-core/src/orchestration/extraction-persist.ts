@@ -111,6 +111,7 @@ import type {
   MemoryCategory,
 } from "../types.js";
 import {
+  flushDeferredFactHashOnFailure,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
   shouldPromoteToShared,
@@ -2607,12 +2608,12 @@ export class ExtractionPersistCoordinator {
         faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
-      await this.deps.applyDeferredContradictionResolve(
-        contradiction,
-        targetStorage,
-        memoryId,
-        postWriteGuard,
-      );
+      try {
+        await this.deps.applyDeferredContradictionResolve(contradiction, targetStorage, memoryId, postWriteGuard);
+      } catch (err) {
+        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        throw err;
+      }
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -2785,6 +2786,11 @@ export class ExtractionPersistCoordinator {
             `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
           );
         }
+      } catch (err) {
+        // PR #2016: flush the deferred fact-hash before propagating so a durable
+        // .md never outlives a missing shared fact-hash index entry.
+        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        throw err;
       } finally {
         // Catalog touch (issue #1499): record AFTER every synchronous
         // source-namespace mutation in the non-chunked path: writeMemory,
