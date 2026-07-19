@@ -47,6 +47,10 @@ interface ExtractionLifecycleState {
   restartCalls?: BufferTurn[][];
   /** Re-flush calls after an aborted before_reset flush (before-reset row). */
   secondFlushCalls?: BufferTurn[][];
+  /** The aborting before_reset flush's recorded extraction calls (before-reset row). */
+  abortFlushCalls?: BufferTurn[][];
+  /** Whether the aborting before_reset flush rejected (before-reset row). */
+  abortFlushRejected?: boolean;
   /** Extraction-call count captured right before the dedupe row's force flush. */
   callsBeforeForceFlush?: number;
 }
@@ -215,13 +219,17 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         await primary.processTurn("user", "The replay ledger checkpoint compacts after five hundred entries.", "session-reset");
         const controller = new AbortController();
         // Rewire the seam: extraction succeeds but trips the abort mid-flight.
-        stubExtraction(primary, (turns) => {
+        state.abortFlushCalls = stubExtraction(primary, (turns) => {
           controller.abort();
           return singleFactResult(turns.map((turn) => turn.content).join(" | "));
         });
+        let abortRejected = false;
         await primary
           .flushSession("session-reset", { reason: "before_reset", abortSignal: controller.signal })
-          .catch(() => undefined);
+          .catch(() => {
+            abortRejected = true;
+          });
+        state.abortFlushRejected = abortRejected;
 
         // A fresh, non-aborted flush must find the turn still buffered AND must
         // itself succeed — swallowing its failure would let a recovery-flush
@@ -338,6 +346,17 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "before-reset": {
+        assert.equal(
+          state.abortFlushRejected,
+          true,
+          "the aborted before_reset flush must reject — the abort tripped mid-flush, not a silent success",
+        );
+        assert.ok(state.abortFlushCalls, "the aborting flush's extraction calls must be recorded");
+        assert.equal(
+          state.abortFlushCalls.length,
+          1,
+          "the abort must trip AFTER exactly one extraction attempt — a reject before extraction ran (length 0) would mean the mid-extraction abort path was never exercised",
+        );
         assert.ok(state.secondFlushCalls, "a re-flush must have been recorded");
         assert.equal(
           state.secondFlushCalls.length,
