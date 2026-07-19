@@ -113,7 +113,7 @@ test("a non-lifecycle path is ignored entirely", () => {
 
 test("classifyGlob distinguishes covered / grandfathered / unmapped", () => {
   const manifest = loadReal();
-  assert.equal(classifyGlob("packages/remnic-core/src/orchestration/**", manifest), "covered");
+  assert.equal(classifyGlob("packages/remnic-core/src/orchestration/extraction-run.ts", manifest), "covered");
   assert.equal(classifyGlob("packages/remnic-core/src/qmd-recall-cache.ts", manifest), "grandfathered");
   assert.equal(classifyGlob("packages/remnic-core/src/does-not-exist.ts", manifest), "unmapped");
 });
@@ -468,4 +468,31 @@ test("runCli is hermetic: an ambient LIFECYCLE_BASE_MANIFEST_PATH is not compare
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("orchestration coverage is per-file: only files extraction-lifecycle exercises are covered", () => {
+  const manifest = loadReal();
+  const P = "packages/remnic-core/src/orchestration/";
+  // No broad orchestration wildcard may claim coverage.
+  assert.ok(
+    !Object.keys(manifest.coverage).some((k) => k.endsWith("/orchestration/**")),
+    "orchestration/** must not be a covered glob — it would falsely cover unexercised files",
+  );
+  // Files the extraction/flush/persist lifecycle actually drives → covered.
+  for (const f of ["extraction-run.ts", "extraction-persist.ts", "turn-ingestion.ts", "session-context.ts"]) {
+    const { covered, violations } = evaluateCoverage([P + f], manifest);
+    assert.equal(violations.length, 0, `${f} must not violate`);
+    assert.equal(covered.length, 1, `${f} must be covered`);
+    assert.equal(covered[0].subject, "extraction-lifecycle");
+  }
+  // Files no current subject exercises → grandfathered (warn), never silently covered.
+  for (const f of ["maintenance.ts", "recall-internal.ts", "tier-migration-coordinator.ts", "consolidation-run.ts"]) {
+    const { covered, warnings, violations } = evaluateCoverage([P + f], manifest);
+    assert.equal(covered.length, 0, `${f} must NOT be covered (extraction-lifecycle does not exercise it)`);
+    assert.equal(violations.length, 0, `${f} is grandfathered, not a hard violation`);
+    assert.equal(warnings.length, 1, `${f} must warn so its lifecycle change is visible`);
+  }
+  // A NEW, unlisted orchestration file cannot pass via a broad glob — it violates.
+  const fresh = evaluateCoverage([P + "brand-new-coordinator.ts"], manifest);
+  assert.equal(fresh.violations.length, 1, "a new orchestration file must fail the gate until covered or grandfathered");
 });
