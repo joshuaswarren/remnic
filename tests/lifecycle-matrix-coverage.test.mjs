@@ -31,6 +31,7 @@ import {
   manifestShrinkage,
   parseNameStatusZ,
   registeredSubjectNames,
+  renameSourcesWithinLifecycle,
   unexplainedRemovals,
   unregisteredSubjects,
 } from "../scripts/lifecycle-matrix/check-coverage.mjs";
@@ -420,6 +421,8 @@ test("discoverSubjectRegistrations records ASI-separated (newline, no semicolon)
     'if (b) foo()',
     'else // trailing line comment',
     'runLifecycleMatrix("else-line-comment-body", subject)',
+    'for await (const x of xs)',
+    'runLifecycleMatrix("for-await-body", subject)',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
@@ -692,6 +695,28 @@ test("a deleted file under a catch-all is filtered from the gate, not a violatio
   assert.equal(violations.length, 0, "deleting a tracked file must not fail the gate");
   assert.equal(covered.length, 1, "the co-changed live path is still evaluated");
   assert.equal(covered[0].file, "packages/remnic-core/src/orchestrator.ts");
+});
+
+test("a rename within lifecycle evaluates the destination, not the moved source", () => {
+  const manifest = loadReal();
+  // Rename WITHIN lifecycle (dest matches the orchestration/** catch-all): the
+  // moved-away source must be dropped so it does not double-fail; only the
+  // destination is evaluated.
+  const within = parseNameStatusZ(
+    "R100\0packages/remnic-core/src/orchestration/old-coord.ts\0packages/remnic-core/src/orchestration/new-coord.ts\0",
+  );
+  const dropWithin = renameSourcesWithinLifecycle(within, manifest);
+  assert.ok(dropWithin.has("packages/remnic-core/src/orchestration/old-coord.ts"), "the within-lifecycle source is dropped");
+  const effWithin = flattenChangedPaths(within).filter((p) => !dropWithin.has(p));
+  assert.deepEqual(effWithin, ["packages/remnic-core/src/orchestration/new-coord.ts"], "only the destination is evaluated");
+
+  // Move OUT to an ignored/non-lifecycle path: the source is KEPT (rename-bypass
+  // hardening), so moving a covered file out of coverage still surfaces it.
+  const out = parseNameStatusZ(
+    "R100\0packages/remnic-core/src/session-toggles.ts\0bench/artifacts/moved.ts\0",
+  );
+  const dropOut = renameSourcesWithinLifecycle(out, manifest);
+  assert.ok(!dropOut.has("packages/remnic-core/src/session-toggles.ts"), "a move-out source is not dropped");
 });
 
 test("a NEW namespace file fails the gate via the namespaces/** catch-all", () => {

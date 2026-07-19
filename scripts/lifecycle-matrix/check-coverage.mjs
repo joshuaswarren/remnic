@@ -100,7 +100,7 @@ function precedingWord(source, idx) {
   }
   const end = k;
   while (k >= 0 && SUBJECT_IDENT.test(source[k])) k -= 1;
-  return source.slice(k + 1, end + 1);
+  return { word: source.slice(k + 1, end + 1), start: k + 1 };
 }
 
 /**
@@ -218,7 +218,11 @@ export function discoverSubjectRegistrations(source) {
       continue;
     }
     if (ch === "(") {
-      controlParen.push(CONTROL_KEYWORDS.has(precedingWord(source, i)));
+      const pw = precedingWord(source, i);
+      const isControlHeader =
+        CONTROL_KEYWORDS.has(pw.word) ||
+        (pw.word === "await" && precedingWord(source, pw.start).word === "for");
+      controlParen.push(isControlHeader);
       parenDepth += 1;
       prevSig = ch;
       i += 1;
@@ -259,7 +263,7 @@ export function discoverSubjectRegistrations(source) {
         (sawNewlineBeforeToken &&
           !STATEMENT_CONTINUATION.has(prevSig) &&
           !(prevSig === ")" && lastCloseWasControlHeader) &&
-          !BODY_KEYWORDS.has(precedingWord(source, i)))) &&
+          !BODY_KEYWORDS.has(precedingWord(source, i).word))) &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&
@@ -516,6 +520,26 @@ export function deletedPaths(records) {
 }
 
 /**
+ * Rename SOURCES to drop from the effective diff. A rename whose DESTINATION is
+ * itself a lifecycle-manifest path stays within lifecycle coverage — the
+ * destination's own evaluation applies, so the moved-away source must not
+ * independently fail the gate. A rename to a NON-lifecycle / ignored path keeps
+ * its source (the rename-bypass hardening: moving a lifecycle file out of
+ * coverage must still surface the source).
+ */
+export function renameSourcesWithinLifecycle(records, manifest) {
+  const drop = new Set();
+  for (const r of records) {
+    if (!r || typeof r === "string") continue;
+    const dest = r.filename;
+    const src = r.previous_filename;
+    if (!src || !dest) continue;
+    if (manifest.lifecycleManifest.some((glob) => isIgnoredPath(dest, [glob]))) drop.add(src);
+  }
+  return drop;
+}
+
+/**
  * Removed manifest globs that are NOT explained by a deletion/rename. An
  * exact-file entry is explained when its path was deleted or renamed away; a
  * glob entry (contains `*`) is never auto-explained, so the shrink-only ratchet
@@ -704,8 +728,9 @@ function main() {
 
   const ignorePatterns = readBaseIgnorePatterns();
   const deleted = deletedPaths(changed);
+  const renamedWithin = renameSourcesWithinLifecycle(changed, manifest);
   const { effective } = splitEffectiveDiff(
-    flattenChangedPaths(changed).filter((p) => !deleted.has(p)),
+    flattenChangedPaths(changed).filter((p) => !deleted.has(p) && !renamedWithin.has(p)),
     ignorePatterns,
   );
 
