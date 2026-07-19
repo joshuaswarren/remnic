@@ -342,11 +342,12 @@ jobs:
             const rawUnresolved = threads.filter(isGatingThread);
 
             // Shadow mode (default): the gating count is byte-identical to
-            // pre-#1994 behavior; we only log the dedup ledger. Enforce mode:
-            // a duplicate whose canonical is resolved folds into the canonical
-            // (counted once) so resolving the canonical auto-satisfies it; a
-            // duplicate whose canonical is UNRESOLVED still gates via that
-            // canonical, so no distinct finding is ever hidden.
+            // pre-#1994 behavior; we only log the dedup ledger. Enforce mode: a
+            // duplicate folds (counted once) only when its canonical is RESOLVED
+            // AND the gate-authored audit reply is posted; a duplicate whose
+            // canonical is UNRESOLVED still gates via that canonical, and a
+            // resolved canonical without the reply keeps gating — so no distinct
+            // finding is ever hidden by a missing or failed audit reply.
             const mode = (process.env.REVIEW_DEDUP_MODE || "shadow").toLowerCase();
             const applyInheritance = mode === "enforce";
             const wouldBeLost = dupRecords.filter(
@@ -433,17 +434,19 @@ jobs:
               }
             }
 
-            // A duplicate stops gating on its own when the finding is satisfied via
-            // its canonical — i.e. the canonical is RESOLVED (resolution flows to
-            // the duplicate) — OR its auditable gate reply is already posted. If
-            // the canonical is still unresolved and no reply exists yet, the
-            // duplicate keeps gating so no fold is ever invisible; the canonical
-            // gates too. Canonicals/standalones gate on their own state. Honors
-            // canonicalResolved, matching computeGuardObligations in review-dedup.mjs.
+            // A duplicate stops gating only when the finding is satisfied via its
+            // canonical AND there is audit evidence: the canonical is RESOLVED and
+            // the gate-authored reply is posted (auditedDuplicateIds). A resolved
+            // canonical without the reply keeps the duplicate gating — folding then
+            // would let a transient/read-only reply-post failure pass enforce with
+            // no gate-authored instruction; the unsticker reruns to post the reply.
+            // Under an UNRESOLVED canonical the duplicate folds (the canonical
+            // gates the finding). Canonicals/standalones gate on their own state.
+            // Matches computeGuardObligations in review-dedup.mjs.
             const effectiveUnresolved = rawUnresolved.filter((t) => {
               const rec = records.find((r) => r.id === t.id);
               if (!rec || rec.canonicalId === rec.id) return true;
-              return !(auditedDuplicateIds.has(rec.id) || canonicalResolved.get(rec.canonicalId) === true);
+              return canonicalResolved.get(rec.canonicalId) === true && !auditedDuplicateIds.has(rec.id);
             });
 
             const unresolvedThreads = applyInheritance ? effectiveUnresolved : rawUnresolved;

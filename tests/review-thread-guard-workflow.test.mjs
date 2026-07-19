@@ -67,15 +67,15 @@ test("check-unsticker folds a resolved-canonical duplicate so it can rerun the g
   );
 });
 
-test("review-thread guard effectiveUnresolved folds a duplicate whose canonical is resolved", () => {
-  // Enforce-mode fold must honor canonical resolution (not require the audit
-  // reply first), matching computeGuardObligations — else a resolved-canonical
-  // duplicate gates forever and the reply can never post (codex P2).
+test("review-thread guard effectiveUnresolved folds only with resolved canonical AND audit evidence", () => {
+  // A duplicate stops gating only when its canonical is resolved AND its gate
+  // reply is posted; a resolved canonical without the reply keeps gating so a
+  // transient reply-post failure can't silently pass enforce (codex P2).
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(
     workflow,
-    /return !\(auditedDuplicateIds\.has\(rec\.id\) \|\| canonicalResolved\.get\(rec\.canonicalId\) === true\);/,
-    "effectiveUnresolved must fold when audited OR canonical resolved",
+    /return canonicalResolved\.get\(rec\.canonicalId\) === true && !auditedDuplicateIds\.has\(rec\.id\);/,
+    "effectiveUnresolved must gate a resolved-canonical duplicate until it is audited",
   );
 });
 

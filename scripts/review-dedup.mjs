@@ -435,8 +435,16 @@ export function computeGuardObligations(threads, config = REVIEW_DEDUP_CONFIG, o
         surfacedByCanonical: true,
       });
     }
-    if (!applyInheritance && !selfResolved) {
-      effectiveUnresolved.push(thread); // Shadow: preserve raw count.
+    if (!applyInheritance) {
+      if (!selfResolved) effectiveUnresolved.push(thread); // Shadow: preserve raw count.
+    } else if (!selfResolved && canonicalIsResolved && !hasGateReply(thread)) {
+      // Enforce: a resolved canonical folds a duplicate ONLY with audit evidence
+      // (the gate-authored reply). Without it, folding would let a transient or
+      // read-only reply-post failure pass enforce with no gate-authored
+      // instruction on the thread, so keep gating — the unsticker reruns the
+      // guard to post the reply. (A duplicate under an UNRESOLVED canonical is
+      // not pushed here: the canonical already gates the finding.)
+      effectiveUnresolved.push(thread);
     }
   }
 

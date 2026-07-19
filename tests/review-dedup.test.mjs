@@ -225,15 +225,56 @@ test("dedupeThreads leaves distinct findings untouched", () => {
 
 // --- Resolution inheritance + shadow mode -----------------------------------
 
-test("resolving the canonical auto-satisfies its duplicate under enforcement", () => {
+test("resolving the canonical folds its duplicate under enforcement WITH audit evidence", () => {
+  const canonical = { ...dup1923A1, isResolved: true };
+  const duplicate = {
+    ...dup1923A2,
+    isResolved: false,
+    comments: {
+      nodes: [
+        ...dup1923A2.comments.nodes,
+        { author: { login: "github-actions[bot]" }, body: formatDuplicateReply("https://x/1") },
+      ],
+    },
+  };
+  const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, {
+    applyInheritance: true,
+  });
+  assert.equal(enforce.duplicateCount, 1);
+  assert.equal(enforce.effectiveUnresolvedCount, 0, "resolved canonical + gate reply folds the duplicate");
+  assert.equal(enforce.wouldBeLostUniqueFindings.length, 0);
+});
+
+test("a resolved canonical does NOT fold an unaudited duplicate (no silent enforce pass)", () => {
+  // Without the gate-authored reply a transient/read-only reply-post failure
+  // must not let enforce pass; the duplicate keeps gating until the reply lands.
   const canonical = { ...dup1923A1, isResolved: true };
   const duplicate = { ...dup1923A2, isResolved: false };
   const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, {
     applyInheritance: true,
   });
   assert.equal(enforce.duplicateCount, 1);
-  assert.equal(enforce.effectiveUnresolvedCount, 0, "resolved canonical clears the duplicate");
-  assert.equal(enforce.wouldBeLostUniqueFindings.length, 0);
+  assert.equal(enforce.effectiveUnresolvedCount, 1, "no audit evidence -> duplicate still gates");
+});
+
+test("a bot reply WITHOUT the gate marker is not audit evidence (partial/failed write still gates)", () => {
+  // Models a transient/partial reply write that landed a comment but not the
+  // ledger marker: it must NOT count as audit evidence, so the duplicate gates.
+  const canonical = { ...dup1923A1, isResolved: true };
+  const duplicate = {
+    ...dup1923A2,
+    isResolved: false,
+    comments: {
+      nodes: [
+        ...dup1923A2.comments.nodes,
+        { author: { login: "github-actions[bot]" }, body: "posted, but the marker never persisted" },
+      ],
+    },
+  };
+  const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, {
+    applyInheritance: true,
+  });
+  assert.equal(enforce.effectiveUnresolvedCount, 1, "a markerless reply is not audit evidence -> still gates");
 });
 
 test("not-a-duplicate reply re-opens the detached thread's guard obligation within one cycle", () => {
@@ -519,10 +560,9 @@ test("an unrelated directive phrase is not falsely blocked or merged", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "unrelated findings simply do not match");
 });
 
-test("enforce obligations honor canonicalResolved: resolved canonical folds an unresolved duplicate", () => {
-  // The duplicate's own thread is UNRESOLVED, but its canonical is RESOLVED, so
-  // the finding is satisfied via the canonical and must not gate (no reliance on
-  // an audit reply existing). Mirrors the guard's effectiveUnresolved fold.
+test("enforce obligations fold an unresolved duplicate only with resolved canonical AND audit evidence", () => {
+  // The duplicate's own thread is UNRESOLVED; its canonical is RESOLVED and the
+  // gate-authored reply is present, so the finding is satisfied and folds.
   const canonical = mkThread({
     id: 701, path: "svc.ts", startLine: 3, line: 5, author: "cursor",
     body: "The retry loop never bounds its attempts and can spin forever on a dead host",
@@ -532,10 +572,11 @@ test("enforce obligations honor canonicalResolved: resolved canonical folds an u
     id: 702, path: "svc.ts", startLine: 3, line: 5, author: "chatgpt-codex-connector",
     body: "The retry loop never bounds its attempts and can spin forever on a dead host",
     isResolved: false,
+    replies: [{ author: "github-actions[bot]", body: formatDuplicateReply("https://svc/1") }],
   });
   const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, { applyInheritance: true });
   assert.equal(enforce.duplicateCount, 1, "the second thread is a duplicate of the resolved canonical");
-  assert.equal(enforce.effectiveUnresolvedCount, 0, "resolved canonical folds the unresolved duplicate");
+  assert.equal(enforce.effectiveUnresolvedCount, 0, "resolved canonical + audit evidence folds the duplicate");
   assert.equal(enforce.wouldBeLostUniqueFindings.length, 0, "nothing hidden: canonical carries the resolution");
 });
 
