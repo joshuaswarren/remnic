@@ -261,3 +261,17 @@ test("the CLI enforces the grandfather ratchet against the base manifest", () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("storage submodule files are in the manifest (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const file of [
+    "packages/remnic-core/src/storage/entity-store.ts",
+    "packages/remnic-core/src/storage/identity-continuity-store.ts",
+  ]) {
+    const { covered, warnings, violations } = evaluateCoverage([file], manifest);
+    assert.equal(violations.length, 0, `${file} must not violate (grandfathered)`);
+    assert.equal(covered.length, 0);
+    assert.equal(warnings.length, 1, `${file} must be seen by the gate (warn), not ignored`);
+    assert.equal(warnings[0].file, file);
+  }
+});

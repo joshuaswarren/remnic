@@ -4,10 +4,12 @@
     "src/orchestration/**",
     "src/buffer.ts",
     "src/storage.ts",
+    "src/storage/**",
     "src/session-toggles.ts",
     "packages/remnic-core/src/orchestration/**",
     "packages/remnic-core/src/buffer.ts",
     "packages/remnic-core/src/storage.ts",
+    "packages/remnic-core/src/storage/**",
     "packages/remnic-core/src/session-toggles.ts",
     "packages/remnic-core/src/lifecycle.ts",
     "packages/remnic-core/src/qmd-recall-cache.ts",
@@ -36,6 +38,8 @@
     "packages/remnic-core/src/session-integrity.ts",
     "packages/remnic-core/src/session-observer-bands.ts",
     "packages/remnic-core/src/session-observer-state.ts",
-    "packages/remnic-core/src/session-transcript-migration.ts"
+    "packages/remnic-core/src/session-transcript-migration.ts",
+    "src/storage/**",
+    "packages/remnic-core/src/storage/**"
   ]
 }
