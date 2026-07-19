@@ -240,8 +240,8 @@ const CLAIMED_IMPRESSION_SPILL_SUFFIX = ".claimed";
 
 /**
  * Outcome of {@link LastRecallStore.drainPendingImpressions}. Distinguishes a
- * completed drain (or nothing pending) from a DEFERRED drain that could not
- * acquire the rotation lock while spills remained, so the caller can tell the
+ * completed drain (or nothing pending) from a DEFERRED drain that left durable
+ * spills in the offline-sync-EXCLUDED queue, so the caller can tell the
  * data-safe cases apart from the one where an offline-sync snapshot would
  * silently omit recorded impressions (#2033).
  */
@@ -249,33 +249,15 @@ export interface DrainPendingImpressionsResult {
   /** Pending spill rows were folded into the synced active file this call. */
   folded: boolean;
   /**
-   * Pending spill rows remain in the offline-sync-EXCLUDED pending queue
-   * because the rotation lock could not be acquired within the budget. A
-   * snapshot taken now would silently omit them (#2033): the caller MUST treat
-   * the active file as INCOMPLETE and retry or abort the snapshot rather than
-   * report success. `false` means the active file is complete — either the
-   * spills were folded or nothing was pending.
+   * Durable spill rows remain in the offline-sync-EXCLUDED pending queue after
+   * this drain: the rotation lock could not be acquired, a spill could not be
+   * claimed, or the drain-only fold left rows that would only fit by rotating
+   * into a sync-excluded archive. A snapshot taken now would silently omit them
+   * (#2033): the caller MUST treat the active file as INCOMPLETE and retry or
+   * abort the snapshot rather than report success. `false` means the active file
+   * is complete — every pending row was folded or nothing was pending.
    */
   pendingDeferred: boolean;
-}
-
-/**
- * Split a JSONL payload into whole rows, each keeping its trailing newline. A
- * final fragment without a trailing newline is returned as its own row so no
- * bytes are lost. Splits on newlines only — never parses — so malformed rows
- * survive byte-for-byte (#2033).
- */
-function splitJsonlRows(payload: string): string[] {
-  const rows: string[] = [];
-  let start = 0;
-  for (let i = 0; i < payload.length; i += 1) {
-    if (payload[i] === "\n") {
-      rows.push(payload.slice(start, i + 1));
-      start = i + 1;
-    }
-  }
-  if (start < payload.length) rows.push(payload.slice(start));
-  return rows;
 }
 
 export class LastRecallStore {
@@ -519,25 +501,6 @@ export class LastRecallStore {
     }
   }
 
-  /** Delete claimed spill files after their rows are durably committed (#2033). A
-   *  delete that fails leaves an orphan the next drain recovers and re-commits —
-   *  a writeNonce-collapsible duplicate, never a lost row. */
-  private async finalizeImpressionClaims(claimedPaths: string[]): Promise<void> {
-    for (const claimedPath of claimedPaths) {
-      await unlink(claimedPath).catch(() => undefined);
-    }
-  }
-
-  /** Roll a failed commit's claims back to unclaimed `<uuid>.jsonl` spills so the
-   *  next lock holder's drain retries them (#2033). Best-effort: an un-renamable
-   *  claim is instead recovered by the next drain's orphan sweep. */
-  private async rollbackImpressionClaims(claimedPaths: string[]): Promise<void> {
-    for (const claimedPath of claimedPaths) {
-      const original = claimedPath.slice(0, -CLAIMED_IMPRESSION_SPILL_SUFFIX.length);
-      await rename(claimedPath, original).catch(() => undefined);
-    }
-  }
-
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
     // Every active-file write goes under the shared cross-process rotation lock,
@@ -580,11 +543,13 @@ export class LastRecallStore {
    * dir/lock-file creation — when nothing is pending.
    *
    * Returns a {@link DrainPendingImpressionsResult}: `folded` is true when rows
-   * were folded into the active file; `pendingDeferred` is true when the
-   * rotation lock could NOT be acquired while spills remained, so the spills
-   * are still in the offline-sync-EXCLUDED queue and a snapshot taken now would
-   * silently drop them. The caller MUST NOT report a clean snapshot while
-   * `pendingDeferred` is true — it either retries or aborts.
+   * were folded into the active file; `pendingDeferred` is true when durable
+   * spills still remain in the offline-sync-EXCLUDED queue after this call —
+   * because the rotation lock could not be acquired, a spill could not be
+   * claimed, or the drain-only fold deferred rows that would only fit by
+   * rotating into a sync-excluded archive (#2033). A snapshot taken while
+   * `pendingDeferred` is true would silently drop those rows, so the caller MUST
+   * NOT report a clean snapshot — it either retries or aborts.
    */
   async drainPendingImpressions(): Promise<DrainPendingImpressionsResult> {
     let pendingCount = 0;
@@ -625,111 +590,119 @@ export class LastRecallStore {
   /**
    * Claim/commit fold of durable pending impression spills into the active file
    * under the held rotation lock (#2033). `line` is a new impression to append
-   * after the drained rows, or null for a drain-only fold. Recovers any claim a
-   * crash orphaned, reads each spill, CLAIMs it by renaming `<uuid>.jsonl` ->
-   * `<uuid>.jsonl.claimed` BEFORE the commit, appends the claimed rows (plus
-   * `line`), then FINALIZEs by deleting the claimed files. A crash between claim
-   * and commit leaves the rows on disk as a `.claimed` orphan the next drain
-   * recovers — the loss the old read-then-unlink ordering could not survive.
-   * Each impression carries a unique writeNonce, so a crash-recovered re-commit
-   * is a collapsible duplicate, never a lost row. listContainedSpillFiles
-   * rejects symlinked/escaping entries before any read/rename; a spill that
-   * cannot be claimed is skipped this pass. Returns true when the active file
-   * was written. MUST run under the held rotation lock.
+   * after the drained rows, or null for a drain-only pre-sync fold.
+   *
+   * Each spill is folded as an INDEPENDENT claim -> append -> finalize unit
+   * rather than materializing the whole queue as one joined payload and
+   * splitting it in a single synchronous pass (#2033). A multi-hundred-MB drain
+   * done as one join/split blocks the event loop long enough for
+   * `withHeldFileLock`'s ownership-refresh timer to miss its window, so a peer
+   * stale-breaks the 30s lock and rotates/appends concurrently — defeating the
+   * rotation lock this drain relies on. The per-file `await`s keep the payload
+   * bounded to one spill at a time and let the refresh timer fire between files.
+   *
+   * The DRAIN-ONLY path (`line === null`, run before an offline-sync snapshot)
+   * NEVER rotates a drained row into an archive. `recall_impressions.jsonl.*`
+   * is offline-sync-EXCLUDED, so rotating a just-drained row into `.1`/`.2` and
+   * then deleting its spill would leave that row only in a path sync omits —
+   * silently lost when the node is discarded after a "successful" sync (#2033).
+   * It folds only the rows that fit the synced active file under the cap and
+   * leaves the rest durable in the pending queue; {@link drainPendingImpressions}
+   * then reports the drain DEFERRED so the caller retries or aborts. The
+   * record() path (`line !== null`) keeps rotating normally — its archives stay
+   * on a live node that is not being discarded.
+   *
+   * Recovers any crash-orphaned claim first. Each impression carries a unique
+   * writeNonce, so a crash-recovered re-commit is a collapsible duplicate, never
+   * a lost row. listContainedSpillFiles rejects symlinked/escaping entries; a
+   * spill that cannot be claimed is skipped this pass. An append failure rolls
+   * that spill's claim back so the row retries on the next lock holder's drain.
+   * Returns true when the active file was written. MUST run under the held
+   * rotation lock.
    */
   private async foldPendingImpressionsAndAppend(line: string | null): Promise<boolean> {
     await this.recoverOrphanedImpressionClaims();
     const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
-    const claimedRows: string[] = [];
-    const claimedPaths: string[] = [];
+    const drainOnly = line === null;
+    const cap = this.impressionsRotateBytes;
+    let activeSize = 0;
+    if (cap > 0) {
+      try {
+        activeSize = (await stat(this.impressionsPath)).size;
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    let wrote = false;
     for (const filePath of spillFiles) {
       const content = await readFile(filePath, "utf-8");
+      const unit = content.length === 0 || content.endsWith("\n") ? content : `${content}\n`;
+      const unitBytes = Buffer.byteLength(unit, "utf-8");
+      // Drain-only fold must never push a drained row into a sync-excluded
+      // archive (#2033). Once the active file cannot take this spill under the
+      // cap without rotating, stop: the remaining spills stay durable in the
+      // pending queue and the drain reports itself deferred. A lone spill larger
+      // than the cap on an empty active file is still folded whole (it cannot be
+      // split without corrupting JSONL) so it reaches sync rather than stranding.
+      if (drainOnly && cap > 0 && activeSize > 0 && activeSize + unitBytes >= cap) break;
       const claimedPath = `${filePath}${CLAIMED_IMPRESSION_SPILL_SUFFIX}`;
       try {
         await rename(filePath, claimedPath);
       } catch {
         continue; // could not claim → do not commit; a later drain retries it.
       }
-      claimedRows.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
-      claimedPaths.push(claimedPath);
+      try {
+        activeSize = await this.appendImpressionUnit(unit, activeSize, drainOnly);
+      } catch (err) {
+        // Commit failed: roll this spill's claim back so it retries on the next
+        // lock holder's drain instead of being lost.
+        await rename(claimedPath, filePath).catch(() => undefined);
+        throw err;
+      }
+      // Commit is durable: delete the claimed file. A delete that fails leaves a
+      // `.claimed` orphan the next drain recovers and re-commits — a
+      // writeNonce-collapsible duplicate, never a lost row (#2033).
+      await unlink(claimedPath).catch(() => undefined);
+      wrote = true;
     }
-    // Drain-only fold with nothing pending is a no-op — never write an empty row.
-    if (claimedRows.length === 0 && line === null) return false;
-    const payload = line === null ? claimedRows.join("") : `${claimedRows.join("")}${line}`;
-    // Fold the drained payload in bounded segments so no active-file generation
-    // exceeds recallImpressionsRotateBytes even when a single drain batch is far
-    // larger than the cap (#2033): a single append of the whole payload would
-    // leave the freshly rotated active file over the limit until the next
-    // record(). Runs under this same held lock, so the rotation renames never
-    // race a peer. A commit (append) failure rolls the claims back so the rows
-    // retry on the next lock holder's drain instead of being lost.
-    try {
-      await this.appendImpressionRowsBounded(payload);
-    } catch (err) {
-      await this.rollbackImpressionClaims(claimedPaths);
-      throw err;
+    if (line !== null) {
+      activeSize = await this.appendImpressionUnit(line, activeSize, false);
+      wrote = true;
     }
-    // Commit is durable: delete the claimed files. A delete that fails leaves a
-    // `.claimed` orphan the next drain recovers and re-commits — a
-    // writeNonce-collapsible duplicate, never a lost row (#2033).
-    await this.finalizeImpressionClaims(claimedPaths);
-    return true;
+    return wrote;
   }
 
   /**
-   * Append `payload` to the active impressions file, folding it in bounded
-   * segments so no active-file generation exceeds `impressionsRotateBytes`
-   * (#2033). Whole JSONL rows are grouped into segments that each keep the
-   * active file within the cap; the archives shift (active -> .1, per keep
-   * semantics) between segments. Rows are never split mid-line, so malformed
-   * rows pass through byte-for-byte and a lone row larger than the cap is
-   * written whole (splitting it would corrupt JSONL). Rotation disabled
-   * (`impressionsRotateBytes <= 0`) collapses to a single append. A rotation
-   * error is logged and the append still runs so a row is never lost; a genuine
-   * append failure propagates so the caller rolls its claims back. MUST run
-   * under the held rotation lock.
+   * Append one whole JSONL unit (a claimed spill's rows or a fresh impression
+   * line) to the active impressions file, returning the resulting active-file
+   * byte size. On the rotating (record) path, when the unit would push the
+   * current active generation to/over `impressionsRotateBytes`, the full active
+   * file is rotated aside FIRST so no generation exceeds the cap (#2033); a lone
+   * unit larger than the cap on an empty active file is written whole because
+   * splitting a JSONL row would corrupt it. `drainOnly` and disabled rotation
+   * (`impressionsRotateBytes <= 0`) both skip rotation — drain-only defers its
+   * overflow in {@link foldPendingImpressionsAndAppend} rather than rotating into
+   * a sync-excluded archive. A rotation error is logged and the append still
+   * runs so a row is never lost; an append failure propagates so the caller
+   * rolls its claim back. MUST run under the held rotation lock.
    */
-  private async appendImpressionRowsBounded(payload: string): Promise<void> {
+  private async appendImpressionUnit(
+    unit: string,
+    activeSize: number,
+    drainOnly: boolean,
+  ): Promise<number> {
     const cap = this.impressionsRotateBytes;
-    if (cap <= 0) {
-      await appendFile(this.impressionsPath, payload, "utf-8");
-      return;
-    }
-    let activeSize = 0;
-    try {
-      activeSize = (await stat(this.impressionsPath)).size;
-    } catch (err) {
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-    }
-    let segment = "";
-    let segmentBytes = 0;
-    const flush = async (): Promise<void> => {
-      if (segment.length === 0) return;
-      await appendFile(this.impressionsPath, segment, "utf-8");
-      activeSize += segmentBytes;
-      segment = "";
-      segmentBytes = 0;
-    };
-    for (const row of splitJsonlRows(payload)) {
-      const rowBytes = Buffer.byteLength(row, "utf-8");
-      // Adding this row would push the current active generation (already-written
-      // bytes + pending segment) to/over the cap: flush the pending segment then
-      // rotate so the row starts a fresh active file. Skip the rotate while the
-      // active generation is still empty — a single oversized row cannot be split
-      // without corrupting JSONL, so it is written whole.
-      if (activeSize + segmentBytes > 0 && activeSize + segmentBytes + rowBytes >= cap) {
-        await flush();
-        try {
-          await this.shiftImpressionArchives();
-          activeSize = 0;
-        } catch (err) {
-          log.debug(`recall impressions rotation failed (append preserved): ${err}`);
-        }
+    const unitBytes = Buffer.byteLength(unit, "utf-8");
+    if (cap > 0 && !drainOnly && activeSize > 0 && activeSize + unitBytes >= cap) {
+      try {
+        await this.shiftImpressionArchives();
+        activeSize = 0;
+      } catch (err) {
+        log.debug(`recall impressions rotation failed (append preserved): ${err}`);
       }
-      segment += row;
-      segmentBytes += rowBytes;
     }
-    await flush();
+    await appendFile(this.impressionsPath, unit, "utf-8");
+    return activeSize + unitBytes;
   }
 
   /**
