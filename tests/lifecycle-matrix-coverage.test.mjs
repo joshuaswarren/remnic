@@ -369,11 +369,13 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     'runLifecycleMatrix("narrowed-rows", subject, { rows: [MATRIX_ROWS[0]] });',
     'runLifecycleMatrix("redirected", subject, { register: fake, registerSkipped: skip });',
     'runLifecycleMatrix("inline-two-arg", { async setup() {}, async exercise() {} });',
+    'const opts = { rows: [MATRIX_ROWS[0]] }; runLifecycleMatrix("aliased-opts", subject, opts);',
+    'runLifecycleMatrix("nested-call-arg", makeSubject(a, b));',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
-    ["real-subject", "single-quoted-real", "inline-two-arg"],
-    "only top-level 2-arg production calls count; comments, string/template literals, brace-nested calls, and rows/register-narrowed calls are ignored",
+    ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg"],
+    "only top-level 2-arg production calls count; comments, strings, brace-nested calls, and any third (options) argument — inline OR aliased — are ignored, while a nested call in the subject arg is fine",
   );
 });
 

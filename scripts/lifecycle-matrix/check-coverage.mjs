@@ -63,10 +63,12 @@ const SUBJECT_CALL = "runLifecycleMatrix";
  * registration. Only a TOP-LEVEL call (brace-depth 0) counts — a call nested in
  * `if (false) { … }` or an uncalled helper never runs at module load, so
  * `node:test` registers nothing for it; recording it would let a coverage
- * mapping pass with no matrix tests. A call that passes the test-only options
- * seam (`rows` / `register` / `registerSkipped`) narrows or redirects the
- * canonical MATRIX_ROWS and is NOT counted — a production subject must register
- * every canonical row. A raw regex over the file text counts all of these.
+ * mapping pass with no matrix tests. Only a two-argument call
+ * (`runLifecycleMatrix("name", subject)`) counts — ANY third argument is the
+ * test-only options seam (rows / register / registerSkipped), inline OR aliased
+ * via a variable, which narrows or redirects the canonical MATRIX_ROWS, so a
+ * production subject must register every canonical row. A raw regex over the
+ * file text counts all of these.
  */
 export function discoverSubjectRegistrations(source) {
   const names = [];
@@ -137,14 +139,18 @@ export function discoverSubjectRegistrations(source) {
           }
           j += 1; // past the closing quote of the subject name
           // Scan the rest of the call's arguments (we are inside its `(`, paren
-          // depth 1) skipping strings/comments. A production registration is
-          // `runLifecycleMatrix("name", subject)` — no options. A call that
-          // passes the test-only `rows` / `register` / `registerSkipped` seam
-          // narrows or redirects the canonical MATRIX_ROWS, so it is NOT a full
-          // production registration and must not count as coverage.
+          // depth 1), skipping strings/comments, and count TOP-LEVEL argument
+          // separators. A production registration is exactly
+          // `runLifecycleMatrix("name", subject)` — two arguments. ANY third
+          // argument is the test-only options seam (rows / register /
+          // registerSkipped), whether inline OR aliased via a variable, which
+          // narrows or redirects the canonical MATRIX_ROWS; such a call is NOT a
+          // full production registration and must not count as coverage.
           let callDepth = 1;
+          let braceDepth = 0;
+          let bracketDepth = 0;
+          let topCommas = 0;
           let argQuote = null;
-          let rest = "";
           while (j < n && callDepth > 0) {
             const c = source[j];
             if (argQuote) {
@@ -173,11 +179,20 @@ export function discoverSubjectRegistrations(source) {
             }
             if (c === "(") callDepth += 1;
             else if (c === ")") callDepth -= 1;
-            if (callDepth > 0) rest += c;
+            else if (c === "{") braceDepth += 1;
+            else if (c === "}") {
+              if (braceDepth > 0) braceDepth -= 1;
+            } else if (c === "[") bracketDepth += 1;
+            else if (c === "]") {
+              if (bracketDepth > 0) bracketDepth -= 1;
+            } else if (c === "," && callDepth === 1 && braceDepth === 0 && bracketDepth === 0) {
+              topCommas += 1;
+            }
             j += 1;
           }
-          const narrowed = /\b(rows|register|registerSkipped)\s*:/.test(rest);
-          if (name.length > 0 && !narrowed) names.push(name);
+          // Exactly two arguments (one top-level separator) is a production call;
+          // zero (no subject) or two-plus (an options arg) is not recorded.
+          if (name.length > 0 && topCommas === 1) names.push(name);
           i = j;
           continue;
         }
