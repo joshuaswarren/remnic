@@ -87,9 +87,6 @@
     "src/namespaces/principal.ts"
   ],
   "coverage": {
-    "src/orchestrator.ts": "extraction-lifecycle",
-    "src/buffer.ts": "extraction-lifecycle",
-    "src/storage.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
     "packages/remnic-core/src/buffer.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage.ts": "extraction-lifecycle",
@@ -170,6 +167,9 @@
     "packages/remnic-core/src/namespaces/scope-profile-config.ts",
     "packages/remnic-core/src/namespaces/scope-profiles.ts",
     "src/namespaces/migrate.ts",
-    "src/namespaces/principal.ts"
+    "src/namespaces/principal.ts",
+    "src/orchestrator.ts",
+    "src/buffer.ts",
+    "src/storage.ts"
   ]
 }

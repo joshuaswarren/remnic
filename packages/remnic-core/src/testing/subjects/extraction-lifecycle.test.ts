@@ -53,6 +53,10 @@ interface ExtractionLifecycleState {
   abortFlushRejected?: boolean;
   /** Persisted fact count captured immediately after the aborted before_reset flush (must be 0). */
   abortedWriteCount?: number;
+  /** Facts containing the recovered turn after the recovery flush (before-reset row; must be 1). */
+  recoveredFactCount?: number;
+  /** Facts containing the recovered turn after a further flush (before-reset row; must stay 1 — no duplicate). */
+  factCountAfterExtraFlush?: number;
   /** Extraction-call count captured right before the dedupe row's force flush. */
   callsBeforeForceFlush?: number;
 }
@@ -244,6 +248,15 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           singleFactResult(turns.map((turn) => turn.content).join(" | ")),
         );
         await primary.flushSession("session-reset", { reason: "before_reset" });
+        // The recovery flush must PERSIST the preserved turn as a fact...
+        state.recoveredFactCount = (
+          await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
+        ).length;
+        // ...and a further flush (buffer now drained) must NOT duplicate it.
+        await primary.flushSession("session-reset", { reason: "before_reset" });
+        state.factCountAfterExtraFlush = (
+          await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
+        ).length;
         return;
       }
       case "session-end": {
@@ -377,6 +390,16 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         assert.deepEqual(state.secondFlushCalls[0]?.map((turn) => turn.content), [
           "The replay ledger checkpoint compacts after five hundred entries.",
         ]);
+        assert.equal(
+          state.recoveredFactCount,
+          1,
+          "the recovery flush must PERSIST the preserved turn as exactly one fact",
+        );
+        assert.equal(
+          state.factCountAfterExtraFlush,
+          1,
+          "a further before_reset flush with an empty buffer must NOT duplicate the recovered fact",
+        );
         return;
       }
       case "session-end": {
