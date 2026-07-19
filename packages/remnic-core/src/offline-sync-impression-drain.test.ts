@@ -8,6 +8,8 @@ import {
   drainPendingImpressionsForOfflineSync,
   drainPendingLifecycleForOfflineSync,
 } from "./offline-sync-impression-drain.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
+import { StorageManager } from "./storage.js";
 
 test("retries deferred drains and succeeds when the lock is released", async () => {
   let calls = 0;
@@ -78,6 +80,44 @@ test("drainPendingLifecycleForOfflineSync folds root and per-namespace pending s
       "utf-8",
     );
     assert.ok(nsActive.includes(nsNonce), "per-namespace lifecycle row must land in its active ledger");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("drains encrypted lifecycle spills through secure storage (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-secure-"));
+  const key = Buffer.alloc(32, 17);
+  const storage = new StorageManager(root);
+  storage.setSecureStoreRequired(true);
+  storage.setSecureStoreKey(key);
+  try {
+    const nonce = randomUUID();
+    const pendingDir = path.join(root, LIFECYCLE_PENDING_REL);
+    const pendingPath = path.join(pendingDir, `${randomUUID()}.jsonl`);
+    await mkdir(pendingDir, { recursive: true });
+    await storage.writeMemoryLifecycleLedgerContent(
+      `${JSON.stringify({
+        type: "promotion",
+        memoryId: "mem-secure",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        nonce,
+      })}\n`,
+      pendingPath,
+    );
+
+    await drainPendingLifecycleForOfflineSync(
+      root,
+      (ledgerPath) => storage.drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+    );
+
+    assert.deepEqual(await readdir(pendingDir), []);
+    assert.ok(
+      isEncryptedFile(await readFile(path.join(root, LIFECYCLE_LEDGER_REL))),
+      "the active ledger must remain encrypted",
+    );
+    const activePlaintext = await storage.readMemoryLifecycleLedgerRawBufferForCompaction();
+    assert.ok(activePlaintext.toString("utf-8").includes(nonce));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

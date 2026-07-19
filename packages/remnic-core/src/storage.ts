@@ -5324,6 +5324,29 @@ export class StorageManager {
     );
   }
 
+  /** Drain pending lifecycle spills for any ledger inside this storage root.
+   * The offline CLI uses this path-aware variant for per-namespace ledgers so
+   * secure-store encryption and path-bound authentication remain consistent. */
+  async drainPendingMemoryLifecycleEventsForSyncAt(
+    ledgerPath: string,
+  ): Promise<DrainPendingLifecycleForSyncResult> {
+    const target = this.assertManagedStoragePath(
+      ledgerPath,
+      "storage.drainPendingMemoryLifecycleEventsForSyncAt",
+    );
+    return drainPendingLifecycleLedgerForSync(
+      target,
+      {
+        writeSecure: (p, c) => this.writeStorageSecureFile(p, c),
+        readSecure: (p) => this.readStorageSecureFile(p),
+      },
+      (payload) => this.appendStorageSecureFile(target, payload),
+      async () => {
+        await mkdir(path.dirname(target), { recursive: true });
+      },
+    );
+  }
+
   /** Rewrite the ledger through the secure writer (#1910); re-encrypts when unlocked, throws when locked.
    *  `targetPath` re-encrypts under a decryptable backup path's own AAD;
    *  Buffer content passes through verbatim (#2033). `forceEncrypt` preserves

@@ -13,6 +13,10 @@ type PendingLifecycleDrain = {
   drainPendingMemoryLifecycleEventsForSync(): Promise<{ folded: boolean; pendingDeferred: boolean }>;
 };
 
+type LifecycleDrainAtPath = (
+  ledgerPath: string,
+) => Promise<{ folded: boolean; pendingDeferred: boolean }>;
+
 type PendingImpressionHost = {
   drainPendingRecallImpressions(): Promise<{ pendingDeferred: boolean }>;
 };
@@ -108,19 +112,22 @@ function offlineSyncLifecycleLedgerPaths(memoryDir: string): string[] {
  * {@link drainPendingLifecycleForSyncOrThrow} rather than building/pushing a
  * snapshot that omits durable rows. Fast no-op per ledger with no pending dir.
  */
-export async function drainPendingLifecycleForOfflineSync(memoryDir: string): Promise<void> {
-  const io = plaintextLifecyclePendingIo();
-  for (const ledgerPath of offlineSyncLifecycleLedgerPaths(memoryDir)) {
+export async function drainPendingLifecycleForOfflineSync(
+  memoryDir: string,
+  drainAtPath: LifecycleDrainAtPath = (ledgerPath) => {
+    const io = plaintextLifecyclePendingIo();
     const stateDir = path.dirname(ledgerPath);
-    await drainPendingLifecycleForSyncOrThrow(() =>
-      drainPendingLifecycleLedgerForSync(
-        ledgerPath,
-        io,
-        (payload) => fs.promises.appendFile(ledgerPath, payload),
-        async () => {
-          await fs.promises.mkdir(stateDir, { recursive: true });
-        },
-      ),
+    return drainPendingLifecycleLedgerForSync(
+      ledgerPath,
+      io,
+      (payload) => fs.promises.appendFile(ledgerPath, payload),
+      async () => {
+        await fs.promises.mkdir(stateDir, { recursive: true });
+      },
     );
+  },
+): Promise<void> {
+  for (const ledgerPath of offlineSyncLifecycleLedgerPaths(memoryDir)) {
+    await drainPendingLifecycleForSyncOrThrow(() => drainAtPath(ledgerPath));
   }
 }
