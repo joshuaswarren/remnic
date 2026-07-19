@@ -111,6 +111,8 @@ export function discoverSubjectRegistrations(source) {
   let i = 0;
   let quote = null;
   let depth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
   let prevSig = "";
   while (i < n) {
     const ch = source[i];
@@ -165,8 +167,34 @@ export function discoverSubjectRegistrations(source) {
       i += 1;
       continue;
     }
+    if (ch === "(") {
+      parenDepth += 1;
+      prevSig = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (parenDepth > 0) parenDepth -= 1;
+      prevSig = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      prevSig = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "]") {
+      if (bracketDepth > 0) bracketDepth -= 1;
+      prevSig = ch;
+      i += 1;
+      continue;
+    }
     if (
       depth === 0 &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
       // Standalone expression statement only: the call must start a statement
       // (prevSig is a statement boundary), never be part of a larger expression
       // like `cond && runLifecycleMatrix(...)`, `if (x) runLifecycleMatrix(...)`,

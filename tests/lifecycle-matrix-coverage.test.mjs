@@ -385,11 +385,13 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     'if (false) runLifecycleMatrix("braceless-if", subject);',
     'const assigned = runLifecycleMatrix("assigned-not-statement", subject);',
     'runLifecycleMatrix("trailing-comma", subject,);',
+    'for (; false; runLifecycleMatrix("for-update", subject)) {}',
+    'foo(runLifecycleMatrix("in-call-arg", subject));',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
     ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg", "after-regex", "trailing-comma"],
-    "only genuine module-load standalone 2-arg registrations count (a legal trailing comma is still two args); comments, strings, template/regex literals, brace-nested calls, options args (inline/aliased), and non-standalone wrappers (short-circuit/braceless-if/assignment) are ignored",
+    "only genuine module-load standalone 2-arg registrations count (legal trailing comma ok); comments, strings, template/regex literals, brace-nested calls, options args, non-standalone wrappers (short-circuit/braceless-if/assignment), and calls inside parens/brackets (for-header, call arg, array) are ignored",
   );
 });
 
