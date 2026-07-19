@@ -1686,22 +1686,21 @@ export class ExtractionPersistCoordinator {
       let exactDuplicate = false;
       let needsCorpusConfirm = false;
       try {
-        exactDuplicate = await this.deps.hasContentHashDedup(
-          targetStorage,
-          contentHashDedupKey,
-        );
-        if (!exactDuplicate && !(await targetStorage.isFactContentHashAuthoritative())) {
-          // PR #2016 findings 1-2: a MISS is only trustworthy when the shared
-          // fact-hash index is authoritative (corpus-rebuilt under the lock).
-          // Under cross-process lock contention it is the loaded snapshot, whose
-          // miss may be false — confirm against the corpus below instead of
-          // trusting a stale snapshot and writing a duplicate.
-          needsCorpusConfirm = true;
+        exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
+        if (!exactDuplicate) {
+          // PR #2016: a MISS is trustworthy only against an AUTHORITATIVE index;
+          // the authority check can REBUILD from the corpus when a peer advanced
+          // it after our miss (thread SDyCj), so re-run the lookup — else a non-
+          // authoritative index confirms against the corpus below (findings 1-2).
+          if (await targetStorage.isFactContentHashAuthoritative()) {
+            exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
+          } else {
+            needsCorpusConfirm = true;
+          }
         }
       } catch (err) {
-        // The dedup lookup surfaced a failure (e.g. the authoritative rebuild
-        // could not run). Do NOT fail-open into a possible duplicate — confirm
-        // against the corpus (ground truth) below.
+        // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
+        // NOT fail-open into a possible duplicate — confirm against the corpus.
         needsCorpusConfirm = true;
         log.warn(
           `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,

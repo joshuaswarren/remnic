@@ -73,22 +73,84 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
   });
 });
 
-test("direct writeMemory('fact') without the flag persists the hash immediately", async () => {
+test("direct writeMemory('fact') without the flag persists the hash via the LOCKED reconcile", async () => {
+  // PR #2016 thread SDyCk: a direct (non-deferred) fact write used to publish
+  // fact-hashes.txt with the unlocked whole-file save(), which can clobber — or
+  // be clobbered by — a peer's concurrent locked rebuild/reconcile. It now flushes
+  // through the SAME cross-process locked reconcile the batch/append/rebuild paths
+  // use (saveMergingWithDisk), never the unlocked save().
   await withMemoryDir(async (dir) => {
     const saveSpy = mock.method(ContentHashIndex.prototype, "save");
+    const reconcileSpy = mock.method(ContentHashIndex.prototype, "saveMergingWithDisk");
     try {
       const storage = new StorageManager(dir);
       await storage.writeMemory("fact", "single write fact", { source: "manual" });
-      assert.ok(saveSpy.mock.callCount() >= 1, "single-write callers flush immediately");
+      assert.ok(
+        reconcileSpy.mock.callCount() >= 1,
+        "single-write callers flush via the locked reconcile (saveMergingWithDisk)",
+      );
+      assert.equal(
+        saveSpy.mock.callCount(),
+        0,
+        "the direct write must NOT use the unlocked whole-file save()",
+      );
       assert.equal(await storage.hasFactContentHash("single write fact"), true);
     } finally {
       saveSpy.mock.restore();
+      reconcileSpy.mock.restore();
     }
 
     // No batch save was performed by the caller, yet a fresh session still finds
     // the hash — it was flushed at write time (crash-safe).
     const reopened = new StorageManager(dir);
     assert.equal(await reopened.hasFactContentHash("single write fact"), true);
+  });
+});
+
+test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's corpus scan is not lost", async () => {
+  // The rebuild used to build a fresh `factOnly` set and publish it with
+  // `this.factOnlyHashes = factOnly`, dropping any concurrent in-process
+  // writeMemory that added to the LIVE set during the readAllMemories /
+  // readAllColdMemories awaits. The rebuild now repopulates the live set in place
+  // (clear + add), so a concurrent add survives publication — exactly as the
+  // shared index preserves concurrent adds by mutating its `hashes` set in place.
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    // One durable fact so the rebuild has corpus content to scan.
+    await storage.writeMemory("fact", "alpha established fact", { source: "extraction" });
+
+    const s = storage as unknown as {
+      factOnlyHashes: Set<string>;
+      factHashIndexAuthoritative: boolean | null;
+      readAllColdMemories: () => Promise<unknown[]>;
+      ensureFactHashIndexAuthoritative: () => Promise<boolean>;
+    };
+    const sentinel = "sentinel-concurrent-fact-hash";
+    const realCold = s.readAllColdMemories.bind(storage);
+    let injected = false;
+    // Interpose on the SECOND corpus await inside the rebuild (after clear()):
+    // simulate a concurrent writeMemory adding a fact hash to the live set while
+    // the rebuild is mid-scan.
+    s.readAllColdMemories = async () => {
+      const res = await realCold();
+      if (!injected) {
+        injected = true;
+        s.factOnlyHashes.add(sentinel);
+      }
+      return res;
+    };
+
+    // Force a fresh authoritative rebuild (clear -> scan -> publish).
+    s.factHashIndexAuthoritative = null;
+    assert.equal(await s.ensureFactHashIndexAuthoritative(), true, "rebuild published");
+
+    assert.equal(
+      s.factOnlyHashes.has(sentinel),
+      true,
+      "a fact hash added during the rebuild scan must survive publication (lost under reassign)",
+    );
+    // The corpus fact is present too — the in-place repopulate did not drop it.
+    assert.equal(await storage.hasFactContentHash("alpha established fact"), true);
   });
 });
 

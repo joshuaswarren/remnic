@@ -86,11 +86,17 @@ export class PersistenceIndexCoordinator {
       );
       index.remove(memory.content);
     }
+    // PR #2016 threads SDzOP / SDzOR: the shared index above is category-
+    // agnostic, but StorageManager.hasFactContentHash answers from a fact-ONLY
+    // membership set. Removing from the shared index alone left that set holding
+    // the removed fact's hash, so hasFactContentHash returned a stale `true`
+    // until the next corpus rebuild and wearable / promotion callers skipped a
+    // valid write. Keep the fact-only set in lockstep with the shared removal.
     // Round 11: no fact-hashes.ready marker exists — the fact-hash index is
-    // rebuilt from the corpus on every restart. An archived/superseded memory's
-    // .md is gone by then, so the rebuild excludes it and the removal lands
-    // regardless of whether this run's reconciling save published. Nothing else
-    // to do here.
+    // rebuilt from the corpus on every restart, so an archived/superseded
+    // memory's .md is gone by then and the removal lands regardless of whether
+    // this run's reconciling save published.
+    targetStorage.removeFactOnlyHashForMemory(memory);
   }
 
   /**

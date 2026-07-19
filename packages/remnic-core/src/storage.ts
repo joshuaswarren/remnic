@@ -1986,10 +1986,14 @@ export class StorageManager {
    * Fact-ONLY hash membership (PR #2016). The shared `factHashIndex` above is
    * category-agnostic (the round-15 corpus rebuild + addContentHashDedup index
    * every category), so it cannot answer a fact-only question. This set carries
-   * only `category === "fact"` hashes — rebuilt in lockstep with the shared
-   * index and kept current by the same write/removal paths — and is the sole
-   * source for `hasFactContentHash`, so an over-included non-fact body can never
-   * suppress a real fact candidate.
+   * only `category === "fact"` hashes and is the sole source for
+   * `hasFactContentHash`, so an over-included non-fact body can never suppress a
+   * real fact candidate. Kept in lockstep with the shared index on EVERY path:
+   * the authoritative corpus rebuild (repopulated in place), the write path
+   * (`writeMemory` / `addActiveFactContentHash`), the storage-owned removal
+   * (`removeFactContentHashesForMemories`), AND the orchestrator's archival /
+   * consolidation removal (`removeContentHashForMemory` ->
+   * `removeFactOnlyHashForMemory`). In-memory only; never persisted.
    */
   private factOnlyHashes: Set<string> = new Set();
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
@@ -3355,8 +3359,13 @@ export class StorageManager {
     factHashIndex.clear();
     // Fact-ONLY membership rebuilt in lockstep (PR #2016): hasFactContentHash
     // reads THIS set, never the category-agnostic shared index below, so an
-    // over-included non-fact body can never satisfy a fact-hash check.
-    const factOnly = new Set<string>();
+    // over-included non-fact body can never satisfy a fact-hash check. Repopulate
+    // the LIVE set in place (clear + add) rather than building a fresh set and
+    // reassigning: a concurrent in-process writeMemory that adds a fact hash
+    // during the corpus-read awaits below would be lost by a publish-time
+    // reassignment (PR #2016 thread SDzOT), exactly as the shared index avoids
+    // by mutating its `hashes` set in place.
+    this.factOnlyHashes.clear();
     // #1909 review round 14: index the HOT and COLD tiers together. A fact or
     // procedure demoted to cold/ is still active and its content-hash must
     // survive the corpus rebuild, or a restart would drop the hash and let the
@@ -3397,9 +3406,8 @@ export class StorageManager {
         continue;
       }
       factHashIndex.addByHash(hash);
-      if (memory.frontmatter.category === "fact") factOnly.add(hash);
+      if (memory.frontmatter.category === "fact") this.factOnlyHashes.add(hash);
     }
-    this.factOnlyHashes = factOnly;
     if (legacyRecovered > 0) {
       log.info(
         `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy memory(ies) with no contentHash in frontmatter`
@@ -3840,9 +3848,13 @@ export class StorageManager {
         // Gate only the flush (issue #1909): the `.add(...)` above already set
         // dirty=true. When the caller defers, it owns the batch save
         // (extraction persist -> saveContentHashIndexes()). Single-write callers
-        // keep the immediate, crash-safe save.
+        // (explicit capture, import, wearable, native writes) flush immediately —
+        // via the SAME cross-process locked reconcile the batch/append and
+        // rebuild paths use (PR #2016 thread SDyCk), never the unlocked whole-file
+        // save() that could clobber, or be clobbered by, a peer's concurrent
+        // locked rebuild/reconcile and drop this durable fact from the index.
         if (!options.deferHashIndexSave) {
-          await factHashIndex.save();
+          await factHashIndex.saveMergingWithDisk();
         }
       } catch (err) {
         log.warn(`storage.writeMemory completed but failed to update fact hash index: ${err}`);
@@ -4017,6 +4029,24 @@ export class StorageManager {
       }
     }
     await factHashIndex.save();
+  }
+
+  /**
+   * Remove a memory's fact-ONLY hash membership in lockstep with the shared,
+   * category-agnostic index removal the orchestrator's
+   * `removeContentHashForMemory` performs on archival / semantic consolidation
+   * (PR #2016 threads SDzOP / SDzOR). Without this, `factOnlyHashes` kept a
+   * removed/superseded fact's hash and `hasFactContentHash` returned a stale
+   * `true` until the next corpus rebuild, so wearable / explicit-capture /
+   * promotion callers skipped a valid write. In-memory only — `factOnlyHashes`
+   * is never persisted; it is rebuilt from the corpus. No-op for non-facts.
+   * Matches the shared index's unconditional per-hash removal so the two stay
+   * coherent.
+   */
+  removeFactOnlyHashForMemory(memory: MemoryFile): void {
+    if (memory.frontmatter.category !== "fact") return;
+    const hash = this.factContentHashForRemoval(memory);
+    if (hash) this.factOnlyHashes.delete(hash);
   }
 
   async isFactContentHashAuthoritative(): Promise<boolean> {

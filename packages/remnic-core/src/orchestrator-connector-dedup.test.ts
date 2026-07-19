@@ -1979,3 +1979,84 @@ test("#1909 (PR #2016): a promoted fact demoted to cold is not re-promoted as a 
 
   await rm(memoryDir, { recursive: true, force: true });
 });
+
+test("#2016 thread SDyCj: a peer-advanced hash visible only after the post-miss authority rebuild is not written as a duplicate", async () => {
+  // Distinct from the freshness-gate test in the defer suite: that pre-warms the
+  // freshness so the FIRST hasContentHashDedup already returns a hit. Here we
+  // isolate the exact race INSIDE a single persistExtraction — a peer advances
+  // the durable index AFTER our MISS but BEFORE the authority check. The MISS was
+  // read from the pre-rebuild snapshot; the authority check then rebuilds and
+  // reports authoritative, but `exactDuplicate` stayed the stale `false`, so the
+  // corpus-confirm block was skipped and a duplicate written. The fix re-runs the
+  // lookup against the freshly authoritative set.
+  const { orchestrator, storage, memoryDir } = await makeDedupOrchestrator();
+  const body = "The release train departs every second Thursday at 1500 UTC.";
+
+  // Peer persisted the fact durably through the real path.
+  const first = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(first.length, 1, "peer's initial write persists");
+
+  // Model the race: the first dedup lookup in the NEXT persist reports a stale
+  // MISS (captured before the peer flush was visible to this snapshot); the
+  // authority check that follows rebuilds from the corpus (which contains the
+  // fact) and reports authoritative, so the re-run lookup must catch it.
+  const realHas = orchestrator.hasContentHashDedup.bind(orchestrator);
+  let calls = 0;
+  orchestrator.hasContentHashDedup = async (ts: StorageManager, content: string) => {
+    calls += 1;
+    if (calls === 1) return false; // stale-snapshot miss
+    return realHas(ts, content); // now-authoritative result
+  };
+
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(
+    ids.length,
+    0,
+    "the re-run lookup after the authority rebuild catches the peer fact (a duplicate is written without the fix)",
+  );
+
+  const all = await new StorageManager(memoryDir).readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.content.includes(body)).length,
+    1,
+    "exactly one copy of the fact exists on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#2016 threads SDzOP/SDzOR: orchestrator archival removal clears fact-only membership (no stale hasFactContentHash)", async () => {
+  // The orchestrator's category-agnostic removeContentHashForMemory (archival /
+  // semantic consolidation) used to mutate only the shared index, leaving the
+  // fact-ONLY membership set holding the removed fact's hash. hasFactContentHash
+  // reads that set when authoritative, so it returned a stale `true` and
+  // wearable / explicit-capture / promotion callers skipped a valid write until
+  // the next corpus rebuild.
+  const { orchestrator, storage } = await makeDedupOrchestrator();
+  const body = "The nightly backup job rotates encryption keys every thirty days.";
+
+  // Register an active fact (shared index + fact-only set).
+  await storage.writeMemory("fact", body, { source: "manual" });
+  assert.equal(
+    await storage.isFactContentHashAuthoritative(),
+    true,
+    "index is authoritative so hasFactContentHash reads the in-memory fact-only set",
+  );
+  assert.equal(await storage.hasFactContentHash(body), true, "fact is registered");
+
+  const [memory] = (await storage.readAllMemories()).filter((m: MemoryFile) =>
+    m.content.includes(body),
+  );
+  assert.ok(memory, "the fact is on disk");
+
+  // Remove via the ORCHESTRATOR coordinator path (what archival uses). It does
+  // NOT save, so the durable index fingerprint is unchanged and
+  // hasFactContentHash still reads the in-memory fact-only set below.
+  await orchestrator.removeContentHashForMemory(storage, memory, "fact-archival");
+
+  assert.equal(
+    await storage.hasFactContentHash(body),
+    false,
+    "the removed fact must not linger in the fact-only membership (stale true without the fix)",
+  );
+});
