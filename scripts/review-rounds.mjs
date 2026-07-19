@@ -345,6 +345,11 @@ function activityMentionsHead(activity, headSha) {
 
 function isCurrentActivity(activity, headSha, headCommittedAt) {
   if (activityMentionsHead(activity, headSha)) return true;
+  const commit = activity?.commit_id ?? activity?.original_commit_id ??
+    activity?.head_sha ?? activity?.headSha;
+  if (typeof commit === "string" ? commit.trim().length > 0 : commit !== undefined && commit !== null) {
+    return false;
+  }
   const body = activityBody(activity);
   if (typeof body === "string" && bodyShaReferences(body).length > 0) return false;
   const activityTimeValue = parseTime(activityTime(activity));

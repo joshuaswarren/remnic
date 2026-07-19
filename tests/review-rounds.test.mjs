@@ -309,6 +309,20 @@ test("missing head time does not make dated activity current", () => {
     }],
   }), null);
 });
+test("stale explicit commit ids do not pass the timestamp fallback", () => {
+  assert.equal(hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "head-2",
+    headCommittedAt: "2026-07-18T12:00:00.000Z",
+    reviews: [{
+      id: "review-old-head",
+      author: { login: "cursor" },
+      commit_id: "head-1",
+      submitted_at: "2026-07-18T12:01:00.000Z",
+    }],
+  }), null);
+});
+
 
 test("ledger parser rejects malformed persisted state", () => {
   const state = openRound();
