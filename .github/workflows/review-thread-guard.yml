@@ -146,7 +146,7 @@ jobs:
             // effective-diff mirror). Precision beats recall: two threads merge
             // ONLY on same file + overlapping line range + lexical fingerprint
             // at or above threshold. Nothing is deleted or hidden.
-            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1, smallFingerprintMax: 6, polarityContentSim: 0.7 };
+            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1, polarityContentSim: 0.7 };
             const NON_DEDUP_LOGINS = new Set([
               "github-advanced-security",
               "github-advanced-security[bot]",
@@ -210,6 +210,11 @@ jobs:
             };
             const tokensOf = (body) =>
               stripMarkup(body).split(/[^a-z0-9]+/).filter((t) => t.length >= 2 && !STOP.has(t));
+            // Keeps single-character tokens for directional operand analysis only
+            // (one-char identifiers like "x"/"y"); scoped so they never enter the
+            // general fingerprint. Mirrors directionalTokens in review-dedup.mjs.
+            const directionalTokensOf = (body) =>
+              stripMarkup(body).split(/[^a-z0-9]+/).filter((t) => t.length >= 1 && !STOP.has(t));
             // Directional operand-swap detector (mirrors review-dedup.mjs): "X
             // instead of Y" vs "Y instead of X" is a contradiction, not a dup,
             // even with multi-word operands and shared context. "of"/"than" are
@@ -233,8 +238,8 @@ jobs:
               return [a.slice(0, a.length - i), b.slice(0, b.length - i)];
             };
             const directionalOperandsSwapped = (a, b) => {
-              const pa = directionalPhrases(tokensOf(a));
-              const pb = directionalPhrases(tokensOf(b));
+              const pa = directionalPhrases(directionalTokensOf(a));
+              const pb = directionalPhrases(directionalTokensOf(b));
               if (!pa || !pb) return false;
               const [aBefore, bBefore] = dropCommonPrefix(pa.before, pb.before);
               const [aAfter, bAfter] = dropCommonSuffix(pa.after, pb.after);
@@ -264,19 +269,18 @@ jobs:
               const contentSim = inter / (na.size + nb.size - inter);
               return contentSim >= DEDUP.polarityContentSim;
             };
-            // Terse-fingerprint guard (mirrors terseDistinctFindings in
-            // review-dedup.mjs): for short comments a single differing word is the
-            // whole finding, so two that each carry a token the other lacks are
-            // distinct ("Missing null guard check" vs "Missing auth guard check")
-            // even at a Jaccard above threshold. Subset/superset or longer pairs
-            // are unaffected.
-            const terseDistinctFindings = (a, b) => {
+            // Single-token distinct-findings guard (mirrors distinctBySingleToken
+            // in review-dedup.mjs): two comments IDENTICAL except exactly one
+            // distinguishing token per side ("Missing null guard check ..." vs
+            // "Missing auth guard check ...", any length) are distinct, not a dup.
+            // Not blanket divergence — multi-token paraphrases and subset/superset
+            // restatements still fold.
+            const distinctBySingleToken = (a, b) => {
               const sa = new Set(tokensOf(a));
               const sb = new Set(tokensOf(b));
-              if (Math.min(sa.size, sb.size) > DEDUP.smallFingerprintMax) return false;
-              const aUnique = [...sa].some((t) => !sb.has(t));
-              const bUnique = [...sb].some((t) => !sa.has(t));
-              return aUnique && bUnique;
+              const aUnique = [...sa].filter((t) => !sb.has(t));
+              const bUnique = [...sb].filter((t) => !sa.has(t));
+              return aUnique.length === 1 && bUnique.length === 1;
             };
             const fingerprint = (body, k = DEDUP.shingleSize) => {
               const toks = tokensOf(body);
@@ -374,7 +378,7 @@ jobs:
                   reversedOrder ||
                   directionalOperandsSwapped(body, c.body) ||
                   polarityMismatch(body, c.body) ||
-                  terseDistinctFindings(body, c.body)
+                  distinctBySingleToken(body, c.body)
                 ) continue;
                 match = c;
                 best = sim;

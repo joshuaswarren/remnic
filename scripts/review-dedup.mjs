@@ -34,13 +34,6 @@ export const REVIEW_DEDUP_CONFIG = Object.freeze({
   // nonzero bigram-sim, so the guard never fires on them (codex P2).
   directionalSetMin: 0.9,
   directionalOrderMax: 0.1,
-  // Terse-fingerprint guard: for short comments (<= smallFingerprintMax content
-  // tokens on the smaller side) a single differing word is decisive, so two that
-  // each carry a token the other lacks are distinct findings ("Missing null guard
-  // check" vs "Missing auth guard check") and must not fold — even though k=1
-  // Jaccard scores them above threshold. Subset/superset or longer paraphrase
-  // duplicates are unaffected (codex P2).
-  smallFingerprintMax: 6,
   // Polarity guard: reject a merge when exactly one side is negated AND the
   // non-negation content is at least this similar — a true prohibition/affirmative
   // flip. Set between a real duplicate that merely carries an incidental negation
@@ -177,6 +170,16 @@ export function contentTokens(body) {
     .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
 }
 
+// Like contentTokens but KEEPS single-character tokens: directional operands can
+// be one-char identifiers/literals ("Use x instead of y"), which the >=2 filter
+// would otherwise drop, blinding the swap detector. Scoped to directional
+// analysis so one-char noise never enters the general fingerprint.
+export function directionalTokens(body) {
+  return stripMarkup(body)
+    .split(NON_WORD_PATTERN)
+    .filter((token) => token.length >= 1 && !STOPWORDS.has(token));
+}
+
 // Directional markers whose two flanking operands carry the meaning: "X instead
 // of Y" / "X rather than Y" / "X before/after Y". ("of"/"than" are stopwords, so
 // the marker is the bare "instead"/"rather"; "before"/"after" are ordering
@@ -219,8 +222,8 @@ const dropCommonSuffix = (a, b) => {
  * reversed-order cutoff.
  */
 function directionalOperandsSwapped(bodyA, bodyB) {
-  const a = directionalPhrases(contentTokens(bodyA));
-  const b = directionalPhrases(contentTokens(bodyB));
+  const a = directionalPhrases(directionalTokens(bodyA));
+  const b = directionalPhrases(directionalTokens(bodyB));
   if (!a || !b) return false;
   const [aBefore, bBefore] = dropCommonPrefix(a.before, b.before);
   const [aAfter, bAfter] = dropCommonSuffix(a.after, b.after);
@@ -259,20 +262,21 @@ function polarityMismatch(bodyA, bodyB, nearMatch = REVIEW_DEDUP_CONFIG.polarity
 }
 
 /**
- * True when two SHORT findings each carry a distinguishing token the other
- * lacks ("Missing null guard check" vs "Missing auth guard check"). For terse
- * comments a single differing word is the whole finding, so mutual divergence
- * means distinct findings — not a duplicate — even at a Jaccard above threshold.
- * A subset/superset short pair (only one side diverges) or a longer comment is
- * unaffected.
+ * True when two findings are IDENTICAL except for exactly one distinguishing
+ * token on each side ("Missing null guard check ..." vs "Missing auth guard
+ * check ...", at any length). One substantive swap in an otherwise word-for-word
+ * identical comment is a distinct finding, not a duplicate — even at Jaccard 0.6+
+ * for terse comments or 0.8+ for longer ones. This is NOT blanket divergence:
+ * genuine multi-token paraphrase duplicates differ on many tokens per side and
+ * are unaffected, and a subset/superset restatement (one side has zero unique
+ * tokens) still folds.
  */
-function terseDistinctFindings(bodyA, bodyB, maxSize = REVIEW_DEDUP_CONFIG.smallFingerprintMax) {
+function distinctBySingleToken(bodyA, bodyB) {
   const a = new Set(contentTokens(bodyA));
   const b = new Set(contentTokens(bodyB));
-  if (Math.min(a.size, b.size) > maxSize) return false;
-  const aUnique = [...a].some((t) => !b.has(t));
-  const bUnique = [...b].some((t) => !a.has(t));
-  return aUnique && bUnique;
+  const aUnique = [...a].filter((t) => !b.has(t));
+  const bUnique = [...b].filter((t) => !a.has(t));
+  return aUnique.length === 1 && bUnique.length === 1;
 }
 
 /** Deterministic set of word k-shingles over content tokens. */
@@ -398,7 +402,6 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
   const shingleSize = config?.shingleSize ?? REVIEW_DEDUP_CONFIG.shingleSize;
   const directionalSetMin = config?.directionalSetMin ?? REVIEW_DEDUP_CONFIG.directionalSetMin;
   const directionalOrderMax = config?.directionalOrderMax ?? REVIEW_DEDUP_CONFIG.directionalOrderMax;
-  const smallFingerprintMax = config?.smallFingerprintMax ?? REVIEW_DEDUP_CONFIG.smallFingerprintMax;
   const ordered = stableSort(Array.isArray(threads) ? threads : []);
   const canonicals = [];
   const records = [];
@@ -440,7 +443,7 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
         reversedOrder ||
         directionalOperandsSwapped(body, canonical.body) ||
         polarityMismatch(body, canonical.body) ||
-        terseDistinctFindings(body, canonical.body, smallFingerprintMax)
+        distinctBySingleToken(body, canonical.body)
       ) {
         continue;
       }

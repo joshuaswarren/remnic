@@ -559,9 +559,9 @@ test("same-direction multi-word directive still merges", () => {
   });
   const b = mkThread({
     id: 624, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
-    body: "Use memory cache instead of disk store in this path",
+    body: "Use memory cache instead of disk store for read requests",
   });
-  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same-direction multi-word restatement folds");
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same-direction multi-token restatement folds");
 });
 
 test("contracted negations are normalized so the negation survives tokenizing", () => {
@@ -636,6 +636,46 @@ test("a terse subset/superset restatement still merges", () => {
     body: "Missing null guard check",
   });
   assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "only one side diverges -> real duplicate folds");
+});
+
+test("longer findings identical except one token also do NOT merge (length-agnostic)", () => {
+  // The single-token guard is not limited to terse comments: a 10-token pair
+  // differing only by null vs auth is still distinct.
+  const a = mkThread({
+    id: 645, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Missing null guard check in request parser because optional metadata can crash",
+  });
+  const b = mkThread({
+    id: 646, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Missing auth guard check in request parser because optional metadata can crash",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "one substantive token apart at any length is distinct");
+});
+
+test("a multi-token paraphrase duplicate still merges (not blanket divergence)", () => {
+  // Differs on several tokens per side -> genuine paraphrase, must still fold.
+  const a = mkThread({
+    id: 647, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "The reindex call discards the code and message so the caller cannot tell a real failure from an empty result",
+  });
+  const b = mkThread({
+    id: 648, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "The reindex call drops the code and message leaving the caller unable to tell a genuine failure from an empty result",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "multi-token paraphrase folds");
+});
+
+test("swapped one-character directional operands do NOT merge", () => {
+  // Operands are single characters; the directional detector must keep them.
+  const a = mkThread({
+    id: 649, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Use x instead of y here",
+  });
+  const b = mkThread({
+    id: 650, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Use y instead of x here",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped 1-char operands must not merge");
 });
 
 test("swapped 'before'/'after' ordering directives do NOT merge", () => {

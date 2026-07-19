@@ -206,11 +206,20 @@ test("review-thread guard inline rejects polarity-mismatch duplicates", () => {
   assert.match(guard, /polarityMismatch\(body, c\.body\)/, "match loop must reject polarity mismatches");
 });
 
-test("review-thread guard inline applies the terse-fingerprint distinct-findings guard", () => {
-  // Short mutually-divergent findings must not fold; mirrors terseDistinctFindings
-  // in review-dedup.mjs (codex P2).
+test("review-thread guard inline applies the single-token distinct-findings guard", () => {
+  // Two comments identical except one token per side must not fold; mirrors
+  // distinctBySingleToken in review-dedup.mjs (codex P2). No smallFingerprintMax.
   const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
-  assert.match(guard, /smallFingerprintMax: 6/, "DEDUP must define smallFingerprintMax");
-  assert.match(guard, /const terseDistinctFindings =/);
-  assert.match(guard, /terseDistinctFindings\(body, c\.body\)/, "match loop must reject terse distinct findings");
+  assert.doesNotMatch(guard, /smallFingerprintMax/, "the length cutoff is gone; the guard is length-agnostic");
+  assert.match(guard, /const distinctBySingleToken =/);
+  assert.match(guard, /aUnique\.length === 1 && bUnique\.length === 1/, "must require exactly one unique token per side");
+  assert.match(guard, /distinctBySingleToken\(body, c\.body\)/, "match loop must reject single-token-apart findings");
+});
+
+test("review-thread guard inline preserves one-character directional operands", () => {
+  // "Use x instead of y" vs "Use y instead of x": operands are 1-char; the swap
+  // detector must use a 1-char-preserving tokenizer (directionalTokensOf).
+  const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(guard, /t\.length >= 1/, "directional tokenizer must keep single-character tokens");
+  assert.match(guard, /directionalPhrases\(directionalTokensOf\(a\)\)/, "swap detector must use the 1-char tokenizer");
 });
