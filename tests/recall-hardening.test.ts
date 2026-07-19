@@ -358,7 +358,7 @@ test("recall aborts the in-flight pipeline when the outer timeout fires", async 
 
   const originalSetTimeout = global.setTimeout;
   global.setTimeout = ((
-    handler: TimerHandler,
+    handler: Parameters<typeof setTimeout>[0],
     timeout?: number,
     ...args: any[]
   ) =>
@@ -428,7 +428,7 @@ test("recall aborts while waiting on the init gate", async () => {
 
   const originalSetTimeout = global.setTimeout;
   global.setTimeout = ((
-    handler: TimerHandler,
+    handler: Parameters<typeof setTimeout>[0],
     timeout?: number,
     ...args: any[]
   ) =>
@@ -533,7 +533,8 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
   );
   const elapsedMs = Date.now() - startedAt;
 
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   assert.equal(sharedReadStarted, true);
   assert.ok(
@@ -608,7 +609,8 @@ test("recallInternal fails open when qmd enrichment rejects before phase-two ass
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -802,7 +804,8 @@ test("recallInternal times out hung enrichment work without blocking assembly", 
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   const elapsedMs = Date.now() - startedAt;
@@ -849,7 +852,8 @@ test("recallInternal fails open when a deferred enrichment promise rejects befor
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -924,7 +928,8 @@ test("recallInternal cancels timed-out qmd enrichment work", async () => {
   }
   assert.ok(observedAbortSignal, "expected qmd enrichment to start");
   await new Promise((resolve) => setTimeout(resolve, 90));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -982,9 +987,11 @@ test("recallInternal shares one enrichment timeout budget across sequential enri
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
   await new Promise((resolve) => setTimeout(resolve, 70));
-  releaseQmd?.();
+  const releaseQmdNow = releaseQmd as (() => void) | null;
+  releaseQmdNow?.();
 
   const context = await recallPromise;
   const elapsedMs = Date.now() - startedAt;
