@@ -23,7 +23,8 @@ import { ContentHashIndex, StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { stripCitationForTemplate } from "../source-attribution.js";
-import { clearIndexesAsync, indexMemoriesBatchAsync, indexesExistAsync } from "../temporal-index.js";
+import { clearIndexesAsync, indexesExistAsync } from "../temporal-index.js";
+import { indexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { MemoryFile, MemoryFrontmatter, PluginConfig } from "../types.js";
 import {

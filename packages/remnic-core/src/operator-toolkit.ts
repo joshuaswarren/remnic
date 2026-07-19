@@ -1987,7 +1987,7 @@ function summarizeSecurityMitigations(
     | "recallAuditAnomalyRepeatQueryLimit"
     | "recallAuditAnomalyNamespaceWalkLimit"
     | "recallAuditAnomalyHighCardinalityLimit"
-    | "recallAuditAnomalyRapidFireLimit"
+    | "recallAuditAnomalyRapidFireLimit" | "recallSingleFlightEnabled"
   >,
 ): OperatorDoctorCheck {
   // Resolve access-setup gates once (#1566 Cluster B).

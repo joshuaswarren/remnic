@@ -52,7 +52,7 @@ import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastRecallSnapshot, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
 import { type RecallFilterTrace, type RecallXrayResult, type RecallXrayScoreDecomposition, type RecallXraySnapshot, buildXraySnapshot } from "../recall-xray.js";
-import { recordRecallTiming } from "../recall-timings.js";
+import { foldQueueWaitTiming, recordRecallTiming } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -75,6 +75,7 @@ import { type TrustZoneSearchResult, searchTrustZoneRecords } from "../trust-zon
 import type { CodingContext, EngramTraceEvent, IdentityInjectionMode, MemoryFile, MemoryIntent, PluginConfig, QmdSearchResult, RecallPlanMode, RecallSectionConfig } from "../types.js";
 import { type VerifiedEpisodeResult, compareVerifiedEpisodeResults, searchVerifiedEpisodes } from "../verified-recall.js";
 import { type WorkProductLedgerSearchResult, searchWorkProductLedgerEntries } from "../work-product-ledger.js";
+import { abortError } from "../abort-error.js";
 import {
   applyQueryAwareCandidateFilter,
   filterRecallCandidates,
@@ -461,7 +462,7 @@ export class RecallInternalCoordinator {
       const parsed = Date.parse(options.asOf);
       if (Number.isFinite(parsed)) asOfMs = parsed;
     }
-    const timings: Record<string, string> = {};
+    const timings = foldQueueWaitTiming(options.queueWaitMs); // #1906 queue-wait phase
     const profileTraceId = this.deps.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: resolveQmdCapabilities(this.deps.config).qmd,
       rerankEnabled: caps.rerank,
@@ -3411,7 +3412,7 @@ export class RecallInternalCoordinator {
 
     const awaitAssemblyStep = async <T>(
       name: string,
-      task: () => Promise<T>,
+      task: (stepSignal: AbortSignal) => Promise<T>,
       fallback: T,
     ): Promise<T> => {
       if (options.abortSignal?.aborted) {
@@ -3430,11 +3431,23 @@ export class RecallInternalCoordinator {
         return fallback;
       }
 
+      // Task-level deadline abort (#1907): give the step a child controller and
+      // pass its signal into the task so the losing task cooperatively stops
+      // instead of running to completion on the daemon thread after the race is
+      // lost. Compose with the request signal so a client disconnect ALSO stops
+      // the step's cooperative reads. This step controller only maps to the
+      // step's `fallback` (fail-open, rule 41); it never rejects the recall —
+      // a request-level abort rejects at the next throwIfRecallAborted boundary.
+      const stepController = new AbortController();
+      const stepSignal = options.abortSignal
+        ? AbortSignal.any([options.abortSignal, stepController.signal])
+        : stepController.signal;
+
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         const result = await (timeoutMs !== null
           ? Promise.race<T | { status: "timed_out" }>([
-              task(),
+              task(stepSignal),
               new Promise<{ status: "timed_out" }>((resolve) => {
                 timeoutHandle = setTimeout(
                   () => resolve({ status: "timed_out" }),
@@ -3442,14 +3455,15 @@ export class RecallInternalCoordinator {
                 );
               }),
             ])
-          : task());
+          : task(stepSignal));
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (
           typeof result === "object" &&
           result !== null &&
           "status" in result &&
-          (result as { status?: unknown }).status === "timed_out"
+          result.status === "timed_out"
         ) {
+          stepController.abort(abortError(`recall assembly [${name}] deadline exceeded`));
           log.debug(
             `recall phase-1 assembly [${name}]: timed out within shared ${enrichmentSectionDeadlineMs}ms budget ` +
               `at +${Date.now() - phase1Start}ms`,
@@ -3459,6 +3473,7 @@ export class RecallInternalCoordinator {
         return result as T;
       } catch (err) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        stepController.abort(abortError(`recall assembly [${name}] failed`));
         log.warn(
           `recall phase-1 assembly [${name}] failed open: ${
             err instanceof Error ? err.message : String(err)
@@ -4350,35 +4365,25 @@ export class RecallInternalCoordinator {
         // does O(candidates) work instead of a full-corpus scan.
         const trustT0 = Date.now();
         // The fallback is a distinct object: identity-comparing the outcome to
-        // it detects a deadline/abort/error fallback without changing
-        // awaitAssemblyStep. On fallback the losing task is cooperatively
-        // cancelled via the AbortController so an orphaned corpus scan stops at
-        // its next loop boundary instead of burning I/O after recall returned,
-        // and the metric records the truth (#1905, Codex/Kilo).
-        const trustAbort = new AbortController();
-        // Also honor the caller's abort (e.g. a disconnected request) while the
-        // stage runs: compose the deadline controller with the request signal so
-        // EITHER cancels the cooperative reads. AbortSignal.any manages the
-        // listener lifecycle internally — no manual disposal (#1905, Codex).
-        const trustSignal = options.abortSignal
-          ? AbortSignal.any([options.abortSignal, trustAbort.signal])
-          : trustAbort.signal;
+        // it detects a deadline/abort/error fallback so the metric records the
+        // truth. awaitAssemblyStep injects a step signal that aborts the losing
+        // task on deadline (or when the request disconnects), so an orphaned
+        // corpus scan stops at its next loop boundary (#1905/#1907).
         const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath };
         const trustOutcome = await awaitAssemblyStep(
           "trustStage",
-          () =>
+          (stepSignal) =>
             this.deps.applyTrustScoreToBranch(
               memoryResults,
               recallNamespaces,
               caps,
               "hot-qmd",
               qmdBoostInput.memoryByPath,
-              trustSignal,
+              stepSignal,
             ),
           trustFallback,
         );
         const trustFellBack = trustOutcome === trustFallback;
-        if (trustFellBack) trustAbort.abort();
         memoryResults = trustOutcome.results;
         recallTrustByPath = trustOutcome.trustByPath;
         recordRecallSectionMetric({
@@ -4570,28 +4575,21 @@ export class RecallInternalCoordinator {
           // the stage's corpus/direct-read fallback cover it — identical lookup
           // semantics (rule 41 parity).
           const trustT0 = Date.now();
-          const trustAbort = new AbortController();
-          // Compose with the caller's signal so a disconnected request also
-          // cancels the cooperative reads (#1905, Codex).
-          const trustSignal = options.abortSignal
-            ? AbortSignal.any([options.abortSignal, trustAbort.signal])
-            : trustAbort.signal;
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
-            () =>
+            (stepSignal) =>
               this.deps.applyTrustScoreToBranch(
                 scoped,
                 recallNamespaces,
                 caps,
                 "embedding-fallback",
                 undefined,
-                trustSignal,
+                stepSignal,
               ),
             trustFallback,
           );
           const trustFellBack = trustOutcome === trustFallback;
-          if (trustFellBack) trustAbort.abort();
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
           recordRecallSectionMetric({
@@ -4775,28 +4773,21 @@ export class RecallInternalCoordinator {
         {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
-          const trustAbort = new AbortController();
-          // Compose with the caller's signal so a disconnected request also
-          // cancels the cooperative reads (#1905, Codex).
-          const trustSignal = options.abortSignal
-            ? AbortSignal.any([options.abortSignal, trustAbort.signal])
-            : trustAbort.signal;
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
-            () =>
+            (stepSignal) =>
               this.deps.applyTrustScoreToBranch(
                 scoped,
                 recallNamespaces,
                 caps,
                 "embedding-fallback",
                 undefined,
-                trustSignal,
+                stepSignal,
               ),
             trustFallback,
           );
           const trustFellBack = trustOutcome === trustFallback;
-          if (trustFellBack) trustAbort.abort();
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
           recordRecallSectionMetric({
@@ -5006,28 +4997,21 @@ export class RecallInternalCoordinator {
               const recentPreloaded = new Map<string, MemoryFile>(
                 queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
               );
-              const trustAbort = new AbortController();
-              // Compose with the caller's signal so a disconnected request also
-              // cancels the cooperative reads (#1905, Codex).
-              const trustSignal = options.abortSignal
-                ? AbortSignal.any([options.abortSignal, trustAbort.signal])
-                : trustAbort.signal;
               const trustFallback = { results: recent, trustByPath: recallTrustByPath };
               const trustOutcome = await awaitAssemblyStep(
                 "trustStage",
-                () =>
+                (stepSignal) =>
                   this.deps.applyTrustScoreToBranch(
                     recent,
                     recallNamespaces,
                     caps,
                     "recent-scan",
                     recentPreloaded,
-                    trustSignal,
+                    stepSignal,
                   ),
                 trustFallback,
               );
               const trustFellBack = trustOutcome === trustFallback;
-              if (trustFellBack) trustAbort.abort();
               recent = trustOutcome.results;
               recallTrustByPath = trustOutcome.trustByPath;
               recordRecallSectionMetric({

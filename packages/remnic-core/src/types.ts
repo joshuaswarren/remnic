@@ -1000,12 +1000,8 @@ export interface PluginConfig {
    * whose resolved taxonomy category is not in this list never qualify.
    */
   recallDirectAnswerEligibleTaxonomyBuckets: string[];
-  /**
-   * Cross-namespace query-budget limiter (issue #565 PR 4/5). When true,
-   * a principal that issues a burst of recalls against namespaces other
-   * than their own is throttled once its per-window count crosses
-   * `recallCrossNamespaceBudgetHardLimit`. Default false — ships disabled.
-   */
+  /** Cross-namespace query-budget limiter (issue #565 PR 4/5): throttle a
+   *  principal's cross-namespace recall burst past the hard limit. Default false. */
   recallCrossNamespaceBudgetEnabled: boolean;
   /** Rolling window in milliseconds over which cross-namespace reads are counted. */
   recallCrossNamespaceBudgetWindowMs: number;
@@ -1017,6 +1013,10 @@ export interface PluginConfig {
   recallCrossNamespaceBudgetSoftLimit: number;
   /** Hard threshold — calls past this count are denied in the window. */
   recallCrossNamespaceBudgetHardLimit: number;
+  /** Max concurrent recalls per principal; `0` = unlimited. Default 4 (#1906). */
+  recallMaxConcurrentPerPrincipal: number;
+  /** Coalesce identical concurrent recalls per principal; each caller gets its own clone. Default true. */
+  recallSingleFlightEnabled: boolean;
   // Memory Worth recall filter (issue #560 PR 4)
   /**
    * When true, recall multiplies candidate scores by the Memory Worth

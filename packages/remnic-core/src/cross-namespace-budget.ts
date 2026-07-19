@@ -67,6 +67,17 @@ export type BudgetDecisionReason =
   | "warn-over-soft"
   | "deny-over-hard";
 
+/**
+ * Opaque token identifying the EXACT window entry a {@link CrossNamespaceBudget.record}
+ * reserve created (issue #1906 review #4). Pass it to `release()` to remove
+ * that specific entry — never "the newest", which under concurrency could evict
+ * a different (newer) recall's reservation and reopen the limiter early.
+ */
+export interface BudgetReservation {
+  principal: string;
+  id: number;
+}
+
 export interface BudgetDecision {
   allowed: boolean;
   reason: BudgetDecisionReason;
@@ -78,11 +89,40 @@ export interface BudgetDecision {
     hardLimit: number;
     windowMs: number;
   };
+  /**
+   * Present only when this decision RESERVED a window entry (an allowed
+   * `record()`), so the caller can later `release(reservation)` that exact
+   * entry on a failed/aborted recall. Absent on denials, peeks, and
+   * same-namespace/no-limit decisions.
+   */
+  reservation?: BudgetReservation;
+}
+
+/**
+ * Response-safe projection of a soft-limit warning: a {@link BudgetDecision}
+ * WITHOUT the server-only `reservation` rollback token (which carries the
+ * principal id). This is what may be surfaced on HTTP/MCP recall responses and
+ * persisted in idempotency-cache entries, so it must never carry internal quota
+ * state (issue #1906 review round 10 #2).
+ */
+export type BudgetWarning = Omit<BudgetDecision, "reservation">;
+
+/**
+ * Project a decision to its response-safe {@link BudgetWarning}, stripping the
+ * internal `reservation` token. Returns `undefined` unless the decision is a
+ * soft-limit warning (`warn-over-soft`) — so callers can assign the result to
+ * `budgetWarning` directly.
+ */
+export function toBudgetWarning(decision: BudgetDecision): BudgetWarning | undefined {
+  if (decision.reason !== "warn-over-soft") return undefined;
+  const { reservation: _reservation, ...warning } = decision;
+  return warning;
 }
 
 interface PrincipalBucket {
-  /** Epoch-ms timestamps of cross-namespace reads in the active window. */
-  timestamps: number[];
+  /** Cross-namespace reads in the active window, each tagged with a unique id
+   *  so a specific reservation can be released without disturbing others. */
+  entries: Array<{ id: number; ts: number }>;
 }
 
 /**
@@ -149,6 +189,8 @@ function normalizeClock(now: number | undefined): number {
 export class CrossNamespaceBudget {
   private readonly config: Required<CrossNamespaceBudgetConfig>;
   private readonly buckets = new Map<string, PrincipalBucket>();
+  /** Monotonic id source for reservation tokens (issue #1906 review #4). */
+  private reservationSeq = 0;
 
   constructor(config?: CrossNamespaceBudgetConfig) {
     this.config = effectiveConfig(config);
@@ -192,46 +234,51 @@ export class CrossNamespaceBudget {
       principal = "__anonymous__";
     }
 
-    const bucket = this.buckets.get(principal) ?? { timestamps: [] };
+    const bucket = this.buckets.get(principal) ?? { entries: [] };
     const cutoff = normalizedNow - windowMs;
-    // Drop timestamps that slid out of the window.
-    while (bucket.timestamps.length > 0 && bucket.timestamps[0]! < cutoff) {
-      bucket.timestamps.shift();
+    // Drop entries that slid out of the window.
+    while (bucket.entries.length > 0 && bucket.entries[0]!.ts < cutoff) {
+      bucket.entries.shift();
     }
 
     // Count the current call against the window BEFORE deciding — a call
     // that crosses the deny threshold should itself be denied, not the
     // next one. This is what the threat model calls "fail at the Nth,
     // not the (N+1)th".
-    bucket.timestamps.push(normalizedNow);
+    const id = ++this.reservationSeq;
+    bucket.entries.push({ id, ts: normalizedNow });
     this.buckets.set(principal, bucket);
-    const count = bucket.timestamps.length;
+    const count = bucket.entries.length;
 
     if (count >= hardLimit) {
-      // Denied: roll back the timestamp we just added so a repeated denied
+      // Denied: roll back the entry we just added so a repeated denied
       // call does not push the bucket further into the future. This keeps
       // the limiter stateless with respect to denied attempts.
-      bucket.timestamps.pop();
+      bucket.entries.pop();
       // Evict empty buckets (e.g. the first record after a long idle
-      // rolled the only timestamp out, then got denied and rolled back).
+      // rolled the only entry out, then got denied and rolled back).
       // Prevents unbounded map growth across many transient principals.
-      if (bucket.timestamps.length === 0) {
+      if (bucket.entries.length === 0) {
         this.buckets.delete(principal);
       }
       return {
         allowed: false,
         reason: "deny-over-hard",
-        count: bucket.timestamps.length,
+        count: bucket.entries.length,
         limit,
       };
     }
 
+    // Allowed: the entry stands as a reservation the caller can later release
+    // by token (issue #1906 review #4).
+    const reservation: BudgetReservation = { principal, id };
     if (count > softLimit) {
       return {
         allowed: true,
         reason: "warn-over-soft",
         count,
         limit,
+        reservation,
       };
     }
 
@@ -240,6 +287,7 @@ export class CrossNamespaceBudget {
       reason: "allowed-under-soft",
       count,
       limit,
+      reservation,
     };
   }
 
@@ -283,11 +331,11 @@ export class CrossNamespaceBudget {
       principal = "__anonymous__";
     }
     const now = normalizeClock(args.now);
-    const bucket = this.buckets.get(principal) ?? { timestamps: [] };
+    const bucket = this.buckets.get(principal) ?? { entries: [] };
     const cutoff = now - windowMs;
     let liveCount = 0;
-    for (const ts of bucket.timestamps) {
-      if (ts >= cutoff) liveCount++;
+    for (const entry of bucket.entries) {
+      if (entry.ts >= cutoff) liveCount++;
     }
     const projected = liveCount + 1; // +1 for the current call
     if (projected >= hardLimit) {
@@ -336,6 +384,25 @@ export class CrossNamespaceBudget {
   }
 
   /**
+   * Roll back the EXACT reservation made by an allowed {@link record} (issue
+   * #1906 review #4). When a recall reserves budget at admission but then fails
+   * or is aborted, the caller releases its own `reservation` token so the
+   * errored recall does not consume budget permanently — and, critically, does
+   * NOT evict a different concurrent recall's entry (which could expire early
+   * and reopen the limiter). A no-op when the token is absent or already gone.
+   * Evicts empty buckets.
+   */
+  release(reservation: BudgetReservation | null | undefined): void {
+    if (!reservation) return;
+    const bucket = this.buckets.get(reservation.principal);
+    if (!bucket) return;
+    const index = bucket.entries.findIndex((entry) => entry.id === reservation.id);
+    if (index < 0) return;
+    bucket.entries.splice(index, 1);
+    if (bucket.entries.length === 0) this.buckets.delete(reservation.principal);
+  }
+
+  /**
    * Clear all state. Intended for tests and for the orchestrator's
    * lifecycle `before_reset` hook.
    */
@@ -355,10 +422,10 @@ export class CrossNamespaceBudget {
     const cutoff = normalizedNow - this.config.windowMs;
     let evicted = 0;
     for (const [principal, bucket] of this.buckets.entries()) {
-      while (bucket.timestamps.length > 0 && bucket.timestamps[0]! < cutoff) {
-        bucket.timestamps.shift();
+      while (bucket.entries.length > 0 && bucket.entries[0]!.ts < cutoff) {
+        bucket.entries.shift();
       }
-      if (bucket.timestamps.length === 0) {
+      if (bucket.entries.length === 0) {
         this.buckets.delete(principal);
         evicted++;
       }
