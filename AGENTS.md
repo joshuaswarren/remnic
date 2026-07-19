@@ -181,7 +181,10 @@ Required response:
 4. Add tests for the failure class, not just the reported instance.
 5. Run the hardening gate before asking for another review.
 
-Minimum scenario matrix for session/retrieval/cache work:
+Minimum scenario matrix for session/retrieval/cache work — now EXECUTABLE.
+These nine rows are the canonical `MATRIX_ROWS` in
+`packages/remnic-core/src/testing/lifecycle-matrix.ts`, run against a subsystem
+via `runLifecycleMatrix(name, subject)` (issue #1993):
 
 - explicit provider identity
 - sparse metadata with remembered binding
@@ -193,8 +196,18 @@ Minimum scenario matrix for session/retrieval/cache work:
 - `session_end`
 - dedupe/replay behavior
 
-If you cannot explain the behavior for every row in that matrix, the PR is not
-ready for external review.
+Instead of only reasoning about these rows in prose, instantiate them. The two
+reference `LifecycleSubject`s —
+`packages/remnic-core/src/testing/subjects/extraction-lifecycle.test.ts` (the
+extraction / turn-ingestion surface) and
+`packages/remnic-core/src/testing/subjects/serialized-write-chain.test.ts`
+(the session-toggle write chain) — exercise the REAL orchestrator/store paths
+for every row; copy one when hardening a new stateful subsystem. The
+`lifecycle-matrix` CI gate (path-triggered via
+`scripts/lifecycle-matrix/coverage.json`) fails when a touched lifecycle path
+has no registered subject (grandfathered paths warn; the grandfather list only
+shrinks). If you cannot explain the behavior for every row — or realize it as a
+subject — the PR is not ready for external review.
 
 Minimum scenario matrix for namespace/ACL scoping work (the dominant review
 cluster of 2026-06-20..07-04, ~80 findings concentrated in #1506/#1519 — a
@@ -2048,31 +2061,7 @@ When you touch any of these files — tsup configs, CLI/plugin package.json `dep
 
 ## Why Review Churn Happens
 
-When a PR touches session identity, retrieval routing, compaction, cache, or
-other lifecycle-heavy behavior, repeated review rounds usually mean the change
-was fixed too locally instead of being hardened as a whole subsystem.
-
-The common failure mode:
-
-1. A fix is made for the reported bug only.
-2. A reviewer then exercises an adjacent path:
-   - sparse metadata
-   - remembered binding reuse
-   - provider rebinding
-   - restart recovery
-   - `before_reset`
-   - `session_end`
-   - compaction
-3. Another follow-up commit is required.
-
-Required prevention workflow:
-
-1. Build the scenario matrix before coding.
-2. Define the invariants for every entrypoint the subsystem owns.
-3. Add tests for the entire failure class, not only the reported example.
-4. Apply one cohesive subsystem patch.
-5. Run the hardening gate before requesting AI review again.
-
-If the work is stateful and you are responding one review comment at a time,
-stop and widen the fix before pushing.
-
+See "Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)" above — it
+owns the failure mode, the required response, and the now-executable scenario
+matrix (`runLifecycleMatrix`, issue #1993). This heading is retained only as a
+pointer so links to it still resolve; do not re-add the prose matrix here.
