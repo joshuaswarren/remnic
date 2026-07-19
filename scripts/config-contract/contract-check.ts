@@ -50,33 +50,77 @@ export interface GrandfatherEntry {
   issue: string;
 }
 
-function readPreviousGrandfatherKeys(repoRoot: string, grandfatherPath: string): Set<string> | null {
+/**
+ * Resolve the prior grandfather baseline for the shrink-only ban.
+ *
+ * Returns `baselineRequired` so the caller can FAIL CLOSED rather than run
+ * open: a real Git checkout whose base ref is unavailable must not silently
+ * skip the ban (a PR could then add a fresh exception and pass — issue #1990).
+ * Synthetic fixtures (temp dirs with no Git work tree) and the PR that first
+ * introduces the manifest legitimately have no baseline to compare against.
+ */
+function readPreviousGrandfatherKeys(
+  repoRoot: string,
+  grandfatherPath: string,
+): { keys: Set<string> | null; baselineRequired: boolean } {
   const relativePath = path.relative(repoRoot, grandfatherPath);
-  if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return null;
+  if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    return { keys: null, baselineRequired: false };
+  }
+  let insideWorkTree = false;
   try {
-    const base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", "origin/main"], {
+    insideWorkTree =
+      execFileSync("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "true";
+  } catch {
+    insideWorkTree = false;
+  }
+  // No Git work tree → synthetic fixture / standalone export: nothing to compare.
+  if (!insideWorkTree) return { keys: null, baselineRequired: false };
+
+  // A real checkout MUST be able to resolve the base, or the ban is meaningless.
+  let base = "";
+  try {
+    base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", "origin/main"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    if (!base) return null;
-    const content = execFileSync("git", ["-C", repoRoot, "show", `${base}:${relativePath}`], {
+  } catch {
+    return { keys: null, baselineRequired: true };
+  }
+  if (!base) return { keys: null, baselineRequired: true };
+
+  let content: string;
+  try {
+    content = execFileSync("git", ["-C", repoRoot, "show", `${base}:${relativePath}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const parsed = JSON.parse(content) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    return new Set(
+  } catch {
+    // The manifest did not exist at the base → this PR introduces it; the
+    // initial population is not a "new exception" to ban.
+    return { keys: null, baselineRequired: false };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { keys: null, baselineRequired: true };
+  }
+  if (!Array.isArray(parsed)) return { keys: null, baselineRequired: true };
+  return {
+    keys: new Set(
       parsed
         .filter(
           (entry): entry is Partial<GrandfatherEntry> =>
             !!entry && typeof entry === "object" && !Array.isArray(entry),
         )
         .map((entry) => `${entry.kind}:${entry.key}`),
-    );
-  } catch {
-    // Synthetic fixtures and standalone source exports have no Git base.
-    return null;
-  }
+    ),
+    baselineRequired: true,
+  };
 }
 
 interface JsonSchemaNode {
@@ -348,7 +392,17 @@ export function runContractCheck(options: {
     return candidate as GrandfatherEntry;
   });
 
-  const previousGrandfatherKeys = readPreviousGrandfatherKeys(repoRoot, grandfatherPath);
+  const { keys: previousGrandfatherKeys, baselineRequired } = readPreviousGrandfatherKeys(
+    repoRoot,
+    grandfatherPath,
+  );
+  if (baselineRequired && !previousGrandfatherKeys) {
+    throw new Error(
+      `${grandfatherPath}: cannot resolve the shrink-only grandfather baseline ` +
+        "(git merge-base HEAD origin/main). Fetch origin/main so newly added exceptions " +
+        "can be rejected; refusing to run the contract check open.",
+    );
+  }
   if (previousGrandfatherKeys) {
     for (const [index, entry] of grandfathered.entries()) {
       const entryKey = `${entry.kind}:${entry.key}`;

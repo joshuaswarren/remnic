@@ -2259,23 +2259,13 @@ export function parseConfig(
         ? cfg.activeRecallPromptStyle
         : "balanced",
     activeRecallCustomInstruction: (() => {
-      const legacyInstruction = cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD];
-      if (
-        legacyInstruction !== undefined &&
-        legacyInstruction !== null &&
-        typeof legacyInstruction !== "string"
-      ) {
-        throw new Error(
-          `activeRecallPromptOverride must be a string; got ${JSON.stringify(legacyInstruction)}`,
-        );
-      }
-      const customInstruction =
+      const raw =
         typeof cfg.activeRecallCustomInstruction === "string"
           ? cfg.activeRecallCustomInstruction
-          : typeof legacyInstruction === "string"
-            ? legacyInstruction
+          : typeof cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD] === "string"
+            ? cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD]
             : "";
-      return customInstruction.trim().length > 0 ? customInstruction.trim() : null;
+      return raw.trim().length > 0 ? raw.trim() : null;
     })(),
     activeRecallPromptReplacement: (() => {
       const raw = cfg.activeRecallPromptReplacement;
@@ -2286,11 +2276,15 @@ export function parseConfig(
       }
       return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
     })(),
-    activeRecallPromptOverride:
-      typeof cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD] === "string" &&
-      cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD].trim().length > 0
-        ? cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD].trim()
-        : null,
+    activeRecallPromptOverride: (() => {
+      const raw = cfg.activeRecallPromptOverride;
+      if (raw !== undefined && raw !== null && typeof raw !== "string") {
+        throw new Error(
+          `activeRecallPromptOverride must be a string; got ${JSON.stringify(raw)}`,
+        );
+      }
+      return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+    })(),
     activeRecallPromptAppend:
       typeof cfg.activeRecallPromptAppend === "string" &&
       cfg.activeRecallPromptAppend.trim().length > 0

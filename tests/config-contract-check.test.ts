@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
 
 /**
@@ -229,6 +230,75 @@ test("clean fixture: no violations, no stale entries", () => {
     const result = fixture.run();
     assert.deepEqual(result.violations, []);
     assert.deepEqual(result.staleGrandfatherEntries, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+function initGitRepo(root: string): void {
+  const git = (...args: string[]): void => {
+    execFileSync(
+      "git",
+      ["-C", root, "-c", "user.email=t@example.com", "-c", "user.name=fixture", ...args],
+      { stdio: "ignore" },
+    );
+  };
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "fixture baseline");
+}
+
+test("grandfather ban fails closed when a real checkout cannot resolve the base (#1990)", () => {
+  const fixture = makeFixtureRepo({
+    parserExtraKey: true,
+    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" }],
+  });
+  try {
+    initGitRepo(fixture.root);
+    // A Git work tree with no resolvable origin/main must refuse to run open,
+    // otherwise a checkout without the base could add a fresh exception silently.
+    assert.throws(
+      () => fixture.run(),
+      /cannot resolve the shrink-only grandfather baseline/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1990)", () => {
+  const fixture = makeFixtureRepo({
+    parserExtraKey: true,
+    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" }],
+  });
+  try {
+    initGitRepo(fixture.root);
+    // Pin the base at the committed manifest (holds only the prior entry).
+    execFileSync("git", ["-C", fixture.root, "update-ref", "refs/remotes/origin/main", "HEAD"], {
+      stdio: "ignore",
+    });
+    // The prior entry exists at the base → accepted, its violation suppressed.
+    const accepted = fixture.run();
+    assert.equal(
+      accepted.violations.some((violation) => violation.key === "codingKnowledge.fixture"),
+      false,
+    );
+    // Add a NEW exception absent from the base → the shrink-only ban rejects it.
+    writeFileSync(
+      path.join(fixture.root, "grandfathered.json"),
+      JSON.stringify(
+        [
+          { kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.sneaky", issue: "#1990" },
+        ],
+        null,
+        2,
+      ),
+    );
+    assert.throws(
+      () => fixture.run(),
+      /new grandfather entry missing-schema:codingKnowledge\.sneaky is not allowed/,
+    );
   } finally {
     fixture.cleanup();
   }

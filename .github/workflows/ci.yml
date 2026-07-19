@@ -86,6 +86,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the v2 config-contract shrink-only grandfather ban
+          # resolves `git merge-base HEAD origin/main` (issue #1990). A default
+          # checkout fetches only the triggering commit, which would leave the
+          # ban to fail closed.
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4

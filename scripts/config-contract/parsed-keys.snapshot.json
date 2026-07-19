@@ -943,7 +943,7 @@
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 2728,
+      "line": 2722,
       "reason": "Object.entries() over parser input — dynamic key set"
     },
     {
@@ -976,6 +976,7 @@
     "activeRecallCustomInstruction.trim",
     "activeRecallModel.trim",
     "activeRecallPromptAppend.trim",
+    "activeRecallPromptOverride.trim",
     "activeRecallPromptReplacement.trim",
     "activeRecallTranscriptDir.trim",
     "agentAccessHttp.authToken.replace",

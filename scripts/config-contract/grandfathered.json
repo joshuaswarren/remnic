@@ -1801,7 +1801,7 @@
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:2728",
+    "key": "packages/remnic-core/src/config.ts:2722",
     "issue": "#1990"
   }
 ]
