@@ -415,12 +415,13 @@ export class LastRecallStore {
   }
 
   /**
-   * Rotate (best-effort) then append one impression line under ONE shared
-   * cross-process lock (#1910, #2033). Both the archive-shift renames AND the
-   * append run inside the same held lock so a peer process holding the lock can
-   * never rename the active inode to `.1` between our open and write — which
-   * would land the impression in a rotated archive that offline-sync excludes,
-   * silently dropping it from active-state/sync consumers.
+   * Drain pending spills, rotate (best-effort, sized to the projected payload),
+   * then append one impression line under ONE shared cross-process lock (#1910,
+   * #2033). Both the archive-shift renames AND the append run inside the same
+   * held lock so a peer process holding the lock can never rename the active
+   * inode to `.1` between our open and write — which would land the impression in
+   * a rotated archive that offline-sync excludes, silently dropping it from
+   * active-state/sync consumers.
    *
    * On lock-acquisition timeout the impression is NEVER written to the active
    * file unlocked (#2033): a peer holding the lock is likely mid-rotation, so an
@@ -466,29 +467,42 @@ export class LastRecallStore {
           await this.spillImpression(line);
           return;
         }
+        // Claim any durable pending spills (impressions a prior lock-timed-out
+        // append queued) by reading then unlinking each BEFORE the append, oldest
+        // name first. Claiming before committing is what stops a swallowed unlink
+        // error from letting the next drain re-read and duplicate an already-
+        // appended impression (#2033); a file that cannot be unlinked is skipped
+        // this pass and retried later. listContainedSpillFiles rejects
+        // symlinked/escaping entries before read/unlink.
+        const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
+        const claimed: string[] = [];
+        for (const filePath of spillFiles) {
+          const content = await readFile(filePath, "utf-8");
+          try {
+            await unlink(filePath);
+          } catch {
+            continue; // could not claim → do not append; a later drain retries it.
+          }
+          claimed.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
+        }
+        const payload = claimed.length > 0 ? `${claimed.join("")}${line}` : line;
+        // Rotate against the FULL drained payload so a large batch of drained
+        // spills cannot leave the active file far over recallImpressionsRotateBytes
+        // until the next record() (#2033). Runs under this same held lock, so the
+        // rename never races a peer; a rotation error is logged and the append
+        // still runs.
         try {
-          await this.rotateImpressionsIfNeeded();
+          await this.rotateImpressionsIfNeeded(Buffer.byteLength(payload, "utf-8"));
         } catch (err) {
           log.debug(`recall impressions rotation failed (append preserved): ${err}`);
         }
-        // Fold any durable pending spills (impressions a prior lock-timed-out
-        // append queued) back into the active file, oldest-name first, then
-        // append the current row — all under the held lock so nothing races a
-        // rotation rename. listContainedSpillFiles rejects symlinked/escaping
-        // entries before read/unlink (#2033).
-        const spillFiles = await listContainedSpillFiles(this.impressionsPendingDir);
-        let payload = line;
-        if (spillFiles.length > 0) {
-          const parts: string[] = [];
-          for (const filePath of spillFiles) {
-            const content = await readFile(filePath, "utf-8");
-            parts.push(content.length === 0 || content.endsWith("\n") ? content : `${content}\n`);
-          }
-          payload = `${parts.join("")}${line}`;
-        }
-        await appendFile(this.impressionsPath, payload, "utf-8");
-        for (const filePath of spillFiles) {
-          await unlink(filePath).catch(() => undefined);
+        try {
+          await appendFile(this.impressionsPath, payload, "utf-8");
+        } catch (err) {
+          // Re-spill the claimed rows so a failed append never loses them; they
+          // rejoin the active file on the next lock holder's drain (#2033).
+          if (claimed.length > 0) await this.spillImpression(claimed.join("")).catch(() => undefined);
+          throw err;
         }
       },
     );
@@ -506,7 +520,7 @@ export class LastRecallStore {
    * lock of their own and cannot race a peer's rename (#2033). A rotation error
    * is caught by the caller so the current impression is still appended.
    */
-  private async rotateImpressionsIfNeeded(): Promise<void> {
+  private async rotateImpressionsIfNeeded(extraBytes = 0): Promise<void> {
     if (this.impressionsRotateBytes <= 0) return;
     let size = 0;
     try {
@@ -515,7 +529,10 @@ export class LastRecallStore {
       if (isErrnoCode(err, "ENOENT")) return;
       throw err;
     }
-    if (size < this.impressionsRotateBytes) return;
+    // Account for the bytes about to be appended (drained spills + the current
+    // row), not just the pre-existing active size (#2033): a large drained batch
+    // would otherwise skip rotation and leave the active file over the limit.
+    if (size + extraBytes < this.impressionsRotateBytes) return;
     await this.shiftImpressionArchives();
   }
 

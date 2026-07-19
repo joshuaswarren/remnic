@@ -154,6 +154,49 @@ test("rebuild-memory-lifecycle-ledger CLI refuses a locked secure store instead 
   }
 });
 
+test("rebuild-memory-lifecycle-ledger CLI recovers a namespaced encrypted ledger through namespace-scoped secure storage (#2033)", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-ns-"));
+  // A namespace store lives under namespaces/<ns>/ — the exact path an oversized
+  // encrypted namespace ledger occupies. The namespace-aware CLI resolves this
+  // memoryDir and its secure StorageManager so the recovery targets it instead of
+  // the root store.
+  const namespaceDir = path.join(rootDir, "namespaces", "team");
+  const key = Buffer.alloc(32, 0x5a);
+  const ledgerPath = path.join(namespaceDir, "state", "memory-lifecycle-ledger.jsonl");
+  try {
+    const unlocked = new StorageManager(namespaceDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key, true);
+    await unlocked.ensureDirectories();
+    await unlocked.writeMemory("fact", "encrypted namespace fact");
+    await unlocked.writeMemoryLifecycleLedgerContent(
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId: "evt-ns-seed",
+        memoryId: "m-ns-seed",
+        eventType: "created",
+        timestamp: "2026-03-08T00:00:00.000Z",
+      }) + "\n",
+    );
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: namespace ledger encrypted at rest");
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir: namespaceDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage: unlocked,
+    });
+    assert.equal(writeResult.dryRun, false);
+    assert.equal(path.resolve(writeResult.outputPath), path.resolve(ledgerPath), "rebuilt the namespace ledger, not the root");
+    assert.ok(
+      isEncryptedFile(await readFile(ledgerPath)),
+      "rebuilt namespace ledger stays encrypted at rest through the namespace secure storage",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("rebuild-memory-projection CLI wrapper respects dry-run default and write mode", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-memory-projection-"));
   await writeText(

@@ -38,9 +38,9 @@ export async function* readMaybeEncryptedLines(
         const { size } = await file.stat();
         if (size >= maxDecryptBytes) {
           throw new Error(
-            `encrypted state file ${filePath} is ${size} bytes, over the ${maxDecryptBytes}-byte `
-            + `whole-file decrypt limit. Run 'remnic rebuild-memory-lifecycle-ledger --write' (or 'remnic doctor') `
-            + `to compact it.`,
+            `encrypted state file ${filePath} is ${size} bytes, at or over the ${maxDecryptBytes}-byte `
+            + `whole-file decrypt limit. Run 'remnic rebuild-memory-lifecycle-ledger --write' (add `
+            + `'--namespace <ns>' when the path is under namespaces/<ns>/state) or 'remnic doctor' to compact it.`,
           );
         }
       }

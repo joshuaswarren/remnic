@@ -958,3 +958,45 @@ test("rebuild bounds a large append-only history under maxLedgerBytes, archiving
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("rebuild bounds finalEvents under maxLedgerBytes even when the on-disk ledger is all-invalid (existing empty) (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-bound-empty-existing-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    // Many memories → a large frontmatter reconstruction (created + updated per
+    // memory) that must be bounded by the cap.
+    const total = 60;
+    for (let i = 0; i < total; i += 1) {
+      const created = new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 2000).toISOString();
+      const updated = new Date(Date.UTC(2026, 2, 8, 0, 0, 1, 0) + i * 2000).toISOString();
+      await writeText(
+        memoryDir,
+        `facts/2026-03-08/fact-${String(i).padStart(3, "0")}.md`,
+        `---\nid: fact-${String(i).padStart(3, "0")}\ncategory: fact\ncreated: ${created}\nupdated: ${updated}\nsource: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: ["t"]\n---\n\nbody ${i}\n`,
+      );
+    }
+    // The on-disk ledger is oversized but EVERY row fails validation, so the
+    // preserve read returns [] — the exact case that previously skipped the byte
+    // cap and let a large frontmatter reconstruction be written unbounded (#2033).
+    const garbage = `${"not-a-valid-lifecycle-row\n".repeat(400)}`;
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, garbage, "utf-8");
+    const cap = 2000;
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      preserveExistingEvents: true,
+      maxLedgerBytes: cap,
+    });
+
+    const rewritten = await readFile(ledgerPath, "utf-8");
+    assert.ok(Buffer.byteLength(rewritten, "utf8") < cap, "rewritten ledger is under the byte cap despite empty existing");
+    assert.ok((result.archivedOverflowRows ?? 0) > 0, "overflow rows were dropped from the active ledger");
+    // The verbatim (invalid) on-disk bytes are preserved in the backup.
+    assert.ok(result.backupPath, "a backup was written");
+    assert.equal(await readFile(result.backupPath!, "utf-8"), garbage, "backup holds the original bytes verbatim");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -124,6 +124,9 @@ test("readMaybeEncryptedLines refuses an oversized encrypted file before decrypt
         const message = err instanceof Error ? err.message : String(err);
         assert.match(message, /whole-file decrypt limit/);
         assert.match(message, /rebuild-memory-lifecycle-ledger|doctor/);
+        // The remedy is namespace-aware (#2033): an oversized encrypted ledger
+        // under namespaces/<ns>/state must not be pointed at a root-only command.
+        assert.match(message, /--namespace/);
         assert.ok(message.includes(filePath));
         return true;
       },

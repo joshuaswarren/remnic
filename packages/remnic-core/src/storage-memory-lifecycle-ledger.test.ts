@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -639,5 +639,52 @@ test("pending drain rejects a symlinked spill entry pointing outside the pending
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("pending drain never re-appends a spill whose unlink fails after the ledger write (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-dup-"));
+  const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+  const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+  try {
+    await mkdir(spillDir, { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    await pending.writeSecure(
+      path.join(spillDir, "q.jsonl"),
+      `${JSON.stringify(lifecycleEvent("evt-dup", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+    );
+
+    // Read stays possible but the unlink (needs directory write) fails. Because
+    // the drain now CLAIMS each spill (unlinks it) before committing its rows, an
+    // unclaimable spill is skipped this pass — never appended-then-left-behind —
+    // so a later drain cannot re-read and duplicate it.
+    await chmod(spillDir, 0o555);
+    const first = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+    assert.equal(first, false, "unclaimable spill is not drained this pass");
+    assert.ok(
+      !(await readFile(ledgerPath, "utf8")).includes("evt-dup"),
+      "unclaimable spill must NOT be written to the ledger",
+    );
+    assert.equal((await readdir(spillDir)).length, 1, "unclaimed spill remains for a later pass");
+
+    // Restore write permission; the spill drains exactly once.
+    await chmod(spillDir, 0o755);
+    const second = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      pending,
+    );
+    assert.equal(second, true, "spill drains once permissions allow the claim");
+    const ledger = await readFile(ledgerPath, "utf8");
+    assert.equal(ledger.split("evt-dup").length - 1, 1, "event folded into the ledger exactly once — no duplicate");
+    assert.equal((await readdir(spillDir)).length, 0, "pending spill drained empty");
+  } finally {
+    await chmod(spillDir, 0o755).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
   }
 });

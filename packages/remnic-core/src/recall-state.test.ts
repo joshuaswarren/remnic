@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -541,6 +541,90 @@ test("LastRecallStore takes the shared rotation lock for active-file appends eve
     assert.ok(active.includes('"sessionKey":"off-spilled"'), "spilled impression folded back in");
     assert.ok(active.includes('"sessionKey":"off-drained"'), "current impression appended");
     assert.equal(await fileExists(`${impressionsPath}.1`), false, "local rotation stays disabled (no archive)");
+    assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore never re-appends a drained impression when its spill unlink fails (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-dup-"));
+  const pendingDir = path.join(dir, "state", "recall_impressions.jsonl.pending.d");
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(pendingDir, { recursive: true });
+    // A durable spill left by a prior lock-timed-out append.
+    await writeFile(
+      path.join(pendingDir, "spill.jsonl"),
+      `${JSON.stringify({ sessionKey: "evt-spill" })}\n`,
+      "utf8",
+    );
+    // Rotation stays out of the way: threshold far above anything written here.
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 1_000_000, impressionsRotateKeep: 5 });
+    await store.load();
+
+    // Make the pending dir non-writable so the drain can READ the spill but its
+    // unlink (which needs directory write permission) FAILS. Because the fix
+    // claims (unlinks) each spill BEFORE committing its rows, a spill that cannot
+    // be claimed is skipped this pass rather than appended-then-left-behind — so
+    // it can never be re-read and duplicated on the next drain.
+    await chmod(pendingDir, 0o555);
+    await store.record({ sessionKey: "cur1", query: "q1", memoryIds: [] });
+
+    let active = await readFile(impressionsPath, "utf8");
+    assert.ok(active.includes("cur1"), "current impression appended");
+    assert.ok(
+      !active.includes("evt-spill"),
+      "unclaimable spill must NOT be appended (would otherwise duplicate on the next drain)",
+    );
+    assert.equal((await readdir(pendingDir)).length, 1, "unclaimed spill remains for a later pass");
+
+    // Restore write permission; the next drain claims the spill and folds it in
+    // exactly once.
+    await chmod(pendingDir, 0o755);
+    await store.record({ sessionKey: "cur2", query: "q2", memoryIds: [] });
+    active = await readFile(impressionsPath, "utf8");
+    const spillOccurrences = active.split("evt-spill").length - 1;
+    assert.equal(spillOccurrences, 1, "drained impression folded in exactly once — no duplicate");
+    assert.ok(active.includes("cur2"), "later impression appended");
+    assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
+  } finally {
+    await chmod(pendingDir, 0o755).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore rotates against the full drained batch so a large spill drain cannot overfill the active file (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-drain-bound-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // Prior active content that is UNDER the rotate threshold on its own, so the
+    // pre-fix rotation check (which ignored the drained payload) would not rotate.
+    const seed = `${"SEED".padEnd(150, "s")}\n`;
+    await writeFile(impressionsPath, seed, "utf8");
+    // A durable pending spill big enough that seed + spill + row crosses the cap.
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    await writeFile(
+      path.join(pendingDir, "a.jsonl"),
+      `${JSON.stringify({ sessionKey: "batch-spill", pad: "p".repeat(60) })}\n`,
+      "utf8",
+    );
+
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 200, impressionsRotateKeep: 5 });
+    await store.load();
+    await store.record({ sessionKey: "cur", query: "q", memoryIds: [] });
+
+    // The drained payload was accounted for in the rotation decision, so the
+    // oversized prior content was archived to .1 instead of piling onto the
+    // active file.
+    assert.equal(await fileExists(`${impressionsPath}.1`), true, "prior active content rotated to .1");
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(!active.includes("SEED"), "pre-existing rows moved out of the active file");
+    assert.ok(active.includes("batch-spill"), "drained spill folded into the fresh active file");
+    assert.ok(active.includes("cur"), "current impression appended");
+    assert.ok((await readFile(`${impressionsPath}.1`, "utf8")).includes("SEED"), "prior content preserved in .1");
     assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
   } finally {
     await rm(dir, { recursive: true, force: true });

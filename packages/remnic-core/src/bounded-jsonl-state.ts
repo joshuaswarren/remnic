@@ -36,6 +36,15 @@ export interface BoundedJsonlStateConfig {
 type IntegerParser = (value: unknown, fallback: number, min: number, keyName: string) => number;
 
 /**
+ * Upper bound for `recallImpressionsRotateKeep`. Each retained slot costs one
+ * rename under the held cross-process impressions lock on every rotation, so an
+ * accidentally huge value (a `1000000` typo) would stall recall recording and
+ * block other writers. 1000 archives is already far past any real retention
+ * need; a larger request is REJECTED before it reaches the rotation loop (#2033).
+ */
+export const RECALL_IMPRESSIONS_ROTATE_KEEP_MAX = 1000;
+
+/**
  * Parse the bounded-state knobs. Numeric knobs accept CLI/overlay string forms
  * (Gotcha #28) via `coerceNumber`, then require an integer >= min. A
  * present-but-malformed or fractional value is REJECTED (throws) rather than
@@ -48,6 +57,18 @@ export function parseBoundedJsonlStateConfig(
   cfg: Record<string, unknown>,
   parseIntegerAtLeast: IntegerParser,
 ): BoundedJsonlStateConfig {
+  const recallImpressionsRotateKeep = parseIntegerAtLeast(
+    cfg.recallImpressionsRotateKeep,
+    5,
+    1,
+    "recallImpressionsRotateKeep",
+  );
+  if (recallImpressionsRotateKeep > RECALL_IMPRESSIONS_ROTATE_KEEP_MAX) {
+    throw new Error(
+      `recallImpressionsRotateKeep must be an integer between 1 and `
+      + `${RECALL_IMPRESSIONS_ROTATE_KEEP_MAX}; got ${JSON.stringify(cfg.recallImpressionsRotateKeep)}`,
+    );
+  }
   return {
     memoryLifecycleLedgerCompactBytes: parseIntegerAtLeast(
       cfg.memoryLifecycleLedgerCompactBytes,
@@ -67,11 +88,6 @@ export function parseBoundedJsonlStateConfig(
       0,
       "recallImpressionsRotateBytes",
     ),
-    recallImpressionsRotateKeep: parseIntegerAtLeast(
-      cfg.recallImpressionsRotateKeep,
-      5,
-      1,
-      "recallImpressionsRotateKeep",
-    ),
+    recallImpressionsRotateKeep,
   };
 }

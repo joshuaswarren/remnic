@@ -329,11 +329,15 @@ export async function rebuildMemoryLifecycleLedger(
       finalEvents = [...mergedById.values()];
       preservedAppendOnlyRows = finalEvents.length - events.length;
       // Bound the rewritten ledger so a preserving compaction can never leave it
-      // over the whole-file read/decrypt cap (#2033). Overflow (oldest) rows are
-      // dropped from the active ledger but survive in the verbatim timestamped
-      // backup written below, which requires the existing ledger to have had
-      // rows — guaranteed here since `existing.length > 0`.
-      if (options.maxLedgerBytes && options.maxLedgerBytes > 0 && existing.length > 0) {
+      // over the whole-file read/decrypt cap (#2033). This must run whenever a
+      // cap is set — NOT only when `existing.length > 0`: an oversized on-disk
+      // ledger whose every row fails validation reads as `existing === []`, yet
+      // `finalEvents` (the frontmatter reconstruction) can itself exceed the cap.
+      // Overflow (oldest) rows are dropped from the active ledger but survive
+      // both in the verbatim timestamped backup (the raw on-disk bytes) and, for
+      // frontmatter-derived rows, in the memory files they were reconstructed
+      // from — so a later full rebuild regenerates them.
+      if (options.maxLedgerBytes && options.maxLedgerBytes > 0) {
         const bounded = boundLifecycleEventsToByteCap(finalEvents, options.maxLedgerBytes);
         if (bounded.dropped > 0) {
           finalEvents = bounded.kept;

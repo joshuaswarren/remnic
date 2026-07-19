@@ -7023,17 +7023,20 @@ export function registerCli(
         .command("rebuild-memory-lifecycle-ledger")
         .description("Rebuild the generic memory lifecycle ledger from markdown memories (dry-run by default)")
         .option("--write", "Write rebuilt ledger (default: dry-run)")
+        .option("--namespace <ns>", "Namespace whose ledger to rebuild (default: config defaultNamespace)", "")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const namespace = typeof options.namespace === "string" && options.namespace.trim().length > 0
+            ? options.namespace.trim()
+            : undefined;
+          // Namespace-aware recovery (#2033): target the namespace's memoryDir and
+          // its secure StorageManager so an encrypted namespace ledger is rebuilt
+          // (and re-encrypted) in place; absent --namespace, the root store as before.
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
-            memoryDir: orchestrator.config.memoryDir,
+            memoryDir: await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true }),
             write: options.write === true,
-            // Live secure-store manager so encrypted-ledger recovery reads and
-            // rewrites through the active key instead of a keyless plaintext
-            // rewrite (#2033); refuses safely when the store is locked.
-            storage: orchestrator.storage,
+            storage: namespace ? await orchestrator.getStorageForNamespace(namespace) : orchestrator.storage,
           });
-
           console.log(`Dry run: ${result.dryRun ? "yes" : "no"}`);
           console.log(`Scanned memories: ${result.scannedMemories}`);
           console.log(`Rebuilt rows: ${result.rebuiltRows}`);

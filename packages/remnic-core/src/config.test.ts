@@ -2300,4 +2300,9 @@ test("parseConfig bounded-state knobs coerce valid strings, preserve 0, and reje
     assert.throws(() => parseConfig({ memoryLifecycleLedgerCompactMinIntervalMs: "1000" }), /greater than or equal to 60000/);
     assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "0" }), /greater than or equal to 1/);
     assert.throws(() => parseConfig({ memoryLifecycleLedgerCompactBytes: -5 }), /greater than or equal to 0/);
+    // An accidentally huge keep count (a typo like 1000000) is REJECTED before it
+    // can drive a rename storm under the held impressions lock (#2033).
+    assert.equal(parseConfig({ recallImpressionsRotateKeep: 1000 }).recallImpressionsRotateKeep, 1000);
+    assert.throws(() => parseConfig({ recallImpressionsRotateKeep: 1001 }), /between 1 and 1000/);
+    assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "1000000" }), /between 1 and 1000/);
   }));

@@ -236,41 +236,53 @@ async function spillPendingAppend(
 
 /**
  * Read every spill file in the pending directory (in deterministic name order)
- * and return the concatenated rows plus the file paths that produced them. MUST
- * be called while holding the ledger lock. Returns null when nothing is pending.
- * The caller deletes the returned files ONLY after the rows are durably in the
- * ledger; a read failure (locked key / corruption) propagates and leaves every
- * spill file intact for a later retry.
+ * and return one entry per file. MUST be called while holding the ledger lock.
+ * Reads at each file's ORIGINAL path so encrypted spills (path-bound AAD) still
+ * decrypt. A read failure (locked key / corruption) propagates BEFORE anything is
+ * claimed, leaving every spill file intact for a later retry.
  */
 async function collectPendingSpills(
   ledgerPath: string,
   io: LifecyclePendingIo,
-): Promise<{ content: string; files: string[] } | null> {
+): Promise<Array<{ file: string; content: string }>> {
   // listContainedSpillFiles rejects a symlinked pending dir and skips any
   // symlinked/escaping entry BEFORE we secure-read or later unlink it (#2033),
   // so a poisoned link cannot redirect a decrypt/delete outside the spill dir.
   const files = await listContainedSpillFiles(pendingLifecycleLedgerDir(ledgerPath));
-  if (files.length === 0) return null;
-  const parts: string[] = [];
+  const out: Array<{ file: string; content: string }> = [];
   for (const filePath of files) {
-    parts.push(withTrailingNewline(await io.readSecure(filePath)));
+    out.push({ file: filePath, content: withTrailingNewline(await io.readSecure(filePath)) });
   }
-  return { content: parts.join(""), files };
+  return out;
 }
 
-/** Delete drained spill files after their rows are durably in the ledger. */
-async function removePendingSpills(files: string[]): Promise<void> {
-  for (const filePath of files) {
-    await unlink(filePath).catch(() => undefined);
+/**
+ * Claim spills by unlinking each one BEFORE its rows are committed to the ledger
+ * (#2033). This is the ordering that prevents duplicates: if a delete fails, that
+ * file's rows are simply excluded from this append and retried on a later pass,
+ * so a swallowed unlink error can never let the next drain re-read and re-append
+ * an already-committed row. Returns the concatenated rows of the files that were
+ * successfully claimed.
+ */
+async function claimPendingSpills(spills: Array<{ file: string; content: string }>): Promise<string> {
+  const parts: string[] = [];
+  for (const spill of spills) {
+    try {
+      await unlink(spill.file);
+    } catch {
+      continue; // could not claim → do not append; a later drain retries it.
+    }
+    parts.push(spill.content);
   }
+  return parts.join("");
 }
 
 /**
  * Under the held ledger lock: fold any pending spills and the new payload into
  * the ledger in one write, so spilled events rejoin the canonical ledger as soon
- * as the lock is free. Spill files are deleted ONLY after the ledger write
- * succeeds; on write failure they are left in place and retried next pass —
- * never lost.
+ * as the lock is free. Spills are CLAIMED (unlinked) before the write so a later
+ * failed delete cannot duplicate them; if the write itself fails after claiming,
+ * the claimed rows are re-spilled so they are never lost (#2033).
  */
 async function drainThenAppend(
   ledgerPath: string,
@@ -278,10 +290,17 @@ async function drainThenAppend(
   payload: string,
   pending: LifecyclePendingIo | undefined,
 ): Promise<void> {
-  const drained = pending ? await collectPendingSpills(ledgerPath, pending) : null;
-  const combined = drained ? `${withTrailingNewline(drained.content)}${payload}` : payload;
-  await append(combined);
-  if (drained) await removePendingSpills(drained.files);
+  const spills = pending ? await collectPendingSpills(ledgerPath, pending) : [];
+  const claimed = spills.length > 0 ? await claimPendingSpills(spills) : "";
+  const combined = claimed.length > 0 ? `${claimed}${payload}` : payload;
+  try {
+    await append(combined);
+  } catch (err) {
+    if (claimed.length > 0 && pending) {
+      await spillPendingAppend(ledgerPath, pending, claimed).catch(() => undefined);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -340,9 +359,10 @@ export async function appendLifecycleEventsSerialized(
  * Drain the durable pending spills into the ledger under the ledger lock WITHOUT
  * appending a new event (#2033). Maintenance calls this so events that spilled
  * while a long compaction held the lock are eventually written even when no
- * further append arrives. A non-acquired lock is a no-op (retried next pass); a
- * ledger-write failure leaves the spill files intact for retry. Returns true
- * when rows were drained.
+ * further append arrives. A non-acquired lock is a no-op (retried next pass).
+ * Spills are claimed (unlinked) before the write so a later failed delete cannot
+ * duplicate them; a ledger-write failure re-spills the claimed rows so they are
+ * never lost and are retried next pass. Returns true when rows were drained.
  */
 export async function drainPendingLifecycleAppendsSerialized(
   ledgerPath: string,
@@ -360,10 +380,15 @@ export async function drainPendingLifecycleAppendsSerialized(
     },
     async (acquired) => {
       if (!acquired) return; // lock busy; the next maintenance pass retries.
-      const collected = await collectPendingSpills(ledgerPath, pending);
-      if (!collected) return;
-      await append(withTrailingNewline(collected.content));
-      await removePendingSpills(collected.files);
+      const spills = await collectPendingSpills(ledgerPath, pending);
+      const claimed = spills.length > 0 ? await claimPendingSpills(spills) : "";
+      if (claimed.length === 0) return;
+      try {
+        await append(withTrailingNewline(claimed));
+      } catch (err) {
+        await spillPendingAppend(ledgerPath, pending, claimed).catch(() => undefined);
+        throw err;
+      }
       drained = true;
     },
   );
