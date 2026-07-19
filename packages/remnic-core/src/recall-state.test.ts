@@ -492,3 +492,57 @@ test("LastRecallStore spills an impression to the durable pending queue on rotat
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("LastRecallStore takes the shared rotation lock for active-file appends even when local rotation is disabled, spilling on a peer lock/rename race (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-off-lock-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // This writer disables its OWN rotation (bytes=0), but a peer writer with
+    // rotation enabled shares the same on-disk lock and may rename the active
+    // inode to `.1` at any moment. An unlocked append here could land in that
+    // offline-sync-excluded archive and be silently dropped (#2033).
+    const seeded = "seed-row\n";
+    await writeFile(impressionsPath, seeded, "utf8");
+    // A peer holds the cross-process rotation lock (fresh mtime, not stale
+    // within the budget), standing in for a peer mid-rotation.
+    const lockPath = `${impressionsPath}.lock`;
+    await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
+
+    const store = new LastRecallStore(dir, {
+      impressionsRotateBytes: 0, // local rotation disabled
+      impressionsRotateKeep: 5,
+      impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
+    });
+    await store.load();
+    await store.record({ sessionKey: "off-spilled", query: "q", memoryIds: [] });
+
+    // Even with local rotation disabled, the append took the shared lock, could
+    // not acquire it, and spilled rather than writing the active file the peer
+    // may rename to `.1`.
+    assert.equal(
+      await readFile(impressionsPath, "utf8"),
+      seeded,
+      "active file untouched while a peer holds the rotation lock, even with local rotation disabled",
+    );
+    const pendingDir = `${impressionsPath}.pending.d`;
+    const spillNames = await readdir(pendingDir);
+    assert.equal(spillNames.length, 1, "impression spilled to the durable pending queue");
+    assert.ok(
+      (await readFile(path.join(pendingDir, spillNames[0]!), "utf8")).includes('"sessionKey":"off-spilled"'),
+      "spilled impression durably queued",
+    );
+
+    // Release the lock; the next append acquires it and folds the spill back into
+    // the active file. Local rotation stays disabled, so no archive is created.
+    await rm(lockPath, { force: true });
+    await store.record({ sessionKey: "off-drained", query: "q2", memoryIds: [] });
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(active.includes('"sessionKey":"off-spilled"'), "spilled impression folded back in");
+    assert.ok(active.includes('"sessionKey":"off-drained"'), "current impression appended");
+    assert.equal(await fileExists(`${impressionsPath}.1`), false, "local rotation stays disabled (no archive)");
+    assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

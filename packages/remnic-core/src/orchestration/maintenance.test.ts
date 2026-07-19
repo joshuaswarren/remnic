@@ -1197,6 +1197,84 @@ test("maintenance drains a pending lifecycle-append spill even when compaction i
   }
 });
 
+test("maintenance drains a namespace pending spill created after the throttle armed, before returning on the min-interval throttle (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-drain-throttled-"));
+  try {
+    // Root: oversized plaintext ledger with a reconstructable memory so the
+    // FIRST pass compacts and arms the min-interval throttle.
+    const junk = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    const junkBlob = junk.repeat(Math.ceil(4096 / junk.length));
+    await mkdir(path.join(root, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(root, "facts", "2026-03-08", "fact-root.md"),
+      `---\nid: fact-root\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const rootLedger = path.join(root, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(rootLedger), { recursive: true });
+    await writeFile(rootLedger, junkBlob, "utf-8");
+
+    // Namespace: a keyed (unlocked) secure store, no oversized ledger — so the
+    // first pass SKIPS it (skip never blocks arming the throttle).
+    const key = Buffer.alloc(32, 7);
+    const token = namespaceIdentityToken("project-alpha");
+    const nsDir = path.join(root, "namespaces", token);
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const nsStorage = new StorageManager(nsDir);
+    nsStorage.setSecureStoreKey(key);
+    const catalog = {
+      enabled: true,
+      listNamespaces: async (): Promise<NamespaceRecord[]> =>
+        [{ namespace: "project-alpha", storageDir: nsDir } as unknown as NamespaceRecord],
+    } as unknown as NamespaceCatalog;
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root),
+      async () => nsStorage,
+      catalog,
+    );
+    try {
+      // Pass 1 compacts the root and arms the throttle for the whole interval.
+      const rootBefore = (await stat(rootLedger)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.ok((await stat(rootLedger)).size < rootBefore, "root ledger compacted on the first pass");
+
+      // AFTER the throttle armed, a namespace impression spills (exactly as a
+      // lock-timed-out append leaves it) — encrypted for the namespace store.
+      const spillDir = pendingLifecycleLedgerDir(nsLedger);
+      await mkdir(spillDir, { recursive: true });
+      const spillPath = path.join(spillDir, "spill.jsonl");
+      const row =
+        `{"eventId":"evt-ns-spilled","memoryId":"m","eventType":"created",`
+        + `"timestamp":"2026-03-08T00:00:00.000Z","actor":"t","ruleVersion":"1"}\n`;
+      await writeFile(spillPath, encryptFileBody(row, key, filePathAad(spillPath, nsDir)));
+
+      // Pass 2 is inside the min-interval window: it WILL return on the throttle,
+      // but it must first drain the namespace pending spill. Before the #2033
+      // fix the throttle return preceded namespace draining and the spill was
+      // stranded for the whole interval.
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      const ids = (await nsStorage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+      assert.ok(
+        ids.includes("evt-ns-spilled"),
+        "namespace spill drained before the throttle return, not stranded until the interval elapses",
+      );
+      await assert.rejects(() => stat(spillPath), /ENOENT/, "namespace spill file removed after drain");
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("auto-compaction bounds per-namespace ledgers, not just the root state path", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-"));
   try {

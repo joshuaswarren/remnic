@@ -621,11 +621,18 @@ export class MaintenanceScheduler {
    * through the existing `rebuildMemoryLifecycleLedger` so the
    * archive-then-atomic-write discipline is reused verbatim. `0` disables.
    *
-   * Before compacting, drain each target's durable pending-append spill so a
-   * lifecycle event that spilled while a prior long rewrite held the lock is
-   * folded back into the ledger and cannot be silently lost (issue #2033). The
-   * root drain runs unconditionally (even when compaction is disabled) so a
-   * spill from a manual rebuild still lands eventually.
+   * Before compacting, drain EVERY target's durable pending-append spill (the
+   * root ledger AND each namespace ledger) so a lifecycle event that spilled
+   * while a prior long rewrite held the lock is folded back into its ledger and
+   * cannot be silently lost (issue #2033). Draining is independent of both the
+   * compaction threshold and the min-interval throttle: targets are enumerated
+   * through the same safe (symlink/containment-checked) resolver and every
+   * eligible queue is drained BEFORE any throttle return, so a namespace spill
+   * created after the previous pass never waits out the whole interval.
+   * Encrypted-store safety is preserved — a keyed target drains through its
+   * secure StorageManager, a filesystem-fallback target only through a plaintext
+   * context that refuses encrypted ledgers/spills. Work stays bounded: one
+   * target enumeration plus a bounded per-queue drain.
    *
    * The min-interval throttle timestamp advances ONLY after real, fully
    * successful compaction work: a failed OR deferred target leaves the throttle
@@ -636,11 +643,16 @@ export class MaintenanceScheduler {
    * retry of that still-oversized ledger for the whole interval (#2033).
    */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
-    // Always fold any durable pending spill back into the root ledger first
-    // (#2033), independent of the compaction threshold: events spill there when
-    // an append cannot get the lock during a long rewrite and must eventually
-    // land even if size-based compaction is disabled.
-    await this.drainPendingLifecycleAppends(this.deps.getStorage?.());
+    // Enumerate every lifecycle target (root + namespaces) through the safe,
+    // containment-checked resolver, and fold each one's durable pending spill
+    // back into its ledger BEFORE any threshold or throttle return (#2033). A
+    // spill created after the previous pass must land promptly even while
+    // compaction is throttled or disabled; draining is bounded per queue and
+    // never bypasses encrypted-store safety.
+    const targets = await this.resolveLifecycleCompactionTargets();
+    for (const target of targets) {
+      await this.drainPendingForTarget(target);
+    }
 
     const threshold = this.deps.config.memoryLifecycleLedgerCompactBytes;
     if (!(threshold > 0)) return; // 0 / negative / non-numeric disables compaction.
@@ -657,17 +669,7 @@ export class MaintenanceScheduler {
       let compacted = 0;
       let failed = 0;
       let deferred = 0;
-      for (const target of await this.resolveLifecycleCompactionTargets()) {
-        // Drain this target's pending spill before compacting so rows that
-        // spilled during a prior rewrite are read into the compacted ledger.
-        // A catalog-backed target drains through its secure StorageManager; a
-        // filesystem-fallback target (no storage) drains through a path-scoped
-        // plaintext context so its pending events are not stranded (#2033).
-        if (target.storage) {
-          await this.drainPendingLifecycleAppends(target.storage);
-        } else {
-          await this.drainPendingLifecycleAppendsForPath(target.memoryDir);
-        }
+      for (const target of targets) {
         const outcome = await this.compactLifecycleLedgerTarget(target, threshold);
         if (outcome === "compacted") compacted += 1;
         else if (outcome === "failed") failed += 1;
@@ -683,6 +685,23 @@ export class MaintenanceScheduler {
       }
     } finally {
       this.lifecycleCompactionInFlight = false;
+    }
+  }
+
+  /**
+   * Drain one compaction target's durable pending spill. A catalog-backed
+   * target folds through its secure StorageManager; a filesystem-fallback
+   * target (no storage) folds through a path-scoped plaintext context that
+   * refuses encrypted ledgers/spills so a keyless drain never downgrades an
+   * encrypted ledger (issue #2033).
+   */
+  private async drainPendingForTarget(
+    target: { memoryDir: string; storage?: StorageManager },
+  ): Promise<void> {
+    if (target.storage) {
+      await this.drainPendingLifecycleAppends(target.storage);
+    } else {
+      await this.drainPendingLifecycleAppendsForPath(target.memoryDir);
     }
   }
 

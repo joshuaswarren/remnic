@@ -443,12 +443,13 @@ export class LastRecallStore {
 
   private async appendImpressionSerialized(line: string): Promise<void> {
     await mkdir(path.dirname(this.impressionsPath), { recursive: true });
-    // Rotation disabled (`0`): the active file is never renamed, so there is no
-    // append-vs-rename race — append lock-free and keep the hot path cheap.
-    if (this.impressionsRotateBytes <= 0) {
-      await appendFile(this.impressionsPath, line, "utf-8");
-      return;
-    }
+    // Every active-file write goes under the shared cross-process rotation lock,
+    // even when THIS writer's local rotation is disabled (`impressionsRotateBytes
+    // <= 0`). A peer process with rotation enabled shares this lock and may
+    // rename the active inode to `.1` at any moment, so an unlocked append could
+    // land in an offline-sync-excluded archive and be silently dropped (#2033).
+    // Only the local rotate DECISION is disabled — rotateImpressionsIfNeeded()
+    // is a no-op when this writer's limit is 0 — the lock itself is not.
     const lockPath = `${this.impressionsPath}.lock`;
     await withHeldFileLock(
       lockPath,
