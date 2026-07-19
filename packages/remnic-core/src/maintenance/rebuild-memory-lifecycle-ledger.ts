@@ -123,12 +123,16 @@ function lifecycleRowBytes(event: MemoryLifecycleEvent): number {
 
 /**
  * Keep the NEWEST canonically-ordered events whose serialized payload fits
- * strictly under `cap` bytes, dropping the oldest overflow (issue #2033). Recency
- * is by `timestamp` (newest first), tie-broken by the canonical comparator, so a
- * large append-only history is trimmed to its most recent rows rather than to a
- * single memoryId group (the ledger's on-disk order is by memoryId then time).
- * The kept subset is returned in the input's canonical order; the caller relies
- * on the verbatim backup to retain the dropped rows.
+ * strictly under `cap` bytes (issue #2033). Recency is by `timestamp` (newest
+ * first), tie-broken by the canonical comparator, so a large append-only
+ * history is trimmed to its most recent rows rather than to a single memoryId
+ * group (the ledger's on-disk order is by memoryId then time).
+ *
+ * A row too large to fit the remaining budget is SKIPPED, and scanning
+ * continues to older rows that still fit — one oversized (or future-dated,
+ * hence recency-first) row cannot truncate the entire older history. The kept
+ * subset is returned in the input's canonical order; the caller relies on the
+ * verbatim backup to retain the dropped rows.
  */
 export function boundLifecycleEventsToByteCap(
   events: MemoryLifecycleEvent[],
@@ -151,7 +155,7 @@ export function boundLifecycleEventsToByteCap(
   let running = 0;
   for (const event of byRecency) {
     const bytes = sizes.get(event)!;
-    if (running + bytes > cap) break; // stop at the first newest row that would overflow
+    if (running + bytes > cap) continue; // skip this row, keep scanning older rows that still fit
     running += bytes;
     keep.add(event);
   }

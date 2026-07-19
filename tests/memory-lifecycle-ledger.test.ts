@@ -7,6 +7,7 @@ import { StorageManager } from "../src/storage.ts";
 import type { MemoryLifecycleEvent } from "../src/types.ts";
 import {
   backupExistingLedger,
+  boundLifecycleEventsToByteCap,
   rebuildMemoryLifecycleLedger,
 } from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
 import {
@@ -999,4 +1000,52 @@ test("rebuild bounds finalEvents under maxLedgerBytes even when the on-disk ledg
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("byte-cap skips one oversized future row and keeps older fit rows under the cap (#2033)", () => {
+  // Five small, older rows that each comfortably fit, in canonical (input)
+  // order, plus ONE oversized row dated in the far future so recency ordering
+  // places it FIRST. The old code broke at that first newest overflow row and
+  // dropped everything older; the fix skips it and keeps scanning.
+  const fitRows: MemoryLifecycleEvent[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    fitRows.push({
+      eventId: `fit-${String(i).padStart(2, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, i, 0)).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    });
+  }
+  const oversizedFuture: MemoryLifecycleEvent = {
+    eventId: "oversized-future",
+    memoryId: "mem-z",
+    eventType: "explicit_capture_accepted",
+    // Far-future timestamp → sorts newest → visited first by the recency scan.
+    timestamp: new Date(Date.UTC(2099, 0, 1, 0, 0, 0, 0)).toISOString(),
+    actor: `explicit-capture-${"x".repeat(4096)}`,
+    ruleVersion: "memory-lifecycle-ledger.v1",
+  };
+  // Input (canonical) order: fit rows first, oversized future row appended.
+  const events = [...fitRows, oversizedFuture];
+  const fitBytes = fitRows
+    .map((e) => Buffer.byteLength(`${JSON.stringify(e)}\n`, "utf8"))
+    .reduce((a, b) => a + b, 0);
+  // Cap admits every fit row (plus slack) but nowhere near the oversized row,
+  // and is below the grand total so bounding actually engages.
+  const cap = fitBytes + 16;
+
+  const { kept, dropped } = boundLifecycleEventsToByteCap(events, cap);
+
+  const keptIds = kept.map((e) => e.eventId);
+  assert.deepEqual(
+    keptIds,
+    fitRows.map((e) => e.eventId),
+    "every fit row survives, in canonical input order",
+  );
+  assert.ok(!keptIds.includes("oversized-future"), "the oversized future row is dropped");
+  assert.equal(dropped, 1, "exactly the oversized row is dropped");
+  const keptBytes = Buffer.byteLength(`${kept.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+  assert.ok(keptBytes <= cap, "kept output stays bounded under the cap");
 });
