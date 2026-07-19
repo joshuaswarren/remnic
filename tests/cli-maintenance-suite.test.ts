@@ -15,7 +15,7 @@ import {
   runVerifyMemoryProjectionCliCommand,
 } from "../src/cli.js";
 import { StorageManager } from "../src/storage.js";
-import { isEncryptedFile } from "../src/secure-store/index.js";
+import { isEncryptedFile, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "../src/secure-store/index.js";
 import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
 import type { PluginConfig } from "../src/types.js";
 
@@ -294,6 +294,69 @@ test("rebuild-memory-lifecycle-ledger recovery targets the router-resolved (toke
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger CLI reserves the envelope when a PLAINTEXT ledger will be rewritten encrypted (write-mode budget, #2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-writemode-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const total = 200;
+    const events = Array.from({ length: total }, (_unused, i) => ({
+      eventId: `cap-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const plaintext = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    // The on-disk ledger is PLAINTEXT (header not encrypted), so the pre-fix
+    // budget keyed off `probeEncryptedRegularFileHeader` alone and SKIPPED the
+    // envelope reserve. But the rewrite below encrypts (encrypt-on-write +
+    // unlocked key), so the on-disk file gains the secure-store envelope and the
+    // reserve is mandatory — exactly the write-mode parity auto-compaction has.
+    await writeFile(ledgerPath, plaintext, "utf-8");
+    assert.ok(!isEncryptedFile(await readFile(ledgerPath)), "precondition: existing ledger is plaintext");
+
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap so the UNRESERVED budget (cap − 1) keeps 20 rows whose encrypted size
+    // (20 rows + envelope) reaches the cap, while the reserving budget
+    // (cap − envelope − 1) keeps 19 rows that land strictly below it.
+    const cap = rowBytes * 20 + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES;
+    assert.ok(
+      20 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES >= cap,
+      "sanity: an unreserved 20-row plaintext budget encrypts to at/over the cap",
+    );
+    assert.ok(
+      19 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES < cap,
+      "sanity: a reserved 19-row budget encrypts to strictly below the cap",
+    );
+
+    const key = Buffer.alloc(32, 5);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ the rewrite encrypts.
+    assert.ok(storage.willEncryptStateWrites(), "precondition: writes will be encrypted at rest");
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage,
+      maxLedgerBytesCap: cap,
+    });
+    assert.equal(writeResult.dryRun, false);
+
+    const onDisk = (await stat(ledgerPath)).size;
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "rewritten ledger encrypted at rest");
+    assert.ok(onDisk < cap, `encrypted on-disk ledger (${onDisk}B) must be strictly below the cap (${cap}B)`);
+    const keptIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event survives");
+    assert.ok(!keptIds.includes("cap-000"), "oldest event archived out of the active ledger");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
 

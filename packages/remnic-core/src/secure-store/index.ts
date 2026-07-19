@@ -121,6 +121,7 @@ export {
   FILE_FORMAT_VERSION,
   MAGIC_BYTES,
   MAGIC_HEADER_SIZE,
+  SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
   SecureStoreDecryptError,
   SecureStoreLockedError,
   decryptMemoryDirToPlaintext,

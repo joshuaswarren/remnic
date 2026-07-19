@@ -20,6 +20,13 @@ export interface RebuildMemoryLifecycleLedgerCliCommandOptions {
    * refuses when the on-disk ledger is encrypted and no unlocked key is present.
    */
   storage?: StorageManager;
+  /**
+   * Read/decrypt cap the rewritten ledger must land strictly below. Defaults to
+   * {@link STATE_FILE_MAX_DECRYPT_BYTES} (the reader's whole-file refusal cap).
+   * Exposed as an override so recovery tooling and tests can bound the rewrite
+   * deterministically, mirroring the scheduler's `lifecycleLedgerMaxBytes` seam.
+   */
+  maxLedgerBytesCap?: number;
 }
 
 export async function runRebuildMemoryLifecycleLedgerCliCommand(
@@ -45,11 +52,17 @@ export async function runRebuildMemoryLifecycleLedgerCliCommand(
   // imported, promoted) instead of silently dropping it, and (2) bound the
   // rewritten ledger under the read/decrypt cap so the repaired ledger is
   // readable. Bound the PLAINTEXT payload, reserving the secure-store envelope
-  // (+1 byte) when the ledger is encrypted so the on-disk file lands STRICTLY
-  // under the cap.
-  const maxLedgerBytes = encrypted
-    ? STATE_FILE_MAX_DECRYPT_BYTES - SECURE_STORE_ENVELOPE_OVERHEAD_BYTES - 1
-    : STATE_FILE_MAX_DECRYPT_BYTES - 1;
+  // (+1 byte) whenever the REPLACEMENT will be encrypted — NOT only when the
+  // current header is encrypted. A plaintext ledger rewritten through an unlocked
+  // encrypt-on-write store becomes encrypted, so it needs the reserve even though
+  // its current header is plaintext; base the decision on
+  // `willEncryptStateWrites()` exactly as auto-compaction does (#2033 write-mode
+  // finding), so the on-disk file lands STRICTLY under the cap.
+  const cap = options.maxLedgerBytesCap ?? STATE_FILE_MAX_DECRYPT_BYTES;
+  const replacementEncrypted = encrypted || (storage?.willEncryptStateWrites() ?? false);
+  const maxLedgerBytes = replacementEncrypted
+    ? cap - SECURE_STORE_ENVELOPE_OVERHEAD_BYTES - 1
+    : cap - 1;
   return rebuildMemoryLifecycleLedger({
     memoryDir: options.memoryDir,
     dryRun: options.write !== true,
