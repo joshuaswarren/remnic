@@ -223,6 +223,37 @@ test("readAllMemoryLifecycleEvents keeps the authenticated encrypted-file fallba
   }
 });
 
+test("readAllMemoryLifecycleEventsForCompaction reads an encrypted ledger via the uncapped buffer path (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-compaction-read-"));
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  const a = lifecycleEvent("evt-a", "memory-a", "2026-01-01T00:00:00.000Z");
+  const b = lifecycleEvent("evt-b", "memory-b", "2026-01-02T00:00:00.000Z");
+  const key = Buffer.alloc(32, 3);
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  await writeFile(
+    ledgerPath,
+    encryptFileBody(
+      `${JSON.stringify(a)}\n${JSON.stringify(b)}\n`,
+      key,
+      filePathAad(ledgerPath, memoryDir),
+    ),
+  );
+  try {
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreKey(key);
+    // The compaction read must decrypt the same rows the general capped read
+    // returns — but through the buffer path, so it also works past the
+    // whole-file string decrypt cap that would otherwise block compaction.
+    assert.deepEqual(await storage.readAllMemoryLifecycleEventsForCompaction(), [a, b]);
+    assert.deepEqual(
+      await storage.readAllMemoryLifecycleEventsForCompaction(),
+      await storage.readAllMemoryLifecycleEvents(),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("readMemoryActionEventRows streams the action ledger and keeps source line numbers", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-action-stream-"));
   const ledgerPath = path.join(memoryDir, "state", "memory-actions.jsonl");

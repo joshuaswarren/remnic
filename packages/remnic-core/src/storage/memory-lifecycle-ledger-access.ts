@@ -4,7 +4,10 @@ import type { MemoryLifecycleEvent } from "../types.js";
 import {
   compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
+  memoryLifecycleLedgerLockPath,
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
   readMaybeEncryptedLines,
   readMemoryLifecycleEventsFromLines,
@@ -23,41 +26,104 @@ export type LedgerSecureReader = (filePath: string) => Promise<string>;
  * required secure store is locked.
  */
 
+/** Reads a lifecycle-ledger file as a raw (possibly still-encrypted-on-disk)
+ *  buffer, decrypting through the live secure key when present. */
+export type LedgerSecureBufferReader = (filePath: string) => Promise<Buffer>;
+
 /**
- * Every valid ledger row in canonical order. Permissive validation (any
- * `eventType` string is admitted) — matches the historical
+ * Parse + canonically sort lifecycle rows from a line source. Permissive
+ * validation (any `eventType` string is admitted) — matches the historical
  * `readAllMemoryLifecycleEvents` contract that projection rebuild depends on.
+ * Fail-open on malformed rows.
+ */
+async function collectLifecycleEvents(
+  lines: AsyncIterable<string>,
+): Promise<MemoryLifecycleEvent[]> {
+  const out: MemoryLifecycleEvent[] = [];
+  for await (const line of lines) {
+    const row = line.trim();
+    if (!row) continue;
+    try {
+      const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
+      if (
+        typeof parsed.eventId === "string" &&
+        typeof parsed.memoryId === "string" &&
+        typeof parsed.eventType === "string" &&
+        typeof parsed.timestamp === "string" &&
+        typeof parsed.actor === "string" &&
+        typeof parsed.ruleVersion === "string"
+      ) {
+        out.push(parsed as MemoryLifecycleEvent);
+      }
+    } catch {
+      // Ignore malformed rows (fail-open).
+    }
+  }
+  return sortMemoryLifecycleEvents(out);
+}
+
+/**
+ * Yield ledger lines from a whole-file buffer WITHOUT ever materializing the
+ * entire decrypted body as one V8 string. A decrypted Buffer can hold ~4GB
+ * where a string tops out near 512MB, so this is the read compaction uses to
+ * shrink an oversize encrypted ledger — the exact file the string-capped
+ * `readMaybeEncryptedLines` path refuses (issue #1910, #2033 Cursor High).
+ * `Buffer.indexOf` scans for the 0x0A newline natively; each yielded line is
+ * small, so no single `toString` approaches the string cap.
+ */
+async function* linesFromBuffer(
+  readBuffer: () => Promise<Buffer>,
+): AsyncGenerator<string> {
+  const buf = await readBuffer();
+  let start = 0;
+  let nl = buf.indexOf(0x0a, start);
+  while (nl !== -1) {
+    yield buf.toString("utf8", start, nl);
+    start = nl + 1;
+    nl = buf.indexOf(0x0a, start);
+  }
+  if (start < buf.length) yield buf.toString("utf8", start, buf.length);
+}
+
+/**
+ * Every valid ledger row in canonical order, read through the string-capped
+ * secure line source (refuses an encrypted body over the whole-file decrypt
+ * limit). General readers use this; compaction uses the uncapped buffer variant.
  */
 export async function readAllLifecycleEventsFromLedger(
   ledgerPath: string,
   readSecureFile: LedgerSecureReader,
 ): Promise<MemoryLifecycleEvent[]> {
   try {
-    const out: MemoryLifecycleEvent[] = [];
-    for await (const line of readMaybeEncryptedLines(
-      ledgerPath,
-      () => readSecureFile(ledgerPath),
-      STATE_FILE_MAX_DECRYPT_BYTES,
-    )) {
-      const row = line.trim();
-      if (!row) continue;
-      try {
-        const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
-        if (
-          typeof parsed.eventId === "string" &&
-          typeof parsed.memoryId === "string" &&
-          typeof parsed.eventType === "string" &&
-          typeof parsed.timestamp === "string" &&
-          typeof parsed.actor === "string" &&
-          typeof parsed.ruleVersion === "string"
-        ) {
-          out.push(parsed as MemoryLifecycleEvent);
-        }
-      } catch {
-        // Ignore malformed rows (fail-open).
-      }
-    }
-    return sortMemoryLifecycleEvents(out);
+    return await collectLifecycleEvents(
+      readMaybeEncryptedLines(
+        ledgerPath,
+        () => readSecureFile(ledgerPath),
+        STATE_FILE_MAX_DECRYPT_BYTES,
+      ),
+    );
+  } catch (err) {
+    if (err instanceof SecureStoreLockedError) throw err;
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+    return [];
+  }
+}
+
+/**
+ * Compaction-only variant of {@link readAllLifecycleEventsFromLedger} that reads
+ * the ledger through a decrypted BUFFER instead of the string-capped whole-file
+ * path. This is what lets background compaction shrink an oversize encrypted
+ * ledger: the string cap (`STATE_FILE_MAX_DECRYPT_BYTES`) that points general
+ * readers at the compaction remedy would otherwise also block the remedy itself
+ * (issue #1910, #2033 Cursor High). Same permissive validation, canonical sort,
+ * fail-open-on-malformed, and ENOENT→[] / locked-store-rethrow contract.
+ */
+export async function readAllLifecycleEventsFromLedgerBuffer(
+  ledgerPath: string,
+  readSecureBuffer: LedgerSecureBufferReader,
+): Promise<MemoryLifecycleEvent[]> {
+  try {
+    return await collectLifecycleEvents(linesFromBuffer(() => readSecureBuffer(ledgerPath)));
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
@@ -101,4 +167,34 @@ export async function readBoundedLifecycleEventsFromLedger(
     if (!isErrnoCode(err, "ENOENT")) throw err;
     return [];
   }
+}
+
+/**
+ * Append `payload` to the lifecycle ledger under the cross-process ledger lock
+ * so it is serialized against compaction's whole-file rewrite (issue #1910):
+ * both hold this lock, so an append during a rewrite waits and lands on the
+ * compacted ledger instead of being clobbered by the atomic rename. If the lock
+ * cannot be acquired within the budget, withHeldFileLock invokes the callback
+ * with acquired=false; we REFUSE rather than append unlocked, or that rewrite
+ * could still clobber the new row — the exact race this lock prevents (#2033).
+ */
+export async function appendLifecycleEventsSerialized(
+  ledgerPath: string,
+  append: (payload: string) => Promise<void>,
+  payload: string,
+): Promise<void> {
+  await withHeldFileLock(
+    memoryLifecycleLedgerLockPath(ledgerPath),
+    { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
+    async (acquired) => {
+      if (!acquired) {
+        throw new Error(
+          "memory-lifecycle-ledger append aborted: could not acquire the ledger lock within "
+          + "the budget; refusing to append unlocked so a concurrent compaction rewrite cannot "
+          + "clobber the new event (issue #1910).",
+        );
+      }
+      await append(payload);
+    },
+  );
 }

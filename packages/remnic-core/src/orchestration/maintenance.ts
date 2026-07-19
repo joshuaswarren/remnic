@@ -22,7 +22,8 @@
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { existsSync, type Dirent } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -52,6 +53,8 @@ import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-life
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
 
 /** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
@@ -61,6 +64,31 @@ function qmdMaintenanceSkipReasonForError(
   return /^QMD (?:update|embed) skipped by .*min-interval gate$/.test(message)
     ? "throttled"
     : null;
+}
+
+/**
+ * True when the lifecycle ledger at `ledgerPath` is encrypted at rest (its
+ * first bytes are the secure-store magic header). Compaction uses this to
+ * refuse rewriting an encrypted ledger through a StorageManager that cannot
+ * re-encrypt it, which would downgrade it to plaintext (issue #2033). ENOENT
+ * resolves to false — an absent ledger is handled as "nothing to compact"
+ * downstream.
+ */
+async function ledgerEncryptedOnDisk(ledgerPath: string): Promise<boolean> {
+  let handle: FileHandle;
+  try {
+    handle = await open(ledgerPath, "r");
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return false;
+    throw err;
+  }
+  try {
+    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    return isEncryptedFile(header.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Dependencies injected by the orchestrator. All stable references. */
@@ -669,6 +697,26 @@ export class MaintenanceScheduler {
     // so a namespace already added via the catalog is not compacted twice.
     if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
       const namespacesBase = path.join(this.deps.config.memoryDir, "namespaces");
+      // Symlink/traversal containment (issue #2033 codex P2): a symlinked
+      // <memoryDir>/namespaces (or a symlinked child) must not redirect the scan
+      // — and later backup/ledger rewrites — outside memoryDir. Resolve the
+      // memory root and the scan base through realpath, reject a symlinked or
+      // escaping base, and skip any symlinked/escaping child, mirroring the
+      // memory-store walkers' hardening (utils/path-containment).
+      let memoryDirReal: string;
+      try {
+        memoryDirReal = await realpath(this.deps.config.memoryDir);
+        const baseStat = await lstat(namespacesBase);
+        if (baseStat.isSymbolicLink() || !baseStat.isDirectory()) {
+          throw new Error("namespaces base is a symlink or not a directory");
+        }
+        assertPathInsideRoot(memoryDirReal, await realpath(namespacesBase), namespacesBase);
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) {
+          log.debug(`lifecycle compaction: namespaces base rejected (non-fatal): ${err}`);
+        }
+        return targets;
+      }
       let entries: Dirent[] = [];
       try {
         entries = await readdir(namespacesBase, { withFileTypes: true });
@@ -678,8 +726,20 @@ export class MaintenanceScheduler {
         }
       }
       for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!entry.isDirectory()) continue;
-        addTarget(path.join(namespacesBase, entry.name));
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const childPath = path.join(namespacesBase, entry.name);
+        try {
+          assertPathInsideRoot(memoryDirReal, await realpath(childPath), childPath);
+        } catch (err) {
+          log.debug(`lifecycle compaction: skipping out-of-root namespace dir ${childPath}: ${err}`);
+          continue;
+        }
+        // The at-rest format is preserved at the rebuild chokepoint: the
+        // compaction guard refuses to rewrite an encrypted-at-rest ledger through
+        // a keyless plaintext StorageManager (#2033 Cursor Medium), so this
+        // fallback (which has no secure storage for a catalog-disabled namespace)
+        // never downgrades an encrypted namespace ledger to plaintext.
+        addTarget(childPath);
       }
     }
     return targets;
@@ -706,6 +766,28 @@ export class MaintenanceScheduler {
       return "failed";
     }
     if (size < threshold) return "skipped";
+    // No plaintext rewrite of an encrypted-at-rest ledger (#2033): rebuilding an
+    // encrypted ledger without an unlocked secure StorageManager would either
+    // fail the preserve-read (locked store) or downgrade the ledger to plaintext.
+    // Refuse instead and point the operator at the manual remedy. Leaving it
+    // "skipped" (not "failed") keeps the throttle un-armed so the next pass
+    // retries once a key is available.
+    try {
+      if (
+        (await ledgerEncryptedOnDisk(ledgerPath))
+        && !(target.storage?.isSecureStoreUnlocked() ?? false)
+      ) {
+        log.warn(
+          `lifecycle ledger at ${ledgerPath} is encrypted at rest but no unlocked secure `
+          + `storage is available; skipping auto-compaction to avoid a plaintext rewrite. `
+          + `Run 'remnic rebuild-memory-lifecycle-ledger --write' after unlocking.`,
+        );
+        return "skipped";
+      }
+    } catch (err) {
+      log.warn(`lifecycle ledger encryption probe failed (non-fatal) for ${ledgerPath}: ${err}`);
+      return "failed";
+    }
     try {
       const result = await rebuildMemoryLifecycleLedger({
         memoryDir: target.memoryDir,

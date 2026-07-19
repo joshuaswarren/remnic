@@ -21,7 +21,9 @@ import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-gua
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
+  appendLifecycleEventsSerialized,
   readAllLifecycleEventsFromLedger,
+  readAllLifecycleEventsFromLedgerBuffer,
   readBoundedLifecycleEventsFromLedger,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
@@ -156,10 +158,7 @@ import {
   inferMemoryStatus,
   isArchivedMemoryPath,
   toMemoryPathRel,
-  memoryLifecycleLedgerLockPath,
-  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "./memory-lifecycle-ledger-utils.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
@@ -5539,17 +5538,13 @@ export class StorageManager {
       })
       .join("");
 
-    // Serialize the append against compaction (issue #1910, codex): the
-    // compaction rewrite reads the ledger and replaces it via an atomic rename,
-    // so an append that landed after its read but before its rename would be
-    // clobbered. Both hold this cross-process lock, so appends made during
-    // compaction wait and land on the compacted ledger instead of being lost.
-    // O_APPEND stays atomic across processes; the lock only orders append vs
-    // whole-file rewrite, which is rare (size-gated + throttled).
-    await withHeldFileLock(
-      memoryLifecycleLedgerLockPath(this.memoryLifecycleLedgerPath),
-      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
-      () => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, payload),
+    // Serialize against compaction's whole-file rewrite through the shared
+    // ledger lock; refuses to append unlocked when the lock cannot be acquired
+    // (issue #1910, #2033). Extracted to the ledger-access sibling.
+    await appendLifecycleEventsSerialized(
+      this.memoryLifecycleLedgerPath,
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      payload,
     );
     return events.length;
   }
@@ -5727,6 +5722,16 @@ export class StorageManager {
 
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
     return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
+  }
+
+  /** Compaction-only full-ledger read via a decrypted BUFFER, bypassing the
+   *  whole-file-string decrypt cap so compaction can shrink an oversize encrypted
+   *  ledger the general capped read refuses (#1910, #2033). */
+  async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+    return readAllLifecycleEventsFromLedgerBuffer(
+      this.memoryLifecycleLedgerPath,
+      (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir),
+    );
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {

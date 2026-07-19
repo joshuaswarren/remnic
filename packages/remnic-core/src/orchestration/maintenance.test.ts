@@ -31,7 +31,7 @@ import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js
 import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
 import { StorageManager } from "../storage.js";
-import { isEncryptedFile } from "../secure-store/secure-fs.js";
+import { encryptFileBody, filePathAad, isEncryptedFile } from "../secure-store/secure-fs.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
  *  contract — only the fields the scheduler/planner read are populated. */
@@ -1131,6 +1131,91 @@ test("auto-compaction bounds per-namespace ledgers, not just the root state path
     assert.deepEqual(rebuilt.map((r) => r.eventType), ["created", "updated"]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback never downgrades an encrypted namespace ledger to plaintext (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-secure-"));
+  try {
+    // Namespaces enabled but the catalog is inactive, so only the filesystem
+    // fallback finds this per-namespace ledger. It is encrypted at rest and
+    // oversized, but the fallback has no secure StorageManager for a
+    // catalog-disabled namespace. The rebuild-chokepoint guard must REFUSE to
+    // rebuild it through a plaintext StorageManager — leaving it untouched and
+    // still encrypted — rather than downgrade it to plaintext.
+    const key = Buffer.alloc(32, 5);
+    const token = namespaceIdentityToken("project-secure");
+    const nsDir = path.join(root, "namespaces", token);
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}\n';
+    const encrypted = encryptFileBody(
+      junk.repeat(Math.ceil(4096 / junk.length)), key, filePathAad(nsLedger, nsDir),
+    );
+    await writeFile(nsLedger, encrypted);
+    assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    // Skipped, not rewritten: the encrypted ledger must be byte-for-byte intact.
+    assert.deepEqual(
+      await readFile(nsLedger),
+      encrypted,
+      "encrypted namespace ledger must be left untouched, never plaintext-rewritten",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback refuses a symlinked namespaces scan root (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-outside-"));
+  try {
+    // <root>/namespaces is a symlink pointing OUTSIDE the memory dir. Following
+    // it would let compaction read/rewrite ledgers outside memoryDir, so the
+    // scan root must be rejected and the external ledger left untouched.
+    const nsLedger = path.join(
+      outside, namespaceIdentityToken("evil"), "state", "memory-lifecycle-ledger.jsonl",
+    );
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}\n';
+    const original = junk.repeat(Math.ceil(4096 / junk.length));
+    await writeFile(nsLedger, original, "utf-8");
+    await symlink(outside, path.join(root, "namespaces"));
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    assert.equal(
+      await readFile(nsLedger, "utf-8"),
+      original,
+      "ledger behind a symlinked namespaces root must be untouched",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

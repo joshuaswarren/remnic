@@ -11,7 +11,7 @@ import {
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
 
 /**
  * Event types `buildLifecycleEventsForMemory` reconstructs from frontmatter.
@@ -52,6 +52,14 @@ export interface RebuildMemoryLifecycleLedgerOptions {
    * frontmatter).
    */
   preserveExistingEvents?: boolean;
+  /**
+   * Override the ledger-lock acquisition timing (issue #2033). Only
+   * `maxWaitMs`/`pollMs` are honored; `staleMs` stays fixed at
+   * `MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS`. Used by tests to force the
+   * lock-acquisition-failure branch (`acquired=false`) deterministically
+   * without a multi-second wait.
+   */
+  lockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">;
 }
 
 export interface SkippedLifecycleBlankIdMemory {
@@ -180,24 +188,36 @@ export async function rebuildMemoryLifecycleLedger(
   // instead of being clobbered by the rename that replaces the file. The
   // corpus scan above stays outside the lock — frontmatter-derived rows are
   // reconstructed from the memory files, not the ledger.
-  const runLedgerCriticalSection = async (): Promise<void> => {
+  const runLedgerCriticalSection = async (acquired: boolean): Promise<void> => {
+    // withHeldFileLock falls back to task(false) when it cannot acquire the
+    // lock within the budget. A rebuild that read or rewrote the ledger without
+    // the lock could race a concurrent append/rewrite and lose data, so REFUSE
+    // the unlocked fallback outright (issue #2033 CodeRabbit Critical / codex).
+    if (!acquired) {
+      throw new Error(
+        "lifecycle ledger rebuild aborted: could not acquire the ledger lock within the "
+        + "acquisition budget; refusing to read or rewrite unlocked so a concurrent append "
+        + "or compaction cannot be clobbered (issue #1910).",
+      );
+    }
     if (options.preserveExistingEvents) {
       // Carry over append-only history frontmatter cannot reconstruct (issue
-      // #1910). Read the existing ledger through the permissive readAll path,
-      // keep only rows whose eventType is NOT frontmatter-derived, then merge
-      // -> canonical sort -> dedup by eventId (collapsing duplicate appended
-      // rows, the point of compaction). Reused verbatim so encrypted-at-rest
-      // decrypts with the live key when `storage` carries the secure context.
-      // preserveExistingEvents means "never lose append-only history": if the
-      // current ledger cannot be read (e.g. it exceeds the whole-file decrypt
-      // limit — exactly when auto-compaction fires), ABORT rather than rewrite
-      // from frontmatter only and silently drop that history (issue #1910,
-      // Cursor High). An absent ledger reads as [] (ENOENT swallowed
-      // downstream), so a throw here is always a real read failure worth
-      // surfacing.
+      // #1910). Read the existing ledger through the uncapped BUFFER path, keep
+      // only rows whose eventType is NOT frontmatter-derived, then merge ->
+      // canonical sort -> dedup by eventId (collapsing duplicate appended rows,
+      // the point of compaction). The buffer read decrypts with the live key
+      // when `storage` carries the secure context AND bypasses the whole-file
+      // string decrypt cap — so an oversize encrypted ledger, the exact file
+      // compaction must shrink, is still readable here rather than aborting
+      // (issue #1910, #2033 Cursor High). preserveExistingEvents means "never
+      // lose append-only history": if the current ledger genuinely cannot be
+      // read (corruption, or a locked required store), ABORT rather than
+      // rewrite from frontmatter only and silently drop that history. An absent
+      // ledger reads as [] (ENOENT swallowed downstream), so a throw here is
+      // always a real read failure worth surfacing.
       let existing: MemoryLifecycleEvent[];
       try {
-        existing = await storage.readAllMemoryLifecycleEvents();
+        existing = await storage.readAllMemoryLifecycleEventsForCompaction();
       } catch (err) {
         throw new Error(
           `lifecycle ledger rebuild aborted: cannot read existing events to preserve `
@@ -238,7 +258,7 @@ export async function rebuildMemoryLifecycleLedger(
   if (options.preserveExistingEvents || !dryRun) {
     await withHeldFileLock(
       memoryLifecycleLedgerLockPath(outputPath),
-      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
+      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, ...options.lockOptions },
       runLedgerCriticalSection,
     );
   }

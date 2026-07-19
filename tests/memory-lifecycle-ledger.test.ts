@@ -9,6 +9,9 @@ import {
   backupExistingLedger,
   rebuildMemoryLifecycleLedger,
 } from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
+import {
+  memoryLifecycleLedgerLockPath,
+} from "../src/memory-lifecycle-ledger-utils.ts";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -674,12 +677,15 @@ test("rebuildMemoryLifecycleLedger aborts and leaves the ledger intact when pres
     const originalLedger = `${JSON.stringify(appendOnly)}\n`;
     await writeFile(ledgerPath, originalLedger, "utf-8");
 
-    // Simulate an unreadable ledger (e.g. over the whole-file decrypt limit —
-    // exactly when auto-compaction fires). storage.dir === memoryDir so the
-    // dir-match guard passes and the preserve read is what fails.
+    // Simulate a genuinely unreadable ledger during the preserve read (e.g.
+    // corruption, or a locked required secure store). storage.dir === memoryDir
+    // so the dir-match guard passes and the compaction preserve read is what
+    // fails. (An oversize encrypted ledger no longer fails here — the uncapped
+    // buffer read shrinks it — so the abort contract is now exercised through a
+    // real read failure, #2033.)
     class UnreadableLedgerStorage extends StorageManager {
-      override async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
-        throw new Error("encrypted state file over the whole-file decrypt limit");
+      override async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+        throw new Error("simulated lifecycle ledger read failure (corruption or locked store)");
       }
     }
     const storage = new UnreadableLedgerStorage(memoryDir);
@@ -743,8 +749,8 @@ test("rebuildMemoryLifecycleLedger does not lose a lifecycle event appended duri
     let appendPromise: Promise<number> | undefined;
     class RebuildStorageWithConcurrentAppend extends StorageManager {
       private fired = false;
-      override async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
-        const events = await super.readAllMemoryLifecycleEvents();
+      override async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+        const events = await super.readAllMemoryLifecycleEventsForCompaction();
         if (!this.fired) {
           this.fired = true;
           // Not awaited: it cannot complete until the rebuild releases the lock.
@@ -771,6 +777,57 @@ test("rebuildMemoryLifecycleLedger does not lose a lifecycle event appended duri
     assert.ok(
       finalIds.includes("cap-2"),
       "event appended during compaction must land on the compacted ledger, not be lost",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger refuses to run unlocked when the ledger lock cannot be acquired (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-lock-timeout-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row a frontmatter-only rebuild cannot reconstruct: proves
+    // the ledger is left untouched, not rewritten from frontmatter alone.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Hold the cross-process lock with a FRESH (non-stale) lock file so
+    // acquisition times out and withHeldFileLock invokes the rebuild with
+    // acquired=false. A short lockOptions budget keeps the test deterministic.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf-8");
+
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        preserveExistingEvents: true,
+        lockOptions: { maxWaitMs: 100, pollMs: 20 },
+      }),
+      /could not acquire the ledger lock/,
+    );
+    // No unlocked rewrite: the append-only history must survive untouched.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "ledger must be untouched when the lock is not acquired",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
