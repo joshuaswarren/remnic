@@ -564,10 +564,11 @@ test("LastRecallStore never re-appends a drained impression when its spill unlin
     await store.load();
 
     // Make the pending dir non-writable so the drain can READ the spill but its
-    // unlink (which needs directory write permission) FAILS. Because the fix
-    // claims (unlinks) each spill BEFORE committing its rows, a spill that cannot
-    // be claimed is skipped this pass rather than appended-then-left-behind — so
-    // it can never be re-read and duplicated on the next drain.
+    // CLAIM (a rename to `<uuid>.jsonl.claimed`, which needs directory write
+    // permission) FAILS. Because the crash-safe fix claims each spill by rename
+    // BEFORE committing its rows, a spill that cannot be claimed is skipped this
+    // pass rather than appended-then-left-behind — so it can never be re-read and
+    // duplicated on the next drain.
     await chmod(pendingDir, 0o555);
     await store.record({ sessionKey: "cur1", query: "q1", memoryIds: [] });
 
@@ -626,6 +627,36 @@ test("LastRecallStore rotates against the full drained batch so a large spill dr
     assert.ok(active.includes("cur"), "current impression appended");
     assert.ok((await readFile(`${impressionsPath}.1`, "utf8")).includes("SEED"), "prior content preserved in .1");
     assert.equal((await readdir(pendingDir)).length, 0, "pending spill drained empty");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore recovers an impression spill claim orphaned by a crash before commit — the row is never lost (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-crash-claim-"));
+  const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+  const pendingDir = `${impressionsPath}.pending.d`;
+  try {
+    await mkdir(pendingDir, { recursive: true });
+    // Simulate a drain that CLAIMED a spill (renamed q.jsonl -> q.jsonl.claimed)
+    // and then CRASHED before appending the rows to the active file. The
+    // `.claimed` file is the ONLY durable copy of the impression — the old
+    // read-then-unlink ordering would already have deleted it and lost the row.
+    await writeFile(
+      path.join(pendingDir, "orphan.jsonl.claimed"),
+      `${JSON.stringify({ sessionKey: "evt-orphan" })}\n`,
+      "utf8",
+    );
+    // Rotation stays out of the way so both rows land in the active file.
+    const store = new LastRecallStore(dir, { impressionsRotateBytes: 1_000_000, impressionsRotateKeep: 5 });
+    await store.load();
+    await store.record({ sessionKey: "cur", query: "q", memoryIds: [] });
+
+    const active = await readFile(impressionsPath, "utf8");
+    assert.ok(active.includes("evt-orphan"), "crash-orphaned claim recovered into the active file — not lost");
+    assert.equal(active.split("evt-orphan").length - 1, 1, "orphaned impression committed exactly once");
+    assert.ok(active.includes('"sessionKey":"cur"'), "current impression appended");
+    assert.equal((await readdir(pendingDir)).length, 0, "recovered claim cleaned up after commit");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
