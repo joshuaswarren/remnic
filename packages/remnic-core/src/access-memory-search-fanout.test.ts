@@ -30,7 +30,7 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
         enabled: false,
         targets: ["userGlobal"],
         categories: ["fact"],
-        minConfidenceTier: "medium",
+        minConfidenceTier: "inferred",
       },
     },
     baseNamespace: "operator-x",
@@ -80,6 +80,31 @@ test("resolveMemorySearchDefaultFallback returns null when the profile self is a
     profilePlan: profilePlan({ baseNamespace: "default" }),
     config: pluginConfig(),
     principal: "default",
+  });
+  assert.equal(fallback, null);
+});
+
+test("resolveMemorySearchDefaultFallback returns null when only serverShared (no userGlobal) is in readOrder", () => {
+  // serverShared maps to sharedNamespace, NOT the default: a profile that
+  // reads only userProject + serverShared deliberately reads the shared
+  // namespace, not the default, so the fallback must not fire.
+  const plan = profilePlan({
+    profile: {
+      readOrder: ["userProject", "serverShared"],
+      writeDefault: "userProject",
+      promotionTargets: ["serverShared"],
+      autoPromote: {
+        enabled: false,
+        targets: ["serverShared"],
+        categories: ["fact"],
+        minConfidenceTier: "inferred",
+      },
+    },
+  });
+  const fallback = resolveMemorySearchDefaultFallback({
+    profilePlan: plan,
+    config: pluginConfig(),
+    principal: "operator-x",
   });
   assert.equal(fallback, null);
 });

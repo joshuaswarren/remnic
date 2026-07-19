@@ -17,8 +17,11 @@ import type { PluginConfig } from "./types.js";
  * narrow profile (#1501 project-only lockdown) or the read ACL says otherwise.
  *
  * Conditions for including the default namespace:
- *   - the profile intends a global/shared read layer (`readOrder` includes
- *     `userGlobal` or `serverShared`), so a project-only lockdown is honored;
+ *   - the profile intends the principal's own global read layer (`readOrder`
+ *     includes `userGlobal`). `serverShared` maps to `sharedNamespace`, NOT
+ *     the default, so it must not trigger this fallback — a
+ *     `["userProject", "serverShared"]` profile deliberately reads only the
+ *     shared namespace, not the default;
  *   - the profile resolved the principal's self namespace AWAY from the
  *     configured default (otherwise it is already in the set);
  *   - the principal is authorized to read the default namespace.
@@ -32,8 +35,7 @@ export function resolveMemorySearchDefaultFallback(options: {
 }): string | null {
   const { profilePlan, config, principal } = options;
   const profileAllowsGlobalLayer =
-    profilePlan.profile.readOrder.includes("userGlobal") ||
-    profilePlan.profile.readOrder.includes("serverShared");
+    profilePlan.profile.readOrder.includes("userGlobal");
   const selfResolvedAwayFromDefault =
     profilePlan.baseNamespace !== config.defaultNamespace;
   if (
