@@ -491,15 +491,20 @@ export function manifestShrinkage(baseManifest, headManifest) {
 
 /**
  * Paths whose manifest removal is EXPLAINED by the diff: a deleted file (status
- * `D`) or a rename/copy SOURCE (`previous_filename`). Dropping a manifest entry
- * for such a path is legitimate — the file no longer exists at that path.
+ * `D`), or a rename/copy SOURCE whose DESTINATION stays in lifecycle coverage
+ * (the file still exists at a tracked path). A move-OUT rename (destination not
+ * a lifecycle path) does NOT explain the source's removal — dropping its
+ * manifest entry would silently lose coverage, so it stays gated by the ratchet.
  */
-export function deletedOrRenamedPaths(records) {
+export function deletedOrRenamedPaths(records, manifest) {
   const set = new Set();
+  const lifecycleGlobs = manifest?.lifecycleManifest ?? [];
   for (const r of records) {
     if (!r || typeof r === "string") continue;
     if (typeof r.status === "string" && r.status.startsWith("D") && r.filename) set.add(r.filename);
-    if (typeof r.previous_filename === "string" && r.previous_filename) set.add(r.previous_filename);
+    if (typeof r.previous_filename === "string" && r.previous_filename && r.filename) {
+      if (lifecycleGlobs.some((glob) => isIgnoredPath(r.filename, [glob]))) set.add(r.previous_filename);
+    }
   }
   return set;
 }
@@ -715,7 +720,7 @@ function main() {
       process.exit(1);
     }
     const removed = manifestShrinkage(baseManifest, manifest);
-    const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed));
+    const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed, manifest));
     if (unexplained.length > 0) {
       console.error(
         `::error::lifecycle-matrix lifecycleManifest removed path(s) with no matching deletion/rename: ${unexplained.join(", ")}. ` +

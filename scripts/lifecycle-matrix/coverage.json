@@ -97,7 +97,12 @@
     "src/retrieval-agents.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/lifecycle/**",
-    "packages/remnic-core/src/lifecycle/tombstones.ts"
+    "packages/remnic-core/src/lifecycle/tombstones.ts",
+    "packages/remnic-core/src/harmonic-retrieval.ts",
+    "src/harmonic-retrieval.ts",
+    "packages/remnic-core/src/causal-retrieval.ts",
+    "src/causal-retrieval.ts",
+    "packages/remnic-core/src/temporal-supersession.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -192,6 +197,11 @@
     "packages/remnic-core/src/retrieval-agents.ts",
     "src/retrieval-agents.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
-    "packages/remnic-core/src/lifecycle/tombstones.ts"
+    "packages/remnic-core/src/lifecycle/tombstones.ts",
+    "packages/remnic-core/src/harmonic-retrieval.ts",
+    "src/harmonic-retrieval.ts",
+    "packages/remnic-core/src/causal-retrieval.ts",
+    "src/causal-retrieval.ts",
+    "packages/remnic-core/src/temporal-supersession.ts"
   ]
 }

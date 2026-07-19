@@ -655,29 +655,27 @@ test("every committed manifest path resolves to a real file — no pre-covering 
   for (const p of manifest.grandfathered) assert.ok(resolves(p), `grandfathered path ${p} must exist`);
 });
 
-test("manifest removal is permitted only when the diff proves deletion/rename", () => {
-  const base = loadCoverageManifest({
-    lifecycleManifest: ["packages/remnic-core/src/orchestrator.ts", "a.ts", "b.ts", "packages/remnic-core/src/storage/**"],
+test("manifest removal is explained by deletion or within-lifecycle rename, not move-out", () => {
+  const manifest = loadCoverageManifest({
+    lifecycleManifest: ["packages/remnic-core/src/orchestrator.ts", "within-dest.ts"],
     coverage: { "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle" },
-    grandfathered: ["a.ts", "b.ts", "packages/remnic-core/src/storage/**"],
+    grandfathered: ["within-dest.ts"],
   });
-  const head = loadCoverageManifest({
-    lifecycleManifest: ["packages/remnic-core/src/orchestrator.ts"],
-    coverage: { "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle" },
-    grandfathered: [],
-  });
-  const removed = manifestShrinkage(base, head); // ["a.ts","b.ts","packages/remnic-core/src/storage/**"]
-  // a.ts deleted, b.ts renamed away → explained; the storage/** glob is never auto-explained.
-  const records = parseNameStatusZ("D\0a.ts\0R100\0b.ts\0c.ts\0");
-  const explained = deletedOrRenamedPaths(records);
-  assert.ok(explained.has("a.ts") && explained.has("b.ts"), "deleted + rename-source paths are explained");
+  // a.ts deleted; b.ts renamed to within-dest.ts (destination stays in lifecycle);
+  // c.ts renamed to out/gone.ts (destination NOT in lifecycle → move-out).
+  const records = parseNameStatusZ("D\0a.ts\0R100\0b.ts\0within-dest.ts\0R100\0c.ts\0out/gone.ts\0");
+  const explained = deletedOrRenamedPaths(records, manifest);
+  assert.ok(explained.has("a.ts"), "a deleted path explains its manifest removal");
+  assert.ok(explained.has("b.ts"), "a rename whose destination stays in lifecycle explains the source removal");
+  assert.ok(!explained.has("c.ts"), "a move-out rename does NOT explain removal — it stays gated by the ratchet");
+  const removed = ["a.ts", "b.ts", "c.ts", "some/dir/**"];
   assert.deepEqual(
     unexplainedRemovals(removed, explained),
-    ["packages/remnic-core/src/storage/**"],
-    "explained exact-file removals are permitted; a glob removal still fails the ratchet",
+    ["c.ts", "some/dir/**"],
+    "deletion + within-lifecycle rename removals pass; move-out and glob removals still fail",
   );
-  // With nothing deleted/renamed, every removal is unexplained.
-  assert.deepEqual(unexplainedRemovals(removed, deletedOrRenamedPaths([])), removed);
+  // With no diff evidence, every removal is unexplained.
+  assert.deepEqual(unexplainedRemovals(removed, deletedOrRenamedPaths([], manifest)), removed);
 });
 
 test("a deleted file under a catch-all is filtered from the gate, not a violation", () => {
@@ -740,4 +738,21 @@ test("the lifecycle/ directory is gated: tombstones grandfathered, a new file vi
   const fresh = evaluateCoverage(["packages/remnic-core/src/lifecycle/brand-new.ts"], manifest);
   assert.equal(fresh.violations.length, 1, "a new lifecycle/ file must fail as unmapped via the catch-all");
   assert.equal(fresh.warnings.length, 0);
+});
+
+test("retrieval freshness entrypoints are tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "packages/remnic-core/src/harmonic-retrieval.ts",
+    "src/harmonic-retrieval.ts",
+    "packages/remnic-core/src/causal-retrieval.ts",
+    "src/causal-retrieval.ts",
+    "packages/remnic-core/src/temporal-supersession.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
+    const { covered, warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(covered.length, 0);
+    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+    assert.equal(warnings.length, 1, `${p} freshness change must warn, not silently bypass the gate`);
+  }
 });
