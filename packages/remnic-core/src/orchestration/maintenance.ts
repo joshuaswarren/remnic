@@ -21,7 +21,7 @@
 
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
-import { existsSync, type Dirent } from "node:fs";
+import { existsSync, type Dirent, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -59,8 +59,12 @@ import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { assertPathInsideRoot } from "../utils/path-containment.js";
-import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
+import { assertPathInsideRoot, listContainedSpillFiles } from "../utils/path-containment.js";
+import {
+  isEncryptedFile,
+  MAGIC_HEADER_SIZE,
+  SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
+} from "../secure-store/secure-fs.js";
 
 /** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
@@ -73,21 +77,32 @@ function qmdMaintenanceSkipReasonForError(
 }
 
 /**
- * True when the lifecycle ledger at `ledgerPath` is encrypted at rest (its
- * first bytes are the secure-store magic header). Compaction uses this to
- * refuse rewriting an encrypted ledger through a StorageManager that cannot
- * re-encrypt it, which would downgrade it to plaintext (issue #2033). ENOENT
- * resolves to false — an absent ledger is handled as "nothing to compact"
- * downstream.
+ * True when the file at `probePath` is encrypted at rest (its first bytes are
+ * the secure-store magic header). Compaction uses this to refuse rewriting an
+ * encrypted ledger through a StorageManager that cannot re-encrypt it, which
+ * would downgrade it to plaintext (issue #2033). ENOENT resolves to false — an
+ * absent ledger is handled as "nothing to compact" downstream. A symlink, FIFO,
+ * device, or any other non-regular file is REFUSED with a throw rather than
+ * opened: opening a FIFO blocks until a writer appears and a symlink would
+ * redirect the probe outside our tree. A ledger/spill we manage is always a
+ * regular file, so a non-regular path is an anomaly the caller must treat as
+ * unsafe (its try/catch defers/skips), never follow (#2033).
  */
-async function ledgerEncryptedOnDisk(ledgerPath: string): Promise<boolean> {
-  let handle: FileHandle;
+async function ledgerEncryptedOnDisk(probePath: string): Promise<boolean> {
+  let entryStat: Stats;
   try {
-    handle = await open(ledgerPath, "r");
+    entryStat = await lstat(probePath);
   } catch (err) {
     if (isErrnoCode(err, "ENOENT")) return false;
     throw err;
   }
+  if (!entryStat.isFile()) {
+    throw new Error(
+      `refusing to probe non-regular lifecycle path ${probePath} `
+      + `(symlink/FIFO/device); opening it could block or escape containment (#2033)`,
+    );
+  }
+  const handle: FileHandle = await open(probePath, "r");
   try {
     const header = Buffer.alloc(MAGIC_HEADER_SIZE);
     const { bytesRead } = await handle.read(header, 0, header.length, 0);
@@ -730,22 +745,27 @@ export class MaintenanceScheduler {
   private async drainPendingLifecycleAppendsForPath(memoryDir: string): Promise<void> {
     const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     const spillDir = pendingLifecycleLedgerDir(ledgerPath);
-    let spillNames: string[];
+    // Enumerate spills through the SAME guarded lister the actual drain uses
+    // (listContainedSpillFiles): it rejects a symlinked/non-directory spill dir
+    // and skips any symlink/FIFO/device/escaping entry, returning only regular
+    // files contained in the dir. Never raw-readdir + open() an untrusted name:
+    // opening a FIFO would block until a writer appears and a symlink would
+    // redirect the probe outside the dir (#2033).
+    let spillFiles: string[];
     try {
-      spillNames = (await readdir(spillDir)).filter((name) => name.endsWith(".jsonl")).sort();
+      spillFiles = await listContainedSpillFiles(spillDir);
     } catch (err) {
-      if (!isErrnoCode(err, "ENOENT")) {
-        log.debug(`fallback lifecycle pending scan failed (non-fatal) for ${memoryDir}: ${err}`);
-      }
-      return; // no pending dir — nothing to drain.
+      log.debug(`fallback lifecycle pending scan failed (non-fatal) for ${memoryDir}: ${err}`);
+      return;
     }
-    if (spillNames.length === 0) return;
+    if (spillFiles.length === 0) return;
     try {
       // A keyless plaintext drain would corrupt/downgrade an encrypted ledger or
-      // spill; defer those to the keyed path instead (#2033).
+      // spill; defer those to the keyed path instead (#2033). The probe now only
+      // opens the guarded, regular-file paths listContainedSpillFiles returned.
       if (await ledgerEncryptedOnDisk(ledgerPath)) return;
-      for (const name of spillNames) {
-        if (await ledgerEncryptedOnDisk(path.join(spillDir, name))) return;
+      for (const filePath of spillFiles) {
+        if (await ledgerEncryptedOnDisk(filePath)) return;
       }
     } catch (err) {
       log.debug(`fallback lifecycle pending encryption probe failed (non-fatal) for ${memoryDir}: ${err}`);
@@ -899,31 +919,51 @@ export class MaintenanceScheduler {
       );
       return "failed";
     }
-    if (size < threshold) return "skipped";
-    // No plaintext rewrite of an encrypted-at-rest ledger (#2033): rebuilding an
-    // encrypted ledger without an unlocked secure StorageManager would either
-    // fail the preserve-read (locked store) or downgrade the ledger to plaintext.
-    // Refuse instead and point the operator at the manual remedy. Report
-    // "deferred" (NOT "skipped"): the ledger is over threshold and still needs
-    // compaction, so the throttle must stay un-armed and retry once a key is
-    // available — a "skipped" here would let another target's success arm the
-    // throttle and suppress this pending work for the whole interval (#2033).
+    // #2033 finding (1): an encrypted ledger becomes unreadable once its on-disk
+    // size reaches the whole-file decrypt cap (the reader refuses at/over it), so
+    // the effective compaction trigger for an encrypted target is clamped to that
+    // cap even when the configured threshold is LARGER — otherwise a ledger that
+    // grows past the cap but stays below a bigger threshold would never compact
+    // and stay permanently unreadable. Plaintext streaming is unaffected at any
+    // size, so a plaintext target keeps the configured threshold. The cheap
+    // pre-check skips anything below the smaller of the two before paying for the
+    // extra lstat/open the encryption probe costs.
+    if (size < Math.min(threshold, this.lifecycleLedgerMaxBytes)) return "skipped";
+    let encrypted: boolean;
     try {
-      if (
-        (await ledgerEncryptedOnDisk(ledgerPath))
-        && !(target.storage?.isSecureStoreUnlocked() ?? false)
-      ) {
-        log.warn(
-          `lifecycle ledger at ${ledgerPath} is encrypted at rest but no unlocked secure `
-          + `storage is available; deferring auto-compaction to avoid a plaintext rewrite. `
-          + `Run 'remnic rebuild-memory-lifecycle-ledger --write' after unlocking.`,
-        );
-        return "deferred";
-      }
+      encrypted = await ledgerEncryptedOnDisk(ledgerPath);
     } catch (err) {
       log.warn(`lifecycle ledger encryption probe failed (non-fatal) for ${ledgerPath}: ${err}`);
       return "failed";
     }
+    const effectiveThreshold = encrypted
+      ? Math.min(threshold, this.lifecycleLedgerMaxBytes)
+      : threshold;
+    if (size < effectiveThreshold) return "skipped";
+    // No plaintext rewrite of an encrypted-at-rest ledger (#2033): rebuilding an
+    // encrypted ledger without an unlocked secure StorageManager would either
+    // fail the preserve-read (locked store) or downgrade the ledger to plaintext.
+    // Report "deferred" (NOT "skipped"): the ledger is over threshold and still
+    // needs compaction, so the throttle must stay un-armed and retry once a key
+    // is available — a "skipped" here would let another target's success arm the
+    // throttle and suppress this pending work for the whole interval (#2033).
+    if (encrypted && !(target.storage?.isSecureStoreUnlocked() ?? false)) {
+      log.warn(
+        `lifecycle ledger at ${ledgerPath} is encrypted at rest but no unlocked secure `
+        + `storage is available; deferring auto-compaction to avoid a plaintext rewrite. `
+        + `Run 'remnic rebuild-memory-lifecycle-ledger --write' after unlocking.`,
+      );
+      return "deferred";
+    }
+    // #2033 findings (2)+(4): the rewrite budget bounds the PLAINTEXT payload, but
+    // an encrypted target adds a fixed secure-store envelope on disk. Reserve that
+    // envelope (plus one byte) from the plaintext budget so the encrypted file
+    // lands STRICTLY below the reader's refusal cap and the post-write check —
+    // which stats the on-disk (encrypted) size against the cap — cannot fail
+    // forever on a plaintext budget that equals the cap (the endless-retry bug).
+    const plaintextBudget = encrypted
+      ? this.lifecycleLedgerMaxBytes - SECURE_STORE_ENVELOPE_OVERHEAD_BYTES - 1
+      : this.lifecycleLedgerMaxBytes - 1;
     try {
       const result = await rebuildMemoryLifecycleLedger({
         memoryDir: target.memoryDir,
@@ -933,10 +973,11 @@ export class MaintenanceScheduler {
         // frontmatter cannot reconstruct (issue #1910) — unlike the manual
         // CLI repair rebuild, which reconstructs purely from frontmatter.
         preserveExistingEvents: true,
-        // Bound the rewrite so preserved append-only history can never leave the
-        // ledger over the whole-file read/decrypt cap; overflow lands in the
-        // verbatim backup (#2033).
-        maxLedgerBytes: this.lifecycleLedgerMaxBytes,
+        // Bound the PLAINTEXT rewrite to a budget that reserves the secure-store
+        // envelope, so the on-disk ledger (plaintext, or plaintext+envelope when
+        // encrypted) is strictly below the read/decrypt cap; overflow lands in
+        // the verbatim backup (#2033 findings 2+4).
+        maxLedgerBytes: plaintextBudget,
       });
       // Verify the rewritten ledger is actually bounded. A compaction that left
       // the ledger at/over the read/decrypt cap is ineffective (the ledger would

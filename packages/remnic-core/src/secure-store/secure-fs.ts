@@ -105,6 +105,18 @@ export const FILE_FORMAT_FLAGS = 0x00;
 /** Total size of the magic header prefix (magic + version + flags). */
 export const MAGIC_HEADER_SIZE = MAGIC_BYTES.length + 2; // 12 bytes
 
+/**
+ * Exact, deterministic bytes `writeMaybeEncryptedFile` adds to an encrypted
+ * file beyond its plaintext body: the magic header prefix plus the fixed
+ * envelope header (version + salt + IV + auth tag). AES-256-GCM ciphertext
+ * matches the plaintext length and the state-file write path applies no
+ * compression, so an encrypted state file is exactly `plaintext +
+ * SECURE_STORE_ENVELOPE_OVERHEAD_BYTES` on disk. Compaction reserves this so an
+ * encrypted ledger lands strictly below the reader's whole-file decrypt cap
+ * (issue #2033).
+ */
+export const SECURE_STORE_ENVELOPE_OVERHEAD_BYTES = MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
+
 // ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------

@@ -18,7 +18,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 
 import { MaintenanceScheduler } from "./maintenance.js";
 import type { PluginConfig } from "../types.js";
@@ -31,7 +32,12 @@ import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js
 import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
 import { StorageManager } from "../storage.js";
-import { encryptFileBody, filePathAad, isEncryptedFile } from "../secure-store/secure-fs.js";
+import {
+  encryptFileBody,
+  filePathAad,
+  isEncryptedFile,
+  SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
+} from "../secure-store/secure-fs.js";
 import { pendingLifecycleLedgerDir } from "../storage/memory-lifecycle-ledger-access.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
@@ -1615,5 +1621,196 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
     await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after the fallback drain");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction triggers on an encrypted ledger at/above the decrypt cap even when the configured threshold is larger (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-cap-clamp-"));
+  try {
+    await mkdir(path.join(memoryDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", "2026-03-08", "fact-1.md"),
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Encrypted-at-rest oversized ledger of junk rows the rebuild discards.
+    const key = Buffer.alloc(32, 7);
+    const junk = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    const junkBlob = junk.repeat(Math.ceil(4096 / junk.length));
+    await writeFile(ledgerPath, encryptFileBody(junkBlob, key, filePathAad(ledgerPath, memoryDir)));
+    const beforeSize = (await stat(ledgerPath)).size;
+
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key); // unlocked, so an encrypted target is not deferred.
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        // Threshold FAR above both the ledger AND the (seam) decrypt cap. A
+        // pre-clamp trigger keyed purely off this threshold would skip the ledger
+        // forever and let it grow permanently unreadable past the cap.
+        memoryLifecycleLedgerCompactBytes: 10 * 1024 * 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    scheduler.lifecycleLedgerMaxBytes = 2048; // tiny cap: the ~4KB ledger is "at/above" it.
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    const afterSize = (await stat(ledgerPath)).size;
+    assert.ok(afterSize < beforeSize, "over-cap encrypted ledger must compact despite the larger threshold");
+    assert.ok(afterSize < 2048, "compacted encrypted ledger must land below the decrypt cap");
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "rewritten ledger stays encrypted at rest");
+    const rebuilt = await storage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction reserves the secure-store envelope so an encrypted rewrite lands below the cap and does not retry forever (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-envelope-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const total = 200;
+    const events = Array.from({ length: total }, (_unused, i) => ({
+      eventId: `cap-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const plaintext = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    const key = Buffer.alloc(32, 3);
+    await writeFile(ledgerPath, encryptFileBody(plaintext, key, filePathAad(ledgerPath, memoryDir)));
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap == exactly 20 plaintext rows. The reserving budget (cap − envelope − 1)
+    // admits 19 rows, so the encrypted output (19 rows + envelope) is below the
+    // cap. WITHOUT the reserve the old budget (== cap) would keep 20 rows and the
+    // encrypted file (20 rows + envelope) would be at/over the cap — the endless
+    // "ineffective compaction" retry this fix prevents.
+    const cap = rowBytes * 20;
+    assert.ok(
+      rowBytes * 20 + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES > cap,
+      "sanity: cap chosen so an unreserved budget would push the encrypted file over the cap",
+    );
+
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: rowBytes * 5,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    scheduler.lifecycleLedgerMaxBytes = cap;
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      const onDisk = (await stat(ledgerPath)).size;
+      assert.ok(isEncryptedFile(await readFile(ledgerPath)), "rewritten ledger encrypted at rest");
+      assert.ok(onDisk < cap, `encrypted on-disk ledger (${onDisk}B) must be strictly below the cap (${cap}B)`);
+      const keptIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+      assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event survives");
+      assert.ok(!keptIds.includes("cap-000"), "oldest event archived out of the active ledger");
+
+      const backups = await readdir(path.join(memoryDir, "archive", "memory-lifecycle-ledger")).catch(() => []);
+      assert.ok(backups.length > 0, "overflow archived to a verbatim backup");
+
+      // The compaction was judged effective (throttle armed): re-grow within the
+      // window; a broken budget would have reported "failed" (throttle un-armed)
+      // and this second pass would recompact.
+      await writeFile(ledgerPath, encryptFileBody(plaintext, key, filePathAad(ledgerPath, memoryDir)));
+      const regrown = (await stat(ledgerPath)).size;
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+      assert.equal(
+        (await stat(ledgerPath)).size,
+        regrown,
+        "throttle armed after an effective encrypted compaction: second in-window pass is a no-op",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback pending drain skips unsafe spill entries (symlink/FIFO/dir) without following or blocking (#2033)", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-unsafe-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-outside-"));
+  try {
+    const token = namespaceIdentityToken("project-unsafe");
+    const nsDir = path.join(root, "namespaces", token);
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    await writeFile(nsLedger, "", "utf-8");
+    const spillDir = pendingLifecycleLedgerDir(nsLedger);
+    await mkdir(spillDir, { recursive: true });
+
+    // A legitimate plaintext spill that MUST drain.
+    const goodPath = path.join(spillDir, "good.jsonl");
+    const spilled = {
+      eventId: "evt-good-spilled",
+      memoryId: "mem-ns",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(goodPath, `${JSON.stringify(spilled)}\n`, "utf-8");
+
+    // Unsafe entries the guarded lister MUST skip WITHOUT opening/following:
+    //  - a symlink to an OUTSIDE file (following it would escape the spill dir),
+    //  - a FIFO (opening it for read would block until a writer appears),
+    //  - a subdirectory (not a regular file).
+    const outsideFile = path.join(outside, "target.jsonl");
+    await writeFile(outsideFile, '{"eventId":"evt-outside"}\n', "utf-8");
+    const linkPath = path.join(spillDir, "link.jsonl");
+    await symlink(outsideFile, linkPath);
+    const fifoPath = path.join(spillDir, "pipe.jsonl");
+    execFileSync("mkfifo", [fifoPath]);
+    const dirPath = path.join(spillDir, "dir.jsonl");
+    await mkdir(dirPath);
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      // Completing at all is part of the assertion: opening the FIFO would hang
+      // (caught by the test timeout) and following the symlink would escape.
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    const ledger = await readFile(nsLedger, "utf-8");
+    assert.ok(ledger.includes("evt-good-spilled"), "the safe plaintext spill drains into the ledger");
+    assert.ok(!ledger.includes("evt-outside"), "the symlink target outside the spill dir is never followed");
+    await assert.rejects(() => stat(goodPath), /ENOENT/, "drained safe spill removed");
+    // Unsafe entries are left untouched (skipped, not read or deleted).
+    assert.ok((await lstat(linkPath)).isSymbolicLink(), "symlink entry left in place");
+    assert.ok((await lstat(fifoPath)).isFIFO(), "FIFO entry left in place");
+    assert.ok((await lstat(dirPath)).isDirectory(), "directory entry left in place");
+    assert.equal(await readFile(outsideFile, "utf-8"), '{"eventId":"evt-outside"}\n', "outside target intact and unread");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
