@@ -3855,6 +3855,14 @@ export class StorageManager {
         // locked rebuild/reconcile and drop this durable fact from the index.
         if (!options.deferHashIndexSave) {
           await factHashIndex.saveMergingWithDisk();
+          // A locked reconcile that times out defers to an unref'd background
+          // retry and returns WITHOUT publishing (dirty retained). A single-write
+          // caller must not observe that as durable (PR #2016 thread SD7Tk):
+          // drain the deferred retry inline so the addition lands on disk (or
+          // exhausts its bounded attempts, falling back to the corpus-rebuild
+          // safety net) before writeMemory returns. No-op when the save already
+          // published (not dirty).
+          await factHashIndex.flushReconcileRetry();
         }
       } catch (err) {
         log.warn(`storage.writeMemory completed but failed to update fact hash index: ${err}`);

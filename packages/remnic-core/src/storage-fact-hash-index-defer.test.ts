@@ -933,3 +933,99 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
     );
   });
 });
+
+// PR #2016 thread SD7Tj: the reconcile publish() snapshots this.added at its
+// start, then read+rewrites fact-hashes.txt under the lock. A concurrent
+// add()/remove() that lands during those disk awaits was silently dropped: the
+// old publish cleared this.added/this.removed WHOLESALE and set dirty=false, so
+// the mid-flight delta vanished from memory AND was never persisted. publish now
+// consumes ONLY the deltas it published; late arrivals stay pending (dirty
+// retained) and a bounded durable retry is re-armed to land them.
+test("#2016 thread SD7Tj: a hash added while a reconcile save awaits disk is not lost", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+
+    // The write-key provider is invoked synchronously at publish's write step —
+    // AFTER publish has snapshotted this.added and BEFORE it consumes/clears it.
+    // Injecting an add() there deterministically reproduces a concurrent add
+    // landing in publish's mid-flight window, with no module mocking.
+    let idx!: ContentHashIndex;
+    let injected = false;
+    const writeKeyProvider = (): Buffer | null => {
+      if (!injected) {
+        injected = true;
+        idx.add("added-during-save");
+      }
+      return null;
+    };
+    idx = new ContentHashIndex(stateDir, () => null, writeKeyProvider, undefined, {
+      maxWaitMs: 50,
+      pollMs: 10,
+      retryBaseMs: 10,
+      retryMaxAttempts: 5,
+    });
+    await idx.load();
+    idx.add("added-before-save");
+
+    await idx.saveMergingWithDisk();
+
+    // The pre-save addition published as expected.
+    const afterFirst = new ContentHashIndex(stateDir);
+    await afterFirst.load();
+    assert.equal(afterFirst.has("added-before-save"), true, "the pre-save addition is on disk");
+
+    // The mid-save addition must survive in-memory (old code wiped it via
+    // `this.hashes = merged` + `this.added.clear()`).
+    assert.equal(idx.has("added-during-save"), true, "mid-save addition retained in-memory");
+
+    // ...and it must still be durably persistable — old code set dirty=false so
+    // the drain below would be a no-op and the delta would be lost forever.
+    await withRetryLoopAlive(() => idx.flushReconcileRetry());
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("added-before-save"), "pre-save addition still durable after drain");
+    assert.ok(
+      fresh.has("added-during-save"),
+      "the mid-save addition reached disk — the mid-flight delta was preserved, not dropped",
+    );
+  });
+});
+
+// PR #2016 thread SD7Tk: a direct (non-deferred) writeMemory("fact") awaited
+// saveMergingWithDisk, which on a lock timeout defers to an UNREF'd background
+// retry and returns without publishing. writeMemory then returned as if the
+// index were durable while the addition lived only in memory + a timer that a
+// short-lived process can exit before it fires. writeMemory now drains that
+// deferred retry inline (flushReconcileRetry) before returning, so a caller can
+// never observe a lingering, exit-losable retry.
+test("#2016 thread SD7Tk: a direct fact write drains its deferred hash retry before returning", async () => {
+  await withMemoryDir(async (dir) => {
+    const flushSpy = mock.method(ContentHashIndex.prototype, "flushReconcileRetry");
+    const lockPath = path.join(dir, "state", "fact-hashes.txt.lock");
+    await mkdir(path.dirname(lockPath), { recursive: true });
+    // A peer holds the lock so the direct write's reconcile save times out and
+    // defers to a background retry instead of publishing.
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+    try {
+      const storage = new StorageManager(dir);
+      storage.factHashIndexLockOptions = { maxWaitMs: 30, pollMs: 10, retryMaxAttempts: 2, retryBaseMs: 10 };
+
+      await withRetryLoopAlive(async () => {
+        await storage.writeMemory("fact", "direct-write-under-contended-lock", { source: "manual" });
+      });
+
+      // The direct write must have drained the deferred retry inline before
+      // returning. Under the old code writeMemory awaited only
+      // saveMergingWithDisk (which returned with the retry still armed) and never
+      // called flushReconcileRetry — so this count was 0.
+      assert.ok(
+        flushSpy.mock.callCount() >= 1,
+        "direct writeMemory drains the deferred hash retry (flushReconcileRetry) before returning",
+      );
+    } finally {
+      flushSpy.mock.restore();
+      await rm(lockPath, { force: true });
+    }
+  });
+});

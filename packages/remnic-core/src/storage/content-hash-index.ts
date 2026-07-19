@@ -300,7 +300,15 @@ export class ContentHashIndex {
     // before acquiring it (the index dir may not exist on a first write).
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const publish = async (): Promise<void> => {
-      const merged = new Set<string>(this.added);
+      // Snapshot the deltas this publish is responsible for. The read+rewrite
+      // below yields the event loop, so a concurrent add()/remove() can land
+      // new deltas while we await disk (PR #2016 thread SD7Tj). Consuming the
+      // LIVE sets afterward would drop those late deltas AND clear `dirty`,
+      // stranding them in no save at all. We consume only what we published;
+      // anything that arrived meanwhile stays pending for the next save.
+      const publishedAdded = new Set<string>(this.added);
+      const publishedRemoved = new Set<string>(this.removed);
+      const merged = new Set<string>(publishedAdded);
       try {
         const raw = await readMaybeEncryptedFile(
           this.filePath,
@@ -310,7 +318,7 @@ export class ContentHashIndex {
         for (const line of raw.split("\n")) {
           const trimmed = line.trim();
           // Keep prior/concurrent on-disk hashes EXCEPT the ones we removed.
-          if (trimmed.length > 0 && !this.removed.has(trimmed)) merged.add(trimmed);
+          if (trimmed.length > 0 && !publishedRemoved.has(trimmed)) merged.add(trimmed);
         }
       } catch (err) {
         if (err instanceof SecureStoreLockedError) throw err;
@@ -325,10 +333,18 @@ export class ContentHashIndex {
         {},
         this.memoryDir
       );
+      // Consume ONLY the deltas we just published; deltas that arrived during
+      // the awaits above remain pending.
+      for (const h of publishedAdded) this.added.delete(h);
+      for (const h of publishedRemoved) this.removed.delete(h);
+      // Fold any still-pending deltas onto the reconciled set so the in-memory
+      // view stays consistent with what the next save will publish.
+      for (const h of this.added) merged.add(h);
+      for (const h of this.removed) merged.delete(h);
       this.hashes = merged;
-      this.added.clear();
-      this.removed.clear();
-      this.dirty = false;
+      // Honest dirty state: true iff late deltas remain to be persisted. A
+      // subsequent batch save or the shutdown flush drains them.
+      this.dirty = this.added.size > 0 || this.removed.size > 0;
       // The reconciled set is now the on-disk state — re-baseline the freshness
       // fingerprint (captured under the held lock) so our own publish is not
       // later mistaken for a peer's advance (PR #2016 review).
@@ -355,8 +371,16 @@ export class ContentHashIndex {
           return;
         }
         await publish();
-        // Published: any pending deferred retry is now satisfied.
-        this.cancelReconcileRetry();
+        if (this.dirty) {
+          // A concurrent add()/remove() landed during publish's disk awaits, so
+          // deltas remain unpersisted (PR #2016 thread SD7Tj). Arm a bounded
+          // durable retry so they reach disk even if no further batch save comes
+          // — never leave a settled barrier over pending work.
+          this.scheduleReconcileRetry();
+        } else {
+          // Published cleanly: any pending deferred retry is now satisfied.
+          this.cancelReconcileRetry();
+        }
       },
     );
     log.debug(`content-hash index: reconcile-saved ${this.hashes.size} hashes`);
