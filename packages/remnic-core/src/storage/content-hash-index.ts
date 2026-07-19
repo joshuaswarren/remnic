@@ -256,24 +256,42 @@ export class ContentHashIndex {
   async save(): Promise<void> {
     if (!this.dirty) return;
     await mkdir(path.dirname(this.filePath), { recursive: true });
+    // Snapshot the deltas + overwrite body THIS save publishes BEFORE the write
+    // yields the event loop. `writeMaybeEncryptedFile` materializes `serialized`
+    // eagerly, then the disk await lets a concurrent same-process add()/remove()
+    // land a late delta (PR #2016 thread PRRT_kwDORJXyws6SEBri). Clearing the
+    // LIVE added/removed sets afterward — as the previous unconditional
+    // clear()+`dirty = false` did — would drop that late hash from the index AND
+    // leave no retry, so peers never see it until a corpus rebuild. Consume only
+    // what we published; late deltas stay pending. Mirrors saveMergingWithDisk.
+    const publishedAdded = new Set<string>(this.added);
+    const publishedRemoved = new Set<string>(this.removed);
+    const serialized = [...this.hashes].join("\n") + "\n";
     await writeMaybeEncryptedFile(
       this.filePath,
-      [...this.hashes].join("\n") + "\n",
+      serialized,
       this.secureStoreWriteKeyProvider(),
       {},
       this.memoryDir
     );
-    // The overwrite publishes the full in-memory set; drop the pending
-    // add/remove deltas so a later reconciling save does not re-apply them, and
-    // cancel any armed deferred-reconcile retry (PR #2016) — a full overwrite
-    // supersedes it, so letting it fire could union stale on-disk rows back.
-    this.added.clear();
-    this.removed.clear();
-    this.dirty = false;
-    this.cancelReconcileRetry();
+    // Consume ONLY the deltas this overwrite published; anything that arrived
+    // during the awaits above remains pending for the next save.
+    for (const h of publishedAdded) this.added.delete(h);
+    for (const h of publishedRemoved) this.removed.delete(h);
+    // Honest dirty state: true iff late deltas remain unpersisted.
+    this.dirty = this.added.size > 0 || this.removed.size > 0;
     // This overwrite is now the on-disk state — re-baseline the freshness
     // fingerprint so our own write is not later mistaken for a peer's (PR #2016).
     await this.captureSyncedFingerprint();
+    if (this.dirty) {
+      // Late deltas landed mid-save: arm a bounded durable retry so they reach
+      // disk even without a further batch save — never a silent in-memory-only
+      // hash. The locked reconcile republishes only OUR delta onto the overwrite.
+      this.scheduleReconcileRetry();
+    } else {
+      // Clean overwrite supersedes any pending deferred reconcile work.
+      this.cancelReconcileRetry();
+    }
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
   }
 

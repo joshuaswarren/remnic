@@ -155,6 +155,58 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
   });
 });
 
+test("#2016 thread PRRT_kwDORJXyws6SEBri: a hash added during rebuildUnderLock's save() overwrite is not lost", async () => {
+  // The plain overwrite save() materializes its body, then awaits disk. A
+  // same-process add() that lands during that await used to be dropped: save()
+  // unconditionally cleared `added` and set `dirty = false` after the write, so
+  // the late hash lived only in memory (never in fact-hashes.txt) with no retry
+  // armed. The delta-preserving consume now keeps late deltas pending and arms a
+  // durable reconcile retry. We drive the exact interleave deterministically by
+  // injecting the add() from the write-key provider, which save() invokes while
+  // evaluating writeMaybeEncryptedFile's arguments — AFTER the overwrite body is
+  // materialized but BEFORE the disk write resolves.
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    const lateContent = "late-arriving-fact-body";
+    const lateHash = ContentHashIndex.computeHash(lateContent);
+    let idx!: ContentHashIndex;
+    let injected = false;
+    const injectingWriteKeyProvider = (): Buffer | null => {
+      if (!injected) {
+        injected = true;
+        idx.add(lateContent);
+      }
+      return null;
+    };
+    idx = new ContentHashIndex(stateDir, () => null, injectingWriteKeyProvider);
+
+    // Publish an authoritative rebuild under the lock; save() runs inside it.
+    const published = await idx.rebuildUnderLock(async () => {
+      idx.clear();
+      idx.addByHash(ContentHashIndex.computeHash("corpus fact one"));
+      idx.addByHash(ContentHashIndex.computeHash("corpus fact two"));
+    });
+    assert.equal(published, true, "rebuild published under the lock");
+    assert.equal(injected, true, "the concurrent add fired during save()'s write window");
+
+    // Drive the deferred reconcile retry inline. On the buggy source save()
+    // cleared dirty and armed nothing, so this is a no-op and the late hash is
+    // gone; on the fixed source it republishes the pending delta onto disk.
+    await idx.flushReconcileRetry();
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(
+      fresh.has(lateContent),
+      "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)",
+    );
+    // The rebuilt corpus set survives too — the late-delta handling did not drop it.
+    assert.ok(fresh.has("corpus fact one"), "corpus hash one survives the rebuild+reconcile");
+    assert.ok(fresh.has("corpus fact two"), "corpus hash two survives the rebuild+reconcile");
+    assert.equal(ContentHashIndex.computeHash(lateContent), lateHash);
+  });
+});
+
 test("promotion-style immediate write survives restart even with fact-hashes.ready present", async () => {
   // Issue #1909 review finding 2: promotion writes (profile/shared) do NOT
   // register with the orchestrator's batch save (no addContentHashDedup), so
