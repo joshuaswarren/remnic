@@ -37,7 +37,10 @@ function threadIsAddressed(thread, botAliases) {
   if (thread?.isResolved === true) return true;
   const bots = new Set(botAliases.map(normalizeLogin).filter(Boolean));
   if (bots.size === 0) return false;
-  return threadComments(thread).some((comment) => {
+  const comments = threadComments(thread);
+  const firstAuthor = normalizeLogin(comments[0]?.author?.login ?? comments[0]?.user?.login);
+  if (!firstAuthor || !bots.has(firstAuthor)) return false;
+  return comments.slice(1).some((comment) => {
     const author = normalizeLogin(comment?.author?.login ?? comment?.user?.login);
     return author.length > 0 && !bots.has(author);
   });
@@ -124,8 +127,7 @@ function isNewBotActivity(activity, state) {
   const dispatchTime = parseTime(state?.dispatchIssuedAt);
   const previous = state?.lastBotActivity;
   if (dispatchTime > 0) {
-    if (activityTime > dispatchTime) return true;
-    return Boolean(activity.id && previous?.id && activity.id !== previous.id);
+    return activityTime > dispatchTime;
   }
   if (!previous) return true;
   if (activity.id && previous.id) return activity.id !== previous.id;

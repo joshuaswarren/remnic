@@ -205,15 +205,6 @@ test("a bot response after dispatch opens the next round", () => {
   assert.deepEqual(next.state.threadIds, ["thread-3"]);
 });
 
-test("a non-bot reply addresses a round thread without changing resolution semantics", () => {
-  const state = openRound();
-  const threads = [
-    { id: "thread-1", isResolved: false, comments: [{ author: { login: "maintainer" } }] },
-    { id: "thread-2", isResolved: false, comments: [{ author: { login: "cursor" } }] },
-  ];
-
-  assert.deepEqual(getGuardUnresolvedThreads(state, threads, botAliases), [threads[1]]);
-});
 
 test("ledger comments round-trip and replace only the owned marker", () => {
   const state = openRound();
@@ -313,7 +304,7 @@ test("ledger parser rejects malformed persisted state", () => {
   assert.equal(parseRoundLedger(renderRoundLedger({ ...state, lastHeadChangedAt: "not-a-date" })), null);
 });
 
-test("a distinct activity id reopens even when timestamps are not later", () => {
+test("an activity id from before dispatch does not reopen a round", () => {
   const state = openRound();
   const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
   const dispatched = decideRound({
@@ -331,7 +322,33 @@ test("a distinct activity id reopens even when timestamps are not later", () => 
     threads: addressed,
     botActivity: { id: "review-2", at: "2026-07-18T12:09:00.000Z" },
   });
-  assert.equal(result.action, "open");
+  assert.equal(result.action, "wait");
+  assert.equal(result.reason, "round-dispatched");
+});
+
+test("a human-created unresolved thread remains open until a bot finding gets a reply", () => {
+  const state = openRound({
+    threads: [{
+      id: "human-thread",
+      isResolved: false,
+      comments: [{ author: { login: "maintainer" } }],
+    }],
+  });
+  assert.deepEqual(getGuardUnresolvedThreads(state, [{
+    id: "human-thread",
+    isResolved: false,
+    comments: [{ author: { login: "maintainer" } }],
+  }], botAliases).map((thread) => thread.id), ["human-thread"]);
+
+  const addressed = [{
+    id: "human-thread",
+    isResolved: false,
+    comments: [
+      { author: { login: "cursor" } },
+      { author: { login: "maintainer" } },
+    ],
+  }];
+  assert.deepEqual(getGuardUnresolvedThreads(state, addressed, botAliases), []);
 });
 
 test("empty bot aliases fail closed for unresolved bot-only threads", () => {
