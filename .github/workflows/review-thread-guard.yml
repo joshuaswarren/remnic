@@ -194,6 +194,13 @@ jobs:
                 .replace(/<[^>]+>/g, " ")
                 .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/gu, " ")
                 .toLowerCase()
+                // Expand contracted negations so the negation survives tokenizing
+                // (can't -> can not); else `n't` splits away and a prohibition
+                // collapses into its opposite (codex P2). Mirrors review-dedup.mjs.
+                .replace(/\bcan['’]t\b/g, "can not")
+                .replace(/\bwon['’]t\b/g, "will not")
+                .replace(/\bshan['’]t\b/g, "shall not")
+                .replace(/(\w+?)n['’]t\b/g, "$1 not")
                 .replace(/\b(?:p[0-4]|sev[0-4]|nit|blocker|critical|major|minor|bug|issue|warning|suggestion)\b\s*[:.)\]-]*/gi, " ")
                 .replace(/[#*_>`~[\]]/g, " ")
                 .replace(/\s+/g, " ")
@@ -201,6 +208,23 @@ jobs:
             };
             const tokensOf = (body) =>
               stripMarkup(body).split(/[^a-z0-9]+/).filter((t) => t.length >= 2 && !STOP.has(t));
+            // Directional operand-swap detector (mirrors review-dedup.mjs): "X
+            // instead of Y" vs "Y instead of X" is a contradiction, not a dup,
+            // even with shared surrounding context. "of"/"than" are stopwords so
+            // the marker is the bare "instead"/"rather" in the token stream.
+            const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
+            const directionalOperands = (toks) => {
+              for (let i = 1; i < toks.length - 1; i++) {
+                if (DIRECTIONAL_MARKERS.has(toks[i])) return { before: toks[i - 1], after: toks[i + 1] };
+              }
+              return null;
+            };
+            const directionalOperandsSwapped = (a, b) => {
+              const oa = directionalOperands(tokensOf(a));
+              const ob = directionalOperands(tokensOf(b));
+              if (!oa || !ob) return false;
+              return oa.before !== oa.after && oa.before === ob.after && oa.after === ob.before;
+            };
             const fingerprint = (body, k = DEDUP.shingleSize) => {
               const toks = tokensOf(body);
               const kk = Math.max(1, k | 0);
@@ -281,12 +305,13 @@ jobs:
                 if (!overlap(anchor, c.anchor)) continue;
                 const sim = similarity(body, c.body);
                 if (sim < DEDUP.similarityThreshold || sim <= best) continue;
-                // Directional guard: identical token set in reversed order ("X
-                // instead of Y" vs "Y instead of X") is contradictory, not a
-                // duplicate — cross-check the ordered bigram similarity. Mirrors
-                // dedupeThreads in review-dedup.mjs.
+                // Directional guard: contradictory, not a duplicate. (1) identical
+                // token set in reversed order (cross-check the ordered bigram-sim);
+                // (2) a swapped "instead of"/"rather than" operand pair, which
+                // survives shared context. Mirrors dedupeThreads in review-dedup.mjs.
                 const orderSim = similarity(body, c.body, 2);
-                if (sim >= DEDUP.directionalSetMin && orderSim <= DEDUP.directionalOrderMax) continue;
+                const reversedOrder = sim >= DEDUP.directionalSetMin && orderSim <= DEDUP.directionalOrderMax;
+                if (reversedOrder || directionalOperandsSwapped(body, c.body)) continue;
                 match = c;
                 best = sim;
               }

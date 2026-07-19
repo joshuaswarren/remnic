@@ -145,6 +145,13 @@ export function stripMarkup(body) {
     .replace(HTML_TAG_PATTERN, " ")
     .replace(EMOJI_PATTERN, " ")
     .toLowerCase()
+    // Expand contracted negations so the negation survives tokenizing: otherwise
+    // `n't` splits into `n`/`t`, both dropped, and a prohibition collapses into
+    // its opposite (codex P2). Irregular forms first, then the general rule.
+    .replace(/\bcan['’]t\b/g, "can not")
+    .replace(/\bwon['’]t\b/g, "will not")
+    .replace(/\bshan['’]t\b/g, "shall not")
+    .replace(/(\w+?)n['’]t\b/g, "$1 not")
     .replace(SEVERITY_TAG_PATTERN, " ")
     .replace(/[#*_>`~[\]]/g, " ")
     .replace(/\s+/g, " ")
@@ -156,6 +163,34 @@ export function contentTokens(body) {
   return stripMarkup(body)
     .split(NON_WORD_PATTERN)
     .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+}
+
+// Directional markers whose two flanking operands carry the meaning: "X instead
+// of Y" / "X rather than Y". ("of"/"than" are stopwords, so in the content-token
+// stream the marker is the bare "instead"/"rather".)
+const DIRECTIONAL_MARKERS = new Set(["instead", "rather"]);
+
+/** The {before, after} operand tokens flanking the first directional marker, or null. */
+function directionalOperands(tokens) {
+  for (let i = 1; i < tokens.length - 1; i++) {
+    if (DIRECTIONAL_MARKERS.has(tokens[i])) {
+      return { before: tokens[i - 1], after: tokens[i + 1] };
+    }
+  }
+  return null;
+}
+
+/**
+ * True when two bodies state the SAME directive with its operands SWAPPED
+ * ("use cache instead of store" vs "use store instead of cache"). This is a
+ * contradiction, not a duplicate, even when they share trailing/leading context
+ * that keeps the ordered-bigram score just above the reversed-order cutoff.
+ */
+function directionalOperandsSwapped(bodyA, bodyB) {
+  const a = directionalOperands(contentTokens(bodyA));
+  const b = directionalOperands(contentTokens(bodyB));
+  if (!a || !b) return false;
+  return a.before !== a.after && a.before === b.after && a.after === b.before;
 }
 
 /** Deterministic set of word k-shingles over content tokens. */
@@ -303,11 +338,14 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
       if (!anchorsOverlap(anchor, canonical.anchor)) continue;
       const similarity = fingerprintSimilarity(body, canonical.body, shingleSize);
       if (similarity < threshold || similarity <= matchSimilarity) continue;
-      // Directional guard: an identical token set in reversed order ("X instead
-      // of Y" vs "Y instead of X") is a contradictory pair, not a duplicate. The
-      // k=1 set-sim can't see order, so cross-check the ordered bigram-sim.
+      // Directional guard: a contradictory pair, not a duplicate. Two signals —
+      // (1) an identical token set in reversed order (k=1 set-sim can't see
+      // order, so cross-check the ordered bigram-sim); (2) a swapped "instead
+      // of"/"rather than" operand pair, which survives shared surrounding context
+      // that would otherwise lift the bigram-sim past the cutoff.
       const orderSimilarity = fingerprintSimilarity(body, canonical.body, 2);
-      if (similarity >= directionalSetMin && orderSimilarity <= directionalOrderMax) continue;
+      const reversedOrder = similarity >= directionalSetMin && orderSimilarity <= directionalOrderMax;
+      if (reversedOrder || directionalOperandsSwapped(body, canonical.body)) continue;
       match = canonical;
       matchSimilarity = similarity;
     }

@@ -132,7 +132,27 @@ test("review-thread guard inline applies the directional-opposite dedup guard", 
   assert.match(workflow, /const orderSim = similarity\(body, c\.body, 2\);/, "must compute the ordered bigram similarity");
   assert.match(
     workflow,
-    /if \(sim >= DEDUP\.directionalSetMin && orderSim <= DEDUP\.directionalOrderMax\) continue;/,
-    "must skip folding a directional-opposite candidate",
+    /if \(reversedOrder \|\| directionalOperandsSwapped\(body, c\.body\)\) continue;/,
+    "must skip folding reversed-order or swapped-operand directional candidates",
   );
+});
+
+test("review-thread guard inline mirrors the directional operand-swap detector", () => {
+  // "X instead of Y" vs "Y instead of X" (even with shared context) must not
+  // fold; mirrors directionalOperandsSwapped in review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(workflow, /const DIRECTIONAL_MARKERS = new Set\(\["instead", "rather"\]\);/);
+  assert.match(workflow, /const directionalOperandsSwapped =/);
+  assert.match(
+    workflow,
+    /return oa\.before !== oa\.after && oa\.before === ob\.after && oa\.after === ob\.before;/,
+    "operand-swap detection must compare reversed operands",
+  );
+});
+
+test("review-thread guard inline expands contracted negations", () => {
+  // can't/won't/n't must expand so the negation survives tokenizing (codex P2).
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(workflow, /\.replace\(\/\\bcan\['’\]t\\b\/g, "can not"\)/);
+  assert.match(workflow, /\.replace\(\/\(\\w\+\?\)n\['’\]t\\b\/g, "\$1 not"\)/);
 });

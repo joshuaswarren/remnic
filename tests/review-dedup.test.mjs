@@ -8,6 +8,7 @@ import {
   REVIEW_DEDUP_CONFIG,
   anchorsOverlap,
   computeGuardObligations,
+  contentTokens,
   dedupeThreads,
   fingerprint,
   fingerprintSimilarity,
@@ -467,6 +468,55 @@ test("equivalent findings with the same directional order still merge", () => {
   });
   const { duplicateCount } = dedupeThreads([a, b]);
   assert.equal(duplicateCount, 1, "same-direction restatement is a real duplicate and folds");
+});
+
+test("reversed directives with shared trailing context still do NOT merge (operand swap)", () => {
+  // The shared suffix lifts the ordered-bigram score above the reversed-order
+  // cutoff, so the marker-aware operand-swap detector must catch it.
+  const a = mkThread({
+    id: 611, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use cache instead of store for invalidation path",
+  });
+  const b = mkThread({
+    id: 612, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Use store instead of cache for invalidation path",
+  });
+  const { duplicateCount } = dedupeThreads([a, b]);
+  assert.equal(duplicateCount, 0, "swapped instead-of operands with shared context must not merge");
+});
+
+test("swapped 'rather than' operands do NOT merge", () => {
+  const a = mkThread({
+    id: 613, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Prefer cache rather than store for reads",
+  });
+  const b = mkThread({
+    id: 614, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Prefer store rather than cache for reads",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "swapped rather-than operands must not merge");
+});
+
+test("contracted negations are normalized so the negation survives tokenizing", () => {
+  // can't/won't/don't/isn't ... expand so 'not' is kept and a prohibition stays
+  // lexically distinct from its opposite.
+  assert.ok(contentTokens("can't delete the backup").includes("not"), "can't keeps a negation token");
+  assert.ok(!contentTokens("can delete the backup").includes("not"), "the affirmative has no negation token");
+  for (const c of ["don't drop it", "isn't valid", "won't retry"]) {
+    assert.ok(contentTokens(c).includes("not"), `${c} keeps a negation token`);
+  }
+});
+
+test("an unrelated directive phrase is not falsely blocked or merged", () => {
+  const a = mkThread({
+    id: 615, path: "a.ts", startLine: 10, line: 12, author: "cursor",
+    body: "Use cache instead of store",
+  });
+  const b = mkThread({
+    id: 616, path: "a.ts", startLine: 10, line: 12, author: "chatgpt-codex-connector",
+    body: "Delete the temporary lockfile on process exit",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "unrelated findings simply do not match");
 });
 
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
