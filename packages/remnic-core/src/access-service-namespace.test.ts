@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
+import { type LoggerBackend, initLogger } from "./logger.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -94,6 +95,19 @@ function makeService(): {
   };
 
   return { service, storage, getStorageCalls };
+}
+
+// memory_search now threads an `execution.onDegradation` observer into
+// searchAcrossNamespaces (issue #2018 observability). Tests that assert the
+// fanout shape compare only the fields they care about, not the whole object.
+function searchParamsSubset(params: unknown): {
+  query: unknown;
+  namespaces: unknown;
+  maxResults: unknown;
+  mode: unknown;
+} {
+  const p = params as { query?: unknown; namespaces?: unknown; maxResults?: unknown; mode?: unknown };
+  return { query: p.query, namespaces: p.namespaces, maxResults: p.maxResults, mode: p.mode };
 }
 
 test("getWritableStorageForNamespace denies read-only principals before storage lookup", async () => {
@@ -915,7 +929,7 @@ test("memorySearch without an explicit namespace uses readable recall namespaces
     principal: "reader",
   });
 
-  assert.deepEqual(searchParams, {
+  assert.deepEqual(searchParamsSubset(searchParams), {
     query: "deployment notes",
     namespaces: ["default", "shared"],
     maxResults: 3,
@@ -943,7 +957,7 @@ test("memorySearch with an explicit namespace searches only that readable namesp
     principal: "reader",
   });
 
-  assert.deepEqual(searchParams, {
+  assert.deepEqual(searchParamsSubset(searchParams), {
     query: "release note",
     namespaces: ["team"],
     maxResults: 2,
@@ -1034,7 +1048,7 @@ test("memorySearch treats global collection as ACL-scoped when namespaces are en
   });
 
   assert.equal(globalSearchCalls, 0);
-  assert.deepEqual(searchParams, {
+  assert.deepEqual(searchParamsSubset(searchParams), {
     query: "runbook",
     namespaces: ["default", "shared"],
     maxResults: undefined,
@@ -1064,7 +1078,7 @@ test("memorySearch accepts a namespace-scoped collection for the requested names
     principal: "reader",
   });
 
-  assert.deepEqual(searchParams, {
+  assert.deepEqual(searchParamsSubset(searchParams), {
     query: "release note",
     namespaces: ["team"],
     maxResults: undefined,
@@ -1093,7 +1107,7 @@ test("memorySearch accepts a readable namespace-scoped collection without duplic
     principal: "reader",
   });
 
-  assert.deepEqual(searchParams, {
+  assert.deepEqual(searchParamsSubset(searchParams), {
     query: "release note",
     namespaces: ["team"],
     maxResults: undefined,
@@ -1564,4 +1578,187 @@ test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (
     "path enumeration aborts on a persistent lifecycle deferral",
   );
   assert.ok(drainAttempts >= 9, "each aborted entrypoint retried the drain before giving up");
+});
+// ─── Issue #2018: memory_search must reach the base collection ───────────────
+//
+// On a namespaces-enabled deployment with a flat-root default namespace, the
+// bulk corpus lives under the DEFAULT namespace's base QMD collection. recall
+// reaches it via the coding-overlay fallbacks, but memory_search has no
+// sessionKey (so no coding context). With scope profiles active and a
+// non-default principal, the profile read set collapsed to the derived
+// principal-self + shared namespaces and EXCLUDED the default namespace —
+// every query silently returned 0.
+
+function makeConfigWithScopeProfile(): PluginConfig {
+  const base = makeConfig();
+  return {
+    ...base,
+    defaultScopeProfile: "standard",
+    scopeProfiles: {
+      standard: {
+        readOrder: ["userProject", "userGlobal", "serverShared"],
+        writeDefault: "userProject",
+        promotionTargets: ["userGlobal", "serverShared"],
+        autoPromote: {
+          enabled: false,
+          targets: ["userGlobal"],
+          categories: ["fact"],
+          minConfidenceTier: "inferred",
+        },
+      },
+    },
+  } as unknown as PluginConfig;
+}
+
+function makeServiceWithConfig(config: PluginConfig): {
+  service: EngramAccessService;
+  captured: { namespaces?: string[]; execution?: unknown; getStorageCalls: string[] };
+} {
+  const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  const captured: { namespaces?: string[]; execution?: unknown; getStorageCalls: string[] } = { getStorageCalls: [] };
+  type OrchLike = {
+    config: PluginConfig;
+    qmd: { search(): Promise<unknown[]>; searchGlobal(): Promise<unknown[]> };
+    getStorage(namespace: string): Promise<StorageManager>;
+    searchAcrossNamespaces(params: {
+      namespaces?: string[];
+      maxResults?: number;
+      mode?: string;
+      execution?: unknown;
+    }): Promise<unknown[]>;
+  };
+  const orchestrator: OrchLike = {
+    config,
+    qmd: {
+      async search() { throw new Error("qmd.search should not run in namespace mode"); },
+      async searchGlobal() { throw new Error("qmd.searchGlobal should not run in namespace mode"); },
+    },
+    async getStorage(namespace: string) { captured.getStorageCalls.push(namespace); return { dir: config.memoryDir } as StorageManager; },
+    async searchAcrossNamespaces(params) {
+      captured.namespaces = params.namespaces;
+      captured.execution = params.execution;
+      return [];
+    },
+  };
+  (service as unknown as { orchestrator: OrchLike }).orchestrator = orchestrator;
+  return { service, captured };
+}
+
+function captureLogs(): { backend: LoggerBackend; warn: string[]; reset: () => void } {
+  const warn: string[] = [];
+  const backend: LoggerBackend = {
+    info() {},
+    warn(msg) { warn.push(msg); },
+    error() {},
+    debug() {},
+  };
+  initLogger(backend, false, { timestamps: false });
+  return { backend, warn, reset: () => initLogger({ info() {}, warn() {}, error() {}, debug() {} }, false) };
+}
+
+test("memorySearch includes the default namespace for a scope-profile principal without coding context (#2018)", async () => {
+  // Before the fix the fanout resolved to ["operator-x", "shared"] and the
+  // base collection (default namespace) was never queried — every search
+  // returned 0 on a flat-root deployment.
+  const { service, captured } = makeServiceWithConfig(makeConfigWithScopeProfile());
+  await service.memorySearch({ query: "exact phrase", principal: "operator-x" });
+  assert.ok(
+    captured.namespaces?.includes("default"),
+    `default namespace must be in fanout, got ${JSON.stringify(captured.namespaces)}`,
+  );
+});
+
+test("memorySearch preserves scope-profile project/global layers alongside the default namespace (#2018)", async () => {
+  const { service, captured } = makeServiceWithConfig(makeConfigWithScopeProfile());
+  await service.memorySearch({ query: "exact phrase", principal: "operator-x" });
+  // The derived self namespace ("operator-x") and shared must still be present;
+  // the fix ADDS the default, it does not replace the profile stack.
+  assert.ok(captured.namespaces?.includes("operator-x"));
+  assert.ok(captured.namespaces?.includes("shared"));
+  assert.ok(captured.namespaces?.includes("default"));
+});
+
+test("memorySearch ACL-gates the default namespace fallback (#2018)", async () => {
+  // If the principal cannot read the default namespace, the fallback must NOT
+  // add it. Configure a protected default via a namespace policy that excludes
+  // the principal, and confirm "default" is absent while the policy name is
+  // still reachable through the profile stack only when readable.
+  const config = makeConfigWithScopeProfile();
+  (config as unknown as { defaultNamespace: string }).defaultNamespace = "root";
+  (config as unknown as { namespacePolicies: Array<{ name: string; readPrincipals: string[]; writePrincipals: string[] }> }).namespacePolicies = [
+    { name: "root", readPrincipals: ["owner"], writePrincipals: ["owner"] },
+  ];
+  const { service, captured } = makeServiceWithConfig(config);
+  await service.memorySearch({ query: "exact phrase", principal: "operator-x" });
+  assert.ok(
+    !captured.namespaces?.includes("root"),
+    "default namespace must NOT be added when the principal lacks read access",
+  );
+});
+
+test("memorySearch surfaces an empty namespace resolution as a warning, never silently empty (#2018)", async () => {
+  const { reset, warn } = captureLogs();
+  try {
+    // defaultRecallNamespaces: [] + no scope profile + no policies ⇒ the
+    // readable recall set is empty, exercising the silent-empty branch.
+    const config = {
+      ...makeConfig(),
+      defaultRecallNamespaces: [],
+    } as unknown as PluginConfig;
+    const { service } = makeServiceWithConfig(config);
+    const result = await service.memorySearch({ query: "anything", principal: "operator-x" });
+    assert.equal(result.count, 0);
+    assert.ok(
+      warn.some((line) => line.includes("memory_search resolved zero readable namespaces")),
+      "expected a zero-namespace warning",
+    );
+  } finally {
+    reset();
+  }
+});
+
+test("memorySearch threads backend degradations to a warning (#2018)", async () => {
+  const { reset, warn } = captureLogs();
+  try {
+    const config = makeConfigWithScopeProfile();
+    const { service } = makeServiceWithConfig(config);
+    (service as unknown as {
+      orchestrator: {
+        searchAcrossNamespaces(params: {
+          execution?: { onDegradation?: (d: unknown) => void };
+        }): Promise<unknown[]>;
+      };
+    }).orchestrator.searchAcrossNamespaces = async (params) => {
+      params.execution?.onDegradation?.({
+        backend: "qmd",
+        code: "backend_unavailable",
+        detail: "namespace collection missing: operator-x",
+      });
+      return [];
+    };
+    await service.memorySearch({ query: "anything", principal: "operator-x" });
+    assert.ok(
+      warn.some((line) => line.includes("memory_search backend degradation")),
+      "expected a backend-degradation warning",
+    );
+  } finally {
+    reset();
+  }
+});
+
+test("memorySearch does not probe default storage for an explicit namespace or before auth (#2056 r5)", async () => {
+  const config = makeConfigWithScopeProfile();
+  const { service, captured } = makeServiceWithConfig(config);
+  // Explicit-namespace queries ignore the default-namespace fallback, so the
+  // flat-root storage probe must not run (and must not run before the auth
+  // check rejects an unauthorized principal).
+  await assert.rejects(
+    () => service.memorySearch({ query: "x", namespace: "team", principal: "stranger" }),
+    /namespace is not readable: team/,
+  );
+  assert.deepEqual(
+    captured.getStorageCalls,
+    [],
+    "default-namespace storage must not be probed for an explicit-namespace query",
+  );
 });
