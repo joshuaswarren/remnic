@@ -9462,7 +9462,10 @@ export function advanceOfflineLargeFileFailureCounts(options: {
  * built-in node-local state excludes applied inside offline-sync.ts.
  * Invalid globs throw with a per-entry message instead of being ignored.
  */
-function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
+function resolveOfflineSyncUserExcludes(
+  rest: string[],
+  config: ReturnType<typeof parseConfig>,
+): RegExp[] {
   const globs: string[] = [];
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] !== "--exclude") continue;
@@ -9473,31 +9476,17 @@ function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
     globs.push(value.trim());
     i += 1;
   }
-  const configPath = resolveConfigPath();
-  try {
-    const raw = fs.existsSync(configPath)
-      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-      : {};
-    const remnicCfg = resolveRemnicConfigRecord(raw);
-    const configured = remnicCfg.offlineSyncExcludes;
-    if (configured !== undefined && configured !== null) {
-      if (!Array.isArray(configured)) {
-        throw new Error("offlineSyncExcludes config must be an array of non-empty glob strings");
-      }
-      for (const entry of configured) {
-        if (typeof entry !== "string" || entry.trim().length === 0) {
-          throw new Error("offlineSyncExcludes config must contain only non-empty glob strings");
-        }
-        globs.push(entry.trim());
-      }
+  const configured = config.offlineSyncExcludes;
+  if (configured !== undefined && configured !== null) {
+    if (!Array.isArray(configured)) {
+      throw new Error("offlineSyncExcludes config must be an array of non-empty glob strings");
     }
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      // Unparseable config file: offline commands historically run without
-      // config; surface loudly rather than silently dropping excludes.
-      throw new Error(`cannot read offlineSyncExcludes from ${configPath}: ${error.message}`);
+    for (const entry of configured) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        throw new Error("offlineSyncExcludes config must contain only non-empty glob strings");
+      }
+      globs.push(entry.trim());
     }
-    throw error;
   }
   return compileOfflineSyncExcludeGlobs(globs);
 }
@@ -9529,12 +9518,19 @@ Environment fallbacks:
   const includeTranscripts = !hasFlag(rest, "--no-transcripts");
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const statePathExplicit = stateOverride !== undefined;
-  const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest);
   const configPath = resolveConfigPath();
-  const rawConfig = fs.existsSync(configPath)
-    ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-    : {};
-  const config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+  let config: ReturnType<typeof parseConfig>;
+  try {
+    const rawConfig = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+      : {};
+    config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+  } catch {
+    throw new Error(
+      "offline sync: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
+    );
+  }
+  const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest, config);
   const impressionRotation = resolveOfflineImpressionRotation(configPath);
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
