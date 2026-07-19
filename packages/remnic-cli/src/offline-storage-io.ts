@@ -54,7 +54,10 @@ export interface OfflineStorageIo {
   deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
 }
 
-export async function createConfiguredOfflineStorage(memoryDir: string): Promise<ConfiguredOfflineStorage> {
+export async function createConfiguredOfflineStorage(
+  memoryDir: string,
+  secureStoreEncryptOnWrite = true,
+): Promise<ConfiguredOfflineStorage> {
   const storage = new StorageManager(memoryDir);
   const header = await readHeader(memoryDir);
   let secureStoreKey: Buffer | null = null;
@@ -62,7 +65,7 @@ export async function createConfiguredOfflineStorage(memoryDir: string): Promise
     storage.setSecureStoreRequired(true);
     const key = keyring.getKey(secureStoreDir(memoryDir));
     if (key) {
-      storage.setSecureStoreKey(key);
+      storage.setSecureStoreKey(key, secureStoreEncryptOnWrite);
       secureStoreKey = key;
     }
   }

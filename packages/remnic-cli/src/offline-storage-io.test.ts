@@ -6,9 +6,17 @@ import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "@remnic/core";
+import {
+  buildHeader,
+  buildMetadata,
+  keyring,
+  secureStoreDir,
+  writeHeader,
+} from "@remnic/core/secure-store";
 import { encryptFileBody, filePathAad } from "@remnic/core/secure-store";
 
-import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { createConfiguredOfflineStorage, createOfflineStorageIo } from "./offline-storage-io.js";
+
 
 test("offline storage IO decrypts encrypted files for reads and streaming digests", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-io-"));
@@ -65,6 +73,33 @@ test("offline storage IO decrypts legacy namespaced AAD files in chunks", async 
 
     assert.deepEqual(Buffer.concat(chunks), content);
   } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("configured offline storage preserves disabled secure-store encryption policy", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-policy-"));
+  const storeKey = Buffer.alloc(32, 41);
+  try {
+    const metadata = buildMetadata({
+      algorithm: "scrypt",
+      salt: Buffer.alloc(16, 42),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await writeHeader(
+      memoryDir,
+      buildHeader({
+        metadata,
+        derivedKey: storeKey,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    keyring.unlock(secureStoreDir(memoryDir), storeKey);
+    const configured = await createConfiguredOfflineStorage(memoryDir, false);
+    assert.equal(configured.secureStoreKey, storeKey);
+    assert.equal(configured.storage.willEncryptStateWrites(), false);
+  } finally {
+    keyring.lock(secureStoreDir(memoryDir));
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

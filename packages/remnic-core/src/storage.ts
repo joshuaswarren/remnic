@@ -74,6 +74,7 @@ import {
   SecureStoreLockedError,
   MAGIC_HEADER_SIZE,
   isEncryptedFile,
+  probeEncryptedRegularFileHeader,
   readMaybeEncryptedFileBuffer,
   readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
@@ -5603,8 +5604,16 @@ export class StorageManager {
     return readMaybeEncryptedFileBuffer(this.memoryLifecycleLedgerPath, this._secureStoreKey, this.baseDir);
   }
   async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+    if (!(await probeEncryptedRegularFileHeader(this.memoryLifecycleLedgerPath))) {
+      return readAllLifecycleEventsFromLedger(
+        this.memoryLifecycleLedgerPath,
+        (p) => this.readStorageSecureFile(p),
+      );
+    }
     return readAllLifecycleEventsFromLedgerBuffer(
-      this.memoryLifecycleLedgerPath, (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir));
+      this.memoryLifecycleLedgerPath,
+      (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir),
+    );
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {

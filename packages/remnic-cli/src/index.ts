@@ -8823,6 +8823,8 @@ export async function runOfflineSyncOnce(options: {
   userExcludeRegexps?: readonly RegExp[];
   /** Large files permanently skipped by the watch 3-strikes policy (#1786). */
   skipLargeFilePaths?: ReadonlySet<string>;
+  /** Preserve the configured secure-store write policy when loading the key. */
+  secureStoreEncryptOnWrite?: boolean;
 } & { impressionsRotateBytes: number; impressionsRotateKeep: number }): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
@@ -8862,7 +8864,10 @@ export async function runOfflineSyncOnce(options: {
   }
   const baseFiles = priorState?.baseFiles ?? [];
   const baseCapturedAt = priorState ? new Date(priorState.lastSyncedAt) : undefined;
-  const offlineStorage = await createConfiguredOfflineStorage(options.memoryDir);
+  const offlineStorage = await createConfiguredOfflineStorage(
+    options.memoryDir,
+    options.secureStoreEncryptOnWrite,
+  );
   const storageIo = await createOfflineStorageIo(options.memoryDir, offlineStorage);
   const localSourceId = localOfflineSourceId(options.memoryDir);
   await drainOfflineSyncImpressions(options.memoryDir, options);
@@ -9525,7 +9530,12 @@ Environment fallbacks:
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const statePathExplicit = stateOverride !== undefined;
   const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest);
-  const impressionRotation = resolveOfflineImpressionRotation(resolveConfigPath());
+  const configPath = resolveConfigPath();
+  const rawConfig = fs.existsSync(configPath)
+    ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+    : {};
+  const config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+  const impressionRotation = resolveOfflineImpressionRotation(configPath);
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
@@ -9565,7 +9575,10 @@ Environment fallbacks:
         statePath: existingState.statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(memoryDir);
+    const storageIo = await createOfflineStorageIo(
+      memoryDir,
+      await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
+    );
     const pull = await applyOfflineSyncSnapshot({
       root: memoryDir,
       snapshot: remoteSnapshot,
@@ -9612,6 +9625,7 @@ Environment fallbacks:
       statePath,
       statePathExplicit,
       userExcludeRegexps,
+      secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
       ...impressionRotation,
     });
     if (json) {
@@ -9646,7 +9660,10 @@ Environment fallbacks:
         statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(memoryDir);
+    const storageIo = await createOfflineStorageIo(
+      memoryDir,
+      await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
+    );
     const summary = await summarizeOfflineSyncPendingChanges({
       root: memoryDir,
       sourceId: localOfflineSourceId(memoryDir),
@@ -9696,6 +9713,7 @@ Environment fallbacks:
           statePath,
           statePathExplicit,
           userExcludeRegexps,
+          secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
           ...impressionRotation,
           skipLargeFilePaths: skippedLargeFiles,
         });

@@ -271,6 +271,27 @@ test("readAllMemoryLifecycleEventsForCompaction reads an encrypted ledger via th
   }
 });
 
+test("readAllMemoryLifecycleEventsForCompaction streams a plaintext ledger", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-plaintext-compaction-"));
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  const a = lifecycleEvent("evt-plain-a", "memory-a", "2026-01-01T00:00:00.000Z");
+  const b = lifecycleEvent("evt-plain-b", "memory-b", "2026-01-02T00:00:00.000Z");
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  await writeFile(ledgerPath, `${JSON.stringify(a)}\n${JSON.stringify(b)}\n`, "utf8");
+  try {
+    const storage = new StorageManager(memoryDir);
+    const privateStorage = storage as unknown as {
+      readStorageSecureFile(filePath: string): Promise<string>;
+    };
+    privateStorage.readStorageSecureFile = async () => {
+      throw new Error("plaintext lifecycle ledger must stream without whole-file reads");
+    };
+    assert.deepEqual(await storage.readAllMemoryLifecycleEventsForCompaction(), [a, b]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("readMemoryActionEventRows streams the action ledger and keeps source line numbers", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-action-stream-"));
   const ledgerPath = path.join(memoryDir, "state", "memory-actions.jsonl");
