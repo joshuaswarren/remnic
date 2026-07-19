@@ -305,6 +305,11 @@ test("storage submodule files are in the manifest (grandfathered), not silently 
     assert.equal(warnings.length, 1, `${file} must be seen by the gate (warn), not ignored`);
     assert.equal(warnings[0].file, file);
   }
+  // Existing storage files are grandfathered individually; a NEW storage file
+  // matches only the storage/** catch-all (unmapped) and must FAIL the gate.
+  const fresh = evaluateCoverage(["packages/remnic-core/src/storage/brand-new-store.ts"], manifest);
+  assert.equal(fresh.violations.length, 1, "a new storage submodule file must fail as unmapped until covered or grandfathered");
+  assert.equal(fresh.warnings.length, 0);
 });
 
 test("manifestShrinkage flags lifecycleManifest globs removed vs the base", () => {
@@ -377,11 +382,12 @@ test("discoverSubjectRegistrations records only genuine TOP-LEVEL calls", () => 
     'false && runLifecycleMatrix("short-circuit", subject);',
     'if (false) runLifecycleMatrix("braceless-if", subject);',
     'const assigned = runLifecycleMatrix("assigned-not-statement", subject);',
+    'runLifecycleMatrix("trailing-comma", subject,);',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
-    ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg", "after-regex"],
-    "only genuine module-load standalone 2-arg registrations count; comments, strings, template/regex literals, brace-nested calls, options args (inline/aliased), and non-standalone wrappers (env/boolean short-circuit, braceless if, assignment) are all ignored",
+    ["real-subject", "single-quoted-real", "inline-two-arg", "nested-call-arg", "after-regex", "trailing-comma"],
+    "only genuine module-load standalone 2-arg registrations count (a legal trailing comma is still two args); comments, strings, template/regex literals, brace-nested calls, options args (inline/aliased), and non-standalone wrappers (short-circuit/braceless-if/assignment) are ignored",
   );
 });
 

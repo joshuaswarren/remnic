@@ -84,7 +84,13 @@
     "packages/remnic-core/src/namespaces/scope-profile-config.ts",
     "packages/remnic-core/src/namespaces/scope-profiles.ts",
     "src/namespaces/migrate.ts",
-    "src/namespaces/principal.ts"
+    "src/namespaces/principal.ts",
+    "packages/remnic-core/src/storage/content-hash-index.ts",
+    "packages/remnic-core/src/storage/entity-store.ts",
+    "packages/remnic-core/src/storage/entity-timeline.ts",
+    "packages/remnic-core/src/storage/identity-continuity-store.ts",
+    "packages/remnic-core/src/storage/memory-read-store.ts",
+    "packages/remnic-core/src/storage/secure-line-reader.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -110,7 +116,6 @@
     "packages/remnic-core/src/session-observer-state.ts",
     "packages/remnic-core/src/session-transcript-migration.ts",
     "src/memory-cache.ts",
-    "packages/remnic-core/src/storage/**",
     "packages/remnic-core/src/memory-cache.ts",
     "src/intent.ts",
     "src/entity-retrieval.ts",
@@ -170,6 +175,12 @@
     "src/namespaces/principal.ts",
     "src/orchestrator.ts",
     "src/buffer.ts",
-    "src/storage.ts"
+    "src/storage.ts",
+    "packages/remnic-core/src/storage/content-hash-index.ts",
+    "packages/remnic-core/src/storage/entity-store.ts",
+    "packages/remnic-core/src/storage/entity-timeline.ts",
+    "packages/remnic-core/src/storage/identity-continuity-store.ts",
+    "packages/remnic-core/src/storage/memory-read-store.ts",
+    "packages/remnic-core/src/storage/secure-line-reader.ts"
   ]
 }

@@ -205,7 +205,8 @@ export function discoverSubjectRegistrations(source) {
           let callDepth = 1;
           let braceDepth = 0;
           let bracketDepth = 0;
-          let topCommas = 0;
+          let contentSegments = 0;
+          let curSegHasContent = false;
           let argQuote = null;
           let argPrev = "(";
           while (j < n && callDepth > 0) {
@@ -226,6 +227,7 @@ export function discoverSubjectRegistrations(source) {
             if (c === '"' || c === "'" || c === "`") {
               argQuote = c;
               argPrev = c;
+              curSegHasContent = true;
               j += 1;
               continue;
             }
@@ -243,29 +245,44 @@ export function discoverSubjectRegistrations(source) {
               if (argPrev === "" || REGEX_ALLOWED_AFTER.has(argPrev)) {
                 j = skipRegexLiteral(source, j);
                 argPrev = "z";
+                curSegHasContent = true;
                 continue;
               }
               argPrev = "/";
+              curSegHasContent = true;
+              j += 1;
+              continue;
+            }
+            if (c === ")") {
+              callDepth -= 1;
+              if (callDepth === 0) break; // call closed — do not count as content
+              curSegHasContent = true;
+              argPrev = c;
               j += 1;
               continue;
             }
             if (c === "(") callDepth += 1;
-            else if (c === ")") callDepth -= 1;
             else if (c === "{") braceDepth += 1;
             else if (c === "}") {
               if (braceDepth > 0) braceDepth -= 1;
             } else if (c === "[") bracketDepth += 1;
             else if (c === "]") {
               if (bracketDepth > 0) bracketDepth -= 1;
-            } else if (c === "," && callDepth === 1 && braceDepth === 0 && bracketDepth === 0) {
-              topCommas += 1;
+            }
+            if (c === "," && callDepth === 1 && braceDepth === 0 && bracketDepth === 0) {
+              if (curSegHasContent) contentSegments += 1;
+              curSegHasContent = false;
+            } else {
+              curSegHasContent = true;
             }
             argPrev = c;
             j += 1;
           }
-          // Exactly two arguments (one top-level separator) is a production call;
-          // zero (no subject) or two-plus (an options arg) is not recorded.
-          if (name.length > 0 && topCommas === 1) names.push(name);
+          if (curSegHasContent) contentSegments += 1;
+          // Two arguments = name + exactly one content segment. A legal trailing
+          // comma leaves an empty final segment (still two args). Zero segments
+          // (no subject) or a second content segment (an options arg) is rejected.
+          if (name.length > 0 && contentSegments === 1) names.push(name);
           prevSig = ")";
           i = j;
           continue;
