@@ -87,10 +87,21 @@ function relPath(repoRoot: string, fileName: string): string {
 }
 
 /**
+ * Name of a parser function node, for scope-qualifying unparseable ids. Uses the
+ * declaration name (program source files have no parent pointers, so an upward
+ * walk is unavailable); anonymous functions yield "".
+ */
+function functionName(fn: ts.Node): string {
+  if ((ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.name) return fn.name.text;
+  return "";
+}
+
+/**
  * Record a loud unparseable construct with a stable, line-independent id
- * (`<relFile>#<hash(reason + normalized construct text)>`). Keeping the id keyed
- * by construct identity means a grandfather entry survives unrelated edits that
- * merely shift line numbers (issue #1990 review).
+ * (`<relFile>#<hash(scope + reason + normalized construct text)>`). Keying by
+ * scope-qualified construct identity means a grandfather entry survives edits
+ * that merely shift line numbers, and two identical constructs in different
+ * parser functions do not collide (issue #1990 review).
  */
 function pushUnparseable(
   out: { unparseable: UnparseableConstruct[] },
@@ -98,11 +109,12 @@ function pushUnparseable(
   sourceFile: ts.SourceFile,
   node: ts.Node,
   reason: string,
+  scope: string,
 ): void {
   const file = relPath(repoRoot, sourceFile.fileName);
   const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
   const normalized = node.getText(sourceFile).replace(/\s+/g, " ").trim();
-  const hash = createHash("sha1").update(`${reason}\u0000${normalized}`).digest("hex").slice(0, 12);
+  const hash = createHash("sha1").update(`${scope}\u0000${reason}\u0000${normalized}`).digest("hex").slice(0, 12);
   out.unparseable.push({ file, line: pos.line + 1, reason, id: `${file}#${hash}` });
 }
 
@@ -199,6 +211,7 @@ function extractParserKeys(
   if (!fn.body) return;
   const param = fn.parameters[0];
   if (!param || !ts.isIdentifier(param.name)) return;
+  const scopeName = functionName(fn);
 
   // alias name -> path prefix relative to the parser input
   const aliases = new Map<string, AliasInfo>();
@@ -470,6 +483,7 @@ function extractParserKeys(
             sourceFile,
             node,
             "computed element access on parser input — key not statically derivable",
+            scopeName,
           );
         } else {
           pushUnparseable(
@@ -478,6 +492,7 @@ function extractParserKeys(
             sourceFile,
             node,
             "computed element access on parser input — key not statically derivable",
+            scopeName,
           );
         }
         return;
@@ -558,6 +573,7 @@ function extractParserKeys(
           sourceFile,
           node,
           `Object.${node.expression.name.text}() over parser input — dynamic key set`,
+          scopeName,
         );
         return;
       }
@@ -737,13 +753,14 @@ export function extractParsedKeyPaths(options: {
           if (helper) {
             extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, delegated.argSegments, recursion);
           } else {
-            pushUnparseable(
-              out,
-              repoRoot,
-              entry.sourceFile,
-              prop,
-              `delegated parser ${delegated.helperName} not found in program`,
-            );
+          pushUnparseable(
+            out,
+            repoRoot,
+            entry.sourceFile,
+            prop,
+            `delegated parser ${delegated.helperName} not found in program`,
+            functionName(entry.fn),
+          );
           }
         }
       } else if (ts.isSpreadAssignment(prop)) {
@@ -761,6 +778,7 @@ export function extractParsedKeyPaths(options: {
               entry.sourceFile,
               prop,
               `delegated parser ${delegated.helperName} not found in program`,
+              functionName(entry.fn),
             );
           }
         }

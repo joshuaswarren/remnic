@@ -957,37 +957,37 @@
     {
       "file": "packages/remnic-core/src/coding/coding-knowledge-config.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/coding/coding-knowledge-config.ts#a310f33cfc0c"
+      "id": "packages/remnic-core/src/coding/coding-knowledge-config.ts#00718dde1337"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
       "reason": "Object.keys() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/config.ts#5d8da91b4674"
+      "id": "packages/remnic-core/src/config.ts#b100f6136e84"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/config.ts#e0fdc039e7a0"
+      "id": "packages/remnic-core/src/config.ts#d53d65700eaa"
     },
     {
       "file": "packages/remnic-core/src/entity-schema.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/entity-schema.ts#0c0f2214aa0d"
+      "id": "packages/remnic-core/src/entity-schema.ts#3038a1b1f062"
     },
     {
       "file": "packages/remnic-core/src/namespaces/scope-profile-config.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#d6e909a14090"
+      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#719099d0bcac"
     },
     {
       "file": "packages/remnic-core/src/namespaces/scope-profile-config.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#d6e909a14090"
+      "id": "packages/remnic-core/src/namespaces/scope-profile-config.ts#19380d52bdbf"
     },
     {
       "file": "packages/remnic-core/src/wearables/config.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/wearables/config.ts#d2e5943b27e2"
+      "id": "packages/remnic-core/src/wearables/config.ts#c5d5e2107ff5"
     }
   ],
   "ambiguousValueMembers": [

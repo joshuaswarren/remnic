@@ -72,6 +72,17 @@ test("unparseable fixture: dynamic constructs are reported loudly, never silentl
   }
 });
 
+test("unparseable ids are scope-qualified: identical constructs in different functions do not collide (#1990)", () => {
+  const { unparseable } = extractReal();
+  // parseScopeProfiles and parseScopeTeams both run `Object.entries(value)` in
+  // scope-profile-config.ts; scope-qualified ids must keep them distinct so
+  // fixing or adding one dynamic loop is not silently hidden by the other.
+  const scopeProfile = unparseable.filter((u) => u.file.endsWith("namespaces/scope-profile-config.ts"));
+  assert.ok(scopeProfile.length >= 2, JSON.stringify(scopeProfile));
+  const ids = scopeProfile.map((u) => u.id);
+  assert.equal(new Set(ids).size, ids.length, `scope-profile unparseable ids collide: ${ids.join(", ")}`);
+});
+
 function extractReal() {
   return extractParsedKeyPaths({
     repoRoot: REPO_ROOT,
