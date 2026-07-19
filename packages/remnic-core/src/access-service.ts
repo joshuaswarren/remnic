@@ -82,6 +82,11 @@ import {
 import { CrossNamespaceBudget, type BudgetWarning } from "./cross-namespace-budget.js";
 import { log } from "./logger.js";
 import {
+  mergeMemorySearchDefaultFallback,
+  resolveMemorySearchDefaultFallback,
+  runMemorySearchFanout,
+} from "./access-memory-search-fanout.js";
+import {
   buildQualityScore,
   buildProposedActions,
   groupActionsByStatus,
@@ -2046,18 +2051,27 @@ export class EngramAccessService {
       codingContext: null,
       codingOverlay: null,
     });
-    const namespaces = profilePlan
-      ? expandScopeProfileReadNamespaces({
-          profilePlan,
-          principalSelfNamespace: profilePlan.baseNamespace,
-          config: this.orchestrator.config,
-          principal,
-          codingOverlay: null,
-          legacyRecallNamespaces,
-        })
-      : legacyRecallNamespaces;
-    if (profilePlan) return namespaces;
-    return namespaces.filter((ns) =>
+    if (profilePlan) {
+      // Issue #2018: memory_search has no sessionKey, so unlike recall it
+      // cannot resolve a coding overlay. Reach the base collection (default
+      // namespace) when the profile intends a global layer and the principal
+      // is authorized — see access-memory-search-fanout.ts for the contract.
+      const profileNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan,
+        principalSelfNamespace: profilePlan.baseNamespace,
+        config: this.orchestrator.config,
+        principal,
+        codingOverlay: null,
+        legacyRecallNamespaces,
+      });
+      const fallback = resolveMemorySearchDefaultFallback({
+        profilePlan,
+        config: this.orchestrator.config,
+        principal,
+      });
+      return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
+    }
+    return legacyRecallNamespaces.filter((ns) =>
       canReadNamespace(principal, ns, this.orchestrator.config),
     );
   }
@@ -4746,14 +4760,15 @@ export class EngramAccessService {
         readableNamespaces,
         namespace?.trim() ? undefined : principal,
       );
-      results = namespaces.length === 0
-        ? []
-        : await this.orchestrator.searchAcrossNamespaces({
-            query,
-            namespaces,
-            maxResults,
-            mode: "search",
-          });
+      results = await runMemorySearchFanout({
+        query,
+        namespaces,
+        maxResults,
+        principal,
+        requestedNamespace: namespace,
+        collection,
+        search: (params) => this.orchestrator.searchAcrossNamespaces(params),
+      });
     }
 
     return {
