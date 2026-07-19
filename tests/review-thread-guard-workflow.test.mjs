@@ -204,3 +204,12 @@ test("review-thread guard inline rejects polarity-mismatch duplicates", () => {
   assert.match(guard, /const polarityMismatch =/);
   assert.match(guard, /polarityMismatch\(body, c\.body\)/, "match loop must reject polarity mismatches");
 });
+
+test("review-thread guard inline applies the terse-fingerprint distinct-findings guard", () => {
+  // Short mutually-divergent findings must not fold; mirrors terseDistinctFindings
+  // in review-dedup.mjs (codex P2).
+  const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(guard, /smallFingerprintMax: 6/, "DEDUP must define smallFingerprintMax");
+  assert.match(guard, /const terseDistinctFindings =/);
+  assert.match(guard, /terseDistinctFindings\(body, c\.body\)/, "match loop must reject terse distinct findings");
+});

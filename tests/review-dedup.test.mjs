@@ -607,9 +607,35 @@ test("two same-polarity prohibitions still merge", () => {
   });
   const b = mkThread({
     id: 636, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
-    body: "Do not call deleteAll prior to backup",
+    body: "Do not ever call deleteAll before backup",
   });
   assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same polarity + same finding folds");
+});
+
+test("terse findings differing by one distinguishing word do NOT merge", () => {
+  // Short comments: a single differing token is the whole finding. "null" vs
+  // "auth" makes these distinct even though k=1 Jaccard scores them 0.6.
+  const a = mkThread({
+    id: 641, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Missing null guard check",
+  });
+  const b = mkThread({
+    id: 642, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Missing auth guard check",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "mutually-divergent terse findings are distinct");
+});
+
+test("a terse subset/superset restatement still merges", () => {
+  const a = mkThread({
+    id: 643, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Missing null check",
+  });
+  const b = mkThread({
+    id: 644, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Missing null guard check",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "only one side diverges -> real duplicate folds");
 });
 
 test("an unrelated directive phrase is not falsely blocked or merged", () => {

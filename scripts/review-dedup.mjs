@@ -34,6 +34,13 @@ export const REVIEW_DEDUP_CONFIG = Object.freeze({
   // nonzero bigram-sim, so the guard never fires on them (codex P2).
   directionalSetMin: 0.9,
   directionalOrderMax: 0.1,
+  // Terse-fingerprint guard: for short comments (<= smallFingerprintMax content
+  // tokens on the smaller side) a single differing word is decisive, so two that
+  // each carry a token the other lacks are distinct findings ("Missing null guard
+  // check" vs "Missing auth guard check") and must not fold — even though k=1
+  // Jaccard scores them above threshold. Subset/superset or longer paraphrase
+  // duplicates are unaffected (codex P2).
+  smallFingerprintMax: 6,
 });
 
 // Reviewers whose findings are never deduplicated. CodeQL threads cannot be
@@ -240,6 +247,23 @@ function polarityMismatch(bodyA, bodyB) {
   return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
 }
 
+/**
+ * True when two SHORT findings each carry a distinguishing token the other
+ * lacks ("Missing null guard check" vs "Missing auth guard check"). For terse
+ * comments a single differing word is the whole finding, so mutual divergence
+ * means distinct findings — not a duplicate — even at a Jaccard above threshold.
+ * A subset/superset short pair (only one side diverges) or a longer comment is
+ * unaffected.
+ */
+function terseDistinctFindings(bodyA, bodyB, maxSize = REVIEW_DEDUP_CONFIG.smallFingerprintMax) {
+  const a = new Set(contentTokens(bodyA));
+  const b = new Set(contentTokens(bodyB));
+  if (Math.min(a.size, b.size) > maxSize) return false;
+  const aUnique = [...a].some((t) => !b.has(t));
+  const bUnique = [...b].some((t) => !a.has(t));
+  return aUnique && bUnique;
+}
+
 /** Deterministic set of word k-shingles over content tokens. */
 export function fingerprint(body, shingleSize = REVIEW_DEDUP_CONFIG.shingleSize) {
   const tokens = contentTokens(body);
@@ -363,6 +387,7 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
   const shingleSize = config?.shingleSize ?? REVIEW_DEDUP_CONFIG.shingleSize;
   const directionalSetMin = config?.directionalSetMin ?? REVIEW_DEDUP_CONFIG.directionalSetMin;
   const directionalOrderMax = config?.directionalOrderMax ?? REVIEW_DEDUP_CONFIG.directionalOrderMax;
+  const smallFingerprintMax = config?.smallFingerprintMax ?? REVIEW_DEDUP_CONFIG.smallFingerprintMax;
   const ordered = stableSort(Array.isArray(threads) ? threads : []);
   const canonicals = [];
   const records = [];
@@ -403,7 +428,8 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
       if (
         reversedOrder ||
         directionalOperandsSwapped(body, canonical.body) ||
-        polarityMismatch(body, canonical.body)
+        polarityMismatch(body, canonical.body) ||
+        terseDistinctFindings(body, canonical.body, smallFingerprintMax)
       ) {
         continue;
       }

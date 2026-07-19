@@ -146,7 +146,7 @@ jobs:
             // effective-diff mirror). Precision beats recall: two threads merge
             // ONLY on same file + overlapping line range + lexical fingerprint
             // at or above threshold. Nothing is deleted or hidden.
-            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1 };
+            const DEDUP = { shingleSize: 1, similarityThreshold: 0.5, directionalSetMin: 0.9, directionalOrderMax: 0.1, smallFingerprintMax: 6 };
             const NON_DEDUP_LOGINS = new Set([
               "github-advanced-security",
               "github-advanced-security[bot]",
@@ -259,6 +259,20 @@ jobs:
               // Exact non-negation content match: only a true polarity flip.
               return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
             };
+            // Terse-fingerprint guard (mirrors terseDistinctFindings in
+            // review-dedup.mjs): for short comments a single differing word is the
+            // whole finding, so two that each carry a token the other lacks are
+            // distinct ("Missing null guard check" vs "Missing auth guard check")
+            // even at a Jaccard above threshold. Subset/superset or longer pairs
+            // are unaffected.
+            const terseDistinctFindings = (a, b) => {
+              const sa = new Set(tokensOf(a));
+              const sb = new Set(tokensOf(b));
+              if (Math.min(sa.size, sb.size) > DEDUP.smallFingerprintMax) return false;
+              const aUnique = [...sa].some((t) => !sb.has(t));
+              const bUnique = [...sb].some((t) => !sa.has(t));
+              return aUnique && bUnique;
+            };
             const fingerprint = (body, k = DEDUP.shingleSize) => {
               const toks = tokensOf(body);
               const kk = Math.max(1, k | 0);
@@ -354,7 +368,8 @@ jobs:
                 if (
                   reversedOrder ||
                   directionalOperandsSwapped(body, c.body) ||
-                  polarityMismatch(body, c.body)
+                  polarityMismatch(body, c.body) ||
+                  terseDistinctFindings(body, c.body)
                 ) continue;
                 match = c;
                 best = sim;
