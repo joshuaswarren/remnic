@@ -53,6 +53,18 @@ export function memoryLifecycleLedgerLockPath(ledgerPath: string): string {
 /** Stale-break window for the lifecycle-ledger lock, shared by append + rewrite. */
 export const MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS = 30_000;
 
+/**
+ * Acquisition budget for a lifecycle append waiting on the shared ledger lock
+ * (issue #2033). Set to twice the stale-break window so a normal append waits
+ * out an in-progress compaction rewrite instead of giving up at
+ * withHeldFileLock's 5s default and dropping the event: a live compaction
+ * releases within its own runtime, and a crashed holder's lock is stale-broken
+ * at MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, so the append still acquires well
+ * inside this budget rather than failing open.
+ */
+export const MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS =
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS * 2;
+
 export function toMemoryPathRel(baseDir: string, filePath: string): string {
   if (!baseDir) return filePath.split(path.sep).join("/");
   return path.relative(baseDir, filePath).split(path.sep).join("/");

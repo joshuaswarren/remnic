@@ -833,3 +833,73 @@ test("rebuildMemoryLifecycleLedger refuses to run unlocked when the ledger lock 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("compaction preserves a frontmatter-derived lifecycle row that raced the corpus scan (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-scan-race-"));
+  try {
+    // A memory present at scan time → the reconstruction emits fact-1 created@T0.
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `source: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Seed the ledger with fact-1's live created row (same content key as the
+    // reconstruction → must collapse to one) plus fact-2's created row: a
+    // memory the corpus scan never saw because it was created after the scan.
+    // That is a frontmatter-derived ("created") row the reconstruction cannot
+    // reproduce; the old eventType-only filter deleted it. It must survive.
+    const liveCreatedFact1: MemoryLifecycleEvent = {
+      eventId: "mle-fact1-created",
+      memoryId: "fact-1",
+      eventType: "created",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "storage.writeMemory",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const racedCreatedFact2: MemoryLifecycleEvent = {
+      eventId: "mle-fact2-created",
+      memoryId: "fact-2",
+      eventType: "created",
+      timestamp: "2026-03-08T05:00:00.000Z",
+      actor: "storage.writeMemory",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify(liveCreatedFact1)}\n${JSON.stringify(racedCreatedFact2)}\n`,
+      "utf-8",
+    );
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage: new StorageManager(memoryDir),
+      preserveExistingEvents: true,
+    });
+
+    const final = await new StorageManager(memoryDir).readAllMemoryLifecycleEvents();
+    const fact2Created = final.filter((e) => e.memoryId === "fact-2" && e.eventType === "created");
+    assert.equal(fact2Created.length, 1, "raced frontmatter-derived row must survive compaction");
+    assert.equal(fact2Created[0]?.eventId, "mle-fact2-created");
+    const fact1Created = final.filter((e) => e.memoryId === "fact-1" && e.eventType === "created");
+    assert.equal(
+      fact1Created.length,
+      1,
+      "the scanned memory's created event must collapse to exactly one row",
+    );
+    assert.equal(
+      fact1Created[0]?.eventId,
+      "rebuild-fact-1-created-2026-03-08T00:00:00.000Z",
+      "the collapsed row must be the fresh reconstruction, not the live duplicate",
+    );
+    assert.ok(
+      (result.preservedAppendOnlyRows ?? 0) >= 1,
+      "the raced row is counted as preserved beyond the reconstruction",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

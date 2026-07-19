@@ -81,9 +81,11 @@ export interface RebuildMemoryLifecycleLedgerResult {
   skippedBlankIdMemories: SkippedLifecycleBlankIdMemory[];
   skippedDuplicateEvents: SkippedDuplicateLifecycleEvent[];
   /**
-   * Count of append-only rows carried over from the existing ledger because
-   * they have no frontmatter equivalent (only set when
-   * `preserveExistingEvents` is on; issue #1910).
+   * Count of existing-ledger rows carried over beyond the frontmatter
+   * reconstruction (only set when `preserveExistingEvents` is on; issue #1910):
+   * append-only history with no frontmatter equivalent, plus any
+   * frontmatter-derived row that raced in after the corpus scan and so was not
+   * reproduced by the reconstruction (#2033).
    */
   preservedAppendOnlyRows?: number;
 }
@@ -201,20 +203,18 @@ export async function rebuildMemoryLifecycleLedger(
       );
     }
     if (options.preserveExistingEvents) {
-      // Carry over append-only history frontmatter cannot reconstruct (issue
-      // #1910). Read the existing ledger through the uncapped BUFFER path, keep
-      // only rows whose eventType is NOT frontmatter-derived, then merge ->
-      // canonical sort -> dedup by eventId (collapsing duplicate appended rows,
-      // the point of compaction). The buffer read decrypts with the live key
-      // when `storage` carries the secure context AND bypasses the whole-file
-      // string decrypt cap — so an oversize encrypted ledger, the exact file
-      // compaction must shrink, is still readable here rather than aborting
-      // (issue #1910, #2033 Cursor High). preserveExistingEvents means "never
-      // lose append-only history": if the current ledger genuinely cannot be
-      // read (corruption, or a locked required store), ABORT rather than
-      // rewrite from frontmatter only and silently drop that history. An absent
-      // ledger reads as [] (ENOENT swallowed downstream), so a throw here is
-      // always a real read failure worth surfacing.
+      // Merge the frontmatter reconstruction (`events`) with the CURRENT ledger
+      // so compaction never deletes a lifecycle row that raced the scan (issue
+      // #1910, #2033). Read the existing ledger through the uncapped BUFFER
+      // path — it decrypts with the live key when `storage` carries the secure
+      // context and bypasses the whole-file string decrypt cap, so an oversize
+      // encrypted ledger (the exact file compaction must shrink) is still
+      // readable here rather than aborting (#2033 Cursor High).
+      // preserveExistingEvents means "never lose history": if the current
+      // ledger genuinely cannot be read (corruption, or a locked required
+      // store), ABORT rather than rewrite from frontmatter only and silently
+      // drop that history. An absent ledger reads as [] (ENOENT swallowed
+      // downstream), so a throw here is always a real read failure.
       let existing: MemoryLifecycleEvent[];
       try {
         existing = await storage.readAllMemoryLifecycleEventsForCompaction();
@@ -224,11 +224,41 @@ export async function rebuildMemoryLifecycleLedger(
           + `(${err instanceof Error ? err.message : String(err)})`,
         );
       }
-      const preserved = existing.filter(
-        (event) => !FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType],
-      );
+      // The corpus scan (`events`) runs OUTSIDE the lock and is therefore a
+      // stale snapshot; `existing` is read here under the lock and is
+      // authoritative for what the ledger holds at rewrite time. A
+      // frontmatter-derived row (created/updated/superseded/archived) is safe to
+      // collapse into the reconstruction ONLY when the scan actually reproduced
+      // the same logical event — same (memoryId, eventType, timestamp), which is
+      // exactly what the live append stamps (fm.created/updated/...) and what
+      // makeRebuiltMemoryLifecycleEvent emits. A frontmatter-derived row whose
+      // content key the reconstruction did NOT produce raced in after the scan
+      // (a memory created/updated between the scan and this locked read); the
+      // reconstruction has no equivalent, so dropping it by eventType alone
+      // would delete it. Preserve it instead, deduped by content key so a
+      // retried append of the same logical event still collapses to one. Rows
+      // that are not frontmatter-derived are append-only history with no
+      // reconstruction — always carried over, deduped by eventId in the merge.
+      const contentKey = (event: MemoryLifecycleEvent): string =>
+        `${event.memoryId}\u0000${event.eventType}\u0000${event.timestamp}`;
+      const reconstructedKeys = new Set(events.map(contentKey));
+      const racedFrontmatterByKey = new Map<string, MemoryLifecycleEvent>();
+      const appendOnly: MemoryLifecycleEvent[] = [];
+      for (const event of existing) {
+        if (!FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType]) {
+          appendOnly.push(event);
+          continue;
+        }
+        const key = contentKey(event);
+        if (reconstructedKeys.has(key)) continue; // collapsed into reconstruction
+        if (!racedFrontmatterByKey.has(key)) racedFrontmatterByKey.set(key, event);
+      }
       const mergedById = new Map<string, MemoryLifecycleEvent>();
-      for (const event of sortMemoryLifecycleEvents([...events, ...preserved])) {
+      for (const event of sortMemoryLifecycleEvents([
+        ...events,
+        ...racedFrontmatterByKey.values(),
+        ...appendOnly,
+      ])) {
         if (!mergedById.has(event.eventId)) mergedById.set(event.eventId, event);
       }
       finalEvents = [...mergedById.values()];

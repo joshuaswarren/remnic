@@ -6,8 +6,9 @@ import {
   sortMemoryLifecycleEvents,
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
+  MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
 } from "../memory-lifecycle-ledger-utils.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
 import {
   readMaybeEncryptedLines,
   readMemoryLifecycleEventsFromLines,
@@ -173,19 +174,32 @@ export async function readBoundedLifecycleEventsFromLedger(
  * Append `payload` to the lifecycle ledger under the cross-process ledger lock
  * so it is serialized against compaction's whole-file rewrite (issue #1910):
  * both hold this lock, so an append during a rewrite waits and lands on the
- * compacted ledger instead of being clobbered by the atomic rename. If the lock
- * cannot be acquired within the budget, withHeldFileLock invokes the callback
- * with acquired=false; we REFUSE rather than append unlocked, or that rewrite
- * could still clobber the new row — the exact race this lock prevents (#2033).
+ * compacted ledger instead of being clobbered by the atomic rename.
+ *
+ * The acquisition budget defaults to MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS
+ * (twice the stale window), NOT withHeldFileLock's 5s default: a compaction
+ * rewrite of a large ledger can legitimately hold the lock past 5s, and giving
+ * up there would surface acquired=false and drop the event fail-open (#2033).
+ * With this budget a normal append waits out the compaction — or, if the holder
+ * crashed, past the stale-break window so it still acquires. Only a lock wedged
+ * beyond that (a genuine filesystem fault, not routine contention) yields
+ * acquired=false, where we REFUSE to append unlocked rather than let the rewrite
+ * clobber the new row — the exact race this lock prevents. `lockOptions` lets
+ * tests shrink the budget to exercise both branches deterministically.
  */
 export async function appendLifecycleEventsSerialized(
   ledgerPath: string,
   append: (payload: string) => Promise<void>,
   payload: string,
+  lockOptions?: Pick<HeldFileLockOptions, "maxWaitMs" | "pollMs">,
 ): Promise<void> {
   await withHeldFileLock(
     memoryLifecycleLedgerLockPath(ledgerPath),
-    { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
+    {
+      staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
+      maxWaitMs: MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
+      ...lockOptions,
+    },
     async (acquired) => {
       if (!acquired) {
         throw new Error(

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +7,13 @@ import test from "node:test";
 import { StorageManager } from "./storage.js";
 import { encryptFileBody, filePathAad } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
+import { appendLifecycleEventsSerialized } from "./storage/memory-lifecycle-ledger-access.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import {
+  memoryLifecycleLedgerLockPath,
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
+  MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
+} from "./memory-lifecycle-ledger-utils.js";
 
 function lifecycleEvent(
   eventId: string,
@@ -281,4 +288,109 @@ test("readMemoryActionEventRows streams the action ledger and keeps source line 
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("appendLifecycleEventsSerialized waits out a held ledger lock instead of dropping the event (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-wait-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+
+    // Simulate a compaction rewrite holding the shared lock while the append
+    // contends for it. The append must WAIT for the holder to release rather
+    // than give up and drop the event fail-open (the pre-#2033 behavior at 5s).
+    // Ordering is driven by gate promises — never wall-clock sleeps — so the
+    // holder provably owns the lock before the append starts and only releases
+    // when we open the gate.
+    const order: string[] = [];
+    const acquiredGate = Promise.withResolvers<void>();
+    const releaseGate = Promise.withResolvers<void>();
+    const holder = withHeldFileLock(
+      lockPath,
+      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, maxWaitMs: 1_000 },
+      async (acquired) => {
+        assert.ok(acquired, "test holder must acquire the lock");
+        acquiredGate.resolve();
+        await releaseGate.promise;
+        order.push("holder-released");
+      },
+    );
+    // The lock is provably held from here until we open the release gate.
+    await acquiredGate.promise;
+
+    const appendPromise = appendLifecycleEventsSerialized(
+      ledgerPath,
+      async (payload) => {
+        order.push("append-ran");
+        await appendFile(ledgerPath, payload, "utf8");
+      },
+      `${JSON.stringify(lifecycleEvent("evt-wait", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+      { maxWaitMs: 2_000, pollMs: 20 },
+    );
+
+    // Release the holder; the append can only acquire after this.
+    releaseGate.resolve();
+    await appendPromise;
+    await holder;
+
+    assert.deepEqual(
+      order,
+      ["holder-released", "append-ran"],
+      "append must acquire only after the holder released — it waited, not dropped",
+    );
+    assert.ok(
+      (await readFile(ledgerPath, "utf8")).includes("evt-wait"),
+      "the appended event must be persisted after the wait",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendLifecycleEventsSerialized refuses to append unlocked when the lock cannot be acquired (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-refuse-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    // A fresh (non-stale) foreign lock held for the whole test so acquisition
+    // times out within the tiny budget and never stale-breaks. The append must
+    // REFUSE to write unlocked rather than risk clobbering a concurrent rewrite.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf8");
+
+    let appended = false;
+    await assert.rejects(
+      () => appendLifecycleEventsSerialized(
+        ledgerPath,
+        async () => {
+          appended = true;
+        },
+        "x\n",
+        { maxWaitMs: 100, pollMs: 20 },
+      ),
+      /could not acquire the ledger lock/,
+    );
+    assert.equal(appended, false, "must not append unlocked when the lock is unavailable");
+    assert.equal(await readFile(ledgerPath, "utf8"), "", "ledger must be untouched");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle append lock budget outlasts a compaction that holds the lock past 5s (#2033)", () => {
+  // withHeldFileLock's default acquisition budget is 5s; a compaction rewrite of
+  // a large ledger can legitimately hold the lock longer. The append budget must
+  // cover the full stale-break window so such a hold is waited out (or a crashed
+  // holder stale-broken) rather than dropping the event at 5s.
+  assert.ok(
+    MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS >= MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
+    "append budget must be at least the stale window",
+  );
+  assert.ok(
+    MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS > 5_000,
+    "append budget must exceed the 5s default that previously dropped events",
+  );
 });
