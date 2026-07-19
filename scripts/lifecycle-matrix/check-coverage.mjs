@@ -70,10 +70,34 @@ const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch"]);
  *  `(...)` header), so a newline before the call is not an ASI boundary. */
 const BODY_KEYWORDS = new Set(["else", "do", "try", "finally"]);
 
-/** The identifier immediately preceding `source[idx]` (skips trailing whitespace). */
+/**
+ * The identifier immediately preceding `source[idx]`, skipping whitespace AND
+ * comments (both block and line comments) backward, so a body keyword hidden
+ * behind a comment between it and the call is still seen.
+ */
 function precedingWord(source, idx) {
   let k = idx - 1;
-  while (k >= 0 && /\s/.test(source[k])) k -= 1;
+  for (;;) {
+    while (k >= 0 && /\s/.test(source[k])) k -= 1;
+    if (k < 1) break;
+    if (source[k] === "/" && source[k - 1] === "*") {
+      // skip backward over a block comment (from its close to its open)
+      k -= 2;
+      while (k >= 1 && !(source[k - 1] === "/" && source[k] === "*")) k -= 1;
+      k -= 2;
+      continue;
+    }
+    let lineStart = k;
+    while (lineStart >= 0 && source[lineStart] !== "\n") lineStart -= 1;
+    lineStart += 1;
+    const commentAt = source.slice(lineStart, k + 1).indexOf("//");
+    if (commentAt !== -1) {
+      // backward over a line comment `// …` on this line
+      k = lineStart + commentAt - 1;
+      continue;
+    }
+    break;
+  }
   const end = k;
   while (k >= 0 && SUBJECT_IDENT.test(source[k])) k -= 1;
   return source.slice(k + 1, end + 1);

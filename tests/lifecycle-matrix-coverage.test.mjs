@@ -414,11 +414,17 @@ test("discoverSubjectRegistrations records ASI-separated (newline, no semicolon)
     'do',
     'runLifecycleMatrix("newline-do-body", subject)',
     'while (false)',
+    'if (a) foo()',
+    'else /* trailing block comment */',
+    'runLifecycleMatrix("else-block-comment-body", subject)',
+    'if (b) foo()',
+    'else // trailing line comment',
+    'runLifecycleMatrix("else-line-comment-body", subject)',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
     ["asi-first", "asi-second", "after-call-asi"],
-    "adjacent newline-separated registrations and a call+newline ASI boundary are recorded; same-line wrappers and control/body-keyword next-line bodies (if/for headers, else, do) stay rejected",
+    "adjacent newline-separated registrations and a call+newline ASI boundary are recorded; same-line wrappers and control/body-keyword next-line bodies (if/for headers, else, do) — even with a block or line comment hiding the keyword — stay rejected",
   );
 });
 
