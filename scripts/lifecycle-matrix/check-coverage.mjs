@@ -106,6 +106,12 @@ export function grandfatherGrowth(baseManifest, headManifest) {
   return headManifest.grandfathered.filter((glob) => !baseSet.has(glob));
 }
 
+/** Manifest ratchet: lifecycleManifest globs present in base but removed in head (removal silently disables the gate for that path). */
+export function manifestShrinkage(baseManifest, headManifest) {
+  const headSet = new Set(headManifest.lifecycleManifest);
+  return baseManifest.lifecycleManifest.filter((glob) => !headSet.has(glob));
+}
+
 /** Scan the subjects directory for `runLifecycleMatrix("<name>", ...)` registrations. */
 export function registeredSubjectNames(subjectsDir) {
   if (!existsSync(subjectsDir)) return [];
@@ -175,25 +181,19 @@ export function flattenChangedPaths(entries) {
   return [...new Set(out)];
 }
 
+// Local-dev fallback (CI always sets REMNIC_LIFECYCLE_CHANGED_FILES_PATH).
+// Git errors are NOT swallowed: a diff that cannot be computed must fail the
+// gate loudly rather than return [] and pass vacuously (review finding on #2042).
 function readChangedFilesFromGit() {
   const baseRef = process.env.LIFECYCLE_BASE_REF || process.env.GITHUB_BASE_REF;
   const diffArgs = ["-c", "core.quotePath=off", "diff", "--name-status", "-z", "-M"];
-  try {
-    if (baseRef) {
-      execFileSync("git", ["fetch", "--quiet", "--depth=1", "origin", baseRef], { cwd: repoRoot, stdio: "ignore" });
-      const range = execFileSync("git", ["merge-base", "FETCH_HEAD", "HEAD"], { cwd: repoRoot })
-        .toString()
-        .trim();
-      return parseNameStatusZ(
-        execFileSync("git", [...diffArgs, `${range}...HEAD`], { cwd: repoRoot }).toString(),
-      );
-    }
-    return parseNameStatusZ(
-      execFileSync("git", [...diffArgs, "HEAD~1...HEAD"], { cwd: repoRoot }).toString(),
-    );
-  } catch {
-    return [];
+  let range = "HEAD~1...HEAD";
+  if (baseRef) {
+    execFileSync("git", ["fetch", "--quiet", "--depth=1", "origin", baseRef], { cwd: repoRoot, stdio: "ignore" });
+    const mergeBase = execFileSync("git", ["merge-base", "FETCH_HEAD", "HEAD"], { cwd: repoRoot }).toString().trim();
+    range = `${mergeBase}...HEAD`;
   }
+  return parseNameStatusZ(execFileSync("git", [...diffArgs, range], { cwd: repoRoot }).toString());
 }
 
 function readChangedFiles() {
@@ -254,6 +254,15 @@ function main() {
         `::error::lifecycle-matrix grandfather list grew: ${grown.join(", ")}. ` +
           `The grandfather list is a shrink-only ratchet (scripts/lifecycle-matrix/coverage.json) — ` +
           `cover new lifecycle paths with a registered LifecycleSubject instead of grandfathering them.`,
+      );
+      process.exit(1);
+    }
+    const removed = manifestShrinkage(baseManifest, manifest);
+    if (removed.length > 0) {
+      console.error(
+        `::error::lifecycle-matrix lifecycleManifest removed path(s): ${removed.join(", ")}. ` +
+          `Lifecycle-critical paths may not be dropped from the manifest — removing a glob silently ` +
+          `disables the path-triggered gate for that subsystem (scripts/lifecycle-matrix/coverage.json).`,
       );
       process.exit(1);
     }

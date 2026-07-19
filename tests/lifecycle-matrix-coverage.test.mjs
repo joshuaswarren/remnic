@@ -24,6 +24,7 @@ import {
   flattenChangedPaths,
   grandfatherGrowth,
   loadCoverageManifest,
+  manifestShrinkage,
   parseNameStatusZ,
   registeredSubjectNames,
   unregisteredSubjects,
@@ -257,6 +258,19 @@ test("the CLI enforces the grandfather ratchet against the base manifest", () =>
     writeFileSync(shrunkPath, JSON.stringify(shrunk));
     const shrink = runCli([`--manifest=${shrunkPath}`, `--base-manifest=${grownPath}`, "--files="]);
     assert.equal(shrink.code, 0, "removing a grandfather entry (covering it) must pass");
+
+    // Removing a glob from lifecycleManifest silently disables the gate for it → must fail.
+    const removed = {
+      lifecycleManifest: ["packages/remnic-core/src/orchestration/**"],
+      coverage: { "packages/remnic-core/src/orchestration/**": "extraction-lifecycle" },
+      grandfathered: [],
+    };
+    const removedPath = join(dir, "removed.json");
+    writeFileSync(removedPath, JSON.stringify(removed));
+    const drop = runCli([`--manifest=${removedPath}`, `--base-manifest=${basePath}`, "--files="]);
+    assert.equal(drop.code, 1, "dropping a lifecycleManifest path must fail the CLI");
+    assert.match(drop.output, /lifecycleManifest removed path/);
+    assert.match(drop.output, /lifecycle\.ts/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -274,4 +288,24 @@ test("storage submodule files are in the manifest (grandfathered), not silently 
     assert.equal(warnings.length, 1, `${file} must be seen by the gate (warn), not ignored`);
     assert.equal(warnings[0].file, file);
   }
+});
+
+test("manifestShrinkage flags lifecycleManifest globs removed vs the base", () => {
+  const base = loadCoverageManifest({
+    lifecycleManifest: ["a.ts", "b.ts"],
+    coverage: { "a.ts": "extraction-lifecycle" },
+    grandfathered: ["b.ts"],
+  });
+  const dropped = loadCoverageManifest({
+    lifecycleManifest: ["a.ts"],
+    coverage: { "a.ts": "extraction-lifecycle" },
+    grandfathered: [],
+  });
+  const grew = loadCoverageManifest({
+    lifecycleManifest: ["a.ts", "b.ts", "c.ts"],
+    coverage: { "a.ts": "extraction-lifecycle", "c.ts": "extraction-lifecycle" },
+    grandfathered: ["b.ts"],
+  });
+  assert.deepEqual(manifestShrinkage(base, dropped), ["b.ts"], "removing a manifest glob is shrinkage");
+  assert.deepEqual(manifestShrinkage(base, grew), [], "adding globs (with coverage) is allowed");
 });
