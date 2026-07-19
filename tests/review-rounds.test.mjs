@@ -180,6 +180,19 @@ test("max-age closes and dispatches an abandoned round with an auditable marker"
   assert.equal(result.state.autoClosed, true);
   assert.equal(result.state.dispatchIssuedAt, "2026-07-19T12:00:00.000Z");
 });
+test("a clean round does not dispatch at max age", () => {
+  const state = openRound({ threads: [] });
+  const result = decideRound({
+    ...base,
+    state,
+    threads: [],
+    now: "2026-07-19T12:00:00.000Z",
+    botActivity: false,
+  });
+  assert.equal(result.action, "wait");
+  assert.equal(result.reason, "no-round-work");
+});
+
 
 test("a bot response after dispatch opens the next round", () => {
   const state = openRound();

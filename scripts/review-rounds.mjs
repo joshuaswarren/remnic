@@ -186,6 +186,7 @@ export function decideRound({
   let next = noteHead(state, headSha, now);
   next = mergeThreadIds(next, threads);
   if (activity && isNewBotActivity(activity, next)) next.lastBotActivity = activity;
+  if (next.threadIds.length === 0 && next.pushes === 0) return wait(next, "no-round-work");
   const age = parseTime(now) - parseTime(next.openedAt);
   if (age >= maxAgeMs) {
     return {
@@ -197,7 +198,6 @@ export function decideRound({
 
   const unresolved = getGuardUnresolvedThreads(next, threads, botAliases);
   if (unresolved.length > 0) return wait(next, "round-threads-open");
-  if (next.threadIds.length === 0 && next.pushes === 0) return wait(next, "no-round-work");
 
   if (forceDispatch) {
     return {
