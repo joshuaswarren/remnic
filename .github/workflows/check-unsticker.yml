@@ -39,20 +39,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
       - name: Rerun stuck required checks
         uses: actions/github-script@v7
+        # Reuse the tested dedup module (scripts/review-dedup.mjs) so the guard's
+        # rerun decision honors the SAME effective unresolved-thread semantics the
+        # guard itself uses. REVIEW_DEDUP_MODE MUST match review-thread-guard.yml.
+        env:
+          REVIEW_DEDUP_MODE: shadow
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            const CODEQL_AUTHORS = new Set([
-              'github-advanced-security',
-              'github-advanced-security[bot]',
-              'github-code-scanning[bot]',
-            ]);
+            // Reuse the tested dedup module rather than a third inline mirror, so
+            // the unsticker's rerun decision cannot drift from the guard's own
+            // effective unresolved-thread math (issue #1994).
+            const { pathToFileURL } = require('node:url');
+            const { dedupeThreads, hasGateReply, REVIEW_DEDUP_CONFIG, NON_DEDUP_AUTHOR_LOGINS } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/review-dedup.mjs`).href
+            );
+            const DEDUP_MODE = (process.env.REVIEW_DEDUP_MODE || 'shadow').toLowerCase();
+            const applyInheritance = DEDUP_MODE === 'enforce';
 
-            async function unresolvedThreadCount(pr) {
+            // Effective unresolved (non-CodeQL) thread count AFTER dedup — the same
+            // condition the guard gates on. In shadow this equals the raw count;
+            // in enforce a duplicate folds into its canonical only once its
+            // auditable gate reply is present (mirrors the guard's audit-gated
+            // fold), so resolving a canonical unsticks the guard even while a
+            // duplicate stays raw-unresolved.
+            async function effectiveUnresolvedCount(pr) {
               const query = `
                 query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
                   repository(owner: $owner, name: $repo) {
@@ -60,27 +77,63 @@ jobs:
                       reviewThreads(first: 100, after: $after) {
                         pageInfo { hasNextPage endCursor }
                         nodes {
+                          id
                           isResolved
-                          comments(first: 1) { nodes { author { login } } }
+                          line
+                          startLine
+                          originalLine
+                          originalStartLine
+                          comments(first: 100) {
+                            pageInfo { hasNextPage endCursor }
+                            nodes { path body author { login } createdAt }
+                          }
                         }
                       }
                     }
                   }
                 }
               `;
-              let count = 0;
+              const commentPageQuery = `
+                query($id: ID!, $after: String) {
+                  node(id: $id) {
+                    ... on PullRequestReviewThread {
+                      comments(first: 100, after: $after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes { path body author { login } createdAt }
+                      }
+                    }
+                  }
+                }
+              `;
+              let threads = [];
               let after = null;
               for (;;) {
                 const result = await github.graphql(query, { owner, repo, pr, after });
                 const conn = result.repository.pullRequest.reviewThreads;
-                for (const thread of conn.nodes ?? []) {
-                  if (thread.isResolved !== false) continue;
-                  const author = thread.comments?.nodes?.[0]?.author?.login;
-                  if (author && CODEQL_AUTHORS.has(author)) continue;
-                  count += 1;
-                }
+                threads = threads.concat(conn.nodes ?? []);
                 if (!conn.pageInfo?.hasNextPage) break;
                 after = conn.pageInfo.endCursor;
+              }
+              for (const t of threads) {
+                let pageInfo = t.comments?.pageInfo;
+                while (pageInfo?.hasNextPage) {
+                  const more = await github.graphql(commentPageQuery, { id: t.id, after: pageInfo.endCursor });
+                  const conn = more.node?.comments;
+                  if (!conn) break;
+                  t.comments.nodes = (t.comments.nodes || []).concat(conn.nodes || []);
+                  pageInfo = conn.pageInfo;
+                }
+              }
+              const { records } = dedupeThreads(threads, REVIEW_DEDUP_CONFIG);
+              const byId = new Map(records.map((r) => [r.id, r]));
+              let count = 0;
+              for (const t of threads) {
+                if (t.isResolved !== false) continue;
+                const author = t.comments?.nodes?.[0]?.author?.login;
+                if (author && NON_DEDUP_AUTHOR_LOGINS.has(author)) continue;
+                const rec = byId.get(t.id);
+                if (applyInheritance && rec && rec.canonicalId !== rec.id && hasGateReply(t)) continue;
+                count += 1;
               }
               return count;
             }
@@ -175,13 +228,13 @@ jobs:
               const guardRuns = (await runsFor('review-thread-guard.yml', headSha, pull.number))
                 .filter((run) => run.status === 'completed' && run.conclusion === 'failure');
               if (guardRuns.length > 0) {
-                const unresolved = await unresolvedThreadCount(pull.number);
+                const unresolved = await effectiveUnresolvedCount(pull.number);
                 if (unresolved === 0) {
                   for (const run of guardRuns) {
                     await rerun(run, `${label} review-thread guard`);
                   }
                 } else {
-                  core.info(`${label}: guard failing with ${unresolved} unresolved thread(s) — legitimate, skipping.`);
+                  core.info(`${label}: guard failing with ${unresolved} effective unresolved thread(s) after dedup — legitimate, skipping.`);
                 }
               }
 
