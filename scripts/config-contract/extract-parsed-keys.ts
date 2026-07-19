@@ -926,10 +926,18 @@ export function collectModuleParserFiles(repoRoot: string): string[] {
       if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts") || entry.name.endsWith(".d.ts")) {
         continue;
       }
-      // Only files that export a parse*Config function participate — keeps
-      // the program small enough for the CI <60s budget.
+      // Files that export a parse*Config function participate; so do *config.ts
+      // module files that export any parse* helper (e.g. scope-profile-config.ts
+      // exports parseScopeProfiles/parseScopeTeams, not parse*Config) — otherwise
+      // parseConfig's delegated calls to them go unresolved (issue #1990 review).
+      // Scoping the broader match to *config.ts keeps the program within the CI
+      // <60s budget.
       const text = fs.readFileSync(full, "utf8");
-      if (/export function parse[A-Z]\w*Config?\s*\(/.test(text) || /function parse[A-Z]\w*Config\s*\(/.test(text)) {
+      const exportsConfigParser =
+        /export function parse[A-Z]\w*Config?\s*\(/.test(text) || /function parse[A-Z]\w*Config\s*\(/.test(text);
+      const isConfigModule = /config\.ts$/.test(entry.name);
+      const exportsAnyParser = /export function parse[A-Z]\w*\s*\(/.test(text);
+      if (exportsConfigParser || (isConfigModule && exportsAnyParser)) {
         out.push(full);
       }
     }

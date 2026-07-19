@@ -324,6 +324,7 @@ export function parseRootConfig(raw: unknown): Rec {
     passThroughList: Array.isArray(cfg.passThroughList) ? (cfg.passThroughList as unknown[]) : [],
     combo: cfg.combo && typeof cfg.combo === "object" ? { keep: (cfg.combo as Rec).keep } : {},
     altBlock: cfg.altBlock,
+    mapBlock: cfg.mapBlock && typeof cfg.mapBlock === "object" ? (cfg.mapBlock as Rec) : {},
   };
 }
 `,
@@ -333,7 +334,7 @@ export function parseRootConfig(raw: unknown): Rec {
   const docsPath = path.join(root, "docs.md");
   writeFileSync(
     docsPath,
-    "Config: `parsedList[].id`, `parsedList[].weight`, `passThroughList`, `combo`, `combo.keep`, `altBlock`.\n",
+    "Config: `parsedList[].id`, `parsedList[].weight`, `passThroughList`, `combo`, `combo.keep`, `altBlock`, `mapBlock`.\n",
   );
   return {
     run: () =>
@@ -420,6 +421,35 @@ test("composition: allOf props are enforced, anyOf/oneOf alternatives are absorb
     const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
     assert.ok(kinds.includes("dead-schema:combo.enforced"), JSON.stringify(kinds));
     assert.equal(kinds.includes("dead-schema:altBlock.alt"), false, JSON.stringify(kinds));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("map-shaped config: typed additionalProperties values are walked, not opaque, and dynamic maps are not false-flagged (#1990)", () => {
+  const fixture = makeArrayFixtureRepo({
+    configSchema: {
+      properties: {
+        parsedList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, weight: { type: "number" } } } },
+        passThroughList: { type: "array", items: { type: "object", properties: {} } },
+        combo: { type: "object", properties: { keep: { type: "string" } } },
+        // mapBlock is a dynamic-key map the parser hands through raw; its typed
+        // value fields flatten under `*` but must NOT dead-schema-flag (no
+        // statically parsed values under the map prefix).
+        mapBlock: {
+          type: "object",
+          additionalProperties: { type: "object", properties: { enabled: { type: "boolean" }, weight: { type: "number" } } },
+        },
+      },
+    },
+  });
+  try {
+    const result = fixture.run();
+    assert.equal(
+      result.violations.some((v) => v.key.startsWith("mapBlock.")),
+      false,
+      JSON.stringify(result.violations),
+    );
   } finally {
     fixture.cleanup();
   }

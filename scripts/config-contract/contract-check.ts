@@ -161,24 +161,43 @@ function flattenSchema(schema: JsonSchemaNode): {
     const isObjectType =
       schemaType === "object" || (Array.isArray(schemaType) && schemaType.includes("object"));
     const props = node.properties;
+    const addl = node.additionalProperties;
+    const isTypedMap =
+      isObjectType &&
+      !!addl &&
+      typeof addl === "object" &&
+      !Array.isArray(addl) &&
+      !!(addl as JsonSchemaNode).properties;
+    // Free-form object (additionalProperties allowed, no declared child shape) →
+    // opaque. A typed map (additionalProperties is a shaped object) is NOT
+    // opaque; its value fields flatten under a `*` wildcard below so map-child
+    // drift stays visible (issue #1990 review).
     if (
       prefix.length > 0 &&
       isObjectType &&
       node.additionalProperties !== false &&
-      (!props || fromAlternative)
+      (!props || fromAlternative) &&
+      !isTypedMap
     ) {
       opaque.add(prefix.join("."));
     }
     // Array item objects flatten their declared fields under the array key so
-    // item-field drift (a manifest-only or parser-only item property) surfaces
-    // (issue #1990 review): `recallPipeline` items declare fields under
-    // items.properties → recallPipeline.<field>.
+    // item-field drift surfaces (issue #1990 review): `recallPipeline` items
+    // declare fields under items.properties → recallPipeline.<field>.
     const isArrayType =
       schemaType === "array" || (Array.isArray(schemaType) && schemaType.includes("array"));
     const items = node.items;
     if (prefix.length > 0 && isArrayType && items && typeof items === "object" && !Array.isArray(items)) {
       arrayPrefixes.add(prefix.join("."));
       walk(items as JsonSchemaNode, prefix, fromAlternative);
+    }
+    // Map-shaped objects (scopeProfiles / teams) flatten their value fields under
+    // a `*` wildcard. Tracked like an array prefix: when the parser never reads
+    // the map values statically (dynamic Object.entries), the wildcard paths are
+    // skipped in dead-schema rather than false-flagged.
+    if (prefix.length > 0 && isTypedMap) {
+      arrayPrefixes.add(prefix.join("."));
+      walk(addl as JsonSchemaNode, [...prefix, "*"], fromAlternative);
     }
     if (!props || typeof props !== "object") return;
     for (const [key, child] of Object.entries(props)) {
