@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -576,4 +576,32 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
     assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
     assert.equal(warnings.length, 1, `${p} retrieval/namespace change must warn, not silently bypass the gate`);
   }
+});
+
+test("every committed manifest path resolves to a real file — no pre-covering absent paths", () => {
+  const manifest = loadReal();
+  const dirHasTs = (dir) => {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return false;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (dirHasTs(child)) return true;
+      } else if (entry.name.endsWith(".ts")) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const resolves = (p) =>
+    p.endsWith("/**") ? dirHasTs(join(repoRoot, p.slice(0, -3))) : existsSync(join(repoRoot, p));
+  for (const p of manifest.lifecycleManifest) {
+    assert.ok(
+      resolves(p),
+      `manifest path ${p} resolves to no real file — remove it (do not pre-cover an absent root shim / future path)`,
+    );
+  }
+  // coverage keys and grandfathered entries are a subset of lifecycleManifest,
+  // so they are covered transitively; assert explicitly for a clear failure.
+  for (const p of Object.keys(manifest.coverage)) assert.ok(resolves(p), `covered path ${p} must exist`);
+  for (const p of manifest.grandfathered) assert.ok(resolves(p), `grandfathered path ${p} must exist`);
 });
