@@ -29,7 +29,8 @@ import type {
   NamespaceUpdateResult,
 } from "../namespaces/search.js";
 import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
-import { namespaceIdentityToken } from "../namespaces/identity.js";
+import { namespaceIdentityFromToken, namespaceIdentityToken } from "../namespaces/identity.js";
+import { isSafeRouteNamespace } from "../routing/engine.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
 import { StorageManager } from "../storage.js";
 import {
@@ -1550,7 +1551,8 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
     // a keyless plaintext target (the pre-fix behavior asserted by the sibling
     // "never downgrades" test, which wires no resolver).
     const key = Buffer.alloc(32, 5);
-    const token = namespaceIdentityToken("project-secure-keyed");
+    const nsName = "project-secure-keyed";
+    const token = namespaceIdentityToken(nsName);
     const nsDir = path.join(root, "namespaces", token);
     // A plaintext frontmatter memory the rebuild reconstructs into created +
     // updated events (read fine under a keyed store — the reader probes per
@@ -1573,9 +1575,10 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
     assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
     const beforeSize = (await stat(nsLedger)).size;
 
-    // The resolver is consulted with the on-disk segment (the routed token) and
-    // returns the namespace's root-keyed, unlocked secure storage rooted AT the
-    // fallback dir — exactly what the live router's storageFor(segment) yields.
+    // The resolver is consulted with the DECODED namespace (the on-disk token is
+    // decoded back to its canonical namespace) and returns the namespace's
+    // root-keyed, unlocked secure storage rooted AT the fallback dir — exactly
+    // what the live router's storageFor(namespace) yields.
     const nsStorage = new StorageManager(nsDir);
     nsStorage.setSecureStoreRequired(true);
     nsStorage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ rewrite stays encrypted.
@@ -1592,7 +1595,7 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
       () => new StorageManager(root), // root has no ledger ⇒ skipped.
       async (namespace) => {
         resolverCalls += 1;
-        assert.equal(namespace, token, "fallback resolves by the on-disk routed segment");
+        assert.equal(namespace, nsName, "fallback resolves by the DECODED namespace, not the raw token");
         return nsStorage;
       },
       undefined, // catalog disabled.
@@ -1635,6 +1638,124 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
 
     // On disk: rewritten, still encrypted at rest (no plaintext downgrade), and
     // decrypts back to the reconstructed events via the same key.
+    assert.notDeepEqual(
+      await readFile(nsLedger),
+      encrypted,
+      "ledger was rewritten (not left byte-for-byte intact, i.e. not deferred)",
+    );
+    assert.ok((await stat(nsLedger)).size < beforeSize, "compacted ledger is smaller");
+    assert.ok(
+      isEncryptedFile(await readFile(nsLedger)),
+      "compacted ledger stays encrypted at rest (namespace isolation + at-rest format preserved)",
+    );
+    const rebuilt = await nsStorage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback decodes a long tokenized namespace dir so an encrypted over-cap ledger compacts instead of deferring forever (#2033 thread PRRT_kwDORJXyws6SE5fv)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-longtoken-"));
+  try {
+    // A VALID namespace (passes isSafeRouteNamespace) that is long enough that
+    // its identity token — the on-disk dir name — exceeds the router's 64-char
+    // route-namespace limit. Passing that raw token back to the resolver (the
+    // pre-fix behavior) makes the router reject it, dropping the fallback to a
+    // keyless target that defers the encrypted over-cap ledger forever. The fix
+    // decodes the token to the canonical namespace before resolving.
+    const nsName = "project-origin-with-a-verylong-namespace";
+    const token = namespaceIdentityToken(nsName);
+    assert.ok(nsName.length >= 31, "precondition: namespace long enough to overflow the routed token");
+    assert.ok(isSafeRouteNamespace(nsName), "precondition: the namespace itself is a valid route namespace");
+    assert.ok(token.length > 64, "precondition: the tokenized dir name exceeds the 64-char route limit");
+    assert.ok(!isSafeRouteNamespace(token), "precondition: the raw token would be REJECTED as a route namespace");
+    assert.equal(namespaceIdentityFromToken(token), nsName, "precondition: the token decodes back to the namespace");
+
+    const key = Buffer.alloc(32, 7);
+    const nsDir = path.join(root, "namespaces", token);
+    // Plaintext frontmatter memory the rebuild reconstructs into created+updated.
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-ns.md"),
+      `---\nid: fact-ns\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["long"]\n---\n\nlong\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"}\n';
+    const encrypted = encryptFileBody(
+      junk.repeat(Math.ceil(4096 / junk.length)), key, filePathAad(nsLedger, nsDir),
+    );
+    await writeFile(nsLedger, encrypted);
+    assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    const nsStorage = new StorageManager(nsDir);
+    nsStorage.setSecureStoreRequired(true);
+    nsStorage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ rewrite stays encrypted.
+    let resolvedWith: string | null = null;
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        secureStoreEnabled: true,
+        secureStoreEncryptOnWrite: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => new StorageManager(root), // root has no ledger ⇒ skipped.
+      // Mirror the production router: reject anything that is not a safe route
+      // namespace, exactly how getWritableStorageForNamespace throws. With the
+      // pre-fix behavior the fallback passed the over-64 token and this resolver
+      // would throw, stranding the ledger on a keyless deferred target.
+      async (namespace) => {
+        resolvedWith = namespace;
+        if (!isSafeRouteNamespace(namespace)) {
+          throw new Error(`invalid namespace: ${namespace}`);
+        }
+        return nsStorage;
+      },
+      undefined, // catalog disabled.
+    );
+    const seam = scheduler as unknown as CompactableScheduler & {
+      resolveLifecycleCompactionTargets: () => Promise<
+        Array<{ memoryDir: string; storage?: StorageManager }>
+      >;
+      compactLifecycleLedgerTarget: (
+        target: unknown,
+        threshold: number,
+      ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
+    };
+    try {
+      const targets = await seam.resolveLifecycleCompactionTargets();
+      assert.equal(resolvedWith, nsName, "fallback resolves by the DECODED namespace, never the over-64 token");
+      const nsTarget = targets.find(
+        (t) => path.resolve(t.memoryDir) === path.resolve(nsDir),
+      );
+      assert.ok(nsTarget, "fallback discovered the per-namespace ledger dir");
+      assert.ok(
+        nsTarget?.storage,
+        "long-namespace fallback target carries a keyed StorageManager, not a keyless dir",
+      );
+      assert.ok(
+        nsTarget?.storage?.isSecureStoreUnlocked(),
+        "keyed target is unlocked so the encrypted ledger can be rewritten",
+      );
+
+      // The core proof: the encrypted over-cap ledger COMPACTS, it does not defer.
+      const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
+      assert.equal(
+        outcome,
+        "compacted",
+        "encrypted over-cap ledger for a long namespace compacts through the keyed store, never deferred forever",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+
     assert.notDeepEqual(
       await readFile(nsLedger),
       encrypted,

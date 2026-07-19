@@ -33,6 +33,7 @@ import {
   type NamespaceUpdateResult,
 } from "../namespaces/search.js";
 import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
+import { namespaceIdentityFromToken } from "../namespaces/identity.js";
 import {
   planNamespaceMaintenance,
   runNamespaceMaintenanceBatchPlan,
@@ -906,18 +907,25 @@ export class MaintenanceScheduler {
         // Resolve the namespace's secure-store-aware storage so an encrypted
         // fallback ledger compacts through the correct root key/context instead
         // of deferring forever behind a keyless plaintext StorageManager (#2033
-        // thread PRRT_kwDORJXyws6SEvWo). The on-disk dir name IS the namespace's
-        // routed segment, so the router resolves it straight back to THIS dir
-        // (legacy-name match) and installs the root-keyed secure context — the
-        // secure store keys one master key per memory ROOT, not per namespace.
-        // Accept the resolved storage only when it actually roots at this dir so
-        // an unexpected re-route can never compact the wrong ledger. With no
-        // resolver wired (focused tests / plaintext deployments) the keyless
-        // target stands: the rebuild chokepoint still refuses to downgrade an
-        // encrypted ledger, so plaintext behavior and namespace isolation hold.
-        if (resolveNamespaceStorage) {
+        // thread PRRT_kwDORJXyws6SE5fv). The on-disk dir name is the namespace's
+        // identity TOKEN (ns-<hex>), NOT a route namespace. Passing the raw token
+        // to the resolver makes it re-tokenize an already-tokenized value, and for
+        // any namespace longer than 30 bytes the token exceeds the router's
+        // 64-char isSafeRouteNamespace limit, so the resolver throws and the
+        // encrypted over-cap ledger defers forever. Decode the token back to the
+        // canonical namespace and resolve THAT, so long valid namespaces still get
+        // keyed secure storage. The secure store keys one master key per memory
+        // ROOT (not per namespace), so the resolved storage routes straight back
+        // to THIS dir; accept it only when it actually roots at this dir so an
+        // unexpected re-route can never compact the wrong ledger. A token that
+        // does not decode (legacy/garbage dir), or no resolver wired (focused
+        // tests / plaintext deployments), leaves the keyless target standing: the
+        // rebuild chokepoint still refuses to downgrade an encrypted ledger, so
+        // plaintext behavior and namespace isolation hold.
+        const decodedNamespace = namespaceIdentityFromToken(entry.name);
+        if (resolveNamespaceStorage && decodedNamespace !== null) {
           try {
-            const storage = await resolveNamespaceStorage(entry.name);
+            const storage = await resolveNamespaceStorage(decodedNamespace);
             if (path.resolve(storage.dir) === path.resolve(childPath)) {
               addTarget(storage.dir, storage);
               continue;
