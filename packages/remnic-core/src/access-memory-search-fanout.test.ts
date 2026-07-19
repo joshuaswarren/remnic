@@ -136,6 +136,37 @@ test("resolveMemorySearchDefaultFallback returns null when only serverShared (no
   assert.equal(fallback, null);
 });
 
+test("resolveMemorySearchDefaultFallback returns null when readOrder omits userGlobal even if a readable userGlobal layer is materialized (#2056 r3)", () => {
+  // resolveScopeProfilePlan always materializes a userGlobal layer regardless
+  // of readOrder (scope-profiles.ts adds \"userGlobal\" to layerIds
+  // unconditionally). A profile that intentionally omits userGlobal from
+  // readOrder must not get the default-namespace fallback just because the
+  // materialized layer resolved readable — consent lives in readOrder.
+  const plan = profilePlan({
+    profile: {
+      readOrder: ["userProject"],
+      writeDefault: "userProject",
+      promotionTargets: [],
+      autoPromote: {
+        enabled: false,
+        targets: [],
+        categories: ["fact"],
+        minConfidenceTier: "explicit",
+      },
+    },
+    layers: [
+      { id: "userProject", kind: "user-project", namespace: "operator-x-project", readable: false, writable: false, promotable: false, reason: "no coding context" },
+      { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: true, writable: true, promotable: true, reason: "materialized but not in readOrder" },
+    ],
+  });
+  const fallback = resolveMemorySearchDefaultFallback({
+    profilePlan: plan,
+    config: pluginConfig(),
+    principal: "operator-x",
+  });
+  assert.equal(fallback, null);
+});
+
 test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", () => {
   const config = pluginConfig({
     defaultNamespace: "root",

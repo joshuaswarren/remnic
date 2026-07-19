@@ -39,14 +39,22 @@ export function resolveMemorySearchDefaultFallback(options: {
   const { profilePlan, config, principal } = options;
   const principalSelfIsDefault =
     defaultNamespaceForPrincipal(principal, config) === config.defaultNamespace;
+  // readOrder must explicitly intend userGlobal (resolveScopeProfilePlan
+  // always materializes a userGlobal layer even when readOrder omits it, so
+  // the layer's presence alone is not consent), AND that layer must have
+  // resolved readable (a listed-but-unreadable layer is a deliberate
+  // omission). serverShared maps to sharedNamespace, not the default.
+  const profileIntendsUserGlobal =
+    profilePlan.profile.readOrder.includes("userGlobal");
   const userGlobalLayerReadable = profilePlan.layers.some(
     (layer) => layer.id === "userGlobal" && layer.readable && Boolean(layer.namespace),
   );
   const selfResolvedAwayFromDefault =
     profilePlan.baseNamespace !== config.defaultNamespace;
   if (
-    principalSelfIsDefault &&
+    profileIntendsUserGlobal &&
     userGlobalLayerReadable &&
+    principalSelfIsDefault &&
     selfResolvedAwayFromDefault &&
     canReadNamespace(principal, config.defaultNamespace, config)
   ) {
