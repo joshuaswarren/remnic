@@ -43,6 +43,7 @@ import {
 import { pendingLifecycleLedgerDir } from "../storage/memory-lifecycle-ledger-access.js";
 import { listContainedSpillFiles } from "../utils/path-containment.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
+import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 
 /** Build a fixture PluginConfig. Cast bridges a partial fixture to the full
  *  contract — only the fields the scheduler/planner read are populated. */
@@ -1876,6 +1877,138 @@ test("catalog-disabled fallback resolves a LEGACY RAW namespace dir (not a ns- t
       "compacted ledger stays encrypted at rest (namespace isolation + at-rest format preserved)",
     );
     const rebuilt = await nsStorage.readAllMemoryLifecycleEvents();
+    assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback routes a LEGACY RAW namespace dir through the PRODUCTION resolver (resolveNamespaceStorageRoot) so its encrypted over-cap ledger compacts, not defers (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-legacyraw-prod-"));
+  try {
+    // Higher-fidelity companion to the hand-rolled-mock legacy-raw test above.
+    // The resolver here is the LIVE production routing helper
+    // `resolveNamespaceStorageRoot` (exactly the root NamespaceStorageRouter.
+    // storageFor resolves through), not a stub returning a fixed StorageManager.
+    // A legacy deployment wrote per-namespace data under the RAW namespace name
+    // (namespaces/<name>/) before tokenization, with NO catalog. The fallback
+    // must (1) offer the raw dir name to the keyed resolver AND (2) the production
+    // resolver must route that raw name BACK to its legacy namespaces/<name>/ root
+    // (returning the legacy dir when the tokenized dir has no marker), so the keyed
+    // guard `storage.dir === childPath` holds and the encrypted over-cap ledger
+    // compacts through the keyed store. Were resolveNamespaceStorageRoot ever to
+    // route a legacy raw name to the tokenized dir, the guard would fail and the
+    // ledger would defer forever — a regression the mock-based test cannot catch.
+    const nsName = "legacy-raw-prod-ns";
+    assert.equal(namespaceIdentityFromToken(nsName), null, "precondition: dir name is NOT a ns- identity token");
+    assert.ok(isSafeRouteNamespace(nsName), "precondition: dir name is a safe route namespace");
+
+    const config = fixtureConfig({
+      memoryDir: root,
+      defaultNamespace: "primary",
+      namespacesEnabled: true,
+      secureStoreEnabled: true,
+      secureStoreEncryptOnWrite: true,
+      memoryLifecycleLedgerCompactBytes: 1024,
+      memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+    });
+
+    const key = Buffer.alloc(32, 7);
+    const nsDir = path.join(root, "namespaces", nsName);
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-legacy.md"),
+      `---\nid: fact-legacy\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["legacy"]\n---\n\nlegacy\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const junk = '{"legacy":true,"pad":"vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"}\n';
+    const encrypted = encryptFileBody(
+      junk.repeat(Math.ceil(4096 / junk.length)), key, filePathAad(nsLedger, nsDir),
+    );
+    await writeFile(nsLedger, encrypted);
+    assert.ok(isEncryptedFile(await readFile(nsLedger)), "precondition: ledger encrypted");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    // Precondition on the PRODUCTION resolver: the live routing helper resolves
+    // the legacy raw name back to the legacy namespaces/<name>/ dir (no tokenized
+    // dir with markers exists), so the keyed target roots at THIS childPath.
+    assert.equal(
+      path.resolve(await resolveNamespaceStorageRoot(config, nsName)),
+      path.resolve(nsDir),
+      "production resolver routes the legacy raw namespace name to its legacy dir",
+    );
+
+    let resolvedWith: string | null = null;
+    const scheduler = buildCompactionSchedulerWithStorage(
+      config,
+      () => new StorageManager(root), // root has no ledger, so it is skipped.
+      // Mirror NamespaceStorageRouter.storageFor: resolve the root through the
+      // LIVE resolver, then build the root-keyed secure StorageManager the router
+      // would hand back (applySecureStoreConfig sets the required flag + key).
+      async (namespace) => {
+        resolvedWith = namespace;
+        const resolvedRoot = await resolveNamespaceStorageRoot(config, namespace);
+        const sm = new StorageManager(resolvedRoot);
+        sm.setSecureStoreRequired(true);
+        sm.setSecureStoreKey(key);
+        return sm;
+      },
+      undefined, // catalog disabled.
+    );
+    const seam = scheduler as unknown as CompactableScheduler & {
+      resolveLifecycleCompactionTargets: () => Promise<
+        Array<{ memoryDir: string; storage?: StorageManager }>
+      >;
+      compactLifecycleLedgerTarget: (
+        target: unknown,
+        threshold: number,
+      ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
+    };
+    try {
+      const targets = await seam.resolveLifecycleCompactionTargets();
+      assert.equal(resolvedWith, nsName, "fallback resolves by the RAW legacy namespace name");
+      const nsTarget = targets.find(
+        (t) => path.resolve(t.memoryDir) === path.resolve(nsDir),
+      );
+      assert.ok(nsTarget, "fallback discovered the legacy raw namespace ledger dir");
+      assert.ok(
+        nsTarget?.storage,
+        "legacy raw fallback target carries a keyed StorageManager (production resolver), not a keyless dir",
+      );
+      assert.equal(
+        path.resolve(nsTarget!.storage!.dir),
+        path.resolve(nsDir),
+        "the keyed target roots at the legacy raw dir, so the keyed guard held",
+      );
+      assert.ok(
+        nsTarget?.storage?.isSecureStoreUnlocked(),
+        "keyed target is unlocked so the encrypted ledger can be rewritten",
+      );
+
+      const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
+      assert.equal(
+        outcome,
+        "compacted",
+        "encrypted over-cap ledger under a legacy raw namespace dir compacts through the production-resolved keyed store, never deferred forever",
+      );
+    } finally {
+      scheduler.dispose();
+    }
+
+    assert.notDeepEqual(await readFile(nsLedger), encrypted, "ledger was rewritten (not deferred)");
+    assert.ok((await stat(nsLedger)).size < beforeSize, "compacted ledger is smaller");
+    assert.ok(
+      isEncryptedFile(await readFile(nsLedger)),
+      "compacted ledger stays encrypted at rest (namespace isolation + at-rest format preserved)",
+    );
+    const verifyStorage = new StorageManager(nsDir);
+    verifyStorage.setSecureStoreRequired(true);
+    verifyStorage.setSecureStoreKey(key);
+    const rebuilt = await verifyStorage.readAllMemoryLifecycleEvents();
     assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
   } finally {
     await rm(root, { recursive: true, force: true });
