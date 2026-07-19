@@ -584,6 +584,9 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
   for (const p of [
     "src/retrieval.ts",
     "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/retrieval-agents.ts",
+    "src/retrieval-agents.ts",
+    "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",

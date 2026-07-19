@@ -92,7 +92,10 @@
     "packages/remnic-core/src/storage/memory-read-store.ts",
     "packages/remnic-core/src/storage/secure-line-reader.ts",
     "packages/remnic-core/src/namespaces/**",
-    "src/namespaces/**"
+    "src/namespaces/**",
+    "packages/remnic-core/src/retrieval-agents.ts",
+    "src/retrieval-agents.ts",
+    "packages/remnic-core/src/retrieval-tiers.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -183,6 +186,9 @@
     "packages/remnic-core/src/storage/entity-timeline.ts",
     "packages/remnic-core/src/storage/identity-continuity-store.ts",
     "packages/remnic-core/src/storage/memory-read-store.ts",
-    "packages/remnic-core/src/storage/secure-line-reader.ts"
+    "packages/remnic-core/src/storage/secure-line-reader.ts",
+    "packages/remnic-core/src/retrieval-agents.ts",
+    "src/retrieval-agents.ts",
+    "packages/remnic-core/src/retrieval-tiers.ts"
   ]
 }
