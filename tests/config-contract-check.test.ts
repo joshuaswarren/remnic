@@ -142,12 +142,13 @@ test("#1923 reproduction: a parsed key missing from the manifests fails naming t
   const fixture = makeFixtureRepo({ parserExtraKey: true });
   try {
     const result = fixture.run();
-    const miss = result.violations.find(
-      (violation) => violation.kind === "missing-schema" && violation.key === "codingKnowledge.fixture",
+    const misses = result.violations.filter(
+      (violation) =>
+        violation.kind === "missing-schema" && violation.key.startsWith("codingKnowledge.fixture@"),
     );
-    assert.ok(miss, JSON.stringify(result.violations));
-    assert.match(miss.detail, /manifest-a\.json/);
-    assert.match(miss.detail, /manifest-b\.json/);
+    assert.equal(misses.length, 2, JSON.stringify(result.violations));
+    assert.ok(misses.some((m) => m.key.endsWith("@manifest-a.json")), JSON.stringify(misses));
+    assert.ok(misses.some((m) => m.key.endsWith("@manifest-b.json")), JSON.stringify(misses));
   } finally {
     fixture.cleanup();
   }
@@ -159,7 +160,7 @@ test("dead schema: a schema key with no parsed counterpart fails as dead-schema"
     const result = fixture.run();
     assert.ok(
       result.violations.some(
-        (violation) => violation.kind === "dead-schema" && violation.key === "deadTopKey",
+        (violation) => violation.kind === "dead-schema" && violation.key.startsWith("deadTopKey@"),
       ),
       JSON.stringify(result.violations),
     );
@@ -174,7 +175,7 @@ test("dead schema: a nested sibling is not covered by a parsed ancestor", () => 
     const result = fixture.run();
     assert.ok(
       result.violations.some(
-        (violation) => violation.kind === "dead-schema" && violation.key === "codingKnowledge.typo",
+        (violation) => violation.kind === "dead-schema" && violation.key.startsWith("codingKnowledge.typo@"),
       ),
       JSON.stringify(result.violations),
     );
@@ -198,31 +199,55 @@ test("grandfather manifest: an entry suppresses its violation; a stale entry FAI
   // Entry matches the live violation -> suppressed.
   const active = makeFixtureRepo({
     parserExtraKey: true,
-    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" }],
+    grandfather: [
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" },
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-b.json", issue: "#1990" },
+    ],
   });
   try {
     const result = active.run();
     assert.equal(
-      result.violations.some((violation) => violation.key === "codingKnowledge.fixture"),
+      result.violations.some((violation) => violation.key.startsWith("codingKnowledge.fixture@")),
       false,
       "grandfathered violation must be suppressed",
     );
     assert.equal(result.staleGrandfatherEntries.length, 0);
-    assert.equal(result.grandfatheredActive, 1);
+    assert.equal(result.grandfatheredActive, 2);
   } finally {
     active.cleanup();
   }
 
   // Violation fixed but manifest NOT pruned -> stale entry reported.
   const stale = makeFixtureRepo({
-    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" }],
+    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" }],
   });
   try {
     const result = stale.run();
     assert.equal(result.staleGrandfatherEntries.length, 1, "staleness is a failure, not a comfort");
-    assert.equal(result.staleGrandfatherEntries[0].key, "codingKnowledge.fixture");
+    assert.equal(result.staleGrandfatherEntries[0].key, "codingKnowledge.fixture@manifest-a.json");
   } finally {
     stale.cleanup();
+  }
+});
+
+test("grandfather is manifest-scoped: suppressing one manifest leaves another's drift visible (#1990)", () => {
+  const fixture = makeFixtureRepo({
+    parserExtraKey: true,
+    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" }],
+  });
+  try {
+    const result = fixture.run();
+    assert.equal(
+      result.violations.some((v) => v.key === "codingKnowledge.fixture@manifest-a.json"),
+      false,
+      "manifest-a entry is suppressed",
+    );
+    assert.ok(
+      result.violations.some((v) => v.key === "codingKnowledge.fixture@manifest-b.json"),
+      "the same drift in manifest-b must remain visible (per-manifest grandfather identity)",
+    );
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -271,18 +296,21 @@ test("grandfather ban fails closed when a real checkout cannot resolve the base 
 test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1990)", () => {
   const fixture = makeFixtureRepo({
     parserExtraKey: true,
-    grandfather: [{ kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" }],
+    grandfather: [
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" },
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-b.json", issue: "#1990" },
+    ],
   });
   try {
     initGitRepo(fixture.root);
-    // Pin the base at the committed manifest (holds only the prior entry).
+    // Pin the base at the committed manifest (holds only the prior entries).
     execFileSync("git", ["-C", fixture.root, "update-ref", "refs/remotes/origin/main", "HEAD"], {
       stdio: "ignore",
     });
-    // The prior entry exists at the base → accepted, its violation suppressed.
+    // The prior entries exist at the base → accepted, their violations suppressed.
     const accepted = fixture.run();
     assert.equal(
-      accepted.violations.some((violation) => violation.key === "codingKnowledge.fixture"),
+      accepted.violations.some((violation) => violation.key.startsWith("codingKnowledge.fixture@")),
       false,
     );
     // Add a NEW exception absent from the base → the shrink-only ban rejects it.
@@ -290,8 +318,9 @@ test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1
       path.join(fixture.root, "grandfathered.json"),
       JSON.stringify(
         [
-          { kind: "missing-schema", key: "codingKnowledge.fixture", issue: "#1990" },
-          { kind: "missing-schema", key: "codingKnowledge.sneaky", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-b.json", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.sneaky@manifest-a.json", issue: "#1990" },
         ],
         null,
         2,
@@ -299,8 +328,55 @@ test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1
     );
     assert.throws(
       () => fixture.run(),
-      /new grandfather entry missing-schema:codingKnowledge\.sneaky is not allowed/,
+      /new grandfather entry missing-schema:codingKnowledge\.sneaky@manifest-a\.json is not allowed/,
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("baseline ref is configurable for fork-safe resolution (#1990)", () => {
+  const fixture = makeFixtureRepo({
+    parserExtraKey: true,
+    grandfather: [
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" },
+      { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-b.json", issue: "#1990" },
+    ],
+  });
+  const run = (baselineRef: string): ContractCheckResult =>
+    runContractCheck({
+      repoRoot: fixture.root,
+      entryFile: path.join(fixture.root, "parser.ts"),
+      entryFunction: "parseRootConfig",
+      includeFiles: [],
+      manifestPaths: [path.join(fixture.root, "manifest-a.json"), path.join(fixture.root, "manifest-b.json")],
+      docsPath: path.join(fixture.root, "docs.md"),
+      grandfatherPath: path.join(fixture.root, "grandfathered.json"),
+      baselineRef,
+    });
+  try {
+    initGitRepo(fixture.root);
+    // The true PR base lives at a non-default ref (fork's origin/main differs).
+    execFileSync("git", ["-C", fixture.root, "update-ref", "refs/remotes/origin/pr-base", "HEAD"], {
+      stdio: "ignore",
+    });
+    // Resolving against the configured base ref keeps the ban active: a new
+    // exception absent from that base is rejected.
+    writeFileSync(
+      path.join(fixture.root, "grandfathered.json"),
+      JSON.stringify(
+        [
+          { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-a.json", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.fixture@manifest-b.json", issue: "#1990" },
+          { kind: "missing-schema", key: "codingKnowledge.sneaky@manifest-a.json", issue: "#1990" },
+        ],
+        null,
+        2,
+      ),
+    );
+    assert.throws(() => run("origin/pr-base"), /new grandfather entry/);
+    // An unresolvable base ref fails closed rather than skipping the ban.
+    assert.throws(() => run("origin/does-not-exist"), /cannot resolve the shrink-only grandfather baseline/);
   } finally {
     fixture.cleanup();
   }
@@ -365,8 +441,8 @@ test("array item flattening: parsed-array item drift surfaces dead + missing sch
   try {
     const result = fixture.run();
     const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
-    assert.ok(kinds.includes("dead-schema:parsedList.deadItem"), JSON.stringify(kinds));
-    assert.ok(kinds.includes("missing-schema:parsedList.weight"), JSON.stringify(kinds));
+    assert.ok(kinds.some((k) => k.startsWith("dead-schema:parsedList.deadItem@")), JSON.stringify(kinds));
+    assert.ok(kinds.some((k) => k.startsWith("missing-schema:parsedList.weight@")), JSON.stringify(kinds));
   } finally {
     fixture.cleanup();
   }
@@ -419,8 +495,8 @@ test("composition: allOf props are enforced, anyOf/oneOf alternatives are absorb
   try {
     const result = fixture.run();
     const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
-    assert.ok(kinds.includes("dead-schema:combo.enforced"), JSON.stringify(kinds));
-    assert.equal(kinds.includes("dead-schema:altBlock.alt"), false, JSON.stringify(kinds));
+    assert.ok(kinds.some((k) => k.startsWith("dead-schema:combo.enforced@")), JSON.stringify(kinds));
+    assert.equal(kinds.some((k) => k.startsWith("dead-schema:altBlock.alt@")), false, JSON.stringify(kinds));
   } finally {
     fixture.cleanup();
   }

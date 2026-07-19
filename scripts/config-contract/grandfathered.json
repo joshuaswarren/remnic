@@ -1,20 +1,5 @@
 [
   {
-    "kind": "dead-schema",
-    "key": "openclawFlushPlanProcessingEnabled",
-    "issue": "#1990"
-  },
-  {
-    "kind": "missing-schema",
-    "key": "gatewayConfig",
-    "issue": "#1990"
-  },
-  {
-    "kind": "missing-schema",
-    "key": "maintenance",
-    "issue": "#1990"
-  },
-  {
     "kind": "undocumented-key",
     "key": "activeRecallAgents",
     "issue": "#1990"
@@ -1782,6 +1767,51 @@
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/wearables/config.ts#d2e5943b27e2",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "openclawFlushPlanProcessingEnabled@openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "gatewayConfig@openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "maintenance@openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "openclawFlushPlanProcessingEnabled@packages/plugin-openclaw/openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "gatewayConfig@packages/plugin-openclaw/openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "maintenance@packages/plugin-openclaw/openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "dead-schema",
+    "key": "openclawFlushPlanProcessingEnabled@packages/shim-openclaw-engram/openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "gatewayConfig@packages/shim-openclaw-engram/openclaw.plugin.json",
+    "issue": "#1990"
+  },
+  {
+    "kind": "missing-schema",
+    "key": "maintenance@packages/shim-openclaw-engram/openclaw.plugin.json",
     "issue": "#1990"
   }
 ]

@@ -62,6 +62,7 @@ export interface GrandfatherEntry {
 function readPreviousGrandfatherKeys(
   repoRoot: string,
   grandfatherPath: string,
+  baseRef: string,
 ): { keys: Set<string> | null; baselineRequired: boolean } {
   const relativePath = path.relative(repoRoot, grandfatherPath);
   if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
@@ -83,7 +84,7 @@ function readPreviousGrandfatherKeys(
   // A real checkout MUST be able to resolve the base, or the ban is meaningless.
   let base = "";
   try {
-    base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", "origin/main"], {
+    base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", baseRef], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
@@ -309,6 +310,13 @@ export function runContractCheck(options: {
    * in a shallow checkout (no `origin/main`) opt out.
    */
   checkGrandfatherBaseline?: boolean;
+  /**
+   * Git ref for the shrink-only baseline (default env
+   * REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main"). CI sets the PR's actual
+   * base branch so a fork whose origin/main predates the manifest cannot skip
+   * the ban (issue #1990 review).
+   */
+  baselineRef?: string;
 }): ContractCheckResult {
   const repoRoot = options.repoRoot;
   const manifestPaths = options.manifestPaths ?? [
@@ -344,16 +352,18 @@ export function runContractCheck(options: {
 
   const violations: ContractViolation[] = [];
 
-  // A. Parsed key must be schema-covered in EVERY manifest.
+  // A. Parsed key must be schema-covered in EVERY manifest. Emit one violation
+  // per missing manifest, keyed `<key>@<manifest>`, so a path already
+  // grandfathered for one manifest does not suppress the same drift newly
+  // appearing in another (issue #1990 review).
   for (const key of parsedKeys) {
-    const missingFrom = schemas
-      .filter((schema) => !coveredBySchema(key, schema.flat))
-      .map((schema) => path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/"));
-    if (missingFrom.length > 0) {
+    for (const schema of schemas) {
+      if (coveredBySchema(key, schema.flat)) continue;
+      const manifestRel = path.relative(repoRoot, schema.manifestPath).split(path.sep).join("/");
       violations.push({
         kind: "missing-schema",
-        key,
-        detail: `parsed key absent from configSchema of: ${missingFrom.join(", ")}`,
+        key: `${key}@${manifestRel}`,
+        detail: `parsed key ${key} absent from configSchema of ${manifestRel}`,
       });
     }
   }
@@ -374,8 +384,8 @@ export function runContractCheck(options: {
       if (!hasParsedCounterpart) {
         violations.push({
           kind: "dead-schema",
-          key: schemaPath,
-          detail: `schema path in ${manifestRel} has no corresponding parsed key at this path or below (validator-implementation drift, §40)`,
+          key: `${schemaPath}@${manifestRel}`,
+          detail: `schema path ${schemaPath} in ${manifestRel} has no corresponding parsed key at this path or below (validator-implementation drift, §40)`,
         });
       }
     }
@@ -495,14 +505,16 @@ export function runContractCheck(options: {
     return candidate as GrandfatherEntry;
   });
 
+  const baseRef =
+    options.baselineRef ?? process.env.REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main";
   const { keys: previousGrandfatherKeys, baselineRequired } =
     options.checkGrandfatherBaseline === false
       ? { keys: null, baselineRequired: false }
-      : readPreviousGrandfatherKeys(repoRoot, grandfatherPath);
+      : readPreviousGrandfatherKeys(repoRoot, grandfatherPath, baseRef);
   if (baselineRequired && !previousGrandfatherKeys) {
     throw new Error(
       `${grandfatherPath}: cannot resolve the shrink-only grandfather baseline ` +
-        "(git merge-base HEAD origin/main). Fetch origin/main so newly added exceptions " +
+        `(git merge-base HEAD ${baseRef}). Fetch the PR base branch so newly added exceptions ` +
         "can be rejected; refusing to run the contract check open.",
     );
   }

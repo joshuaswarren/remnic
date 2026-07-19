@@ -116,6 +116,11 @@ jobs:
 
       - name: Config contract (v1 + v2, issue #1990)
         run: npm run check-config-contract
+        env:
+          # Resolve the shrink-only grandfather baseline against the PR's actual
+          # base branch, not a hardcoded origin/main — so a fork whose default
+          # branch predates grandfathered.json cannot skip the ban (issue #1990).
+          REMNIC_CONFIG_CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
 
       - name: Envelope belt (issue #1989)
         run: node scripts/check-envelope-belt.mjs
