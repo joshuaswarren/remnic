@@ -481,14 +481,17 @@ test("an enforced dispatch pings exactly the reviewers the aliases recognize", a
   assert.match(trigger.body, /@codex/);
 });
 
-test("a check_run event processes every associated PR, not just the first", async () => {
+test("a check_run event processes only the concurrency-serialized PR", async () => {
+  // A GitHub Actions run is in exactly one concurrency group; processing
+  // secondary shared-head PRs here would write their ledgers outside their own
+  // serialized group (codex). Only pull_requests[0] (the group key) is handled;
+  // the rest advance via their own events.
   const { github, calls } = fakeGithub({ threads: openThreads(1) });
   const checkRunContext = {
     repo: { owner: "o", repo: "r" },
     payload: { check_run: { pull_requests: [{ number: 7 }, { number: 8 }] } },
   };
   const result = await runRoundGate({ github, context: checkRunContext, core, env: {} });
-  assert.ok(Array.isArray(result), "returns one result per associated PR");
-  assert.equal(result.length, 2);
-  assert.equal(calls.created.length, 2, "each associated PR gets its own ledger");
+  assert.ok(result && !Array.isArray(result), "returns a single result for the serialized PR");
+  assert.equal(calls.created.length, 1, "only the primary PR's ledger is written");
 });
