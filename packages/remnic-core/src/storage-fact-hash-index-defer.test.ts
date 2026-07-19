@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { mock } from "node:test";
 
-import { ContentHashIndex, StorageManager } from "./storage.js";
+import { ContentHashIndex, FactHashIndexNotAuthoritativeError, StorageManager } from "./storage.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
 // fact-hash index (which grows with corpus size) on EVERY fact, even though
@@ -666,6 +666,120 @@ test("#2016: a peer's committed fact survives a fresh-session authoritative rebu
       await rebuilder.hasFactContentHash("durable multiprocess fact"),
       true,
       "the peer's fact is deduped after a fresh-session locked rebuild",
+    );
+  });
+});
+
+// PR #2016 findings 1-2 + 3: when the authoritative rebuild lock cannot be
+// acquired, hasFactContentHash()/getAuthoritativeFactHashIndex() must NOT answer
+// from the stale loaded snapshot as if it were authoritative; and a deferred
+// lock-timeout append must be drainable inline at a short-lived writer's
+// shutdown boundary rather than relying on the unref'd background timer.
+//
+// These tests hold the advisory lock deterministically (a fresh, non-stale
+// <index>.lock the acquirer cannot take within the short window) and inject
+// tight lock/retry budgets so the miss path is exercised without real
+// multi-second waits. Same real-timer rationale as the retry tests above.
+
+test("#2016 finding 1: a lock-contended miss is verified against the corpus, never a stale-snapshot false miss", async () => {
+  await withMemoryDir(async (dir) => {
+    // Process A writes a durable fact (.md corpus + fact-hashes.txt).
+    const writer = new StorageManager(dir);
+    await writer.writeMemory("fact", "durable fact under contention", { source: "extraction" });
+
+    // Drop the on-disk hash index so a fresh session's LOADED snapshot is EMPTY,
+    // but keep the durable .md — the corpus is now the only source of truth.
+    await rm(path.join(dir, "state", "fact-hashes.txt"), { force: true });
+
+    // A peer holds the rebuild lock so process B cannot become authoritative.
+    const lockPath = path.join(dir, "state", "fact-hashes.txt.lock");
+    await mkdir(path.dirname(lockPath), { recursive: true });
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    try {
+      const reader = new StorageManager(dir);
+      reader.factHashIndexLockOptions = { maxWaitMs: 40, pollMs: 10, retryMaxAttempts: 2, retryBaseMs: 10 };
+
+      assert.equal(
+        await reader.isFactContentHashAuthoritative(),
+        false,
+        "index cannot be authoritative while the peer holds the rebuild lock",
+      );
+      assert.equal(
+        await reader.hasFactContentHash("durable fact under contention"),
+        true,
+        "a miss on the empty loaded snapshot is verified against the durable corpus — no false dedup miss",
+      );
+      assert.equal(
+        await reader.hasFactContentHash("was never written anywhere"),
+        false,
+        "a genuine miss is still a miss under contention (corpus confirms absence)",
+      );
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+  });
+});
+
+test("#2016 finding 2: getAuthoritativeFactHashIndex fails explicitly instead of returning a non-authoritative index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    storage.factHashIndexLockOptions = { maxWaitMs: 40, pollMs: 10, retryMaxAttempts: 2, retryBaseMs: 10 };
+    const lockPath = path.join(dir, "state", "fact-hashes.txt.lock");
+    await mkdir(path.dirname(lockPath), { recursive: true });
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    try {
+      await assert.rejects(
+        () => storage.getAuthoritativeFactHashIndex(),
+        (err: unknown) => err instanceof FactHashIndexNotAuthoritativeError,
+        "must throw rather than return a stale/non-authoritative index",
+      );
+      assert.equal(
+        await storage.isFactContentHashAuthoritative(),
+        false,
+        "the non-authoritative state is propagated, not masked as authoritative",
+      );
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+
+    // Once the lock is free the rebuild publishes and the accessor returns.
+    const idx = await storage.getAuthoritativeFactHashIndex();
+    assert.ok(idx, "returns the authoritative index after the lock clears");
+    assert.equal(await storage.isFactContentHashAuthoritative(), true);
+  });
+});
+
+test("#2016 finding 3: flushReconcileRetry drains a deferred lock-timeout append to disk at shutdown", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 30,
+      pollMs: 10,
+      retryBaseMs: 10,
+      retryMaxAttempts: 5,
+    });
+    await idx.load();
+    idx.add("deferred-drained-on-shutdown");
+    await idx.saveMergingWithDisk();
+    assert.equal(idx.hasPendingReconcileRetry, true, "the lock timeout armed a background retry");
+
+    // The peer releases the lock; a short-lived writer drains INLINE at its
+    // shutdown boundary instead of relying on the unref'd background timer.
+    await rm(lockPath, { force: true });
+    await idx.flushReconcileRetry();
+
+    assert.equal(idx.hasPendingReconcileRetry, false, "no lingering retry after the inline drain");
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(
+      fresh.has("deferred-drained-on-shutdown"),
+      "the deferred hash reached disk via the inline shutdown drain",
     );
   });
 });

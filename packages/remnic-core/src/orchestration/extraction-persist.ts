@@ -1704,22 +1704,35 @@ export class ExtractionPersistCoordinator {
         fact.tags,
       );
       let exactDuplicate = false;
+      let needsCorpusConfirm = false;
       try {
         exactDuplicate = await this.deps.hasContentHashDedup(
           targetStorage,
           contentHashDedupKey,
         );
+        if (!exactDuplicate && !(await targetStorage.isFactContentHashAuthoritative())) {
+          // PR #2016 findings 1-2: a MISS is only trustworthy when the shared
+          // fact-hash index is authoritative (corpus-rebuilt under the lock).
+          // Under cross-process lock contention it is the loaded snapshot, whose
+          // miss may be false — confirm against the corpus below instead of
+          // trusting a stale snapshot and writing a duplicate.
+          needsCorpusConfirm = true;
+        }
       } catch (err) {
+        // The dedup lookup surfaced a failure (e.g. the authoritative rebuild
+        // could not run). Do NOT fail-open into a possible duplicate — confirm
+        // against the corpus (ground truth) below.
+        needsCorpusConfirm = true;
         log.warn(
-          `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
+          `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,
         );
       }
-      // Connector-aware dedup (QOjlB): if the hash says duplicate, verify
-      // a same-content, same-connector active fact exists. Different
-      // connectors with same content should NOT be deduped. Fail open
-      // (write) on scan failure so an unverifiable hash hit cannot
-      // silently drop content.
-      if (exactDuplicate) {
+      // Connector-aware dedup (QOjlB): if the hash says duplicate — or the index
+      // could not authoritatively confirm a miss — verify a same-content,
+      // same-connector active fact exists across the hot+cold tiers. Different
+      // connectors with the same content are NOT duplicates. Fail open (write) on
+      // scan failure so an unverifiable state cannot silently drop content.
+      if (exactDuplicate || needsCorpusConfirm) {
         try {
           // #2016 cold-tier finding: the authoritative content-hash rebuild
           // unions the HOT and COLD tiers, so a hash hit can name an active copy

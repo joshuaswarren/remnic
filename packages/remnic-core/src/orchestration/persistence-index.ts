@@ -297,6 +297,31 @@ export class PersistenceIndexCoordinator {
     }
   }
 
+  /**
+   * Drive any deferred lock-timeout reconcile-save retries to completion at a
+   * lifecycle boundary (PR #2016 finding 3). Each per-index background retry is
+   * `unref`'d so it never keeps a long-lived host alive; a short-lived writer (a
+   * one-shot CLI) can exit before it fires, leaving a durable fact `.md` whose
+   * hash never reached disk for peers. `orchestrator.destroy()` calls this so the
+   * addition publishes before the process exits. Long-lived hosts only reach it
+   * at their own shutdown, so their in-flight retries keep running in the
+   * background until then. Best-effort: `flushReconcileRetry` is a no-op on a
+   * clean index and a permanently contended lock falls back to the
+   * corpus-rebuild-on-restart safety net.
+   */
+  async drainContentHashReconcileRetries(): Promise<void> {
+    const indexes = new Set<ContentHashIndex>();
+    if (this.deps.contentHashIndex) indexes.add(this.deps.contentHashIndex);
+    for (const index of this.deps.contentHashIndexesByStorageDir.values()) {
+      indexes.add(index);
+    }
+    for (const index of indexes) {
+      await index.flushReconcileRetry().catch((err) =>
+        log.warn(`content-hash index reconcile drain failed: ${err}`),
+      );
+    }
+  }
+
   async indexPersistedMemory(
     storage: StorageManager,
     memoryId: string,

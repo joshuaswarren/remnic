@@ -1170,6 +1170,11 @@ const CONTENT_HASH_INDEX_RETRY_BASE_MS = 500;
 /** Ceiling (ms) for the exponential reconcile-save retry backoff. */
 const CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS = 5_000;
 
+/** Bounded attempts to acquire the rebuild lock before ensureFactHashIndexAuthoritative surrenders authority (PR #2016). */
+const FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS = 3;
+/** Base backoff (ms) between rebuild-lock attempts; doubles each attempt, capped at CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS. */
+const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
+
 /**
  * Tuning for {@link ContentHashIndex} cross-process lock waits and the
  * deferred reconcile-save durable retry (issue #1909 / PR #2016). All optional;
@@ -1186,6 +1191,21 @@ export interface ContentHashIndexLockOptions {
   readonly retryBaseMs?: number;
   /** Max deferred-save retries before falling back to the corpus-rebuild safety net (default 5). */
   readonly retryMaxAttempts?: number;
+}
+
+/**
+ * Thrown when the fact-hash index cannot be made authoritative — the
+ * cross-process rebuild lock could not be acquired within the bounded retry
+ * budget (PR #2016). Callers that require an authoritative dedup answer surface
+ * this instead of silently trusting a stale loaded snapshot.
+ */
+export class FactHashIndexNotAuthoritativeError extends Error {
+  constructor(stateDir: string) {
+    super(
+      `fact-hash index is not authoritative: the cross-process rebuild lock for ${stateDir} could not be acquired within the bounded retry budget`,
+    );
+    this.name = "FactHashIndexNotAuthoritativeError";
+  }
 }
 
 /**
@@ -1483,6 +1503,47 @@ export class ContentHashIndex {
    */
   async whenReconcileRetrySettled(): Promise<void> {
     await (this.reconcileRetryBarrier ?? Promise.resolve());
+  }
+
+  /**
+   * Drive any deferred lock-timeout reconcile save to completion INLINE at a
+   * lifecycle boundary (PR #2016 finding 3). The background retry timer is
+   * `unref`'d so it never keeps a long-lived daemon alive — but a short-lived
+   * writer (a one-shot CLI) can exit before it fires, leaving a durable fact
+   * `.md` whose hash never reached `fact-hashes.txt` for peers that already
+   * built their in-memory index. `orchestrator.destroy()` calls this so the
+   * addition publishes before the process exits; long-lived hosts only reach it
+   * at their own shutdown, so their in-flight retries keep running in the
+   * background until then. Bounded by the same attempt ceiling as the background
+   * retry; a permanently contended lock falls back to the corpus-rebuild-on-
+   * restart safety net (the fact `.md` is already durable). No deadlock: each
+   * attempt is the same non-reentrant, bounded-wait file lock.
+   */
+  async flushReconcileRetry(): Promise<void> {
+    if (!this.dirty) return;
+    const maxAttempts = this.lockOptions.retryMaxAttempts ?? CONTENT_HASH_INDEX_RETRY_MAX_ATTEMPTS;
+    const baseMs = this.lockOptions.retryBaseMs ?? CONTENT_HASH_INDEX_RETRY_BASE_MS;
+    for (let attempt = 0; this.dirty && attempt < maxAttempts; attempt += 1) {
+      // Cancel the unref'd background timer — we drive the locked publish inline.
+      if (this.reconcileRetryTimer) {
+        clearTimeout(this.reconcileRetryTimer);
+        this.reconcileRetryTimer = null;
+      }
+      await this.saveMergingWithDisk();
+      if (!this.dirty) break;
+      if (attempt < maxAttempts - 1) {
+        const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
+        await new Promise<void>((resolve) => setTimeout(resolve, wait));
+      }
+    }
+    // Clear any timer the final saveMergingWithDisk armed and settle the barrier
+    // so awaiters unblock — the bounded inline drain has done its best.
+    if (this.reconcileRetryTimer) {
+      clearTimeout(this.reconcileRetryTimer);
+      this.reconcileRetryTimer = null;
+    }
+    this.reconcileRetryAttempts = 0;
+    this.settleReconcileRetry();
   }
 
   /**
@@ -2430,7 +2491,9 @@ export class StorageManager {
   private factHashIndex: ContentHashIndex | null = null;
   private factHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
   private factHashIndexAuthoritative: boolean | null = null;
-  private factHashIndexAuthoritativePromise: Promise<void> | null = null;
+  private factHashIndexAuthoritativePromise: Promise<boolean> | null = null;
+  /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
+  factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
   /**
    * Cache of "is this file encrypted?" keyed by absolute path, VALIDATED by file
@@ -3375,7 +3438,8 @@ export class StorageManager {
       this.stateDir,
       () => this._secureStoreKey,
       () => this.resolveWriteKey(),
-      this.baseDir
+      this.baseDir,
+      this.factHashIndexLockOptions,
     );
   }
 
@@ -3695,52 +3759,78 @@ export class StorageManager {
    * and never re-creates a fact whose per-write flush was deferred and lost.
    */
   async getAuthoritativeFactHashIndex(): Promise<ContentHashIndex> {
+    if (!(await this.ensureFactHashIndexAuthoritative())) {
+      throw new FactHashIndexNotAuthoritativeError(this.stateDir);
+    }
+    return this.getFactHashIndex();
+  }
+
+  /**
+   * Return the shared fact-hash index instance, corpus-rebuilt under the lock
+   * when the lock is free. Unlike {@link getAuthoritativeFactHashIndex} this
+   * NEVER throws on lock contention — it returns the shared instance (the loaded
+   * snapshot when a locked rebuild could not run) so registration writes still
+   * land in the one shared index and reconcile to disk. Callers that trust a
+   * dedup MISS MUST also consult {@link isFactContentHashAuthoritative} and
+   * confirm against the corpus when it is false (PR #2016).
+   */
+  async getSharedFactHashIndex(): Promise<ContentHashIndex> {
     await this.ensureFactHashIndexAuthoritative();
     return this.getFactHashIndex();
   }
 
-  private async ensureFactHashIndexAuthoritative(): Promise<void> {
+  private async ensureFactHashIndexAuthoritative(): Promise<boolean> {
     if (this.factHashIndexAuthoritative === true) {
-      return;
+      return true;
     }
     if (this.factHashIndexAuthoritativePromise) {
-      await this.factHashIndexAuthoritativePromise;
-      return;
+      return this.factHashIndexAuthoritativePromise;
     }
 
     this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
-      // Round 11 (definitive): ALWAYS rebuild the fact-hash index from the
-      // durable fact corpus on first use per process — no on-disk "ready" marker
-      // is written or trusted. A deferred write, crash, or multi-process
-      // interleave therefore can never leave a stale index trusted (there is no
-      // cached authoritative signal to go stale). One-time O(N) per restart,
-      // amortized by the #1902 hot-memories cache after the first read.
+      // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
+      // first use per process — no on-disk "ready" marker is written or trusted,
+      // so a deferred write, crash, or multi-process interleave can never leave a
+      // stale index trusted. The scan AND publish run under the SAME per-index
+      // cross-process lock the reconciling saves use (rebuildUnderLock), so the
+      // rebuild can never overwrite a peer's newer lock-merged or deferred
+      // additions with an unlocked overwrite.
       //
-      // PR #2016 (this finding): serialize the corpus scan AND the publish under
-      // the SAME per-index cross-process lock the reconciling append/removal
-      // saves (saveMergingWithDisk) use, so the rebuild can never overwrite a
-      // peer's newer lock-merged or deferred additions with an unlocked
-      // overwrite. A locked writer that committed BEFORE the rebuild took the
-      // lock has its memory .md on disk and is re-scanned; one that commits
-      // AFTER the rebuild releases reconciles its additions on top. On lock
-      // failure nothing is published and the index stays non-authoritative so
-      // the next use retries — never an unlocked write, and (non-reentrant file
-      // lock) never a deadlock with the deferred reconcile-retry path.
+      // PR #2016 (findings 1-2): bounded-retry the LOCKED rebuild so transient
+      // contention (a peer mid reconcile-save) clears within a short budget
+      // instead of surrendering authority on the first miss. Each attempt uses
+      // the same non-reentrant, bounded-wait file lock, so it can never deadlock
+      // with a deferred reconcile-retry. On exhaustion the index is left
+      // non-authoritative: getAuthoritativeFactHashIndex() fails explicitly and
+      // hasFactContentHash()/isFactContentHashAuthoritative() fall back to the
+      // durable corpus so a stale loaded snapshot never answers as current.
       const factHashIndex = await this.getFactHashIndex();
-      const published = await factHashIndex.rebuildUnderLock(() =>
-        this.rebuildFactHashIndexFromCorpus(factHashIndex),
-      );
+      const maxAttempts =
+        this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
+      const baseMs =
+        this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
+      let published = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        published = await factHashIndex.rebuildUnderLock(() =>
+          this.rebuildFactHashIndexFromCorpus(factHashIndex),
+        );
+        if (published || attempt === maxAttempts - 1) break;
+        const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
+        await new Promise<void>((resolve) => setTimeout(resolve, wait));
+      }
       this.factHashIndexAuthoritative = published;
       if (!published) {
         log.warn(
-          `ensureFactHashIndexAuthoritative: fact-hash index lock unavailable; index left non-authoritative (will rebuild from corpus on next use)`
+          `ensureFactHashIndexAuthoritative: fact-hash index lock unavailable after ${maxAttempts} attempt(s); ` +
+            `index left non-authoritative (reads verify against the durable corpus; next use retries the locked rebuild)`,
         );
       }
+      return published;
     })().finally(() => {
       this.factHashIndexAuthoritativePromise = null;
     });
-    await this.factHashIndexAuthoritativePromise;
+    return this.factHashIndexAuthoritativePromise;
   }
 
   /**
@@ -4295,10 +4385,23 @@ export class StorageManager {
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {
-    await this.ensureFactHashIndexAuthoritative();
+    const authoritative = await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     const sanitized = sanitizeMemoryContent(content);
-    return factHashIndex.has(sanitized.text);
+    if (factHashIndex.has(sanitized.text)) return true;
+    if (authoritative) return false;
+    // PR #2016 finding 1: the locked corpus rebuild could not run, so the shared
+    // index is still the loaded snapshot whose miss may be false. Never answer a
+    // miss from a stale snapshot as if authoritative — verify against the durable
+    // hot+cold corpus (ground truth) via a throwaway index so a lock-contended
+    // read can never cause a false dedup miss.
+    return await this.factContentHashPresentInCorpus(sanitized.text);
+  }
+
+  private async factContentHashPresentInCorpus(sanitizedText: string): Promise<boolean> {
+    const scratch = this.createContentHashIndex();
+    await this.rebuildFactHashIndexFromCorpus(scratch);
+    return scratch.has(sanitizedText);
   }
 
   private factContentHashForRemoval(memory: MemoryFile): string | null {
@@ -4398,8 +4501,7 @@ export class StorageManager {
   }
 
   async isFactContentHashAuthoritative(): Promise<boolean> {
-    await this.ensureFactHashIndexAuthoritative();
-    return true;
+    return await this.ensureFactHashIndexAuthoritative();
   }
 
   async writeArtifact(

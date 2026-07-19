@@ -952,6 +952,14 @@ export class Orchestrator {
     }
     this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
+    // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
+    // short-lived writer's durable fact hash reaches disk before the process
+    // exits. The per-index background retry is unref'd (it never keeps a
+    // long-lived host alive), so a one-shot CLI could exit before it fires; this
+    // drives it to completion inline at the shutdown boundary. Best-effort.
+    await this.persistenceIndexCoordinator
+      .drainContentHashReconcileRetries()
+      .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
     // Issue #1909: persist any turns buffered within the debounce window BEFORE
     // flushing catalog touches (review round 11 finding 2). The buffer save fires
     // a coalesced namespace-catalog touch on an unref'd timer; flushing touches
@@ -1289,7 +1297,13 @@ export class Orchestrator {
     // the durable fact, so hasContentHashDedup() sees it and persistExtraction
     // does not re-create it. We still cache the reference so saveContentHashIndexes
     // persists exactly the shared instance.
-    const index = await targetStorage.getAuthoritativeFactHashIndex();
+    // PR #2016: use the shared (best-effort) accessor, not the throwing
+    // authoritative one — the shared instance must be available for registration
+    // add/remove even under lock contention (it reconciles to disk via the
+    // deferred retry). The dedup READ path (extraction-persist) gates a MISS on
+    // isFactContentHashAuthoritative() and confirms against the corpus, so a
+    // non-authoritative snapshot never causes a false dedup miss.
+    const index = await targetStorage.getSharedFactHashIndex();
     if (targetStorage.dir === this.storage.dir) {
       this.contentHashIndex = index;
     } else {

@@ -63,14 +63,21 @@ test("content-hash: contentHashSource overrides the persisted body for dedup (ru
   }
 });
 
-test("content-hash: non-fact categories do not register a content hash", async () => {
+test("content-hash: the authoritative rebuild dedups every active registered category, not just facts (#2016 round-15)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
     await storage.writeMemory("decision", "we chose option B");
+    // writeMemory only registers facts on the write hot path, but the
+    // authoritative corpus rebuild (first hasFactContentHash use) indexes EVERY
+    // active registered category (b866c735 / PR #2016) so a restart never
+    // re-creates an identical decision/preference/commitment. The shared
+    // content-hash index is therefore category-agnostic; over-inclusion is safe
+    // because dedup consumers confirm the category with a corpus scan before
+    // dropping a write.
     assert.equal(
       await storage.hasFactContentHash("we chose option B"),
-      false,
-      "non-fact categories must not enter the fact dedup index",
+      true,
+      "the rebuilt shared content-hash index covers all active categories, not only facts",
     );
   } finally {
     await cleanup();

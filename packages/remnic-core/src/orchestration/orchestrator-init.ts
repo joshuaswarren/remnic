@@ -180,10 +180,23 @@ export class OrchestratorInitCoordinator {
       // share this one instance so a crash before a deferred batch save cannot
       // leave the restart's dedup blind to a durable fact.
       if (resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication) {
-        this.deps.contentHashIndex = await this.deps.storage.getAuthoritativeFactHashIndex();
-        log.info(
-          `content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`,
-        );
+        try {
+          this.deps.contentHashIndex = await this.deps.storage.getAuthoritativeFactHashIndex();
+          log.info(
+            `content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`,
+          );
+        } catch (err) {
+          // PR #2016: the locked corpus rebuild could not run at init (transient
+          // cross-process contention). Pre-warm with the shared instance instead
+          // of failing init; the dedup consumers gate a MISS on
+          // isFactContentHashAuthoritative() and confirm against the corpus until
+          // a later rebuild acquires the lock.
+          this.deps.contentHashIndex = await this.deps.storage.getSharedFactHashIndex();
+          log.warn(
+            `content-hash dedup: authoritative rebuild deferred at init (${err instanceof Error ? err.message : String(err)}); ` +
+              `using the shared index, will retry the locked rebuild on next use`,
+          );
+        }
       }
       await this.deps.transcript.initialize();
       await this.deps.summarizer.initialize();
