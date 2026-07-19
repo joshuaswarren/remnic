@@ -48,7 +48,7 @@ test("the round-dispatch workflow also wakes on check-run completion", () => {
   // A bot completing only a check run must wake the gate (issue #1992 P2), not
   // just push/comment/review events. GitHub Actions has no
   // pull_request_review_thread trigger, so it must NOT be declared.
-  assert.match(dispatch, /check_run:/);
+  assert.match(dispatch, /^\s*check_run:\s*\n\s*types:\s*\[completed\]/m);
   assert.doesNotMatch(dispatch, /^\s*pull_request_review_thread:/m);
 });
 

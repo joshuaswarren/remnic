@@ -179,24 +179,31 @@ export function decideRound({
   let next = noteHead(state, headSha, now);
   next = mergeThreadIds(next, threads);
   if (activity && isNewBotActivity(activity, next)) next.lastBotActivity = activity;
+  // Force-dispatch is an absolute maintainer override (issue #1992 escape
+  // hatch): it wins over an open thread set, the debounce, and even an empty
+  // round, so it is checked first.
+  if (forceDispatch) {
+    return {
+      action: "dispatch",
+      reason: "force-label",
+      state: closeForDispatch(next, now, "force-label"),
+    };
+  }
+
+  // Nothing to act on yet (round opened with no threads and no pushes): a clean
+  // bot review has nothing to auto-close or debounce-dispatch, so wait rather
+  // than churn a pointless new round. Force-dispatch above still overrides this.
   if (next.threadIds.length === 0 && next.pushes === 0) return wait(next, "no-round-work");
+
+  // Max-age auto-close unwedges a round whose threads were abandoned (issue
+  // #1992); an empty round is already handled above so this only fires when the
+  // round has real work.
   const age = parseTime(now) - parseTime(next.openedAt);
   if (age >= maxAgeMs) {
     return {
       action: "dispatch",
       reason: "max-age",
       state: closeForDispatch(next, now, "max-age"),
-    };
-  }
-
-  // Force-dispatch is a maintainer override: it must win over an open thread set
-  // and the debounce (issue #1992 escape hatch), so it is checked before the
-  // open-thread wait below. Max-age already dispatches above regardless.
-  if (forceDispatch) {
-    return {
-      action: "dispatch",
-      reason: "force-label",
-      state: closeForDispatch(next, now, "force-label"),
     };
   }
 

@@ -161,6 +161,20 @@ test("force dispatch overrides an open thread set (escape hatch for a stuck roun
   assert.equal(result.state.status, "closed");
 });
 
+test("force dispatch overrides a thread-less round (not blocked by no-round-work)", () => {
+  const state = openRound({ threads: [] });
+  const result = decideRound({
+    ...base,
+    state,
+    threads: [],
+    forceDispatch: true,
+    now: "2026-07-18T12:00:01.000Z",
+    botActivity: false,
+  });
+  assert.equal(result.action, "dispatch");
+  assert.equal(result.reason, "force-label");
+});
+
 test("replays the recorded high-churn PR 1852 timeline without dispatch churn", () => {
   const fixture = loadFixture("pr-1852.json");
   const replay = replayFixture(fixture);
