@@ -546,3 +546,22 @@ test("root flush-plan lifecycle entrypoint is tracked (grandfathered), not silen
   assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
   assert.equal(warnings.length, 1, `${p} flush-plan lifecycle change must warn, not be silently ignored`);
 });
+
+test("retrieval + namespace resolver paths are tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "src/retrieval.ts",
+    "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/namespaces/storage.ts",
+    "packages/remnic-core/src/namespaces/search.ts",
+    "packages/remnic-core/src/namespaces/catalog.ts",
+    "src/namespaces/storage.ts",
+    "src/namespaces/search.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
+    const { covered, warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(covered.length, 0);
+    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+    assert.equal(warnings.length, 1, `${p} retrieval/namespace change must warn, not silently bypass the gate`);
+  }
+});

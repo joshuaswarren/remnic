@@ -71,7 +71,14 @@
     "src/session-integrity.ts",
     "src/session-observer-bands.ts",
     "src/session-observer-state.ts",
-    "src/openclaw-flush-plan-lifecycle.ts"
+    "src/openclaw-flush-plan-lifecycle.ts",
+    "src/retrieval.ts",
+    "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/namespaces/storage.ts",
+    "packages/remnic-core/src/namespaces/search.ts",
+    "packages/remnic-core/src/namespaces/catalog.ts",
+    "src/namespaces/storage.ts",
+    "src/namespaces/search.ts"
   ],
   "coverage": {
     "src/orchestrator.ts": "extraction-lifecycle",
@@ -144,6 +151,13 @@
     "src/session-integrity.ts",
     "src/session-observer-bands.ts",
     "src/session-observer-state.ts",
-    "src/openclaw-flush-plan-lifecycle.ts"
+    "src/openclaw-flush-plan-lifecycle.ts",
+    "src/retrieval.ts",
+    "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/namespaces/storage.ts",
+    "packages/remnic-core/src/namespaces/search.ts",
+    "packages/remnic-core/src/namespaces/catalog.ts",
+    "src/namespaces/storage.ts",
+    "src/namespaces/search.ts"
   ]
 }
