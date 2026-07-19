@@ -205,11 +205,26 @@ test("renaming a lifecycle path across an ignore boundary does NOT bypass the ga
   assert.equal(covered[0].subject, "serialized-write-chain");
 });
 
+const LIFECYCLE_ENV_VARS = [
+  "LIFECYCLE_BASE_MANIFEST_PATH",
+  "LIFECYCLE_BASE_IGNORE_PATH",
+  "REMNIC_LIFECYCLE_CHANGED_FILES_PATH",
+  "LIFECYCLE_BASE_REF",
+  "GITHUB_BASE_REF",
+];
+
 function runCli(args, env = {}) {
+  // Hermetic by default: scrub the lifecycle env vars a prior CI step sets, so a
+  // spawned CLI case is driven ONLY by its explicit args (pass `env` for a case
+  // that intentionally wants env-driven behavior). Otherwise an inherited
+  // LIFECYCLE_BASE_MANIFEST_PATH would make temp-manifest cases without
+  // --base-manifest silently compare against the real base manifest.
+  const scrubbed = { ...process.env };
+  for (const key of LIFECYCLE_ENV_VARS) delete scrubbed[key];
   try {
     const stdout = execFileSync("node", [checkCoveragePath, ...args], {
       cwd: repoRoot,
-      env: { ...process.env, ...env },
+      env: { ...scrubbed, ...env },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -409,6 +424,47 @@ test("the CLI reads ai-review-ignore from the base path, not the head checkout",
     // (In CI this file comes from the BASE ref, so a head-side ignore edit cannot bypass the gate.)
     const ignored = runCli([`--manifest=${manifestPath}`, `--base-ignore=${listingIgnore}`, `--files=${lifecyclePath}`]);
     assert.equal(ignored.code, 0, "only the base-ref ignore rules may drop a path from the gate");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runCli is hermetic: an ambient LIFECYCLE_BASE_MANIFEST_PATH is not compared against a temp manifest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lifecycle-env-"));
+  try {
+    // A base with a grandfathered entry the head drops → manifestShrinkage IF compared.
+    const base = {
+      lifecycleManifest: ["a.ts", "b.ts"],
+      coverage: { "a.ts": "extraction-lifecycle" },
+      grandfathered: ["b.ts"],
+    };
+    const head = { lifecycleManifest: ["a.ts"], coverage: { "a.ts": "extraction-lifecycle" }, grandfathered: [] };
+    const basePath = join(dir, "base.json");
+    const headPath = join(dir, "head.json");
+    writeFileSync(basePath, JSON.stringify(base));
+    writeFileSync(headPath, JSON.stringify(head));
+
+    const prev = process.env.LIFECYCLE_BASE_MANIFEST_PATH;
+    process.env.LIFECYCLE_BASE_MANIFEST_PATH = basePath;
+    try {
+      // No --base-manifest arg: the inherited env must be scrubbed → no shrinkage failure.
+      const hermetic = runCli([`--manifest=${headPath}`, "--files="]);
+      assert.equal(
+        hermetic.code,
+        0,
+        "runCli must scrub LIFECYCLE_BASE_MANIFEST_PATH so a temp manifest is not compared to the CI base",
+      );
+      // Positive control: an explicit --base-manifest is still honored.
+      const explicit = runCli([`--manifest=${headPath}`, `--base-manifest=${basePath}`, "--files="]);
+      assert.equal(explicit.code, 1, "an explicit --base-manifest must still be compared");
+      assert.match(explicit.output, /lifecycleManifest removed path/);
+      // Intentional env-driven behavior is still reachable via the `env` param.
+      const viaEnv = runCli([`--manifest=${headPath}`, "--files="], { LIFECYCLE_BASE_MANIFEST_PATH: basePath });
+      assert.equal(viaEnv.code, 1, "a case may opt into env-driven base comparison via the env param");
+    } finally {
+      if (prev === undefined) delete process.env.LIFECYCLE_BASE_MANIFEST_PATH;
+      else process.env.LIFECYCLE_BASE_MANIFEST_PATH = prev;
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
