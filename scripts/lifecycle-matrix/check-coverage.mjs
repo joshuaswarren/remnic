@@ -52,24 +52,27 @@ function validateManifestGlob(glob) {
   }
 }
 
+const SUBJECT_IDENT = /[A-Za-z0-9_$]/;
+const SUBJECT_CALL = "runLifecycleMatrix";
+
 /**
- * Strip `//` line and block comments from JS/TS source, honoring string and
- * template literals. Subject discovery counts `runLifecycleMatrix("name", ...)`
- * calls; without this a commented-out example such as
- * `// runLifecycleMatrix("new-subject", subject)` would be mistaken for a real
- * registration, letting the gate pass while the matrix runs no such subject.
+ * Discover `runLifecycleMatrix("<name>", ...)` registrations in JS/TS source at
+ * the CODE level: a single scan skips comments AND string/template literals, so
+ * neither a commented-out example nor a docs string like
+ * `const doc = 'runLifecycleMatrix("fake", subject)'` is mistaken for a real
+ * registration — only a genuine call, whose first string argument is the
+ * subject name, is recorded. A raw regex over the file text counts both and
+ * lets a coverage mapping pass while the matrix runs no such subject.
  */
-export function stripComments(source) {
-  let out = "";
-  let quote = null;
-  let i = 0;
+export function discoverSubjectRegistrations(source) {
+  const names = [];
   const n = source.length;
+  let i = 0;
+  let quote = null;
   while (i < n) {
     const ch = source[i];
     if (quote) {
-      out += ch;
-      if (ch === "\\" && i + 1 < n) {
-        out += source[i + 1];
+      if (ch === "\\") {
         i += 2;
         continue;
       }
@@ -79,7 +82,6 @@ export function stripComments(source) {
     }
     if (ch === '"' || ch === "'" || ch === "`") {
       quote = ch;
-      out += ch;
       i += 1;
       continue;
     }
@@ -93,11 +95,43 @@ export function stripComments(source) {
       i += 2;
       continue;
     }
-    out += ch;
+    if (
+      ch === "r" &&
+      source.startsWith(SUBJECT_CALL, i) &&
+      (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&
+      !SUBJECT_IDENT.test(source[i + SUBJECT_CALL.length] ?? "")
+    ) {
+      let j = i + SUBJECT_CALL.length;
+      while (j < n && /\s/.test(source[j])) j += 1;
+      if (source[j] === "(") {
+        j += 1;
+        while (j < n && /\s/.test(source[j])) j += 1;
+        const q = source[j];
+        if (q === '"' || q === "'") {
+          j += 1;
+          let name = "";
+          while (j < n && source[j] !== q) {
+            if (source[j] === "\\") {
+              name += source[j + 1] ?? "";
+              j += 2;
+              continue;
+            }
+            name += source[j];
+            j += 1;
+          }
+          if (name.length > 0) names.push(name);
+          i = j + 1;
+          continue;
+        }
+      }
+      i += SUBJECT_CALL.length;
+      continue;
+    }
     i += 1;
   }
-  return out;
+  return names;
 }
+
 /**
  * Parse + validate a coverage manifest object. Throws on structural errors so a
  * malformed manifest fails the gate loudly instead of silently under-checking.
@@ -189,11 +223,10 @@ export function manifestShrinkage(baseManifest, headManifest) {
 export function registeredSubjectNames(subjectsDir) {
   if (!existsSync(subjectsDir)) return [];
   const names = new Set();
-  const pattern = /runLifecycleMatrix\(\s*["']([^"']+)["']/g;
   for (const entry of readdirSync(subjectsDir)) {
     if (!entry.endsWith(".test.ts")) continue;
-    const text = stripComments(readFileSync(join(subjectsDir, entry), "utf8"));
-    for (const match of text.matchAll(pattern)) names.add(match[1]);
+    const source = readFileSync(join(subjectsDir, entry), "utf8");
+    for (const name of discoverSubjectRegistrations(source)) names.add(name);
   }
   return [...names];
 }

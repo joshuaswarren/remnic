@@ -22,7 +22,13 @@
     "packages/remnic-core/src/session-integrity.ts",
     "packages/remnic-core/src/session-observer-bands.ts",
     "packages/remnic-core/src/session-observer-state.ts",
-    "packages/remnic-core/src/session-transcript-migration.ts"
+    "packages/remnic-core/src/session-transcript-migration.ts",
+    "src/intent.ts",
+    "src/entity-retrieval.ts",
+    "src/config.ts",
+    "packages/remnic-core/src/intent.ts",
+    "packages/remnic-core/src/entity-retrieval.ts",
+    "packages/remnic-core/src/config.ts"
   ],
   "coverage": {
     "src/orchestration/**": "extraction-lifecycle",
@@ -48,6 +54,12 @@
     "src/storage/**",
     "src/memory-cache.ts",
     "packages/remnic-core/src/storage/**",
-    "packages/remnic-core/src/memory-cache.ts"
+    "packages/remnic-core/src/memory-cache.ts",
+    "src/intent.ts",
+    "src/entity-retrieval.ts",
+    "src/config.ts",
+    "packages/remnic-core/src/intent.ts",
+    "packages/remnic-core/src/entity-retrieval.ts",
+    "packages/remnic-core/src/config.ts"
   ]
 }

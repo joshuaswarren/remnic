@@ -20,6 +20,7 @@ import test from "node:test";
 import { splitEffectiveDiff } from "../scripts/effective-diff.mjs";
 import {
   classifyGlob,
+  discoverSubjectRegistrations,
   evaluateCoverage,
   flattenChangedPaths,
   grandfatherGrowth,
@@ -27,7 +28,6 @@ import {
   manifestShrinkage,
   parseNameStatusZ,
   registeredSubjectNames,
-  stripComments,
   unregisteredSubjects,
 } from "../scripts/lifecycle-matrix/check-coverage.mjs";
 
@@ -107,7 +107,7 @@ test("a grandfathered path only warns, never fails", () => {
 
 test("a non-lifecycle path is ignored entirely", () => {
   const manifest = loadReal();
-  const result = evaluateCoverage(["README.md", "packages/remnic-core/src/config.ts"], manifest);
+  const result = evaluateCoverage(["README.md", "packages/remnic-core/src/version.ts"], manifest);
   assert.deepEqual(result, { covered: [], warnings: [], violations: [] });
 });
 
@@ -340,14 +340,23 @@ test("loadCoverageManifest rejects globs that can never match a repo-relative pa
   );
 });
 
-test("stripComments removes comments but preserves string/template literals", () => {
-  assert.equal(stripComments('a // line\nb'), "a \nb");
-  assert.equal(stripComments("a /* block */ b"), "a  b");
-  assert.equal(stripComments('const u = "https://example.com/x";'), 'const u = "https://example.com/x";');
-  assert.equal(stripComments("const t = `a//b`;"), "const t = `a//b`;");
+test("discoverSubjectRegistrations records only genuine calls, not comments or string literals", () => {
+  const source = [
+    'runLifecycleMatrix("real-subject", subject);',
+    '// runLifecycleMatrix("commented-line", subject)',
+    '/* runLifecycleMatrix("commented-block", subject) */',
+    "const doc = 'runLifecycleMatrix(\"string-literal\", subject)';",
+    'const t = `runLifecycleMatrix("template-literal", subject)`;',
+    "runLifecycleMatrix('single-quoted-real', subject);",
+  ].join("\n");
+  assert.deepEqual(
+    discoverSubjectRegistrations(source),
+    ["real-subject", "single-quoted-real"],
+    "only genuine code-level calls count; comments and string/template literals are ignored",
+  );
 });
 
-test("registeredSubjectNames ignores commented-out runLifecycleMatrix examples", () => {
+test("registeredSubjectNames ignores commented-out and string-literal runLifecycleMatrix examples", () => {
   const dir = mkdtempSync(join(tmpdir(), "lifecycle-subjects-"));
   try {
     writeFileSync(
@@ -355,13 +364,26 @@ test("registeredSubjectNames ignores commented-out runLifecycleMatrix examples",
       [
         'runLifecycleMatrix("real-subject", subject);',
         '// runLifecycleMatrix("commented-line", subject)',
-        "/* runLifecycleMatrix(\"commented-block\", subject) */",
-        'const doc = "runLifecycleMatrix(\\"in-string\\", subject)";',
+        '/* runLifecycleMatrix("commented-block", subject) */',
+        "const doc = 'runLifecycleMatrix(\"string-literal\", subject)';",
       ].join("\n"),
     );
-    const names = registeredSubjectNames(dir);
-    assert.deepEqual(names, ["real-subject"], "only the live registration counts");
+    assert.deepEqual(registeredSubjectNames(dir), ["real-subject"], "only the live registration counts");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("retrieval/intent/config paths are tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "packages/remnic-core/src/entity-retrieval.ts",
+    "packages/remnic-core/src/intent.ts",
+    "packages/remnic-core/src/config.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
+    const { warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+    assert.equal(warnings.length, 1, `${p} must warn, not be silently ignored by the gate`);
   }
 });
