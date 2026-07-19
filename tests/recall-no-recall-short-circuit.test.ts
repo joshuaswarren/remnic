@@ -7,7 +7,7 @@ import type { PluginConfig } from "../src/types.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
 function tmpDir(prefix: string): string {
-  return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  return path.join(os.tmpdir(), "remnic-tests", prefix);
 }
 
 function baseConfig(memoryDir: string): PluginConfig {

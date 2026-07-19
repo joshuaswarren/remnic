@@ -379,11 +379,14 @@ export class RecallSectionCoordinator {
           rendered = candidate;
         }
         if (includedAtomicCount === 0) {
+          if (!rendered) {
+            truncated = true;
+            continue;
+          }
+        } else if (includedAtomicCount < atomicChunks.length) {
           truncated = true;
-          continue;
         }
         finalContent = rendered;
-        if (includedAtomicCount < atomicChunks.length) truncated = true;
       }
 
       selected.set(id, finalContent);
@@ -393,11 +396,14 @@ export class RecallSectionCoordinator {
     const sections: string[] = [];
     const includedIds: string[] = [];
     const omittedIds: string[] = [];
+    const emittedIds = new Set<string>();
     for (const section of orderedSections) {
+      if (emittedIds.has(section.id)) continue;
       const content = selected.get(section.id);
       if (content) {
         sections.push(content);
         includedIds.push(section.id);
+        emittedIds.add(section.id);
       } else {
         omittedIds.push(section.id);
       }

@@ -4524,7 +4524,6 @@ export class RecallInternalCoordinator {
           },
         trustByPath: recallTrustByPath,
         });
-        recalledMemoryIds = this.deps.extractMemoryIdsFromResults(memoryResults);
         recalledMemoryPaths = memoryResults
           .map((result) => result.path)
           .filter(Boolean);
@@ -4634,7 +4633,6 @@ export class RecallInternalCoordinator {
             },
           trustByPath: recallTrustByPath,
           });
-          recalledMemoryIds = this.deps.extractMemoryIdsFromResults(scoped);
           recalledMemoryPaths = scoped
             .map((result) => result.path)
             .filter(Boolean);
@@ -4684,7 +4682,6 @@ export class RecallInternalCoordinator {
               },
             trustByPath: recallTrustByPath,
             });
-            recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
               .map((result) => result.path)
               .filter(Boolean);
@@ -4830,7 +4827,6 @@ export class RecallInternalCoordinator {
           },
         trustByPath: recallTrustByPath,
         });
-        recalledMemoryIds = this.deps.extractMemoryIdsFromResults(scoped);
         recalledMemoryPaths = scoped
           .map((result) => result.path)
           .filter(Boolean);
@@ -4940,7 +4936,6 @@ export class RecallInternalCoordinator {
                 },
               trustByPath: recallTrustByPath,
               });
-              recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
               recalledMemoryPaths = longTerm
                 .map((result) => result.path)
                 .filter(Boolean);
@@ -5053,7 +5048,6 @@ export class RecallInternalCoordinator {
                 },
               trustByPath: recallTrustByPath,
               });
-              recalledMemoryIds = this.deps.extractMemoryIdsFromResults(recent);
               recalledMemoryPaths = recent
                 .map((result) => result.path)
                 .filter(Boolean);
@@ -5102,7 +5096,6 @@ export class RecallInternalCoordinator {
                   },
                 trustByPath: recallTrustByPath,
                 });
-                recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
                 recalledMemoryPaths = longTerm
                   .map((result) => result.path)
                   .filter(Boolean);
@@ -5153,7 +5146,6 @@ export class RecallInternalCoordinator {
               },
             trustByPath: recallTrustByPath,
             });
-            recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
               .map((result) => result.path)
               .filter(Boolean);
@@ -5332,6 +5324,7 @@ export class RecallInternalCoordinator {
     );
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
+    recalledMemoryCount = assembledRecall.includedMemoryIds.length;
     this.deps.trackMemoryAccess(assembledRecall.includedMemoryIds);
     const context =
       assembledRecall.sections.length === 0

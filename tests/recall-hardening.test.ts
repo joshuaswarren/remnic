@@ -224,6 +224,39 @@ test("assembleRecallSections keeps earlier atomic memories ahead of later helper
   assert.deepEqual(assembled.includedMemoryIds, ["memory-atomic"]);
 });
 
+test("assembleRecallSections keeps later helper text when no atomic memory fits", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-helper-fallback-", {
+    recallBudgetChars: 70,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "A".repeat(100),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "Retrieval Feedback Helper",
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.match(assembled.sections.join("\n\n---\n\n"), /Retrieval Feedback Helper/);
+  assert.deepEqual(assembled.includedMemoryIds, []);
+  assert.deepEqual(assembled.omittedMemoryIds, ["memory-too-large"]);
+});
+
 test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-profile-boundary-", {
     recallBudgetChars: 140,
