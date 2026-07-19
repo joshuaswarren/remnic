@@ -8,6 +8,14 @@ import {
   type EngramAccessRecallResponse,
 } from "./access-service.js";
 import type { BudgetReservation } from "./cross-namespace-budget.js";
+import {
+  type RecallCoordinatorHost,
+  consumeFlight,
+  createAndStartFlight,
+  leadRecallFlight,
+  raceAbort,
+  withRecallConcurrency,
+} from "./access-recall-concurrency.js";
 
 // Issue #1906 (+ review): the per-principal recall lock was a width-1 FIFO
 // mutex held for the whole ~30s recall. Its replacement is a per-principal
@@ -1107,34 +1115,16 @@ test("a keyed caller aborted at admission does NOT join a live coalesced flight 
     handleIdempotentRead: (options: {
       execute: () => Promise<EngramAccessRecallResponse>;
     }) => Promise<EngramAccessRecallResponse>;
-    createAndStartFlight: (
-      normalizedRequest: EngramAccessRecallRequest,
-      flightKey: string,
-      principalKey: string,
-      keyed: boolean,
-    ) => unknown;
-    consumeFlight: (
-      flight: unknown,
-      request: EngramAccessRecallRequest,
-      recordBudget: boolean,
-      race: boolean,
-    ) => Promise<{ response: EngramAccessRecallResponse; reservation: unknown }>;
-    leadRecallFlight: (
-      request: EngramAccessRecallRequest,
-      normalizedRequest: EngramAccessRecallRequest,
-      requestFingerprint: unknown,
-      flightKey: string,
-      principalKey: string,
-    ) => Promise<EngramAccessRecallResponse>;
   };
   // A keyed leader on a cache MISS runs execute() (the harness has no real store).
   host.handleIdempotentRead = async (options) => options.execute();
+  const svc = h.service as unknown as RecallCoordinatorHost;
 
   const flightKey = "principal\u0000same";
   const req = { query: "same", idempotencyKey: "k" } as EngramAccessRecallRequest;
   // A LIVE coalesced flight kept registered by a real consumer.
-  const flight = host.createAndStartFlight(req, flightKey, "principal", true);
-  const liveConsumer = host.consumeFlight(flight, req, false, false);
+  const flight = createAndStartFlight(svc, req, flightKey, "principal", true);
+  const liveConsumer = consumeFlight(svc, flight, req, false, false);
 
   // A keyed caller whose signal is ALREADY aborted reaches leadRecallFlight and
   // finds the existing flight. It must reject at admission WITHOUT joining — a
@@ -1147,7 +1137,7 @@ test("a keyed caller aborted at admission does NOT join a live coalesced flight 
     idempotencyKey: "k",
     abortSignal: controller.signal,
   } as EngramAccessRecallRequest;
-  const aborted = host.leadRecallFlight(abortedReq, abortedReq, {}, flightKey, "principal");
+  const aborted = leadRecallFlight(svc, abortedReq, abortedReq, {}, flightKey, "principal");
   pipelineGate.resolve();
   await assert.rejects(aborted, (error: Error) => error.name === "AbortError");
 
@@ -1583,20 +1573,14 @@ test("a recall aborted after its concurrency slot is granted rejects before the 
     singleFlight: false,
     pipeline: async () => stubResponse([]),
   });
-  const host = h.service as unknown as {
-    withRecallConcurrency: <T>(
-      principal: string,
-      signal: AbortSignal | undefined,
-      fn: (queueWaitMs: number) => Promise<T>,
-    ) => Promise<T>;
-  };
+  const svc = h.service as unknown as RecallCoordinatorHost;
 
   // Slot is free: acquireRecallSlot resolves synchronously, so the fn runs in a
   // microtask. Aborting right after the call lands in exactly that gap — after
   // the (synchronous) slot grant, before the fn continuation.
   const controller = new AbortController();
   let fnRan = false;
-  const pending = host.withRecallConcurrency("principal", controller.signal, async () => {
+  const pending = withRecallConcurrency(svc, "principal", controller.signal, async () => {
     fnRan = true;
     return "ok";
   });
@@ -1912,11 +1896,7 @@ test("raceAbort rejects for an already-aborted signal even when p is already ful
   // a pre-check, a caller that aborted before raceAbort is called (e.g. the keyed
   // follower persistence wait) would proceed past the helper. raceAbort must
   // reject synchronously for an already-aborted signal.
-  const { service } = makeService({ pipeline: async () => stubResponse([]) });
-  const host = service as unknown as {
-    raceAbort: <T>(p: Promise<T>, signal?: AbortSignal) => Promise<T>;
-  };
-  const raceAbort = host.raceAbort.bind(service);
+  makeService({ pipeline: async () => stubResponse([]) });
 
   const aborted = new AbortController();
   aborted.abort();

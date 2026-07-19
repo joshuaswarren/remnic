@@ -6,6 +6,10 @@ import { abortError } from "./abort-error.js";
 import { EngramAccessHttpServer } from "./access-http.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { EngramAccessService, type EngramAccessRecallRequest } from "./access-service.js";
+import {
+  type RecallCoordinatorHost,
+  withRecallConcurrency,
+} from "./access-recall-concurrency.js";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -361,7 +365,7 @@ test("a disconnected MCP recall queued on the budget lock never starts and does 
         secondQueued.resolve();
       }
       try {
-        return await lockHost.withRecallConcurrency("principal", input.abortSignal, async () => {
+        return await withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", input.abortSignal, async () => {
           if (call === 1) {
             firstStarted.resolve();
             await releaseFirst.promise;

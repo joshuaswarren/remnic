@@ -4,6 +4,10 @@ import test from "node:test";
 
 import { EngramAccessHttpServer } from "./access-http.js";
 import { EngramAccessService, type EngramAccessRecallRequest } from "./access-service.js";
+import {
+  type RecallCoordinatorHost,
+  withRecallConcurrency,
+} from "./access-recall-concurrency.js";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -110,14 +114,14 @@ test("a queued recall rejects immediately on abort — before the holder release
   // limit=1 => the second recall must queue behind the first.
   lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
-  const first = lockHost.withRecallConcurrency("principal", undefined, async () => {
+  const first = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     firstStarted.resolve();
     await releaseFirst.promise;
   });
   await firstStarted.promise;
 
   const controller = new AbortController();
-  const second = lockHost.withRecallConcurrency("principal", controller.signal, async () => {
+  const second = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", controller.signal, async () => {
     secondStarted = true;
   });
   controller.abort();
@@ -150,17 +154,17 @@ test("an aborted queued recall does not poison the per-principal recall lane", a
   lockHost.recallSemaphores = new Map();
   lockHost.orchestrator = { config: { recallMaxConcurrentPerPrincipal: 1 } };
 
-  const first = lockHost.withRecallConcurrency("principal", undefined, async () => {
+  const first = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     firstStarted.resolve();
     await releaseFirst.promise;
   });
   await firstStarted.promise;
 
   const controller = new AbortController();
-  const second = lockHost.withRecallConcurrency("principal", controller.signal, async () => {
+  const second = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", controller.signal, async () => {
     secondStarted = true;
   });
-  const third = lockHost.withRecallConcurrency("principal", undefined, async () => {
+  const third = withRecallConcurrency(lockHost as unknown as RecallCoordinatorHost, "principal", undefined, async () => {
     thirdStarted = true;
   });
   controller.abort();

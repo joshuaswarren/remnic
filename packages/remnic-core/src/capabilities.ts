@@ -189,16 +189,14 @@ export interface AccessSetupCapabilitySet {
   readonly recallCrossNamespaceBudget: boolean;
   /** `recallAuditAnomalyDetectionEnabled` — access-audit anomaly detection (default-off). */
   readonly recallAuditAnomalyDetection: boolean;
+  readonly recallSingleFlight: boolean;
 }
 
-/**
- * Resolve the {@link AccessSetupCapabilitySet} from parsed config.
- *
- * Call this ONCE at access-service handler entry and thread the result down.
- */
+/** Resolve the {@link AccessSetupCapabilitySet} from parsed config. Call ONCE at
+ *  access-service handler entry and thread the result down. */
 export type AccessSetupConfigProjection = Pick<
   PluginConfig,
-  "recallCrossNamespaceBudgetEnabled" | "recallAuditAnomalyDetectionEnabled"
+  "recallCrossNamespaceBudgetEnabled" | "recallAuditAnomalyDetectionEnabled" | "recallSingleFlightEnabled"
 >;
 
 export function resolveAccessSetupCapabilities(
@@ -208,6 +206,7 @@ export function resolveAccessSetupCapabilities(
     recallCrossNamespaceBudget: config.recallCrossNamespaceBudgetEnabled,
     // Optional/default-off flag: preserve `=== true` semantics.
     recallAuditAnomalyDetection: config.recallAuditAnomalyDetectionEnabled === true,
+    recallSingleFlight: config.recallSingleFlightEnabled === true,
   });
 }
 

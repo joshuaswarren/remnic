@@ -52,7 +52,7 @@ import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastRecallSnapshot, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
 import { type RecallFilterTrace, type RecallXrayResult, type RecallXrayScoreDecomposition, type RecallXraySnapshot, buildXraySnapshot } from "../recall-xray.js";
-import { recordRecallTiming } from "../recall-timings.js";
+import { foldQueueWaitTiming, recordRecallTiming } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -461,18 +461,7 @@ export class RecallInternalCoordinator {
       const parsed = Date.parse(options.asOf);
       if (Number.isFinite(parsed)) asOfMs = parsed;
     }
-    const timings: Record<string, string> = {};
-    // Issue #1906 — additive queue-wait phase. The caller measured the
-    // wall-clock time spent waiting for a per-principal recall slot /
-    // single-flight leader before execution began; fold it into timings so
-    // both recordRecallTiming sites (which spread ...timings) emit it.
-    if (
-      typeof options.queueWaitMs === "number" &&
-      Number.isFinite(options.queueWaitMs) &&
-      options.queueWaitMs >= 0
-    ) {
-      timings.queueWaitMs = `${options.queueWaitMs}ms`;
-    }
+    const timings = foldQueueWaitTiming(options.queueWaitMs); // #1906 queue-wait phase
     const profileTraceId = this.deps.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: resolveQmdCapabilities(this.deps.config).qmd,
       rerankEnabled: caps.rerank,

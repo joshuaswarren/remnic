@@ -36,6 +36,7 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   resolveEmitLegacyTools,
@@ -2061,10 +2062,8 @@ export function parseConfig(
           (v): v is string => typeof v === "string" && v.length > 0,
         )
       : ["decisions", "principles", "conventions", "runbooks", "entities"],
-    // Cross-namespace query-budget limiter (issue #565 PR 4/5).
-    // Defaults to false — ships disabled so existing deployments are
-    // unaffected. When enabled, the read path throttles a principal that
-    // issues a burst of recalls against namespaces other than their own.
+    // Cross-namespace query-budget limiter (issue #565 PR 4/5). Defaults to
+    // false — ships disabled; when enabled, throttles cross-namespace recall bursts.
     recallCrossNamespaceBudgetEnabled:
       coerceBool(cfg.recallCrossNamespaceBudgetEnabled) ?? false,
     recallCrossNamespaceBudgetWindowMs: (() => {
@@ -2079,15 +2078,7 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallCrossNamespaceBudgetHardLimit);
       return n !== undefined && n > 0 ? Math.floor(n) : 30;
     })(),
-    recallMaxConcurrentPerPrincipal: (() => {
-      const n = coerceNumber(cfg.recallMaxConcurrentPerPrincipal);
-      // Accept only finite integers >= 0 so 0 means "unlimited" deliberately.
-      // A fractional typo like 0.5 must NOT floor to 0 (which would silently
-      // disable the cap); it falls back to the default 4 (AGENTS.md #1/#17).
-      return n !== undefined && Number.isInteger(n) && n >= 0 ? n : 4;
-    })(),
-    recallSingleFlightEnabled:
-      coerceBool(cfg.recallSingleFlightEnabled) ?? true,
+    ...parseRecallConcurrencyConfig(cfg),
     // Recall-audit anomaly detector (issue #565 PR 5/5). Defaults off so
     // existing deployments are unaffected; enable explicitly to let the
     // access surfaces flag suspicious query patterns derived from the

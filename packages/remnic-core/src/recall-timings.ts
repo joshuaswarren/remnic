@@ -87,6 +87,20 @@ function sanitizeRecallTiming(
   };
 }
 
+/**
+ * Build the recall `timings` map, seeding the additive queue-wait phase (issue
+ * #1906) when the caller measured a real per-principal slot / single-flight
+ * wait. `queueWaitMs` 0/undefined/non-finite omits the phase so recall-timings
+ * stays byte-identical to the uncontended pre-#1906 path.
+ */
+export function foldQueueWaitTiming(queueWaitMs?: number): Record<string, string> {
+  const timings: Record<string, string> = {};
+  if (typeof queueWaitMs === "number" && Number.isFinite(queueWaitMs) && queueWaitMs >= 0) {
+    timings.queueWaitMs = `${queueWaitMs}ms`;
+  }
+  return timings;
+}
+
 export function recordRecallTiming(
   config: PluginConfig,
   input: Record<string, unknown>,
