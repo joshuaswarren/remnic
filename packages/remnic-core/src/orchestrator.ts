@@ -708,7 +708,13 @@ export class Orchestrator {
   // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
     string,
-    { count: number; lastAccessed: string }
+    {
+      memoryId: string;
+      memoryPath?: string;
+      namespace?: string;
+      count: number;
+      lastAccessed: string;
+    }
   > = new Map();
 
   // Passive correction capture (issue #1581) — dedup state + lazy service.
@@ -3669,13 +3675,31 @@ export class Orchestrator {
    * Record that memories were accessed (retrieved).
    * Updates are batched in memory and flushed during consolidation.
    */
-  trackMemoryAccess(memoryIds: string[]): void {
+  trackMemoryAccess(memoryIds: string[], memoryPaths: string[] = []): void {
     if (!resolveRecallEnhancementCapabilities(this.config).accessTracking) return;
 
     const now = new Date().toISOString();
+    const pathsByMemoryId = new Map<string, string[]>();
+    for (const memoryPath of memoryPaths) {
+      const basename = memoryPath.split(/[\\/]/).pop() ?? memoryPath;
+      const memoryId = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
+      if (memoryId.length > 0 && memoryIds.includes(memoryId)) {
+        const paths = pathsByMemoryId.get(memoryId) ?? [];
+        paths.push(memoryPath);
+        pathsByMemoryId.set(memoryId, paths);
+      }
+    }
     for (const id of memoryIds) {
-      const existing = this.accessTrackingBuffer.get(id);
-      this.accessTrackingBuffer.set(id, {
+      const paths = pathsByMemoryId.get(id);
+      const memoryPath = paths?.shift();
+      const namespace = memoryPath
+        ? this.namespaceFromPath(memoryPath)
+        : this.config.defaultNamespace;
+      const key = memoryPath ? `${namespace}:${memoryPath}` : id;
+      const existing = this.accessTrackingBuffer.get(key);
+      this.accessTrackingBuffer.set(key, {
+        memoryId: id,
+        ...(memoryPath ? { memoryPath, namespace } : {}),
         count: (existing?.count ?? 0) + 1,
         lastAccessed: now,
       });

@@ -351,57 +351,65 @@ export class RecallSectionCoordinator {
         if (finalContent.length < content.length) truncated = true;
       } else {
         const firstAtomicIndex = section.chunks.findIndex((chunk) => chunk.atomic);
-        const leading = section.chunks
-          .slice(0, firstAtomicIndex)
-          .filter((chunk) => !chunk.atomic)
-          .map((chunk) => chunk.content);
-        const trailing = section.chunks
-          .slice(firstAtomicIndex)
-          .filter((chunk) => !chunk.atomic)
-          .map((chunk) => chunk.content);
-        let rendered = leading.join("\n\n");
+        let rendered = "";
         let includedAtomicCount = 0;
-        for (const chunk of atomicChunks) {
+        let includedPostAtomicContent = false;
+        const postAtomicContents: string[] = [];
+        let includedLeadingContent = false;
+        for (const [index, chunk] of section.chunks.entries()) {
+          if (
+            !chunk.atomic &&
+            includedAtomicCount === 0 &&
+            index < firstAtomicIndex
+          ) {
+            const candidate = rendered
+              ? `${rendered}\n\n${chunk.content}`
+              : chunk.content;
+            if (candidate.length <= sectionAvailable) {
+              rendered = candidate;
+              includedLeadingContent = true;
+            } else {
+              truncated = true;
+            }
+            continue;
+          }
+
           const candidate = rendered
             ? `${rendered}\n\n${chunk.content}`
             : chunk.content;
           if (candidate.length > sectionAvailable) {
+            if (
+              !chunk.atomic &&
+              includedAtomicCount === 0 &&
+              includedLeadingContent &&
+              chunk.content.length <= sectionAvailable
+            ) {
+              rendered = chunk.content;
+              includedLeadingContent = false;
+              includedPostAtomicContent = true;
+              postAtomicContents.push(chunk.content);
+              continue;
+            }
             truncated = true;
             continue;
           }
+
           rendered = candidate;
-          includedAtomicCount += 1;
-          if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
-          if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
-        }
-        if (includedAtomicCount === 0) {
-          rendered = "";
-          for (const chunk of trailing) {
-            const candidate = rendered
-              ? `${rendered}\n\n${chunk}`
-              : chunk;
-            if (candidate.length > sectionAvailable) {
-              truncated = true;
-              continue;
-            }
-            rendered = candidate;
-          }
-        } else {
-          for (const chunk of trailing) {
-            const candidate = rendered
-              ? `${rendered}\n\n${chunk}`
-              : chunk;
-            if (candidate.length > sectionAvailable) {
-              truncated = true;
-              continue;
-            }
-            rendered = candidate;
+          if (chunk.atomic) {
+            includedAtomicCount += 1;
+            if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
+            if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
+          } else {
+            includedPostAtomicContent = true;
+            postAtomicContents.push(chunk.content);
           }
         }
         if (includedAtomicCount === 0) {
-          if (!rendered) {
+          if (includedPostAtomicContent) {
+            rendered = postAtomicContents.join("\n\n");
+          } else {
+            rendered = "";
             truncated = true;
-            continue;
           }
         } else if (includedAtomicCount < atomicChunks.length) {
           truncated = true;

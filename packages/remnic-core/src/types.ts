@@ -3644,6 +3644,7 @@ export type {
 /** Entry in the access tracking buffer (batched updates) */
 export interface AccessTrackingEntry {
   memoryId: string;
+  memoryPath?: string;
   newCount: number;
   lastAccessed: string;
 }

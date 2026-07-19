@@ -345,7 +345,7 @@ export interface RecallInternalDeps {
   ): number | undefined;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly handleHistory: RecallHandleHistoryStore;
-  trackMemoryAccess(memoryIds: string[]): void;
+  trackMemoryAccess(memoryIds: string[], memoryPaths?: string[]): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   isRecallSectionEnabled(
     sectionId: string,
@@ -5325,7 +5325,10 @@ export class RecallInternalCoordinator {
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
     recalledMemoryCount = assembledRecall.includedMemoryIds.length;
-    this.deps.trackMemoryAccess(assembledRecall.includedMemoryIds);
+    this.deps.trackMemoryAccess(
+      assembledRecall.includedMemoryIds,
+      assembledRecall.includedMemoryPaths,
+    );
     const context =
       assembledRecall.sections.length === 0
         ? ""

@@ -5014,46 +5014,39 @@ export class EngramAccessService {
   }): Promise<{ submitted: number; matched: number }> {
     if (request.entries.length === 0) return { submitted: 0, matched: 0 };
 
-    // Enforce namespace ACLs — citation tracking is a write-like operation.
-    // Pass authenticatedPrincipal so the principal resolution matches other
-    // write endpoints (gotcha #42: read and write paths must resolve through
-    // the same namespace layer).
     const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       request.sessionId,
       request.authenticatedPrincipal,
     );
 
-    // Extract memory IDs from citation paths. The path in citations
-    // follows the pattern `facts/<id>.md` or just `<id>.md`.
-    const memoryIds: string[] = [];
-    for (const entry of request.entries) {
-      // Strip directory prefix and .md extension to derive the memory ID.
-      const basename = entry.path.split("/").pop() ?? entry.path;
-      const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-      if (id.length > 0) {
-        memoryIds.push(id);
-      }
-    }
+    const memoryEntries = request.entries
+      .map((entry) => {
+        const basename = entry.path.split("/").pop() ?? entry.path;
+        const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
+        return id.length > 0 ? { id, path: entry.path } : null;
+      })
+      .filter((entry): entry is { id: string; path: string } => entry !== null);
 
-    if (memoryIds.length === 0) return { submitted: 0, matched: 0 };
+    if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
 
-    // Determine which IDs correspond to real memories in storage using a
-    // targeted file-existence scan instead of loading all memories (Finding #2).
+    const memoryIds = memoryEntries.map((entry) => entry.id);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const existingIds = await storage.filterExistingMemoryIds(memoryIds);
-    const matchedIds = memoryIds.filter((id) => existingIds.has(id));
+    const matchedEntries = memoryEntries.filter((entry) => existingIds.has(entry.id));
 
-    if (matchedIds.length > 0) {
+    if (matchedEntries.length > 0) {
       try {
-        this.orchestrator.trackMemoryAccess(matchedIds);
+        this.orchestrator.trackMemoryAccess(
+          matchedEntries.map((entry) => entry.id),
+          matchedEntries.map((entry) => entry.path),
+        );
       } catch {
-        // Fail gracefully — citation usage tracking is best-effort.
         log.debug("citation usage tracking: failed to record access for cited memories");
       }
     }
 
-    return { submitted: memoryIds.length, matched: matchedIds.length };
+    return { submitted: memoryIds.length, matched: matchedEntries.length };
   }
 
   // ── Operator Console state (issue #688 PR 2/3) ────────────────────────────
