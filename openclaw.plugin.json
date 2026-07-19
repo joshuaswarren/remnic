@@ -4351,7 +4351,8 @@
         "type": "integer",
         "default": 5,
         "minimum": 1,
-        "description": "Number of rotated recall-impression archives to keep (.1 .. .N) (issue #1910). Default 5."
+        "maximum": 1000,
+        "description": "Number of rotated recall-impression archives to keep (.1 .. .N) (issue #1910). Default 5. Max 1000: each retained slot costs one rename under the held impressions lock per rotation, so a larger value is rejected at config-parse time before it can stall recall recording."
       },
       "recallMaxConcurrentPerPrincipal": {
         "type": "integer",
