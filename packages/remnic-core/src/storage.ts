@@ -1152,6 +1152,43 @@ function dehyphenate(s: string): string {
 const CONTENT_HASH_INDEX_LOCK_STALE_MS = 30_000;
 
 /**
+ * Durable-retry policy for a deferred content-hash reconcile save whose
+ * cross-process lock acquire timed out (issue #1909 / PR #2016). When the lock
+ * is contended past `withHeldFileLock`'s bounded wait, the added hashes are held
+ * only in this process's memory; relying on "some later batch save" is not
+ * durable (the run may be the last before idle/shutdown), and a long-lived peer
+ * that already built its authoritative in-memory index will not see the write.
+ * So we schedule a bounded, exponentially-backed-off background retry that keeps
+ * re-attempting the locked publish until it lands. Bounded because the durable
+ * fact `.md` is already on disk and a process restart rebuilds the index from
+ * the corpus regardless — exhausting retries degrades to that rebuild safety
+ * net, never to data loss or a fatal append failure.
+ */
+const CONTENT_HASH_INDEX_RETRY_MAX_ATTEMPTS = 5;
+/** Base backoff (ms) before the first deferred reconcile-save retry; doubles each attempt. */
+const CONTENT_HASH_INDEX_RETRY_BASE_MS = 500;
+/** Ceiling (ms) for the exponential reconcile-save retry backoff. */
+const CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS = 5_000;
+
+/**
+ * Tuning for {@link ContentHashIndex} cross-process lock waits and the
+ * deferred reconcile-save durable retry (issue #1909 / PR #2016). All optional;
+ * production uses the module defaults. Tests inject small values so the
+ * lock-timeout + retry path is exercised deterministically without real
+ * multi-second waits.
+ */
+export interface ContentHashIndexLockOptions {
+  /** Bounded wait to acquire the per-file advisory lock; passed to `withHeldFileLock` (default 5000ms). */
+  readonly maxWaitMs?: number;
+  /** Poll interval while waiting for a busy lock (default 50ms). */
+  readonly pollMs?: number;
+  /** Base backoff before the first deferred-save retry (default 500ms). */
+  readonly retryBaseMs?: number;
+  /** Max deferred-save retries before falling back to the corpus-rebuild safety net (default 5). */
+  readonly retryMaxAttempts?: number;
+}
+
+/**
  * Content-hash dedup index for facts.
  * Normalizes content (lowercase, strip punctuation, collapse whitespace),
  * computes SHA-256, and stores hashes in a line-delimited file.
@@ -1182,17 +1219,31 @@ export class ContentHashIndex {
   private readonly secureStoreKeyProvider: () => Buffer | null;
   private readonly secureStoreWriteKeyProvider: () => Buffer | null;
   private readonly memoryDir: string;
+  private readonly lockOptions: ContentHashIndexLockOptions;
+  /**
+   * Deferred reconcile-save durable-retry state (issue #1909 / PR #2016). At
+   * most ONE retry is ever armed (`reconcileRetryTimer` is the reentrancy guard)
+   * so successive timed-out saves cannot stack duplicate/parallel retries.
+   * `reconcileRetryBarrier` resolves when the chain settles (published or gave
+   * up) — awaited by tests and any caller wanting the eventual result.
+   */
+  private reconcileRetryTimer: NodeJS.Timeout | null = null;
+  private reconcileRetryAttempts = 0;
+  private reconcileRetryBarrier: Promise<void> | null = null;
+  private reconcileRetryResolve: (() => void) | null = null;
 
   constructor(
     stateDir: string,
     secureStoreKeyProvider: () => Buffer | null = () => null,
     secureStoreWriteKeyProvider: () => Buffer | null = secureStoreKeyProvider,
-    memoryDir: string = path.dirname(stateDir)
+    memoryDir: string = path.dirname(stateDir),
+    lockOptions: ContentHashIndexLockOptions = {}
   ) {
     this.filePath = path.join(stateDir, "fact-hashes.txt");
     this.secureStoreKeyProvider = secureStoreKeyProvider;
     this.secureStoreWriteKeyProvider = secureStoreWriteKeyProvider;
     this.memoryDir = memoryDir;
+    this.lockOptions = lockOptions;
   }
 
   /** Load existing hashes from disk. Safe to call multiple times. */
@@ -1241,8 +1292,11 @@ export class ContentHashIndex {
     }
     // A full clear is always paired with a plain overwrite save() (rebuild);
     // pending per-hash add/remove deltas are subsumed by writing the rebuilt set.
+    // Cancel any armed deferred-reconcile retry (PR #2016) so it cannot fire in
+    // the clear→rebuild→save window and union the pre-clear on-disk rows back.
     this.added.clear();
     this.removed.clear();
+    this.cancelReconcileRetry();
     this.dirty = true;
   }
 
@@ -1258,10 +1312,13 @@ export class ContentHashIndex {
       this.memoryDir
     );
     // The overwrite publishes the full in-memory set; drop the pending
-    // add/remove deltas so a later reconciling save does not re-apply them.
+    // add/remove deltas so a later reconciling save does not re-apply them, and
+    // cancel any armed deferred-reconcile retry (PR #2016) — a full overwrite
+    // supersedes it, so letting it fire could union stale on-disk rows back.
     this.added.clear();
     this.removed.clear();
     this.dirty = false;
+    this.cancelReconcileRetry();
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
   }
 
@@ -1282,8 +1339,11 @@ export class ContentHashIndex {
    *    nor removed anything this run, skip the O(file) read+rewrite entirely.
    *  - Cross-process lock (round 7 finding 2): serialize the read→reconcile→write
    *    window on a per-file advisory lock. If the lock is NOT acquired (timeout),
-   *    do NOT publish (round 9 finding 2): leave `dirty` set so a later save
-   *    retries under the lock, never an unlocked write that could clobber a peer.
+   *    do NOT publish (round 9 finding 2): keep `dirty` set AND schedule a bounded
+   *    durable background retry (PR #2016) that keeps re-attempting the locked
+   *    publish until the deferred additions land — never an unlocked write that
+   *    could clobber a peer, and never a silent "batch save complete" that leaves
+   *    the addition in this process's memory only.
    */
   async saveMergingWithDisk(): Promise<void> {
     if (!this.dirty) return;
@@ -1323,19 +1383,113 @@ export class ContentHashIndex {
     };
     await withHeldFileLock(
       `${this.filePath}.lock`,
-      { staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS },
+      {
+        staleMs: CONTENT_HASH_INDEX_LOCK_STALE_MS,
+        ...(this.lockOptions.maxWaitMs !== undefined ? { maxWaitMs: this.lockOptions.maxWaitMs } : {}),
+        ...(this.lockOptions.pollMs !== undefined ? { pollMs: this.lockOptions.pollMs } : {}),
+      },
       async (acquired) => {
         if (!acquired) {
-          // Never publish unlocked (round 9 finding 2): keep dirty for retry.
+          // Never publish unlocked (round 9 finding 2): keep dirty AND schedule a
+          // durable background retry (PR #2016). Relying on an unguaranteed later
+          // batch save silently left the addition in this process's memory only;
+          // the retry keeps re-attempting the locked publish until the addition
+          // lands on disk.
           log.warn(
-            `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained)`,
+            `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained, scheduling durable retry)`,
           );
+          this.scheduleReconcileRetry();
           return;
         }
         await publish();
+        // Published: any pending deferred retry is now satisfied.
+        this.cancelReconcileRetry();
       },
     );
     log.debug(`content-hash index: reconcile-saved ${this.hashes.size} hashes`);
+  }
+
+  /**
+   * True while a background durable reconcile-save retry is armed (PR #2016).
+   * Test/introspection hook.
+   */
+  get hasPendingReconcileRetry(): boolean {
+    return this.reconcileRetryTimer !== null;
+  }
+
+  /**
+   * Resolve once any armed background reconcile-save retry chain has settled —
+   * either it published the deferred additions, or it exhausted its bounded
+   * attempts and fell back to the corpus-rebuild safety net. Resolves
+   * immediately when nothing is armed. Lets a caller (or a test) await the
+   * eventual durability outcome of a lock-timed-out save.
+   */
+  async whenReconcileRetrySettled(): Promise<void> {
+    await (this.reconcileRetryBarrier ?? Promise.resolve());
+  }
+
+  /**
+   * Schedule ONE bounded, exponentially-backed-off background retry of the
+   * deferred reconcile save (PR #2016). Reentrant-safe: an already-armed timer
+   * short-circuits, so successive timed-out saves never stack duplicate retries.
+   * When attempts are exhausted the chain settles without publishing — the
+   * durable fact `.md` is on disk and a process restart rebuilds the index from
+   * the corpus, so this degrades to that safety net, never a fatal failure.
+   */
+  private scheduleReconcileRetry(): void {
+    if (this.reconcileRetryTimer) return; // one retry in flight — no duplicate/reentrant retries
+    const maxAttempts = this.lockOptions.retryMaxAttempts ?? CONTENT_HASH_INDEX_RETRY_MAX_ATTEMPTS;
+    if (this.reconcileRetryAttempts >= maxAttempts) {
+      log.warn(
+        `content-hash index: exhausted ${maxAttempts} deferred reconcile-save retries for ${this.filePath}; ` +
+          `${this.added.size} addition(s) remain dirty in-memory (a process restart rebuilds the index from the durable corpus)`,
+      );
+      this.reconcileRetryAttempts = 0;
+      this.settleReconcileRetry();
+      return;
+    }
+    if (!this.reconcileRetryBarrier) {
+      this.reconcileRetryBarrier = new Promise<void>((resolve) => {
+        this.reconcileRetryResolve = resolve;
+      });
+    }
+    const attempt = this.reconcileRetryAttempts + 1;
+    const baseMs = this.lockOptions.retryBaseMs ?? CONTENT_HASH_INDEX_RETRY_BASE_MS;
+    const delay = Math.min(baseMs * 2 ** (attempt - 1), CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
+    this.reconcileRetryTimer = setTimeout(() => {
+      this.reconcileRetryTimer = null;
+      this.reconcileRetryAttempts = attempt;
+      void this.saveMergingWithDisk()
+        .catch((err) => {
+          // A publish-time I/O/encryption error (not a lock timeout) is best-effort:
+          // log and let the corpus-rebuild safety net cover it rather than loop.
+          log.warn(`content-hash index: deferred reconcile-save retry failed for ${this.filePath}: ${err}`);
+        })
+        .finally(() => {
+          // If the attempt neither published (dirty cleared → cancelReconcileRetry)
+          // nor re-armed a further retry, the chain has ended — settle the barrier.
+          if (this.dirty && !this.reconcileRetryTimer) this.settleReconcileRetry();
+        });
+    }, delay);
+    this.reconcileRetryTimer.unref?.();
+  }
+
+  /** Cancel any armed reconcile-save retry and settle the barrier (a publish landed). */
+  private cancelReconcileRetry(): void {
+    if (this.reconcileRetryTimer) {
+      clearTimeout(this.reconcileRetryTimer);
+      this.reconcileRetryTimer = null;
+    }
+    this.reconcileRetryAttempts = 0;
+    this.settleReconcileRetry();
+  }
+
+  /** Resolve and clear the retry barrier if one is outstanding. */
+  private settleReconcileRetry(): void {
+    const resolve = this.reconcileRetryResolve;
+    this.reconcileRetryBarrier = null;
+    this.reconcileRetryResolve = null;
+    resolve?.();
   }
 
   /** Remove a hash from the index (used when archiving/deleting). */

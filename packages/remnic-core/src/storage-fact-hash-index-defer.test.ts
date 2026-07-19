@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -391,5 +391,148 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
       true,
       "the hot-tier fact must also survive the rebuild",
     );
+  });
+});
+
+// PR #2016: when saveMergingWithDisk cannot acquire the cross-process lock in
+// time, it used to resolve "successfully" while retaining the added hash ONLY
+// in this process's memory — a silent gap. A long-lived peer that already built
+// its authoritative in-memory index would never see the write, and no later
+// save was guaranteed. The fix schedules a bounded, durable background retry
+// that keeps re-attempting the locked publish until the addition lands.
+//
+// These tests hold the advisory lock deterministically (write the <index>.lock
+// file with a fresh mtime so it is neither acquirable nor stale-breakable within
+// the short test window) and use small injected lock/retry timings.
+//
+// ts-no-test-timers exception (same rationale as serialize-mutations.test.ts):
+// the retry is driven by a REAL setTimeout coupled to withHeldFileLock's REAL
+// filesystem mtime-staleness + poll loop — fake timers cannot advance the fs
+// lock's platform clock, so time control here must be real. We never guess a
+// duration: each test awaits the code's own `whenReconcileRetrySettled()`
+// signal. The retry timer is `unref`'d in production so a pending retry never
+// keeps a daemon alive, which means an awaiting test needs a ref'd keep-alive
+// interval to hold the event loop open until that signal fires; it is cleared
+// the instant the retry chain settles.
+
+async function withRetryLoopAlive(run: () => Promise<void>): Promise<void> {
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await run();
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
+test("#2016: a lock-timed-out append is NOT silently dropped and eventually persists via durable retry", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
+
+    // A peer holds the lock: a fresh, non-stale lock file the acquirer cannot take.
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 50,
+      pollMs: 10,
+      retryBaseMs: 15,
+      retryMaxAttempts: 5,
+    });
+    await idx.load();
+    idx.add("deferred-under-contended-lock");
+
+    // The batch save times out on the lock. It must NOT publish (peer's lock is
+    // held) but MUST arm a durable retry instead of resolving as "complete".
+    await idx.saveMergingWithDisk();
+    assert.equal(idx.hasPendingReconcileRetry, true, "a durable retry must be armed after the lock timeout");
+
+    // Disk is untouched while the lock is held — proves it did not write unlocked.
+    const early = new ContentHashIndex(stateDir);
+    await early.load();
+    assert.equal(early.has("deferred-under-contended-lock"), false, "no unlocked publish while the peer holds the lock");
+    // In-memory dedup still works this session (dirty addition retained).
+    assert.equal(idx.has("deferred-under-contended-lock"), true, "addition stays live in-memory");
+
+    // The peer releases the lock; the background retry must then land the write.
+    await rm(lockPath, { force: true });
+    await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
+
+    assert.equal(idx.hasPendingReconcileRetry, false, "retry chain settled after publishing");
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(
+      fresh.has("deferred-under-contended-lock"),
+      "the deferred addition eventually reached disk via the durable retry",
+    );
+  });
+});
+
+test("#2016: exhausting retries under a permanently held lock is best-effort, never a fatal append failure", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 25,
+      pollMs: 10,
+      retryBaseMs: 10,
+      retryMaxAttempts: 2,
+    });
+    await idx.load();
+    idx.add("never-persistable-while-locked");
+
+    // The save resolves (best-effort) — a busy lock must never throw and turn a
+    // durable-.md append into a fatal failure.
+    await assert.doesNotReject(idx.saveMergingWithDisk());
+
+    // Let the bounded retry chain run to exhaustion (lock is never released).
+    await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
+
+    assert.equal(idx.hasPendingReconcileRetry, false, "retries are bounded — the chain gives up, it does not spin forever");
+    // The addition is still held in-memory (dedup stays correct this session);
+    // disk stays empty, so the corpus-rebuild-on-restart safety net covers it.
+    assert.equal(idx.has("never-persistable-while-locked"), true, "addition retained in-memory after giving up");
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.equal(fresh.has("never-persistable-while-locked"), false, "nothing written unlocked while the lock stayed held");
+  });
+});
+
+test("#2016: successive lock-timed-out saves do not stack duplicate retries (reentrancy guard)", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
+    await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+
+    const idx = new ContentHashIndex(stateDir, undefined, undefined, undefined, {
+      maxWaitMs: 40,
+      pollMs: 10,
+      retryBaseMs: 500, // long enough that neither timed-out save fires the retry mid-test
+      retryMaxAttempts: 5,
+    });
+    await idx.load();
+    idx.add("first-deferred");
+    await idx.saveMergingWithDisk();
+    assert.equal(idx.hasPendingReconcileRetry, true, "first timeout arms exactly one retry");
+
+    // A second timed-out save while a retry is already armed must be a no-op for
+    // scheduling — the single armed timer is the reentrancy guard.
+    idx.add("second-deferred");
+    await idx.saveMergingWithDisk();
+    assert.equal(idx.hasPendingReconcileRetry, true, "still exactly one retry armed (no duplicate/parallel retries)");
+
+    // Release the lock and let the single retry drain BOTH deferred additions in
+    // one locked publish.
+    await rm(lockPath, { force: true });
+    await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
+
+    const fresh = new ContentHashIndex(stateDir);
+    await fresh.load();
+    assert.ok(fresh.has("first-deferred"), "first deferred addition persisted");
+    assert.ok(fresh.has("second-deferred"), "second deferred addition persisted by the same single retry");
   });
 });
