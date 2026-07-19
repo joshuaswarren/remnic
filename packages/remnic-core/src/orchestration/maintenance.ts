@@ -618,6 +618,11 @@ export class MaintenanceScheduler {
    * target is oversized but could not be compacted because its encrypted ledger
    * has no unlocked secure store — arming the throttle for it would suppress the
    * retry of that still-oversized ledger for the whole interval (#2033).
+   *
+   * The min-interval throttle is bypassed for one case: an encrypted ledger
+   * already at/over the whole-file decrypt cap is unreadable, so it must be
+   * clamped on the next pass rather than wait out the interval. Ordinary
+   * below-cap (or plaintext) targets stay throttled (#2033).
    */
   private async maybeCompactMemoryLifecycleLedger(): Promise<void> {
     // Enumerate every lifecycle target (root + namespaces) through the safe,
@@ -637,8 +642,15 @@ export class MaintenanceScheduler {
     const now = Date.now();
     if (
       now - this.lastLifecycleCompactionAtMs <
-      this.deps.config.memoryLifecycleLedgerCompactMinIntervalMs
+        this.deps.config.memoryLifecycleLedgerCompactMinIntervalMs &&
+      !(await this.hasOverCapEncryptedLifecycleLedger(targets))
     ) {
+      // Throttled: no ordinary target is due yet. The exception is an encrypted
+      // ledger already at/over the whole-file decrypt cap — it is unreadable, so
+      // the global min-interval must not defer clamping it for a whole interval.
+      // The guard above lets such a target through immediately (compaction then
+      // clamps it via the cap-aware effective threshold) while ordinary
+      // below-cap targets stay throttled (#2033).
       return;
     }
     this.lifecycleCompactionInFlight = true;
@@ -663,6 +675,38 @@ export class MaintenanceScheduler {
     } finally {
       this.lifecycleCompactionInFlight = false;
     }
+  }
+
+  /**
+   * True when any lifecycle target's ledger is encrypted at rest AND its
+   * on-disk size is at/over the whole-file decrypt cap. Such a ledger is already
+   * unreadable (the secure reader refuses at/over the cap), so it must reach the
+   * bounded compaction path on the next maintenance pass regardless of the
+   * global min-interval throttle — otherwise the throttle could keep an
+   * unreadable ledger un-clamped for a whole interval (#2033). Ordinary
+   * below-cap or plaintext targets never match, so the throttle still governs
+   * them. A stat/probe failure yields "no forced target" and is left to the
+   * normal compaction path, which classifies it as failed and retries.
+   */
+  private async hasOverCapEncryptedLifecycleLedger(
+    targets: Array<{ memoryDir: string; storage?: StorageManager }>,
+  ): Promise<boolean> {
+    for (const target of targets) {
+      const ledgerPath = path.join(target.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+      let size: number;
+      try {
+        size = (await stat(ledgerPath)).size;
+      } catch {
+        continue; // absent/unstattable — nothing to force here.
+      }
+      if (size < this.lifecycleLedgerMaxBytes) continue;
+      try {
+        if (await probeEncryptedRegularFileHeader(ledgerPath)) return true;
+      } catch {
+        continue; // probe failure — the normal compaction path reports it.
+      }
+    }
+    return false;
   }
 
   /**

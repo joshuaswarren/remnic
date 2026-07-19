@@ -758,6 +758,9 @@ test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regre
 interface CompactableScheduler {
   maybeCompactMemoryLifecycleLedger(): Promise<void>;
   lifecycleLedgerMaxBytes: number;
+  // Arming this to `Date.now()` puts a focused test inside the min-interval
+  // window so it can prove the throttle path (#2033).
+  lastLifecycleCompactionAtMs: number;
   dispose(): void;
 }
 
@@ -1821,6 +1824,90 @@ test("auto-compaction triggers on an encrypted ledger at/above the decrypt cap e
   }
 });
 
+test("auto-compaction bypasses the min-interval throttle for an over-cap encrypted ledger, but still throttles a below-cap target (#2033)", async () => {
+  // Bypass arm: an encrypted, over-cap ledger with the throttle freshly armed.
+  // Without the bypass the min-interval return fires before the compaction path
+  // can clamp it, leaving the unreadable ledger to wait out the whole interval.
+  const bypassDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-throttle-bypass-"));
+  // Throttle arm: an ordinary below-cap target with the throttle armed must NOT
+  // recompact — the bypass is scoped to over-cap encrypted ledgers only.
+  const throttledDir = (await seedMemoryDirWithOversizedLedger(4096)).memoryDir;
+  try {
+    await mkdir(path.join(bypassDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(bypassDir, "facts", "2026-03-08", "fact-1.md"),
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const bypassLedger = path.join(bypassDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(bypassLedger), { recursive: true });
+    const key = Buffer.alloc(32, 7);
+    const junk = '{"legacy":true,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n';
+    const junkBlob = junk.repeat(Math.ceil(4096 / junk.length));
+    await writeFile(bypassLedger, encryptFileBody(junkBlob, key, filePathAad(bypassLedger, bypassDir)));
+    const bypassBefore = (await stat(bypassLedger)).size;
+
+    const storage = new StorageManager(bypassDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key); // unlocked, so the encrypted target is not deferred.
+    const bypassScheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir: bypassDir,
+        // Threshold far above both the ledger and the (seam) cap: only the
+        // cap-clamp — not the configured threshold — makes this target eligible.
+        memoryLifecycleLedgerCompactBytes: 10 * 1024 * 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    bypassScheduler.lifecycleLedgerMaxBytes = 2048; // tiny cap: the ~4KB ledger is over it.
+    // Arm the throttle: WITHOUT the #2033 bypass this in-window pass returns
+    // before compaction and the over-cap encrypted ledger is never clamped.
+    bypassScheduler.lastLifecycleCompactionAtMs = Date.now();
+    try {
+      await bypassScheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      bypassScheduler.dispose();
+    }
+    const bypassAfter = (await stat(bypassLedger)).size;
+    assert.ok(
+      bypassAfter < bypassBefore,
+      "over-cap encrypted ledger must compact despite the armed throttle (#2033 bypass)",
+    );
+    assert.ok(bypassAfter < 2048, "compacted encrypted ledger must land below the decrypt cap");
+    assert.ok(isEncryptedFile(await readFile(bypassLedger)), "rewritten ledger stays encrypted at rest");
+
+    // Below-cap control: same armed throttle, ordinary plaintext oversized
+    // ledger (over threshold, under the default cap). The bypass must NOT fire,
+    // so the throttle still holds and the ledger is left untouched.
+    const throttledLedger = path.join(throttledDir, "state", "memory-lifecycle-ledger.jsonl");
+    const throttledBefore = (await stat(throttledLedger)).size;
+    const throttledScheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: throttledDir,
+        memoryLifecycleLedgerCompactBytes: 1024, // ledger is over threshold — eligible if unthrottled.
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    throttledScheduler.lastLifecycleCompactionAtMs = Date.now();
+    try {
+      await throttledScheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      throttledScheduler.dispose();
+    }
+    assert.equal(
+      (await stat(throttledLedger)).size,
+      throttledBefore,
+      "below-cap target stays throttled: the armed throttle prevents recompaction",
+    );
+  } finally {
+    await rm(bypassDir, { recursive: true, force: true });
+    await rm(throttledDir, { recursive: true, force: true });
+  }
+});
+
 test("auto-compaction reserves the secure-store envelope so an encrypted rewrite lands below the cap and does not retry forever (#2033)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-envelope-"));
   try {
@@ -1877,8 +1964,16 @@ test("auto-compaction reserves the secure-store envelope so an encrypted rewrite
       // The compaction was judged effective (throttle armed): re-grow within the
       // window; a broken budget would have reported "failed" (throttle un-armed)
       // and this second pass would recompact.
-      await writeFile(ledgerPath, encryptFileBody(plaintext, key, filePathAad(ledgerPath, memoryDir)));
+      // Re-grow OVER the threshold but strictly BELOW the decrypt cap, so this
+      // pass is governed by the armed throttle — not the over-cap encrypted
+      // bypass (#2033), which only fires for a ledger at/over the cap.
+      const regrownPlain = `${events.slice(0, 10).map((e) => JSON.stringify(e)).join("\n")}\n`;
+      await writeFile(ledgerPath, encryptFileBody(regrownPlain, key, filePathAad(ledgerPath, memoryDir)));
       const regrown = (await stat(ledgerPath)).size;
+      assert.ok(
+        regrown > rowBytes * 5 && regrown < cap,
+        "regrown ledger is over threshold but below the cap (throttle, not bypass, applies)",
+      );
       await scheduler.maybeCompactMemoryLifecycleLedger();
       assert.equal(
         (await stat(ledgerPath)).size,
