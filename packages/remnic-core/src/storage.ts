@@ -3518,22 +3518,24 @@ export class StorageManager {
       ];
       let legacyRecovered = 0;
       for (const memory of existing) {
-        // #1909 review round 13: the content-hash dedup index is SHARED by fact
-        // AND procedure dedup. Procedures register their persist-body hash via
-        // the orchestrator's addContentHashDedup into THIS same index, but they
-        // are stored with category "procedure". A fact-only rebuild dropped every
-        // persisted procedure hash on restart, letting the next extraction
-        // recreate identical procedures. Index both categories so the corpus
-        // rebuild is coherent with the shared registration path. Procedures never
-        // carry a frontmatter contentHash (writeMemory only sets it for facts),
-        // so they fall through to the citation-strip reconstruction below — the
-        // same path legacy facts use.
-        if (
-          memory.frontmatter.category !== "fact" &&
-          memory.frontmatter.category !== "procedure"
-        ) {
-          continue;
-        }
+        // #1909 review round 15 (PR #2016): the content-hash dedup index is
+        // SHARED across EVERY registered write category. persistExtraction calls
+        // addContentHashDedup for every writeCategory it persists — fact,
+        // procedure, preference, decision, commitment, correction, and any other
+        // extracted category — into THIS one index. A rebuild restricted to
+        // fact+procedure dropped every other category's hash on restart, so the
+        // next extraction re-created identical active preference/decision/
+        // commitment memories (the retired fact-hashes.txt load used to preserve
+        // them). Index every active memory regardless of category so the corpus
+        // rebuild covers the full registration surface. Over-inclusion is safe:
+        // the dedup consumers (hasContentHashDedup in persistExtraction, the
+        // explicit-capture negative pre-filter) confirm a hash hit with a
+        // same-category corpus scan before dropping anything, so a surplus hash
+        // only costs a scan — it can never wrongly suppress a write. Procedures
+        // keep their round-13 behaviour: they carry no frontmatter contentHash
+        // (writeMemory sets it only for facts), so they fall through to the
+        // citation-strip reconstruction below, hashing the stored persist body
+        // (title + steps) exactly as buildProcedurePersistBody registered it.
         if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
         // Prefer the pre-computed raw-content hash stored in frontmatter
         // (written since round 8 of issue #369). This hash was derived from
@@ -3543,33 +3545,39 @@ export class StorageManager {
           factHashIndex.addByHash(memory.frontmatter.contentHash);
           continue;
         }
-        // Legacy fact written before contentHash was introduced (Finding 1 —
-        // Uhol). Apply nuanced handling based on whether the citation can be
-        // reliably stripped:
+        // No frontmatter hash (procedures, non-fact categories, and legacy facts
+        // written before contentHash existed — Finding 1, Uhol). Reconstruct the
+        // registered hash from the stored body. First strip the "[Attributes: …]"
+        // enrichment suffix writeMemory appends for structuredAttributes: the
+        // registration path (addContentHashDedup) hashed the raw canonical
+        // content WITHOUT that suffix, so a non-fact category carrying attributes
+        // would otherwise rebuild to a hash that never matches. stripAttributesSuffix
+        // is a no-op when no suffix is present (procedures, plain facts), and the
+        // connector-aware dedup scan already strips it the same way. Then handle
+        // the citation:
         //
-        //  1. Default citation present → strip it and index the raw body.
-        //  2. No citation at all → index the raw body as-is.
+        //  1. Default/configured citation present → strip it and index the body.
+        //  2. No citation at all → index the body as-is.
         //  3. Unknown/custom citation template → skip with a warning.
         //
-        // Rationale for (3): for facts annotated with a custom citation
+        // Rationale for (3): for content annotated with a custom citation
         // template, stripCitationForTemplate cannot reliably detect the inline
         // marker and would hash the cited body — producing a hash that never
-        // matches what hasFactContentHash(rawContent) computes. A
-        // false-negative miss (the fact is not in the index) is preferable to
-        // a wrong index entry that permanently suppresses legitimate duplicate
-        // writes.
+        // matches what the dedup check computes. A false-negative miss (the
+        // memory is not in the index) is preferable to a wrong index entry that
+        // permanently suppresses legitimate duplicate writes.
         //
         // Limitation (Thread 2 — stale hash): even when contentHash IS present
         // it may be stale if updateMemory() rewrote the body without updating
         // the frontmatter hash. The hash is trusted as-is here; a future
         // migration pass can recompute it from the current content.
-        const content = memory.content;
-        // Use the configured template (Thread 1 fix): citationTemplate is set
-        // by the orchestrator to the active inlineSourceAttributionFormat so
-        // the rebuild can strip both the default and any custom template.
-        // Falls back to DEFAULT_CITATION_FORMAT when the orchestrator has not
-        // configured a custom template (e.g. direct StorageManager construction
-        // in tests).
+        //
+        // citationTemplate (Thread 1 fix) is set by the orchestrator to the
+        // active inlineSourceAttributionFormat so the rebuild strips both the
+        // default and any custom template. It falls back to DEFAULT_CITATION_FORMAT
+        // when the orchestrator has not configured one (e.g. direct StorageManager
+        // construction in tests).
+        const content = stripAttributesSuffix(memory.content);
         const stripped = stripCitationForTemplate(content, this.citationTemplate);
         if (stripped !== content) {
           // Citation was stripped — index the bare body.
@@ -3578,8 +3586,8 @@ export class StorageManager {
         }
         // No citation was removed. Decide whether to index or skip.
         // Thread 4 fix: use hasCitation() rather than the too-broad endsWith("]")
-        // heuristic. Facts that legitimately end with "]" (e.g. "User prefers
-        // [dark mode]") have no citation marker and should be indexed as-is.
+        // heuristic. Content that legitimately ends with "]" (e.g. "User prefers
+        // [dark mode]") has no citation marker and should be indexed as-is.
         // Only skip when hasCitation() confirms a citation is present — that
         // means the citation is from an unknown/custom template we cannot strip.
         if (!hasCitation(content)) {

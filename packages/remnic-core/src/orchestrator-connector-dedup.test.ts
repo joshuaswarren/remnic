@@ -24,7 +24,7 @@ import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { clearMemoryCache } from "./memory-cache.js";
 import { ContentHashIndex, StorageManager } from "./storage.js";
-import type { ExtractionResult, ExtractedFact, MemoryFile } from "./types.js";
+import type { ExtractionResult, ExtractedFact, MemoryFile, MemoryCategory } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { buildProcedurePersistBody } from "./procedural/procedure-types.js";
 
@@ -1501,6 +1501,131 @@ test("#1909 round 13: startup rebuild preserves PROCEDURE hashes as well as fact
     all.filter((m: MemoryFile) => m.frontmatter.category === "procedure").length,
     1,
     "one procedure on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered category hash across restart", async () => {
+  // The content-hash dedup index is shared by every registered write category:
+  // persistExtraction calls addContentHashDedup for every writeCategory it
+  // persists (preference, decision, commitment, …), not only fact/procedure.
+  // A rebuild restricted to fact+procedure dropped those hashes on restart, so
+  // the next extraction re-created identical active non-fact memories (the
+  // retired fact-hashes.txt load used to preserve them). Every category's hash
+  // must survive the corpus rebuild.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cat-rebuild-"));
+  const prefContent = "The user prefers dark mode across every surface.";
+  const decisionContent = "We standardized on pnpm for all workspace installs.";
+  // A preference carrying structuredAttributes: writeMemory appends an
+  // "[Attributes: …]" suffix to the stored body, but the registered dedup key
+  // is the RAW content WITHOUT that suffix. The rebuild must strip the suffix
+  // or the reconstructed hash never matches and the memory is re-created.
+  const attrContent = "The user's working timezone is America/Chicago.";
+  const attrs: Record<string, string> = { timezone: "America/Chicago", trust: "high" };
+
+  const categoryResult = (
+    content: string,
+    category: MemoryCategory,
+    structuredAttributes?: Record<string, string>,
+  ): ExtractionResult => ({
+    facts: [
+      {
+        content,
+        category,
+        tags: [],
+        confidence: 0.9,
+        ...(structuredAttributes ? { structuredAttributes } : {}),
+      } as ExtractedFact,
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  });
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+
+  // Phase 1 — persist non-fact/procedure categories through the real path.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(prefContent, "preference"), storage, null)).length,
+      1,
+      "preference persisted in phase 1",
+    );
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(decisionContent, "decision"), storage, null)).length,
+      1,
+      "decision persisted in phase 1",
+    );
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(attrContent, "preference", attrs), storage, null)).length,
+      1,
+      "attributed preference persisted in phase 1",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the dedup index rebuilds authoritatively from the corpus.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, prefContent),
+    true,
+    "preference hash survives the corpus rebuild (PR #2016 fix)",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, decisionContent),
+    true,
+    "decision hash survives the corpus rebuild (PR #2016 fix)",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, attrContent),
+    true,
+    "attributed preference hash survives the rebuild (attributes suffix stripped)",
+  );
+
+  // Re-extraction of each is deduped — none is re-created.
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(prefContent, "preference"), storage2, null)).length,
+    0,
+    "preference is deduped on restart (would be re-created without the fix)",
+  );
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(decisionContent, "decision"), storage2, null)).length,
+    0,
+    "decision is deduped on restart (would be re-created without the fix)",
+  );
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(attrContent, "preference", attrs), storage2, null)).length,
+    0,
+    "attributed preference is deduped on restart (would be re-created without the fix)",
+  );
+
+  // The originals remain the only copies on disk.
+  const all = await storage2.readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "preference").length,
+    2,
+    "two preferences on disk (plain + attributed), none duplicated",
+  );
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "decision").length,
+    1,
+    "one decision on disk, not duplicated",
   );
 
   await rm(memoryDir, { recursive: true, force: true });
