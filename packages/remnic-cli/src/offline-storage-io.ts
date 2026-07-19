@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import { createDecipheriv, createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
@@ -180,36 +183,87 @@ async function* readEncryptedOfflineFileChunks(options: {
     ENVELOPE_LAYOUT.authTag,
     ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH,
   );
-  const decipher = createDecipheriv("aes-256-gcm", options.key, iv, {
-    authTagLength: AUTH_TAG_LENGTH,
-  });
-  decipher.setAuthTag(authTag);
-  decipher.setAAD(Buffer.concat([secureStoreEnvelopeHeaderAad(salt), filePathAad(options.filePath, options.memoryDir)]));
+  const aadCandidates = offlineFileAadCandidates(options.filePath, options.memoryDir);
+  let lastError: unknown;
+  for (const aad of aadCandidates) {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-decrypt-"));
+    const tempPath = path.join(tempDir, "content");
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", options.key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+      });
+      decipher.setAuthTag(authTag);
+      decipher.setAAD(Buffer.concat([secureStoreEnvelopeHeaderAad(salt), aad]));
+      const output = fs.createWriteStream(tempPath, { mode: 0o600 });
+      try {
+        const stream = fs.createReadStream(options.filePath, {
+          start: MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE,
+          highWaterMark: options.chunkSize,
+        });
+        for await (const encryptedChunk of stream) {
+          const plain = decipher.update(
+            Buffer.isBuffer(encryptedChunk) ? encryptedChunk : Buffer.from(encryptedChunk),
+          );
+          if (plain.length > 0 && !output.write(plain)) {
+            await new Promise<void>((resolve, reject) => {
+              output.once("drain", resolve);
+              output.once("error", reject);
+            });
+          }
+        }
+        const finalPlain = decipher.final();
+        if (finalPlain.length > 0 && !output.write(finalPlain)) {
+          await new Promise<void>((resolve, reject) => {
+            output.once("drain", resolve);
+            output.once("error", reject);
+          });
+        }
+      } finally {
+        await closeWriteStream(output);
+      }
+      yield* readPlainOfflineFileChunks(tempPath, options.chunkSize);
+      return;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`secure-store could not decrypt file: ${options.filePath}`);
+}
 
-  let pending = Buffer.alloc(0);
-  const stream = fs.createReadStream(options.filePath, {
-    start: MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE,
-    highWaterMark: options.chunkSize,
+function offlineFileAadCandidates(filePath: string, memoryDir: string): Buffer[] {
+  const candidates = [filePathAad(filePath, memoryDir)];
+  const relative = path.relative(memoryDir, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return candidates;
+  const parts = relative.split(path.sep);
+  if (parts[0] === "namespaces" && parts.length >= 3 && parts[1]) {
+    candidates.push(filePathAad(filePath, path.join(memoryDir, "namespaces", parts[1])));
+  }
+  const memoryParts = path.resolve(memoryDir).split(path.sep);
+  if (memoryParts.length >= 3 && memoryParts.at(-2) === "namespaces" && memoryParts.at(-1)) {
+    const topLevelRoot = memoryParts.slice(0, -2).join(path.sep) || path.sep;
+    const topRelative = path.relative(topLevelRoot, filePath);
+    if (
+      topRelative
+      && !topRelative.startsWith("..")
+      && !path.isAbsolute(topRelative)
+      && topRelative.split(path.sep)[0] === "namespaces"
+      && topRelative.split(path.sep)[1] === memoryParts.at(-1)
+    ) {
+      candidates.push(filePathAad(filePath, topLevelRoot));
+    }
+  }
+  return candidates;
+}
+
+async function closeWriteStream(stream: fs.WriteStream): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    stream.once("error", reject);
+    stream.end(() => resolve());
   });
-  for await (const encryptedChunk of stream) {
-    const plain = decipher.update(Buffer.isBuffer(encryptedChunk) ? encryptedChunk : Buffer.from(encryptedChunk));
-    if (plain.length > 0) {
-      pending = Buffer.concat([pending, plain], pending.length + plain.length);
-    }
-    while (pending.length >= options.chunkSize) {
-      yield pending.subarray(0, options.chunkSize);
-      pending = pending.subarray(options.chunkSize);
-    }
-  }
-  const finalPlain = decipher.final();
-  if (finalPlain.length > 0) {
-    pending = Buffer.concat([pending, finalPlain], pending.length + finalPlain.length);
-  }
-  while (pending.length >= options.chunkSize) {
-    yield pending.subarray(0, options.chunkSize);
-    pending = pending.subarray(options.chunkSize);
-  }
-  if (pending.length > 0) yield pending;
 }
 
 function secureStoreEnvelopeHeaderAad(salt: Uint8Array): Buffer {

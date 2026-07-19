@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "@remnic/core";
+import { encryptFileBody, filePathAad } from "@remnic/core/secure-store";
 
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 
@@ -37,6 +38,32 @@ test("offline storage IO decrypts encrypted files for reads and streaming digest
       sha256: createHash("sha256").update(content).digest("hex"),
       bytes: content.byteLength,
     });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("offline storage IO decrypts legacy namespaced AAD files in chunks", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-legacy-aad-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const key = Buffer.alloc(32, 29);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    const namespaceRoot = path.join(memoryDir, "namespaces", "project-a");
+    const filePath = path.join(namespaceRoot, "facts", "legacy.md");
+    await mkdir(path.dirname(filePath), { recursive: true });
+    const content = Buffer.from("legacy namespaced offline sync content\n".repeat(96));
+    await writeFile(filePath, encryptFileBody(content, key, filePathAad(filePath, namespaceRoot)));
+
+    const io = await createOfflineStorageIo(memoryDir, { storage, secureStoreKey: key });
+    const target = { root: memoryDir, path: "namespaces/project-a/facts/legacy.md", filePath };
+    const chunks: Buffer[] = [];
+    for await (const chunk of io.readFileChunks({ ...target, chunkSize: 37 })) {
+      chunks.push(chunk);
+    }
+
+    assert.deepEqual(Buffer.concat(chunks), content);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
