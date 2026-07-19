@@ -41,6 +41,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        # Read-only: only reads scripts/review-dedup.mjs for the dynamic import,
+        # never pushes — do not persist GITHUB_TOKEN on disk.
+        with:
+          persist-credentials: false
       - name: Rerun stuck required checks
         uses: actions/github-script@v7
         # Reuse the tested dedup module (scripts/review-dedup.mjs) so the guard's
