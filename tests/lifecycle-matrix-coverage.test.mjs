@@ -756,3 +756,35 @@ test("retrieval freshness entrypoints are tracked (grandfathered), not silently 
     assert.equal(warnings.length, 1, `${p} freshness change must warn, not silently bypass the gate`);
   }
 });
+
+test("recall lifecycle modules are tracked (grandfathered), not silently ignored", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "packages/remnic-core/src/recall-state.ts",
+    "src/recall-state.ts",
+    "packages/remnic-core/src/recall-query-policy.ts",
+    "src/recall-query-policy.ts",
+    "packages/remnic-core/src/verified-recall.ts",
+    "src/verified-recall.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
+    const { warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
+    assert.equal(warnings.length, 1, `${p} recall lifecycle change must warn, not silently bypass the gate`);
+  }
+});
+
+test("the maintenance/ directory is gated: namespace-maintenance modules grandfathered, new files violate", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "packages/remnic-core/src/maintenance/namespace-planner.ts",
+    "packages/remnic-core/src/maintenance/namespace-maintenance-fanout.ts",
+  ]) {
+    const { warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(warnings.length, 1, `${p} must warn (grandfathered)`);
+    assert.equal(violations.length, 0);
+  }
+  const fresh = evaluateCoverage(["packages/remnic-core/src/maintenance/brand-new-maintenance.ts"], manifest);
+  assert.equal(fresh.violations.length, 1, "a new maintenance/ module must fail as unmapped via the catch-all");
+  assert.equal(fresh.warnings.length, 0);
+});

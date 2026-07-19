@@ -102,7 +102,16 @@
     "src/harmonic-retrieval.ts",
     "packages/remnic-core/src/causal-retrieval.ts",
     "src/causal-retrieval.ts",
-    "packages/remnic-core/src/temporal-supersession.ts"
+    "packages/remnic-core/src/temporal-supersession.ts",
+    "packages/remnic-core/src/recall-state.ts",
+    "src/recall-state.ts",
+    "packages/remnic-core/src/recall-query-policy.ts",
+    "src/recall-query-policy.ts",
+    "packages/remnic-core/src/verified-recall.ts",
+    "src/verified-recall.ts",
+    "packages/remnic-core/src/maintenance/namespace-planner.ts",
+    "packages/remnic-core/src/maintenance/namespace-maintenance-fanout.ts",
+    "packages/remnic-core/src/maintenance/**"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -202,6 +211,14 @@
     "src/harmonic-retrieval.ts",
     "packages/remnic-core/src/causal-retrieval.ts",
     "src/causal-retrieval.ts",
-    "packages/remnic-core/src/temporal-supersession.ts"
+    "packages/remnic-core/src/temporal-supersession.ts",
+    "packages/remnic-core/src/recall-state.ts",
+    "src/recall-state.ts",
+    "packages/remnic-core/src/recall-query-policy.ts",
+    "src/recall-query-policy.ts",
+    "packages/remnic-core/src/verified-recall.ts",
+    "src/verified-recall.ts",
+    "packages/remnic-core/src/maintenance/namespace-planner.ts",
+    "packages/remnic-core/src/maintenance/namespace-maintenance-fanout.ts"
   ]
 }
