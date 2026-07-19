@@ -252,15 +252,19 @@ export function runLifecycleMatrix<S>(
 
     register(name, async () => {
       let built: S | undefined;
+      let setupDone = false;
       try {
         built = await subject.setup(row);
+        setupDone = true;
         await subject.exercise(built, row);
         await subject.invariants(built, row);
       } finally {
-        // `setup` is transactional, so teardown runs whenever it produced a
-        // fixture — even if exercise/invariants throw — and is skipped only
-        // when setup never returned one (it cleaned up its own partial state).
-        if (built !== undefined) await subject.teardown(built, row);
+        // Teardown runs whenever setup COMPLETED — even when a subject's fixture
+        // type is `void`/undefined — and is skipped only when setup itself threw
+        // (a transactional setup cleans up its own partial state on throw). The
+        // sentinel is a completion flag, NOT the fixture value, so a stateless or
+        // void subject that did setup work is still torn down.
+        if (setupDone) await subject.teardown(built as S, row);
       }
     });
   }

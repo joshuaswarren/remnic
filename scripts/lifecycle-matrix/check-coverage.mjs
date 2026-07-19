@@ -194,6 +194,17 @@ export function classifyGlob(glob, manifest) {
 }
 
 /**
+ * Co-located test files (`*.test` / `*.spec` and their .mts/.cts/.tsx/.js
+ * variants) are NOT production lifecycle code — they ARE the subjects/coverage.
+ * A broad manifest glob such as `orchestration/**` matches them, so without this
+ * a pure test-file change would be treated as an unmapped lifecycle path and
+ * fail the gate. Test files never require a subject; skip them explicitly.
+ */
+export function isLifecycleTestFile(file) {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(file);
+}
+
+/**
  * Evaluate an effective changed-files list against the manifest.
  * Precedence per file: covered > grandfathered > unmapped (a file covered by
  * one glob is covered even if another glob it matches is only grandfathered).
@@ -203,6 +214,7 @@ export function evaluateCoverage(effectiveFiles, manifest) {
   const warnings = [];
   const violations = [];
   for (const file of effectiveFiles) {
+    if (isLifecycleTestFile(file)) continue;
     const matched = manifest.lifecycleManifest.filter((glob) => isIgnoredPath(file, [glob]));
     if (matched.length === 0) continue;
     const classes = matched.map((glob) => ({ glob, klass: classifyGlob(glob, manifest) }));

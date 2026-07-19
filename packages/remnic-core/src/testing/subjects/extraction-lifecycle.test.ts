@@ -51,6 +51,8 @@ interface ExtractionLifecycleState {
   abortFlushCalls?: BufferTurn[][];
   /** Whether the aborting before_reset flush rejected (before-reset row). */
   abortFlushRejected?: boolean;
+  /** Persisted fact count captured immediately after the aborted before_reset flush (must be 0). */
+  abortedWriteCount?: number;
   /** Extraction-call count captured right before the dedupe row's force flush. */
   callsBeforeForceFlush?: number;
 }
@@ -231,6 +233,10 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           });
         state.abortFlushRejected = abortRejected;
 
+        // The aborted flush must persist NOTHING (abort guards before_persist):
+        // capture the fact count now, before the recovery flush writes the turn.
+        state.abortedWriteCount = (await markdownFilesUnder(path.join(state.memoryDir, "facts"))).length;
+
         // A fresh, non-aborted flush must find the turn still buffered AND must
         // itself succeed — swallowing its failure would let a recovery-flush
         // regression pass vacuously (the extraction call still bumps the count).
@@ -356,6 +362,11 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           state.abortFlushCalls.length,
           1,
           "the abort must trip AFTER exactly one extraction attempt — a reject before extraction ran (length 0) would mean the mid-extraction abort path was never exercised",
+        );
+        assert.equal(
+          state.abortedWriteCount,
+          0,
+          "the aborted before_reset flush must persist nothing — the abort guards before_persist, so no fact is written before the buffer-preserving recovery flush",
         );
         assert.ok(state.secondFlushCalls, "a re-flush must have been recorded");
         assert.equal(

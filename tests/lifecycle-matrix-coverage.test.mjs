@@ -24,6 +24,7 @@ import {
   evaluateCoverage,
   flattenChangedPaths,
   grandfatherGrowth,
+  isLifecycleTestFile,
   loadCoverageManifest,
   manifestShrinkage,
   parseNameStatusZ,
@@ -513,4 +514,22 @@ test("orchestration coverage is per-file: only files extraction-lifecycle exerci
   // A NEW, unlisted orchestration file cannot pass via a broad glob — it violates.
   const fresh = evaluateCoverage([P + "brand-new-coordinator.ts"], manifest);
   assert.equal(fresh.violations.length, 1, "a new orchestration file must fail the gate until covered or grandfathered");
+});
+
+test("co-located orchestration test files are ignored by the gate, not violations", () => {
+  const manifest = loadReal();
+  const P = "packages/remnic-core/src/orchestration/";
+  // Test/spec files match the broad orchestration/** glob but are not production
+  // lifecycle code — a pure test-file change must not fail (or warn on) the gate.
+  for (const f of ["extraction-run.test.ts", "maintenance.test.ts", "brand-new.spec.ts", "helper.test.mts"]) {
+    assert.ok(isLifecycleTestFile(P + f), `${f} must be recognized as a test file`);
+    const { covered, warnings, violations } = evaluateCoverage([P + f], manifest);
+    assert.deepEqual(
+      { covered: covered.length, warnings: warnings.length, violations: violations.length },
+      { covered: 0, warnings: 0, violations: 0 },
+      `${f} must be ignored entirely by the coverage gate`,
+    );
+  }
+  // A production source file is still evaluated (not mistaken for a test).
+  assert.equal(isLifecycleTestFile(P + "extraction-run.ts"), false);
 });

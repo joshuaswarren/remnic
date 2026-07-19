@@ -184,3 +184,29 @@ test("teardown runs when a post-setup phase throws, and is skipped (no crash) wh
   await assert.rejects(async () => cap2.tests[0].fn(), /setup boom/);
   assert.equal(toreDownAfterSetupFail, 0, "teardown must not run on a fixture setup never produced");
 });
+
+test("teardown runs for a void/undefined-fixture subject that completed setup", async () => {
+  // A subject whose fixture type is void (does setup work but returns nothing)
+  // must still be torn down — the sentinel is setup COMPLETION, not the value.
+  let toreDown = 0;
+  const voidSubject: LifecycleSubject<void> = {
+    async setup() {
+      // setup work with no returned handle (e.g. process-global state).
+    },
+    async exercise() {
+      throw new Error("exercise boom");
+    },
+    async invariants() {},
+    async teardown() {
+      toreDown += 1;
+    },
+  };
+  const cap = capture();
+  runLifecycleMatrix("toy-void", voidSubject, {
+    register: cap.register,
+    registerSkipped: cap.registerSkipped,
+    rows: [MATRIX_ROWS[0]],
+  });
+  await assert.rejects(async () => cap.tests[0].fn(), /exercise boom/);
+  assert.equal(toreDown, 1, "a void-fixture subject that completed setup must still be torn down");
+});
