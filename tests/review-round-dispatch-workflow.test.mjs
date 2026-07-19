@@ -60,6 +60,15 @@ test("the round-dispatch workflow wakes on top-level PR comments and has Checks 
   assert.match(dispatch, /^\s*checks:\s*read/m);
 });
 
+test("the round-dispatch workflow keeps least-privilege token scopes", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // The gate only writes issue comments/labels and READS PR data, so
+  // pull-requests stays read-only to shrink the github-script blast radius
+  // (issue #1992 P1 hardening).
+  assert.match(dispatch, /^\s*pull-requests:\s*read/m);
+  assert.doesNotMatch(dispatch, /^\s*pull-requests:\s*write/m);
+});
+
 test("the round-dispatch workflow shadows dispatch by default (enforcement flip is PR3)", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   assert.match(dispatch, /REVIEW_ROUND_ENFORCE:\s*'false'/);

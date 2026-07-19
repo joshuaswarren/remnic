@@ -233,31 +233,43 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
   return threads;
 }
 
-function resolvePullNumber(context) {
-  // check_run.completed carries the PR under check_run.pull_requests[]; the
-  // PR/review/comment events carry pull_request or issue.
-  const candidate =
-    context.payload?.pull_request?.number ??
-    context.payload?.issue?.number ??
-    context.payload?.check_run?.pull_requests?.[0]?.number ??
-    null;
-  const pr = Number(candidate);
-  return Number.isInteger(pr) && pr > 0 ? pr : null;
+function resolvePullNumbers(context) {
+  // check_run.completed carries every associated PR under check_run.pull_requests[]
+  // (several PRs can share a head SHA); the PR/review/comment events carry
+  // pull_request or issue. Return all distinct valid numbers (codex).
+  const numbers = [];
+  const add = (value) => {
+    const pr = Number(value);
+    if (Number.isInteger(pr) && pr > 0 && !numbers.includes(pr)) numbers.push(pr);
+  };
+  add(context.payload?.pull_request?.number);
+  add(context.payload?.issue?.number);
+  for (const pr of context.payload?.check_run?.pull_requests ?? []) add(pr?.number);
+  return numbers;
 }
 
 /**
- * actions/github-script entrypoint. The workflow imports this module directly
- * so the tested decision core is the only copy of the logic.
+ * actions/github-script entrypoint. Resolves every PR the event touches (a
+ * check_run can be attached to several PRs sharing a head SHA) and runs the
+ * gate for each. Returns the single result for one PR, or an array of results.
  */
 export async function runRoundGate({ github, context, core, env = {} } = {}) {
   const owner = context.repo.owner;
   const repo = context.repo.repo;
-  const prNumber = resolvePullNumber(context);
-  if (!prNumber) {
+  const prNumbers = resolvePullNumbers(context);
+  if (prNumbers.length === 0) {
     core.notice("review-round gate: no pull request in payload; nothing to do.");
     return null;
   }
+  const results = [];
+  for (const prNumber of prNumbers) {
+    results.push(await runRoundGateForPr({ github, core, env, owner, repo, prNumber }));
+  }
+  return results.length === 1 ? results[0] : results;
+}
 
+/** Run the round gate for a single resolved pull request. */
+async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
   const enforce = String(env.REVIEW_ROUND_ENFORCE ?? "").toLowerCase() === "true";
   const botAliases = parseReviewerAliases(
     env.REQUIRED_AI_REVIEWER_GROUPS || DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,

@@ -480,3 +480,15 @@ test("an enforced dispatch pings exactly the reviewers the aliases recognize", a
   assert.match(trigger.body, /@coderabbitai/);
   assert.match(trigger.body, /@codex/);
 });
+
+test("a check_run event processes every associated PR, not just the first", async () => {
+  const { github, calls } = fakeGithub({ threads: openThreads(1) });
+  const checkRunContext = {
+    repo: { owner: "o", repo: "r" },
+    payload: { check_run: { pull_requests: [{ number: 7 }, { number: 8 }] } },
+  };
+  const result = await runRoundGate({ github, context: checkRunContext, core, env: {} });
+  assert.ok(Array.isArray(result), "returns one result per associated PR");
+  assert.equal(result.length, 2);
+  assert.equal(calls.created.length, 2, "each associated PR gets its own ledger");
+});
