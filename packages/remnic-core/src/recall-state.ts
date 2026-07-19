@@ -5,7 +5,7 @@ import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { withHeldFileLock, type HeldFileLockOptions } from "./utils/serialize-mutations.js";
-import { listContainedSpillFiles } from "./utils/path-containment.js";
+import { ensureContainedSpillDir, listContainedSpillFiles } from "./utils/path-containment.js";
 import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
@@ -446,7 +446,7 @@ export class LastRecallStore {
   }
 
   private async spillImpression(line: string): Promise<void> {
-    await mkdir(this.impressionsPendingDir, { recursive: true });
+    await ensureContainedSpillDir(this.impressionsPendingDir);
     await writeFile(path.join(this.impressionsPendingDir, `${randomUUID()}.jsonl`), line, "utf-8");
   }
 

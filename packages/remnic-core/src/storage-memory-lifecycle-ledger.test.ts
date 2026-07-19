@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -753,5 +753,52 @@ test("an append recovers a crash-orphaned claim alongside the new event (#2033)"
     assert.equal((await readdir(spillDir)).length, 0, "spill dir drained empty");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendLifecycleEventsSerialized refuses to write a spill into a symlinked pending directory (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-symlink-dir-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-outside-dir-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    // Plant a symlink AT the spill-directory path pointing at a real directory
+    // outside the memory store. The write path must refuse it before any file
+    // lands in the target.
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    await symlink(outsideDir, spillDir);
+
+    // Hold the ledger lock from a foreign owner so the append takes the spill
+    // branch instead of writing the ledger directly.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf8");
+
+    await assert.rejects(
+      () =>
+        appendLifecycleEventsSerialized(
+          ledgerPath,
+          async () => { throw new Error("ledger append must not run"); },
+          `${JSON.stringify(lifecycleEvent("evt-symlink", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`,
+          plaintextPendingIo(),
+          { maxWaitMs: 100, pollMs: 20 },
+        ),
+      /symlinked or non-directory/,
+      "spill write into a symlinked pending dir must be refused",
+    );
+
+    assert.equal(
+      (await lstat(spillDir)).isSymbolicLink(),
+      true,
+      "spill directory symlink left intact (not replaced by a real dir)",
+    );
+    assert.deepEqual(
+      await readdir(outsideDir),
+      [],
+      "no spill file leaked through the symlink into the outside directory",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });

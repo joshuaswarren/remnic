@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -659,5 +659,47 @@ test("LastRecallStore recovers an impression spill claim orphaned by a crash bef
     assert.equal((await readdir(pendingDir)).length, 0, "recovered claim cleaned up after commit");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore refuses to write an impression spill into a symlinked pending directory (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-symlink-spill-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-symlink-outside-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // Plant a symlink AT the spill-directory path pointing at a real directory
+    // outside the memory store. The write path must refuse it before any file
+    // lands in the target.
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await symlink(outside, pendingDir);
+
+    // Force the spill branch: hold the rotation lock from a foreign owner so
+    // record()'s append cannot acquire it and falls back to spilling.
+    const lockPath = `${impressionsPath}.lock`;
+    await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
+    const store = new LastRecallStore(dir, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+      impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
+    });
+    await store.load();
+    // The spill refusal is swallowed as a logged append failure (record never
+    // throws), but nothing may be written through the poisoned link.
+    await store.record({ sessionKey: "symlink-refused", query: "q", memoryIds: [] });
+
+    assert.equal(
+      (await lstat(pendingDir)).isSymbolicLink(),
+      true,
+      "spill directory symlink left intact (not replaced by a real dir)",
+    );
+    assert.deepEqual(
+      await readdir(outside),
+      [],
+      "no spill file leaked through the symlink into the outside directory",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

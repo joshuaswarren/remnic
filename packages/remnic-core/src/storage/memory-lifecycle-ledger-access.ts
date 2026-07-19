@@ -1,6 +1,6 @@
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryLifecycleEvent } from "../types.js";
@@ -12,7 +12,7 @@ import {
   MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
 } from "../memory-lifecycle-ledger-utils.js";
 import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
-import { listContainedSpillFiles } from "../utils/path-containment.js";
+import { ensureContainedSpillDir, listContainedSpillFiles } from "../utils/path-containment.js";
 import {
   readMaybeEncryptedLines,
   readMemoryLifecycleEventsFromLines,
@@ -230,7 +230,7 @@ async function spillPendingAppend(
   payload: string,
 ): Promise<void> {
   const dir = pendingLifecycleLedgerDir(ledgerPath);
-  await mkdir(dir, { recursive: true });
+  await ensureContainedSpillDir(dir);
   await io.writeSecure(path.join(dir, `${randomUUID()}.jsonl`), payload);
 }
 

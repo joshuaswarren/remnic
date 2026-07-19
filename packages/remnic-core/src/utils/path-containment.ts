@@ -14,7 +14,7 @@
  */
 
 import path from "node:path";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { isErrnoCode } from "./errno.js";
 
 /**
@@ -94,4 +94,23 @@ export async function listContainedSpillFiles(dir: string, suffix = ".jsonl"): P
     files.push(filePath);
   }
   return files;
+}
+
+/**
+ * Create `dir` (recursively, if absent) and assert it is a REAL directory —
+ * never a symlink — BEFORE any spill file is written into it (#2033). This
+ * mirrors the lstat guard {@link listContainedSpillFiles} applies on the read
+ * side so the durable-spill WRITE and its later drain enforce the SAME
+ * symlink-safe containment: a symlink planted at the spill-directory path (e.g.
+ * `<ledger>.pending.d` -> /etc) cannot redirect a write/rename/unlink outside
+ * the intended location. `mkdir` recursive is a no-op when the path already
+ * resolves through a symlink, so the post-mkdir lstat is what actually refuses
+ * the poisoned link. Throws on a symlinked or non-directory target.
+ */
+export async function ensureContainedSpillDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  const dirStat = await lstat(dir);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error(`Refusing to write spill file into symlinked or non-directory path: ${dir}`);
+  }
 }
