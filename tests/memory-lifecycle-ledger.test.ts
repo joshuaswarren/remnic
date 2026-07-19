@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
+import type { MemoryLifecycleEvent } from "../src/types.ts";
 import {
   backupExistingLedger,
   rebuildMemoryLifecycleLedger,
@@ -629,6 +630,148 @@ duplicate
     assert.equal(result.skippedDuplicateEvents.every((entry) => entry.eventId.includes("duplicate-id")), true);
     const rows = (await readFile(result.outputPath, "utf-8")).trim().split("\n");
     assert.equal(rows.length, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger rejects a storage whose dir does not match memoryDir (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dir-mismatch-a-"));
+  const otherDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dir-mismatch-b-"));
+  try {
+    const mismatched = new StorageManager(otherDir);
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({ memoryDir, dryRun: false, storage: mismatched }),
+      /storage\.dir .* must match .*memoryDir/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(otherDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger aborts and leaves the ledger intact when preserve read fails (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-preserve-readfail-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row a frontmatter-only rebuild cannot reconstruct.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Simulate an unreadable ledger (e.g. over the whole-file decrypt limit —
+    // exactly when auto-compaction fires). storage.dir === memoryDir so the
+    // dir-match guard passes and the preserve read is what fails.
+    class UnreadableLedgerStorage extends StorageManager {
+      override async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
+        throw new Error("encrypted state file over the whole-file decrypt limit");
+      }
+    }
+    const storage = new UnreadableLedgerStorage(memoryDir);
+
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        storage,
+        preserveExistingEvents: true,
+      }),
+      /rebuild aborted: cannot read existing events to preserve/,
+    );
+    // No lossy rewrite: the append-only history must survive the failed compaction.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "ledger must be untouched after a preserve-read abort",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger does not lose a lifecycle event appended during compaction (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-concurrent-append-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row that only the preserve path can carry over.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const capOne: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(ledgerPath, `${JSON.stringify(capOne)}\n`, "utf-8");
+
+    // Fire a concurrent append the instant the rebuild reads the ledger to
+    // preserve it — i.e. while the rebuild holds the ledger lock. The append
+    // must block on that lock and land on the compacted ledger afterwards
+    // instead of being clobbered by the rewrite/rename.
+    const appender = new StorageManager(memoryDir);
+    const capTwo: MemoryLifecycleEvent = {
+      eventId: "cap-2",
+      memoryId: "fact-1",
+      eventType: "imported",
+      timestamp: "2026-03-08T03:00:00.000Z",
+      actor: "importer",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    let appendPromise: Promise<number> | undefined;
+    class RebuildStorageWithConcurrentAppend extends StorageManager {
+      private fired = false;
+      override async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
+        const events = await super.readAllMemoryLifecycleEvents();
+        if (!this.fired) {
+          this.fired = true;
+          // Not awaited: it cannot complete until the rebuild releases the lock.
+          appendPromise = appender.appendMemoryLifecycleEvents([capTwo]);
+        }
+        return events;
+      }
+    }
+    const storage = new RebuildStorageWithConcurrentAppend(memoryDir);
+
+    await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+    });
+    assert.ok(appendPromise, "concurrent append must have been fired during the preserve read");
+    await appendPromise;
+
+    const finalIds = (await new StorageManager(memoryDir).readAllMemoryLifecycleEvents())
+      .map((event) => event.eventId)
+      .sort();
+    assert.ok(finalIds.includes("cap-1"), "preserved append-only event must survive compaction");
+    assert.ok(
+      finalIds.includes("cap-2"),
+      "event appended during compaction must land on the compacted ledger, not be lost",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

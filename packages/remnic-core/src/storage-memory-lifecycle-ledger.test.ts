@@ -67,7 +67,7 @@ test("readAllMemoryLifecycleEvents streams plaintext rows and preserves fail-ope
   });
 });
 
-test("readMemoryLifecycleEvents keeps the last N appended rows, then sorts that tail", async () => {
+test("readMemoryLifecycleEvents returns the canonical last-N tail, not the append tail", async () => {
   const first = lifecycleEvent("event-1", "memory-a", "2026-01-01T00:00:00.000Z");
   const second = lifecycleEvent("event-2", "memory-a", "2026-01-02T00:00:00.000Z");
   const third = lifecycleEvent("event-3", "memory-b", "2026-01-01T00:00:00.000Z");
@@ -77,10 +77,12 @@ test("readMemoryLifecycleEvents keeps the last N appended rows, then sorts that 
     JSON.stringify(first),
     JSON.stringify(second),
   ], async (storage) => {
-    // Bounded ring keeps the last 2 APPENDED rows (first, second), then sorts:
-    // both are memory-a, so timestamp order → [first, second]. The pre-#1910
-    // global sort-then-slice returned [second, third] instead.
-    assert.deepEqual(await storage.readMemoryLifecycleEvents(2), [first, second]);
+    // The bounded read ranks by the canonical comparator (memoryId, timestamp,
+    // eventType), then keeps the last 2 — identical to the pre-#1910 readAll →
+    // sort → slice(-limit). Canonical order is [first, second, third], so the
+    // last two are [second, third] regardless of append order (#1910,
+    // CodeRabbit: keep the no-memoryId read on the canonical tail).
+    assert.deepEqual(await storage.readMemoryLifecycleEvents(2), [second, third]);
   });
 });
 

@@ -17,24 +17,32 @@ export const STATE_FILE_MAX_DECRYPT_BYTES = 400 * 1024 * 1024;
 
 /**
  * Stream plaintext files by line while preserving authenticated whole-file
- * reads for encrypted files.
+ * reads for encrypted files. `maxDecryptBytes` bounds the whole-file decrypt:
+ * when set, an encrypted file at/over it is refused before decryption with an
+ * actionable error. The ceiling is OPT-IN so it applies ONLY to callers with a
+ * compaction-backed remedy (the lifecycle ledger). Callers with no bounded
+ * maintenance path — e.g. the memory-actions ledger — omit it and keep the
+ * prior unbounded read (issue #1910).
  */
 export async function* readMaybeEncryptedLines(
   filePath: string,
   readEncryptedFile: () => Promise<string>,
+  maxDecryptBytes?: number,
 ): AsyncGenerator<string> {
   const file = await open(filePath, "r");
   const header = Buffer.alloc(MAGIC_HEADER_SIZE);
   try {
     const { bytesRead } = await file.read(header, 0, header.length, 0);
     if (isEncryptedFile(header.subarray(0, bytesRead))) {
-      const { size } = await file.stat();
-      if (size >= STATE_FILE_MAX_DECRYPT_BYTES) {
-        throw new Error(
-          `encrypted state file ${filePath} is ${size} bytes, over the ${STATE_FILE_MAX_DECRYPT_BYTES}-byte `
-          + `whole-file decrypt limit. Run 'remnic rebuild-memory-lifecycle-ledger --write' (or 'remnic doctor') `
-          + `to compact it.`,
-        );
+      if (maxDecryptBytes !== undefined) {
+        const { size } = await file.stat();
+        if (size >= maxDecryptBytes) {
+          throw new Error(
+            `encrypted state file ${filePath} is ${size} bytes, over the ${maxDecryptBytes}-byte `
+            + `whole-file decrypt limit. Run 'remnic rebuild-memory-lifecycle-ledger --write' (or 'remnic doctor') `
+            + `to compact it.`,
+          );
+        }
       }
       yield* (await readEncryptedFile()).split("\n");
       return;

@@ -156,7 +156,10 @@ import {
   inferMemoryStatus,
   isArchivedMemoryPath,
   toMemoryPathRel,
+  memoryLifecycleLedgerLockPath,
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "./memory-lifecycle-ledger-utils.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
@@ -5536,7 +5539,18 @@ export class StorageManager {
       })
       .join("");
 
-    await this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, payload);
+    // Serialize the append against compaction (issue #1910, codex): the
+    // compaction rewrite reads the ledger and replaces it via an atomic rename,
+    // so an append that landed after its read but before its rename would be
+    // clobbered. Both hold this cross-process lock, so appends made during
+    // compaction wait and land on the compacted ledger instead of being lost.
+    // O_APPEND stays atomic across processes; the lock only orders append vs
+    // whole-file rewrite, which is rare (size-gated + throttled).
+    await withHeldFileLock(
+      memoryLifecycleLedgerLockPath(this.memoryLifecycleLedgerPath),
+      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
+      () => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, payload),
+    );
     return events.length;
   }
 

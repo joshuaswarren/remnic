@@ -8,7 +8,10 @@ import { copyExistingFileToBackup, writeFileAtomically } from "./atomic-file.js"
 import {
   buildLifecycleEventsForMemory,
   sortMemoryLifecycleEvents,
+  memoryLifecycleLedgerLockPath,
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 
 /**
  * Event types `buildLifecycleEventsForMemory` reconstructs from frontmatter.
@@ -113,6 +116,12 @@ export async function rebuildMemoryLifecycleLedger(
   const now = options.now ?? new Date();
   const outputPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
   const storage = options.storage ?? new StorageManager(options.memoryDir);
+  if (options.storage && path.resolve(storage.dir) !== path.resolve(options.memoryDir)) {
+    throw new Error(
+      `rebuildMemoryLifecycleLedger: storage.dir (${storage.dir}) must match `
+      + `memoryDir (${options.memoryDir})`,
+    );
+  }
   const secureRewrite = options.storage !== undefined;
   const tiers = [
     await storage.readAllMemories(),
@@ -163,46 +172,75 @@ export async function rebuildMemoryLifecycleLedger(
 
   let finalEvents = events;
   let preservedAppendOnlyRows: number | undefined;
-  if (options.preserveExistingEvents) {
-    // Carry over append-only history frontmatter cannot reconstruct (issue
-    // #1910). Read the existing ledger through the permissive readAll path,
-    // keep only rows whose eventType is NOT frontmatter-derived, then merge →
-    // canonical sort → dedup by eventId (collapsing duplicate appended rows,
-    // the point of compaction). Reused verbatim so encrypted-at-rest decrypts
-    // with the live key when `storage` carries the secure context.
-    let existing: MemoryLifecycleEvent[] = [];
-    try {
-      existing = await storage.readAllMemoryLifecycleEvents();
-    } catch (err) {
-      log.warn(`lifecycle ledger rebuild could not read existing events to preserve: ${err}`);
-    }
-    const preserved = existing.filter(
-      (event) => !FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType],
-    );
-    const mergedById = new Map<string, MemoryLifecycleEvent>();
-    for (const event of sortMemoryLifecycleEvents([...events, ...preserved])) {
-      if (!mergedById.has(event.eventId)) mergedById.set(event.eventId, event);
-    }
-    finalEvents = [...mergedById.values()];
-    preservedAppendOnlyRows = finalEvents.length - events.length;
-  }
-
   let backupPath: string | undefined;
-  if (!dryRun) {
-    const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
-    const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
-    const content = payload.length > 0 ? `${payload}\n` : "";
-    if (secureRewrite) {
-      // Preserve encrypted-at-rest (issue #1910): back up the existing (possibly
-      // encrypted) ledger bytes verbatim, then rewrite through the secure writer
-      // so the new ledger is encrypted with the active key.
-      backupPath = desiredBackup
-        ? await copyExistingFileToBackup(outputPath, desiredBackup)
-        : undefined;
-      await storage.writeMemoryLifecycleLedgerContent(content);
-    } else {
-      backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
+  // Serialize the preserve-read and the whole-file rewrite against concurrent
+  // lifecycle appends (issue #1910, codex). appendMemoryLifecycleEvents holds
+  // this same cross-process lock, so an event appended after the preserve-read
+  // but before the atomic rename waits and lands on the compacted ledger
+  // instead of being clobbered by the rename that replaces the file. The
+  // corpus scan above stays outside the lock — frontmatter-derived rows are
+  // reconstructed from the memory files, not the ledger.
+  const runLedgerCriticalSection = async (): Promise<void> => {
+    if (options.preserveExistingEvents) {
+      // Carry over append-only history frontmatter cannot reconstruct (issue
+      // #1910). Read the existing ledger through the permissive readAll path,
+      // keep only rows whose eventType is NOT frontmatter-derived, then merge
+      // -> canonical sort -> dedup by eventId (collapsing duplicate appended
+      // rows, the point of compaction). Reused verbatim so encrypted-at-rest
+      // decrypts with the live key when `storage` carries the secure context.
+      // preserveExistingEvents means "never lose append-only history": if the
+      // current ledger cannot be read (e.g. it exceeds the whole-file decrypt
+      // limit — exactly when auto-compaction fires), ABORT rather than rewrite
+      // from frontmatter only and silently drop that history (issue #1910,
+      // Cursor High). An absent ledger reads as [] (ENOENT swallowed
+      // downstream), so a throw here is always a real read failure worth
+      // surfacing.
+      let existing: MemoryLifecycleEvent[];
+      try {
+        existing = await storage.readAllMemoryLifecycleEvents();
+      } catch (err) {
+        throw new Error(
+          `lifecycle ledger rebuild aborted: cannot read existing events to preserve `
+          + `(${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+      const preserved = existing.filter(
+        (event) => !FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType],
+      );
+      const mergedById = new Map<string, MemoryLifecycleEvent>();
+      for (const event of sortMemoryLifecycleEvents([...events, ...preserved])) {
+        if (!mergedById.has(event.eventId)) mergedById.set(event.eventId, event);
+      }
+      finalEvents = [...mergedById.values()];
+      preservedAppendOnlyRows = finalEvents.length - events.length;
     }
+
+    if (!dryRun) {
+      const desiredBackup = await backupExistingLedger(options.memoryDir, outputPath, now);
+      const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
+      const content = payload.length > 0 ? `${payload}\n` : "";
+      if (secureRewrite) {
+        // Preserve encrypted-at-rest (issue #1910): back up the existing
+        // (possibly encrypted) ledger bytes verbatim, then rewrite through the
+        // secure writer so the new ledger is encrypted with the active key.
+        backupPath = desiredBackup
+          ? await copyExistingFileToBackup(outputPath, desiredBackup)
+          : undefined;
+        await storage.writeMemoryLifecycleLedgerContent(content);
+      } else {
+        backupPath = await writeFileAtomically(outputPath, content, desiredBackup);
+      }
+    }
+  };
+  // Only hold the lock when the ledger is actually read or rewritten. A
+  // no-preserve dry run touches nothing, so it must not create the state dir or
+  // a transient lock file as a side effect.
+  if (options.preserveExistingEvents || !dryRun) {
+    await withHeldFileLock(
+      memoryLifecycleLedgerLockPath(outputPath),
+      { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS },
+      runLedgerCriticalSection,
+    );
   }
 
   return {

@@ -40,6 +40,19 @@ export function lifecycleEventSortRank(eventType: string): number {
   );
 }
 
+/**
+ * Cross-process lock path guarding lifecycle-ledger mutations (issue #1910,
+ * codex): `appendMemoryLifecycleEvents` and the compaction rewrite both hold
+ * this lock so a lifecycle event appended during compaction's read->rewrite
+ * window cannot be clobbered by the atomic rename that replaces the ledger.
+ */
+export function memoryLifecycleLedgerLockPath(ledgerPath: string): string {
+  return `${ledgerPath}.lock`;
+}
+
+/** Stale-break window for the lifecycle-ledger lock, shared by append + rewrite. */
+export const MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS = 30_000;
+
 export function toMemoryPathRel(baseDir: string, filePath: string): string {
   if (!baseDir) return filePath.split(path.sep).join("/");
   return path.relative(baseDir, filePath).split(path.sep).join("/");

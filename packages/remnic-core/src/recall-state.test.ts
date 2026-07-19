@@ -328,7 +328,9 @@ test("LastRecallStore serializes concurrent impression writes without losing row
 
     // Gather every impression line across the active file and all archives.
     const stateDir = path.dirname(impressionsPath);
-    const files = (await readdir(stateDir)).filter((f) => f.startsWith("recall_impressions.jsonl"));
+    const files = (await readdir(stateDir))
+      .filter((f) => f.startsWith("recall_impressions.jsonl"))
+      .sort();
     const lines: string[] = [];
     for (const f of files) {
       const content = await readFile(path.join(stateDir, f), "utf8");

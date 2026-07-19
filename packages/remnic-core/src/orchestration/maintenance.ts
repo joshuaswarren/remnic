@@ -21,8 +21,8 @@
 
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
-import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -51,6 +51,7 @@ import {
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 /** Reason a QMD maintenance pass was skipped, used for status recording. */
 function qmdMaintenanceSkipReasonForError(
@@ -659,6 +660,28 @@ export class MaintenanceScheduler {
         }
       }
     }
+
+    // Filesystem fallback (codex P2): when namespaces are enabled but the
+    // catalog is disabled (namespaceCatalogEnabled=false) — or a namespace is
+    // not yet cataloged — the catalog walk above finds nothing, yet per-namespace
+    // ledgers still grow under <memoryDir>/namespaces/<token>/state/. Scan that
+    // base directly so those ledgers are still bounded. Deduped by resolved dir,
+    // so a namespace already added via the catalog is not compacted twice.
+    if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
+      const namespacesBase = path.join(this.deps.config.memoryDir, "namespaces");
+      let entries: Dirent[] = [];
+      try {
+        entries = await readdir(namespacesBase, { withFileTypes: true });
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) {
+          log.debug(`lifecycle compaction: namespaces dir scan failed (non-fatal): ${err}`);
+        }
+      }
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory()) continue;
+        addTarget(path.join(namespacesBase, entry.name));
+      }
+    }
     return targets;
   }
 
@@ -675,8 +698,12 @@ export class MaintenanceScheduler {
     let size = 0;
     try {
       size = (await stat(ledgerPath)).size;
-    } catch {
-      return "skipped"; // ENOENT etc. — nothing to compact yet.
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return "skipped"; // absent — nothing to compact yet.
+      log.warn(
+        `lifecycle ledger size check failed (non-fatal) for ${target.memoryDir}: ${err}`,
+      );
+      return "failed";
     }
     if (size < threshold) return "skipped";
     try {

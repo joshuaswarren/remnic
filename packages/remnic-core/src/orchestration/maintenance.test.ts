@@ -1174,3 +1174,49 @@ test("maintenance request triggers lifecycle compaction even when QMD is unavail
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("auto-compaction bounds per-namespace ledgers via filesystem fallback when the catalog is disabled (#1910)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-nocatalog-"));
+  try {
+    const token = namespaceIdentityToken("project-beta");
+    const nsDir = path.join(root, "namespaces", token);
+    await mkdir(path.join(nsDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(nsDir, "facts", "2026-03-08", "fact-ns.md"),
+      `---\nid: fact-ns\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["beta"]\n---\n\nbeta\n`,
+      "utf-8",
+    );
+    const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const line = '{"legacy":true,"pad":"wwwwwwwwwwwwwwwwwwwwwwwwwwwwww"}\n';
+    await writeFile(nsLedger, line.repeat(Math.ceil(4096 / line.length)), "utf-8");
+    const beforeSize = (await stat(nsLedger)).size;
+
+    // namespacesEnabled=true but NO catalog wired (the namespaceCatalogEnabled=false
+    // deployment). The catalog walk finds nothing; the filesystem fallback must
+    // still discover and bound the per-namespace ledger (codex P2).
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+    assert.ok(
+      (await stat(nsLedger)).size < beforeSize,
+      "namespace ledger must be compacted via the filesystem fallback",
+    );
+    const rebuilt = (await readFile(nsLedger, "utf-8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(rebuilt.map((r) => r.eventType), ["created", "updated"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

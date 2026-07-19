@@ -5,7 +5,11 @@ import {
   compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
 } from "../memory-lifecycle-ledger-utils.js";
-import { readMaybeEncryptedLines, readMemoryLifecycleEventsFromLines } from "./secure-line-reader.js";
+import {
+  readMaybeEncryptedLines,
+  readMemoryLifecycleEventsFromLines,
+  STATE_FILE_MAX_DECRYPT_BYTES,
+} from "./secure-line-reader.js";
 
 /** Reads a lifecycle-ledger file through the secure whole-file/plaintext line source. */
 export type LedgerSecureReader = (filePath: string) => Promise<string>;
@@ -30,7 +34,11 @@ export async function readAllLifecycleEventsFromLedger(
 ): Promise<MemoryLifecycleEvent[]> {
   try {
     const out: MemoryLifecycleEvent[] = [];
-    for await (const line of readMaybeEncryptedLines(ledgerPath, () => readSecureFile(ledgerPath))) {
+    for await (const line of readMaybeEncryptedLines(
+      ledgerPath,
+      () => readSecureFile(ledgerPath),
+      STATE_FILE_MAX_DECRYPT_BYTES,
+    )) {
       const row = line.trim();
       if (!row) continue;
       try {
@@ -58,13 +66,16 @@ export async function readAllLifecycleEventsFromLedger(
 }
 
 /**
- * Bounded tail read: retains at most `limit` rows via a streaming ring/heap so
- * the whole ledger is never materialized. Without `memoryId` the last `limit`
- * appended rows are kept then canonically sorted (identical to the prior
- * `slice(-limit)` on the full sorted list for the governance caller that passes
- * a huge limit). With `memoryId` only that memory's rows are considered and the
- * memoryId-first comparator preserves the prior "filter → canonical sort → last
- * N" ordering.
+ * Bounded tail read: retains at most `limit` rows via a streaming min-heap so
+ * the whole ledger is never materialized. Rows are always ranked by the
+ * canonical comparator, so the result is the last `limit` events in canonical
+ * (memoryId, timestamp, eventType) order — byte-for-byte the prior `readAll →
+ * sort → slice(-limit)`, whether or not `memoryId` is supplied. Governance
+ * passes `MAX_SAFE_INTEGER`, so the heap keeps every row and equals
+ * `readAllMemoryLifecycleEvents` (issue #1910; CodeRabbit: keep the no-memoryId
+ * read on the canonical tail). With `memoryId` only that memory's rows are
+ * considered, so the per-memory timeline fallback never materializes the whole
+ * ledger either.
  */
 export async function readBoundedLifecycleEventsFromLedger(
   ledgerPath: string,
@@ -75,13 +86,16 @@ export async function readBoundedLifecycleEventsFromLedger(
   const cappedLimit = Math.max(0, Math.floor(limit));
   if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
   try {
-    const tail = await readMemoryLifecycleEventsFromLines(
-      readMaybeEncryptedLines(ledgerPath, () => readSecureFile(ledgerPath)),
+    return await readMemoryLifecycleEventsFromLines(
+      readMaybeEncryptedLines(
+        ledgerPath,
+        () => readSecureFile(ledgerPath),
+        STATE_FILE_MAX_DECRYPT_BYTES,
+      ),
       cappedLimit,
       memoryId,
-      memoryId === undefined ? undefined : compareMemoryLifecycleEvents,
+      compareMemoryLifecycleEvents,
     );
-    return sortMemoryLifecycleEvents(tail);
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;

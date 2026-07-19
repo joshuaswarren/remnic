@@ -109,10 +109,14 @@ test("readMaybeEncryptedLines refuses an oversized encrypted file before decrypt
     let decryptCalled = false;
     await assert.rejects(
       async () => {
-        for await (const _line of readMaybeEncryptedLines(filePath, async () => {
-          decryptCalled = true;
-          return "";
-        })) {
+        for await (const _line of readMaybeEncryptedLines(
+          filePath,
+          async () => {
+            decryptCalled = true;
+            return "";
+          },
+          STATE_FILE_MAX_DECRYPT_BYTES,
+        )) {
           // no-op
         }
       },
@@ -125,6 +129,34 @@ test("readMaybeEncryptedLines refuses an oversized encrypted file before decrypt
       },
     );
     assert.equal(decryptCalled, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMaybeEncryptedLines does not refuse an oversized encrypted file without a decrypt ceiling (memory-actions parity, issue #1910)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-slr-nolimit-"));
+  const filePath = path.join(dir, "state.jsonl");
+  const header = Buffer.alloc(MAGIC_HEADER_SIZE);
+  MAGIC_BYTES.copy(header, 0);
+  const handle = await open(filePath, "w");
+  await handle.write(header, 0, header.length, 0);
+  await handle.close();
+  await truncate(filePath, STATE_FILE_MAX_DECRYPT_BYTES + 1);
+  try {
+    // No maxDecryptBytes argument: the caller (e.g. the memory-actions ledger)
+    // has no compaction remedy, so the size guard must NOT fire — decryption is
+    // attempted exactly as before the lifecycle-only ceiling was added.
+    let decryptCalled = false;
+    const lines: string[] = [];
+    for await (const line of readMaybeEncryptedLines(filePath, async () => {
+      decryptCalled = true;
+      return "row-1\nrow-2";
+    })) {
+      lines.push(line);
+    }
+    assert.equal(decryptCalled, true, "decrypt runs when no ceiling is supplied");
+    assert.deepEqual(lines, ["row-1", "row-2"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
