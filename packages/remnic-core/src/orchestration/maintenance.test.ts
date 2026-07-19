@@ -992,6 +992,81 @@ test("auto-compaction is a no-op when the ledger is below the threshold", async 
   }
 });
 
+test("auto-compaction singleflight: two requests racing through the over-cap probe compact once (#2033)", async () => {
+  const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
+  try {
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    ) as CompactableScheduler & {
+      hasOverCapEncryptedLifecycleLedger: (targets: unknown) => Promise<boolean>;
+      compactLifecycleLedgerTarget: (
+        target: unknown,
+        threshold: number,
+      ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
+    };
+    try {
+      // Inside the min-interval window so the awaited over-cap probe — the ONLY
+      // await between the singleflight guard and claiming it — is exercised.
+      scheduler.lastLifecycleCompactionAtMs = Date.now();
+
+      // Deterministically open the race window the reviewer flagged: gate the
+      // over-cap probe so BOTH callers pass the early `lifecycleCompactionInFlight`
+      // guard and park inside the same await, then release them together. An
+      // over-cap encrypted ledger (probe => true) bypasses the throttle, so both
+      // fall through toward claiming the guard.
+      const { promise: probeGate, resolve: releaseProbe } = Promise.withResolvers<void>();
+      // Resolves the instant the SECOND caller enters the probe, so the test
+      // releases the gate on a real signal rather than a timed poll.
+      const { promise: bothArrived, resolve: signalBothArrived } =
+        Promise.withResolvers<void>();
+      let probeArrivals = 0;
+      scheduler.hasOverCapEncryptedLifecycleLedger = async () => {
+        probeArrivals += 1;
+        if (probeArrivals === 2) signalBothArrived();
+        await probeGate;
+        return true;
+      };
+
+      // Count real compaction attempts. Each one rewrites the ledger and writes
+      // a verbatim (400MB-class in production) backup, so a second call here is
+      // exactly the duplicate expensive work singleflight must prevent.
+      let compactions = 0;
+      const realCompact = scheduler.compactLifecycleLedgerTarget.bind(scheduler);
+      scheduler.compactLifecycleLedgerTarget = async (target, threshold) => {
+        compactions += 1;
+        return realCompact(target, threshold);
+      };
+
+      const a = scheduler.maybeCompactMemoryLifecycleLedger();
+      const b = scheduler.maybeCompactMemoryLifecycleLedger();
+      // Both callers must reach the gated probe before either can claim the guard.
+      await bothArrived;
+      releaseProbe();
+      await Promise.all([a, b]);
+
+      assert.equal(
+        compactions,
+        1,
+        "exactly one caller compacts; the racing caller must re-observe the singleflight guard after the probe",
+      );
+
+      // Exactly one verbatim backup — proof no duplicate backup ran back-to-back.
+      const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
+      const stamps = await readdir(archiveRoot);
+      assert.equal(stamps.length, 1, "only one compaction backup exists");
+      assert.ok((await stat(ledgerPath)).size < 4096, "ledger was compacted once");
+    } finally {
+      scheduler.dispose();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 /** Scheduler wired with a live secure-store-configured root storage (issue
  *  #1910, Cursor Medium / Codex P2). */
 function buildCompactionSchedulerWithStorage(

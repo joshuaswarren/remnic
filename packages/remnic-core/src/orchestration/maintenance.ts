@@ -653,6 +653,13 @@ export class MaintenanceScheduler {
       // below-cap targets stay throttled (#2033).
       return;
     }
+    // The over-cap probe above awaits, so a second maintenance request can pass
+    // the early `lifecycleCompactionInFlight` guard and reach here during that
+    // await. Recheck the guard immediately before claiming it — otherwise two
+    // racing requests both see an over-cap ledger and run duplicate 400MB-class
+    // compactions/backups back-to-back (#2033). The set below is synchronous
+    // with this recheck (no await between), so exactly one caller wins.
+    if (this.lifecycleCompactionInFlight) return;
     this.lifecycleCompactionInFlight = true;
     try {
       let compacted = 0;
