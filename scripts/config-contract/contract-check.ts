@@ -236,6 +236,12 @@ export function runContractCheck(options: {
   manifestPaths?: string[];
   docsPath?: string;
   grandfatherPath?: string;
+  /**
+   * Enforce the shrink-only grandfather ban against the Git base (default
+   * true). The CLI gate keeps this on; surface-only unit tests that must run
+   * in a shallow checkout (no `origin/main`) opt out.
+   */
+  checkGrandfatherBaseline?: boolean;
 }): ContractCheckResult {
   const repoRoot = options.repoRoot;
   const manifestPaths = options.manifestPaths ?? [
@@ -419,10 +425,10 @@ export function runContractCheck(options: {
     return candidate as GrandfatherEntry;
   });
 
-  const { keys: previousGrandfatherKeys, baselineRequired } = readPreviousGrandfatherKeys(
-    repoRoot,
-    grandfatherPath,
-  );
+  const { keys: previousGrandfatherKeys, baselineRequired } =
+    options.checkGrandfatherBaseline === false
+      ? { keys: null, baselineRequired: false }
+      : readPreviousGrandfatherKeys(repoRoot, grandfatherPath);
   if (baselineRequired && !previousGrandfatherKeys) {
     throw new Error(
       `${grandfatherPath}: cannot resolve the shrink-only grandfather baseline ` +

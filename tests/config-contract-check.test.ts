@@ -306,7 +306,9 @@ test("grandfather ban: a prior entry passes; a newly added entry is rejected (#1
 
 test("real repo surface is contract-clean against the committed grandfather manifest", () => {
   const repoRoot = path.resolve(import.meta.dirname, "..");
-  const result = runContractCheck({ repoRoot });
+  // Surface-only check: the shrink-only ban is covered by the Git-fixture
+  // tests above and must not couple this unit test to CI checkout depth.
+  const result = runContractCheck({ repoRoot, checkGrandfatherBaseline: false });
   assert.deepEqual(
     result.violations,
     [],
