@@ -72,6 +72,7 @@ jobs:
                         id
                         isResolved
                         isOutdated
+                        diffSide
                         line
                         startLine
                         originalLine
@@ -252,10 +253,14 @@ jobs:
                 path: c?.path ?? t.path ?? null,
                 start: Number.isInteger(startRaw) ? startRaw : null,
                 end: Number.isInteger(end) ? end : null,
+                // Diff side: a LEFT and a RIGHT comment on the same line are
+                // different locations and must not dedupe (default RIGHT).
+                side: t.diffSide ?? c?.diffSide ?? "RIGHT",
               };
             };
             const overlap = (a, b) => {
               if (!a.path || !b.path || a.path !== b.path) return false;
+              if (a.side !== b.side) return false;
               if (a.start === null || a.end === null || b.start === null || b.end === null) return false;
               const [alo, ahi] = a.start <= a.end ? [a.start, a.end] : [a.end, a.start];
               const [blo, bhi] = b.start <= b.end ? [b.start, b.end] : [b.end, b.start];
@@ -428,16 +433,17 @@ jobs:
               }
             }
 
-            // A duplicate folds into its canonical (stops gating on its own) ONLY
-            // when its auditable gate reply is present — otherwise a failed reply
-            // post would silently hide the folded finding. Unaudited duplicates
-            // stay in the guard set so no fold is ever invisible. Canonicals and
-            // standalones always gate on their own state. Mirrors the fold math
-            // in computeGuardObligations, plus this workflow-only write fail-safe.
+            // A duplicate stops gating on its own when the finding is satisfied via
+            // its canonical — i.e. the canonical is RESOLVED (resolution flows to
+            // the duplicate) — OR its auditable gate reply is already posted. If
+            // the canonical is still unresolved and no reply exists yet, the
+            // duplicate keeps gating so no fold is ever invisible; the canonical
+            // gates too. Canonicals/standalones gate on their own state. Honors
+            // canonicalResolved, matching computeGuardObligations in review-dedup.mjs.
             const effectiveUnresolved = rawUnresolved.filter((t) => {
               const rec = records.find((r) => r.id === t.id);
               if (!rec || rec.canonicalId === rec.id) return true;
-              return !auditedDuplicateIds.has(rec.id);
+              return !(auditedDuplicateIds.has(rec.id) || canonicalResolved.get(rec.canonicalId) === true);
             });
 
             const unresolvedThreads = applyInheritance ? effectiveUnresolved : rawUnresolved;

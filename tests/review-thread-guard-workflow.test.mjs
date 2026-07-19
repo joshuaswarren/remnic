@@ -54,6 +54,31 @@ test("check-unsticker query selects isOutdated so its dedup matches the guard", 
   assert.match(queryBlock[0], /\bisOutdated\b/, "check-unsticker thread nodes must request isOutdated");
 });
 
+test("check-unsticker folds a resolved-canonical duplicate so it can rerun the guard", () => {
+  // In enforce mode a duplicate whose canonical is resolved must not count as a
+  // blocker even before its audit reply exists, or the sweeper refuses the rerun
+  // that posts the reply (enforce-mode deadlock, codex P2).
+  const unsticker = readFileSync(".github/workflows/check-unsticker.yml", "utf8");
+  assert.match(unsticker, /const resolvedById = new Map\(threads\.map\(\(t\) => \[t\.id, t\.isResolved === true\]\)\);/);
+  assert.match(
+    unsticker,
+    /hasGateReply\(t\) \|\| resolvedById\.get\(rec\.canonicalId\) === true/,
+    "duplicate must fold when audited OR its canonical is resolved",
+  );
+});
+
+test("review-thread guard effectiveUnresolved folds a duplicate whose canonical is resolved", () => {
+  // Enforce-mode fold must honor canonical resolution (not require the audit
+  // reply first), matching computeGuardObligations — else a resolved-canonical
+  // duplicate gates forever and the reply can never post (codex P2).
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(
+    workflow,
+    /return !\(auditedDuplicateIds\.has\(rec\.id\) \|\| canonicalResolved\.get\(rec\.canonicalId\) === true\);/,
+    "effectiveUnresolved must fold when audited OR canonical resolved",
+  );
+});
+
 test("review-thread guard posts audit replies via 64-bit-safe fullDatabaseId", () => {
   // databaseId is deprecated for PullRequestReviewComment and null for 64-bit
   // ids; the enforce-mode audit reply must use fullDatabaseId or it silently
@@ -155,4 +180,16 @@ test("review-thread guard inline expands contracted negations", () => {
   const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   assert.match(workflow, /\.replace\(\/\\bcan\['’\]t\\b\/g, "can not"\)/);
   assert.match(workflow, /\.replace\(\/\(\\w\+\?\)n\['’\]t\\b\/g, "\$1 not"\)/);
+});
+
+test("review-thread guard and unsticker anchor on diff side", () => {
+  // A LEFT and a RIGHT comment on the same line are different locations and must
+  // not dedupe; both the guard query/overlap and the unsticker query must carry
+  // and honor diffSide (codex P2). Mirrors threadAnchor/anchorsOverlap in review-dedup.mjs.
+  const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  const unsticker = readFileSync(".github/workflows/check-unsticker.yml", "utf8");
+  assert.match(guard, /\bdiffSide\b/, "guard thread query must request diffSide");
+  assert.match(guard, /side: t\.diffSide \?\? c\?\.diffSide \?\? "RIGHT"/, "anchorOf must carry diff side");
+  assert.match(guard, /if \(a\.side !== b\.side\) return false;/, "overlap must require the same diff side");
+  assert.match(unsticker, /\bdiffSide\b/, "unsticker thread query must request diffSide");
 });

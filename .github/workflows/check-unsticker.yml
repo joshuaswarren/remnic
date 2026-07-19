@@ -84,6 +84,7 @@ jobs:
                           id
                           isResolved
                           isOutdated
+                          diffSide
                           line
                           startLine
                           originalLine
@@ -131,13 +132,27 @@ jobs:
               }
               const { records } = dedupeThreads(threads, REVIEW_DEDUP_CONFIG);
               const byId = new Map(records.map((r) => [r.id, r]));
+              // Canonical resolution by thread id. A duplicate whose canonical is
+              // resolved will fold as soon as the guard posts its audit reply, so
+              // it must NOT count as a blocker here — otherwise the sweeper refuses
+              // the very rerun that would post that reply and let the required
+              // check pass (enforce-mode deadlock, codex P2). If the canonical is
+              // still unresolved the duplicate keeps counting (a rerun can't help).
+              const resolvedById = new Map(threads.map((t) => [t.id, t.isResolved === true]));
               let count = 0;
               for (const t of threads) {
                 if (t.isResolved !== false) continue;
                 const author = t.comments?.nodes?.[0]?.author?.login;
                 if (author && NON_DEDUP_AUTHOR_LOGINS.has(author)) continue;
                 const rec = byId.get(t.id);
-                if (applyInheritance && rec && rec.canonicalId !== rec.id && hasGateReply(t)) continue;
+                if (
+                  applyInheritance &&
+                  rec &&
+                  rec.canonicalId !== rec.id &&
+                  (hasGateReply(t) || resolvedById.get(rec.canonicalId) === true)
+                ) {
+                  continue;
+                }
                 count += 1;
               }
               return count;

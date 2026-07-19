@@ -239,7 +239,11 @@ export function threadAnchor(thread) {
     thread?.startLine ?? comment?.startLine ?? thread?.originalStartLine ?? comment?.originalStartLine ?? rawEnd;
   const start = Number.isInteger(rawStart) ? rawStart : null;
   const end = Number.isInteger(rawEnd) ? rawEnd : null;
-  return { path, start, end };
+  // Diff side (LEFT = pre-image, RIGHT = post-image). A LEFT and a RIGHT comment
+  // on the same file/line are different locations and must not dedupe. Missing
+  // side normalizes to RIGHT (the default for additions) for back-compat.
+  const side = thread?.diffSide ?? comment?.diffSide ?? thread?.side ?? "RIGHT";
+  return { path, start, end, side };
 }
 
 /**
@@ -248,6 +252,7 @@ export function threadAnchor(thread) {
  */
 export function anchorsOverlap(a, b) {
   if (!a?.path || !b?.path || a.path !== b.path) return false;
+  if (a.side !== b.side) return false;
   if (a.start === null || a.end === null || b.start === null || b.end === null) {
     return false;
   }

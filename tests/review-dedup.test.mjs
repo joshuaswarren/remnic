@@ -519,6 +519,52 @@ test("an unrelated directive phrase is not falsely blocked or merged", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "unrelated findings simply do not match");
 });
 
+test("enforce obligations honor canonicalResolved: resolved canonical folds an unresolved duplicate", () => {
+  // The duplicate's own thread is UNRESOLVED, but its canonical is RESOLVED, so
+  // the finding is satisfied via the canonical and must not gate (no reliance on
+  // an audit reply existing). Mirrors the guard's effectiveUnresolved fold.
+  const canonical = mkThread({
+    id: 701, path: "svc.ts", startLine: 3, line: 5, author: "cursor",
+    body: "The retry loop never bounds its attempts and can spin forever on a dead host",
+    isResolved: true,
+  });
+  const duplicate = mkThread({
+    id: 702, path: "svc.ts", startLine: 3, line: 5, author: "chatgpt-codex-connector",
+    body: "The retry loop never bounds its attempts and can spin forever on a dead host",
+    isResolved: false,
+  });
+  const enforce = computeGuardObligations([canonical, duplicate], REVIEW_DEDUP_CONFIG, { applyInheritance: true });
+  assert.equal(enforce.duplicateCount, 1, "the second thread is a duplicate of the resolved canonical");
+  assert.equal(enforce.effectiveUnresolvedCount, 0, "resolved canonical folds the unresolved duplicate");
+  assert.equal(enforce.wouldBeLostUniqueFindings.length, 0, "nothing hidden: canonical carries the resolution");
+});
+
+test("comments on the same line but opposite diff sides do NOT merge", () => {
+  // LEFT (pre-image) and RIGHT (post-image) on the same line are different
+  // locations; identical text on opposite sides must not collapse.
+  const left = {
+    ...mkThread({ id: 801, path: "a.ts", startLine: 5, line: 7, author: "cursor", body: "This branch is dead code and should be removed" }),
+    diffSide: "LEFT",
+  };
+  const right = {
+    ...mkThread({ id: 802, path: "a.ts", startLine: 5, line: 7, author: "chatgpt-codex-connector", body: "This branch is dead code and should be removed" }),
+    diffSide: "RIGHT",
+  };
+  assert.equal(dedupeThreads([left, right]).duplicateCount, 0, "opposite diff sides are distinct locations");
+});
+
+test("same-side duplicates on the same line still merge", () => {
+  const a = {
+    ...mkThread({ id: 803, path: "a.ts", startLine: 5, line: 7, author: "cursor", body: "This branch is dead code and should be removed" }),
+    diffSide: "RIGHT",
+  };
+  const b = {
+    ...mkThread({ id: 804, path: "a.ts", startLine: 5, line: 7, author: "chatgpt-codex-connector", body: "This branch is dead code and should be removed" }),
+    diffSide: "RIGHT",
+  };
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same side + same finding folds");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);
