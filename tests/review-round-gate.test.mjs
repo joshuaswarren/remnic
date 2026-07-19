@@ -240,7 +240,10 @@ for (const name of ["pr-1852.json", "pr-1923.json"]) {
   });
 }
 
-function fakeGithub({ existingComments = [], threads = [], labels = [], draft = false, failDispatch = false } = {}) {
+function fakeGithub({
+  existingComments = [], threads = [], labels = [], draft = false,
+  failDispatch = false, failLedgerWrite = false,
+} = {}) {
   const calls = { created: [], updated: [], graphql: 0, labelsAdded: [], labelsRemoved: [] };
   const listComments = () => {};
   const listReviews = () => {};
@@ -278,7 +281,12 @@ function fakeGithub({ existingComments = [], threads = [], labels = [], draft = 
           }
           return calls.created.push(args);
         },
-        updateComment: async (args) => calls.updated.push(args),
+        updateComment: async (args) => {
+          // failLedgerWrite simulates a transient ledger-write failure so tests can
+          // assert the force-dispatch label is NOT consumed before a durable write.
+          if (failLedgerWrite) throw new Error("simulated ledger write failure");
+          return calls.updated.push(args);
+        },
         addLabels: async (args) => calls.labelsAdded.push(args),
         removeLabel: async (args) => calls.labelsRemoved.push(args),
       },
@@ -494,4 +502,21 @@ test("a check_run event processes only the concurrency-serialized PR", async () 
   const result = await runRoundGate({ github, context: checkRunContext, core, env: {} });
   assert.ok(result && !Array.isArray(result), "returns a single result for the serialized PR");
   assert.equal(calls.created.length, 1, "only the primary PR's ledger is written");
+});
+
+test("a transient ledger-write failure does not consume the force-dispatch label", async () => {
+  // Regression: the force label must be removed only AFTER the dispatched state
+  // is durably persisted; otherwise a transient write failure drops the
+  // maintainer's force intent and its manual retry (Main).
+  const seed = decide({ threads: openThreads(2) }).commentBody;
+  const addressed = openThreads(2).map((thread) => ({ ...thread, isResolved: true }));
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 11, body: seed }],
+    threads: addressed,
+    labels: [{ name: FORCE_DISPATCH_LABEL }],
+    failLedgerWrite: true,
+  });
+  const result = await runRoundGate({ github, context, core, env: { REVIEW_ROUND_ENFORCE: "false" } });
+  assert.equal(result.telemetry.reason, "force-label", "force-dispatch was decided");
+  assert.equal(calls.labelsRemoved.length, 0, "force label kept so the maintainer's retry survives");
 });

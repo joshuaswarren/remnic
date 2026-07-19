@@ -344,26 +344,21 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
     now: new Date().toISOString(),
   });
 
-  // Decide dispatch and label side effects BEFORE persisting the ledger. Under
-  // enforcement the bot round must be requested before the round is recorded as
-  // dispatched: if the trigger fails we leave the round OPEN (skip the ledger
-  // write) so the next run retries, instead of waiting for a review that was
-  // never requested and silently dropping the round (codex).
+  // Order matters for the non-atomic multi-write (issue #1992):
+  //  1) under enforcement, REQUEST the bot round before recording the round as
+  //     dispatched, so a trigger failure leaves the round open to retry (codex);
+  //  2) PERSIST the ledger;
+  //  3) only AFTER a durable persist, consume the one-shot force-dispatch label
+  //     and stamp the auto-closed label. Consuming the label before the write
+  //     would drop the maintainer's force intent (and its manual retry) if the
+  //     write then failed transiently (Main).
   let persist = true;
   let dispatchedThisRun = false;
   const forceConsumed =
     result.telemetry.dispatch && forceDispatch && result.telemetry.reason === "force-label";
   if (result.telemetry.dispatch && enforce) {
-    const dispatched = await dispatchReviewers({ github, owner, repo, prNumber, core });
-    if (dispatched) {
-      dispatchedThisRun = true;
-      if (result.telemetry.autoClosed) {
-        await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
-      }
-      if (forceConsumed) {
-        await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
-      }
-    } else {
+    dispatchedThisRun = await dispatchReviewers({ github, owner, repo, prNumber, core });
+    if (!dispatchedThisRun) {
       persist = false;
       core.warning(
         `review-round gate PR #${prNumber}: reviewer dispatch failed; leaving the round ` +
@@ -371,12 +366,6 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
       );
     }
   } else if (result.telemetry.dispatch) {
-    // Shadow mode: never trigger reviewers or mutate the auto-closed label, but
-    // DO consume the one-shot force-dispatch label so it cannot re-fire on every
-    // later round and corrupt telemetry / defeat batching (cursor).
-    if (forceConsumed) {
-      await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
-    }
     core.info(
       `review-round gate PR #${prNumber}: shadow mode — would dispatch reviewers ` +
         `(${result.telemetry.reason}); no action taken.`,
@@ -387,6 +376,7 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
   // shadow mode) unless an enforced dispatch failed above. Writes can fail on
   // fork PRs (read-only token) — that degrades to a log line, never a failed
   // (non-blocking) gate.
+  let persisted = false;
   if (persist) {
     try {
       if (existing) {
@@ -404,14 +394,24 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
           body: result.commentBody,
         });
       }
+      persisted = true;
     } catch (error) {
-      // A ledger write that fails AFTER reviewers were already pinged means the
-      // next run may re-dispatch (non-atomic two-write; reviewer bots coalesce
-      // duplicate requests). Surface it loudly for the PR3 enforcement rollout;
-      // in shadow mode it is a benign visibility miss (cursor).
       const note = `review-round gate: could not write ledger comment (${error?.message ?? error}).`;
       if (dispatchedThisRun) core.warning(`${note} Reviewers were already dispatched; a retry may re-dispatch.`);
       else core.info(note);
+    }
+  }
+
+  // Consume/stamp labels ONLY after the dispatched state is durably recorded, so
+  // a transient ledger-write failure never removes the force-dispatch label
+  // (and its manual retry) without recording the dispatch, and never leaves an
+  // auto-closed label on a round whose closure was not persisted (Main).
+  if (persisted && result.telemetry.dispatch) {
+    if (enforce && result.telemetry.autoClosed) {
+      await addLabelSafely(github, owner, repo, prNumber, AUTO_CLOSED_LABEL, core);
+    }
+    if (forceConsumed) {
+      await removeLabelSafely(github, owner, repo, prNumber, FORCE_DISPATCH_LABEL, core);
     }
   }
 
