@@ -42,6 +42,12 @@ export const NON_DEDUP_AUTHOR_LOGINS = new Set([
 // self-triggering the detach escape hatch below.
 export const GATE_REPLY_MARKER = "<!-- remnic-review-dedup:duplicate -->";
 
+// Only the Actions bot posts the gate reply (via GITHUB_TOKEN). The marker is
+// public, so trusting it regardless of author lets anyone who can comment paste
+// it into a duplicate and fold the thread out of the guard without a real
+// gate-authored link — a false-merge vector (codex P2). Require the author.
+export const GATE_REPLY_AUTHOR_LOGINS = new Set(["github-actions", "github-actions[bot]"]);
+
 // PR-level label applied when at least one finding is merged, so the merge is
 // discoverable off the thread as well as on it.
 export const DUPLICATE_LABEL = "duplicate-finding";
@@ -58,10 +64,14 @@ export function formatDuplicateReply(canonicalUrl) {
   );
 }
 
-/** True when the gate already posted its dedup reply on this thread (idempotency). */
+/** True when the gate (Actions bot) already posted its dedup reply (idempotency). */
 export function hasGateReply(thread) {
   const replies = thread?.comments?.nodes ?? thread?.replies ?? [];
-  return replies.some((c) => (c?.body ?? "").includes(GATE_REPLY_MARKER));
+  return replies.some(
+    (c) =>
+      GATE_REPLY_AUTHOR_LOGINS.has(c?.author?.login ?? "") &&
+      (c?.body ?? "").includes(GATE_REPLY_MARKER),
+  );
 }
 
 // A single maintainer/agent reply carrying this token detaches a merged thread

@@ -151,6 +151,10 @@ jobs:
               "github-code-scanning[bot]",
             ]);
             const GATE_REPLY_MARKER = "<!-- remnic-review-dedup:duplicate -->";
+            // Only the Actions bot posts the gate reply; the marker is public, so
+            // require the author or a spoofed marker could fold a thread out of the
+            // guard with no real gate-authored link (codex P2). Mirrors review-dedup.mjs.
+            const GATE_REPLY_AUTHOR_LOGINS = new Set(["github-actions", "github-actions[bot]"]);
             const DUPLICATE_LABEL = "duplicate-finding";
             const formatDuplicateReply = (canonicalUrl) =>
               `${GATE_REPLY_MARKER}\n` +
@@ -160,7 +164,11 @@ jobs:
               "If this is a distinct finding, reply `not-a-duplicate` and it detaches back " +
               "into the round set within one gate cycle.";
             const hasGateReply = (t) =>
-              (t.comments?.nodes ?? []).some((c) => (c?.body ?? "").includes(GATE_REPLY_MARKER));
+              (t.comments?.nodes ?? []).some(
+                (c) =>
+                  GATE_REPLY_AUTHOR_LOGINS.has(c?.author?.login ?? "") &&
+                  (c?.body ?? "").includes(GATE_REPLY_MARKER),
+              );
             const STOP = new Set(
               "a an and are as at be been but by can cannot could de do does for from has have if in into is it its may no not of on or so than that the their then there these this to up was we when which will with would you your should shall here how why what where who"
                 .split(" "),

@@ -245,7 +245,7 @@ test("not-a-duplicate reply re-opens the detached thread's guard obligation with
     author: "chatgpt-codex-connector",
     isResolved: false,
     body: firstBody(dup1923A2),
-    replies: [{ author: "joshuaswarren", body: "not-a-duplicate — this is the async path, distinct fix." }],
+    replies: [{ author: "maintainer", body: "not-a-duplicate — this is the async path, distinct fix." }],
   });
   assert.equal(isDetached(detached), true);
   const enforce = computeGuardObligations([canonical, detached], REVIEW_DEDUP_CONFIG, {
@@ -386,6 +386,16 @@ test("hasGateReply detects the gate's prior reply for idempotency", () => {
   assert.equal(hasGateReply(without), false);
 });
 
+test("hasGateReply rejects a spoofed marker from a non-bot author", () => {
+  // The marker is public; only the Actions bot's reply may count as a real gate
+  // fold, or anyone who can comment could fold a duplicate out of the guard.
+  const spoofed = mkThread({
+    id: 405, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
+    replies: [{ author: "attacker", body: formatDuplicateReply("https://x/1") }],
+  });
+  assert.equal(hasGateReply(spoofed), false, "a non-bot marker must not satisfy hasGateReply");
+});
+
 test("the gate's own reply never self-triggers the detach escape hatch", () => {
   const gateReplied = mkThread({
     id: 403, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
@@ -397,7 +407,7 @@ test("the gate's own reply never self-triggers the detach escape hatch", () => {
     id: 404, path: "a.ts", startLine: 1, line: 2, author: "cursor", body: "finding",
     replies: [
       { author: "github-actions[bot]", body: formatDuplicateReply("https://x/1") },
-      { author: "joshuaswarren", body: "not-a-duplicate — distinct fix" },
+      { author: "maintainer", body: "not-a-duplicate — distinct fix" },
     ],
   });
   assert.equal(isDetached(maintainerDetach), true, "a real not-a-duplicate reply still detaches");

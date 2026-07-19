@@ -67,3 +67,15 @@ test("review-thread guard posts audit replies via 64-bit-safe fullDatabaseId", (
     "guard must not use the deprecated databaseId field",
   );
 });
+
+test("review-thread guard inline hasGateReply requires the Actions-bot author", () => {
+  // The dedup marker is public; the inline hasGateReply must require a
+  // github-actions author or a spoofed marker folds a thread out of the guard
+  // (codex P2). Mirrors GATE_REPLY_AUTHOR_LOGINS in scripts/review-dedup.mjs.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(
+    workflow,
+    /const GATE_REPLY_AUTHOR_LOGINS = new Set\(\["github-actions", "github-actions\[bot\]"\]\);/,
+  );
+  assert.match(workflow, /GATE_REPLY_AUTHOR_LOGINS\.has\(c\?\.author\?\.login \?\? ""\)/);
+});
