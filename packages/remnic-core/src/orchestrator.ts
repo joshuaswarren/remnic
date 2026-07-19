@@ -3695,7 +3695,7 @@ export class Orchestrator {
       const namespace = memoryPath
         ? this.namespaceFromPath(memoryPath)
         : this.config.defaultNamespace;
-      const key = memoryPath ? `${namespace}:${memoryPath}` : id;
+      const key = `${namespace}:${id}`;
       const existing = this.accessTrackingBuffer.get(key);
       this.accessTrackingBuffer.set(key, {
         memoryId: id,

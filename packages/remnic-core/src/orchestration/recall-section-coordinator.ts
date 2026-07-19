@@ -298,6 +298,17 @@ export class RecallSectionCoordinator {
       orderedSections.map((section) => [section.id, section]),
     );
     const allocationOrder = orderedSections.map((section) => section.id);
+    const memorySection = sectionById.get("memories");
+    const memoryIndex = allocationOrder.indexOf("memories");
+    const firstAtomicMemoryIndex =
+      memorySection?.chunks.findIndex((chunk) => chunk.atomic) ?? -1;
+    const reservedMemoryContent =
+      memorySection && firstAtomicMemoryIndex >= 0
+        ? memorySection.chunks
+            .slice(0, firstAtomicMemoryIndex + 1)
+            .map((chunk) => chunk.content)
+            .join("\n\n").length
+        : 0;
     const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
     const includedMemoryPaths: string[] = [];
@@ -314,7 +325,13 @@ export class RecallSectionCoordinator {
         typeof sectionMaxChars === "number"
           ? Math.min(available, sectionMaxChars)
           : available;
-      if (sectionAvailable <= 0) {
+      const reservesFirstMemory =
+        memoryIndex > allocationOrder.indexOf(id) &&
+        reservedMemoryContent > 0;
+      const memoryReserve =
+        reservesFirstMemory ? reservedMemoryContent + separator.length : 0;
+      const allocatedSectionAvailable = sectionAvailable - memoryReserve;
+      if (allocatedSectionAvailable <= 0) {
         truncated = true;
         continue;
       }
@@ -335,15 +352,21 @@ export class RecallSectionCoordinator {
                 ),
                 this.getRecallSectionMaxChars("profile") ?? budget,
               )
-            : sectionAvailable;
+            : allocatedSectionAvailable;
         const boundedContent =
           id === "profile"
-            ? this.truncateProfileToBoundary(content, Math.min(profileLimit, sectionAvailable))
+            ? this.truncateProfileToBoundary(
+                content,
+                Math.min(profileLimit, allocatedSectionAvailable),
+              )
             : content;
         finalContent =
           id === "profile"
             ? boundedContent
-            : this.truncateRecallSectionToBudget(boundedContent, sectionAvailable);
+            : this.truncateRecallSectionToBudget(
+                boundedContent,
+                allocatedSectionAvailable,
+              );
         if (!finalContent) {
           truncated = true;
           continue;
@@ -365,7 +388,7 @@ export class RecallSectionCoordinator {
             const candidate = rendered
               ? `${rendered}\n\n${chunk.content}`
               : chunk.content;
-            if (candidate.length <= sectionAvailable) {
+            if (candidate.length <= allocatedSectionAvailable) {
               rendered = candidate;
               includedLeadingContent = true;
             } else {
@@ -377,12 +400,12 @@ export class RecallSectionCoordinator {
           const candidate = rendered
             ? `${rendered}\n\n${chunk.content}`
             : chunk.content;
-          if (candidate.length > sectionAvailable) {
+          if (candidate.length > allocatedSectionAvailable) {
             if (
               !chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&
-              chunk.content.length <= sectionAvailable
+              chunk.content.length <= allocatedSectionAvailable
             ) {
               rendered = chunk.content;
               includedLeadingContent = false;
@@ -417,6 +440,10 @@ export class RecallSectionCoordinator {
         finalContent = rendered;
       }
 
+      if (!finalContent) {
+        truncated = true;
+        continue;
+      }
       selected.set(id, finalContent);
       usedChars += separatorChars + finalContent.length;
     }
@@ -443,8 +470,8 @@ export class RecallSectionCoordinator {
       omittedIds,
       truncated,
       finalChars: usedChars,
-      includedMemoryIds: [...new Set(includedMemoryIds)],
-      includedMemoryPaths: [...new Set(includedMemoryPaths)],
+      includedMemoryIds,
+      includedMemoryPaths,
       omittedMemoryIds: candidateMemoryIds.filter(
         (id) => !includedMemoryIds.includes(id),
       ),

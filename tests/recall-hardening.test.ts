@@ -156,10 +156,12 @@ test("assembleRecallSections allocates budget in configured pipeline order", asy
     sectionBuckets,
   );
 
-  assert.deepEqual(assembled.includedIds, ["profile"]);
-  assert.deepEqual(assembled.omittedIds, ["memories"]);
-  assert.equal(assembled.includedMemoryIds.length, 0);
-  assert.match(assembled.sections.join("\n\n---\n\n"), /^P{40}$/);
+  assert.deepEqual(assembled.includedIds, ["profile", "memories"]);
+  assert.deepEqual(assembled.omittedIds, []);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-pipeline"]);
+  assert.equal(assembled.includedMemoryPaths[0], "facts/pipeline.md");
+  assert.match(assembled.sections.join("\n\n---\n\n"), /Relevant Memories/);
+  assert.ok(assembled.finalChars <= 80);
 });
 
 test("assembleRecallSections does not omit earlier sections when protected sections will truncate anyway", async () => {
@@ -294,6 +296,35 @@ test("assembleRecallSections keeps later helper text when no atomic memory fits"
   assert.doesNotMatch(assembled.sections.join("\n\n---\n\n"), /## Relevant Memories/);
   assert.deepEqual(assembled.includedMemoryIds, []);
   assert.deepEqual(assembled.omittedMemoryIds, ["memory-too-large"]);
+});
+
+test("assembleRecallSections omits an empty memories section when no chunk fits", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-empty-memory-", {
+    recallBudgetChars: 40,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(100),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.sections, []);
+  assert.deepEqual(assembled.includedIds, []);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.equal(assembled.finalChars, 0);
 });
 
 test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {

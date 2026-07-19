@@ -4734,3 +4734,44 @@ test("a keyed recall whose idempotency.put FAILS rejects, persists nothing, and 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("recordCitationUsage tracks duplicate citations with resolved namespace paths", async () => {
+  const memoryPath = "/tmp/engram/namespaces/project-x/facts/2026-07-19/same-id.md";
+  const tracked: Array<{ ids: string[]; paths: string[] }> = [];
+  const service = new EngramAccessService({
+    config: {
+      memoryDir: "/tmp/engram",
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        {
+          name: "project-x",
+          readPrincipals: ["project-x"],
+          writePrincipals: ["project-x"],
+        },
+      ],
+    },
+    getStorage: async () => ({
+      readAllMemories: async () => [{ frontmatter: { id: "same-id" }, path: memoryPath }],
+    }),
+    trackMemoryAccess: (ids: string[], paths: string[]) => {
+      tracked.push({ ids, paths });
+    },
+  } as any);
+
+  const result = await service.recordCitationUsage({
+    namespace: "project-x",
+    authenticatedPrincipal: "project-x",
+    entries: [
+      { path: "facts/2026-07-19/same-id.md", lineStart: 1, lineEnd: 1, note: "" },
+      { path: "other/same-id.md", lineStart: 1, lineEnd: 1, note: "" },
+    ],
+    rolloutIds: [],
+  });
+
+  assert.deepEqual(result, { submitted: 2, matched: 2 });
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [memoryPath, memoryPath] }]);
+});

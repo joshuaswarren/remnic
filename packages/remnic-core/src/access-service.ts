@@ -5024,16 +5024,23 @@ export class EngramAccessService {
       .map((entry) => {
         const basename = entry.path.split("/").pop() ?? entry.path;
         const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-        return id.length > 0 ? { id, path: entry.path } : null;
+        return id.length > 0 ? { id } : null;
       })
-      .filter((entry): entry is { id: string; path: string } => entry !== null);
+      .filter((entry): entry is { id: string } => entry !== null);
 
     if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
 
-    const memoryIds = memoryEntries.map((entry) => entry.id);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const existingIds = await storage.filterExistingMemoryIds(memoryIds);
-    const matchedEntries = memoryEntries.filter((entry) => existingIds.has(entry.id));
+    const memories = await storage.readAllMemories();
+    const pathsById = new Map(
+      memories.map((memory) => [memory.frontmatter.id, memory.path] as const),
+    );
+    const matchedEntries = memoryEntries
+      .map((entry) => {
+        const memoryPath = pathsById.get(entry.id);
+        return memoryPath ? { id: entry.id, path: memoryPath } : null;
+      })
+      .filter((entry): entry is { id: string; path: string } => entry !== null);
 
     if (matchedEntries.length > 0) {
       try {
@@ -5046,7 +5053,7 @@ export class EngramAccessService {
       }
     }
 
-    return { submitted: memoryIds.length, matched: matchedEntries.length };
+    return { submitted: memoryEntries.length, matched: matchedEntries.length };
   }
 
   // ── Operator Console state (issue #688 PR 2/3) ────────────────────────────
