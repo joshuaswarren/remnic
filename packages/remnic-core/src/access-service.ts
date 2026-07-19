@@ -2026,11 +2026,10 @@ export class EngramAccessService {
     return resolved;
   }
 
-  private resolveReadableNamespacesForSearch(
+  private async resolveReadableNamespacesForSearch(
     namespace: string | undefined,
     principal?: string,
-    options?: { defaultAtFlatRoot?: boolean },
-  ): string[] {
+  ): Promise<string[]> {
     const requested = namespace?.trim();
     if (requested) {
       return [this.resolveReadableNamespace(requested, principal)];
@@ -2059,8 +2058,11 @@ export class EngramAccessService {
     if (profilePlan) {
       // Issue #2018: memory_search has no sessionKey, so unlike recall it
       // cannot resolve a coding overlay. Reach the base collection (default
-      // namespace) when the profile intends a global layer and the principal
-      // is authorized — see access-memory-search-fanout.ts for the contract.
+      // namespace) only when the profile intends a global layer and the
+      // principal is authorized — see access-memory-search-fanout.ts. The
+      // flat-root storage probe runs lazily HERE (after auth, no explicit
+      // namespace, profile active) so explicit-namespace queries and auth
+      // rejections never touch the default store (#2056 r5).
       const profileNamespaces = expandScopeProfileReadNamespaces({
         profilePlan,
         principalSelfNamespace: profilePlan.baseNamespace,
@@ -2069,11 +2071,15 @@ export class EngramAccessService {
         codingOverlay: null,
         legacyRecallNamespaces,
       });
+      const defaultAtFlatRoot = await defaultNamespaceAtFlatRoot(
+        (n) => this.orchestrator.getStorage(n),
+        this.orchestrator.config,
+      );
       const fallback = resolveMemorySearchDefaultFallback({
         profilePlan,
         config: this.orchestrator.config,
         principal,
-        defaultAtFlatRoot: options?.defaultAtFlatRoot === true,
+        defaultAtFlatRoot,
       });
       return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
     }
@@ -4760,11 +4766,7 @@ export class EngramAccessService {
         ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
         : await this.orchestrator.qmd.search(query, collection, maxResults);
     } else {
-      const defaultAtFlatRoot = await defaultNamespaceAtFlatRoot(
-        (n) => this.orchestrator.getStorage(n),
-        this.orchestrator.config,
-      );
-      const readableNamespaces = this.resolveReadableNamespacesForSearch(namespace, principal, { defaultAtFlatRoot });
+      const readableNamespaces = await this.resolveReadableNamespacesForSearch(namespace, principal);
       const namespaces = this.resolveMemorySearchNamespacesForCollection(
         collection,
         readableNamespaces,

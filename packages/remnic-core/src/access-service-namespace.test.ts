@@ -1339,10 +1339,10 @@ function makeConfigWithScopeProfile(): PluginConfig {
 
 function makeServiceWithConfig(config: PluginConfig): {
   service: EngramAccessService;
-  captured: { namespaces?: string[]; execution?: unknown };
+  captured: { namespaces?: string[]; execution?: unknown; getStorageCalls: string[] };
 } {
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
-  const captured: { namespaces?: string[]; execution?: unknown } = {};
+  const captured: { namespaces?: string[]; execution?: unknown; getStorageCalls: string[] } = { getStorageCalls: [] };
   type OrchLike = {
     config: PluginConfig;
     qmd: { search(): Promise<unknown[]>; searchGlobal(): Promise<unknown[]> };
@@ -1360,7 +1360,7 @@ function makeServiceWithConfig(config: PluginConfig): {
       async search() { throw new Error("qmd.search should not run in namespace mode"); },
       async searchGlobal() { throw new Error("qmd.searchGlobal should not run in namespace mode"); },
     },
-    async getStorage() { return { dir: config.memoryDir } as StorageManager; },
+    async getStorage(namespace: string) { captured.getStorageCalls.push(namespace); return { dir: config.memoryDir } as StorageManager; },
     async searchAcrossNamespaces(params) {
       captured.namespaces = params.namespaces;
       captured.execution = params.execution;
@@ -1471,4 +1471,21 @@ test("memorySearch threads backend degradations to a warning (#2018)", async () 
   } finally {
     reset();
   }
+});
+
+test("memorySearch does not probe default storage for an explicit namespace or before auth (#2056 r5)", async () => {
+  const config = makeConfigWithScopeProfile();
+  const { service, captured } = makeServiceWithConfig(config);
+  // Explicit-namespace queries ignore the default-namespace fallback, so the
+  // flat-root storage probe must not run (and must not run before the auth
+  // check rejects an unauthorized principal).
+  await assert.rejects(
+    () => service.memorySearch({ query: "x", namespace: "team", principal: "stranger" }),
+    /namespace is not readable: team/,
+  );
+  assert.deepEqual(
+    captured.getStorageCalls,
+    [],
+    "default-namespace storage must not be probed for an explicit-namespace query",
+  );
 });
