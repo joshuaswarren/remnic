@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 
 import { StorageManager } from "./storage.js";
 import { encryptFileBody, filePathAad, isEncryptedFile } from "./secure-store/secure-fs.js";
@@ -14,6 +15,7 @@ import {
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import { listContainedSpillFiles } from "./utils/path-containment.js";
 import { rebuildMemoryLifecycleLedger } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
 import {
   memoryLifecycleLedgerLockPath,
@@ -404,12 +406,18 @@ test("lifecycle append lock budget outlasts a compaction that holds the lock pas
 });
 
 /** Plaintext pending IO for the access-layer tests (the StorageManager
- *  integration test below exercises the encrypted-at-rest path). */
+ *  integration test below exercises the encrypted-at-rest path). Faithful to the
+ *  `LifecyclePendingIo` contract: `writeSecure` is ATOMIC — it writes to a temp
+ *  file (a non-`*.jsonl` name the drain's lister skips) in the same dir, then
+ *  renames it onto the final path, so a concurrent drain never sees a partial
+ *  spill (#2033). */
 function plaintextPendingIo(): LifecyclePendingIo {
   return {
     writeSecure: async (p, c) => {
       await mkdir(path.dirname(p), { recursive: true });
-      await writeFile(p, c, "utf8");
+      const temp = `${p}.tmp-${randomUUID()}`;
+      await writeFile(temp, c, "utf8");
+      await rename(temp, p);
     },
     readSecure: (p) => readFile(p, "utf8"),
   };
@@ -445,6 +453,77 @@ test("appendLifecycleEventsSerialized spills to the durable pending queue instea
       (await readFile(path.join(spillDir, files[0]!), "utf8")).includes("evt-spill"),
       "event durably queued in the pending spill",
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a concurrent drain never folds a partial spill; the finished spill is valid (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-spill-atomic-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    // Hold the ledger lock so the append cannot acquire it and must spill —
+    // mirroring a compaction rewrite holding the lock while a lock-denied append
+    // writes its spill WITHOUT the lock, concurrent with the holder's drain.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf8");
+    const row = `${JSON.stringify(lifecycleEvent("evt-atomic", "memory-a", "2026-03-08T00:00:00.000Z"))}\n`;
+
+    // Capture exactly what a concurrent fold-under-lock would enumerate + read
+    // (collectPendingSpills uses listContainedSpillFiles + readSecure) WHILE the
+    // spill write is still in progress. An atomic writeSecure stages the full
+    // payload under a temp name the `*.jsonl` lister skips, so the drain sees
+    // nothing to fold until the rename lands the complete file (#2033).
+    let drainSawDuringWrite: Array<{ file: string; content: string }> = [];
+    const io: LifecyclePendingIo = {
+      writeSecure: async (p, c) => {
+        await mkdir(path.dirname(p), { recursive: true });
+        const temp = `${p}.tmp-${randomUUID()}`;
+        await writeFile(temp, c, "utf8");
+        const listed = await listContainedSpillFiles(spillDir);
+        drainSawDuringWrite = [];
+        for (const f of listed) drainSawDuringWrite.push({ file: f, content: await readFile(f, "utf8") });
+        await rename(temp, p);
+      },
+      readSecure: (p) => readFile(p, "utf8"),
+    };
+
+    await appendLifecycleEventsSerialized(
+      ledgerPath,
+      async () => { throw new Error("ledger append must not run while the lock is held"); },
+      row,
+      io,
+      { maxWaitMs: 100, pollMs: 20 },
+    );
+
+    assert.deepEqual(
+      drainSawDuringWrite,
+      [],
+      "a concurrent drain lists no in-progress spill, so it can never fold partial bytes",
+    );
+
+    // The finished spill is a single complete, valid row (never truncated).
+    const spillFiles = await listContainedSpillFiles(spillDir);
+    assert.equal(spillFiles.length, 1, "exactly one complete spill after the write");
+    const spillContent = await readFile(spillFiles[0]!, "utf8");
+    assert.equal(spillContent, row, "spill content is the whole payload, never a partial write");
+    assert.doesNotThrow(() => JSON.parse(spillContent.trim()), "final spill is valid JSON");
+
+    // Release the lock; a real drain folds exactly the one valid row.
+    await rm(lockPath, { force: true });
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => { await appendFile(ledgerPath, payload, "utf8"); },
+      io,
+    );
+    assert.equal(drained, true, "the completed spill drains into the ledger");
+    const ledger = (await readFile(ledgerPath, "utf8")).trim().split("\n").filter(Boolean);
+    assert.equal(ledger.length, 1, "exactly one row folded, none partial");
+    assert.equal(JSON.parse(ledger[0]!).eventId, "evt-atomic");
+    assert.equal((await readdir(spillDir)).length, 0, "spill removed after a successful drain");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -195,6 +195,16 @@ export function pendingLifecycleLedgerDir(ledgerPath: string): string {
  * Secure IO the pending spill needs. `writeSecure`/`readSecure` mirror the
  * ledger's own secure write/read so each spill file is encrypted at rest exactly
  * like the ledger it backs (each at its own path-bound AAD).
+ *
+ * `writeSecure` MUST be ATOMIC (#2033): it writes the payload to a temp file in
+ * the SAME directory and then renames it onto `filePath`, so a concurrent lock
+ * holder draining the pending dir never lists or reads a half-written spill (the
+ * exact partial-fold the drain's `*.jsonl`-only lister must never see). The
+ * temp+rename is bound to the FINAL path because the ciphertext's AAD is the
+ * final path — an outer rename at the spill layer would leave the bytes
+ * undecryptable, so the atomic step lives here in `writeSecure`. The production
+ * wiring (`writeMaybeEncryptedFile`) already renames its temp onto `filePath`,
+ * naming that temp `<final>.tmp-…` (never `*.jsonl`), so the drain skips it.
  */
 export interface LifecyclePendingIo {
   writeSecure: (filePath: string, payload: string) => Promise<void>;
@@ -223,7 +233,13 @@ export function serializeLifecycleAppendPayload(events: MemoryLifecycleEvent[]):
     .join("");
 }
 
-/** Write one spill file (a fresh, uniquely-named, immutable per-append file). */
+/**
+ * Write one spill file (a fresh, uniquely-named, immutable per-append file).
+ * The write goes to the FINAL `<uuid>.jsonl` path through {@link LifecyclePendingIo}
+ * `writeSecure`, whose atomic temp+rename (bound to that final path, since the
+ * ciphertext's AAD is the final path) guarantees a concurrent lock holder's
+ * drain never lists or folds a half-written spill (#2033).
+ */
 async function spillPendingAppend(
   ledgerPath: string,
   io: LifecyclePendingIo,
@@ -231,7 +247,8 @@ async function spillPendingAppend(
 ): Promise<void> {
   const dir = pendingLifecycleLedgerDir(ledgerPath);
   await ensureContainedSpillDir(dir);
-  await io.writeSecure(path.join(dir, `${randomUUID()}.jsonl`), payload);
+  const finalPath = path.join(dir, `${randomUUID()}.jsonl`);
+  await io.writeSecure(finalPath, payload);
 }
 
 /**
