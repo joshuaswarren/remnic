@@ -1050,7 +1050,7 @@ test("byte-cap skips one oversized future row and keeps older fit rows under the
   assert.ok(keptBytes <= cap, "kept output stays bounded under the cap");
 });
 
-test("dry-run rebuild does not acquire or block on the held ledger lock (#2033)", async () => {
+test("dry-run rebuild computes the preserve/merge preview without acquiring the ledger lock (#2033)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dryrun-lock-"));
   try {
     await writeText(
@@ -1060,8 +1060,8 @@ test("dry-run rebuild does not acquire or block on the held ledger lock (#2033)"
       + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
       + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
     );
-    // An append-only row a frontmatter-only rebuild cannot reconstruct — only
-    // the (locked) preserve path reads it.
+    // An append-only row a frontmatter reconstruction cannot regenerate; the
+    // dry-run preview must still read and count it as preserved.
     const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
     await mkdir(path.dirname(ledgerPath), { recursive: true });
     const appendOnly: MemoryLifecycleEvent = {
@@ -1075,10 +1075,9 @@ test("dry-run rebuild does not acquire or block on the held ledger lock (#2033)"
     const originalLedger = `${JSON.stringify(appendOnly)}\n`;
     await writeFile(ledgerPath, originalLedger, "utf-8");
 
-    // Hold the shared lifecycle lock: create the lock file with a fresh mtime.
-    // The 30s stale window means it cannot be stale-broken within the short
-    // acquisition budget below, so a rebuild that TRIED to take the lock would
-    // exhaust its budget and abort with "could not acquire the ledger lock".
+    // Hold the shared lifecycle lock with a fresh mtime for the whole run. A
+    // write would exhaust the short budget below and abort; the dry run must
+    // still complete because it computes its preview WITHOUT taking the lock.
     const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
     await writeFile(lockPath, `${process.pid} test-holder ${new Date().toISOString()}\n`, { flag: "wx" });
     try {
@@ -1089,24 +1088,23 @@ test("dry-run rebuild does not acquire or block on the held ledger lock (#2033)"
         storage,
         preserveExistingEvents: true,
         // A short budget: were the dry run to contend for the held lock, it
-        // would give up here and throw rather than resolve. It does not, because
-        // the lock is gated to write mode (#2033).
+        // would throw here instead of resolving. It never takes the lock.
         lockOptions: { maxWaitMs: 200, pollMs: 20 },
       });
       assert.equal(result.dryRun, true);
-      // No preserve/merge ledger work: the append-only row is neither read nor
-      // counted, and nothing is rewritten or backed up.
+      // Preview parity with --write: the append-only row is read and counted,
+      // and the reconstruction includes it — but nothing is rewritten.
       assert.equal(
         result.preservedAppendOnlyRows,
-        undefined,
-        "dry run performs no preserve/merge ledger work",
+        1,
+        "dry-run preview counts the append-only row a --write would preserve",
       );
-      assert.equal(result.backupPath, undefined, "dry run writes no backup");
       assert.equal(
         result.rebuiltRows,
-        2,
-        "dry run reconstructs created+updated from frontmatter only",
+        3,
+        "dry-run preview = 2 frontmatter rows + 1 preserved append-only row",
       );
+      assert.equal(result.backupPath, undefined, "dry run writes no backup");
     } finally {
       await rm(lockPath, { force: true });
     }
@@ -1116,6 +1114,53 @@ test("dry-run rebuild does not acquire or block on the held ledger lock (#2033)"
       await readFile(ledgerPath, "utf-8"),
       originalLedger,
       "dry run must not rewrite the ledger",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("dry-run rebuild previews byte-cap trimming without rewriting the ledger (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dryrun-cap-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    const storage = new StorageManager(memoryDir);
+    // A 1-byte cap fits no row, so every row overflows: the preview must report
+    // the cap trimming a --write would apply (archivedOverflowRows) while
+    // leaving the ledger on disk untouched.
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      storage,
+      preserveExistingEvents: true,
+      maxLedgerBytes: 1,
+    });
+    assert.equal(result.dryRun, true);
+    assert.equal(result.archivedOverflowRows, 3, "dry-run preview reports every over-cap row");
+    assert.equal(result.rebuiltRows, 0, "no row fits the 1-byte cap in the preview");
+    assert.equal(result.backupPath, undefined, "dry run writes no backup");
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "dry run must not rewrite the ledger even when the cap trims every row",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

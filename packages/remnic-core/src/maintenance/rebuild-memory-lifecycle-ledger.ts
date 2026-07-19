@@ -253,22 +253,25 @@ export async function rebuildMemoryLifecycleLedger(
   let preservedAppendOnlyRows: number | undefined;
   let archivedOverflowRows: number | undefined;
   let backupPath: string | undefined;
-  // Serialize the preserve-read and the whole-file rewrite against concurrent
-  // lifecycle appends (issue #1910, codex). appendMemoryLifecycleEvents holds
-  // this same cross-process lock, so an event appended after the preserve-read
-  // but before the atomic rename waits and lands on the compacted ledger
-  // instead of being clobbered by the rename that replaces the file. The
-  // corpus scan above stays outside the lock — frontmatter-derived rows are
-  // reconstructed from the memory files, not the ledger.
+  // The preserve-read + whole-file rewrite are serialized against concurrent
+  // lifecycle appends ONLY in write mode (issue #1910, codex):
+  // appendMemoryLifecycleEvents holds this same cross-process lock, so an event
+  // appended after the preserve-read but before the atomic rename waits and
+  // lands on the compacted ledger instead of being clobbered by the rename. A
+  // DRY RUN takes no lock — it reads the ledger read-only to compute the
+  // preserve/merge/byte-cap PREVIEW and never rewrites, so it must not block
+  // appends (#2033 Cursor). The corpus scan above stays outside the lock in
+  // both modes — frontmatter-derived rows come from the memory files.
   const runLedgerCriticalSection = async (
     acquired: boolean,
-    lock: HeldFileLockController,
+    lock: HeldFileLockController | null,
   ): Promise<void> => {
-    // withHeldFileLock falls back to task(false) when it cannot acquire the
-    // lock within the budget. A rebuild that read or rewrote the ledger without
-    // the lock could race a concurrent append/rewrite and lose data, so REFUSE
-    // the unlocked fallback outright (issue #2033 CodeRabbit Critical / codex).
-    if (!acquired) {
+    // A WRITE that read or rewrote the ledger without the lock could race a
+    // concurrent append/rewrite and lose data, so REFUSE the unlocked fallback
+    // withHeldFileLock takes on acquisition timeout (issue #2033 CodeRabbit
+    // Critical / codex). A dry run passes lock=null and acquired=true: it never
+    // reaches the rewrite, so the unlocked preview read is safe.
+    if (!dryRun && !acquired) {
       throw new Error(
         "lifecycle ledger rebuild aborted: could not acquire the ledger lock within the "
         + "acquisition budget; refusing to read or rewrite unlocked so a concurrent append "
@@ -371,7 +374,7 @@ export async function rebuildMemoryLifecycleLedger(
     // peer's append, and (b) when still held, re-stamps the mtime so the bounded
     // write below cannot itself be judged stale mid-rename (issue #1910/#2033).
     const abortIfLockLost = async (): Promise<void> => {
-      if (await lock.refresh()) return;
+      if (lock && await lock.refresh()) return;
       throw new Error(
         "lifecycle ledger rebuild aborted: lost the ledger lock during the compaction "
         + "rewrite (a peer stale-broke it while the event loop was blocked by CPU-bound "
@@ -411,18 +414,21 @@ export async function rebuildMemoryLifecycleLedger(
       }
     }
   };
-  // Hold the ledger lock only in write mode. A dry run reconstructs purely from
-  // memory frontmatter and never reads or rewrites the ledger, so it must not
-  // acquire the shared lifecycle lock — doing so would block concurrent
-  // lifecycle appends and pending-spill paths for the length of the run (#2033
-  // Cursor). This also keeps a dry run side-effect free: no state dir or
-  // transient lock file is created.
+  // Write mode holds the ledger lock across the preserve-read and atomic
+  // rewrite so a concurrent append lands on the compacted ledger instead of
+  // being clobbered. A dry run computes the SAME preserve/merge/byte-cap
+  // preview but WITHOUT the lock (read-only, no rewrite), so `rebuiltRows`,
+  // `preservedAppendOnlyRows`, and `archivedOverflowRows` report what a --write
+  // would apply while never blocking concurrent appends (#2033 Cursor). A dry
+  // run with nothing to preserve touches nothing at all.
   if (!dryRun) {
     await withHeldFileLock(
       memoryLifecycleLedgerLockPath(outputPath),
       { staleMs: MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, ...options.lockOptions },
       runLedgerCriticalSection,
     );
+  } else if (options.preserveExistingEvents) {
+    await runLedgerCriticalSection(true, null);
   }
 
   return {
