@@ -48,6 +48,25 @@ export interface BufferSurpriseProbe {
 const MAX_BUFFER_ENTRY_COUNT = 200;
 
 /**
+ * Upper bound on how long a debounced buffer save may be deferred under
+ * sustained activity (issue #1909). Each new turn re-arms the trailing-edge
+ * timer, so a steady stream of turns could otherwise push the save out
+ * indefinitely and widen the crash-loss window without bound. Once a pending
+ * save has been deferred this many debounce windows, the next scheduled save
+ * forces an inline flush instead of re-arming.
+ */
+const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
+
+/**
+ * Node's maximum 32-bit `setTimeout` delay (2^31-1 ms, ~24.8 days). A larger
+ * value is overflow-clamped by Node to 1ms with a TimeoutOverflowWarning, so we
+ * clamp defensively at every timer arm (issue #1909 review round 5) even though
+ * parseConfig already caps `bufferSaveDebounceMs` — a directly-constructed config
+ * could still exceed it.
+ */
+const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+
+/**
  * Minimal data carried on the serialized telemetry write chain
  * (issue #563 PR 3).
  *
@@ -112,6 +131,20 @@ export class SmartBuffer {
    * poison the chain (CLAUDE.md rule #40).
    */
   private surpriseTelemetryWriteChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Debounced buffer-save state (issue #1909). Steady-state buffering used to
+   * serialize + rewrite the whole multi-session buffer on EVERY turn. We now
+   * coalesce those writes onto a trailing-edge timer; correctness boundaries
+   * (extraction trigger, extraction clear, shutdown) still force an immediate
+   * flush. `bufferSaveDebounceMs: 0` restores save-every-turn exactly.
+   */
+  private saveTimer: NodeJS.Timeout | null = null;
+  private pendingSave = false;
+  /** Wall-clock ms when the currently-pending save was first scheduled (issue
+   * #1909). Null when nothing is pending. Used to bound deferral under sustained
+   * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
+  private firstPendingAtMs: number | null = null;
 
   constructor(
     private readonly config: PluginConfig,
@@ -291,6 +324,154 @@ export class SmartBuffer {
     await this.enqueueMutation(async () => this.saveUnlocked());
   }
 
+  /**
+   * Schedule a coalesced, TRUE trailing-edge buffer save (issue #1909). Only
+   * used for the debounced (`bufferSaveDebounceMs > 0`) steady-state buffering
+   * path; the debounce-off and correctness-boundary paths save inline within the
+   * mutation (see `recordTurnUnlocked`). Each call re-arms the timer from now so
+   * the write lands one full window after the LAST turn, not the first. To keep
+   * sustained activity from deferring the save without bound (which would widen
+   * the crash-loss window), once a pending save has been deferred
+   * BUFFER_SAVE_MAX_DEFER_MULTIPLIER windows it is flushed inline instead of
+   * re-armed. Runs inside the record mutation, so the inline save is awaited.
+   */
+  private async scheduleSave(): Promise<void> {
+    const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
+    const now = Date.now();
+    this.pendingSave = true;
+    if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
+    if (now - this.firstPendingAtMs >= ms * BUFFER_SAVE_MAX_DEFER_MULTIPLIER) {
+      // Staleness cap hit: persist now rather than deferring further. Drop the
+      // armed timer, attempt the write, and only mark clean on success — a
+      // failure keeps the save pending + re-arms so shutdown/the next timer
+      // retries (issue #1909 review round 2), never diverging memory from disk.
+      clearTimeout(this.saveTimer ?? undefined);
+      this.saveTimer = null;
+      try {
+        await this.saveUnlocked();
+        this.pendingSave = false;
+        this.firstPendingAtMs = null;
+      } catch (err) {
+        log.warn(`buffer.scheduleSave: staleness-cap save failed, keeping it pending: ${describeError(err)}`);
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
+      return;
+    }
+    // True trailing edge: drop any armed timer and re-arm from now.
+    clearTimeout(this.saveTimer ?? undefined);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.flushPendingSave();
+    }, ms);
+    this.saveTimer.unref?.();
+  }
+
+  /** Cancel any armed debounced save without persisting. */
+  private cancelScheduledSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.pendingSave = false;
+    this.firstPendingAtMs = null;
+  }
+
+  /**
+   * Persist the current in-memory buffer state inline, keeping the global
+   * pending-save state armed until the write SUCCEEDS (issue #1909). On failure
+   * the save stays pending and — when debounced — a background retry timer is
+   * (re-)armed before the error propagates, so a graceful shutdown flush and the
+   * next timer tick both retry. A failed post-mutation save therefore can never
+   * silently drop buffered turns, including turns from OTHER sessions that were
+   * only in the debounced pending state. The pending flag is cleared (and any
+   * armed timer dropped) only after a durable write.
+   */
+  private async saveNowRetainingPendingOnFailure(context: string): Promise<void> {
+    this.pendingSave = true;
+    if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
+    try {
+      await this.saveUnlocked();
+    } catch (err) {
+      log.warn(
+        `buffer.${context}: inline save failed, keeping it pending for retry: ${describeError(err)}`,
+      );
+      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
+      if (ms > 0 && !this.saveTimer) {
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
+      throw err;
+    }
+    this.cancelScheduledSave();
+  }
+
+  /**
+   * Force any pending debounced save to land now (issue #1909). Idempotent and
+   * safe to call from outside a mutation (timer tick, shutdown/dispose, or the
+   * surprise-promotion path in `addTurnWithOutcome`). Do NOT `await` this from
+   * inside a mutation — it enqueues its own mutation and would deadlock the
+   * serializer.
+   *
+   * `throwOnFailure` (review round 7 finding 5): when set, a failed write is
+   * rethrown AFTER the keep-pending + re-arm bookkeeping, so the surprise
+   * extraction boundary gets the same durability guarantee as the built-in
+   * extract triggers (which propagate saveUnlocked failures) instead of
+   * proceeding to extract_now on a non-durable triggering turn. Default false
+   * keeps the fail-open behavior for the timer/shutdown callers.
+   */
+  async flushPendingSave(opts?: { throwOnFailure?: boolean }): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.pendingSave) return;
+    try {
+      await this.enqueueMutation(async () => {
+        // Re-check under the serializer: a concurrent flush may have already
+        // persisted this pending save. Skip the redundant write (no phantom
+        // writes).
+        if (!this.pendingSave) return;
+        await this.saveUnlocked();
+        // Clear the pending flag INSIDE the same serialized mutation as the
+        // write (issue #1909 review). Clearing it after the enqueue await
+        // resolved raced an addTurn interleaving between the write and the
+        // clear: that turn's scheduleSave re-armed pendingSave + a timer, then
+        // this clear wiped it and the debounced flush was lost. Atomic
+        // write+clear means any addTurn runs wholly before (its turn is in the
+        // write) or wholly after (its pendingSave survives and its timer
+        // persists it).
+        this.pendingSave = false;
+        this.firstPendingAtMs = null;
+      });
+    } catch (err) {
+      // The write failed: memory and disk diverge (issue #1909 review round 2).
+      // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
+      // graceful shutdown flush and the re-armed timer both retry it — clearing
+      // the flag here would drop the buffered turns permanently. Re-arm a
+      // background retry when debounced.
+      log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
+      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
+      if (ms > 0 && !this.saveTimer) {
+        this.saveTimer = setTimeout(() => {
+          this.saveTimer = null;
+          void this.flushPendingSave();
+        }, ms);
+        this.saveTimer.unref?.();
+      }
+      // Surprise-extraction boundary needs the durability guarantee — surface
+      // the failure so the caller does not proceed with a non-durable flush.
+      if (opts?.throwOnFailure) throw err;
+      return; // fail-open for timer/shutdown callers
+    }
+  }
+
   async addTurn(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
@@ -336,6 +517,16 @@ export class SmartBuffer {
             decision = "extract_now";
             triggered = true;
             extractionTurns = currentTurns;
+            // Issue #1909 (review): the record mutation for a `keep_buffering`
+            // turn only SCHEDULED a debounced save. Surprise now promotes it to
+            // extract_now AFTER that mutation, so force the buffer durable before
+            // the caller runs extraction — otherwise state/buffer.json lags the
+            // extracted turns by up to the debounce window on a crash. Safe to
+            // await here: we are outside the record mutation (deadlock-free).
+            // throwOnFailure (round 7 finding 5): match the built-in extract
+            // triggers — a failed durability write must NOT silently proceed to
+            // extract_now on a non-durable turn.
+            await this.flushPendingSave({ throwOnFailure: true });
           } else {
             log.debug(
               `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} ignored because buffer changed before probe resolved`,
@@ -399,7 +590,20 @@ export class SmartBuffer {
     const turnCountInWindow = entry.turns.length;
 
     this.pruneEntries([bufferKey]);
-    await this.saveUnlocked();
+    if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
+      // Steady-state buffering: coalesce the whole-state serialize onto a
+      // trailing-edge timer (issue #1909) instead of rewriting per turn.
+      await this.scheduleSave();
+    } else {
+      // Persist immediately within this mutation (awaited) when either:
+      //  - the turn triggered extraction (the buffer must be durable), or
+      //  - debounce is disabled (bufferSaveDebounceMs <= 0), which reproduces
+      //    the legacy save-every-turn behavior byte-for-byte.
+      // Round 8 thread 4: the write is attempted BEFORE the pending state is
+      // cleared, and a failed write leaves it pending (+ a re-armed timer) for
+      // shutdown/timer retry instead of dropping the in-memory turns.
+      await this.saveNowRetainingPendingOnFailure("recordTurn");
+    }
     return {
       decision,
       signalLevel: signal.level,
@@ -710,6 +914,17 @@ export class SmartBuffer {
     extractedTurns?: readonly BufferTurn[],
   ): Promise<void> {
     await this.enqueueMutation(async () => {
+      // Drop any armed debounce TIMER so it cannot fire mid-mutation and race
+      // our post-clear write, but KEEP the pending-save state (issue #1909
+      // review round 13): the post-clear save below can fail, and clearing the
+      // pending flag here would strand buffered turns — including turns from
+      // OTHER sessions that only ever entered the debounced pending state — with
+      // nothing left to retry them. saveNowRetainingPendingOnFailure clears the
+      // pending state only after a durable write, or re-arms it on failure.
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
       if (Array.isArray(extractedTurns)) {
@@ -733,7 +948,7 @@ export class SmartBuffer {
           }
         }
         if (!clearedLiveTurns) {
-          await this.saveUnlocked();
+          await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
           return;
         }
       } else {
@@ -747,7 +962,7 @@ export class SmartBuffer {
         this.state.extractionCount = entry.extractionCount;
       }
       this.pruneEntries([bufferKey]);
-      await this.saveUnlocked();
+      await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
     });
   }
 

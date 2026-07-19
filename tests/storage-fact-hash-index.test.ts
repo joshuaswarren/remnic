@@ -4,20 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile, rm, readFile, unlink } from "node:fs/promises";
 import { ContentHashIndex, StorageManager } from "../src/storage.ts";
+import { clearMemoryCache } from "../src/memory-cache.ts";
 import { sanitizeMemoryContent } from "../src/sanitize.ts";
 import { attachCitation } from "../src/source-attribution.ts";
 
 test("concurrent fact hash lookups wait for a single shared index load", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-fact-hash-"));
-  const stateDir = path.join(dir, "state");
-  await mkdir(stateDir, { recursive: true });
   const content = "User prefers pourover coffee.";
-  await writeFile(path.join(stateDir, "fact-hashes.ready"), "v1\n", "utf-8");
-  await writeFile(
-    path.join(stateDir, "fact-hashes.txt"),
-    `${ContentHashIndex.computeHash(content)}\n`,
-    "utf-8",
-  );
+  // Round 11: the fact-hash index is ALWAYS rebuilt from the corpus (no
+  // fact-hashes.ready trust marker), so seed a real fact .md and clear the
+  // process cache to model a fresh restart before the concurrent lookups.
+  const seed = new StorageManager(dir);
+  await seed.writeMemory("fact", content, { source: "test" });
+  clearMemoryCache(dir);
 
   const originalLoad = ContentHashIndex.prototype.load;
   let loadCalls = 0;

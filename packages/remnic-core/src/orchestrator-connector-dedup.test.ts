@@ -17,13 +17,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
-import { ContentHashIndex, type StorageManager } from "./storage.js";
-import type { ExtractionResult, ExtractedFact, MemoryFile } from "./types.js";
+import { clearMemoryCache } from "./memory-cache.js";
+import { ContentHashIndex, StorageManager } from "./storage.js";
+import type { ExtractionResult, ExtractedFact, MemoryFile, MemoryCategory } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { buildProcedurePersistBody } from "./procedural/procedure-types.js";
 
 // ---------------------------------------------------------------------------
 // Types — minimal surface of Orchestrator needed by these tests.
@@ -48,6 +51,15 @@ interface OrchestratorTestSurface {
   ) => Promise<string[]>;
   getStorage: (namespace: string) => Promise<StorageManager>;
   contentHashIndex: ContentHashIndex | null;
+  // Private on the real instance; reached through the unknown-cast surface for
+  // the #1909 defer-durability tests (registration failure + concurrent runs).
+  addContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<void>;
+  hasContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<boolean>;
+  removeContentHashForMemory: (
+    targetStorage: StorageManager,
+    memory: MemoryFile,
+    context: string,
+  ) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,5 +1090,1026 @@ test("shared backfill: operator (no-connector) extraction must NOT patch a conne
     taggedAfter!.frontmatter.invalid_at,
     undefined,
     "tagged fact must NOT get invalid_at from connectorless/operator backfill",
+  );
+});
+// ---------------------------------------------------------------------------
+// Issue #1909 review round 2 finding 2 — defer only covered by the batch save
+// ---------------------------------------------------------------------------
+
+test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fact-hash index immediately", async () => {
+  // With dedup off, contentHashIndexForStorage() returns null so the
+  // orchestrator's end-of-persist batch save is a no-op. The main-path fact
+  // write must therefore NOT defer its per-fact index flush — otherwise the
+  // storage-owned fact-hash index is never written, and a restart with
+  // fact-hashes.ready present trusts a stale index missing the fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-dedup-off-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  // Warm the index authoritative and create the .ready marker over the current
+  // (empty) corpus, so a later fresh session trusts the on-disk index.
+  assert.equal(await storage.hasFactContentHash("warm"), false);
+
+  const body = "The billing service retries failed charges with exponential backoff.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written");
+
+  // Fresh StorageManager with .ready present trusts the on-disk fact-hash index
+  // (no rebuild). The hash must be there via the immediate per-fact save.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(
+    await restarted.hasFactContentHash(body),
+    true,
+    "the fact hash was flushed immediately despite the batch saver being a no-op",
+  );
+});
+test("#2016 SD-nH: fact dedup disabled never suppresses a write via the authority/corpus-confirm path", async () => {
+  // With dedup DISABLED the entire content-hash dedup path must be
+  // short-circuited. The pre-fix code still ran hasContentHashDedup (returns
+  // false with a null index), then consulted isFactContentHashAuthoritative();
+  // when that reported NON-authoritative (e.g. a peer holds the rebuild lock)
+  // it set needsCorpusConfirm and the connector-aware corpus scan could find a
+  // same-content same-connector active fact and SUPPRESS the write — dedup
+  // behavior while dedup is turned off.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-dedup-off-nosuppress-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: false,
+    });
+    const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+
+    const body = "The billing service retries failed charges with exponential backoff.";
+    const source = { sourceConnector: "slack" };
+
+    // Seed one active same-connector copy in the corpus.
+    const first = await orchestrator.persistExtraction(factResult(body), storage, null, source);
+    assert.equal(first.length, 1, "first write lands");
+
+    // Force the storage fact-hash index NON-authoritative so the pre-fix code
+    // falls into needsCorpusConfirm and runs the corpus scan — the exact path
+    // that (wrongly) suppressed a write while dedup is DISABLED.
+    // isFactContentHashAuthoritative is a real method on StorageManager; the
+    // cast only reaches it as an overridable slot for this test.
+    const authorityStub = storage as unknown as {
+      isFactContentHashAuthoritative: () => Promise<boolean>;
+    };
+    authorityStub.isFactContentHashAuthoritative = async () => false;
+    // Read the corpus from disk so the scan sees the seeded copy.
+    clearMemoryCache();
+
+    const second = await orchestrator.persistExtraction(factResult(body), storage, null, source);
+    assert.equal(
+      second.length,
+      1,
+      "dedup disabled must not suppress the write via the authority/corpus-confirm path",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("#1909 round 11: deferred persist writes no ready marker and a restart rebuild still dedups", async () => {
+  // With dedup ON the main-path fact write defers; there is NO fact-hashes.ready
+  // marker anymore. A restart rebuilds the fact-hash index authoritatively from
+  // the corpus and still dedups the fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-window-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
+
+  const body = "The scheduler batches webhook deliveries into 250ms windows.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written");
+  assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
+
+  // A fresh instance rebuilds from the corpus and still dedups.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(await restarted.hasFactContentHash(body), true);
+  assert.equal(existsSync(readyPath), false, "still no marker after the restart rebuild");
+});
+test("#1909: a deferred fact stays durable when addContentHashDedup throws", async () => {
+  // Review round 6 finding 1: the deferred write's durability must not depend on
+  // the orchestrator dedup registration succeeding. writeMemory already added the
+  // hash to the storage-owned index; the end-of-run storage-index flush must put
+  // it on disk even though addContentHashDedup threw (caught+logged).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-regfail-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  assert.equal(await storage.hasFactContentHash("warm"), false); // warm + create marker
+
+  // Force the orchestrator dedup registration to throw for every fact this run.
+  orchestrator.addContentHashDedup = async () => {
+    throw new Error("simulated registration failure");
+  };
+
+  const body = "The queue drains oldest-first under sustained backpressure.";
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 1, "the fact is written despite the registration failure");
+
+  // Restart trusts the marker (restored) and finds the hash on disk — no
+  // duplicate re-creation — because the storage-owned index flush persisted it.
+  const restarted = new StorageManager(memoryDir);
+  assert.equal(
+    await restarted.hasFactContentHash(body),
+    true,
+    "the deferred hash reached disk independent of addContentHashDedup",
+  );
+});
+
+test("#1909: two interleaved persist runs both land on disk (merge, no clobber)", async () => {
+  // Review round 6 finding 2: two orchestrators that snapshot an empty index
+  // before either saves must not clobber each other — the merge-save unions.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-defer-interleave-"));
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+  const orchA = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const orchB = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storageA = await orchA.getStorage("default");
+  const storageB = await orchB.getStorage("default");
+  await storageA.ensureDirectories();
+
+  // Force BOTH orchestrator indexes to load an empty snapshot up front (the race:
+  // each holds a pre-write view of the shared on-disk index).
+  await orchA.hasContentHashDedup(storageA, "noop-a");
+  await orchB.hasContentHashDedup(storageB, "noop-b");
+
+  await orchA.persistExtraction(factResult("alpha interleaved fact"), storageA, null);
+  await orchB.persistExtraction(factResult("beta interleaved fact"), storageB, null);
+
+  // A blind overwrite by B (stale empty snapshot) would drop alpha; the merge
+  // union preserves both.
+  const fresh = new StorageManager(memoryDir);
+  assert.equal(await fresh.hasFactContentHash("alpha interleaved fact"), true, "A's fact survived");
+  assert.equal(await fresh.hasFactContentHash("beta interleaved fact"), true, "B's fact survived");
+});
+test("#1909 round 11: the restart rebuild reflects the current corpus (archived fact is not re-deduped)", async () => {
+  // No ready marker exists — the fact-hash index is ALWAYS rebuilt from the
+  // durable corpus on restart. So an archival/consolidation removal LANDS after
+  // restart (the removed .md is excluded from the rebuild) even if that run's
+  // reconciling save could not publish (lock timeout) — there is no stale
+  // on-disk index to trust. This is the definitive replacement for the
+  // marker-invalidate-on-removal machinery.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-corpus-reflect-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+
+  const body = "The nightly job compacts cold storage at 02:00 UTC.";
+  await orchestrator.persistExtraction(factResult(body), storage, null);
+  const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
+  assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
+
+  // A fresh instance rebuilds from the corpus → dedups the persisted fact.
+  const before = new StorageManager(memoryDir);
+  assert.equal(await before.hasFactContentHash(body), true);
+
+  // Archive the fact: remove its .md from the active corpus.
+  const mem = (await storage.readAllMemories()).find((m: MemoryFile) => m.content.includes(body));
+  assert.ok(mem, "persisted fact is readable");
+  await rm(mem.path);
+  // Simulate a fresh process (real restart): drop the process-wide memory cache
+  // so the rebuild re-reads the now-smaller corpus from disk.
+  clearMemoryCache(memoryDir);
+
+  // A fresh instance rebuilds from the now-smaller corpus → the archived fact is
+  // no longer deduped (re-extraction is allowed). The removal landed with no
+  // marker and no reliance on the reconciling save having published.
+  const after = new StorageManager(memoryDir);
+  assert.equal(
+    await after.hasFactContentHash(body),
+    false,
+    "archived fact is not deduped after the restart rebuild",
+  );
+});
+test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE catalog touches", async () => {
+  // The buffer save fires a coalesced namespace-catalog touch; if catalog touches
+  // were flushed first, that shutdown-time touch would queue after and be lost.
+  // destroy() must flush the buffer first so its touch folds into the catalog
+  // flush and both settle before destroy() returns.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-order-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config);
+  const priv = orchestrator as unknown as {
+    buffer: { flushPendingSave: () => Promise<void> };
+    namespaceCatalog: { flushPendingTouches: () => Promise<void> };
+    destroy: () => Promise<void>;
+  };
+  const order: string[] = [];
+  const realFlushSave = priv.buffer.flushPendingSave.bind(priv.buffer);
+  priv.buffer.flushPendingSave = async () => {
+    order.push("buffer");
+    return realFlushSave();
+  };
+  const realFlushTouch = priv.namespaceCatalog.flushPendingTouches.bind(priv.namespaceCatalog);
+  priv.namespaceCatalog.flushPendingTouches = async () => {
+    order.push("catalog");
+    return realFlushTouch();
+  };
+
+  await priv.destroy();
+  assert.deepEqual(
+    order,
+    ["buffer", "catalog"],
+    "buffer flush must run before the catalog-touch flush on shutdown",
+  );
+});
+test("#1909 round 14: destroy() surfaces a buffer flush failure and still completes teardown", async () => {
+  // Graceful-shutdown durability contract: a failed shutdown buffer flush must
+  // NOT be silently swallowed — the pending turns are retained in memory but
+  // lost on process exit, so the host has to learn about it. destroy() runs the
+  // remaining teardown in a finally block, then rethrows the flush failure.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-fail-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config);
+  const priv = orchestrator as unknown as {
+    buffer: { flushPendingSave: (opts?: { throwOnFailure?: boolean }) => Promise<void> };
+    namespaceCatalog: { flushPendingTouches: () => Promise<void> };
+    destroy: () => Promise<void>;
+  };
+  const flushErr = new Error("simulated shutdown buffer write failure");
+  priv.buffer.flushPendingSave = async () => {
+    throw flushErr;
+  };
+  let catalogFlushed = false;
+  const realFlushTouch = priv.namespaceCatalog.flushPendingTouches.bind(priv.namespaceCatalog);
+  priv.namespaceCatalog.flushPendingTouches = async () => {
+    catalogFlushed = true;
+    return realFlushTouch();
+  };
+
+  await assert.rejects(
+    priv.destroy(),
+    (err: unknown) => err === flushErr,
+    "destroy() must surface the buffer flush failure instead of swallowing it",
+  );
+  assert.equal(
+    catalogFlushed,
+    true,
+    "teardown (catalog flush) must still run in the finally block despite the flush failure",
+  );
+});
+test("#1909 round 12: after a crash before the batch save, the orchestrator dedup sees the fact (corpus rebuild)", async () => {
+  // A deferred fact write persists the .md but not fact-hashes.txt; a crash
+  // before saveContentHashIndexes leaves only the .md durable. On restart the
+  // orchestrator's dedup index must be corpus-AUTHORITATIVE (round 12) — sharing
+  // StorageManager's rebuild — so hasContentHashDedup sees the fact and
+  // persistExtraction does NOT re-create it. Pre-round-12 it loaded a stale
+  // fact-hashes.txt (missing the fact) and would duplicate.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-orch-rebuild-"));
+  const body = "The deploy pipeline gates on a green smoke suite.";
+
+  // Phase 1 — crash window: deferred write, NO batch save / index flush.
+  {
+    const seed = new StorageManager(memoryDir);
+    await seed.ensureDirectories();
+    await seed.writeMemory("fact", body, { source: "extraction", deferHashIndexSave: true });
+    // CRASH: no saveContentHashIndexes → fact-hashes.txt never got the hash.
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the orchestrator dedup index rebuilds from the corpus.
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as OrchestratorTestSurface;
+  const storage = await orchestrator.getStorage("default");
+
+  assert.equal(
+    await orchestrator.hasContentHashDedup(storage, body),
+    true,
+    "orchestrator dedup sees the crashed-but-durable fact via the corpus rebuild",
+  );
+  // And re-persisting the same fact is deduped (no duplicate .md created).
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(ids.length, 0, "the fact is deduped on re-extraction — not re-created");
+});
+
+test("#1909 round 13: startup rebuild preserves PROCEDURE hashes as well as fact hashes across restart", async () => {
+  // The content-hash dedup index is SHARED by fact AND procedure dedup —
+  // procedures register their persist-body hash into the same index. The
+  // marker-less startup rebuild (ensureFactHashIndexAuthoritative) clears the
+  // on-disk index and reconstructs it from the .md corpus on first use per
+  // process. A fact-only rebuild dropped every persisted procedure hash, so a
+  // restart would re-create identical procedures. Both categories must survive.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proc-rebuild-"));
+  const factBody = "The staging deploy gates on a green smoke suite.";
+  const procTitle = "When you cut a hotfix release, follow the checklist";
+  const procSteps = [
+    { intent: "Branch from main and cherry-pick the fix" },
+    { intent: "Run CI and tag the release" },
+  ];
+  // The dedup key for a procedure is its full persist body (title + steps).
+  const procBody = buildProcedurePersistBody(
+    procTitle,
+    procSteps.map((s, i) => ({ order: i + 1, intent: s.intent })),
+  );
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+      // procedural.enabled defaults to true.
+    });
+
+  // Phase 1 — persist a fact and a procedure through the real persist path.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    const factIds = await orch.persistExtraction(factResult(factBody), storage, null);
+    assert.equal(factIds.length, 1, "fact persisted in phase 1");
+    const procIds = await orch.persistExtraction(
+      procedureResult(procTitle, procSteps),
+      storage,
+      null,
+    );
+    assert.equal(procIds.length, 1, "procedure persisted in phase 1");
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the dedup index rebuilds authoritatively from the corpus.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, factBody),
+    true,
+    "fact hash survives the corpus rebuild",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, procBody),
+    true,
+    "PROCEDURE hash survives the corpus rebuild (round 13 fix)",
+  );
+
+  // Re-extraction of both is deduped — neither is re-created.
+  const factReIds = await orch2.persistExtraction(factResult(factBody), storage2, null);
+  assert.equal(factReIds.length, 0, "fact is deduped on restart");
+  const procReIds = await orch2.persistExtraction(
+    procedureResult(procTitle, procSteps),
+    storage2,
+    null,
+  );
+  assert.equal(
+    procReIds.length,
+    0,
+    "procedure is deduped on restart (would be re-created without the round 13 fix)",
+  );
+
+  // Exactly one of each remains on disk.
+  const all = await storage2.readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "fact").length,
+    1,
+    "one fact on disk",
+  );
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "procedure").length,
+    1,
+    "one procedure on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered category hash across restart", async () => {
+  // The content-hash dedup index is shared by every registered write category:
+  // persistExtraction calls addContentHashDedup for every writeCategory it
+  // persists (preference, decision, commitment, …), not only fact/procedure.
+  // A rebuild restricted to fact+procedure dropped those hashes on restart, so
+  // the next extraction re-created identical active non-fact memories (the
+  // retired fact-hashes.txt load used to preserve them). Every category's hash
+  // must survive the corpus rebuild.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cat-rebuild-"));
+  const prefContent = "The user prefers dark mode across every surface.";
+  const decisionContent = "We standardized on pnpm for all workspace installs.";
+  // A preference carrying structuredAttributes: writeMemory appends an
+  // "[Attributes: …]" suffix to the stored body, but the registered dedup key
+  // is the RAW content WITHOUT that suffix. The rebuild must strip the suffix
+  // or the reconstructed hash never matches and the memory is re-created.
+  const attrContent = "The user's working timezone is America/Chicago.";
+  const attrs: Record<string, string> = { timezone: "America/Chicago", trust: "high" };
+
+  const categoryResult = (
+    content: string,
+    category: MemoryCategory,
+    structuredAttributes?: Record<string, string>,
+  ): ExtractionResult => ({
+    facts: [
+      {
+        content,
+        category,
+        tags: [],
+        confidence: 0.9,
+        ...(structuredAttributes ? { structuredAttributes } : {}),
+      } as ExtractedFact,
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  });
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+
+  // Phase 1 — persist non-fact/procedure categories through the real path.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(prefContent, "preference"), storage, null)).length,
+      1,
+      "preference persisted in phase 1",
+    );
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(decisionContent, "decision"), storage, null)).length,
+      1,
+      "decision persisted in phase 1",
+    );
+    assert.equal(
+      (await orch.persistExtraction(categoryResult(attrContent, "preference", attrs), storage, null)).length,
+      1,
+      "attributed preference persisted in phase 1",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the dedup index rebuilds authoritatively from the corpus.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, prefContent),
+    true,
+    "preference hash survives the corpus rebuild (PR #2016 fix)",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, decisionContent),
+    true,
+    "decision hash survives the corpus rebuild (PR #2016 fix)",
+  );
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, attrContent),
+    true,
+    "attributed preference hash survives the rebuild (attributes suffix stripped)",
+  );
+
+  // Re-extraction of each is deduped — none is re-created.
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(prefContent, "preference"), storage2, null)).length,
+    0,
+    "preference is deduped on restart (would be re-created without the fix)",
+  );
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(decisionContent, "decision"), storage2, null)).length,
+    0,
+    "decision is deduped on restart (would be re-created without the fix)",
+  );
+  assert.equal(
+    (await orch2.persistExtraction(categoryResult(attrContent, "preference", attrs), storage2, null)).length,
+    0,
+    "attributed preference is deduped on restart (would be re-created without the fix)",
+  );
+
+  // The originals remain the only copies on disk.
+  const all = await storage2.readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "preference").length,
+    2,
+    "two preferences on disk (plain + attributed), none duplicated",
+  );
+  assert.equal(
+    all.filter((m: MemoryFile) => m.frontmatter.category === "decision").length,
+    1,
+    "one decision on disk, not duplicated",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 (PR #2016): a fact demoted to cold is not re-created as a duplicate hot copy after restart", async () => {
+  // The authoritative content-hash rebuild unions the HOT and COLD tiers, so a
+  // restart's hash index reports a hit for a fact whose only active copy was
+  // demoted to cold/. The connector-aware confirmation scan in
+  // ExtractionPersistCoordinator previously scanned readAllMemories() (hot)
+  // only, found no matching row, flipped exactDuplicate back to false, and
+  // wrote a SECOND active hot copy. It must scan the cold tier too so the
+  // cold-only active copy still suppresses the redundant hot write.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cold-dedup-"));
+  const body =
+    "The disaster-recovery drill runs on the first Sunday of every quarter.";
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+
+  // Phase 1 — persist a fact, then demote its only active copy to cold/.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    const ids = await orch.persistExtraction(factResult(body), storage, null, {
+      sourceConnector: "chatgpt",
+    });
+    assert.equal(ids.length, 1, "fact persisted to hot in phase 1");
+
+    const [hotMemory] = await storage.readAllMemories();
+    assert.ok(hotMemory, "the persisted fact is readable from the hot tier");
+    const { changed } = await storage.migrateMemoryToTier(hotMemory, "cold");
+    assert.equal(changed, true, "the fact was demoted to cold");
+
+    assert.equal(
+      (await storage.readAllMemories()).length,
+      0,
+      "no active copy remains in the hot tier after demotion",
+    );
+    const cold = await storage.readAllColdMemories();
+    assert.equal(cold.length, 1, "the demoted fact is now in the cold tier");
+    assert.equal(
+      cold[0]?.frontmatter.status ?? "active",
+      "active",
+      "the cold copy is still active",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the authoritative rebuild unions hot+cold, so the hash
+  // index reports a hit for the cold-only copy.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+  assert.equal(
+    await orch2.hasContentHashDedup(storage2, body),
+    true,
+    "the demoted fact's hash survives the hot+cold rebuild",
+  );
+
+  // Re-extraction of the same content with the same connector must be deduped
+  // against the cold copy — no second hot copy is created.
+  const reIds = await orch2.persistExtraction(factResult(body), storage2, null, {
+    sourceConnector: "chatgpt",
+  });
+  assert.equal(
+    reIds.length,
+    0,
+    "cold-only active copy suppresses the duplicate hot write (would be 1 without the fix)",
+  );
+
+  assert.equal(
+    (await storage2.readAllMemories()).filter((m: MemoryFile) => m.content.includes(body))
+      .length,
+    0,
+    "no duplicate hot copy was written",
+  );
+  assert.equal(
+    (await storage2.readAllColdMemories()).filter((m: MemoryFile) => m.content.includes(body))
+      .length,
+    1,
+    "the single cold copy remains the only copy of the fact",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 (PR #2016) review: an authoritative instance still confirms a fact a peer flushed after its rebuild (no duplicate)", async () => {
+  // Fresh finding beyond the crash/restart tests above: those model a NEW
+  // process rebuilding from the corpus. Here BOTH instances stay live. Instance
+  // A rebuilds its fact-hash index and marks it authoritative; instance B then
+  // persists AND flushes a fact through the real persist path. A is still
+  // flagged authoritative from its earlier rebuild, so without a freshness gate
+  // its stale in-memory index answers a MISS and skips corpus confirmation —
+  // persisting a duplicate active memory. The cheap per-operation freshness
+  // check (durable index fingerprint advanced) must drop authority so A's
+  // duplicate check finds B's fact.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-peer-fresh-"));
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+    });
+  const orchA = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const orchB = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storageA = await orchA.getStorage("default");
+  const storageB = await orchB.getStorage("default");
+  await storageA.ensureDirectories();
+
+  const body = "The incident bridge auto-pages the on-call SRE after five minutes.";
+
+  // A rebuilds the index and becomes authoritative over a corpus without the
+  // fact — its in-memory MISS for `body` is (correctly) trusted at this point.
+  assert.equal(
+    await storageA.isFactContentHashAuthoritative(),
+    true,
+    "A's fact-hash index rebuilt authoritative",
+  );
+  assert.equal(
+    await orchA.hasContentHashDedup(storageA, body),
+    false,
+    "A has no such fact before B writes it",
+  );
+
+  // B persists and flushes the fact through the real persist path (its
+  // reconcile-save advances the durable fact-hashes.txt A rebuilt from).
+  const bIds = await orchB.persistExtraction(factResult(body), storageB, null);
+  assert.equal(bIds.length, 1, "B persisted the fact");
+
+  // A is still flagged authoritative, but the durable index advanced. The
+  // freshness gate must catch it so A's duplicate check now finds B's fact
+  // instead of trusting a stale miss.
+  assert.equal(
+    await orchA.hasContentHashDedup(storageA, body),
+    true,
+    "A sees B's flushed fact via the freshness-gated rebuild (stale-miss without the fix)",
+  );
+  assert.equal(
+    await storageA.hasFactContentHash(body),
+    true,
+    "A's fact-only membership also reflects B's flushed fact",
+  );
+
+  // Re-extracting the same fact on A is deduped — no duplicate .md is created.
+  const aIds = await orchA.persistExtraction(factResult(body), storageA, null);
+  assert.equal(aIds.length, 0, "A does not re-create B's fact (would be 1 without the fix)");
+  const all = await new StorageManager(memoryDir).readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.content.includes(body)).length,
+    1,
+    "exactly one copy of the fact exists on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 (PR #2016): a re-extracted duplicate backfills temporal bounds onto a COLD-only active copy", async () => {
+  // Finding: when a content-hash hit is confirmed only by the cold tier, the
+  // dedup short-circuit fires but backfillTemporalBoundsOnDedupHit() scanned
+  // readAllMemories() (hot) alone, so a cold active fact re-extracted with a
+  // newly resolved invalid_at never had its cold copy patched and the corrected
+  // temporal write was suppressed — leaving recall with stale bounds. The
+  // helper must scan the cold tier too.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cold-backfill-"));
+  const body =
+    "The legacy billing pipeline drains all remaining invoices before shutdown.";
+  const anchor = "2025-06-20T00:00:00.000Z";
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+      temporalBiTemporal: true,
+    });
+
+  // Phase 1 — persist a fact with NO end bound, then demote it to cold.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const storage = await orch.getStorage("default");
+    const ids = await orch.persistExtraction(factResult(body), storage, null, {
+      sourceConnector: "chatgpt",
+      validAt: anchor,
+    });
+    assert.equal(ids.length, 1, "fact persisted to hot in phase 1");
+
+    const [hotMemory] = await storage.readAllMemories();
+    assert.ok(hotMemory, "the persisted fact is readable from the hot tier");
+    assert.ok(
+      !hotMemory.frontmatter.invalid_at,
+      "the fact has no end bound before re-extraction",
+    );
+    const { changed } = await storage.migrateMemoryToTier(hotMemory, "cold");
+    assert.equal(changed, true, "the fact was demoted to cold");
+    assert.equal(
+      (await storage.readAllMemories()).length,
+      0,
+      "no active copy remains in the hot tier after demotion",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — re-extract the SAME content, now carrying a resolved end bound
+  // ("through 2026" → invalid_at 2027-01-01). The dedup hit is confirmed only
+  // by the cold copy, so the backfill must patch the cold copy's invalid_at.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+  const resultWithEndBound: ExtractionResult = {
+    facts: [{ ...makeFact(body), eventTime: "through 2026" }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  };
+  const reIds = await orch2.persistExtraction(resultWithEndBound, storage2, null, {
+    sourceConnector: "chatgpt",
+    validAt: anchor,
+  });
+  assert.equal(
+    reIds.length,
+    0,
+    "cold-only active copy suppresses the duplicate hot write",
+  );
+  assert.equal(
+    (await storage2.readAllMemories()).length,
+    0,
+    "no duplicate hot copy was written",
+  );
+
+  const cold = await storage2.readAllColdMemories();
+  const coldCopy = cold.find((m: MemoryFile) => m.content.includes(body));
+  assert.ok(coldCopy, "the single cold copy remains");
+  assert.equal(
+    coldCopy!.frontmatter.invalid_at,
+    "2027-01-01T00:00:00.000Z",
+    "the corrected invalid_at was backfilled onto the COLD copy (empty without the fix)",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#1909 (PR #2016): a promoted fact demoted to cold is not re-promoted as a duplicate hot copy after restart", async () => {
+  // Finding: adding cold memories to the authoritative hash rebuild means the
+  // TARGET namespace's hasFactContentHash() can hit a promoted copy that was
+  // demoted to cold/, but the promotion confirmation scan read readAllMemories()
+  // (hot) alone, missed the cold copy, and fell through to writeSealedMemory —
+  // creating a duplicate hot promotion. The confirmation must scan cold too.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cold-promo-"));
+  const body = "The compliance archive is retained for exactly seven years.";
+  const scopePlan = makePromotionScopePlan();
+
+  const makeConfig = () =>
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: false,
+      factDeduplicationEnabled: true,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+  // Phase 1 — pre-write the fact into the TARGET namespace, then demote its
+  // only active copy to cold/.
+  {
+    const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+    const targetStorage = await orch.getStorage(PROMOTION_TARGET_NS);
+    await targetStorage.ensureDirectories();
+    await targetStorage.writeMemory("fact", body, {
+      confidence: 0.9,
+      sourceConnector: "chatgpt",
+    });
+    const [hotMemory] = await targetStorage.readAllMemories();
+    assert.ok(hotMemory, "the pre-written promotion copy is in the hot tier");
+    const { changed } = await targetStorage.migrateMemoryToTier(hotMemory, "cold");
+    assert.equal(changed, true, "the promoted copy was demoted to cold");
+    assert.equal(
+      (await targetStorage.readAllMemories()).length,
+      0,
+      "no active promotion copy remains in the hot tier",
+    );
+    assert.equal(
+      (await targetStorage.readAllColdMemories()).length,
+      1,
+      "the demoted promotion copy is now in the cold tier",
+    );
+  }
+  clearMemoryCache(memoryDir); // model a fresh process
+
+  // Phase 2 — restart: the target rebuild unions hot+cold, so hasFactContentHash
+  // reports a hit for the cold-only promoted copy.
+  const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
+  const storage2 = await orch2.getStorage("default");
+  await storage2.ensureDirectories();
+  const targetStorage2 = await orch2.getStorage(PROMOTION_TARGET_NS);
+  assert.equal(
+    await targetStorage2.hasFactContentHash(body),
+    true,
+    "the demoted promotion copy's hash survives the hot+cold rebuild",
+  );
+
+  const ids = await orch2.persistExtraction(
+    factResult(body),
+    storage2,
+    null,
+    { sourceConnector: "chatgpt" },
+    "default",
+    scopePlan,
+  );
+  assert.equal(ids.length, 1, "source write must succeed");
+
+  // The promotion must be deduped against the cold copy — no duplicate hot
+  // promotion is created (would be 1 without the fix).
+  assert.equal(
+    (await targetStorage2.readAllMemories()).filter((m: MemoryFile) =>
+      m.content.includes(body),
+    ).length,
+    0,
+    "no duplicate hot promotion copy was written",
+  );
+  assert.equal(
+    (await targetStorage2.readAllColdMemories()).filter((m: MemoryFile) =>
+      m.content.includes(body),
+    ).length,
+    1,
+    "the single cold promotion copy remains the only copy",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#2016 thread SDyCj: a peer-advanced hash visible only after the post-miss authority rebuild is not written as a duplicate", async () => {
+  // Distinct from the freshness-gate test in the defer suite: that pre-warms the
+  // freshness so the FIRST hasContentHashDedup already returns a hit. Here we
+  // isolate the exact race INSIDE a single persistExtraction — a peer advances
+  // the durable index AFTER our MISS but BEFORE the authority check. The MISS was
+  // read from the pre-rebuild snapshot; the authority check then rebuilds and
+  // reports authoritative, but `exactDuplicate` stayed the stale `false`, so the
+  // corpus-confirm block was skipped and a duplicate written. The fix re-runs the
+  // lookup against the freshly authoritative set.
+  const { orchestrator, storage, memoryDir } = await makeDedupOrchestrator();
+  const body = "The release train departs every second Thursday at 1500 UTC.";
+
+  // Peer persisted the fact durably through the real path.
+  const first = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(first.length, 1, "peer's initial write persists");
+
+  // Model the race: the first dedup lookup in the NEXT persist reports a stale
+  // MISS (captured before the peer flush was visible to this snapshot); the
+  // authority check that follows rebuilds from the corpus (which contains the
+  // fact) and reports authoritative, so the re-run lookup must catch it.
+  const realHas = orchestrator.hasContentHashDedup.bind(orchestrator);
+  let calls = 0;
+  orchestrator.hasContentHashDedup = async (ts: StorageManager, content: string) => {
+    calls += 1;
+    if (calls === 1) return false; // stale-snapshot miss
+    return realHas(ts, content); // now-authoritative result
+  };
+
+  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  assert.equal(
+    ids.length,
+    0,
+    "the re-run lookup after the authority rebuild catches the peer fact (a duplicate is written without the fix)",
+  );
+
+  const all = await new StorageManager(memoryDir).readAllMemories();
+  assert.equal(
+    all.filter((m: MemoryFile) => m.content.includes(body)).length,
+    1,
+    "exactly one copy of the fact exists on disk",
+  );
+
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("#2016 threads SDzOP/SDzOR: orchestrator archival removal clears fact-only membership (no stale hasFactContentHash)", async () => {
+  // The orchestrator's category-agnostic removeContentHashForMemory (archival /
+  // semantic consolidation) used to mutate only the shared index, leaving the
+  // fact-ONLY membership set holding the removed fact's hash. hasFactContentHash
+  // reads that set when authoritative, so it returned a stale `true` and
+  // wearable / explicit-capture / promotion callers skipped a valid write until
+  // the next corpus rebuild.
+  const { orchestrator, storage } = await makeDedupOrchestrator();
+  const body = "The nightly backup job rotates encryption keys every thirty days.";
+
+  // Register an active fact (shared index + fact-only set).
+  await storage.writeMemory("fact", body, { source: "manual" });
+  assert.equal(
+    await storage.isFactContentHashAuthoritative(),
+    true,
+    "index is authoritative so hasFactContentHash reads the in-memory fact-only set",
+  );
+  assert.equal(await storage.hasFactContentHash(body), true, "fact is registered");
+
+  const [memory] = (await storage.readAllMemories()).filter((m: MemoryFile) =>
+    m.content.includes(body),
+  );
+  assert.ok(memory, "the fact is on disk");
+
+  // Remove via the ORCHESTRATOR coordinator path (what archival uses). It does
+  // NOT save, so the durable index fingerprint is unchanged and
+  // hasFactContentHash still reads the in-memory fact-only set below.
+  await orchestrator.removeContentHashForMemory(storage, memory, "fact-archival");
+
+  assert.equal(
+    await storage.hasFactContentHash(body),
+    false,
+    "the removed fact must not linger in the fact-only membership (stale true without the fix)",
   );
 });

@@ -19,6 +19,38 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 
 OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM calls use the gateway agent model chain instead of requiring a Remnic-specific OpenAI API key.
 
+## Active recall
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `activeRecallPromptAppend` | `(unset)` | Optional guidance appended to the active-recall prompt |
+| `activeRecallPromptOverride` | `(unset)` | Legacy custom instruction retained for compatibility |
+| `activeRecallPromptReplacement` | `(unset)` | Optional complete replacement prompt for the active-recall builder |
+
+`activeRecallPromptReplacement` takes precedence over `activeRecallPromptOverride` when both are set.
+
+## External connectors
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `connectors.googleDrive.clientSecret` | `""` | OAuth2 client secret for the Google Drive connector; use a secret reference |
+| `connectors.googleDrive.refreshToken` | `""` | OAuth2 refresh token for the Google Drive connector; use a secret reference |
+| `connectors.gmail.clientSecret` | `""` | OAuth2 client secret for the Gmail connector; use a secret reference |
+| `connectors.gmail.refreshToken` | `""` | OAuth2 refresh token for the Gmail connector; use a secret reference |
+
+## Trust scoring
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `trustScoreWeights.memoryWorth` | `(default)` | Weight for memory-worth evidence |
+| `trustScoreWeights.provenance` | `(default)` | Weight for provenance evidence |
+| `trustScoreWeights.faithfulness` | `(default)` | Weight for faithfulness evidence |
+| `trustScoreWeights.corroboration` | `(default)` | Weight for corroboration evidence |
+| `trustScoreWeights.contradiction` | `(default)` | Weight for contradiction evidence |
+| `trustScoreWeights.domainCalibration` | `(default)` | Weight for domain-calibration evidence |
+| `trustScoreWeights.feedback` | `(default)` | Weight for feedback evidence |
+| `trustScoreWeights.recency` | `(default)` | Weight for recency evidence |
+
 `captureMode` behavior:
 
 - `implicit`: normal extraction/write behavior.
@@ -71,6 +103,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json` on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
@@ -116,6 +149,8 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 |---------|---------|-------------|
 | `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for assembled recall context.** Controls how much memory context is injected into agent prompts. If unset, falls back to `maxMemoryTokens * 4`. See [Recall Budget Tuning](#recall-budget-tuning) below. |
 | `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
+| `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
+| `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
 | `qmdMaxResults` | `8` | Final result cap after over-scanning and ranking (fetch size may be larger) |
@@ -1159,6 +1194,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `triggerMode` | `smart` | `smart` |
 | `bufferMaxTurns` | `5` | `5` |
 | `bufferMaxMinutes` | `15` | `15` |
+| `bufferSaveDebounceMs` | `3000` | `3000` |
 | `consolidateEveryN` | `3` | `3` |
 | `highSignalPatterns` | `[]` | `[]` |
 | `maxMemoryTokens` | `2000` | `2000` |
@@ -1659,6 +1695,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `recallPipeline[].topK` | (unset) | (unset) |
 | `recallPipeline[].timeoutMs` | (unset) | (unset) |
 | `recallPipeline[].maxPatterns` | (unset) | (unset) |
+| `recallPipeline[].maxRubrics` | (unset) | (unset) |
+| `recallPipeline[].forceGeneric` | (unset) | (unset) |
 | `extractionJudgeEnabled` | `false` | `false` |
 | `extractionJudgeModel` | `""` | `""` |
 | `extractionJudgeBatchSize` | `20` | `20` |

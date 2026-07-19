@@ -1943,6 +1943,7 @@ const pluginDefinition = {
         queryMode: cfg.activeRecallQueryMode,
         promptStyle: cfg.activeRecallPromptStyle,
         customInstruction: cfg.activeRecallCustomInstruction,
+        promptReplacement: cfg.activeRecallPromptReplacement,
         promptAppend: cfg.activeRecallPromptAppend,
         maxSummaryChars: cfg.activeRecallMaxSummaryChars,
         recentUserTurns: cfg.activeRecallRecentUserTurns,
@@ -1954,8 +1955,7 @@ const pluginDefinition = {
         cacheTtlMs: cfg.activeRecallCacheTtlMs,
         persistTranscripts: cfg.activeRecallPersistTranscripts,
         transcriptDir: path.isAbsolute(cfg.activeRecallTranscriptDir)
-          ? cfg.activeRecallTranscriptDir
-          : path.join(pluginStateDir, cfg.activeRecallTranscriptDir),
+          ? cfg.activeRecallTranscriptDir : path.join(pluginStateDir, cfg.activeRecallTranscriptDir),
         entityGraphDepth: cfg.activeRecallEntityGraphDepth,
         includeCausalTrajectories: cfg.activeRecallIncludeCausalTrajectories,
         includeDaySummary: cfg.activeRecallIncludeDaySummary,

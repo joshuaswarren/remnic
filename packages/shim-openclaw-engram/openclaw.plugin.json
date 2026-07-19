@@ -225,6 +225,14 @@
         "type": "string",
         "description": "Optional additional guidance for the active-recall builder."
       },
+      "activeRecallPromptOverride": {
+        "type": "string",
+        "description": "Legacy optional custom instruction for the active-recall builder."
+      },
+      "activeRecallPromptReplacement": {
+        "type": "string",
+        "description": "Optional complete replacement prompt for the active-recall builder."
+      },
       "activeRecallPromptStyle": {
         "type": "string",
         "enum": [
@@ -584,6 +592,13 @@
         "type": "number",
         "default": 5,
         "description": "Max turns before forced extraction"
+      },
+      "bufferSaveDebounceMs": {
+        "type": "integer",
+        "default": 3000,
+        "minimum": 0,
+        "maximum": 2147483647,
+        "description": "Debounce window (ms) for persisting the smart buffer to state/buffer.json. Steady-state buffering coalesces the whole-state write onto a trailing-edge timer instead of rewriting every turn; extraction trigger/clear and shutdown force an immediate flush. 0 restores save-every-turn. Capped at 2147483647 (Node's 32-bit setTimeout limit)."
       },
       "bufferSurpriseK": {
         "type": "number",
@@ -1495,6 +1510,68 @@
         ],
         "default": "off",
         "description": "Passive correction capture (#1581) — detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
+      },
+      "correction": {
+        "type": "object",
+        "description": "Memory-correction contract (issue #1580) — nested form; nested keys win over the flat legacy correction* keys.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the correction contract (plan/apply). Default true."
+          },
+          "applyRequiresConfirm": {
+            "type": "boolean",
+            "description": "Require confirm: true on memory_correct_apply. Default true."
+          },
+          "maxAffected": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum memories one correction plan may touch. Default 10."
+          },
+          "planTtlHours": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Hours a planned correction stays applicable. Default 24."
+          }
+        }
+      },
+      "correctionCapture": {
+        "type": "object",
+        "description": "Implicit correction capture (nested form; nested keys win over the flat legacy correctionCapture* keys).",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "queue",
+              "auto"
+            ],
+            "description": "Implicit capture mode. Default off."
+          },
+          "confidenceFloor": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Minimum detector confidence to act on. Default 0.85."
+          },
+          "autoApplyMaxAffected": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Auto-apply ceiling on affected memories. Default 2."
+          }
+        }
+      },
+      "openclawHostEmbeddingProviderEnabled": {
+        "type": "boolean",
+        "description": "Legacy alias for hostEmbeddingProviderEnabled (OpenClaw host embedding provider). Default true."
+      },
+      "openclawHostEmbeddingProviderId": {
+        "type": "string",
+        "description": "Legacy alias for hostEmbeddingProviderId."
+      },
+      "openclawHostEmbeddingProviderModel": {
+        "type": "string",
+        "description": "Legacy alias for hostEmbeddingProviderModel."
       },
       "correctionEnabled": {
         "type": "boolean",
@@ -4469,6 +4546,26 @@
             },
             "forceGeneric": {
               "type": "boolean"
+            },
+            "maxHints": {
+              "type": "number",
+              "description": "Per-section cap on injected hint lines."
+            },
+            "maxSupportingFacts": {
+              "type": "number",
+              "description": "Per-section cap on supporting facts."
+            },
+            "maxRelatedEntities": {
+              "type": "number",
+              "description": "Per-section cap on related entities."
+            },
+            "recentTurns": {
+              "type": "number",
+              "description": "Per-section recent-turn scan window."
+            },
+            "maxRubrics": {
+              "type": "number",
+              "description": "Per-section cap on injected rubrics."
             }
           },
           "required": [

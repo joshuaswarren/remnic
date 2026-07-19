@@ -63,14 +63,59 @@ test("content-hash: contentHashSource overrides the persisted body for dedup (ru
   }
 });
 
-test("content-hash: non-fact categories do not register a content hash", async () => {
+test("content-hash: the shared dedup index covers every active category, but hasFactContentHash stays fact-only (#2016)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
     await storage.writeMemory("decision", "we chose option B");
+    // writeMemory only registers facts on the write hot path, but the
+    // authoritative corpus rebuild (first fact-hash use) indexes EVERY active
+    // registered category (PR #2016) so a restart never re-creates an identical
+    // decision/preference/commitment. The SHARED content-hash index is therefore
+    // category-agnostic — probe it directly.
+    const shared = await storage.getAuthoritativeFactHashIndex();
+    assert.equal(
+      shared.has("we chose option B"),
+      true,
+      "the shared dedup index must cover all active categories, not only facts",
+    );
+    // hasFactContentHash, however, is fact-ONLY (PR #2016): a non-fact body must
+    // NOT satisfy a fact-hash check, or an unrelated decision/preference/note
+    // would suppress a real fact candidate for direct consumers (wearable/native
+    // writers, explicit-capture) that trust a hit before their own category or
+    // source confirmation.
     assert.equal(
       await storage.hasFactContentHash("we chose option B"),
       false,
-      "non-fact categories must not enter the fact dedup index",
+      "a decision body must not satisfy the fact-only hasFactContentHash",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("content-hash: hasFactContentHash is fact-only — a non-fact body sharing a fact's content never suppresses the fact (#2016)", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const body = "the launch window closes on friday";
+    // An unrelated non-fact memory shares the normalized body.
+    await storage.writeMemory("preference", body);
+    const shared = await storage.getAuthoritativeFactHashIndex();
+    assert.equal(
+      shared.has(body),
+      true,
+      "the shared dedup index carries the non-fact hash (cross-category dedup preserved)",
+    );
+    assert.equal(
+      await storage.hasFactContentHash(body),
+      false,
+      "a preference must not satisfy hasFactContentHash — a direct consumer would else skip a real fact",
+    );
+    // A genuine active fact with the same body DOES satisfy the fact-only check.
+    await storage.writeMemory("fact", body);
+    assert.equal(
+      await storage.hasFactContentHash(body),
+      true,
+      "an active fact with the body satisfies the fact-only check",
     );
   } finally {
     await cleanup();

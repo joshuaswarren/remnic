@@ -40,14 +40,7 @@ export type ActiveRecallPromptStyle =
   | "recall-heavy"
   | "precision-heavy"
   | "preference-only";
-export type ActiveRecallThinking =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive";
+export type ActiveRecallThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 export type ActiveRecallChatType = "direct" | "group" | "channel";
 export type ActiveRecallModelFallbackPolicy = "default-remote" | "resolved-only";
 
@@ -679,6 +672,14 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   bufferMaxTurns: number;
   bufferMaxMinutes: number;
   /**
+   * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
+   * (issue #1909). Steady-state buffering coalesces the whole-state serialize
+   * onto a trailing-edge timer instead of rewriting on every turn; extraction
+   * trigger/clear and shutdown still force an immediate flush. Default 3000.
+   * `0` restores the legacy save-every-turn behavior exactly.
+   */
+  bufferSaveDebounceMs: number;
+  /**
    * Surprise-gated buffer flush (issue #563, D-MEM).
    *
    * When enabled, every turn added to the smart buffer is scored against a
@@ -1173,6 +1174,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   activeRecallQueryMode: ActiveRecallQueryMode;
   activeRecallPromptStyle: ActiveRecallPromptStyle;
   activeRecallCustomInstruction: string | null;
+  activeRecallPromptReplacement: string | null;
+  activeRecallPromptOverride: string | null;
   activeRecallPromptAppend: string | null;
   activeRecallMaxSummaryChars: number;
   activeRecallRecentUserTurns: number;
@@ -3622,63 +3625,19 @@ export interface CompressionGuidelineOptimizerState {
   ruleUpdates?: CompressionGuidelineOptimizerRuleUpdate[];
 }
 
-export type ContinuityIncidentState = "open" | "closed";
-
-export interface ContinuityIncidentRecord {
-  id: string;
-  state: ContinuityIncidentState;
-  openedAt: string;
-  updatedAt: string;
-  triggerWindow?: string;
-  symptom: string;
-  suspectedCause?: string;
-  fixApplied?: string;
-  verificationResult?: string;
-  preventiveRule?: string;
-  closedAt?: string;
-  filePath?: string;
-}
-
-export interface ContinuityIncidentOpenInput {
-  triggerWindow?: string;
-  symptom: string;
-  suspectedCause?: string;
-}
-
-export interface ContinuityIncidentCloseInput {
-  fixApplied: string;
-  verificationResult: string;
-  preventiveRule?: string;
-}
-
-export type ContinuityLoopCadence = "daily" | "weekly" | "monthly" | "quarterly";
-export type ContinuityLoopStatus = "active" | "paused" | "retired";
-
-export interface ContinuityImprovementLoop {
-  id: string;
-  cadence: ContinuityLoopCadence;
-  purpose: string;
-  status: ContinuityLoopStatus;
-  killCondition: string;
-  lastReviewed: string;
-  notes?: string;
-}
-
-export interface ContinuityLoopUpsertInput {
-  id: string;
-  cadence: ContinuityLoopCadence;
-  purpose: string;
-  status: ContinuityLoopStatus;
-  killCondition: string;
-  lastReviewed?: string;
-  notes?: string;
-}
-
-export interface ContinuityLoopReviewInput {
-  status?: ContinuityLoopStatus;
-  notes?: string;
-  reviewedAt?: string;
-}
+// Continuity incident + improvement-loop types live in a sibling module to keep
+// types.ts under its size ceiling; re-exported so `./types.js` imports resolve.
+export type {
+  ContinuityIncidentState,
+  ContinuityIncidentRecord,
+  ContinuityIncidentOpenInput,
+  ContinuityIncidentCloseInput,
+  ContinuityLoopCadence,
+  ContinuityLoopStatus,
+  ContinuityImprovementLoop,
+  ContinuityLoopUpsertInput,
+  ContinuityLoopReviewInput,
+} from "./types-continuity.js";
 
 /** Entry in the access tracking buffer (batched updates) */
 export interface AccessTrackingEntry {

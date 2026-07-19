@@ -25,6 +25,8 @@ test("parseConfig defaults the new OpenClaw runtime-surface settings", () => {
   assert.equal(cfg.activeRecallQueryMode, "recent");
   assert.equal(cfg.activeRecallPromptStyle, "balanced");
   assert.equal(cfg.activeRecallCustomInstruction, null);
+  assert.equal(cfg.activeRecallPromptReplacement, null);
+  assert.equal(cfg.activeRecallPromptOverride, null);
   assert.equal(cfg.activeRecallPromptAppend, null);
   assert.equal(cfg.activeRecallMaxSummaryChars, 220);
   assert.equal(cfg.activeRecallRecentUserTurns, 2);
@@ -92,6 +94,7 @@ test("parseConfig preserves explicit disables, rejects invalid dreaming minima, 
     activeRecallQueryMode: "full",
     activeRecallPromptStyle: "precision-heavy",
     activeRecallCustomInstruction: "  always cite memories  ",
+    activeRecallPromptReplacement: "  replace the prompt  ",
     activeRecallPromptAppend: "  append this  ",
     activeRecallMaxSummaryChars: 10,
     activeRecallRecentUserTurns: 99,
@@ -156,6 +159,7 @@ test("parseConfig preserves explicit disables, rejects invalid dreaming minima, 
   assert.equal(cfg.activeRecallQueryMode, "full");
   assert.equal(cfg.activeRecallPromptStyle, "precision-heavy");
   assert.equal(cfg.activeRecallCustomInstruction, "always cite memories");
+  assert.equal(cfg.activeRecallPromptReplacement, "replace the prompt");
   assert.equal(cfg.activeRecallPromptAppend, "append this");
   assert.equal(cfg.activeRecallMaxSummaryChars, 40);
   assert.equal(cfg.activeRecallRecentUserTurns, 4);
