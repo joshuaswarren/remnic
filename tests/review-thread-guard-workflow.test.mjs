@@ -53,3 +53,17 @@ test("check-unsticker query selects isOutdated so its dedup matches the guard", 
   assert.ok(queryBlock, "check-unsticker reviewThreads query block must exist");
   assert.match(queryBlock[0], /\bisOutdated\b/, "check-unsticker thread nodes must request isOutdated");
 });
+
+test("review-thread guard posts audit replies via 64-bit-safe fullDatabaseId", () => {
+  // databaseId is deprecated for PullRequestReviewComment and null for 64-bit
+  // ids; the enforce-mode audit reply must use fullDatabaseId or it silently
+  // drops and the duplicate can never inherit its canonical's resolution
+  // (codex P2). Guard against a regression to the deprecated field.
+  const workflow = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(workflow, /const commentId = r\.t\.comments\?\.nodes\?\.\[0\]\?\.fullDatabaseId;/);
+  assert.doesNotMatch(
+    workflow,
+    /\bdatabaseId\b/,
+    "guard must not use the deprecated databaseId field",
+  );
+});

@@ -84,7 +84,7 @@ jobs:
                           nodes {
                             path
                             body
-                            databaseId
+                            fullDatabaseId
                             author { login }
                             url
                             createdAt
@@ -118,7 +118,7 @@ jobs:
                       nodes {
                         path
                         body
-                        databaseId
+                        fullDatabaseId
                         author { login }
                         url
                         createdAt
@@ -345,7 +345,10 @@ jobs:
                   auditedDuplicateIds.add(r.id);
                   continue;
                 }
-                const commentId = r.t.comments?.nodes?.[0]?.databaseId;
+                // fullDatabaseId (64-bit safe, string). The deprecated numeric
+                // id field is null for 64-bit ids, which would silently drop the
+                // audit reply and block the duplicate fold (codex P2).
+                const commentId = r.t.comments?.nodes?.[0]?.fullDatabaseId;
                 if (!commentId) continue;
                 const canonicalUrl =
                   records.find((x) => x.id === r.canonicalId)?.t.comments?.nodes?.[0]?.url ?? r.canonicalId;
