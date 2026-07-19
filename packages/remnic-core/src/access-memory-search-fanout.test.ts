@@ -20,10 +20,34 @@ function pluginConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
 }
 
 function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): ResolvedScopeProfilePlan {
+  const base = overrides.baseNamespace ?? "operator-x";
+  const readOrder = overrides.profile?.readOrder ?? ["userProject", "userGlobal", "serverShared"];
+  // Build a layer per readOrder entry so the resolved-userGlobal-readable gate
+  // mirrors what resolveScopeProfilePlan produces (the unit under test reads
+  // profilePlan.layers, not the raw readOrder).
+  const layerKind: Record<string, "user-project" | "user-global" | "server-shared"> = {
+    userProject: "user-project",
+    userGlobal: "user-global",
+    serverShared: "server-shared",
+  };
+  const layerNamespace: Record<string, string> = {
+    userProject: `${base}-project`,
+    userGlobal: base,
+    serverShared: "shared",
+  };
+  const layers = readOrder.map((id) => ({
+    id,
+    kind: layerKind[id],
+    namespace: layerNamespace[id],
+    readable: true,
+    writable: id === "userProject",
+    promotable: id === "userGlobal",
+    reason: "test fixture",
+  }));
   return {
     profileId: "standard",
     profile: {
-      readOrder: ["userProject", "userGlobal", "serverShared"],
+      readOrder,
       writeDefault: "userProject",
       promotionTargets: ["userGlobal", "serverShared"],
       autoPromote: {
@@ -33,15 +57,18 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
         minConfidenceTier: "inferred",
       },
     },
-    baseNamespace: "operator-x",
+    baseNamespace: base,
     writeLayer: "userProject",
     writeNamespace: "",
-    readNamespaces: ["operator-x", "shared"],
-    layers: [],
+    readNamespaces: [base, "shared"],
+
     promotionTargets: [],
     warnings: [],
     ...overrides,
-  } as ResolvedScopeProfilePlan;
+    // Recompute layers from the (possibly overridden) readOrder/baseNamespace
+    // unless the caller supplied their own.
+    layers: overrides.layers ?? layers,
+  } as unknown as ResolvedScopeProfilePlan;
 }
 
 test("resolveMemorySearchDefaultFallback returns the default namespace when a global layer is intended and self resolved away (#2018)", () => {
@@ -114,6 +141,41 @@ test("resolveMemorySearchDefaultFallback ACL-gates the default namespace", () =>
     defaultNamespace: "root",
     namespacePolicies: [
       { name: "root", readPrincipals: ["owner"], writePrincipals: ["owner"] },
+    ],
+  } as Partial<PluginConfig>);
+  const fallback = resolveMemorySearchDefaultFallback({
+    profilePlan: profilePlan(),
+    config,
+    principal: "operator-x",
+  });
+  assert.equal(fallback, null);
+});
+
+test("resolveMemorySearchDefaultFallback returns null when the resolved userGlobal layer is unreadable (#2056 r2)", () => {
+  // userGlobal is listed in readOrder but resolved unreadable (e.g. a policy
+  // withholding the principal): a deliberate omission must not trigger the
+  // fallback.
+  const plan = profilePlan({
+    layers: [
+      { id: "userGlobal", kind: "user-global", namespace: "operator-x", readable: false, writable: false, promotable: false, reason: "policy withholds principal" },
+    ],
+  });
+  const fallback = resolveMemorySearchDefaultFallback({
+    profilePlan: plan,
+    config: pluginConfig(),
+    principal: "operator-x",
+  });
+  assert.equal(fallback, null);
+});
+
+test("resolveMemorySearchDefaultFallback returns null when the principal owns a dedicated namespace (#2056 r2 / #1501 privateOnly)", () => {
+  // Multi-tenant scope-profile deployment: the principal has its own policy,
+  // so its self namespace is NOT the configured default. Reaching into the
+  // default would read another namespace — the fallback must not fire even
+  // though userGlobal is readable and baseNamespace differs from default.
+  const config = pluginConfig({
+    namespacePolicies: [
+      { name: "operator-x", readPrincipals: ["operator-x"], writePrincipals: ["operator-x"] },
     ],
   } as Partial<PluginConfig>);
   const fallback = resolveMemorySearchDefaultFallback({

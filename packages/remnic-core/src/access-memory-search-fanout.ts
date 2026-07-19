@@ -1,4 +1,4 @@
-import { canReadNamespace } from "./namespaces/principal.js";
+import { canReadNamespace, defaultNamespaceForPrincipal } from "./namespaces/principal.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { log } from "./logger.js";
 import type { SearchDegradation, SearchExecutionOptions } from "./search/port.js";
@@ -13,17 +13,20 @@ import type { PluginConfig } from "./types.js";
  * every query silently returned 0.
  *
  * Returns the configured default namespace to merge into the profile read set
- * when the base collection must stay reachable, or `null` when a deliberately
- * narrow profile (#1501 project-only lockdown) or the read ACL says otherwise.
+ * when the base collection must stay reachable, or `null` otherwise. ALL of:
  *
- * Conditions for including the default namespace:
- *   - the profile intends the principal's own global read layer (`readOrder`
- *     includes `userGlobal`). `serverShared` maps to `sharedNamespace`, NOT
- *     the default, so it must not trigger this fallback — a
- *     `["userProject", "serverShared"]` profile deliberately reads only the
- *     shared namespace, not the default;
- *   - the profile resolved the principal's self namespace AWAY from the
- *     configured default (otherwise it is already in the set);
+ *   - the default namespace is THIS principal's own self store — i.e. the
+ *     principal has no dedicated namespace policy, so
+ *     `defaultNamespaceForPrincipal` resolves to the configured default. On a
+ *     multi-tenant scope-profile deployment every principal has its own
+ *     policy; reaching into the default would read ANOTHER namespace, so the
+ *     fallback must not fire (#2056 r2 / #1501 privateOnly);
+ *   - the profile resolved `userGlobal` as a READABLE layer (not just listed
+ *     it in `readOrder`). `serverShared` maps to `sharedNamespace`, not the
+ *     default, and an unreadable resolved layer is a deliberate omission —
+ *     neither may trigger this fallback (#2056 r2);
+ *   - the profile's resolved self namespace is NOT already the default
+ *     (otherwise it is already in the set);
  *   - the principal is authorized to read the default namespace.
  *
  * Pure and side-effect-free so callers can unit-test the decision directly.
@@ -34,12 +37,16 @@ export function resolveMemorySearchDefaultFallback(options: {
   principal: string | undefined;
 }): string | null {
   const { profilePlan, config, principal } = options;
-  const profileAllowsGlobalLayer =
-    profilePlan.profile.readOrder.includes("userGlobal");
+  const principalSelfIsDefault =
+    defaultNamespaceForPrincipal(principal, config) === config.defaultNamespace;
+  const userGlobalLayerReadable = profilePlan.layers.some(
+    (layer) => layer.id === "userGlobal" && layer.readable && Boolean(layer.namespace),
+  );
   const selfResolvedAwayFromDefault =
     profilePlan.baseNamespace !== config.defaultNamespace;
   if (
-    profileAllowsGlobalLayer &&
+    principalSelfIsDefault &&
+    userGlobalLayerReadable &&
     selfResolvedAwayFromDefault &&
     canReadNamespace(principal, config.defaultNamespace, config)
   ) {
