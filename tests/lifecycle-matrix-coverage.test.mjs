@@ -408,11 +408,17 @@ test("discoverSubjectRegistrations records ASI-separated (newline, no semicolon)
     'runLifecycleMatrix("newline-if-body", subject)',
     'for (const x of xs)',
     'runLifecycleMatrix("newline-for-body", subject)',
+    'if (a) foo()',
+    'else',
+    'runLifecycleMatrix("newline-else-body", subject)',
+    'do',
+    'runLifecycleMatrix("newline-do-body", subject)',
+    'while (false)',
   ].join("\n");
   assert.deepEqual(
     discoverSubjectRegistrations(source),
     ["asi-first", "asi-second", "after-call-asi"],
-    "adjacent newline-separated registrations and a call+newline ASI boundary are recorded; same-line wrappers AND a control-header (if/for) body on the next line stay rejected",
+    "adjacent newline-separated registrations and a call+newline ASI boundary are recorded; same-line wrappers and control/body-keyword next-line bodies (if/for headers, else, do) stay rejected",
   );
 });
 

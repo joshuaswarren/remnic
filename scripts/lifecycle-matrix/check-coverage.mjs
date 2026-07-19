@@ -66,6 +66,9 @@ const STATEMENT_CONTINUATION = new Set([
 /** Keywords whose `(...)` is a control-flow header — the following statement is
  *  its BODY, not a new statement (so a newline before it is not an ASI boundary). */
 const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch"]);
+/** Bare keywords whose following statement is a BODY, not a new statement (no
+ *  `(...)` header), so a newline before the call is not an ASI boundary. */
+const BODY_KEYWORDS = new Set(["else", "do", "try", "finally"]);
 
 /** The identifier immediately preceding `source[idx]` (skips trailing whitespace). */
 function precedingWord(source, idx) {
@@ -231,7 +234,8 @@ export function discoverSubjectRegistrations(source) {
         prevSig === "}" ||
         (sawNewlineBeforeToken &&
           !STATEMENT_CONTINUATION.has(prevSig) &&
-          !(prevSig === ")" && lastCloseWasControlHeader))) &&
+          !(prevSig === ")" && lastCloseWasControlHeader) &&
+          !BODY_KEYWORDS.has(precedingWord(source, i)))) &&
       ch === "r" &&
       source.startsWith(SUBJECT_CALL, i) &&
       (i === 0 || !SUBJECT_IDENT.test(source[i - 1])) &&
