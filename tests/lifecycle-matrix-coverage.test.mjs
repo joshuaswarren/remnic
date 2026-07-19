@@ -27,6 +27,7 @@ import {
   manifestShrinkage,
   parseNameStatusZ,
   registeredSubjectNames,
+  stripComments,
   unregisteredSubjects,
 } from "../scripts/lifecycle-matrix/check-coverage.mjs";
 
@@ -308,4 +309,59 @@ test("manifestShrinkage flags lifecycleManifest globs removed vs the base", () =
   });
   assert.deepEqual(manifestShrinkage(base, dropped), ["b.ts"], "removing a manifest glob is shrinkage");
   assert.deepEqual(manifestShrinkage(base, grew), [], "adding globs (with coverage) is allowed");
+});
+
+test("loadCoverageManifest rejects globs that can never match a repo-relative path", () => {
+  const base = { coverage: {}, grandfathered: [] };
+  assert.throws(
+    () => loadCoverageManifest({ ...base, lifecycleManifest: ["/packages/remnic-core/src/orchestrator.ts"] }),
+    /leading-slash forms never match/,
+    "a leading slash must be rejected, not silently ignored",
+  );
+  assert.throws(
+    () => loadCoverageManifest({ ...base, lifecycleManifest: ["packages\\remnic-core\\src\\orchestrator.ts"] }),
+    /must use forward slashes/,
+    "backslashes must be rejected",
+  );
+  assert.throws(
+    () => loadCoverageManifest({ ...base, lifecycleManifest: ["!packages/remnic-core/src/orchestrator.ts"] }),
+    /negation and leading-slash forms/,
+    "negation must be rejected",
+  );
+  assert.throws(
+    () => loadCoverageManifest({ ...base, lifecycleManifest: [" packages/remnic-core/src/orchestrator.ts"] }),
+    /leading\/trailing whitespace/,
+    "surrounding whitespace must be rejected",
+  );
+  assert.throws(
+    () => loadCoverageManifest({ ...base, lifecycleManifest: [""] }),
+    /non-empty string/,
+    "an empty glob must be rejected",
+  );
+});
+
+test("stripComments removes comments but preserves string/template literals", () => {
+  assert.equal(stripComments('a // line\nb'), "a \nb");
+  assert.equal(stripComments("a /* block */ b"), "a  b");
+  assert.equal(stripComments('const u = "https://example.com/x";'), 'const u = "https://example.com/x";');
+  assert.equal(stripComments("const t = `a//b`;"), "const t = `a//b`;");
+});
+
+test("registeredSubjectNames ignores commented-out runLifecycleMatrix examples", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lifecycle-subjects-"));
+  try {
+    writeFileSync(
+      join(dir, "example.test.ts"),
+      [
+        'runLifecycleMatrix("real-subject", subject);',
+        '// runLifecycleMatrix("commented-line", subject)',
+        "/* runLifecycleMatrix(\"commented-block\", subject) */",
+        'const doc = "runLifecycleMatrix(\\"in-string\\", subject)";',
+      ].join("\n"),
+    );
+    const names = registeredSubjectNames(dir);
+    assert.deepEqual(names, ["real-subject"], "only the live registration counts");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

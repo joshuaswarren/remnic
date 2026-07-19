@@ -29,6 +29,76 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(dirname(scriptDir));
 
 /**
+ * A manifest glob must be usable by {@link isIgnoredPath}, which matches
+ * repo-relative POSIX paths. Patterns that can never match such a path — a
+ * leading `/`, negation, backslashes, or surrounding whitespace — are a
+ * manifest ERROR, not silently accepted; otherwise a touched lifecycle file
+ * slips through uncovered. Mirrors the documented subset in scripts/effective-diff.mjs.
+ */
+function validateManifestGlob(glob) {
+  if (typeof glob !== "string" || glob.length === 0) {
+    throw new Error(`coverage manifest: lifecycleManifest entry must be a non-empty string (got ${JSON.stringify(glob)})`);
+  }
+  if (glob !== glob.trim()) {
+    throw new Error(`coverage manifest: glob ${JSON.stringify(glob)} has leading/trailing whitespace and cannot match a repo-relative path`);
+  }
+  if (glob.startsWith("!") || glob.startsWith("/")) {
+    throw new Error(
+      `coverage manifest: unsupported glob ${JSON.stringify(glob)} — negation and leading-slash forms never match repo-relative paths (see scripts/effective-diff.mjs)`,
+    );
+  }
+  if (glob.includes("\\")) {
+    throw new Error(`coverage manifest: glob ${JSON.stringify(glob)} must use forward slashes, not backslashes`);
+  }
+}
+
+/**
+ * Strip `//` line and block comments from JS/TS source, honoring string and
+ * template literals. Subject discovery counts `runLifecycleMatrix("name", ...)`
+ * calls; without this a commented-out example such as
+ * `// runLifecycleMatrix("new-subject", subject)` would be mistaken for a real
+ * registration, letting the gate pass while the matrix runs no such subject.
+ */
+export function stripComments(source) {
+  let out = "";
+  let quote = null;
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const ch = source[i];
+    if (quote) {
+      out += ch;
+      if (ch === "\\" && i + 1 < n) {
+        out += source[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "/") {
+      while (i < n && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "*") {
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i += 1;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+/**
  * Parse + validate a coverage manifest object. Throws on structural errors so a
  * malformed manifest fails the gate loudly instead of silently under-checking.
  */
@@ -41,6 +111,9 @@ export function loadCoverageManifest(raw) {
   const grandfathered = raw.grandfathered;
   if (!Array.isArray(lifecycleManifest) || lifecycleManifest.length === 0) {
     throw new Error("coverage manifest: `lifecycleManifest` must be a non-empty array");
+  }
+  for (const glob of lifecycleManifest) {
+    validateManifestGlob(glob);
   }
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error("coverage manifest: `coverage` must be an object of glob → subject");
@@ -119,7 +192,7 @@ export function registeredSubjectNames(subjectsDir) {
   const pattern = /runLifecycleMatrix\(\s*["']([^"']+)["']/g;
   for (const entry of readdirSync(subjectsDir)) {
     if (!entry.endsWith(".test.ts")) continue;
-    const text = readFileSync(join(subjectsDir, entry), "utf8");
+    const text = stripComments(readFileSync(join(subjectsDir, entry), "utf8"));
     for (const match of text.matchAll(pattern)) names.add(match[1]);
   }
   return [...names];
