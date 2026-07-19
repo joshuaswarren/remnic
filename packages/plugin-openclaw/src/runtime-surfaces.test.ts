@@ -15,6 +15,7 @@ import {
   syncHeartbeatOutcomeLinks,
   syncHeartbeatSurfaceEntries,
 } from "./runtime-surfaces.js";
+import { sealedWriteToLegacyArgs } from "@remnic/core/write-envelope";
 
 function normalizeAttributePairs(pairs: Record<string, string>): string {
   return Object.entries(pairs)
@@ -79,26 +80,28 @@ function makeStorage(initial: MemoryFile[] = []) {
         },
       }));
     },
-    async writeMemory(
-      category: MemoryFrontmatter["category"],
-      content: string,
-      options: {
+    // Production mapper keeps the legacy-shaped recorder faithful (§21).
+    async writeSealedMemory(
+      envelope: import("@remnic/core/write-envelope").SealedMemoryEnvelope,
+      extras: { memoryKind?: MemoryFrontmatter["memoryKind"] },
+    ) {
+      const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
+      const writeOptions = options as {
         tags?: string[];
         source?: string;
         memoryKind?: MemoryFrontmatter["memoryKind"];
         structuredAttributes?: Record<string, string>;
-      } = {},
-    ) {
+      };
       const id = `${category}-${memories.length + 1}`;
       memories.push(
         makeMemory({
           id,
           category,
           content,
-          tags: options.tags,
-          source: options.source,
-          memoryKind: options.memoryKind,
-          structuredAttributes: options.structuredAttributes,
+          tags: writeOptions.tags,
+          source: writeOptions.source,
+          memoryKind: writeOptions.memoryKind,
+          structuredAttributes: writeOptions.structuredAttributes,
         }),
       );
       return { id: id, tombstoneBlocked: false };

@@ -29,6 +29,13 @@
 
 import { scoreImportance } from "../importance.js";
 import type { MemoryWriteResult } from "../storage.js";
+import {
+  composeMemoryEnvelope,
+  type MemoryWriteInput,
+  type SealedMemoryEnvelope,
+  type WriteContext,
+} from "../write-envelope.js";
+import { log } from "../logger.js";
 import type { JudgeBatchResult, JudgeCandidate } from "../extraction-judge.js";
 import { getVerdictKind } from "../extraction-judge.js";
 import { describeErrorForOperator } from "./errors.js";
@@ -61,6 +68,23 @@ import type {
  * anything that is not explicitly "auto" lands in the review queue
  * rather than active recall.
  */
+/**
+ * Compose a wearable-side envelope in salvage mode (issue #1989 PR4):
+ * wearable transcripts and provider-native memories are MACHINE input —
+ * one malformed field must not abort a whole day's sync. Drops are
+ * warn-logged, never silent.
+ */
+function composeSalvagedWearableEnvelope(
+  input: MemoryWriteInput,
+  ctx: WriteContext,
+): SealedMemoryEnvelope {
+  const envelope = composeMemoryEnvelope(input, ctx, { salvage: true });
+  if (envelope.salvageNotes.length > 0) {
+    log.warn(`wearable write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
+  }
+  return envelope;
+}
+
 export function memoryStatusForMode(
   mode: WearableMemoryMode,
 ): Extract<MemoryStatus, "active" | "pending_review"> {
@@ -69,16 +93,14 @@ export function memoryStatusForMode(
 
 /** Narrow writer interface satisfied by `StorageManager`. */
 export interface WearableMemoryWriter {
-  writeMemory(
-    category: MemoryCategory,
-    content: string,
-    options: {
-      confidence?: number;
-      tags?: string[];
-      source?: string;
+  /**
+   * Sealed-envelope write entry point (issue #1989 PR4): cross-cutting
+   * fields ride the composed envelope; per-write extras stay explicit.
+   */
+  writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: {
       importance?: ImportanceScore;
-      validAt?: string;
-      structuredAttributes?: Record<string, string>;
       contentHashSource?: string;
       status?: MemoryStatus;
       memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
@@ -573,22 +595,28 @@ export async function generateWearableMemories(
         wearableDayTag(date),
       ]),
     ];
-    const writeResult = await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
-      confidence:
-        settings.memoryMode === "smart"
-          ? trustById.get(index)?.trust
-          : candidate.fact.confidence,
-      tags,
-      source: wearableSourceLabel(sourceId),
-      importance: candidate.importance,
-      validAt: candidate.conversation.startIso,
-      structuredAttributes: {
-        ...(candidate.fact.structuredAttributes ?? {}),
-        wearableSource: sourceId,
-        wearableDate: date,
-        wearableConversationId: candidate.conversation.id,
-        ...trustAttributes,
+    const factEnvelope = composeSalvagedWearableEnvelope(
+      {
+        content: candidate.fact.content,
+        category: candidate.fact.category,
+        confidence:
+          settings.memoryMode === "smart"
+            ? trustById.get(index)?.trust
+            : candidate.fact.confidence,
+        tags,
+        validAt: candidate.conversation.startIso,
+        structuredAttributes: {
+          ...(candidate.fact.structuredAttributes ?? {}),
+          wearableSource: sourceId,
+          wearableDate: date,
+          wearableConversationId: candidate.conversation.id,
+          ...trustAttributes,
+        },
       },
+      { source: wearableSourceLabel(sourceId) },
+    );
+    const writeResult = await deps.writer.writeSealedMemory(factEnvelope, {
+      importance: candidate.importance,
       contentHashSource: candidate.fact.content,
       status,
     });
@@ -633,21 +661,27 @@ export async function writeDailyDigestMemory(
     `${conversations.length} recorded conversation${conversations.length === 1 ? "" : "s"}.\n` +
     lines.join("\n");
   if (await writer.hasFactContentHash(content)) return false;
-  await writer.writeMemory("moment", content, {
-    confidence: 0.9,
-    tags: [
-      WEARABLE_SOURCE_PREFIX,
-      wearableSourceLabel(sourceId),
-      wearableDayTag(date),
-      "daily-digest",
-    ],
-    source: wearableSourceLabel(sourceId),
-    importance: scoreImportance(content, "moment", ["daily-digest"]),
-    validAt: `${date}T00:00:00.000Z`,
-    structuredAttributes: {
-      wearableSource: sourceId,
-      wearableDate: date,
+  const digestEnvelope = composeSalvagedWearableEnvelope(
+    {
+      content,
+      category: "moment",
+      confidence: 0.9,
+      tags: [
+        WEARABLE_SOURCE_PREFIX,
+        wearableSourceLabel(sourceId),
+        wearableDayTag(date),
+        "daily-digest",
+      ],
+      validAt: `${date}T00:00:00.000Z`,
+      structuredAttributes: {
+        wearableSource: sourceId,
+        wearableDate: date,
+      },
     },
+    { source: wearableSourceLabel(sourceId) },
+  );
+  await writer.writeSealedMemory(digestEnvelope, {
+    importance: scoreImportance(content, "moment", ["daily-digest"]),
     contentHashSource: content,
     status: memoryStatusForMode(settings.memoryMode),
     memoryKind: "episode",
@@ -759,24 +793,30 @@ export async function importNativeMemories(
           : {}),
       };
     }
-    const nativeWriteResult = await deps.writer.writeMemory("fact", content, {
-      confidence,
-      tags: [
-        ...new Set([
-          ...(memory.tags ?? []),
-          WEARABLE_SOURCE_PREFIX,
-          wearableSourceLabel(sourceId),
-          "native-import",
-        ]),
-      ],
-      source: `${wearableSourceLabel(sourceId)}:native`,
-      importance: scoreImportance(content, "fact", memory.tags ?? []),
-      validAt: memory.createdIso,
-      structuredAttributes: {
-        wearableSource: sourceId,
-        wearableNativeId: memory.id,
-        ...trustAttributes,
+    const nativeEnvelope = composeSalvagedWearableEnvelope(
+      {
+        content,
+        category: "fact",
+        confidence,
+        tags: [
+          ...new Set([
+            ...(memory.tags ?? []),
+            WEARABLE_SOURCE_PREFIX,
+            wearableSourceLabel(sourceId),
+            "native-import",
+          ]),
+        ],
+        validAt: memory.createdIso,
+        structuredAttributes: {
+          wearableSource: sourceId,
+          wearableNativeId: memory.id,
+          ...trustAttributes,
+        },
       },
+      { source: `${wearableSourceLabel(sourceId)}:native` },
+    );
+    const nativeWriteResult = await deps.writer.writeSealedMemory(nativeEnvelope, {
+      importance: scoreImportance(content, "fact", memory.tags ?? []),
       contentHashSource: content,
       status,
     });

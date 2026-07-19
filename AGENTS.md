@@ -132,7 +132,8 @@ cancel those reruns. Work with this, not against it:
 
 ## Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)
 
-PRs in retrieval, session identity, compaction, cache, or reset/end-of-session code
+PRs in retrieval, session identity, compaction, cache, reset/end-of-session,
+namespace/ACL scoping, or flush-plan/extraction lifecycle code
 often attract many review rounds for the same structural reason:
 
 1. The subsystem is stateful across multiple entrypoints.
@@ -169,6 +170,36 @@ Minimum scenario matrix for session/retrieval/cache work:
 
 If you cannot explain the behavior for every row in that matrix, the PR is not
 ready for external review.
+
+Minimum scenario matrix for namespace/ACL scoping work (the dominant review
+cluster of 2026-06-20..07-04, ~80 findings concentrated in #1506/#1519 — a
+semantic, single-subsystem invariant class with no textual signature, so it is
+NOT catchable by a `.omp/rules/` stream rule; model it here instead):
+
+- read path and write path resolve through the SAME namespace resolver
+  (`resolveWritableNamespace` / scoped-key helpers), never `defaultNamespace`
+  on one side
+- authenticated principal — never a client-supplied `actor`/namespace — drives
+  authorization AND the audit trail
+- slot-based lookups reject foreign plugin IDs
+- search scope constrained to the session-derived namespace (no cross-tenant
+  leakage from an un-namespaced scan)
+- catalog `lastWriteAt` / last-seen markers keyed by the sanitized namespace,
+  with a reversible encoding (no lossy collision between distinct namespaces)
+- profile/scope layering precedence is deterministic and applied identically on
+  every entrypoint
+
+Minimum scenario matrix for flush-plan / extraction lifecycle work (#1487 and
+kin — also semantic, not stream-rule-able):
+
+- timed-out `before_reset` flush aborts the in-flight extraction before the
+  buffer is cleared (late flush cannot clear turns buffered after reset)
+- explicit/force flush bypasses the dedupe fingerprint (`skipDedupeCheck`)
+- buffer key is propagated through every extraction path (no `"default"`
+  fallback clearing the wrong buffer)
+- persisted head/marker advances only after a non-empty, fully-persisted batch
+- deadline is shared across retries (elapsed time subtracted, not reset)
+- `session_end` drains the same way as `before_reset`
 
 ## Mechanical Stream Rules (`.omp/rules/`)
 
@@ -1938,6 +1969,43 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 34. **Distinguish empty results from backend failures** — `search()` returning `[]` for both "index is empty" and "endpoint returned 5xx" prevents callers from short-circuiting on genuine failures. Use distinct result shapes: `{ok: true, results: []}` vs `{ok: false, error: "backend_unavailable"}`.
 43. **Direct-write paths must trigger reindex** — bypassing the normal extraction→persist→index pipeline (e.g., heartbeat import writing directly to storage) leaves data undiscoverable until unrelated maintenance. After direct writes, explicitly call the reindex step.
 49. **Deduplicate batch operation inputs before executing** — duplicate rollout slugs in a batch rename cause ENOENT crash when the second rename tries to move an already-moved file. Check for duplicates before processing, or verify source exists before each move. PR #392.
+
+## Sealed memory-write envelope (issue #1989)
+
+How memory writes work since the #1989 series landed — this DESCRIBES the
+mechanism (decision A); the enforced gate is `scripts/check-envelope-belt.mjs`
+in CI's checks job.
+
+- Every production memory write composes a `SealedMemoryEnvelope` via
+  `composeMemoryEnvelope(input, ctx, opts?)` in
+  `packages/remnic-core/src/write-envelope.ts` and persists through
+  `storage.writeSealedMemory(envelope, extras)`. `StorageManager.writeMemory`
+  remains the single persistence engine — `writeSealedMemory` delegates
+  through the exported `sealedWriteToLegacyArgs` mapper, which test doubles
+  also use so stub behavior cannot drift (§21).
+- **Strict vs salvage:** operator/system-built input composes STRICT (an
+  invalid value is a caller bug that must surface — explicit capture,
+  coding surfaces, audit trails). Machine-generated or replayed-from-store
+  input composes with `{ salvage: true }` (extraction, wearables,
+  consolidation, promotions, corrections, admin replays): invalid OPTIONAL
+  fields drop with notes on `envelope.salvageNotes`, which callers warn-log —
+  visible, never silent. Content/category/source/validAt stay fatal in both
+  modes.
+- **Adding a cross-cutting field is a ONE-MODULE change:** add it to
+  `MemoryWriteInput`/`SealedMemoryEnvelope` with normalization in the
+  composer, classify it in exactly one of `WRITE_FINGERPRINT_FIELDS`
+  (identity) or `FINGERPRINT_EXEMPT_FIELDS` (provenance), and map it in
+  `sealedWriteToLegacyArgs`. Compile-time assertions refuse unclassified or
+  doubly-classified fields, and `UncoveredAccessFingerprintField` forces an
+  explicit access-surface fingerprint decision.
+  `write-envelope.extension.test.ts` is the living demonstration.
+- **Idempotency fingerprints:** the access surfaces' stored hashes are
+  load-bearing state (no TTL). Their payloads build through the per-surface
+  builders in write-envelope.ts (`buildAccessWriteRequestFingerprint`,
+  `buildObserveRequestFingerprint`) which reproduce the historical shapes
+  byte-for-byte; `access-fingerprint-parity.test.ts` is the safety net.
+  Unifying onto the versioned `buildWriteIdempotencyPayload` shape requires
+  an explicit stored-state migration.
 
 ## À-la-carte packaging
 

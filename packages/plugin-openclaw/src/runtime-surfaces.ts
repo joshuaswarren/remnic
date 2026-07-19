@@ -1,3 +1,4 @@
+import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import type {
   ConsolidationObservation,
   MemoryFile,
@@ -22,10 +23,10 @@ type StorageWriteOptions = {
 
 export interface RuntimeSurfaceStorage {
   readAllMemories(): Promise<MemoryFile[]>;
-  writeMemory(
-    category: MemoryFrontmatter["category"],
-    content: string,
-    options?: StorageWriteOptions,
+  /** Sealed-envelope write entry point (issue #1989 PR4). */
+  writeSealedMemory(
+    envelope: import("@remnic/core/write-envelope").SealedMemoryEnvelope,
+    extras: { memoryKind?: MemoryFrontmatter["memoryKind"] },
   ): Promise<MemoryWriteResult>;
   updateMemory(id: string, newContent: string): Promise<boolean>;
   writeMemoryFrontmatter(
@@ -373,13 +374,16 @@ export async function syncDreamSurfaceEntries(params: {
     };
     const existing = findSurfaceMemoryByAttribute(memories, DREAM_ENTRY_ID_KEY, entry.id);
     if (!existing) {
-      const { id: memoryId } = await storage.writeMemory("moment", content, {
-        confidence: 0.85,
-        tags,
-        source: "dreams.md",
-        memoryKind: "dream",
-        structuredAttributes,
-      });
+      // Sealed-envelope write (issue #1989 PR4): journal-file content is
+      // replayed machine data — salvage; drops warn-logged by the helper.
+      const { id: memoryId } = await storage.writeSealedMemory(
+        composeSalvagedEnvelope(
+          "dreams-surface",
+          { content, category: "moment", confidence: 0.85, tags, structuredAttributes },
+          { source: "dreams.md" },
+        ),
+        { memoryKind: "dream" },
+      );
       memories.push(
         makeSurfaceMemorySnapshot({
           id: memoryId,
@@ -445,13 +449,15 @@ export async function syncHeartbeatSurfaceEntries(params: {
       findUniqueSurfaceMemoryBySlug(memories, HEARTBEAT_SURFACE_TYPE, entry.slug);
 
     if (!existing) {
-      const { id: memoryId } = await storage.writeMemory("principle", content, {
-        confidence: 0.95,
-        tags,
-        source: "heartbeat.md",
-        memoryKind: "procedural",
-        structuredAttributes,
-      });
+      // Sealed-envelope write (issue #1989 PR4): see the dreams surface.
+      const { id: memoryId } = await storage.writeSealedMemory(
+        composeSalvagedEnvelope(
+          "heartbeat-surface",
+          { content, category: "principle", confidence: 0.95, tags, structuredAttributes },
+          { source: "heartbeat.md" },
+        ),
+        { memoryKind: "procedural" },
+      );
       memories.push(
         makeSurfaceMemorySnapshot({
           id: memoryId,

@@ -1,4 +1,5 @@
 import test from "node:test";
+import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -42,7 +43,7 @@ function makeTrajectory(
 
 test("procedure mining deduplicates by full cluster hash instead of truncated cluster text", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-procedure-miner-"));
-  const written: Array<{ structuredAttributes: Record<string, string> }> = [];
+  const written: Array<{ structuredAttributes: Record<string, string>; status?: string }> = [];
   const storage = {
     async readAllMemories() {
       return written.map((entry, index) => ({
@@ -54,13 +55,12 @@ test("procedure mining deduplicates by full cluster hash instead of truncated cl
         },
       }));
     },
-    async writeMemory(
-      _category: string,
-      _body: string,
-      options: { structuredAttributes?: Record<string, string> },
-    ) {
+    async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: { status?: string }) {
       written.push({
-        structuredAttributes: options.structuredAttributes ?? {},
+        structuredAttributes: envelope.rawStructuredAttributes
+          ? { ...envelope.rawStructuredAttributes }
+          : {},
+        status: extras.status,
       });
       return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },
@@ -95,6 +95,12 @@ test("procedure mining deduplicates by full cluster hash instead of truncated cl
     assert.equal(result.proceduresWritten, 2);
     assert.equal(new Set(written.map((entry) => entry.structuredAttributes.procedure_cluster)).size, 1);
     assert.equal(new Set(written.map((entry) => entry.structuredAttributes.procedure_cluster_hash)).size, 2);
+    // §21 review: the status extra is parameter-dependent behavior — these
+    // fixtures do not meet the auto-promote gate, so both land in review.
+    assert.deepEqual(
+      written.map((entry) => entry.status),
+      ["pending_review", "pending_review"],
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -102,7 +108,7 @@ test("procedure mining deduplicates by full cluster hash instead of truncated cl
 
 test("procedure mining serializes concurrent writes for the same cluster", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-procedure-miner-concurrent-"));
-  const written: Array<{ structuredAttributes: Record<string, string> }> = [];
+  const written: Array<{ structuredAttributes: Record<string, string>; status?: string }> = [];
   const storage = {
     async readAllMemories() {
       return written.map((entry, index) => ({
@@ -114,14 +120,13 @@ test("procedure mining serializes concurrent writes for the same cluster", async
         },
       }));
     },
-    async writeMemory(
-      _category: string,
-      _body: string,
-      options: { structuredAttributes?: Record<string, string> },
-    ) {
+    async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: { status?: string }) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       written.push({
-        structuredAttributes: options.structuredAttributes ?? {},
+        structuredAttributes: envelope.rawStructuredAttributes
+          ? { ...envelope.rawStructuredAttributes }
+          : {},
+        status: extras.status,
       });
       return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },

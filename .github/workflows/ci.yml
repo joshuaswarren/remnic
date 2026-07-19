@@ -108,6 +108,8 @@ jobs:
       - name: Review pattern check
         run: bash scripts/check-review-patterns.sh
 
+      - name: Envelope belt (issue #1989)
+        run: node scripts/check-envelope-belt.mjs
       # Merge-skew scoping (issue #1995): on PRs, per-file ceiling failures
       # only fire for files THIS PR changed — a PR must not fail because an
       # unrelated merge grew a grandfathered file on main after this PR's

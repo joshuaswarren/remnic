@@ -22,6 +22,7 @@ import {
   type DecisionStatus,
 } from "./decision-records.js";
 import { log } from "../logger.js";
+import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryWriteResult } from "../storage.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -170,21 +171,15 @@ export interface DecisionSurfaceStorage {
   readonly namespace: string;
   readAllMemories(): Promise<readonly MemoryFile[]>;
   getMemoryById(id: string): Promise<MemoryFile | null>;
-  writeMemory(
-    category: "decision",
-    content: string,
-    options: {
-      confidence?: number;
-      tags?: string[];
-      source?: string;
-      /** Outer memory lifecycle status — set to "archived" for inactive
-       *  decisions so generic recall/search/maintenance exclude them
-       *  (review P2: persist inactive decision statuses in frontmatter). */
-      status?: MemoryStatus;
-      /** Decision-specific lifecycle marker, mirrored from the serialized
-       *  body so the list/get projection has one authoritative source. */
-      structuredAttributes?: Record<string, string>;
-    },
+  /**
+   * Sealed-envelope write entry point (issue #1989 PR4). The envelope owns
+   * content/category/tags/attributes; the outer lifecycle status (set to
+   * "archived" for inactive decisions so generic recall/search/maintenance
+   * exclude them — review P2) stays a per-write extra.
+   */
+  writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: { status?: MemoryStatus },
   ): Promise<MemoryWriteResult>;
   writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -345,10 +340,21 @@ async function decisionRecord(
   const content = serializeDecisionRecord(record);
   const storage = await ctx.resolveStorage(request);
   const isActive = ACTIVE_DECISION_STATUSES.has(status);
-  const { id: memoryId } = await storage.writeMemory("decision", content, {
-    confidence: 1.0,
-    tags: ["decision-record"],
-    source: "coding-decision",
+  // Sealed-envelope write (issue #1989 PR4): operator/API-built decision
+  // record — strict compose; envelope-owned fields ride the envelope, the
+  // status/connector extras stay explicit.
+  const decisionEnvelope = composeMemoryEnvelope(
+    {
+      content,
+      category: "decision",
+      confidence: 1.0,
+      tags: ["decision-record"],
+      structuredAttributes: { decisionStatus: status },
+      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+    },
+    { source: "coding-decision" },
+  );
+  const { id: memoryId } = await storage.writeSealedMemory(decisionEnvelope, {
     // Persist the decision lifecycle in BOTH places so generic
     // recall/search/maintenance (which read frontmatter.status) and the
     // decision list/get projection (which reads structuredAttributes) agree:
@@ -358,9 +364,7 @@ async function decisionRecord(
     //     (rejected/superseded) so the outer memory pipeline excludes them
     //     from the active corpus exactly like a supersede does (review P2:
     //     persist inactive decision statuses in frontmatter).
-    structuredAttributes: { decisionStatus: status },
     status: isActive ? undefined : "archived",
-    ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
   });
   log.info(
     `access-write op=coding_decision/record memoryId=${memoryId} status=${status}`,
@@ -411,19 +415,23 @@ async function decisionSupersede(
     supersedes: targetId,
   };
   const replacementContent = serializeDecisionRecord(replacement);
-  const { id: replacementId, tombstoneBlocked: replacementBlocked } = await storage.writeMemory(
-    "decision",
-    replacementContent,
-    {
-      confidence: 1.0,
-      tags: ["decision-record"],
-      source: "coding-decision",
-      // Mirror decisionRecord: persist structuredAttributes.decisionStatus on
-      // the replacement so list/get projection and QMD indexing see the
-      // authoritative marker (review: supersede omits decisionStatus attrs).
-      structuredAttributes: { decisionStatus: "accepted" },
-      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
-    },
+  // Sealed-envelope write (issue #1989 PR4): strict — see decisionRecord.
+  // Mirror decisionRecord: persist structuredAttributes.decisionStatus on
+  // the replacement so list/get projection and QMD indexing see the
+  // authoritative marker (review: supersede omits decisionStatus attrs).
+  const { id: replacementId, tombstoneBlocked: replacementBlocked } = await storage.writeSealedMemory(
+    composeMemoryEnvelope(
+      {
+        content: replacementContent,
+        category: "decision",
+        confidence: 1.0,
+        tags: ["decision-record"],
+        structuredAttributes: { decisionStatus: "accepted" },
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+      },
+      { source: "coding-decision" },
+    ),
+    {},
   );
   if (replacementBlocked) {
     // #1645: the replacement decision matched a tombstone (pending_review).

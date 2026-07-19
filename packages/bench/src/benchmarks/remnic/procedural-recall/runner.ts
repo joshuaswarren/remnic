@@ -14,6 +14,7 @@ import {
   buildProcedureRecallSection,
   buildProcedureMarkdownBody,
 } from "@remnic/core";
+import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
 import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions, TaskResult } from "../../../types.js";
 import { aggregateTaskScores, exactMatch } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
@@ -101,10 +102,17 @@ export async function runProceduralRecallBenchmark(
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       const body = buildProcedureMarkdownBody(sample.procedureSteps);
-      await storage.writeMemory(
-        "procedure",
-        `${sample.procedurePreamble}\n\n${body}`,
-        { source: "bench", tags: sample.procedureTags },
+      // Sealed-envelope write (issue #1989 PR4): bench-built corpus.
+      await storage.writeSealedMemory(
+        composeMemoryEnvelope(
+          {
+            content: `${sample.procedurePreamble}\n\n${body}`,
+            category: "procedure",
+            tags: sample.procedureTags,
+          },
+          { source: "bench" },
+        ),
+        {},
       );
 
       const config = parseConfig({

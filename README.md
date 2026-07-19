@@ -12,6 +12,84 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 - **Sharp retrieval.** Hybrid search (BM25 + vector + reranking) over rebuildable indexes, with graph recall, memory-worth scoring, and per-result provenance you can inspect.
 - **MIT licensed.** Free, open, and built to be forked.
 
+<!-- BEGIN OPENAI BUILD WEEK 2026 HIGHLIGHT — temporary submission section -->
+## OpenAI Build Week 2026: Remnic Relay
+
+**Correct once. Every agent learns.**
+
+Remnic is shared memory for AI agents. **Remnic Relay** is the human-governed
+correction loop we built for OpenAI Build Week: it exposes the stale belief
+behind an agent failure, shows where that belief came from, puts the proposed
+replacement behind human approval, and proves a brand-new agent learned the
+approved correction from Remnic.
+
+The demonstration follows an online-payment failure. One Codex agent reads the
+current rule while another confidently applies an older retry rule. Relay opens
+an evidence X-Ray connecting the recalled memory to the failing test, presents
+a before-and-after memory diff for approval, preserves the old belief as
+superseded, and then starts a fresh agent with no handoff. The mission is only
+complete when that agent recalls the replacement and turns the same payment
+test green.
+
+### What we built during Build Week
+
+- a versioned contract for conflicts, evidence, corrections, lineage, and
+  fresh-agent verification;
+- a human-gated correction engine with append-only supersession;
+- Mission Control views for conflict inspection, evidence X-Ray, approval,
+  propagation, and the final mission receipt;
+- an isolated four-role Codex mission runner using only a cleared synthetic
+  Remnic instance; and
+- a dependency-free judge package that binds the recorded agent run, product
+  UI, synthetic fixture, and verification receipt into one reproducible story.
+
+### How Codex and GPT-5.6 were used
+
+Codex collaborated across the new extension: contract modeling, correction
+engine, Mission Control, isolated runner, adversarial tests, evidence sealing,
+and judge packaging. GPT-5.6 also powers the demonstrated product workflow
+itself through four isolated Codex roles: Scout reads the accepted rule, a
+Builder acts on stale memory, a correction agent proposes the replacement, and
+a fresh Builder proves the approved memory propagated without an agent
+handoff. Agents propose; a human approves; the test proves the result.
+
+### Install, supported platforms, and testing
+
+The fastest judge path uses the committed synthetic mission and requires no
+dependency install, model call, account, or credential:
+
+```bash
+git clone https://github.com/joshuaswarren/remnic.git
+cd remnic
+node scripts/relay/judge-package.mjs serve
+```
+
+Open the printed loopback URL, compare the current and stale beliefs, open the
+X-Ray, review and approve the proposed correction, and follow the fresh agent
+through the passing payment test. Verify the same evidence from the terminal:
+
+```bash
+node scripts/relay/judge-package.mjs verify
+node scripts/verify-relay-judge-package.mjs
+```
+
+- **Judge package:** Linux with procfs and Node.js 22.12 or newer; Linux x64 is
+  independently clean-room verified.
+- **Mission Control:** Chrome/Chromium 151 verified at desktop and mobile
+  sizes, including keyboard-only and reduced-motion flows.
+- **Live isolated mission runner:** Linux x64 with Codex CLI 0.144.4 or newer
+  and the repository development dependencies. This is not required for the
+  judge experience.
+- **macOS and Windows:** use the submission video/gallery or run the verifier
+  in a supported Linux environment. The executable verifier fails closed where
+  equivalent filesystem-safety primitives are unavailable.
+
+Remnic's core memory engine, integrations, and benchmark framework predate
+Build Week. The [submission ledger](HACKATHON.md) separates that foundation
+from the new Relay work. See the [judge guide](docs/remnic-relay/JUDGE-GUIDE.md)
+and [claim ledger](docs/remnic-relay/CLAIMS.md) for the complete evidence.
+<!-- END OPENAI BUILD WEEK 2026 HIGHLIGHT -->
+
 ## Why Remnic
 
 Most agents do not fail because they lack another prompt. They fail because they do not understand the user, the project, the boundaries, or what "good" means in context. Every session starts from zero: the agent forgets your name, your projects, the decisions you already made, and the bugs you already debugged. You re-explain the same context over and over, and the agent still repeats the same mistakes.
@@ -187,7 +265,7 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 
 **Glass-box tooling.** [Recall X-ray](docs/xray.md) shows which retrieval tier produced each result and why, the [daily briefing](docs/guides/daily-briefing.md) surfaces active entities and open commitments, and the [operator console](docs/console.md) gives live engine introspection with trace record and replay.
 
-**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) — Remnic's OpenAI Build Week 2026 entry ([submission ledger](HACKATHON.md)) — checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one, and runs offline in one command. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
+**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
 
 **More capabilities.** A few of the deeper features, each with its own guide:
 
@@ -196,50 +274,6 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 - [Pattern reinforcement](docs/pattern-reinforcement.md) — cross-session pattern detection with a recall boost for reinforced primitives.
 - [Shared context](docs/shared-context.md) — cross-agent shared intelligence for multi-agent teams.
 - [Coding-agent memory](docs/coding-agent.md) — repo conventions, review behavior, and ask-before rules for coding tools.
-
-## OpenAI Build Week: MemCorrect
-
-MemCorrect is Remnic's Developer Tools entry for OpenAI Build Week 2026. It
-benchmarks the memory system behind an AI agent through a generic MCP adapter,
-then writes a provenance-locked result and offline HTML report. The keyless
-test path takes about two minutes and needs no dataset, API key, or model call:
-
-```bash
-npm install -g @remnic/cli@9.6.34 @remnic/bench@9.6.34
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
-remnic bench runs list
-remnic bench export <run-id> --format html --output ./memcorrect-report.html
-```
-
-That exact 9.6.34 registry install and run passed in a clean Linux x86_64
-prefix. The Node CLI also supports macOS; the submission does not claim a
-final macOS global-install receipt. On Windows, use WSL2; native Windows is not
-claimed. The MCP adapter supports stdio and Streamable HTTP.
-
-Codex accelerated three concrete in-window decisions: it shaped the generic
-MCP tool/argument mapping and backend safety checks, implemented the sealed
-structured-output judge and fail-closed provider semantics, and built the
-single-file report/provenance flow plus the isolated one-shot Codex CLI credit
-guard. GPT-5.6 is integrated as the opt-in Responses API judge under model id
-`gpt-5.6`. The separate ChatGPT-backed benchmark path uses
-`gpt-5.6-luna` for bulk work and `gpt-5.6-terra` for quality-critical judging;
-`gpt-5.6-sol` is outside the bounded plan. We do not claim a GPT-5.6 score
-until a successful artifact and manifest are committed.
-
-To exercise the optional API judge, provide your own key and add the judge
-flags to the same smoke command:
-
-```bash
-export OPENAI_API_KEY=...
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
-  --judge-provider openai --judge-model gpt-5.6
-```
-
-Remnic and the original benchmark package predate Build Week. The
-[submission evidence ledger](HACKATHON.md) draws the prior-work boundary
-commit by commit, while the [demo script](docs/hackathon/demo-script.md) and
-[Devpost draft](docs/hackathon/devpost-description.md) keep model and package
-claims tied to reproducible receipts.
 
 ## Privacy and your data
 

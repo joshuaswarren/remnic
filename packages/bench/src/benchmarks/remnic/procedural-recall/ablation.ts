@@ -23,6 +23,7 @@ import {
   buildProcedureRecallSection,
   buildProcedureMarkdownBody,
 } from "@remnic/core";
+import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
 import { pairedDeltaConfidenceInterval } from "../../../stats/bootstrap.js";
 import type { ConfidenceInterval } from "../../../types.js";
 import {
@@ -136,10 +137,17 @@ async function runSide(
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       const body = buildProcedureMarkdownBody(scenario.procedureSteps);
-      await storage.writeMemory(
-        "procedure",
-        `${scenario.procedurePreamble}\n\n${body}`,
-        { source: "bench", tags: scenario.procedureTags },
+      // Sealed-envelope write (issue #1989 PR4): bench-built corpus.
+      await storage.writeSealedMemory(
+        composeMemoryEnvelope(
+          {
+            content: `${scenario.procedurePreamble}\n\n${body}`,
+            category: "procedure",
+            tags: scenario.procedureTags,
+          },
+          { source: "bench" },
+        ),
+        {},
       );
 
       const config = parseConfig({

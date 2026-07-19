@@ -35,7 +35,7 @@ import { expandTildePath } from "./utils/path.js";
 // boolean-coercion logic that connectors/index.ts already exports. The helper
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
-import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { coerceBool, coerceInstallExtension, coerceNumber, warnUnrecognizedConfig } from "./connectors/coerce.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
@@ -349,23 +349,23 @@ function parsePortNumber(
 // fall back to their own default. Guards against the "string `false` is
 // truthy" footgun (CLAUDE.md gotcha #36) when config values arrive from
 // CLI/env/JSON sources where booleans are sometimes string-typed.
-function coerceBooleanLike(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
+//
+// The boolean/string path delegates to the canonical `coerceBool`
+// (connectors/coerce.ts), which warns on a present-but-unrecognized string
+// rather than letting a typo silently take the caller's default (often a
+// fail-open `?? true`). Numeric 1/0 is handled here because config values can
+// arrive as JSON numbers, which `coerceBool` intentionally does not accept.
+function coerceBooleanLike(value: unknown, label?: string): boolean | undefined {
   if (typeof value === "number") {
     if (value === 1) return true;
     if (value === 0) return false;
+    warnUnrecognizedConfig(
+      `ignoring unrecognized boolean value ${JSON.stringify(value)}${label ? ` for ${label}` : ""}; ` +
+        `expected true|false|1|0|yes|no|on|off — using default`,
+    );
     return undefined;
   }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
-      return true;
-    }
-    if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
-      return false;
-    }
-  }
-  return undefined;
+  return coerceBool(value, label);
 }
 
 function readNestedConfig(

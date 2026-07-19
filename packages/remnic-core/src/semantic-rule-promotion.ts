@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { composeMemoryEnvelope } from "./write-envelope.js";
+import { log } from "./logger.js";
 import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -638,10 +640,17 @@ export async function promoteSemanticRuleFromMemory(options: {
     }
 
     await lock.beforePromotedRuleWrite();
-    const { id: id } = await storage.writeMemory("rule", content, {
-      confidence,
-      tags: candidateBase.tags,
-      source: "semantic-rule-promotion",
+    // Sealed-envelope write (issue #1989 PR4): rule content and tags are
+    // derived from stored/LLM data — salvage; drops are warn-logged.
+    const ruleEnvelope = composeMemoryEnvelope(
+      { content, category: "rule", confidence, tags: candidateBase.tags },
+      { source: "semantic-rule-promotion" },
+      { salvage: true },
+    );
+    if (ruleEnvelope.salvageNotes.length > 0) {
+      log.warn(`rule-promotion write salvaged invalid fields: ${ruleEnvelope.salvageNotes.join("; ")}`);
+    }
+    const { id: id } = await storage.writeSealedMemory(ruleEnvelope, {
       lineage: candidateBase.lineage,
       sourceMemoryId: options.sourceMemoryId,
       memoryKind: "note",

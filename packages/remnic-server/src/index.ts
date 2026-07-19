@@ -17,6 +17,8 @@ import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, getAllValidTokenEntriesCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
+import { envOverrides, readCompatEnv } from "./server-env.js";
+export { envOverrides };
 
 // ── Config loading ──────────────────────────────────────────────────────────
 
@@ -39,10 +41,6 @@ export interface ServerConfig {
     /** OAuth authorization-server facade for ChatGPT dev-mode apps (parsed by oauth.ts). */
     oauth?: unknown;
   };
-}
-
-function readCompatEnv(primary: string, legacy: string): string | undefined {
-  return process.env[primary] ?? process.env[legacy];
 }
 
 function parseServerPort(value: unknown, source: string): number {
@@ -224,32 +222,6 @@ function loadResolvedConfig(resolved: ResolvedConfigPath): ServerConfig {
   }
 
   return loadConfigFile(resolved.path);
-}
-
-function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Record<string, unknown> } {
-  const overrides: Record<string, unknown> = {};
-  const remnic: Record<string, unknown> = {};
-
-  const port = readCompatEnv("REMNIC_PORT", "ENGRAM_PORT");
-  const host = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
-  const authToken = readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
-  const adminConsoleEnabled = readCompatEnv("REMNIC_ADMIN_CONSOLE_ENABLED", "ENGRAM_ADMIN_CONSOLE_ENABLED");
-  const adminConsolePublicDir = readCompatEnv("REMNIC_ADMIN_CONSOLE_PUBLIC_DIR", "ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR");
-  const adminConsolePrefillToken = readCompatEnv("REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN", "ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN");
-  const readinessOverride = process.env.REMNIC_READY_OVERRIDE;
-  if (port) overrides.port = port;
-  if (host) overrides.host = host;
-  if (authToken) overrides.authToken = authToken;
-  if (adminConsoleEnabled) overrides.adminConsoleEnabled = adminConsoleEnabled;
-  if (adminConsolePublicDir) overrides.adminConsolePublicDir = adminConsolePublicDir;
-  if (adminConsolePrefillToken) overrides.adminConsolePrefillToken = adminConsolePrefillToken;
-  if (readinessOverride !== undefined) overrides.readinessOverride = readinessOverride;
-
-  if (process.env.OPENAI_API_KEY) remnic.openaiApiKey = process.env.OPENAI_API_KEY;
-  const memoryDir = readCompatEnv("REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR");
-  if (memoryDir) remnic.memoryDir = memoryDir;
-
-  return { ...overrides, ...(Object.keys(remnic).length > 0 ? { remnic } : {}) };
 }
 
 export function mergeRemnicConfigForServer(

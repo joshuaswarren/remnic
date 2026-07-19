@@ -1,4 +1,5 @@
 import test from "node:test";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.ts";
 
@@ -54,6 +55,20 @@ function buildHarness(options?: {
     readAllEntities: async () => [],
     writeMemory: async (category: string, content: string, writeOptions?: Record<string, unknown>) => {
       capturedWrites.push({ category, content, options: writeOptions });
+      if (options?.writeMemory) {
+        return await options.writeMemory(category, content, writeOptions);
+      }
+      return { id: "fact-stored", tombstoneBlocked: false };
+    },
+    // Production mapper keeps the legacy recorder faithful (§21).
+    writeSealedMemory: async (envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) => {
+      const { category, content, options: writeOptions } = sealedWriteToLegacyArgs(envelope, extras);
+      // Drop explicit-undefined mapper keys: writeMemory treats them as
+      // absent, and the assertions compare against the meaningful set.
+      const definedOptions = Object.fromEntries(
+        Object.entries(writeOptions).filter(([, value]) => value !== undefined),
+      );
+      capturedWrites.push({ category, content, options: definedOptions });
       if (options?.writeMemory) {
         return await options.writeMemory(category, content, writeOptions);
       }

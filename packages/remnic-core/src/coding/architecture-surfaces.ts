@@ -34,6 +34,7 @@ import type { MemoryWriteResult } from "../storage.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
+import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Subcommands
@@ -149,17 +150,10 @@ export interface ArchitectureSurfaceStorage {
   /** The resolved namespace — used for logging/observability. */
   readonly namespace: string;
   readAllMemories(): Promise<readonly MemoryFile[]>;
-  writeMemory(
-    category: "fact",
-    content: string,
-    options: {
-      confidence?: number;
-      tags?: string[];
-      source?: string;
-      status?: MemoryStatus;
-      structuredAttributes?: Record<string, string>;
-      sourceConnector?: string;
-    },
+  /** Sealed-envelope write entry point (issue #1989 PR4). */
+  writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: { status?: MemoryStatus },
   ): Promise<MemoryWriteResult>;
   updateMemory(
     id: string,
@@ -320,13 +314,22 @@ async function architectureRefresh(
       log.warn(
         `coding_architecture/refresh: updateMemory returned false for id=${existing.frontmatter.id} — falling back to writeMemory`,
       );
-      const fallbackWrite = await storage.writeMemory("fact", cardContent, {
-        confidence: 1.0,
-        tags,
-        source: "coding-architecture",
-        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
-        structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
-      });
+      // Sealed-envelope write (issue #1989 PR4): system-built card content —
+      // strict compose; an invalid card is a code bug that must surface.
+      const fallbackWrite = await storage.writeSealedMemory(
+        composeMemoryEnvelope(
+          {
+            content: cardContent,
+            category: "fact",
+            confidence: 1.0,
+            tags,
+            structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
+            ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+          },
+          { source: "coding-architecture" },
+        ),
+        {},
+      );
       log.info(
         `access-write op=coding_architecture/refresh memoryId=${fallbackWrite.id} (fallback write) byteSize=${buildResult.card.byteSize}`,
       );
@@ -345,13 +348,21 @@ async function architectureRefresh(
   }
 
   // First card for this namespace — write a new memory.
-  const newWrite = await storage.writeMemory("fact", cardContent, {
-    confidence: 1.0,
-    tags,
-    source: "coding-architecture",
-    ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
-    structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
-  });
+  // Sealed-envelope write (issue #1989 PR4): strict — see the fallback site.
+  const newWrite = await storage.writeSealedMemory(
+    composeMemoryEnvelope(
+      {
+        content: cardContent,
+        category: "fact",
+        confidence: 1.0,
+        tags,
+        structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+      },
+      { source: "coding-architecture" },
+    ),
+    {},
+  );
   log.info(
     `access-write op=coding_architecture/refresh memoryId=${newWrite.id} (new) byteSize=${buildResult.card.byteSize}`,
   );

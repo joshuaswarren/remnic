@@ -60,6 +60,22 @@ export function initLogger(backend?: LoggerBackend, debug?: boolean, options?: L
   _clock = options?.clock ?? (() => new Date().toISOString());
 }
 
+// Whether a real backend has been installed via initLogger. Lets diagnostics
+// that must not be swallowed (config misconfiguration warnings) fall back to
+// console when a host-agnostic consumer uses core without calling initLogger.
+export function isLoggerInitialized(): boolean {
+  return _backend !== NOOP_LOGGER;
+}
+
+// Restore the pristine no-op backend (as at module load, before initLogger).
+// Primarily a test seam for exercising the standalone/no-host path.
+export function resetLogger(): void {
+  _backend = NOOP_LOGGER;
+  _debug = false;
+  _timestamps = true;
+  _clock = () => new Date().toISOString();
+}
+
 // Format one log line: "<iso> remnic: <msg>" when timestamps are enabled,
 // otherwise the legacy "remnic: <msg>". Timestamp is per-call.
 function fmt(msg: string, label = "remnic"): string {
