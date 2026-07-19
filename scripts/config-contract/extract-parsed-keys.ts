@@ -76,6 +76,12 @@ const JS_VALUE_MEMBERS = new Set([
  * surface `<arrayKey>.<itemField>` keys (issue #1990 review).
  */
 const ARRAY_CALLBACK_METHODS = new Set(["map", "flatMap", "forEach", "filter"]);
+/**
+ * Array-returning transforms that preserve item shape. Unwrapped to find the
+ * underlying array when following a callback after a chain like
+ * `arr.filter(...).map(fn)` (issue #1990 review).
+ */
+const ARRAY_CHAIN_METHODS = new Set(["map", "flatMap", "filter", "slice", "concat"]);
 
 interface AliasInfo {
   /** Path prefix segments from the parser input to this alias ("" = root). */
@@ -304,6 +310,50 @@ function extractParserKeys(
     return null;
   };
 
+  // Follow a per-item array callback (named helper or inline function) with the
+  // array-key prefix so `<arrayKey>.<itemField>` keys surface (issue #1990).
+  const followArrayItemCallback = (itemPrefix: string[], callback: ts.Node): void => {
+    if (!recursion || recursion.depth >= 6) return;
+    if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) {
+      extractParserKeys(callback, sourceFile, repoRoot, out, itemPrefix, {
+        program: recursion.program,
+        depth: recursion.depth + 1,
+        seen: recursion.seen,
+      });
+      return;
+    }
+    if (ts.isIdentifier(callback)) {
+      const recursionKey = `map:${callback.text}@${itemPrefix.join(".")}`;
+      if (recursion.seen.has(recursionKey)) return;
+      recursion.seen.add(recursionKey);
+      const helper = findFunctionForCall(recursion.program, callback.text, 0);
+      if (helper) {
+        extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, itemPrefix, {
+          program: recursion.program,
+          depth: recursion.depth + 1,
+          seen: recursion.seen,
+        });
+      }
+    }
+  };
+
+  // Resolve the underlying array alias through a shape-preserving transform
+  // chain (`arr.filter(...).map(fn)`). Returns null when `expr` is not itself a
+  // chain, so the direct-array path keeps its existing handling.
+  const resolveArrayChainReceiver = (
+    expr: ts.Expression,
+  ): { info: AliasInfo; segments: string[] } | null => {
+    let recv: ts.Expression = expr;
+    while (
+      ts.isCallExpression(recv) &&
+      ts.isPropertyAccessExpression(recv.expression) &&
+      ARRAY_CHAIN_METHODS.has(recv.expression.name.text)
+    ) {
+      recv = recv.expression.expression;
+    }
+    return recv === expr ? null : resolveAliasChain(recv);
+  };
+
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const method = node.expression;
@@ -332,32 +382,35 @@ function extractParserKeys(
             ARRAY_CALLBACK_METHODS.has(method.name.text) &&
             node.arguments.length >= 1
           ) {
-            const itemPrefix = [...prefix, ...resolved.info.prefix, ...resolved.segments];
-            const callback = node.arguments[0];
-            if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) {
-              extractParserKeys(callback, sourceFile, repoRoot, out, itemPrefix, {
-                program: recursion.program,
-                depth: recursion.depth + 1,
-                seen: recursion.seen,
-              });
-            } else if (ts.isIdentifier(callback)) {
-              const recursionKey = `map:${callback.text}@${itemPrefix.join(".")}`;
-              if (!recursion.seen.has(recursionKey)) {
-                recursion.seen.add(recursionKey);
-                const helper = findFunctionForCall(recursion.program, callback.text, 0);
-                if (helper) {
-                  extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, itemPrefix, {
-                    program: recursion.program,
-                    depth: recursion.depth + 1,
-                    seen: recursion.seen,
-                  });
-                }
-              }
-            }
+            followArrayItemCallback(
+              [...prefix, ...resolved.info.prefix, ...resolved.segments],
+              node.arguments[0],
+            );
           }
           for (const argument of node.arguments) visit(argument);
           return;
         }
+      }
+    }
+    // Array callback after a shape-preserving transform chain:
+    // `arr.filter(...).map(fn)` — the outer receiver is a transform call that the
+    // direct resolveAliasChain leaves null, so resolve the underlying array
+    // through the chain and follow the callback with its prefix. No early return:
+    // forEachChild still visits the inner transform's own callback so no existing
+    // `arr.map(fn).filter(...)` traversal is lost (issue #1990 review).
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ARRAY_CALLBACK_METHODS.has(node.expression.name.text) &&
+      node.arguments.length >= 1 &&
+      !resolveAliasChain(node.expression.expression)
+    ) {
+      const arrayReceiver = resolveArrayChainReceiver(node.expression.expression);
+      if (arrayReceiver && arrayReceiver.info.prefix.length + arrayReceiver.segments.length > 0) {
+        followArrayItemCallback(
+          [...prefix, ...arrayReceiver.info.prefix, ...arrayReceiver.segments],
+          node.arguments[0],
+        );
       }
     }
     // Alias creation: const X = <expr resolving to alias(+segments)>

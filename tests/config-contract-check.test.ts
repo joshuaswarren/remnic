@@ -397,6 +397,9 @@ export function parseRootConfig(raw: unknown): Rec {
   const cfg = raw && typeof raw === "object" ? (raw as Rec) : {};
   return {
     parsedList: Array.isArray(cfg.parsedList) ? cfg.parsedList.map(parseItem) : [],
+    chainList: Array.isArray(cfg.chainList)
+      ? cfg.chainList.filter((v) => v !== null).map(parseItem)
+      : [],
     passThroughList: Array.isArray(cfg.passThroughList) ? (cfg.passThroughList as unknown[]) : [],
     combo: cfg.combo && typeof cfg.combo === "object" ? { keep: (cfg.combo as Rec).keep } : {},
     altBlock: cfg.altBlock,
@@ -410,7 +413,7 @@ export function parseRootConfig(raw: unknown): Rec {
   const docsPath = path.join(root, "docs.md");
   writeFileSync(
     docsPath,
-    "Config: `parsedList[].id`, `parsedList[].weight`, `passThroughList`, `combo`, `combo.keep`, `altBlock`, `mapBlock`.\n",
+    "Config: `parsedList[].id`, `parsedList[].weight`, `chainList[].id`, `chainList[].weight`, `passThroughList`, `combo`, `combo.keep`, `altBlock`, `mapBlock`.\n",
   );
   return {
     run: () =>
@@ -526,6 +529,30 @@ test("map-shaped config: typed additionalProperties values are walked, not opaqu
       false,
       JSON.stringify(result.violations),
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("array chain: filter().map(parseItem) follows the callback so item drift surfaces (#1990)", () => {
+  const fixture = makeArrayFixtureRepo({
+    configSchema: {
+      properties: {
+        parsedList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, weight: { type: "number" } } } },
+        // chainList is parsed via cfg.chainList.filter(...).map(parseItem); the
+        // map callback must be followed THROUGH the filter chain, so a bogus
+        // item field is dead-schema and a parser-read one omitted is missing.
+        chainList: { type: "array", items: { type: "object", properties: { id: { type: "string" }, deadItem: { type: "string" } } } },
+        passThroughList: { type: "array", items: { type: "object", properties: {} } },
+        combo: { type: "object", properties: { keep: { type: "string" } } },
+      },
+    },
+  });
+  try {
+    const result = fixture.run();
+    const kinds = result.violations.map((v) => `${v.kind}:${v.key}`);
+    assert.ok(kinds.some((k) => k.startsWith("dead-schema:chainList.deadItem@")), JSON.stringify(kinds));
+    assert.ok(kinds.some((k) => k.startsWith("missing-schema:chainList.weight@")), JSON.stringify(kinds));
   } finally {
     fixture.cleanup();
   }
