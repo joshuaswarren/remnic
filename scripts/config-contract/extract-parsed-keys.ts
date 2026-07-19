@@ -907,7 +907,14 @@ if (invokedDirectly) {
     entryFunction: "parseConfig",
     includeFiles: collectModuleParserFiles(repoRoot),
   });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  // Omit the volatile `line` from the committed snapshot: the stable `id`
+  // identifies each construct, so an unrelated edit that merely shifts lines no
+  // longer forces snapshot churn / a preflight failure (issue #1990 review).
+  const snapshot = {
+    ...result,
+    unparseable: result.unparseable.map(({ file, reason, id }) => ({ file, reason, id })),
+  };
+  process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
 }
 
 /** All module-parser files the real extraction should include. */

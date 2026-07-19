@@ -87,7 +87,7 @@ test("real config.ts extraction matches the committed snapshot (config-surface c
     readFileSync(path.join(REPO_ROOT, "scripts", "config-contract", "parsed-keys.snapshot.json"), "utf8"),
   ) as {
     keys: string[];
-    unparseable: Array<{ file: string; line: number; reason: string; id: string }>;
+    unparseable: Array<{ file: string; reason: string; id: string }>;
     ambiguousValueMembers: string[];
   };
   assert.deepEqual(
@@ -97,7 +97,13 @@ test("real config.ts extraction matches the committed snapshot (config-surface c
       "(npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json) " +
       "so the config-surface change is visible in review",
   );
-  assert.deepEqual(actual.unparseable, snapshot.unparseable);
+  // Compare stable fields only — the committed snapshot omits the volatile
+  // `line`, so a construct that merely moves lines does not churn the snapshot
+  // (issue #1990 review).
+  assert.deepEqual(
+    actual.unparseable.map(({ file, reason, id }) => ({ file, reason, id })),
+    snapshot.unparseable,
+  );
   // Round-3 review: the new ambiguousValueMembers surface must round-trip
   // too — dropped-but-reviewable value-member paths are part of the snapshot.
   assert.deepEqual(actual.ambiguousValueMembers, snapshot.ambiguousValueMembers);
