@@ -307,15 +307,30 @@ async function recoverOrphanedClaims(ledgerPath: string): Promise<void> {
  * survive. Content was already read at each spill's original (AAD-bound) path by
  * {@link collectPendingSpills}, so the claimed file is never decrypted again. A
  * rename that fails (read-only dir, vanished file) skips that spill this pass; it
- * is retried later. Returns the rows of every successfully-claimed spill plus the
- * claimed paths, which the caller deletes only AFTER the commit succeeds.
+ * is retried later. Returns one bounded batch and its next input index. A spill
+ * larger than the batch limit is committed alone so the drain always makes
+ * progress.
  */
+const PENDING_SPILL_BATCH_MAX_BYTES = 1024 * 1024;
+
 async function claimPendingSpills(
   spills: Array<{ file: string; content: string }>,
-): Promise<{ payload: string; claimedPaths: string[] }> {
+  startIndex: number,
+): Promise<{
+  payload: string;
+  claimedPaths: string[];
+  nextIndex: number;
+}> {
   const parts: string[] = [];
   const claimedPaths: string[] = [];
-  for (const spill of spills) {
+  let payloadBytes = 0;
+  let nextIndex = startIndex;
+  for (; nextIndex < spills.length; nextIndex++) {
+    const spill = spills[nextIndex]!;
+    const spillBytes = Buffer.byteLength(spill.content, "utf8");
+    if (parts.length > 0 && payloadBytes + spillBytes > PENDING_SPILL_BATCH_MAX_BYTES) {
+      break;
+    }
     const claimedPath = `${spill.file}${CLAIMED_SPILL_SUFFIX}`;
     try {
       await rename(spill.file, claimedPath);
@@ -324,8 +339,9 @@ async function claimPendingSpills(
     }
     parts.push(spill.content);
     claimedPaths.push(claimedPath);
+    payloadBytes += spillBytes;
   }
-  return { payload: parts.join(""), claimedPaths };
+  return { payload: parts.join(""), claimedPaths, nextIndex };
 }
 
 /** Delete claimed spill files after their rows are durably committed. A delete
@@ -348,13 +364,14 @@ async function rollbackClaimedSpills(claimedPaths: string[]): Promise<void> {
 }
 
 /**
- * Under the held ledger lock, fold any durable pending spills into the ledger
- * together with `extraPayload` (a new event's rows, or "" for a drain-only pass)
- * using the crash-safe claim/commit protocol (#2033): recover orphaned claims,
- * read each spill, CLAIM it by rename, COMMIT the claimed rows plus the extra
- * payload, then FINALIZE by deleting the claimed files. A commit failure rolls
- * the claims back to unclaimed spills and rethrows, so a failed write neither
- * loses nor double-commits rows. Returns true when spill rows were committed.
+ * Under the held ledger lock, fold durable pending spills into the ledger in
+ * bounded batches together with `extraPayload` (a new event's rows, or "" for a
+ * drain-only pass). Each batch uses the crash-safe claim/commit protocol:
+ * recover orphaned claims, read each spill, CLAIM it by rename, COMMIT the
+ * claimed rows, then FINALIZE by deleting the claimed files. A commit failure
+ * rolls the current batch's claims back to unclaimed spills and rethrows, so a
+ * failed write neither loses nor double-commits rows. Returns true when spill
+ * rows were committed.
  */
 async function foldPendingSpillsIntoAppend(
   ledgerPath: string,
@@ -368,23 +385,28 @@ async function foldPendingSpillsIntoAppend(
   }
   await recoverOrphanedClaims(ledgerPath);
   const spills = await collectPendingSpills(ledgerPath, pending);
-  const { payload: claimed, claimedPaths } =
-    spills.length > 0 ? await claimPendingSpills(spills) : { payload: "", claimedPaths: [] };
-  const combined = `${claimed}${extraPayload}`;
-  if (combined.length === 0) {
-    // Drain-only pass with no claimable rows: still delete any (empty) files we
-    // claimed so they do not linger, then report nothing drained.
-    await finalizeClaimedSpills(claimedPaths);
-    return false;
+  let nextIndex = 0;
+  let drained = false;
+
+  while (nextIndex < spills.length) {
+    const batch = await claimPendingSpills(spills, nextIndex);
+    nextIndex = batch.nextIndex;
+    if (batch.claimedPaths.length === 0) {
+      if (nextIndex >= spills.length) break;
+      continue;
+    }
+    try {
+      await append(batch.payload);
+    } catch (err) {
+      await rollbackClaimedSpills(batch.claimedPaths);
+      throw err;
+    }
+    await finalizeClaimedSpills(batch.claimedPaths);
+    drained = true;
   }
-  try {
-    await append(combined);
-  } catch (err) {
-    await rollbackClaimedSpills(claimedPaths);
-    throw err;
-  }
-  await finalizeClaimedSpills(claimedPaths);
-  return claimed.length > 0;
+
+  if (extraPayload.length > 0) await append(extraPayload);
+  return drained;
 }
 
 /**

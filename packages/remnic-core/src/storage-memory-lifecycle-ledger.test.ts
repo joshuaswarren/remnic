@@ -605,6 +605,40 @@ test("drainPendingLifecycleAppendsSerialized folds queued events into the ledger
   }
 });
 
+
+test("pending drain commits oversized queues in bounded append batches (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drain-bounded-"));
+  try {
+    const ledgerPath = path.join(dir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, "", "utf8");
+    const pending = plaintextPendingIo();
+    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
+    const first = `first:${"x".repeat(700 * 1024)}\n`;
+    const second = `second:${"y".repeat(700 * 1024)}\n`;
+    await pending.writeSecure(path.join(spillDir, "a.jsonl"), first);
+    await pending.writeSecure(path.join(spillDir, "b.jsonl"), second);
+    const batches: string[] = [];
+
+    const drained = await drainPendingLifecycleAppendsSerialized(
+      ledgerPath,
+      async (payload) => {
+        batches.push(payload);
+        await appendFile(ledgerPath, payload, "utf8");
+      },
+      pending,
+    );
+
+    assert.equal(drained, true, "rows were drained");
+    assert.equal(batches.length, 2, "each oversized spill is committed separately");
+    assert.ok(batches.every((payload) => Buffer.byteLength(payload, "utf8") <= 1024 * 1024));
+    assert.equal(await readFile(ledgerPath, "utf8"), first + second);
+    assert.equal((await readdir(spillDir)).length, 0, "all committed spills are removed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failed ledger write leaves pending spills intact for retry (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-append-drainfail-"));
   try {
