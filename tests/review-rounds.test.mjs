@@ -352,3 +352,30 @@ test("numeric activity ids produce distinct markers", () => {
   });
   assert.deepEqual(marker, { id: "review:12345", at: "2026-07-18T12:00:00.000Z" });
 });
+
+test("a clean bot round waits instead of redispatching", () => {
+  const state = openRound({ threads: [] });
+  const result = decideRound({
+    ...base,
+    state,
+    threads: [],
+    now: "2026-07-18T12:10:00.000Z",
+    botActivity: null,
+  });
+  assert.equal(result.action, "wait");
+  assert.equal(result.reason, "no-round-work");
+});
+
+test("a bot response that names an older SHA is not current", () => {
+  assert.equal(hasCurrentBotActivity({
+    aliases: ["cursor"],
+    headSha: "abcdef1234567890",
+    headCommittedAt: "2026-07-18T12:00:00.000Z",
+    reviews: [{
+      id: "review-old-sha",
+      author: { login: "cursor" },
+      body: "Reviewed commit 1234567. Looks good.",
+      submitted_at: "2026-07-18T12:10:00.000Z",
+    }],
+  }), null);
+});

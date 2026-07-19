@@ -195,6 +195,8 @@ export function decideRound({
 
   const unresolved = getGuardUnresolvedThreads(next, threads, botAliases);
   if (unresolved.length > 0) return wait(next, "round-threads-open");
+  if (next.threadIds.length === 0 && next.pushes === 0) return wait(next, "no-round-work");
+
   if (forceDispatch) {
     return {
       action: "dispatch",
@@ -308,16 +310,41 @@ function activityId(activity, kind) {
   return commit || at ? `${kind}:${commit ?? ""}:${at ?? ""}` : null;
 }
 
+const SHA_REFERENCE_PATTERN =
+  /\b(?:sha|commit|head|rev|revision)\s*[:#]?\s*([0-9a-f]{7,40})\b|\bfor\s+([0-9a-f]{7,40})\b/gi;
+
+function bodyShaReferences(body) {
+  if (typeof body !== "string") return [];
+  return [...body.matchAll(SHA_REFERENCE_PATTERN)]
+    .map((match) => (match[1] ?? match[2] ?? "").toLowerCase())
+    .filter(Boolean);
+}
+
+function bodyReferencesCurrentHead(body, headSha) {
+  if (typeof body !== "string" || typeof headSha !== "string" || !headSha.trim()) return true;
+  const references = bodyShaReferences(body);
+  if (references.length === 0) return false;
+  const normalizedHead = headSha.trim().toLowerCase();
+  return references.some((reference) => normalizedHead.startsWith(reference));
+}
+
+function activityBody(activity) {
+  return [activity?.body, activity?.text].find((value) => typeof value === "string");
+}
+
 function activityMentionsHead(activity, headSha) {
   if (!headSha) return false;
-  const commit = activity?.commit_id ?? activity?.original_commit_id;
+  const commit = activity?.commit_id ?? activity?.original_commit_id ?? activity?.head_sha ?? activity?.headSha;
   if (commit) return commit === headSha;
-  const body = [activity?.body, activity?.text].find((value) => typeof value === "string");
-  return typeof body === "string" && body.includes(headSha);
+  const body = activityBody(activity);
+  if (typeof body !== "string") return false;
+  return body.includes(headSha) || bodyReferencesCurrentHead(body, headSha);
 }
 
 function isCurrentActivity(activity, headSha, headCommittedAt) {
   if (activityMentionsHead(activity, headSha)) return true;
+  const body = activityBody(activity);
+  if (typeof body === "string" && bodyShaReferences(body).length > 0) return false;
   const activityTimeValue = parseTime(activityTime(activity));
   const headTime = parseTime(headCommittedAt);
   return activityTimeValue > 0 && headTime > 0 && activityTimeValue >= headTime;
