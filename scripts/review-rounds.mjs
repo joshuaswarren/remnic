@@ -173,6 +173,27 @@ export function decideRound({
         state: openRound({ state, headSha, now, threads, botActivity: activity }),
       };
     }
+    // Force-dispatch is an absolute maintainer override in ANY state: reopen a
+    // fresh round on the current head and dispatch it (cursor). This branch is
+    // reachable (unlike the earlier dead `!dispatchIssuedAt` guard removed in an
+    // earlier round) because closed states always carry dispatchIssuedAt.
+    if (forceDispatch) {
+      return {
+        action: "dispatch",
+        reason: "force-label",
+        state: closeForDispatch(
+          openRound({ state, headSha, now, threads, botActivity: activity ?? state.lastBotActivity ?? null }),
+          now,
+          "force-label",
+        ),
+      };
+    }
+    // A new push after dispatch (before the next bot round opens) must still be
+    // recorded so the ledger head/telemetry tracks the latest SHA rather than
+    // staying pinned to the dispatched head (codex).
+    if (typeof headSha === "string" && headSha.length > 0 && headSha !== state.headSha) {
+      return wait(noteHead(state, headSha, now), "round-dispatched");
+    }
     return wait(state, "round-dispatched");
   }
 

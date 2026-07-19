@@ -286,6 +286,38 @@ test("repeated activity snapshot after dispatch does not reopen a round", () => 
   assert.equal(result.reason, "round-dispatched");
 });
 
+test("force-dispatch reopens and dispatches a closed round (absolute override)", () => {
+  const state = openRound();
+  const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const dispatched = decideRound({
+    ...base, state, threads: addressed, now: "2026-07-18T12:10:00.000Z", botActivity: null,
+  }).state;
+  assert.equal(dispatched.status, "closed");
+  const result = decideRound({
+    ...base, state: dispatched, threads: addressed, forceDispatch: true,
+    now: "2026-07-18T12:12:00.000Z", botActivity: false,
+  });
+  assert.equal(result.action, "dispatch");
+  assert.equal(result.reason, "force-label");
+  assert.equal(result.state.round, dispatched.round + 1);
+});
+
+test("a new push after dispatch updates the ledger head instead of pinning it", () => {
+  const state = openRound();
+  const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const dispatched = decideRound({
+    ...base, state, threads: addressed, now: "2026-07-18T12:10:00.000Z", botActivity: null,
+  }).state;
+  const result = decideRound({
+    ...base, state: dispatched, headSha: "head-2", threads: addressed,
+    now: "2026-07-18T12:12:00.000Z", botActivity: false,
+  });
+  assert.equal(result.action, "wait");
+  assert.equal(result.reason, "round-dispatched");
+  assert.equal(result.state.headSha, "head-2");
+  assert.equal(result.state.pushes, dispatched.pushes + 1);
+});
+
 test("new bot activity after dispatch opens the next round", () => {
   const state = openRound();
   const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));
