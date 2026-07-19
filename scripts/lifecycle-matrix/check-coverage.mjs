@@ -397,6 +397,31 @@ export function manifestShrinkage(baseManifest, headManifest) {
   return baseManifest.lifecycleManifest.filter((glob) => !headSet.has(glob));
 }
 
+/**
+ * Paths whose manifest removal is EXPLAINED by the diff: a deleted file (status
+ * `D`) or a rename/copy SOURCE (`previous_filename`). Dropping a manifest entry
+ * for such a path is legitimate — the file no longer exists at that path.
+ */
+export function deletedOrRenamedPaths(records) {
+  const set = new Set();
+  for (const r of records) {
+    if (!r || typeof r === "string") continue;
+    if (typeof r.status === "string" && r.status.startsWith("D") && r.filename) set.add(r.filename);
+    if (typeof r.previous_filename === "string" && r.previous_filename) set.add(r.previous_filename);
+  }
+  return set;
+}
+
+/**
+ * Removed manifest globs that are NOT explained by a deletion/rename. An
+ * exact-file entry is explained when its path was deleted or renamed away; a
+ * glob entry (contains `*`) is never auto-explained, so the shrink-only ratchet
+ * still fails a quiet removal that would disable the gate for a live subsystem.
+ */
+export function unexplainedRemovals(removed, explained) {
+  return removed.filter((glob) => glob.includes("*") || !explained.has(glob));
+}
+
 /** Scan the subjects directory for `runLifecycleMatrix("<name>", ...)` registrations. */
 export function registeredSubjectNames(subjectsDir) {
   if (!existsSync(subjectsDir)) return [];
@@ -434,10 +459,10 @@ export function parseNameStatusZ(text) {
     if (/^[RC]\d*$/.test(status)) {
       const previous_filename = tokens[i++];
       const filename = tokens[i++];
-      if (filename) records.push({ filename, previous_filename });
+      if (filename) records.push({ status, filename, previous_filename });
     } else {
       const filename = tokens[i++];
-      if (filename) records.push({ filename });
+      if (filename) records.push({ status, filename });
     }
   }
   return records;
@@ -550,6 +575,7 @@ function main() {
     process.exit(1);
   }
 
+  const changed = readChangedFiles();
   const baseManifest = readBaseManifest();
   if (baseManifest) {
     const grown = grandfatherGrowth(baseManifest, manifest);
@@ -562,17 +588,17 @@ function main() {
       process.exit(1);
     }
     const removed = manifestShrinkage(baseManifest, manifest);
-    if (removed.length > 0) {
+    const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed));
+    if (unexplained.length > 0) {
       console.error(
-        `::error::lifecycle-matrix lifecycleManifest removed path(s): ${removed.join(", ")}. ` +
-          `Lifecycle-critical paths may not be dropped from the manifest — removing a glob silently ` +
-          `disables the path-triggered gate for that subsystem (scripts/lifecycle-matrix/coverage.json).`,
+        `::error::lifecycle-matrix lifecycleManifest removed path(s) with no matching deletion/rename: ${unexplained.join(", ")}. ` +
+          `Removing a live glob silently disables the path-triggered gate for that subsystem; only remove an entry when the ` +
+          `name-status diff shows its file was deleted or renamed (scripts/lifecycle-matrix/coverage.json).`,
       );
       process.exit(1);
     }
   }
 
-  const changed = readChangedFiles();
   const ignorePatterns = readBaseIgnorePatterns();
   const { effective } = splitEffectiveDiff(flattenChangedPaths(changed), ignorePatterns);
 

@@ -90,7 +90,9 @@
     "packages/remnic-core/src/storage/entity-timeline.ts",
     "packages/remnic-core/src/storage/identity-continuity-store.ts",
     "packages/remnic-core/src/storage/memory-read-store.ts",
-    "packages/remnic-core/src/storage/secure-line-reader.ts"
+    "packages/remnic-core/src/storage/secure-line-reader.ts",
+    "packages/remnic-core/src/namespaces/**",
+    "src/namespaces/**"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",

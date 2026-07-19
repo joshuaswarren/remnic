@@ -21,6 +21,7 @@ import { splitEffectiveDiff } from "../scripts/effective-diff.mjs";
 import {
   classifyGlob,
   discoverSubjectRegistrations,
+  deletedOrRenamedPaths,
   evaluateCoverage,
   flattenChangedPaths,
   grandfatherGrowth,
@@ -29,6 +30,7 @@ import {
   manifestShrinkage,
   parseNameStatusZ,
   registeredSubjectNames,
+  unexplainedRemovals,
   unregisteredSubjects,
 } from "../scripts/lifecycle-matrix/check-coverage.mjs";
 
@@ -162,9 +164,9 @@ test("parseNameStatusZ splits git --name-status -z records, keeping rename sourc
   // R085\0old\0new\0M\0path\0A\0added\0
   const text = "R085\0packages/remnic-core/src/session-toggles.ts\0bench/artifacts/moved.ts\0M\0README.md\0A\0src/new.ts\0";
   assert.deepEqual(parseNameStatusZ(text), [
-    { filename: "bench/artifacts/moved.ts", previous_filename: "packages/remnic-core/src/session-toggles.ts" },
-    { filename: "README.md" },
-    { filename: "src/new.ts" },
+    { status: "R085", filename: "bench/artifacts/moved.ts", previous_filename: "packages/remnic-core/src/session-toggles.ts" },
+    { status: "M", filename: "README.md" },
+    { status: "A", filename: "src/new.ts" },
   ]);
 });
 
@@ -610,4 +612,42 @@ test("every committed manifest path resolves to a real file — no pre-covering 
   // so they are covered transitively; assert explicitly for a clear failure.
   for (const p of Object.keys(manifest.coverage)) assert.ok(resolves(p), `covered path ${p} must exist`);
   for (const p of manifest.grandfathered) assert.ok(resolves(p), `grandfathered path ${p} must exist`);
+});
+
+test("manifest removal is permitted only when the diff proves deletion/rename", () => {
+  const base = loadCoverageManifest({
+    lifecycleManifest: ["packages/remnic-core/src/orchestrator.ts", "a.ts", "b.ts", "packages/remnic-core/src/storage/**"],
+    coverage: { "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle" },
+    grandfathered: ["a.ts", "b.ts", "packages/remnic-core/src/storage/**"],
+  });
+  const head = loadCoverageManifest({
+    lifecycleManifest: ["packages/remnic-core/src/orchestrator.ts"],
+    coverage: { "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle" },
+    grandfathered: [],
+  });
+  const removed = manifestShrinkage(base, head); // ["a.ts","b.ts","packages/remnic-core/src/storage/**"]
+  // a.ts deleted, b.ts renamed away → explained; the storage/** glob is never auto-explained.
+  const records = parseNameStatusZ("D\0a.ts\0R100\0b.ts\0c.ts\0");
+  const explained = deletedOrRenamedPaths(records);
+  assert.ok(explained.has("a.ts") && explained.has("b.ts"), "deleted + rename-source paths are explained");
+  assert.deepEqual(
+    unexplainedRemovals(removed, explained),
+    ["packages/remnic-core/src/storage/**"],
+    "explained exact-file removals are permitted; a glob removal still fails the ratchet",
+  );
+  // With nothing deleted/renamed, every removal is unexplained.
+  assert.deepEqual(unexplainedRemovals(removed, deletedOrRenamedPaths([])), removed);
+});
+
+test("a NEW namespace file fails the gate via the namespaces/** catch-all", () => {
+  const manifest = loadReal();
+  for (const dir of ["packages/remnic-core/src/namespaces", "src/namespaces"]) {
+    const fresh = evaluateCoverage([`${dir}/brand-new-resolver.ts`], manifest);
+    assert.equal(fresh.violations.length, 1, `a new file under ${dir} must fail as unmapped`);
+    assert.equal(fresh.warnings.length, 0);
+  }
+  // Existing namespace files stay grandfathered (warn), not violations.
+  const existing = evaluateCoverage(["packages/remnic-core/src/namespaces/principal.ts"], manifest);
+  assert.equal(existing.warnings.length, 1);
+  assert.equal(existing.violations.length, 0);
 });
