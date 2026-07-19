@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ROUND_COMMENT_MARKER, renderRoundLedger } from "../scripts/review-rounds.mjs";
+import { ROUND_COMMENT_MARKER, parseRoundLedger, renderRoundLedger } from "../scripts/review-rounds.mjs";
 import {
   AUTO_CLOSED_LABEL,
   DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,
@@ -208,6 +208,9 @@ function replayThroughDriver(fixture) {
       reviews: review ? [review] : [],
       threads,
       botAliases,
+      // The replay validates ENFORCED behavior (#1852's churn collapses to <=3
+      // dispatched rounds), so rounds must close on dispatch — enforce mode.
+      enforce: true,
       debounceMs,
       maxAgeMs,
     });
@@ -223,6 +226,7 @@ function replayThroughDriver(fixture) {
     reviews: [],
     threads: resolved,
     botAliases,
+    enforce: true,
     debounceMs,
     maxAgeMs,
   });
@@ -422,8 +426,14 @@ test("runRoundGate applies the auto-closed label only under enforcement", async 
     core,
     env: { REVIEW_ROUND_ENFORCE: "false" },
   });
-  assert.equal(shadowResult.telemetry.autoClosed, true, "max-age auto-closes the stale round");
-  assert.equal(shadowResult.telemetry.dispatch, true);
+  // Shadow "changes nothing": the max-age dispatch is surfaced as a dry-run
+  // decision, but the ledger is NOT recorded as closed/auto-closed and no label
+  // is mutated.
+  assert.equal(shadowResult.telemetry.dispatch, true, "max-age dispatch is surfaced");
+  assert.equal(shadowResult.telemetry.reason, "max-age");
+  assert.equal(shadowResult.telemetry.dryRun, true);
+  assert.equal(shadowResult.telemetry.status, "open", "shadow persists an OPEN round, not a real dispatch");
+  assert.equal(shadowResult.telemetry.autoClosed, false, "shadow does not record a real auto-close");
   assert.equal(shadow.calls.labelsAdded.length, 0, "shadow mode must not mutate PR labels");
 
   const enforced = fakeGithub({ existingComments: [{ id: 7, body: staleOpenLedger }], threads: openThreads(1) });
@@ -519,4 +529,30 @@ test("a transient ledger-write failure does not consume the force-dispatch label
   const result = await runRoundGate({ github, context, core, env: { REVIEW_ROUND_ENFORCE: "false" } });
   assert.equal(result.telemetry.reason, "force-label", "force-dispatch was decided");
   assert.equal(calls.labelsRemoved.length, 0, "force label kept so the maintainer's retry survives");
+});
+
+test("shadow persists a dry-run dispatch as an OPEN round; enforce persists it closed", () => {
+  const opened = decide();
+  const addressed = openThreads(2).map((thread) => ({ ...thread, isResolved: true }));
+  const args = {
+    ledgerBody: opened.commentBody,
+    headSha: "head-1",
+    now: "2026-07-18T12:10:00.000Z",
+    reviews: [],
+    threads: addressed,
+    botAliases,
+    debounceMs,
+    maxAgeMs,
+  };
+  const shadow = computeRoundGateDecision({ ...args, enforce: false });
+  assert.equal(shadow.telemetry.dispatch, true, "the dispatch decision is still surfaced");
+  assert.equal(shadow.telemetry.dryRun, true);
+  assert.equal(shadow.state.status, "open", "shadow keeps the round open (changes nothing)");
+  assert.equal(shadow.state.dispatchIssuedAt, null, "no real dispatch recorded in shadow");
+  assert.equal(parseRoundLedger(shadow.commentBody).status, "open", "persisted ledger stays open");
+
+  const enforced = computeRoundGateDecision({ ...args, enforce: true });
+  assert.equal(enforced.state.status, "closed", "enforcement records the real dispatch");
+  assert.equal(typeof enforced.state.dispatchIssuedAt, "string");
+  assert.equal(parseRoundLedger(enforced.commentBody).status, "closed");
 });

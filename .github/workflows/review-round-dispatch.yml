@@ -58,12 +58,17 @@ concurrency:
 
 jobs:
   round-dispatch:
-    # Only run for PR-relevant events, and skip drafts, so a repo-wide check_run
-    # completion or a standalone-issue comment does not spin up a no-op run
-    # (cursor). PR/review/comment events carry github.event.pull_request;
-    # check_run must have an associated PR; issue_comment must be on a PR.
+    # Trusted-ref execution (issue #1992 security): the pull_request family is the
+    # ONLY path where actions/checkout pulls the PR-HEAD ref, so the write-scoped
+    # github-script step would execute PR-controlled code. Restrict that path to
+    # SAME-REPO (trusted) PRs; fork PRs are untrusted and also get a read-only
+    # token from GitHub, so they are skipped here. check_run/issue_comment run
+    # with GITHUB_SHA = the default branch (trusted code), so they need no such
+    # guard. Also skip drafts, and require an associated PR for check_run /
+    # a PR-scoped comment for issue_comment (cursor).
     if: >-
-      (github.event.pull_request && github.event.pull_request.draft == false) ||
+      (github.event.pull_request && github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'check_run' && github.event.check_run.pull_requests[0] != null) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     runs-on: ubuntu-latest

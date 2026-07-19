@@ -39,6 +39,14 @@ test("the round-dispatch job only runs for PR-relevant events (no repo-wide no-o
   assert.match(dispatch, /github\.event\.issue\.pull_request != null/);
   assert.match(dispatch, /github\.event\.pull_request\.draft == false/);
 });
+
+test("the write-scoped gate runs PR-ref code only for trusted same-repo PRs", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // The pull_request family is the only path that checks out PR-HEAD code, so it
+  // is gated to same-repo (trusted) PRs; fork PRs never execute checked-out code
+  // with the write token (issue #1992 security).
+  assert.match(dispatch, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+});
 test("the round-dispatch workflow imports the tested driver rather than inlining logic", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   assert.match(dispatch, /scripts\/review-round-gate\.mjs/);

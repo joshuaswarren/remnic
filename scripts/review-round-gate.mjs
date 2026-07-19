@@ -64,6 +64,15 @@ function threadLabel(thread) {
   return `${author} on ${path}`;
 }
 
+// Shadow mode "changes nothing" (issue #1992 decision C): reopen the round the
+// reducer closed for a would-be dispatch, so the persisted ledger never records
+// a real dispatch that did not happen.
+function reopenRoundForShadow(state) {
+  const reopened = { ...state, status: "open", dispatchIssuedAt: null, closeReason: null, autoClosed: false };
+  delete reopened.closedAt;
+  return reopened;
+}
+
 /**
  * Pure round-gate decision from an activity snapshot. Returns the next state,
  * the fully-rendered ledger comment body, telemetry, and a human summary.
@@ -107,7 +116,14 @@ export function computeRoundGateDecision({
     maxAgeMs,
   });
 
-  const state = decision.state;
+  // In shadow (dry-run) mode a would-be dispatch is LOGGED via telemetry + the
+  // summary, but the persisted ledger stays OPEN: recording a closed/dispatched
+  // round would claim a dispatch that never happened and, once enforcement flips
+  // on, make the gate wait for bot activity that was never requested (codex).
+  const decisionState = decision.state;
+  const dryRunDispatch =
+    !enforce && decision.action === "dispatch" && decisionState?.status === "closed";
+  const state = dryRunDispatch ? reopenRoundForShadow(decisionState) : decisionState;
   const unresolved = state
     ? getGuardUnresolvedThreads(state, threads, botAliases)
     : [];
