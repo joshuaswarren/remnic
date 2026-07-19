@@ -632,6 +632,32 @@ test("same-side duplicates on the same line still merge", () => {
   assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same side + same finding folds");
 });
 
+test("multi-line threads with the same end side but different START side do NOT merge", () => {
+  // The end line shares a side but the multi-line span starts on different sides
+  // (startDiffSide), so the two threads cover different locations.
+  const a = {
+    ...mkThread({ id: 811, path: "a.ts", startLine: 5, line: 9, author: "cursor", body: "This block is dead code and should be removed" }),
+    startDiffSide: "LEFT", diffSide: "RIGHT",
+  };
+  const b = {
+    ...mkThread({ id: 812, path: "a.ts", startLine: 5, line: 9, author: "chatgpt-codex-connector", body: "This block is dead code and should be removed" }),
+    startDiffSide: "RIGHT", diffSide: "RIGHT",
+  };
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "differing start side is a different location");
+});
+
+test("multi-line threads with matching start AND end side still merge", () => {
+  const a = {
+    ...mkThread({ id: 813, path: "a.ts", startLine: 5, line: 9, author: "cursor", body: "This block is dead code and should be removed" }),
+    startDiffSide: "LEFT", diffSide: "RIGHT",
+  };
+  const b = {
+    ...mkThread({ id: 814, path: "a.ts", startLine: 5, line: 9, author: "chatgpt-codex-connector", body: "This block is dead code and should be removed" }),
+    startDiffSide: "LEFT", diffSide: "RIGHT",
+  };
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "matching start+end side + same finding folds");
+});
+
 test("formatRoundLedger reports filed, deduplicated, and unique-by-reviewer counts", () => {
   const ledger = formatRoundLedger([dup1923A1, dup1923A2, ...N.slice(0, 3)]);
   assert.match(ledger, /5 filed, 1 deduplicated/);

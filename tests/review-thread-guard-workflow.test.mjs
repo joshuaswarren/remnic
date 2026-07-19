@@ -189,8 +189,8 @@ test("review-thread guard and unsticker anchor on diff side", () => {
   // and honor diffSide (codex P2). Mirrors threadAnchor/anchorsOverlap in review-dedup.mjs.
   const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
   const unsticker = readFileSync(".github/workflows/check-unsticker.yml", "utf8");
-  assert.match(guard, /\bdiffSide\b/, "guard thread query must request diffSide");
-  assert.match(guard, /side: t\.diffSide \?\? c\?\.diffSide \?\? "RIGHT"/, "anchorOf must carry diff side");
-  assert.match(guard, /if \(a\.side !== b\.side\) return false;/, "overlap must require the same diff side");
-  assert.match(unsticker, /\bdiffSide\b/, "unsticker thread query must request diffSide");
+  assert.match(guard, /\bstartDiffSide\b/, "guard thread query must request startDiffSide");
+  assert.match(guard, /t\.startDiffSide \?\? c\?\.startDiffSide/, "anchorOf must carry the start diff side");
+  assert.match(guard, /if \(a\.side !== b\.side\) return false;/, "overlap must require the same (start:end) diff side");
+  assert.match(unsticker, /\bstartDiffSide\b/, "unsticker thread query must request startDiffSide");
 });

@@ -260,11 +260,14 @@ export function threadAnchor(thread) {
     thread?.startLine ?? comment?.startLine ?? thread?.originalStartLine ?? comment?.originalStartLine ?? rawEnd;
   const start = Number.isInteger(rawStart) ? rawStart : null;
   const end = Number.isInteger(rawEnd) ? rawEnd : null;
-  // Diff side (LEFT = pre-image, RIGHT = post-image). A LEFT and a RIGHT comment
-  // on the same file/line are different locations and must not dedupe. Missing
-  // side normalizes to RIGHT (the default for additions) for back-compat.
-  const side = thread?.diffSide ?? comment?.diffSide ?? thread?.side ?? "RIGHT";
-  return { path, start, end, side };
+  // Diff side (LEFT = pre-image, RIGHT = post-image). For a multi-line thread the
+  // START and END lines can be on different sides, so the anchor carries both:
+  // GitHub exposes startDiffSide (first line) separately from diffSide (last
+  // line). Two threads that share a line span but differ on either side are
+  // different locations and must not dedupe. Missing side normalizes to RIGHT.
+  const endSide = thread?.diffSide ?? comment?.diffSide ?? thread?.side ?? "RIGHT";
+  const startSide = thread?.startDiffSide ?? comment?.startDiffSide ?? thread?.startSide ?? endSide;
+  return { path, start, end, side: `${startSide}:${endSide}` };
 }
 
 /**

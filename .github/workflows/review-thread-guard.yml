@@ -73,6 +73,7 @@ jobs:
                         isResolved
                         isOutdated
                         diffSide
+                        startDiffSide
                         line
                         startLine
                         originalLine
@@ -267,9 +268,11 @@ jobs:
                 path: c?.path ?? t.path ?? null,
                 start: Number.isInteger(startRaw) ? startRaw : null,
                 end: Number.isInteger(end) ? end : null,
-                // Diff side: a LEFT and a RIGHT comment on the same line are
-                // different locations and must not dedupe (default RIGHT).
-                side: t.diffSide ?? c?.diffSide ?? "RIGHT",
+                // Diff side, both ends: a multi-line thread's start and end lines
+                // can be on different sides (startDiffSide vs diffSide). Two threads
+                // over the same span that differ on either side are different
+                // locations and must not dedupe (default RIGHT). Mirrors threadAnchor.
+                side: `${t.startDiffSide ?? c?.startDiffSide ?? t.diffSide ?? c?.diffSide ?? "RIGHT"}:${t.diffSide ?? c?.diffSide ?? "RIGHT"}`,
               };
             };
             const overlap = (a, b) => {
