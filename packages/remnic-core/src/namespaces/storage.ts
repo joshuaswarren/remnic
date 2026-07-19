@@ -1,8 +1,9 @@
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import path from "node:path";
 import { access, lstat, readdir } from "node:fs/promises";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
+import { keyring, secureStoreDir } from "../secure-store/index.js";
 import type { PluginConfig } from "../types.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
@@ -324,6 +325,14 @@ export class NamespaceStorageRouter {
     // #1579: apply the tombstone non-resurrection config so every namespace
     // storage enforces the invariant at its own writeMemory chokepoint.
     this.applyTombstonesConfig(sm, ns);
+    // #2033: install the secure-store context on router-created stores. The
+    // orchestrator keys ONLY its primary default-namespace storage; without
+    // this, a store resolved through the router reads isSecureStoreUnlocked()
+    // === false even after the operator unlocked the keyring, so secure-store
+    // recovery paths (e.g. the CLI lifecycle-ledger rebuild) refuse an encrypted
+    // ledger they could actually rewrite, and namespace writes could silently
+    // fall back to plaintext. Mirror the orchestrator's setup exactly.
+    this.applySecureStoreConfig(sm);
     this.cache.set(ns, sm);
     this.notifyResolved(ns, root);
     return sm;
@@ -451,6 +460,25 @@ export class NamespaceStorageRouter {
    */
   private applyTombstonesConfig(sm: StorageManager, namespace: string): void {
     sm.setTombstonesConfig({ ...this.tombstonesGlobalConfig, namespace });
+  }
+
+  /**
+   * Install the at-rest secure-store context on a router-created StorageManager
+   * (#2033). Mirrors the orchestrator's primary-storage setup: mark the store
+   * required so a locked store throws instead of silently writing plaintext, and
+   * install the master key when the process-local keyring already holds it (the
+   * operator unlocked). The secure store is one key per memory ROOT (single
+   * header + per-file path-bound AAD), so every namespace store keys off the
+   * root keyring id — exactly the id the orchestrator and `secure-store unlock`
+   * register under. No-op when secure-store is disabled.
+   */
+  private applySecureStoreConfig(sm: StorageManager): void {
+    if (!resolveRecallAuxiliaryCapabilities(this.config).secureStore) return;
+    sm.setSecureStoreRequired(true);
+    const existingKey = keyring.getKey(secureStoreDir(this.config.memoryDir));
+    if (existingKey) {
+      sm.setSecureStoreKey(existingKey, this.config.secureStoreEncryptOnWrite);
+    }
   }
 
   /**

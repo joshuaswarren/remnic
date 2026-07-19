@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { LastRecallStore } from "./recall-state.js";
 import type { RecallTierExplain } from "./types.js";
+import { listContainedSpillFiles } from "./utils/path-containment.js";
 
 async function freshStore() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-state-"));
@@ -701,5 +702,42 @@ test("LastRecallStore refuses to write an impression spill into a symlinked pend
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("LastRecallStore writes an impression spill via a temp name then renames to *.jsonl so a drain never sees a partial spill (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-impressions-atomic-spill-"));
+  try {
+    const impressionsPath = path.join(dir, "state", "recall_impressions.jsonl");
+    await mkdir(path.dirname(impressionsPath), { recursive: true });
+    // Force the spill branch: a foreign owner holds the rotation lock so
+    // record()'s append cannot acquire it and falls back to spilling.
+    const lockPath = `${impressionsPath}.lock`;
+    await writeFile(lockPath, "999999 foreign-owner 2999-01-01T00:00:00.000Z\n", "utf8");
+    const store = new LastRecallStore(dir, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+      impressionsLockOptions: { maxWaitMs: 40, pollMs: 10 },
+    });
+    await store.load();
+    await store.record({ sessionKey: "atomic-spill", query: "q", memoryIds: [] });
+
+    const pendingDir = `${impressionsPath}.pending.d`;
+    const entries = await readdir(pendingDir);
+    // Exactly one spill, named with the final `.jsonl` suffix — no temp artifact
+    // left behind, and nothing ending in the temp `.tmp` suffix.
+    assert.equal(entries.length, 1, "exactly one spill file after the rename");
+    assert.ok(entries[0].endsWith(".jsonl"), "spill has the final .jsonl suffix");
+    assert.ok(!entries[0].endsWith(".jsonl.tmp"), "no temp artifact left behind");
+
+    // The drain's own lister (the exact one a concurrent lock holder runs) sees a
+    // single COMPLETE spill — the temp name is invisible to it, so a drain can
+    // never read/rename a partial `.jsonl`.
+    const listed = await listContainedSpillFiles(pendingDir);
+    assert.equal(listed.length, 1, "drain lister sees exactly the one committed spill");
+    const spilled = JSON.parse(await readFile(listed[0], "utf8"));
+    assert.equal(spilled.sessionKey, "atomic-spill", "spilled row is complete, parseable JSON");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

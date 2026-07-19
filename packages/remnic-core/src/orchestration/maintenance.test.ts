@@ -33,6 +33,7 @@ import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
 import { StorageManager } from "../storage.js";
 import {
+  decryptFileBody,
   encryptFileBody,
   filePathAad,
   isEncryptedFile,
@@ -1072,7 +1073,9 @@ test("auto-compaction rewrites the ledger encrypted at rest under a secure store
     assert.ok((await stat(ledgerPath)).size < beforeSize);
     const rebuilt = await storage.readAllMemoryLifecycleEvents();
     assert.deepEqual(rebuilt.map((e) => e.eventType), ["created", "updated"]);
-    // The backup is the verbatim original plaintext ledger.
+    // The existing ledger here is PLAINTEXT (only the rewrite encrypts), so its
+    // backup is a directly-readable verbatim copy — the source-AAD re-encrypt only
+    // applies when the EXISTING ledger is itself encrypted (#2033).
     const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
     const stamps = await readdir(archiveRoot);
     assert.equal(stamps.length, 1);
@@ -1082,6 +1085,80 @@ test("auto-compaction rewrites the ledger encrypted at rest under a secure store
         "utf-8",
       ),
       before,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-compaction re-encrypts an ENCRYPTED ledger's backup for the archive path so it decrypts there, not with the source AAD (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-enc-backup-"));
+  try {
+    // A memory file so the rebuild reconstructs a small active ledger.
+    await mkdir(path.join(memoryDir, "facts", "2026-03-08"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", "2026-03-08", "fact-1.md"),
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+      "utf-8",
+    );
+    const key = Buffer.alloc(32, 6);
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // An oversized ENCRYPTED existing ledger of valid legacy events. Its bytes
+    // are path-bound to the SOURCE via AAD, so a byte copy to the archive path
+    // would not decrypt there — the exact orphaning the fix prevents.
+    const legacyIds = Array.from({ length: 80 }, (_, i) => `evt-legacy-${i}`);
+    const plaintextLedger = legacyIds
+      .map((id) => JSON.stringify({
+        schemaVersion: 1, eventId: id, memoryId: "m-legacy", eventType: "note",
+        timestamp: "2026-03-08T00:00:00.000Z", actor: "t", ruleVersion: "1",
+      }))
+      .join("\n") + "\n";
+    await writeFile(ledgerPath, encryptFileBody(plaintextLedger, key, filePathAad(ledgerPath, memoryDir)));
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: source ledger encrypted");
+
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    const scheduler = buildCompactionSchedulerWithStorage(
+      fixtureConfig({
+        memoryDir,
+        memoryLifecycleLedgerCompactBytes: 1024,
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+      () => storage,
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "compacted ledger stays encrypted at rest");
+
+    const archiveRoot = path.join(memoryDir, "archive", "memory-lifecycle-ledger");
+    const stamps = await readdir(archiveRoot);
+    assert.equal(stamps.length, 1);
+    const backupPath = path.join(archiveRoot, stamps[0]!, "state", "memory-lifecycle-ledger.jsonl");
+    const backupBytes = await readFile(backupPath);
+    assert.ok(isEncryptedFile(backupBytes), "backup encrypted at rest (no plaintext leak)");
+    // Decrypts AT THE BACKUP PATH — a directly readable recovery ledger.
+    const decrypted = decryptFileBody(backupBytes, key, filePathAad(backupPath, memoryDir)).toString("utf8");
+    const decryptedIds = decrypted
+      .trim().split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l).eventId as string)
+      .sort();
+    assert.deepEqual(
+      decryptedIds,
+      [...legacyIds].sort(),
+      "backup preserves exactly the prior ledger's events, decryptable at the archive path",
+    );
+    // A byte-for-byte copy would carry the SOURCE path's AAD and fail here.
+    assert.throws(
+      () => decryptFileBody(backupBytes, key, filePathAad(ledgerPath, memoryDir)),
+      "backup must NOT decrypt under the SOURCE-path AAD (proves re-encrypt, not byte copy)",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -1619,6 +1696,75 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
       "the pending spill must be drained into the namespace ledger via the fallback path",
     );
     await assert.rejects(() => stat(spillPath), /ENOENT/, "spill file removed after the fallback drain");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("catalog-disabled fallback drain re-probes encryption UNDER the lock and defers ciphertext instead of plaintext-corrupting it (#2033)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-secure-drain-"));
+  try {
+    const key = Buffer.alloc(32, 4);
+    const validRow = (id: string): string =>
+      `{"eventId":"${id}","memoryId":"m","eventType":"created",`
+      + `"timestamp":"2026-03-08T00:00:00.000Z","actor":"t","ruleVersion":"1"}\n`;
+
+    // nsA: plaintext (empty) ledger + an ENCRYPTED pending spill, exactly as a
+    // secure-store writer's lock-timeout leaves it. A keyless plaintext readFile
+    // would fold ciphertext into the ledger; the under-lock probe must refuse it.
+    const tokenA = namespaceIdentityToken("ns-enc-spill");
+    const nsDirA = path.join(root, "namespaces", tokenA);
+    const nsLedgerA = path.join(nsDirA, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedgerA), { recursive: true });
+    await writeFile(nsLedgerA, "", "utf-8");
+    const spillDirA = pendingLifecycleLedgerDir(nsLedgerA);
+    await mkdir(spillDirA, { recursive: true });
+    const spillPathA = path.join(spillDirA, "spill.jsonl");
+    const encryptedSpillA = encryptFileBody(validRow("evt-enc-spill"), key, filePathAad(spillPathA, nsDirA));
+    await writeFile(spillPathA, encryptedSpillA);
+
+    // nsB: ENCRYPTED ledger + a PLAINTEXT pending spill. A keyless plaintext
+    // appendFile would append plaintext onto the encrypted ledger; the under-lock
+    // append probe must refuse it and roll the claim back.
+    const tokenB = namespaceIdentityToken("ns-enc-ledger");
+    const nsDirB = path.join(root, "namespaces", tokenB);
+    const nsLedgerB = path.join(nsDirB, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(nsLedgerB), { recursive: true });
+    const encryptedLedgerB = encryptFileBody(validRow("evt-existing"), key, filePathAad(nsLedgerB, nsDirB));
+    await writeFile(nsLedgerB, encryptedLedgerB);
+    const spillDirB = pendingLifecycleLedgerDir(nsLedgerB);
+    await mkdir(spillDirB, { recursive: true });
+    const spillPathB = path.join(spillDirB, "spill.jsonl");
+    await writeFile(spillPathB, validRow("evt-plain-spill"), "utf-8");
+
+    const scheduler = buildCompactionScheduler(
+      fixtureConfig({
+        memoryDir: root,
+        namespacesEnabled: true,
+        memoryLifecycleLedgerCompactBytes: 0, // drain still runs unconditionally
+        memoryLifecycleLedgerCompactMinIntervalMs: 60 * 60 * 1000,
+      }),
+    );
+    try {
+      await scheduler.maybeCompactMemoryLifecycleLedger();
+    } finally {
+      scheduler.dispose();
+    }
+
+    // nsA: encrypted spill deferred — byte-for-byte intact, the ledger never got
+    // ciphertext folded into it.
+    assert.deepEqual(await readFile(spillPathA), encryptedSpillA, "encrypted spill left intact for the keyed path");
+    assert.equal(await readFile(nsLedgerA, "utf-8"), "", "plaintext ledger never received ciphertext");
+    assert.ok(isEncryptedFile(await readFile(spillPathA)), "spill stays encrypted at rest");
+
+    // nsB: plaintext spill deferred (not appended onto the encrypted ledger), and
+    // the encrypted ledger left byte-for-byte intact.
+    assert.deepEqual(await readFile(nsLedgerB), encryptedLedgerB, "encrypted ledger left byte-for-byte intact");
+    assert.equal(
+      await readFile(spillPathB, "utf-8"),
+      validRow("evt-plain-spill"),
+      "plaintext spill rolled back to unclaimed for a later keyed pass",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

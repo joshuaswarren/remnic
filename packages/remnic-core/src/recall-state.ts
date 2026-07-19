@@ -447,7 +447,17 @@ export class LastRecallStore {
 
   private async spillImpression(line: string): Promise<void> {
     await ensureContainedSpillDir(this.impressionsPendingDir);
-    await writeFile(path.join(this.impressionsPendingDir, `${randomUUID()}.jsonl`), line, "utf-8");
+    // Write to a temp name the drain's `.jsonl` lister ignores, then atomically
+    // rename to the final `<uuid>.jsonl` (#2033). writeFile creates the path
+    // before its bytes are durable, so writing straight to the final name lets a
+    // concurrent lock holder's drain read/rename/delete a partial spill and
+    // append malformed JSON — permanently losing that impression. The temp lives
+    // in the SAME contained dir, so the rename is atomic and stays symlink-safe.
+    const id = randomUUID();
+    const tempPath = path.join(this.impressionsPendingDir, `${id}.jsonl.tmp`);
+    const finalPath = path.join(this.impressionsPendingDir, `${id}.jsonl`);
+    await writeFile(tempPath, line, "utf-8");
+    await rename(tempPath, finalPath);
   }
 
   /**

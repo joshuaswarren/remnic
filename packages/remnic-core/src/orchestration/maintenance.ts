@@ -721,30 +721,39 @@ export class MaintenanceScheduler {
       return;
     }
     if (spillFiles.length === 0) return;
-    try {
-      // A keyless plaintext drain would corrupt/downgrade an encrypted ledger or
-      // spill; defer those to the keyed path instead (#2033). The probe now only
-      // opens the guarded, regular-file paths listContainedSpillFiles returned.
-      if (await probeEncryptedRegularFileHeader(ledgerPath)) return;
-      for (const filePath of spillFiles) {
-        if (await probeEncryptedRegularFileHeader(filePath)) return;
-      }
-    } catch (err) {
-      log.debug(`fallback lifecycle pending encryption probe failed (non-fatal) for ${memoryDir}: ${err}`);
-      return;
-    }
+    // The pending encryption state is authoritative only UNDER the ledger lock:
+    // drainPendingLifecycleLedgerIfAny waits for the lock and re-enumerates the
+    // pending dir, so a secure-store writer that spills an encrypted file — or a
+    // keyed compaction that rewrites the ledger encrypted — while this fallback
+    // waits would defeat any pre-lock probe (#2033). Probe each file at the
+    // moment of use inside the held lock instead: readSecure refuses an
+    // encrypted spill (collectPendingSpills propagates the throw BEFORE claiming,
+    // leaving every spill intact) and the append refuses a ledger that became
+    // encrypted (the fold rolls the claims back). Either way the plaintext IO
+    // never reads or writes ciphertext; the keyed catalog-path drain handles the
+    // deferred rows.
     const io: LifecyclePendingIo = {
       writeSecure: async (filePath, payload) => {
         await mkdir(path.dirname(filePath), { recursive: true });
         await writeFile(filePath, payload, "utf-8");
       },
-      readSecure: (filePath) => readFile(filePath, "utf-8"),
+      readSecure: async (filePath) => {
+        if (await probeEncryptedRegularFileHeader(filePath)) {
+          throw new Error(`fallback lifecycle drain deferred: encrypted spill at ${filePath}`);
+        }
+        return readFile(filePath, "utf-8");
+      },
     };
     try {
       await drainPendingLifecycleLedgerIfAny(
         ledgerPath,
         io,
-        (payload) => appendFile(ledgerPath, payload, "utf-8"),
+        async (payload) => {
+          if (await probeEncryptedRegularFileHeader(ledgerPath)) {
+            throw new Error(`fallback lifecycle drain deferred: ledger became encrypted at ${ledgerPath}`);
+          }
+          await appendFile(ledgerPath, payload, "utf-8");
+        },
         async () => {
           await mkdir(path.dirname(ledgerPath), { recursive: true });
         },

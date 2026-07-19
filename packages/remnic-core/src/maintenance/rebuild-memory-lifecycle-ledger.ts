@@ -13,6 +13,7 @@ import {
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
 import { withHeldFileLock, type HeldFileLockOptions } from "../utils/serialize-mutations.js";
+import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
 
 /**
  * Event types `buildLifecycleEventsForMemory` reconstructs from frontmatter.
@@ -334,9 +335,11 @@ export async function rebuildMemoryLifecycleLedger(
       // ledger whose every row fails validation reads as `existing === []`, yet
       // `finalEvents` (the frontmatter reconstruction) can itself exceed the cap.
       // Overflow (oldest) rows are dropped from the active ledger but survive
-      // both in the verbatim timestamped backup (the raw on-disk bytes) and, for
-      // frontmatter-derived rows, in the memory files they were reconstructed
-      // from — so a later full rebuild regenerates them.
+      // both in the timestamped backup (a verbatim copy when the ledger is
+      // plaintext, re-encrypted under the backup path's own AAD when it is
+      // encrypted so it still decrypts there, #2033) and, for frontmatter-derived
+      // rows, in the memory files they were reconstructed from — so a later full
+      // rebuild regenerates them.
       if (options.maxLedgerBytes && options.maxLedgerBytes > 0) {
         const bounded = boundLifecycleEventsToByteCap(finalEvents, options.maxLedgerBytes);
         if (bounded.dropped > 0) {
@@ -356,12 +359,28 @@ export async function rebuildMemoryLifecycleLedger(
       const payload = finalEvents.map((event) => JSON.stringify(event)).join("\n");
       const content = payload.length > 0 ? `${payload}\n` : "";
       if (secureRewrite) {
-        // Preserve encrypted-at-rest (issue #1910): back up the existing
-        // (possibly encrypted) ledger bytes verbatim, then rewrite through the
-        // secure writer so the new ledger is encrypted with the active key.
-        backupPath = desiredBackup
-          ? await copyExistingFileToBackup(outputPath, desiredBackup)
-          : undefined;
+        // Preserve encrypted-at-rest (issue #1910). The BACKUP needs care under
+        // secure-store (#2033): when the existing ledger is encrypted, its bytes
+        // are path-bound via AAD, so a byte-for-byte copy to the archive path
+        // cannot be decrypted there — it would silently orphan the overflow rows
+        // a bounded rewrite claims to preserve. Re-encrypt the decrypted ledger
+        // under the backup path's own AAD instead, yielding a directly
+        // decryptable backup. A PLAINTEXT existing ledger is already readable, so
+        // a verbatim copy is correct (and preserves any malformed rows). Then
+        // rewrite the active ledger through the secure writer.
+        if (desiredBackup && await probeEncryptedRegularFileHeader(outputPath)) {
+          const prior = await storage.readAllMemoryLifecycleEventsForCompaction();
+          const priorPayload = prior.map((event) => JSON.stringify(event)).join("\n");
+          await storage.writeMemoryLifecycleLedgerContent(
+            priorPayload.length > 0 ? `${priorPayload}\n` : "",
+            desiredBackup,
+          );
+          backupPath = desiredBackup;
+        } else {
+          backupPath = desiredBackup
+            ? await copyExistingFileToBackup(outputPath, desiredBackup)
+            : undefined;
+        }
         await storage.writeMemoryLifecycleLedgerContent(content);
       } else {
         backupPath = await writeFileAtomically(outputPath, content, desiredBackup);

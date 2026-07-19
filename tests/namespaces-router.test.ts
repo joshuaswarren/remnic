@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "../src/types.js";
 import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
+import { keyring, secureStoreDir } from "../src/secure-store/index.js";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -348,5 +349,53 @@ test("storageFor retries a resolve hook that resolves to false (dropped registra
     calls,
     callsAfterPersist,
     "after a persisted registration (true), further cache hits are deduped",
+  );
+});
+
+test("router installs the unlocked secure-store key on router-created stores so recovery paths see an unlocked store (#2033)", async () => {
+  const memoryDir = tmpDir("engram-ns-router-secure");
+  await mkdir(memoryDir, { recursive: true });
+  const storeId = secureStoreDir(memoryDir);
+  // Operator unlocked: the process-local keyring holds the root key. Router
+  // stores must pick it up — the orchestrator keys only its primary storage.
+  keyring.unlock(storeId, Buffer.alloc(32, 6));
+  try {
+    const cfg: PluginConfig = {
+      ...baseConfig(memoryDir),
+      secureStoreEnabled: true,
+      secureStoreEncryptOnWrite: true,
+    };
+    const router = new NamespaceStorageRouter(cfg);
+
+    const defaultStore = await router.storageFor("default");
+    assert.equal(
+      defaultStore.isSecureStoreUnlocked(),
+      true,
+      "router-created default store picks up the unlocked keyring key",
+    );
+    // The secure store is one key per memory ROOT, so a per-namespace child store
+    // keys off the same root id and is also unlocked.
+    const childStore = await router.storageFor("project-x");
+    assert.equal(
+      childStore.isSecureStoreUnlocked(),
+      true,
+      "router-created namespace store is unlocked from the root key too",
+    );
+  } finally {
+    keyring.lock(storeId);
+  }
+
+  // Keyring locked (no key registered): the store is marked required but stays
+  // locked — it must NOT silently fall back to plaintext.
+  const lockedRouter = new NamespaceStorageRouter({
+    ...baseConfig(memoryDir),
+    secureStoreEnabled: true,
+    secureStoreEncryptOnWrite: true,
+  });
+  const lockedStore = await lockedRouter.storageFor("default");
+  assert.equal(
+    lockedStore.isSecureStoreUnlocked(),
+    false,
+    "no key in the keyring → router store stays locked, never silently plaintext",
   );
 });

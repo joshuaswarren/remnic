@@ -5550,11 +5550,11 @@ export class StorageManager {
     );
   }
 
-  /** Rewrite the ledger through the secure writer (#1910): re-encrypts with the
-   *  active key when unlocked; throws SecureStoreLockedError when locked. */
-  async writeMemoryLifecycleLedgerContent(content: string): Promise<void> {
+  /** Rewrite the ledger through the secure writer (#1910); re-encrypts when unlocked, throws when locked.
+   *  Optional `targetPath` re-encrypts under a different path's own AAD for a decryptable backup (#2033). */
+  async writeMemoryLifecycleLedgerContent(content: string, targetPath: string = this.memoryLifecycleLedgerPath): Promise<void> {
     await this.ensureDirectories();
-    await this.writeStorageSecureFile(this.memoryLifecycleLedgerPath, content);
+    await this.writeStorageSecureFile(targetPath, content);
   }
 
   async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]): Promise<number> {
