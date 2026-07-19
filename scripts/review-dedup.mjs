@@ -214,6 +214,32 @@ function directionalOperandsSwapped(bodyA, bodyB) {
   return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
 }
 
+// Negation tokens that flip a finding's polarity (contractions are already
+// expanded to "not"/"will not"/... before tokenizing).
+const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none"]);
+
+/**
+ * True when two bodies are the SAME finding at OPPOSITE polarity — one is a
+ * prohibition, the other an affirmative ("Do not call deleteAll" vs "Call
+ * deleteAll"). Preserving the negation token is not enough: the k=1 Jaccard
+ * still scores such pairs above threshold. Reject only when exactly one side
+ * carries a negation AND the non-negation content is otherwise IDENTICAL, so a
+ * genuine duplicate with an incidental negation (different wording) is unaffected.
+ */
+function polarityMismatch(bodyA, bodyB) {
+  const a = new Set(contentTokens(bodyA));
+  const b = new Set(contentTokens(bodyB));
+  const aNeg = [...a].some((t) => NEGATION_TOKENS.has(t));
+  const bNeg = [...b].some((t) => NEGATION_TOKENS.has(t));
+  if (aNeg === bNeg) return false;
+  const strip = (s) => [...s].filter((t) => !NEGATION_TOKENS.has(t));
+  const na = strip(a);
+  const nb = new Set(strip(b));
+  // Exact non-negation content match: only a true polarity flip, never an
+  // incidental negation inside an otherwise differently-worded duplicate.
+  return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
+}
+
 /** Deterministic set of word k-shingles over content tokens. */
 export function fingerprint(body, shingleSize = REVIEW_DEDUP_CONFIG.shingleSize) {
   const tokens = contentTokens(body);
@@ -374,7 +400,13 @@ export function dedupeThreads(threads, config = REVIEW_DEDUP_CONFIG) {
       // that would otherwise lift the bigram-sim past the cutoff.
       const orderSimilarity = fingerprintSimilarity(body, canonical.body, 2);
       const reversedOrder = similarity >= directionalSetMin && orderSimilarity <= directionalOrderMax;
-      if (reversedOrder || directionalOperandsSwapped(body, canonical.body)) continue;
+      if (
+        reversedOrder ||
+        directionalOperandsSwapped(body, canonical.body) ||
+        polarityMismatch(body, canonical.body)
+      ) {
+        continue;
+      }
       match = canonical;
       matchSimilarity = similarity;
     }

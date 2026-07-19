@@ -241,6 +241,24 @@ jobs:
               if (aBefore.length === 0 || aAfter.length === 0) return false;
               return seqEqual(aBefore, bAfter) && seqEqual(aAfter, bBefore);
             };
+            // Same finding at OPPOSITE polarity ("Do not call X" vs "Call X") —
+            // preserving the negation token isn't enough, k=1 Jaccard still scores
+            // it above threshold. Reject only when exactly one side carries a
+            // negation and the non-negation content is otherwise near-identical.
+            // Mirrors polarityMismatch in review-dedup.mjs.
+            const NEGATION_TOKENS = new Set(["not", "no", "cannot", "never", "none"]);
+            const polarityMismatch = (a, b) => {
+              const sa = new Set(tokensOf(a));
+              const sb = new Set(tokensOf(b));
+              const aNeg = [...sa].some((t) => NEGATION_TOKENS.has(t));
+              const bNeg = [...sb].some((t) => NEGATION_TOKENS.has(t));
+              if (aNeg === bNeg) return false;
+              const strip = (s) => [...s].filter((t) => !NEGATION_TOKENS.has(t));
+              const na = strip(sa);
+              const nb = new Set(strip(sb));
+              // Exact non-negation content match: only a true polarity flip.
+              return na.length > 0 && na.length === nb.size && na.every((t) => nb.has(t));
+            };
             const fingerprint = (body, k = DEDUP.shingleSize) => {
               const toks = tokensOf(body);
               const kk = Math.max(1, k | 0);
@@ -333,7 +351,11 @@ jobs:
                 // survives shared context. Mirrors dedupeThreads in review-dedup.mjs.
                 const orderSim = similarity(body, c.body, 2);
                 const reversedOrder = sim >= DEDUP.directionalSetMin && orderSim <= DEDUP.directionalOrderMax;
-                if (reversedOrder || directionalOperandsSwapped(body, c.body)) continue;
+                if (
+                  reversedOrder ||
+                  directionalOperandsSwapped(body, c.body) ||
+                  polarityMismatch(body, c.body)
+                ) continue;
                 match = c;
                 best = sim;
               }

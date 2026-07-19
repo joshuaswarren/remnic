@@ -574,6 +574,44 @@ test("contracted negations are normalized so the negation survives tokenizing", 
   }
 });
 
+test("a prohibition and its affirmative on the same lines do NOT merge (polarity mismatch)", () => {
+  // Preserving 'not' isn't enough — k=1 Jaccard still scores these ~0.8. The
+  // polarity check rejects the pair (one negated, otherwise-identical content).
+  const a = mkThread({
+    id: 631, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Do not call deleteAll before backup",
+  });
+  const b = mkThread({
+    id: 632, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Call deleteAll before backup",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "opposite polarity must not merge");
+});
+
+test("a contracted prohibition and its affirmative do NOT merge", () => {
+  const a = mkThread({
+    id: 633, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Don't call deleteAll before backup",
+  });
+  const b = mkThread({
+    id: 634, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Call deleteAll before backup",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 0, "contracted negation flips polarity too");
+});
+
+test("two same-polarity prohibitions still merge", () => {
+  const a = mkThread({
+    id: 635, path: "a.ts", startLine: 4, line: 6, author: "cursor",
+    body: "Do not call deleteAll before backup",
+  });
+  const b = mkThread({
+    id: 636, path: "a.ts", startLine: 4, line: 6, author: "chatgpt-codex-connector",
+    body: "Do not call deleteAll prior to backup",
+  });
+  assert.equal(dedupeThreads([a, b]).duplicateCount, 1, "same polarity + same finding folds");
+});
+
 test("an unrelated directive phrase is not falsely blocked or merged", () => {
   const a = mkThread({
     id: 615, path: "a.ts", startLine: 10, line: 12, author: "cursor",

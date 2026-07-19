@@ -155,10 +155,11 @@ test("review-thread guard inline applies the directional-opposite dedup guard", 
   assert.match(workflow, /directionalSetMin:\s*0\.9/, "DEDUP must define directionalSetMin");
   assert.match(workflow, /directionalOrderMax:\s*0\.1/, "DEDUP must define directionalOrderMax");
   assert.match(workflow, /const orderSim = similarity\(body, c\.body, 2\);/, "must compute the ordered bigram similarity");
+  assert.match(workflow, /reversedOrder \|\|/, "match loop must skip reversed-order directional candidates");
   assert.match(
     workflow,
-    /if \(reversedOrder \|\| directionalOperandsSwapped\(body, c\.body\)\) continue;/,
-    "must skip folding reversed-order or swapped-operand directional candidates",
+    /directionalOperandsSwapped\(body, c\.body\) \|\|/,
+    "match loop must skip swapped-operand directional candidates",
   );
 });
 
@@ -193,4 +194,13 @@ test("review-thread guard and unsticker anchor on diff side", () => {
   assert.match(guard, /t\.startDiffSide \?\? c\?\.startDiffSide/, "anchorOf must carry the start diff side");
   assert.match(guard, /if \(a\.side !== b\.side\) return false;/, "overlap must require the same (start:end) diff side");
   assert.match(unsticker, /\bstartDiffSide\b/, "unsticker thread query must request startDiffSide");
+});
+
+test("review-thread guard inline rejects polarity-mismatch duplicates", () => {
+  // A prohibition and its affirmative on the same lines must not fold; mirrors
+  // polarityMismatch in review-dedup.mjs (codex P2).
+  const guard = readFileSync(".github/workflows/review-thread-guard.yml", "utf8");
+  assert.match(guard, /const NEGATION_TOKENS = new Set\(\["not", "no", "cannot", "never", "none"\]\);/);
+  assert.match(guard, /const polarityMismatch =/);
+  assert.match(guard, /polarityMismatch\(body, c\.body\)/, "match loop must reject polarity mismatches");
 });
