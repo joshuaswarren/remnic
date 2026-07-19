@@ -1761,22 +1761,22 @@
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:117",
+    "key": "packages/remnic-core/src/config.ts:118",
     "issue": "#1990"
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:360",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts:374",
+    "key": "packages/remnic-core/src/config.ts:361",
     "issue": "#1990"
   },
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts:375",
+    "issue": "#1990"
+  },
+  {
+    "kind": "unparseable-construct",
+    "key": "packages/remnic-core/src/config.ts:376",
     "issue": "#1990"
   },
   {

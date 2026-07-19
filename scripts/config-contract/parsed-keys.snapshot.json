@@ -717,6 +717,7 @@
     "recallGraphIterations",
     "recallGraphTopK",
     "recallHandleSnapshotDepth",
+    "recallMaxConcurrentPerPrincipal",
     "recallMemoryHandles",
     "recallMemoryWorthFilterEnabled",
     "recallMemoryWorthHalfLifeMs",
@@ -737,6 +738,7 @@
     "recallPlannerTimeoutMs",
     "recallPlannerUseResponsesApi",
     "recallReasoningTraceBoostEnabled",
+    "recallSingleFlightEnabled",
     "recallTranscriptRetentionDays",
     "recallTranscriptsEnabled",
     "recallTrustStageCorpusFallbackEnabled",
@@ -923,22 +925,22 @@
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 117,
+      "line": 118,
       "reason": "Object.keys() over parser input — dynamic key set"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
-      "line": 360,
-      "reason": "computed element access on parser input — key not statically derivable"
-    },
-    {
-      "file": "packages/remnic-core/src/config.ts",
-      "line": 374,
+      "line": 361,
       "reason": "computed element access on parser input — key not statically derivable"
     },
     {
       "file": "packages/remnic-core/src/config.ts",
       "line": 375,
+      "reason": "computed element access on parser input — key not statically derivable"
+    },
+    {
+      "file": "packages/remnic-core/src/config.ts",
+      "line": 376,
       "reason": "computed element access on parser input — key not statically derivable"
     },
     {
@@ -1221,6 +1223,7 @@
     "recallGraphEnabled.trim",
     "recallGraphIterations.trim",
     "recallGraphTopK.trim",
+    "recallMaxConcurrentPerPrincipal.trim",
     "recallMemoryHandles.trim",
     "recallMemoryWorthFilterEnabled.trim",
     "recallMemoryWorthHalfLifeMs.trim",
@@ -1232,6 +1235,7 @@
     "recallPlannerTelemetryEnabled.trim",
     "recallPlannerUseResponsesApi.trim",
     "recallReasoningTraceBoostEnabled.trim",
+    "recallSingleFlightEnabled.trim",
     "recallTrustStageCorpusFallbackEnabled.trim",
     "reinforcementRecallBoostEnabled.trim",
     "reinforcementRecallBoostMax.trim",

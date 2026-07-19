@@ -148,6 +148,8 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 |---------|---------|-------------|
 | `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for assembled recall context.** Controls how much memory context is injected into agent prompts. If unset, falls back to `maxMemoryTokens * 4`. See [Recall Budget Tuning](#recall-budget-tuning) below. |
 | `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
+| `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
+| `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
 | `qmdMaxResults` | `8` | Final result cap after over-scanning and ranking (fetch size may be larger) |
