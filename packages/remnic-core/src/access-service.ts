@@ -118,7 +118,7 @@ import {
   toMemoryPathRel,
 } from "./memory-lifecycle-ledger-utils.js";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
-import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { canReadNamespace, canWriteNamespace, citationAuthorizedNamespaces, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
@@ -5025,13 +5025,7 @@ export class EngramAccessService {
           }
           const authorizedNamespaces = namespacesEnabled
             ? Array.from(
-                new Set([
-                  ...recallNamespacesForPrincipal(principal, this.orchestrator.config),
-                  ...this.orchestrator.config.namespacePolicies
-                    .filter((policy) => canReadNamespace(principal, policy.name, this.orchestrator.config))
-                    .map((policy) => policy.name),
-                  fallbackNamespace,
-                ]),
+                new Set([...citationAuthorizedNamespaces(principal, this.orchestrator.config), fallbackNamespace]),
               )
             : [fallbackNamespace];
           const resolved = await this.storageForAbsoluteRecallPath(
