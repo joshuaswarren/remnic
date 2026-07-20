@@ -60,6 +60,59 @@ test("flushAccessTracking keeps duplicate memory IDs scoped by memory path", asy
     },
   ]);
 });
+test("flushAccessTracking reads buffered namespaces outside configured policies", async () => {
+  const projectPath = path.join("/memory", "namespaces", "project-x", "facts", "same-id.md");
+  const memories = [{ path: projectPath, frontmatter: { id: "same-id", accessCount: 4 } }];
+  const readNamespaces: string[][] = [];
+  let flushed: AccessTrackingEntry[] = [];
+  const config = {
+    namespacesEnabled: true,
+    memoryDir: "/memory",
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer: new Map([
+      [
+        "project-x:same-id",
+        {
+          memoryId: "same-id",
+          memoryPath: projectPath,
+          namespace: "project-x",
+          count: 1,
+          lastAccessed: "2026-07-19T00:00:00.000Z",
+        },
+      ],
+    ]),
+    readAllMemoriesForNamespaces: async (namespaces: string[]) => {
+      readNamespaces.push(namespaces);
+      return memories;
+    },
+    namespaceFromPath: (memoryPath: string) =>
+      memoryPath.includes(`${path.sep}project-x${path.sep}`) ? "project-x" : "default",
+    storageRouter: {
+      storageFor: async (namespace: string) => ({
+        flushAccessTracking: async (entries: AccessTrackingEntry[]) => {
+          if (namespace === "project-x") flushed = entries;
+        },
+      }),
+    },
+  } as unknown as WorkspaceOpsDeps);
+
+  await coordinator.flushAccessTracking();
+
+  assert.deepEqual(readNamespaces, [["default", "shared", "project-x"]]);
+  assert.deepEqual(flushed, [
+    {
+      memoryId: "same-id",
+      memoryPath: projectPath,
+      newCount: 5,
+      lastAccessed: "2026-07-19T00:00:00.000Z",
+    },
+  ]);
+});
 
 test("flushAccessTracking selects the buffered path within one namespace", async () => {
   const firstPath = path.join("/memory", "facts", "first.md");

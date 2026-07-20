@@ -833,15 +833,23 @@ export class WorkspaceOpsCoordinator {
   async flushAccessTracking(): Promise<void> {
     if (this.deps.accessTrackingBuffer.size === 0) return;
 
-    const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-      ? Array.from(
-          new Set<string>([
-            this.deps.config.defaultNamespace,
-            this.deps.config.sharedNamespace,
-            ...this.deps.config.namespacePolicies.map((p) => p.name),
-          ]),
-        )
+    const bufferedNamespaces = new Set<string>();
+    for (const [, update] of this.deps.accessTrackingBuffer) {
+      bufferedNamespaces.add(
+        update.namespace ??
+          (update.memoryPath
+            ? this.deps.namespaceFromPath(update.memoryPath)
+            : this.deps.config.defaultNamespace),
+      );
+    }
+    const configuredNamespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
+      ? [
+          this.deps.config.defaultNamespace,
+          this.deps.config.sharedNamespace,
+          ...this.deps.config.namespacePolicies.map((p) => p.name),
+        ]
       : [this.deps.config.defaultNamespace];
+    const namespaces = Array.from(new Set([...configuredNamespaces, ...bufferedNamespaces]));
     const memoriesByNamespace = new Map<string, MemoryFile[]>();
     const memories = await this.deps.readAllMemoriesForNamespaces(namespaces);
     for (const memory of memories) {
