@@ -55,6 +55,7 @@ import {
   rougeL,
   timed,
 } from "../../scorer.js";
+import { computeCategoryAggregates } from "./category-aggregates.js";
 import type {
   BenchmarkMode,
   BenchmarkResult,
@@ -866,6 +867,7 @@ async function buildBenchmarkResult(
         .map((failure) => `${failure.taskId}: ${failure.message.slice(0, 240)}`)
         .join("; ")}${failedTasks.length > 3 ? `; and ${failedTasks.length - 3} more` : ""})`
     : undefined;
+  const categoryAggregates = computeCategoryAggregates(tasks);
 
   return {
     meta: {
@@ -904,6 +906,12 @@ async function buildBenchmarkResult(
     results: {
       tasks,
       aggregates: aggregateTaskScores(tasks.map((task) => task.scores)),
+      // Per-category breakdown for benchmarks that stamp a `categoryName`
+      // detail (LoCoMo). Omitted when empty so other benchmarks' output shape
+      // is unchanged (issue #1878).
+      ...(Object.keys(categoryAggregates).length > 0
+        ? { categoryAggregates }
+        : {}),
     },
     environment: {
       os: process.platform,
