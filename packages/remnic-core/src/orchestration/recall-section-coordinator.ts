@@ -419,8 +419,10 @@ export class RecallSectionCoordinator {
               rendered = chunk.content;
               includedLeadingContent = false;
               includedAtomicCount = 1;
-              if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
-              if (chunk.memoryPath) {
+              // Push id/path/namespace together so the parallel tracking arrays
+              // never misalign when a chunk carries only one of them (#2020).
+              if (chunk.memoryId && chunk.memoryPath) {
+                includedMemoryIds.push(chunk.memoryId);
                 includedMemoryPaths.push(chunk.memoryPath);
                 includedMemoryNamespaces.push(chunk.memoryNamespace);
               }

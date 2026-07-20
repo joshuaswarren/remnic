@@ -4335,8 +4335,7 @@ export class RecallInternalCoordinator {
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
       if (caps.rerank && this.deps.config.rerankProvider === "local") {
-        // (namespace, path) id so same-relative-path cross-namespace hits don't
-        // collapse; pipe delimiter keeps it LLM-safe + cache-stable (#2020).
+        // (namespace, path) id so cross-namespace same-path hits don't collapse; LLM-safe + cache-stable (#2020).
         const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
@@ -4960,6 +4959,7 @@ export class RecallInternalCoordinator {
                   (m, i) => ({
                     docid: m.frontmatter.id,
                     path: m.path,
+                    namespace: this.deps.namespaceFromPath(m.path),
                     snippet: m.content,
                     score: 1.0 - i / Math.max(recentSorted.length, 1),
                   }),

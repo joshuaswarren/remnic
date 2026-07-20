@@ -30,7 +30,7 @@ import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { getDefaultArchiveScoring, memoryFileToScoreItem } from "../recall/archive-scoring.js";
 import { RelevanceStore } from "../relevance.js";
-import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
+import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
@@ -1064,12 +1064,14 @@ export class RecallSearchPipelineCoordinator {
     }
 
     if (caps.rerank && this.deps.config.rerankProvider === "local") {
+      // (namespace, path) id so same-relative-path cross-namespace hits are not collapsed (#2020).
+      const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
       const ranked = await rerankLocalOrNoop({
         query: options.prompt,
         candidates: results
           .slice(0, this.deps.config.rerankMaxCandidates)
           .map((r) => ({
-            id: r.path,
+            id: rerankId(r),
             snippet: r.snippet || r.path,
           })),
         local: this.deps.fastLlmForRerank,
@@ -1081,17 +1083,7 @@ export class RecallSearchPipelineCoordinator {
         cacheTtlMs: this.deps.config.rerankCacheTtlMs,
       });
       if (ranked && ranked.length > 0) {
-        const byPath = new Map(results.map((r) => [r.path, r]));
-        const reordered: QmdSearchResult[] = [];
-        for (const p of ranked) {
-          const it = byPath.get(p);
-          if (it) reordered.push(it);
-        }
-        const rankedSet = new Set(ranked);
-        for (const r of results) {
-          if (!rankedSet.has(r.path)) reordered.push(r);
-        }
-        results = reordered;
+        results = reorderByRankedKeys(results, ranked, rerankId);
       }
     }
     if (caps.rerank && this.deps.config.rerankProvider === "cloud") {
