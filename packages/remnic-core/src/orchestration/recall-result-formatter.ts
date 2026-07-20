@@ -93,6 +93,27 @@ export function displayResultPath(
     : resultPath;
 }
 
+/**
+ * Return a copy of budget metadata with `includedMemoryPaths` rendered
+ * memoryDir-relative, so recall/last-recall API callers never receive operator
+ * filesystem paths via budget output even though the internal snapshot keeps
+ * absolute paths for tracking/x-ray (#2020). Other fields are unchanged.
+ */
+export function displaySafeBudgetsApplied<
+  T extends {
+    includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
+  },
+>(budgetsApplied: T | undefined, memoryDir: string): T | undefined {
+  if (!budgetsApplied?.includedMemoryPaths) return budgetsApplied;
+  return {
+    ...budgetsApplied,
+    includedMemoryPaths: budgetsApplied.includedMemoryPaths.map((p, i) =>
+      displayResultPath(p, memoryDir, budgetsApplied.includedMemoryNamespaces?.[i]),
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
