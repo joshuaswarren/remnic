@@ -4744,6 +4744,7 @@ test("recordCitationUsage tracks duplicate citations with resolved namespace pat
       namespacesEnabled: true,
       defaultNamespace: "global",
       sharedNamespace: "shared",
+      defaultRecallNamespaces: ["self", "shared"],
       principalFromSessionKeyMode: "prefix",
       principalFromSessionKeyRules: [],
       namespacePolicies: [
@@ -4790,6 +4791,7 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
       namespacesEnabled: true,
       defaultNamespace: "global",
       sharedNamespace: "shared",
+      defaultRecallNamespaces: ["self", "shared"],
       principalFromSessionKeyMode: "prefix",
       principalFromSessionKeyRules: [],
       namespacePolicies: [

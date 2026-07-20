@@ -5394,8 +5394,7 @@ export class RecallInternalCoordinator {
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
           const recalledPath = recalledMemoryPaths[xrayIdx]!;
-          // Namespace captured alongside the path (aligned array), never
-          // re-derived from a now-relative path that resolves to default (#2020).
+          // Namespace from the aligned capture array, not re-derived from a relative path (#2020).
           const recalledNamespace = recalledMemoryNamespaces[xrayIdx];
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
@@ -5459,13 +5458,14 @@ export class RecallInternalCoordinator {
         // must never look like "no result"). These are NOT in recalledMemoryPaths
         // (they were excluded from injection) but ARE in the trust map.
         if (recallTrustByPath) {
-          for (const [qPath, qItem] of recallTrustByPath) {
-            if (!qItem.quarantined || recalledMemoryPaths.includes(qPath)) continue;
-            const qId = idFromPath(qPath);
+          for (const qItem of recallTrustByPath.values()) {
+            // Map is keyed by composite trustResultKey; read the plain path from the item (#2020).
+            if (!qItem.quarantined || recalledMemoryPaths.includes(qItem.path)) continue;
+            const qId = idFromPath(qItem.path);
             if (!qId) continue;
             results.push({
               memoryId: qId,
-              path: qPath,
+              path: qItem.path,
               servedBy,
               scoreDecomposition: { final: 0 },
               admittedBy: [],

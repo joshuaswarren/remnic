@@ -1,7 +1,9 @@
 import type { MemoryFile, QmdSearchResult } from "./types.js";
 
 export function memoryMapKey(result: Pick<QmdSearchResult, "namespace" | "path">): string {
-  return `${result.namespace ?? ""}\0${result.path}`;
+  // No namespace -> bare path (backward-compatible with path-keyed lookups).
+  // Namespaced -> composite so the same relative path across namespaces stays distinct.
+  return result.namespace ? `${result.namespace}\0${result.path}` : result.path;
 }
 
 export function memoryForResult(
