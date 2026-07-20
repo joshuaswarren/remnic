@@ -370,8 +370,12 @@ export class GraphRecallCoordinator {
       }
     }
 
+    const namespacedPrimaryResults = Array.from(byNamespace.entries()).flatMap(
+      ([namespace, results]) =>
+        results.map((result) => ({ ...result, namespace })),
+    );
     return {
-      merged: mergeGraphExpandedResults(options.memoryResults, expandedResults),
+      merged: mergeGraphExpandedResults(namespacedPrimaryResults, expandedResults),
       seedPaths,
       expandedPaths,
       seedResults,
