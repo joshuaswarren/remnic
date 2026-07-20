@@ -432,3 +432,48 @@ test("runDisableValueCheck fails closed when the shrink-only baseline cannot be 
     /refusing to run the §33 check open|cannot resolve the shrink-only baseline/,
   );
 });
+
+test("guard: a ternary whose zero branch does NOT return 0 still coerces (flagged)", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const raw = coerceNumber(cfg.cap) ?? 0;",
+        "  const cap = raw <= 0 ? 5 : Math.max(1, raw);",
+        "  return { cap };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: threshold detection catches every inequality ordering", () => {
+  for (const expr of [
+    "config.cap > used",
+    "used > config.cap",
+    "config.cap < used",
+    "used < config.cap",
+  ]) {
+    const sources: DisableValueSource[] = [
+      {
+        path: "types.ts",
+        text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+      },
+      {
+        path: "consumer.ts",
+        text: `function tick(used: number, config: { cap: number }) {\n  if (${expr}) act();\n}`,
+      },
+    ];
+    const { violations } = findDisableValueViolations({ sources, manifests: [] });
+    assert.equal(violations.length, 1, `ordering not detected: ${expr}`);
+    assert.equal(violations[0].key, "cap");
+  }
+});

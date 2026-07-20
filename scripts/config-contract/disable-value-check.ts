@@ -169,6 +169,15 @@ function isComparisonOperator(kind: ts.SyntaxKind): boolean {
   );
 }
 
+function isInequalityOperator(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.GreaterThanToken ||
+    kind === ts.SyntaxKind.GreaterThanEqualsToken ||
+    kind === ts.SyntaxKind.LessThanToken ||
+    kind === ts.SyntaxKind.LessThanEqualsToken
+  );
+}
+
 /** `Math.max(L, …)` / `Math.max(…, L)` with an integer floor L >= 1. */
 function isFloorAboveZero(node: ts.CallExpression): boolean {
   const callee = node.expression;
@@ -236,26 +245,77 @@ function scopeHasZeroGuardFor(scope: ts.Node, name: string): boolean {
   return found;
 }
 
-/** Any comparison of any operand to the literal 0 or 1 — a zero-aware short-circuit in a parser initializer. */
-function subtreeHasZeroComparison(root: ts.Node): boolean {
-  let found = false;
+/** Does value === 0 satisfy `<value> <op> <lit>` (or the mirror `<lit> <op> <value>`)? */
+function zeroSatisfiesComparison(op: ts.SyntaxKind, valueOnLeft: boolean, lit: number): boolean | undefined {
+  const a = valueOnLeft ? 0 : lit;
+  const b = valueOnLeft ? lit : 0;
+  switch (op) {
+    case ts.SyntaxKind.GreaterThanToken:
+      return a > b;
+    case ts.SyntaxKind.GreaterThanEqualsToken:
+      return a >= b;
+    case ts.SyntaxKind.LessThanToken:
+      return a < b;
+    case ts.SyntaxKind.LessThanEqualsToken:
+      return a <= b;
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+    case ts.SyntaxKind.EqualsEqualsToken:
+      return a === b;
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsToken:
+      return a !== b;
+  }
+  return undefined;
+}
+
+/** For a condition comparing a value to 0/1, which ternary branch runs when the value is 0. */
+function zeroCaseBranch(condition: ts.Expression): "whenTrue" | "whenFalse" | undefined {
+  let branch: "whenTrue" | "whenFalse" | undefined;
   const visit = (node: ts.Node): void => {
-    if (found) return;
+    if (branch) return;
     if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
       const leftLit = numericLiteralValue(node.left);
       const rightLit = numericLiteralValue(node.right);
-      if (leftLit === 0 || leftLit === 1 || rightLit === 0 || rightLit === 1) {
-        found = true;
-        return;
+      let lit: number | undefined;
+      let valueOnLeft = true;
+      if (rightLit === 0 || rightLit === 1) {
+        lit = rightLit;
+        valueOnLeft = true;
+      } else if (leftLit === 0 || leftLit === 1) {
+        lit = leftLit;
+        valueOnLeft = false;
+      }
+      if (lit !== undefined) {
+        const satisfied = zeroSatisfiesComparison(node.operatorToken.kind, valueOnLeft, lit);
+        if (satisfied !== undefined) {
+          branch = satisfied ? "whenTrue" : "whenFalse";
+          return;
+        }
       }
     }
     ts.forEachChild(node, visit);
   };
-  visit(root);
-  return found;
+  visit(condition);
+  return branch;
 }
 
-/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) with no zero-aware short-circuit. */
+/** A ternary whose zero case yields literal 0 — the disable value is genuinely preserved (`raw <= 0 ? 0 : Math.max(1, raw)`). */
+function initializerPreservesZero(root: ts.Node): boolean {
+  let preserves = false;
+  const visit = (node: ts.Node): void => {
+    if (preserves) return;
+    if (ts.isConditionalExpression(node)) {
+      const branch = zeroCaseBranch(node.condition);
+      if (branch === "whenTrue" && numericLiteralValue(node.whenTrue) === 0) preserves = true;
+      if (branch === "whenFalse" && numericLiteralValue(node.whenFalse) === 0) preserves = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return preserves;
+}
+
+/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) with no zero branch that preserves 0. */
 function initializerCoercesZero(initializer: ts.Expression): boolean {
   let coerces = false;
   const visit = (node: ts.Node): void => {
@@ -274,9 +334,9 @@ function initializerCoercesZero(initializer: ts.Expression): boolean {
     ts.forEachChild(node, visit);
   };
   visit(initializer);
-  // A comparison to 0/1 anywhere in the initializer means the parser already
-  // branches on the disable value (e.g. `raw <= 0 ? 0 : Math.max(1, raw)`).
-  return coerces && !subtreeHasZeroComparison(initializer);
+  // A ternary whose zero case returns literal 0 preserves the disable value, so
+  // the clamp only runs for values > 0 (`raw <= 0 ? 0 : Math.max(1, raw)`).
+  return coerces && !initializerPreservesZero(initializer);
 }
 
 /**
@@ -293,29 +353,22 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
   for (const source of sources) {
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node): void => {
-      if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-        const op = node.operatorToken.kind;
+      if (ts.isBinaryExpression(node) && isInequalityOperator(node.operatorToken.kind)) {
         const leftName = propertyAccessName(node.left);
         const rightName = propertyAccessName(node.right);
         const leftLit = numericLiteralValue(node.left);
         const rightLit = numericLiteralValue(node.right);
-        // Property as a bound against a dynamic value: `X > prop` / `X >= prop` / `prop < X` / `prop <= X`.
-        const boundName =
-          rightName &&
-          flags.has(rightName) &&
-          (op === ts.SyntaxKind.GreaterThanToken || op === ts.SyntaxKind.GreaterThanEqualsToken) &&
-          leftLit !== 0 &&
-          leftLit !== 1
-            ? rightName
-            : leftName &&
-                flags.has(leftName) &&
-                (op === ts.SyntaxKind.LessThanToken || op === ts.SyntaxKind.LessThanEqualsToken) &&
-                rightLit !== 0 &&
-                rightLit !== 1
-              ? leftName
-              : undefined;
-        if (boundName && !scopeHasZeroGuardFor(enclosingScope(node), boundName)) {
-          flags.get(boundName)!.thresholdUnguarded = true;
+        // A property is a threshold bound in ANY inequality ordering (`prop > X`,
+        // `X > prop`, `prop < X`, `X < prop`, …) as long as the other operand is
+        // a dynamic value, not the 0/1 disable literal (that side is a guard).
+        const bounds = [
+          rightName && flags.has(rightName) && leftLit !== 0 && leftLit !== 1 ? rightName : undefined,
+          leftName && flags.has(leftName) && rightLit !== 0 && rightLit !== 1 ? leftName : undefined,
+        ];
+        for (const boundName of bounds) {
+          if (boundName && !scopeHasZeroGuardFor(enclosingScope(node), boundName)) {
+            flags.get(boundName)!.thresholdUnguarded = true;
+          }
         }
       }
       const assignedName = propertyNodeName(node);
