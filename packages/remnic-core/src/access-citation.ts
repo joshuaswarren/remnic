@@ -71,7 +71,10 @@ export async function recordCitationUsage(
   const matchedEntries = memoryEntries
     .map((entry) => {
       const paths = remainingPathsById.get(entry.id);
-      const memoryPath = paths?.shift();
+      if (!paths || paths.length === 0) return null;
+      const preferredIndex = paths.indexOf(entry.citedPath);
+      const pathIndex = preferredIndex >= 0 ? preferredIndex : 0;
+      const [memoryPath] = paths.splice(pathIndex, 1);
       return memoryPath ? { id: entry.id, path: memoryPath } : null;
     })
     .filter(

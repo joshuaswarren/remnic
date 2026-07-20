@@ -585,6 +585,7 @@ export class RecallInternalCoordinator {
     let recalledMemoryCount = 0;
     let recalledMemoryIds: string[] = [];
     let recalledMemoryPaths: string[] = [];
+    let recalledMemoryNamespaces: Array<string | undefined> = [];
     // Boosted QmdSearchResult array for the serving branch (issue #687 PR 3/4).
     // Populated alongside recalledMemoryPaths so the X-ray capture can read
     // per-result explain data (e.g. reinforcementBoost) from the result that
@@ -5330,6 +5331,7 @@ export class RecallInternalCoordinator {
     );
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
+    recalledMemoryNamespaces = assembledRecall.includedMemoryNamespaces;
     recalledMemoryCount = assembledRecall.includedMemoryIds.length;
     this.deps.trackMemoryAccess(
       assembledRecall.includedMemoryIds,
@@ -5571,6 +5573,7 @@ export class RecallInternalCoordinator {
           budgetsApplied,
           latencyMs: Date.now() - recallStart,
           resultPaths: recalledMemoryPaths,
+          resultNamespaces: recalledMemoryNamespaces,
           policyVersion,
           appendImpression:
             recalledMemoryIds.length > 0 ||
