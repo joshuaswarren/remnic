@@ -5382,7 +5382,7 @@ export class RecallInternalCoordinator {
         // from the path here guarantees `memoryId` and `path` refer to
         // the same underlying result.
         const idFromPath = (p: string): string | null => {
-          const match = p.match(/([^/]+)\.md$/);
+          const match = p.match(/([^/\\]+)\.md$/);
           return match ? match[1] ?? null : null;
         };
         // Build a path → QmdSearchResult index so we can pull per-result
