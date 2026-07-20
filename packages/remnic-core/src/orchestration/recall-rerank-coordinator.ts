@@ -355,7 +355,7 @@ export class RecallRerankCoordinator {
       namespaces,
       {
         readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),
-        readMemoryFrontmatter: async (path) => {
+        readMemoryFrontmatter: async (path, preferredNamespace) => {
           if (!fallbackReader) {
             for (const ns of namespaces) {
               try {
@@ -371,6 +371,7 @@ export class RecallRerankCoordinator {
             path,
             fallbackReader,
             namespaces,
+            preferredNamespace,
           );
           return memory ? memory.frontmatter : null;
         },

@@ -327,8 +327,13 @@ export interface TrustScoreRerankDeps {
   readNamespaceMemories(
     namespace: string,
   ): Promise<ReadonlyArray<{ path: string; frontmatter: TrustFrontmatterProjection }>>;
-  /** Read one memory's frontmatter by path (cold-tier direct fallback). */
-  readMemoryFrontmatter(path: string): Promise<TrustFrontmatterProjection | null>;
+  /** Read one memory's frontmatter by path (cold-tier direct fallback). The
+   * owning namespace is passed so a relative path resolves against the correct
+   * namespace store instead of the first fallback (#2020). */
+  readMemoryFrontmatter(
+    path: string,
+    preferredNamespace?: string,
+  ): Promise<TrustFrontmatterProjection | null>;
   /**
    * Current cross-process corpus version for a namespace (issue #1905). Used
    * to key the per-namespace corpus-fallback cache so it invalidates on the
@@ -528,7 +533,7 @@ export async function buildTrustSignalsForRerank(
       const batch = await Promise.all(
         missing.slice(off, off + BATCH).map(async (c) => {
           try {
-            const frontmatter = await deps.readMemoryFrontmatter(c.path);
+            const frontmatter = await deps.readMemoryFrontmatter(c.path, c.namespace);
             return frontmatter ? { path: c.signalKey, frontmatter } : null;
           } catch (err) {
             logDebug("trust-score: direct path lookup failed", {
