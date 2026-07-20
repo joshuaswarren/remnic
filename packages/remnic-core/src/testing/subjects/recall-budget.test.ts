@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 
 import { parseConfig } from "../../config.js";
 import { RecallSectionCoordinator } from "../../orchestration/recall-section-coordinator.js";
-import { formatRecallSectionMetric } from "../../recall-qos.js";
+import { createRecallSectionMetricRecorder, formatRecallSectionMetric } from "../../recall-qos.js";
 import { reorderRecallResultsWithMmr } from "../../recall-mmr.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "../../retrieval.js";
 import type { PluginConfig, RecallSectionConfig } from "../../types.js";
@@ -384,6 +384,25 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         });
         assert.equal(skipMetric.timing, "skip", "a skipped section is timed as 'skip'");
         assert.equal(skipMetric.level, "debug", "a skipped enrichment section logs at debug level");
+        // The recorder factory writes the section's timing into a timings map
+        // and routes a successful core section to an info-level log.
+        const timings: Record<string, string> = {};
+        const infoLogs: string[] = [];
+        const record = createRecallSectionMetricRecorder({
+          timings,
+          logger: { info: (m: string) => infoLogs.push(m), debug: () => {} },
+        });
+        const coreEntry = record({
+          section: "memories",
+          priority: "core",
+          durationMs: 12,
+          deadlineMs: 100,
+          source: "fresh",
+          success: true,
+        });
+        assert.equal(timings.memories, coreEntry.timing, "the recorder writes the section timing into the timings map");
+        assert.equal(coreEntry.level, "info", "a successful core section records at info level");
+        assert.equal(infoLogs.length, 1, "the info-level metric is routed to the info logger");
         return;
       }
       case "before-reset": {
