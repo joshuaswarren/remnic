@@ -60,18 +60,19 @@ export function mergeGraphExpandedResults(
   primary: QmdSearchResult[],
   expanded: QmdSearchResult[],
 ): QmdSearchResult[] {
-  const mergedByPath = new Map<string, QmdSearchResult>();
+  const mergedByNamespaceAndPath = new Map<string, QmdSearchResult>();
   for (const item of [...primary, ...expanded]) {
-    const prev = mergedByPath.get(item.path);
+    const key = `${item.namespace ?? ""}\0${item.path}`;
+    const prev = mergedByNamespaceAndPath.get(key);
     if (!prev) {
-      mergedByPath.set(item.path, item);
+      mergedByNamespaceAndPath.set(key, item);
       continue;
     }
     const better = item.score > prev.score ? item : prev;
     const snippet = prev.snippet || item.snippet;
-    mergedByPath.set(item.path, { ...better, snippet });
+    mergedByNamespaceAndPath.set(key, { ...better, snippet });
   }
-  return Array.from(mergedByPath.values());
+  return Array.from(mergedByNamespaceAndPath.values());
 }
 
 export function graphPathRelativeToStorage(

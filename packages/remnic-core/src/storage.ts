@@ -6497,8 +6497,8 @@ export class StorageManager {
       }
       if (preferredMatches.length > 0) {
         pathsById.set(id, preferredMatches);
-      } else if (existingPaths[0]) {
-        pathsById.set(id, [existingPaths[0]]);
+      } else if (existingPaths.length > 0) {
+        pathsById.set(id, existingPaths);
       }
     }
     return pathsById;

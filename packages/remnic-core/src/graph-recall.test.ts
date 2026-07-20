@@ -6,7 +6,38 @@ import {
   type GraphRecallOptions,
   runGraphRecall,
 } from "./graph-recall.js";
+import { mergeGraphExpandedResults } from "./orchestration/graph-recall-coordinator.js";
 import type { MemoryEdgeSource } from "./graph-retrieval.js";
+
+test("mergeGraphExpandedResults preserves same paths from different namespaces", () => {
+  const merged = mergeGraphExpandedResults(
+    [
+      {
+        docid: "default-memory",
+        path: "facts/same-id.md",
+        namespace: "default",
+        snippet: "default",
+        score: 0.8,
+      },
+      {
+        docid: "project-memory",
+        path: "facts/same-id.md",
+        namespace: "project-x",
+        snippet: "project",
+        score: 0.7,
+      },
+    ],
+    [],
+  );
+
+  assert.deepEqual(
+    merged.map((result) => [result.namespace, result.path]),
+    [
+      ["default", "facts/same-id.md"],
+      ["project-x", "facts/same-id.md"],
+    ],
+  );
+});
 
 const DEFAULT_CONFIG: GraphRecallConfig = {
   recallGraphEnabled: true,

@@ -4144,7 +4144,7 @@ export class RecallInternalCoordinator {
         maxSpecializedScore,
       } = qmdResult;
 
-      // Merge/dedupe by path; keep the best score and first non-empty snippet.
+      // Merge/dedupe by namespace and path; keep the best score and first non-empty snippet.
       const memoryResultsRaw = mergeGraphExpandedResults(
         memoryResultsLists.flat(),
         [],

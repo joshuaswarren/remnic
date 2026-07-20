@@ -376,6 +376,43 @@ test("hot cache (#2020): path-scoped access flush updates the cited duplicate ID
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("citation path lookup returns every duplicate when no preferred path matches", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-citation-duplicates-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await storage.writeMemory("fact", "first duplicate");
+    await storage.writeMemory("fact", "second duplicate");
+    const initial = await storage.readAllMemories();
+    const first = initial.find((memory) => memory.content === "first duplicate");
+    const second = initial.find((memory) => memory.content === "second duplicate");
+    assert.ok(first);
+    assert.ok(second);
+
+    const secondFile = await readFile(second.path, "utf8");
+    const duplicatePath = path.join(dir, "facts", "duplicate", path.basename(first.path));
+    await mkdir(path.dirname(duplicatePath), { recursive: true });
+    await writeFile(
+      duplicatePath,
+      secondFile.replace(/^id: .*$/m, `id: ${first.frontmatter.id}`),
+    );
+    await rm(second.path);
+    resetStaticCaches();
+    const fresh = new StorageManager(dir);
+    await fresh.ensureDirectories();
+
+    const found = await fresh.findExistingMemoryPaths(
+      [first.frontmatter.id],
+      new Map([[first.frontmatter.id, ["/missing/preferred/path.md"]]]),
+    );
+
+    assert.deepEqual(found.get(first.frontmatter.id)?.sort(), [first.path, duplicatePath].sort());
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("citation path lookup resolves collection-prefixed QMD paths", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-citation-path-"));
