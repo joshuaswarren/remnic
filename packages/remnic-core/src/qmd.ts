@@ -2762,9 +2762,8 @@ export class QmdClient implements SearchBackend {
   }
 
   /**
-   * Embed specific files by path (prioritized embedding for hot writes).
-   * Non-blocking callers should wrap in fire-and-forget with error handling.
-   * Returns true if the embed command succeeded, false otherwise.
+   * Trigger a collection-level embed for fresh writes (QMD CLI has no per-file
+   * targeting; callers debounce/batch via prioritized-embed). Returns ok status.
    */
   async embedFiles(filePaths: string[]): Promise<boolean> {
     if (this.available === false || filePaths.length === 0) {
@@ -2776,6 +2775,7 @@ export class QmdClient implements SearchBackend {
       filePaths,
       QMD_TIMEOUT_MS,
     );
+    if (result.ok) clearQmdResultCaches();
     return result.ok;
   }
 

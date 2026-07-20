@@ -201,9 +201,14 @@ export class AccessObserveWriteSurface {
     let degradedReason: string | undefined;
     if (typeof (qmd as { status?: unknown }).status === "function") {
       try {
-        const statusReport = await (qmd as unknown as { status: () => Promise<{ pendingEmbeddings: number | null; oldestPendingAgeMs: number | null }> }).status();
-        pendingEmbeddings = statusReport.pendingEmbeddings;
-        oldestPendingAgeMs = statusReport.oldestPendingAgeMs;
+        const statusReport = await Promise.race([
+          (qmd as unknown as { status: () => Promise<{ pendingEmbeddings: number | null; oldestPendingAgeMs: number | null }> }).status(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
+        ]);
+        if (statusReport) {
+          pendingEmbeddings = statusReport.pendingEmbeddings;
+          oldestPendingAgeMs = statusReport.oldestPendingAgeMs;
+        }
       } catch { /* status probe failed — non-fatal */ }
     }
     if (threshold > 0 && pendingEmbeddings !== null && pendingEmbeddings > threshold) {
@@ -283,6 +288,8 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: health.upgradeAvailable,
         doctorAvailable: health.doctorAvailable,
         debugStatus: health.debugStatus,
+        // Backlog metrics require a QMD client bound to the namespace collection;
+        // this path only checks collection availability, so they stay null here.
         pendingEmbeddings: null,
         oldestPendingAgeMs: null,
         embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,

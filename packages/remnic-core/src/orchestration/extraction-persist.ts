@@ -221,7 +221,6 @@ export class ExtractionPersistCoordinator {
   constructor(
     private readonly deps: ExtractionPersistDeps,
   ) {}
-
   private get config(): PluginConfig {
     return this.deps.config;
   }
@@ -2979,7 +2978,6 @@ export class ExtractionPersistCoordinator {
     log.info(
       `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
-
     // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open
     void (async () => {
       if (persistedIdsByStorage.size === 0) {
@@ -2992,7 +2990,6 @@ export class ExtractionPersistCoordinator {
     })().catch((err) =>
       log.debug(`temporal-index update error (non-fatal): ${err}`),
     );
-
     // #1635: surface pending_review ids so the thread episode set excludes them.
     this.deps.setLastPersistExtractionPendingReviewIds(pendingReviewPersistedIds);
     // Return the persisted fact IDs for threading

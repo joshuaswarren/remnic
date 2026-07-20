@@ -244,9 +244,11 @@ still works (BM25/fulltext), only vector recall lags.
 ```
 
 **Prioritized embedding** (`qmdAutoEmbedEnabled: true`). When enabled, each
-memory write queues its file for a targeted `qmd embed --files <path>` call.
-Writes are debounced and batched (max 5 paths per flush) so a burst of
-extractions produces one embed call, not one per file. The path is
+memory write queues its path for a debounced collection-level `qmd embed`
+trigger. The QMD CLI does not support per-file embed targeting, so each flush
+runs `qmd embed -c <collection>`, which embeds all pending documents. Writes
+are debounced (30 s) and batched (max 50 paths per flush) so a burst of
+extractions produces one embed call, not one per file. The trigger is
 fire-and-forget: an embed failure logs a warning and never blocks the write.
 This keeps new hot-collection memories vector-searchable within minutes
 instead of waiting for the next full `qmd embed`.
@@ -257,11 +259,11 @@ instead of waiting for the next full `qmd embed`.
 |------|----------------------|---------|
 | Standalone / CLI | Operator (or cron) | Periodic full re-embed; Remnic never schedules it |
 | OpenClaw plugin | Operator's gateway host | Same — Remnic only reports the backlog |
-| `qmdAutoEmbedEnabled: true` | Remnic, per-write | Debounced targeted embed of new files only |
+| `qmdAutoEmbedEnabled: true` | Remnic, per-write | Debounced collection-level embed trigger after fresh writes |
 
 In every mode the full-collection `qmd embed` remains the operator's
-responsibility; Remnic's prioritized path only covers newly written files and
-does not replace periodic full re-embedding.
+responsibility; Remnic's prioritized path triggers collection-level embeds
+after fresh writes and does not replace periodic full re-embedding.
 
 **Alerting.** Alert when `pendingEmbeddings` grows monotonically across
 consecutive health checks (the backlog is never draining). A steadily rising

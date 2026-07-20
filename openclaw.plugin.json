@@ -4105,7 +4105,8 @@
         "description": "Enable debounced background QMD maintenance instead of immediate updates on extraction."
       },
       "qmdEmbeddingBacklogThreshold": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 0,
         "default": 1000,
         "description": "Pending-embedding count above which QMD health reports degraded. Set to 0 to disable backlog degradation."
       },

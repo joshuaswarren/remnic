@@ -1,6 +1,8 @@
 /**
- * Prioritized embedding: batch new memory file paths and embed them via QMD
- * on a short timer so fresh writes become searchable within minutes.
+ * Prioritized embedding: debounce and batch-trigger collection-level QMD embeds
+ * so fresh memory writes become searchable within minutes. The QMD CLI does not
+ * support per-file embed targeting; each trigger runs `qmd embed -c <collection>`
+ * which embeds all pending files. Batching avoids hammering the CLI on every write.
  *
  * Extracted from orchestrator.ts to keep that file under the structural ratchet.
  */

@@ -158,18 +158,21 @@ export async function fetchQmdStatus(
 }
 
 /**
- * Embed specific files via `qmd embed --files`. Returns `{ ok: false }`
- * on failure so callers can handle errors without throwing.
+ * Trigger a collection-level embed run via `qmd embed -c <collection>`.
+ * The QMD CLI does not support per-file embed targeting; this triggers
+ * embedding for all pending files in the collection. The prioritized-embed
+ * module debounces and batches these triggers so fresh writes become
+ * searchable within minutes without hammering the CLI on every write.
+ * Returns `{ ok: false }` on failure so callers can reschedule without crashing.
  */
 export async function embedQmdFiles(
   runQmdCommand: QmdCommandRunner,
   collection: string,
-  filePaths: string[],
+  _filePaths: string[],
   timeoutMs: number,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (filePaths.length === 0) return { ok: true };
   try {
-    await runQmdCommand(["embed", "-c", collection, "--files", ...filePaths], timeoutMs);
+    await runQmdCommand(["embed", "-c", collection], timeoutMs);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
