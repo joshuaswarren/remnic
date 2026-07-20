@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -335,6 +335,42 @@ test("hot cache (#1902): an empty corpus is served from cache, not rescanned (ki
     // getCachedMemories returns [] (falsy) for an empty corpus; the read guard
     // must null-check, not truthiness-check, or every read rescans.
     assert.equal(spy.scans(), 0, "empty corpus is served from cache on repeat reads");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("hot cache (#2020): path-scoped access flush updates the cited duplicate ID file", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-hot-access-path-"));
+  try {
+    resetStaticCaches();
+    const sm = new StorageManager(dir);
+    await sm.ensureDirectories();
+    await sm.writeMemory("fact", "first duplicate");
+    await sm.writeMemory("fact", "second duplicate");
+    const initial = await sm.readAllMemories();
+    const first = initial.find((memory) => memory.content === "first duplicate");
+    const second = initial.find((memory) => memory.content === "second duplicate");
+    assert.ok(first);
+    assert.ok(second);
+
+    const secondFile = await readFile(second.path, "utf8");
+    await writeFile(second.path, secondFile.replace(/^id: .*$/m, `id: ${first.frontmatter.id}`));
+    resetStaticCaches();
+    const fresh = new StorageManager(dir);
+    await fresh.ensureDirectories();
+    await fresh.flushAccessTracking([
+      {
+        memoryId: first.frontmatter.id,
+        memoryPath: first.path,
+        newCount: 17,
+        lastAccessed: "2026-07-19T00:00:00.000Z",
+      },
+    ]);
+
+    const after = await fresh.readAllMemories();
+    assert.equal(after.find((memory) => memory.path === first.path)?.frontmatter.accessCount, 17);
+    assert.notEqual(after.find((memory) => memory.path === second.path)?.frontmatter.accessCount, 17);
   } finally {
     resetStaticCaches();
     await rm(dir, { recursive: true, force: true });

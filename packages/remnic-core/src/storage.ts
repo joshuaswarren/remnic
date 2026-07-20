@@ -6346,6 +6346,7 @@ export class StorageManager {
 
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
+    const memoryPathMap = new Map(memories.map((m) => [path.resolve(m.path), m]));
     let updated = 0;
     // Capture the corpus version + warmth BEFORE writing so we can patch the hot
     // entries in place and then re-key them to the version this flush produces
@@ -6365,7 +6366,9 @@ export class StorageManager {
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
 
     for (const entry of entries) {
-      const memory = memoryMap.get(entry.memoryId);
+      const memory = entry.memoryPath
+        ? memoryPathMap.get(path.resolve(entry.memoryPath))
+        : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
       const newFm: MemoryFrontmatter = {
@@ -6384,7 +6387,10 @@ export class StorageManager {
         if (warm) {
           updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
         }
-        appliedPatches.set(entry.memoryId, { accessCount: entry.newCount, lastAccessed: entry.lastAccessed });
+        appliedPatches.set(path.resolve(memory.path), {
+          accessCount: entry.newCount,
+          lastAccessed: entry.lastAccessed,
+        });
         updated++;
       } catch (err) {
         log.debug(`failed to update access tracking for ${entry.memoryId}: ${err}`);
@@ -6417,7 +6423,7 @@ export class StorageManager {
           // re-key robust to that race; the publish guard blocks any scan
           // finishing AFTER our bump, so this is the only window.
           const reapplied = cur.map((m) => {
-            const patch = appliedPatches.get(m.frontmatter.id);
+            const patch = appliedPatches.get(path.resolve(m.path));
             return patch
               ? { ...m, frontmatter: { ...m.frontmatter, accessCount: patch.accessCount, lastAccessed: patch.lastAccessed } }
               : m;
