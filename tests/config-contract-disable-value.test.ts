@@ -628,3 +628,22 @@ test("schema-min: a nested zero-disable doc does not falsely flag an undocumente
   ];
   assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
 });
+
+test("guard: a coerced local passed via shorthand to a call (not returned) is not a false coercion", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  maxItems: number;\n}",
+    },
+    {
+      path: "helper.ts",
+      text: [
+        "function render(request: { maxItems: number }) {",
+        "  const maxItems = Math.max(1, request.maxItems);",
+        "  emit({ maxItems });",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});

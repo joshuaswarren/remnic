@@ -234,7 +234,7 @@ function enclosingScope(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-/** True when a same-named field is emitted via shorthand (`return { name }`) inside the declaration's enclosing scope — i.e. a parsed config field, not an unrelated helper local. */
+/** True when a same-named field is emitted via shorthand inside a `return {…}` in the declaration's enclosing scope — a parsed config field being returned, not a helper local passed elsewhere. */
 function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   if (!ts.isIdentifier(decl.name)) return false;
   const name = decl.name.text;
@@ -242,7 +242,7 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (ts.isShorthandPropertyAssignment(node) && node.name.text === name) {
+    if (ts.isShorthandPropertyAssignment(node) && node.name.text === name && withinReturn(node, scope)) {
       found = true;
       return;
     }
@@ -250,6 +250,16 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   };
   visit(scope);
   return found;
+}
+
+/** Does the node sit inside a `return` statement without crossing out of `scope`? */
+function withinReturn(node: ts.Node, scope: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current && current !== scope) {
+    if (ts.isReturnStatement(current)) return true;
+    current = current.parent;
+  }
+  return false;
 }
 
 /**
