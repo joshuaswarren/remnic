@@ -74,7 +74,6 @@
     "packages/remnic-core/src/retrieval.ts",
     "packages/remnic-core/src/recall-mmr.ts",
     "packages/remnic-core/src/recall-qos.ts",
-    "src/recall-qos.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",
@@ -140,8 +139,7 @@
     "packages/remnic-core/src/orchestration/recall-section-coordinator.ts": "recall-budget",
     "packages/remnic-core/src/retrieval.ts": "recall-budget",
     "packages/remnic-core/src/recall-mmr.ts": "recall-budget",
-    "packages/remnic-core/src/recall-qos.ts": "recall-budget",
-    "src/recall-qos.ts": "recall-budget"
+    "packages/remnic-core/src/recall-qos.ts": "recall-budget"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
