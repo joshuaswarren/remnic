@@ -22,7 +22,11 @@ export interface CitationUsageDependencies {
     authenticatedPrincipal: string | undefined,
   ) => string;
   getStorage: (namespace: string) => Promise<CitationStorage>;
-  trackMemoryAccess: (memoryIds: string[], memoryPaths: string[]) => void;
+  trackMemoryAccess: (
+    memoryIds: string[],
+    memoryPaths: string[],
+    memoryNamespaces?: Array<string | undefined>,
+  ) => void;
 }
 
 export interface CitationUsageResult {
@@ -75,6 +79,7 @@ export async function recordCitationUsage(
       deps.trackMemoryAccess(
         matchedEntries.map((entry) => entry.id),
         matchedEntries.map((entry) => entry.path),
+        matchedEntries.map(() => resolvedNamespace),
       );
     } catch {
       log.debug("citation usage tracking: failed to record access for cited memories");

@@ -5012,8 +5012,15 @@ export class EngramAccessService {
         resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
           this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
         getStorage: (namespace) => this.orchestrator.getStorage(namespace),
-        trackMemoryAccess: (memoryIds, memoryPaths) =>
-          this.orchestrator.trackMemoryAccess(memoryIds, memoryPaths),
+        trackMemoryAccess: (
+          memoryIds,
+          memoryPaths,
+          memoryNamespaces,
+        ) => this.orchestrator.trackMemoryAccess(
+          memoryIds,
+          memoryPaths,
+          memoryNamespaces,
+        ),
       },
       request,
     );

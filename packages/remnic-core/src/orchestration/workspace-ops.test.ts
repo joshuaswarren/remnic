@@ -262,3 +262,34 @@ test("trackMemoryAccess coalesces absolute and relative paths for one file", () 
   assert.equal(accessTrackingBuffer.size, 1);
   assert.equal(Array.from(accessTrackingBuffer.values())[0]?.count, 2);
 });
+test("trackMemoryAccess preserves namespaces for relative paths", () => {
+  const accessTrackingBuffer = new Map<string, AccessTrackingEntry & { count: number }>();
+  const config = {
+    accessTrackingEnabled: true,
+    accessTrackingBufferMaxSize: 100,
+    memoryDir: "/memory",
+    defaultNamespace: "default",
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer,
+    namespaceFromPath: () => "default",
+  } as unknown as WorkspaceOpsDeps);
+
+  coordinator.trackMemoryAccess(
+    ["same-id", "same-id"],
+    ["facts/same-id.md", "facts/same-id.md"],
+    ["main", "shared"],
+  );
+
+  assert.deepEqual(
+    Array.from(accessTrackingBuffer.entries()).map(([key, entry]) => ({
+      key,
+      memoryPath: entry.memoryPath,
+    })),
+    [
+      { key: "main:/memory/facts/same-id.md", memoryPath: "facts/same-id.md" },
+      { key: "shared:/memory/facts/same-id.md", memoryPath: "facts/same-id.md" },
+    ],
+  );
+});

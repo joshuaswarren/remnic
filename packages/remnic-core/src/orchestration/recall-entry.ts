@@ -302,6 +302,7 @@ export class RecallEntryCoordinator {
           atomic: true,
           ...(memoryId ? { memoryId } : {}),
           ...(result.path ? { memoryPath: result.path } : {}),
+          ...(result.namespace ? { memoryNamespace: result.namespace } : {}),
         },
       );
     }

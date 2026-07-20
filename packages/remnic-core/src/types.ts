@@ -3422,6 +3422,8 @@ export interface QmdSearchResult {
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
+  /** Namespace that owned this result when returned by a namespace fanout search. */
+  namespace?: string;
 }
 
 export interface QmdSearchExplain {

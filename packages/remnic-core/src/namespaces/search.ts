@@ -586,12 +586,13 @@ function mergeNamespaceSearchResults(
       const key = `${namespace}\0${result.path || result.docid}`;
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, result);
+        merged.set(key, { ...result, namespace });
         continue;
       }
       if (result.score > existing.score) {
         merged.set(key, {
           ...result,
+          namespace,
           snippet: existing.snippet || result.snippet || "",
         });
       }

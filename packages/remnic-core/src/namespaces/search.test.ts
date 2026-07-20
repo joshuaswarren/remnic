@@ -404,10 +404,8 @@ test("searchAcrossNamespaces preserves same path results from distinct namespace
     maxResults: 10,
   });
 
-  assert.deepEqual(
-    results.map((result) => result.snippet),
-    ["main", "shared"],
-  );
+  assert.deepEqual(results.map((result) => result.snippet), ["main", "shared"]);
+  assert.deepEqual(results.map((result) => result.namespace), ["main", "shared"]);
 });
 
 test("searchAcrossNamespaces passes scoped collection to backend search methods", async () => {

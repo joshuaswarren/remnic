@@ -24,6 +24,7 @@ export interface RecallSectionAppendOptions {
   atomic?: boolean;
   memoryId?: string;
   memoryPath?: string;
+  memoryNamespace?: string;
 }
 
 export interface RecallSectionChunk {
@@ -31,6 +32,7 @@ export interface RecallSectionChunk {
   atomic?: boolean;
   memoryId?: string;
   memoryPath?: string;
+  memoryNamespace?: string;
 }
 
 export type RecallSectionBuckets = Map<
@@ -145,14 +147,17 @@ export class RecallSectionCoordinator {
           : `${finalContent.slice(0, maxChars)}\n\n...(trimmed)\n`;
     }
     if (finalContent.length === 0) return false;
-
     const existing = sectionBuckets.get(sectionId) ?? [];
+
     if (options.atomic) {
       existing.push({
         content: finalContent,
         atomic: true,
         ...(options.memoryId ? { memoryId: options.memoryId } : {}),
         ...(options.memoryPath ? { memoryPath: options.memoryPath } : {}),
+        ...(options.memoryNamespace
+          ? { memoryNamespace: options.memoryNamespace }
+          : {}),
       });
     } else {
       existing.push(finalContent);
@@ -227,6 +232,7 @@ export class RecallSectionCoordinator {
     finalChars: number;
     includedMemoryIds: string[];
     includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   } {
     type OrderedSection = { id: string; chunks: RecallSectionChunk[] };
@@ -289,6 +295,7 @@ export class RecallSectionCoordinator {
         finalChars: 0,
         includedMemoryIds: [],
         includedMemoryPaths: [],
+        includedMemoryNamespaces: [],
         omittedMemoryIds: candidateMemoryIds,
       };
     }
@@ -309,11 +316,12 @@ export class RecallSectionCoordinator {
         break;
       }
     }
-    const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
     const includedMemoryPaths: string[] = [];
+    const includedMemoryNamespaces: Array<string | undefined> = [];
     let usedChars = 0;
     let truncated = false;
+    const selected = new Map<string, string>();
 
     for (const id of allocationOrder) {
       const section = sectionById.get(id);
@@ -412,7 +420,10 @@ export class RecallSectionCoordinator {
               includedLeadingContent = false;
               includedAtomicCount = 1;
               if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
-              if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
+              if (chunk.memoryPath) {
+                includedMemoryPaths.push(chunk.memoryPath);
+                includedMemoryNamespaces.push(chunk.memoryNamespace);
+              }
               continue;
             }
             if (
@@ -435,7 +446,10 @@ export class RecallSectionCoordinator {
           if (chunk.atomic) {
             includedAtomicCount += 1;
             if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
-            if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
+            if (chunk.memoryPath) {
+              includedMemoryPaths.push(chunk.memoryPath);
+              includedMemoryNamespaces.push(chunk.memoryNamespace);
+            }
           } else {
             includedPostAtomicContent = true;
             postAtomicContents.push(chunk.content);
@@ -477,7 +491,6 @@ export class RecallSectionCoordinator {
         omittedIds.push(section.id);
       }
     }
-
     return {
       sections,
       includedIds,
@@ -486,6 +499,7 @@ export class RecallSectionCoordinator {
       finalChars: usedChars,
       includedMemoryIds,
       includedMemoryPaths,
+      includedMemoryNamespaces,
       omittedMemoryIds: candidateMemoryIds.filter(
         (id) => !includedMemoryIds.includes(id),
       ),

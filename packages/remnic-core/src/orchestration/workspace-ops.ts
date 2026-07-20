@@ -773,26 +773,40 @@ export class WorkspaceOpsCoordinator {
       );
     }
   }
-  trackMemoryAccess(memoryIds: string[], memoryPaths: string[] = []): void {
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths: string[] = [],
+    memoryNamespaces: Array<string | undefined> = [],
+  ): void {
     if (!resolveRecallEnhancementCapabilities(this.deps.config).accessTracking) return;
 
     const now = new Date().toISOString();
-    const pathsByMemoryId = new Map<string, string[]>();
-    for (const memoryPath of memoryPaths) {
+    const pathsByMemoryId = new Map<
+      string,
+      Array<{ path: string; namespace?: string }>
+    >();
+    for (const [index, memoryPath] of memoryPaths.entries()) {
       const basename = memoryPath.split(/[\\/]/).pop() ?? memoryPath;
       const memoryId = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
       if (memoryId.length > 0 && memoryIds.includes(memoryId)) {
         const paths = pathsByMemoryId.get(memoryId) ?? [];
-        paths.push(memoryPath);
+        const namespace = memoryNamespaces[index];
+        paths.push({
+          path: memoryPath,
+          ...(namespace ? { namespace } : {}),
+        });
         pathsByMemoryId.set(memoryId, paths);
       }
     }
     for (const id of memoryIds) {
-      const paths = pathsByMemoryId.get(id);
-      const memoryPath = paths?.shift();
-      const namespace = memoryPath
-        ? this.deps.namespaceFromPath(memoryPath)
-        : this.deps.config.defaultNamespace;
+      const references = pathsByMemoryId.get(id);
+      const reference = references?.shift();
+      const memoryPath = reference?.path;
+      const namespace = reference?.namespace ?? (
+        memoryPath
+          ? this.deps.namespaceFromPath(memoryPath)
+          : this.deps.config.defaultNamespace
+      );
       const key = memoryPath
         ? `${namespace}:${canonicalMemoryPath(memoryPath, this.deps.config.memoryDir)}`
         : `${namespace}:${id}`;

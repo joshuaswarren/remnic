@@ -2699,6 +2699,7 @@ export class Orchestrator {
     finalChars: number;
     includedMemoryIds: string[];
     includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   } {
     return this.recallSectionCoordinator.assembleRecallSections(
@@ -3661,8 +3662,16 @@ export class Orchestrator {
    * Record that memories were accessed (retrieved).
    * Updates are batched in memory and flushed during consolidation.
    */
-  trackMemoryAccess(memoryIds: string[], memoryPaths: string[] = []): void {
-    this.workspaceOpsCoordinator.trackMemoryAccess(memoryIds, memoryPaths);
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths: string[] = [],
+    memoryNamespaces: Array<string | undefined> = [],
+  ): void {
+    this.workspaceOpsCoordinator.trackMemoryAccess(
+      memoryIds,
+      memoryPaths,
+      memoryNamespaces,
+    );
   }
 
   async flushAccessTracking(): Promise<void> {

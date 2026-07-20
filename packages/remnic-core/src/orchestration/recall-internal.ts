@@ -174,6 +174,7 @@ export interface RecallInternalDeps {
     finalChars: number;
     includedMemoryIds: string[];
     includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   };
   boostSearchResults(
@@ -345,7 +346,11 @@ export interface RecallInternalDeps {
   ): number | undefined;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly handleHistory: RecallHandleHistoryStore;
-  trackMemoryAccess(memoryIds: string[], memoryPaths?: string[]): void;
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths?: string[],
+    memoryNamespaces?: Array<string | undefined>,
+  ): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   isRecallSectionEnabled(
     sectionId: string,
@@ -5328,6 +5333,7 @@ export class RecallInternalCoordinator {
     this.deps.trackMemoryAccess(
       assembledRecall.includedMemoryIds,
       assembledRecall.includedMemoryPaths,
+      assembledRecall.includedMemoryNamespaces,
     );
     const context =
       assembledRecall.sections.length === 0
