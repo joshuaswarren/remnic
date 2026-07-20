@@ -565,7 +565,7 @@ export class ExtractionPersistCoordinator {
           // #1645 TV6: a tombstone-blocked promotion is pending_review (no
           // active copy) — skip catalog/index/behavior like postWriteGuard.
           if (!targetPromotion.tombstoneBlocked) {
-            trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
+            trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false, category: options.category as MemoryCategory });
             await this.deps.indexPersistedMemory(targetStorage, promotedId);
             trackBehaviorSignals(
               targetStorage,
@@ -984,6 +984,7 @@ export class ExtractionPersistCoordinator {
         if (!sharedPromotion.tombstoneBlocked) {
           trackPersistedId(sharedStorage, promotedId, {
             includeReturnedIds: false,
+            category: options.category as MemoryCategory,
           });
           await this.deps.indexPersistedMemory(sharedStorage, promotedId);
           trackBehaviorSignals(
@@ -2334,6 +2335,7 @@ export class ExtractionPersistCoordinator {
           );
           trackPersistedId(targetStorage, parentId, {
             pendingReview: postWriteGuard,
+            category: writeCategory,
           });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
@@ -2658,6 +2660,7 @@ export class ExtractionPersistCoordinator {
         );
         trackPersistedId(targetStorage, memoryId, {
           pendingReview: postWriteGuard,
+          category: writeCategory,
         });
         if (
           !postWriteGuard &&
