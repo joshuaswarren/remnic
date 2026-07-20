@@ -1007,3 +1007,40 @@ test("guard: a coerced local returned only from a nested inner function is not t
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
 });
+
+test("guard: a disabling `||` short-circuit (`cap <= 0 || used > cap`) is honored", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  if (config.cap <= 0 || used > config.cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("guard: a coerced same-named local returned under a DIFFERENT key is not a false coercion", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the section. */\n  maxFollowups: number;\n}",
+    },
+    {
+      path: "helper.ts",
+      text: [
+        "function summarize(request: { maxFollowups: number }) {",
+        "  const maxFollowups = Math.max(1, request.maxFollowups);",
+        "  return { requested: maxFollowups };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});

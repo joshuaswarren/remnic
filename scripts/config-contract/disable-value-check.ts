@@ -326,15 +326,18 @@ function localInitializer(name: string, scope: ts.Node): ts.Expression | undefin
 }
 
 /**
- * Does `expr` emit config field `name` into a returned value — directly
- * (`return name`), via a same-named shorthand (`return { name }`), or through a
- * nested/aliased object it is assigned to (`const p = { name }; return { p }`)?
- * `seen` breaks alias cycles (`const a = b; const b = a`).
+ * Does `expr` emit config field `name` into a returned value UNDER THE KEY
+ * `name` — via a same-named shorthand (`return { name }`), a `name: <value>`
+ * property, or a nested/aliased container that itself emits it
+ * (`const p = { name }; return { p }`)? A same-named local returned under a
+ * DIFFERENT key (`return { requested: name }`) does NOT count — that binds the
+ * value to another config key, not `name`. `seen` breaks alias cycles.
  */
 function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node, seen: Set<string>): boolean {
   if (ts.isParenthesizedExpression(expr)) return expressionEmitsField(expr.expression, name, scope, seen);
   if (ts.isIdentifier(expr)) {
-    if (expr.text === name) return true;
+    // Follow a container alias (`const p = { name }; return p`); a bare identifier
+    // is not itself an emission under key `name`.
     if (seen.has(expr.text)) return false;
     seen.add(expr.text);
     const init = localInitializer(expr.text, scope);
@@ -344,12 +347,19 @@ function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node,
     return expr.properties.some((prop) => {
       if (ts.isShorthandPropertyAssignment(prop)) {
         if (prop.name.text === name) return true;
+        // `{ container }` where container = { name }: follow the alias.
         if (seen.has(prop.name.text)) return false;
         seen.add(prop.name.text);
         const init = localInitializer(prop.name.text, scope);
         return init ? expressionEmitsField(init, name, scope, seen) : false;
       }
-      if (ts.isPropertyAssignment(prop)) return expressionEmitsField(prop.initializer, name, scope, seen);
+      if (ts.isPropertyAssignment(prop)) {
+        const key = ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : undefined;
+        if (key === name) return true;
+        // Different key: only a nested container can still emit `name` deeper;
+        // a bare same-named local here is bound to `key`, not `name`.
+        return expressionEmitsField(prop.initializer, name, scope, seen);
+      }
       return false;
     });
   }
@@ -505,18 +515,27 @@ function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
   return false;
 }
 
-/** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&` conjunct, or an enclosing active/else branch. */
+/** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&`/`||` conjunct, or an enclosing active/else branch. */
 function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
   let node: ts.Node = use;
   while (node.parent) {
     const parent = node.parent;
-    if (
-      ts.isBinaryExpression(parent) &&
-      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-      node === parent.right &&
-      pathGuardKind(parent.left, guardedPath) === "active"
-    ) {
-      return true;
+    if (ts.isBinaryExpression(parent) && node === parent.right) {
+      // `cfg.x > 0 && use` — the use only runs when the guard is active.
+      if (
+        parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+        pathGuardKind(parent.left, guardedPath) === "active"
+      ) {
+        return true;
+      }
+      // `cfg.x <= 0 || use` — the disabling left operand short-circuits, so the
+      // use is only evaluated when the value is enabled.
+      if (
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+        pathGuardKind(parent.left, guardedPath) === "disabling"
+      ) {
+        return true;
+      }
     }
     if (ts.isIfStatement(parent)) {
       if (isDescendant(parent.thenStatement, use) && pathGuardKind(parent.expression, guardedPath) === "active") {
