@@ -160,7 +160,8 @@ test("assembleRecallSections allocates budget in configured pipeline order", asy
   assert.deepEqual(assembled.omittedIds, []);
   assert.deepEqual(assembled.includedMemoryIds, ["memory-pipeline"]);
   assert.equal(assembled.includedMemoryPaths[0], "facts/pipeline.md");
-  assert.match(assembled.sections.join("\n\n---\n\n"), /Relevant Memories/);
+  assert.match(assembled.sections.join("\n\n---\n\n"), /M{25}/);
+  assert.doesNotMatch(assembled.sections.join("\n\n---\n\n"), /Relevant Memories/);
   assert.ok(assembled.finalChars <= 80);
 });
 
@@ -1363,6 +1364,44 @@ test("assembleRecallSections drops an oversized leading heading before a fitting
   assert.deepEqual(assembled.includedIds, ["memories"]);
   assert.deepEqual(assembled.includedMemoryIds, ["memory-fits"]);
   assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits.md"]);
+});
+
+test("assembleRecallSections reserves only the atomic memory after a leading heading", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-heading-reserve-", {
+    recallBudgetChars: 100,
+    recallProfileMaxRatio: 1,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "H".repeat(50),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-heading-reserve", memoryPath: "facts/heading-reserve.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.match(assembled.sections[0] ?? "", /^P{40}$/);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-heading-reserve"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/heading-reserve.md"]);
+  assert.ok(assembled.finalChars <= 100);
 });
 
 test("assembleRecallSections does not reserve an oversized atomic memory", async () => {

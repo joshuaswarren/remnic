@@ -303,20 +303,11 @@ export class RecallSectionCoordinator {
     const memoryBudget = this.getRecallSectionMaxChars("memories") ?? budget;
     const memoryAllocationBudget = Math.min(budget, memoryBudget);
     let firstAtomicMemoryReserveChars = 0;
-    let memoryPrefix = "";
     for (const chunk of memorySection?.chunks ?? []) {
-      const candidate = memoryPrefix
-        ? `${memoryPrefix}\n\n${chunk.content}`
-        : chunk.content;
-      if (chunk.atomic && candidate.length <= memoryAllocationBudget) {
-        firstAtomicMemoryReserveChars = candidate.length;
-        break;
-      }
       if (chunk.atomic && chunk.content.length <= memoryAllocationBudget) {
         firstAtomicMemoryReserveChars = chunk.content.length;
         break;
       }
-      memoryPrefix = candidate;
     }
     const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
