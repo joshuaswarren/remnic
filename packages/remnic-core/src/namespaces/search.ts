@@ -165,7 +165,10 @@ export class NamespaceSearchRouter {
             );
             break;
         }
-        results = filterNamespaceSubtreeResults(record, results);
+        results = filterNamespaceSubtreeResults(record, results).map((result) => ({
+          ...result,
+          path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
+        }));
         return { namespace, results };
       }),
     );
@@ -573,6 +576,21 @@ function normalizeQmdResultPath(resultPath: string, collection: string): string 
     value = value.slice(collectionPrefix.length);
   }
   return value;
+}
+function resolveNamespaceResultPath(
+  memoryDir: string,
+  collection: string,
+  resultPath: string,
+): string {
+  const normalized = normalizeQmdResultPath(resultPath, collection);
+  if (path.isAbsolute(normalized)) return normalized;
+  const root = path.resolve(memoryDir);
+  const resolved = path.resolve(root, normalized);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return resultPath;
+  }
+  return resolved;
 }
 
 function mergeNamespaceSearchResults(
