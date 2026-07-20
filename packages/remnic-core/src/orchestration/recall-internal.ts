@@ -5389,13 +5389,17 @@ export class RecallInternalCoordinator {
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
         const xrayResultByPath = new Map<string, QmdSearchResult>(
-          xrayRecalledResults.map((xr) => [xr.path, xr]),
+          xrayRecalledResults.map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
         );
         const results: RecallXrayResult[] = [];
-        for (const recalledPath of recalledMemoryPaths) {
+        for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
+          const recalledPath = recalledMemoryPaths[xrayIdx]!;
+          // Namespace captured alongside the path (aligned array), never
+          // re-derived from a now-relative path that resolves to default (#2020).
+          const recalledNamespace = recalledMemoryNamespaces[xrayIdx];
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
-          const xrayResult = xrayResultByPath.get(recalledPath);
+          const xrayResult = xrayResultByPath.get(`${recalledNamespace ?? ""}\0${recalledPath}`);
           const scoreDecomposition: RecallXrayScoreDecomposition = {
             final: xrayResult?.score ?? 0,
           };
@@ -5406,7 +5410,7 @@ export class RecallInternalCoordinator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
-          const resultNamespace = this.deps.namespaceFromPath(recalledPath);
+          const resultNamespace = recalledNamespace ?? this.deps.namespaceFromPath(recalledPath);
           let provenance: RecallXrayResult["provenance"] | undefined;
           let sourceSpan: RecallXrayResult["sourceSpan"] | undefined;
           try {
@@ -5435,7 +5439,9 @@ export class RecallInternalCoordinator {
             // X-ray capture is best-effort; missing provenance must not
             // perturb recall or suppress the surfaced result.
           }
-          const trustItem = recallTrustByPath?.get(recalledPath);
+          const trustItem =
+            recallTrustByPath?.get(JSON.stringify([recalledNamespace ?? "", recalledPath])) ??
+            recallTrustByPath?.get(recalledPath);
           results.push({
             memoryId: derivedId,
             path: recalledPath,
