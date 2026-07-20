@@ -298,34 +298,6 @@ test("assembleRecallSections keeps later helper text when no atomic memory fits"
   assert.deepEqual(assembled.omittedMemoryIds, ["memory-too-large"]);
 });
 
-test("assembleRecallSections omits an empty memories section when no chunk fits", async () => {
-  const orchestrator = await makeOrchestrator("engram-recall-budget-empty-memory-", {
-    recallBudgetChars: 40,
-    recallPipeline: [{ id: "memories", enabled: true }],
-  });
-  const sectionBuckets: RecallSectionBuckets = new Map();
-
-  orchestrator.recallSectionCoordinator.appendRecallSection(
-    sectionBuckets,
-    "memories",
-    "## Relevant Memories",
-  );
-  orchestrator.recallSectionCoordinator.appendRecallSection(
-    sectionBuckets,
-    "memories",
-    "M".repeat(100),
-    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
-  );
-
-  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
-    sectionBuckets,
-  );
-
-  assert.deepEqual(assembled.sections, []);
-  assert.deepEqual(assembled.includedIds, []);
-  assert.deepEqual(assembled.omittedIds, ["memories"]);
-  assert.equal(assembled.finalChars, 0);
-});
 
 test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-profile-boundary-", {
@@ -1302,4 +1274,33 @@ test("recallInternal skips no-QMD hot fallback after assembly budget expires", a
   assert.equal(embeddingCalls, 0);
   assert.equal(recentScanReads, 0);
   assert.doesNotMatch(context, /late no-qmd embedding memory/);
+});
+
+test("assembleRecallSections omits an empty memories section when no chunk fits", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-empty-memory-", {
+    recallBudgetChars: 40,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(100),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.sections, []);
+  assert.deepEqual(assembled.includedIds, []);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.equal(assembled.finalChars, 0);
 });
