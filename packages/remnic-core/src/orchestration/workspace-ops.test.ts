@@ -103,3 +103,35 @@ test("flushAccessTracking selects the buffered path within one namespace", async
     },
   ]);
 });
+
+test("trackMemoryAccess keeps same-id accesses separate by path", () => {
+  const firstPath = path.join("/memory", "facts", "first", "same-id.md");
+  const secondPath = path.join("/memory", "facts", "second", "same-id.md");
+  const accessTrackingBuffer = new Map<string, AccessTrackingEntry & { count: number }>();
+  const config = {
+    accessTrackingEnabled: true,
+    accessTrackingBufferMaxSize: 100,
+    memoryDir: "/memory",
+    defaultNamespace: "default",
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer,
+    namespaceFromPath: () => "default",
+  } as unknown as WorkspaceOpsDeps);
+
+  coordinator.trackMemoryAccess(["same-id", "same-id"], [firstPath, secondPath]);
+
+  assert.equal(accessTrackingBuffer.size, 2);
+  assert.deepEqual(
+    Array.from(accessTrackingBuffer.values()).map((entry) => ({
+      memoryId: entry.memoryId,
+      memoryPath: entry.memoryPath,
+      count: entry.count,
+    })),
+    [
+      { memoryId: "same-id", memoryPath: firstPath, count: 1 },
+      { memoryId: "same-id", memoryPath: secondPath, count: 1 },
+    ],
+  );
+});

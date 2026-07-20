@@ -328,17 +328,17 @@ export class RecallSectionCoordinator {
       const separatorChars = selected.size > 0 ? separator.length : 0;
       const available = budget - usedChars - separatorChars;
       const sectionMaxChars = this.getRecallSectionMaxChars(id);
-      const sectionAvailable =
-        typeof sectionMaxChars === "number"
-          ? Math.min(available, sectionMaxChars)
-          : available;
       const reservesFirstMemory =
         memoryIndex > allocationOrder.indexOf(id) &&
         firstAtomicMemoryReserveChars > 0;
       const memoryReserve = reservesFirstMemory
         ? firstAtomicMemoryReserveChars + separator.length
         : 0;
-      const allocatedSectionAvailable = sectionAvailable - memoryReserve;
+      const availableAfterMemoryReserve = available - memoryReserve;
+      const allocatedSectionAvailable =
+        typeof sectionMaxChars === "number"
+          ? Math.min(availableAfterMemoryReserve, sectionMaxChars)
+          : availableAfterMemoryReserve;
       if (allocatedSectionAvailable <= 0) {
         truncated = true;
         continue;

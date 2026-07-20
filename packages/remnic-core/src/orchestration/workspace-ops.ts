@@ -776,7 +776,7 @@ export class WorkspaceOpsCoordinator {
       const namespace = memoryPath
         ? this.deps.namespaceFromPath(memoryPath)
         : this.deps.config.defaultNamespace;
-      const key = `${namespace}:${id}`;
+      const key = memoryPath ? `${namespace}:${memoryPath}` : `${namespace}:${id}`;
       const existing = this.deps.accessTrackingBuffer.get(key);
       this.deps.accessTrackingBuffer.set(key, {
         memoryId: id,
