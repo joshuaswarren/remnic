@@ -141,27 +141,33 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
 
 /**
  * The positive floor a numeric schema imposes on the value, or undefined when it
- * admits 0 (or isn't numeric). Handles `anyOf`/`oneOf` (recursively): a
- * combinator admits 0 when ANY numeric branch admits it, so a `minimum: 1`
- * branch alone still rejects the documented disable value.
+ * admits 0 (or isn't numeric). A schema's own `minimum` applies IN ADDITION to
+ * any `anyOf`/`oneOf` (JSON Schema allOf semantics), so `minimum: 1` with a
+ * `minimum: 0` branch still rejects 0. A combinator with no own floor admits 0
+ * only when some numeric branch admits it, so a lone `minimum: 1` branch rejects
+ * the documented disable value.
  */
 function positiveNumericFloor(prop: DisableValueSchemaProperty): number | undefined {
+  const ownFloor =
+    numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum >= 1 ? prop.minimum : undefined;
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
-    let floor: number | undefined;
-    let admitsZero = false;
+    // The parent floor applies regardless of which branch matches: if it rejects
+    // 0, the field rejects 0 no matter what the branches allow.
+    if (ownFloor !== undefined) return ownFloor;
+    let branchFloor: number | undefined;
+    let anyBranchAdmitsZero = false;
     for (const branch of branches) {
-      const branchFloor = positiveNumericFloor(branch);
-      if (branchFloor === undefined) {
-        if (numericSchema(branch) || branch.anyOf || branch.oneOf) admitsZero = true;
+      const bf = positiveNumericFloor(branch);
+      if (bf === undefined) {
+        if (numericSchema(branch) || branch.anyOf || branch.oneOf) anyBranchAdmitsZero = true;
       } else {
-        floor = floor === undefined ? branchFloor : Math.min(floor, branchFloor);
+        branchFloor = branchFloor === undefined ? bf : Math.min(branchFloor, bf);
       }
     }
-    return admitsZero ? undefined : floor;
+    return anyBranchAdmitsZero ? undefined : branchFloor;
   }
-  if (numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum >= 1) return prop.minimum;
-  return undefined;
+  return ownFloor;
 }
 
 interface GuardFlags {
@@ -241,15 +247,20 @@ function propertyAccess(node: ts.Expression): { leaf: string; path: string } | u
 }
 
 /**
- * Map of local name → config field leaf for `const { field } = config` /
- * `const { field: alias } = config`, so a destructured threshold bound
- * (`const { cap } = config; if (used > cap) …`) is tied back to its config field.
+ * If bare identifier `operand` was destructured from a config object
+ * (`const { field } = config` / `const { field: alias } = config`) within its
+ * OWN enclosing function, the config field leaf it maps to. Scoped to the
+ * operand's function so a `const { cap } = config` in one function does not make
+ * an unrelated `cap` in a sibling function look like that config field.
  * Restricted to destructuring off a plain object reference (identifier or member
  * access) to avoid binding unrelated call-result locals.
  */
-function collectDestructuredConfigLocals(sf: ts.SourceFile): Map<string, string> {
-  const map = new Map<string, string>();
+function destructuredConfigField(operand: ts.Identifier): string | undefined {
+  const scope = enclosingScope(operand);
+  const name = operand.text;
+  let field: string | undefined;
   const visit = (node: ts.Node): void => {
+    if (field) return;
     if (
       ts.isVariableDeclaration(node) &&
       ts.isObjectBindingPattern(node.name) &&
@@ -257,19 +268,19 @@ function collectDestructuredConfigLocals(sf: ts.SourceFile): Map<string, string>
       accessPath(node.initializer) !== undefined
     ) {
       for (const element of node.name.elements) {
-        if (ts.isBindingElement(element) && ts.isIdentifier(element.name)) {
-          const field =
+        if (ts.isBindingElement(element) && ts.isIdentifier(element.name) && element.name.text === name) {
+          field =
             element.propertyName && ts.isIdentifier(element.propertyName)
               ? element.propertyName.text
               : element.name.text;
-          map.set(element.name.text, field);
+          return;
         }
       }
     }
     ts.forEachChild(node, visit);
   };
-  visit(sf);
-  return map;
+  visit(scope);
+  return field;
 }
 
 /** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
@@ -408,18 +419,21 @@ function evalConditionAt(node: ts.Node, guardedPath: string, value: number): Tri
 }
 
 /**
- * How a condition treats the disable value for `guardedPath`: "active" when a
- * value of 0 makes the WHOLE condition FALSE and a positive value TRUE (`x > 0`,
- * `x !== 0`), "disabling" when 0 makes it TRUE and a positive value FALSE
- * (`x <= 0`, `x === 0`). `>= 0` (true for both) and boolean-combined conditions
- * whose other operands are unknown (`force && x <= 0`) yield undefined — not a
- * real disable guard.
+ * How a condition treats the disable value for `guardedPath`, keyed on the value
+ * at 0: "disabling" when 0 makes the condition definitely TRUE (it fires when
+ * disabled) and a positive value does not force it true (`x <= 0`, `x === 0`,
+ * and feature-gated `!enabled || x <= 0`); "active" when 0 makes it definitely
+ * FALSE (the branch cannot run while disabled) and a positive value does not
+ * force it false (`x > 0`, `x !== 0`, `enabled && x > 0`). An unknown value at 0
+ * (`force && x <= 0` — the zero check is itself gated), `>= 0` (true for both),
+ * and conditions independent of `guardedPath` yield undefined.
  */
 function pathGuardKind(condition: ts.Node, guardedPath: string): "active" | "disabling" | undefined {
   const atZero = evalConditionAt(condition, guardedPath, 0);
+  if (atZero === "unknown") return undefined;
   const atPositive = evalConditionAt(condition, guardedPath, 2);
-  if (atZero === false && atPositive === true) return "active";
-  if (atZero === true && atPositive === false) return "disabling";
+  if (atZero === false && atPositive !== false) return "active";
+  if (atZero === true && atPositive !== true) return "disabling";
   return undefined;
 }
 
@@ -665,10 +679,9 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
   for (const name of zeroDisable) flags.set(name, { thresholdUnguarded: false, coercion: false });
   for (const source of sources) {
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
-    const destructured = collectDestructuredConfigLocals(sf);
     const operandBound = (operand: ts.Expression): { leaf: string; path: string } | undefined => {
       if (ts.isIdentifier(operand)) {
-        const leaf = destructured.get(operand.text);
+        const leaf = destructuredConfigField(operand);
         if (leaf) return { leaf, path: operand.text };
       }
       return propertyAccess(operand);
@@ -702,7 +715,13 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
           : ts.isPropertyDeclaration(node)
             ? node.initializer
             : undefined;
-        if (initializer && initializerCoercesZero(initializer)) flags.get(assignedName)!.coercion = true;
+        // Resolve an aliased local initializer (`const parsed = Math.max(1, raw); { maxItems: parsed }`)
+        // to its declaration so a coercion routed through a differently named local is still caught.
+        const resolved =
+          initializer && ts.isIdentifier(initializer)
+            ? localInitializer(initializer.text, enclosingScope(node))
+            : initializer;
+        if (resolved && initializerCoercesZero(resolved)) flags.get(assignedName)!.coercion = true;
       }
       // Parser value computed in a same-named local AND returned via shorthand
       // (a config field being assembled) — not an unrelated runtime helper local.
