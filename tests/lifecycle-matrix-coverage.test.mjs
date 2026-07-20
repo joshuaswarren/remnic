@@ -634,6 +634,7 @@ test("recall-budget subject covers the recall-output budgeting paths", () => {
     "packages/remnic-core/src/retrieval.ts",
     "packages/remnic-core/src/recall-mmr.ts",
     "packages/remnic-core/src/recall-qos.ts",
+    "src/recall-qos.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "covered", `${p} must be covered by the recall-budget subject`);
     assert.equal(manifest.coverage[p], "recall-budget", `${p} maps to the recall-budget subject`);
