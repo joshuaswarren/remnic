@@ -4153,11 +4153,9 @@ export class RecallInternalCoordinator {
 
       let memoryResults = memoryResultsRaw;
 
-      // Enforce namespace read policies by filtering paths.
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         memoryResults = memoryResults.filter((r) =>
-          recallNamespaces.includes(this.deps.namespaceFromPath(r.path)),
-        );
+          recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
       // Artifacts are injected through dedicated verbatim recall flow only.
       memoryResults = memoryResults.filter(

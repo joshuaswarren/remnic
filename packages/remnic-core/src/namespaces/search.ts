@@ -167,6 +167,7 @@ export class NamespaceSearchRouter {
         }
         results = filterNamespaceSubtreeResults(record, results).map((result) => ({
           ...result,
+          namespace,
           path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
         }));
         return { namespace, results };

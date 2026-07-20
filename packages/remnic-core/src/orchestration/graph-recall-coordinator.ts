@@ -266,7 +266,7 @@ export class GraphRecallCoordinator {
         }
         continue;
       }
-      const ns = this.namespaceFromPath(result.path);
+      const ns = result.namespace ?? this.namespaceFromPath(result.path);
       if (!options.recallNamespaces.includes(ns)) continue;
       addResultForNamespace(ns, result);
     }

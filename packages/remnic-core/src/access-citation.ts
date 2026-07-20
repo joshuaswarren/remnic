@@ -21,6 +21,10 @@ export interface CitationUsageDependencies {
     sessionId: string | undefined,
     authenticatedPrincipal: string | undefined,
   ) => string;
+  resolveNamespaceForPath?: (
+    path: string,
+    fallbackNamespace: string,
+  ) => Promise<string>;
   getStorage: (namespace: string) => Promise<CitationStorage>;
   trackMemoryAccess: (
     memoryIds: string[],
@@ -40,53 +44,77 @@ export async function recordCitationUsage(
 ): Promise<CitationUsageResult> {
   if (request.entries.length === 0) return { submitted: 0, matched: 0 };
 
-  const resolvedNamespace = deps.resolveNamespace(
+  const fallbackNamespace = deps.resolveNamespace(
     request.namespace,
     request.sessionId,
     request.authenticatedPrincipal,
   );
-  const memoryEntries = request.entries
-    .map((entry) => {
+  const memoryEntries = (await Promise.all(
+    request.entries.map(async (entry) => {
       const basename = entry.path.split("/").pop() ?? entry.path;
       const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-      return id.length > 0 ? { id, citedPath: entry.path } : null;
-    })
-    .filter(
-      (entry): entry is { id: string; citedPath: string } => entry !== null,
-    );
+      if (id.length === 0) return null;
+      const namespace = deps.resolveNamespaceForPath
+        ? await deps.resolveNamespaceForPath(entry.path, fallbackNamespace)
+        : fallbackNamespace;
+      return { id, citedPath: entry.path, namespace };
+    }),
+  )).filter(
+    (
+      entry,
+    ): entry is { id: string; citedPath: string; namespace: string } =>
+      entry !== null,
+  );
 
   if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
-  const storage = await deps.getStorage(resolvedNamespace);
-  const ids = [...new Set(memoryEntries.map((entry) => entry.id))];
-  const preferredPaths = new Map<string, string[]>();
+
+  const matchedEntries: Array<{
+    id: string;
+    path: string;
+    namespace: string;
+  }> = [];
+  const entriesByNamespace = new Map<string, typeof memoryEntries>();
   for (const entry of memoryEntries) {
-    const paths = preferredPaths.get(entry.id) ?? [];
-    paths.push(entry.citedPath);
-    preferredPaths.set(entry.id, paths);
+    const entries = entriesByNamespace.get(entry.namespace) ?? [];
+    entries.push(entry);
+    entriesByNamespace.set(entry.namespace, entries);
   }
-  const pathsById = await storage.findExistingMemoryPaths(ids, preferredPaths);
-  const remainingPathsById = new Map(
-    Array.from(pathsById.entries()).map(([id, paths]) => [id, [...paths]]),
-  );
-  const matchedEntries = memoryEntries
-    .map((entry) => {
+
+  for (const [namespace, namespaceEntries] of entriesByNamespace) {
+    const storage = await deps.getStorage(namespace);
+    const ids = [...new Set(namespaceEntries.map((entry) => entry.id))];
+    const preferredPaths = new Map<string, string[]>();
+    for (const entry of namespaceEntries) {
+      const paths = preferredPaths.get(entry.id) ?? [];
+      paths.push(entry.citedPath);
+      preferredPaths.set(entry.id, paths);
+    }
+    const pathsById = await storage.findExistingMemoryPaths(ids, preferredPaths);
+    const remainingPathsById = new Map(
+      Array.from(pathsById.entries()).map(([id, paths]) => [id, [...paths]]),
+    );
+    for (const entry of namespaceEntries) {
       const paths = remainingPathsById.get(entry.id);
-      if (!paths || paths.length === 0) return null;
+      if (!paths || paths.length === 0) continue;
       const preferredIndex = paths.indexOf(entry.citedPath);
       const pathIndex = preferredIndex >= 0 ? preferredIndex : 0;
       const [memoryPath] = paths.splice(pathIndex, 1);
-      return memoryPath ? { id: entry.id, path: memoryPath } : null;
-    })
-    .filter(
-      (entry): entry is { id: string; path: string } => entry !== null,
-    );
+      if (memoryPath) {
+        matchedEntries.push({
+          id: entry.id,
+          path: memoryPath,
+          namespace,
+        });
+      }
+    }
+  }
 
   if (matchedEntries.length > 0) {
     try {
       deps.trackMemoryAccess(
         matchedEntries.map((entry) => entry.id),
         matchedEntries.map((entry) => entry.path),
-        matchedEntries.map(() => resolvedNamespace),
+        matchedEntries.map((entry) => entry.namespace),
       );
     } catch {
       log.debug("citation usage tracking: failed to record access for cited memories");

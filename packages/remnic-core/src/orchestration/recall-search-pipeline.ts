@@ -727,7 +727,6 @@ export class RecallSearchPipelineCoordinator {
     const scored: QmdSearchResult[] = scoredResults.map((r) => ({
       docid: r.docid,
       path: r.path,
-      namespace: this.deps.namespaceFromPath(r.path),
       score: r.score,
       snippet: r.snippet,
     }));
@@ -989,19 +988,12 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
         if (path.isAbsolute(result.path)) {
-          const resolvedPath = path.resolve(result.path);
-          if (
-            recallRoots.some((recallRoot) =>
-              isPathInsideStorageRoot(recallRoot, resolvedPath),
-            )
-          ) {
+          if (recallRoots.some((recallRoot) => isPathInsideStorageRoot(recallRoot, path.resolve(result.path)))) {
             scopedResults.push(result);
           }
           continue;
         }
-        if (options.recallNamespaces.includes(this.deps.namespaceFromPath(result.path))) {
-          scopedResults.push(result);
-        }
+        if (options.recallNamespaces.includes(result.namespace ?? this.deps.namespaceFromPath(result.path))) scopedResults.push(result);
       }
       results = scopedResults;
     }

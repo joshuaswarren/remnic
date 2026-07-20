@@ -5011,6 +5011,22 @@ export class EngramAccessService {
       {
         resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
           this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
+        resolveNamespaceForPath: async (memoryPath, fallbackNamespace) => {
+          const resolved = await this.storageForAbsoluteRecallPath(
+            memoryPath,
+            fallbackNamespace,
+          );
+          if (!resolved) return fallbackNamespace;
+          const namespacesRoot = nodePath.join(
+            nodePath.resolve(this.orchestrator.config.memoryDir),
+            "namespaces",
+          );
+          const relative = nodePath.relative(namespacesRoot, resolved.dir);
+          const [namespaceSegment] = relative.split(/[\\/]/);
+          return namespaceSegment
+            ? namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment
+            : fallbackNamespace;
+        },
         getStorage: (namespace) => this.orchestrator.getStorage(namespace),
         trackMemoryAccess: (
           memoryIds,
