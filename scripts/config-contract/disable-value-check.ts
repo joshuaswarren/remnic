@@ -195,9 +195,22 @@ function isFloorAboveZero(node: ts.CallExpression): boolean {
   });
 }
 
-/** Name accessed as `obj.name` — config reads in consumers. Bare identifiers are excluded to avoid renamed-local false positives. */
-function propertyAccessName(node: ts.Expression): string | undefined {
-  return ts.isPropertyAccessExpression(node) ? node.name.text : undefined;
+/** Full dotted access path (`config.backlogThreshold`, `this.cap`), or undefined for anything that isn't a plain member access. */
+function accessPath(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (ts.isPropertyAccessExpression(node)) {
+    const base = accessPath(node.expression);
+    return base ? `${base}.${node.name.text}` : undefined;
+  }
+  return undefined;
+}
+
+/** The config property (leaf) an operand reads as `obj.leaf`, plus its full path for guard matching. Bare identifiers are excluded to avoid renamed-local false positives. */
+function propertyAccess(node: ts.Expression): { leaf: string; path: string } | undefined {
+  if (!ts.isPropertyAccessExpression(node)) return undefined;
+  const path = accessPath(node);
+  return path ? { leaf: node.name.text, path } : undefined;
 }
 
 /** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
@@ -221,19 +234,37 @@ function enclosingScope(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-/** A `obj.name <op> 0|1` short-circuit somewhere within a scope. */
-function scopeHasZeroGuardFor(scope: ts.Node, name: string): boolean {
+/** True when a same-named field is emitted via shorthand (`return { name }`) inside the declaration's enclosing scope — i.e. a parsed config field, not an unrelated helper local. */
+function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
+  if (!ts.isIdentifier(decl.name)) return false;
+  const name = decl.name.text;
+  const scope = enclosingScope(decl);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isShorthandPropertyAssignment(node) && node.name.text === name) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return found;
+}
+
+/** A `<path> <op> 0|1` short-circuit within a scope, matched on the FULL access path so a same-named nested setting can't vouch for it. */
+function scopeHasZeroGuardFor(scope: ts.Node, guardedPath: string): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) return;
     if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-      const leftName = propertyAccessName(node.left);
-      const rightName = propertyAccessName(node.right);
+      const leftPath = ts.isPropertyAccessExpression(node.left) ? accessPath(node.left) : undefined;
+      const rightPath = ts.isPropertyAccessExpression(node.right) ? accessPath(node.right) : undefined;
       const leftLit = numericLiteralValue(node.left);
       const rightLit = numericLiteralValue(node.right);
       if (
-        (leftName === name && (rightLit === 0 || rightLit === 1)) ||
-        (rightName === name && (leftLit === 0 || leftLit === 1))
+        (leftPath === guardedPath && (rightLit === 0 || rightLit === 1)) ||
+        (rightPath === guardedPath && (leftLit === 0 || leftLit === 1))
       ) {
         found = true;
         return;
@@ -354,20 +385,22 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && isInequalityOperator(node.operatorToken.kind)) {
-        const leftName = propertyAccessName(node.left);
-        const rightName = propertyAccessName(node.right);
+        const left = propertyAccess(node.left);
+        const right = propertyAccess(node.right);
         const leftLit = numericLiteralValue(node.left);
         const rightLit = numericLiteralValue(node.right);
         // A property is a threshold bound in ANY inequality ordering (`prop > X`,
         // `X > prop`, `prop < X`, `X < prop`, …) as long as the other operand is
         // a dynamic value, not the 0/1 disable literal (that side is a guard).
         const bounds = [
-          rightName && flags.has(rightName) && leftLit !== 0 && leftLit !== 1 ? rightName : undefined,
-          leftName && flags.has(leftName) && rightLit !== 0 && rightLit !== 1 ? leftName : undefined,
+          right && flags.has(right.leaf) && leftLit !== 0 && leftLit !== 1 ? right : undefined,
+          left && flags.has(left.leaf) && rightLit !== 0 && rightLit !== 1 ? left : undefined,
         ];
-        for (const boundName of bounds) {
-          if (boundName && !scopeHasZeroGuardFor(enclosingScope(node), boundName)) {
-            flags.get(boundName)!.thresholdUnguarded = true;
+        for (const bound of bounds) {
+          // Guarded only by a zero short-circuit on the SAME access path, so a
+          // same-named nested/other-object setting can't vouch for it.
+          if (bound && !scopeHasZeroGuardFor(enclosingScope(node), bound.path)) {
+            flags.get(bound.leaf)!.thresholdUnguarded = true;
           }
         }
       }
@@ -380,8 +413,15 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
             : undefined;
         if (initializer && initializerCoercesZero(initializer)) flags.get(assignedName)!.coercion = true;
       }
-      // Parser values computed in a same-named local and returned via shorthand.
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && flags.has(node.name.text) && node.initializer) {
+      // Parser value computed in a same-named local AND returned via shorthand
+      // (a config field being assembled) — not an unrelated runtime helper local.
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        flags.has(node.name.text) &&
+        node.initializer &&
+        localReturnedViaShorthand(node)
+      ) {
         if (initializerCoercesZero(node.initializer)) flags.get(node.name.text)!.coercion = true;
       }
       ts.forEachChild(node, visit);
