@@ -1435,7 +1435,10 @@ export class RecallSearchPipelineCoordinator {
         `recall safety filter stopped before validating all candidates (${candidateResults.length}/${results.length} eligible)`,
       );
     }
-    const blockedPaths = new Set<string>();
+    // Always block secure-store-locked candidates that failed to load: they
+    // must never re-enter ranking/injection without a loaded memory, whether or
+    // not dropUnresolved is set. Keyed by composite (namespace, path).
+    const blockedPaths = new Set<string>(loaded.unreadablePaths);
     if (options?.dropUnresolved === true) {
       for (const result of candidateResults) {
         if (result.path && resultHasKey(loaded.checkedPaths, result) && !hasMemoryForResult(loaded.memoryByPath, result)) {

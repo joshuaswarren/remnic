@@ -54,7 +54,7 @@ import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastR
 import { type RecallFilterTrace, type RecallXrayResult, type RecallXrayScoreDecomposition, type RecallXraySnapshot, buildXraySnapshot } from "../recall-xray.js";
 import { foldQueueWaitTiming, recordRecallTiming } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
-import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
+import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
 import { type ParallelSearchResult, mergeWithAgentResults, runDirectAgent, runTemporalAgent, shouldRunAgent } from "../retrieval-agents.js";
 import { resolveScopePlan } from "../scopes/scope-plan.js";
@@ -2553,6 +2553,7 @@ export class RecallInternalCoordinator {
                           retrievalQuery,
                           memoryDir,
                           maxPerAgent,
+                          (p) => this.deps.namespaceFromPath(p),
                         ).catch((err) => {
                           log.debug(`DirectAgent pre-start failed: ${err}`);
                           return [] as ParallelSearchResult[];
@@ -2562,7 +2563,7 @@ export class RecallInternalCoordinator {
                       const merged: ParallelSearchResult[] = [];
                       const seen = new Set<string>();
                       for (const result of groups.flat()) {
-                        const key = (result as any).path ?? JSON.stringify(result);
+                        const key = `${(result as any).namespace ?? ""}\0${(result as any).path ?? JSON.stringify(result)}`;
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
@@ -2580,6 +2581,7 @@ export class RecallInternalCoordinator {
                           memoryDir,
                           maxPerAgent,
                           queryAwarePrefilter.candidatePaths,
+                          (p) => this.deps.namespaceFromPath(p),
                         ).catch((err) => {
                           log.debug(`TemporalAgent pre-start failed for ${memoryDir}: ${err}`);
                           return [] as ParallelSearchResult[];
@@ -2589,7 +2591,7 @@ export class RecallInternalCoordinator {
                       const merged: ParallelSearchResult[] = [];
                       const seen = new Set<string>();
                       for (const result of groups.flat()) {
-                        const key = (result as any).path ?? JSON.stringify(result);
+                        const key = `${(result as any).namespace ?? ""}\0${(result as any).path ?? JSON.stringify(result)}`;
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
@@ -4333,12 +4335,15 @@ export class RecallInternalCoordinator {
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
       if (caps.rerank && this.deps.config.rerankProvider === "local") {
+        // (namespace, path) id so same-relative-path cross-namespace hits don't
+        // collapse; pipe delimiter keeps it LLM-safe + cache-stable (#2020).
+        const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
           candidates: memoryResults
             .slice(0, this.deps.config.rerankMaxCandidates)
             .map((r) => ({
-              id: r.path,
+              id: rerankId(r),
               snippet: r.snippet || r.path,
             })),
           local: this.deps.fastLlmForRerank,
@@ -4350,18 +4355,7 @@ export class RecallInternalCoordinator {
           cacheTtlMs: this.deps.config.rerankCacheTtlMs,
         });
         if (ranked && ranked.length > 0) {
-          const byPath = new Map(memoryResults.map((r) => [r.path, r]));
-          const reordered: QmdSearchResult[] = [];
-          for (const p of ranked) {
-            const it = byPath.get(p);
-            if (it) reordered.push(it);
-          }
-          // Append any unranked items in original order.
-          const rankedSet = new Set(ranked);
-          for (const r of memoryResults) {
-            if (!rankedSet.has(r.path)) reordered.push(r);
-          }
-          memoryResults = reordered;
+          memoryResults = reorderByRankedKeys(memoryResults, ranked, rerankId);
         }
       }
       if (caps.rerank && this.deps.config.rerankProvider === "cloud") {

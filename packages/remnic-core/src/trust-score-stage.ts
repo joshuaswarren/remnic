@@ -454,7 +454,12 @@ export async function buildTrustSignalsForRerank(
   if (options.preloadedFrontmatter) {
     const preloaded: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     for (const c of normalized) {
-      const mem = options.preloadedFrontmatter.get(c.lookupKey);
+      // Composite lookupKey is authoritative; the bare-path fallback keeps
+      // path-keyed preloaded maps (e.g. the recent-scan branch) hitting the
+      // fast path and is inert in production composite-keyed maps (#2020).
+      const mem =
+        options.preloadedFrontmatter.get(c.lookupKey) ??
+        options.preloadedFrontmatter.get(c.path);
       if (!mem) continue;
       preloadedKeys.add(c.signalKey);
       preloaded.push({ path: c.signalKey, frontmatter: mem.frontmatter });

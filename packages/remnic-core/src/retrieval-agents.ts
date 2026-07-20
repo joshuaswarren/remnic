@@ -123,10 +123,27 @@ async function resolveContainedRegularFile(
  * Cost: readdir on entities/ + filename scoring. Typically <5ms.
  *
  */
+// Agents scan one namespace storage dir and return absolute paths; contextual
+// fanout hits are namespace-relative. Normalize agent results to the SAME
+// (namespace, relative-path) identity so a memory found by both merges once
+// instead of being injected/counted twice (#2020). No-op without a resolver.
+function namespaceRelativeResult(
+  result: ParallelSearchResult,
+  memoryDir: string,
+  namespaceFromPath?: (p: string) => string,
+): ParallelSearchResult {
+  if (!namespaceFromPath || !result.path) return result;
+  const namespace = result.namespace ?? namespaceFromPath(result.path);
+  if (!path.isAbsolute(result.path)) return { ...result, namespace };
+  const rel = path.relative(memoryDir, result.path).split(path.sep).join("/");
+  return { ...result, namespace, path: rel.startsWith("..") ? result.path : rel };
+}
+
 export async function runDirectAgent(
   query: string,
   memoryDir: string,
   maxResults = 10,
+  namespaceFromPath?: (p: string) => string,
 ): Promise<ParallelSearchResult[]> {
   try {
     const canonicalRoot = await realpath(memoryDir);
@@ -156,14 +173,20 @@ export async function runDirectAgent(
       const safePath = await resolveContainedRegularFile(memoryDir, fullPath, canonicalRoot);
       if (!safePath) continue;
 
-      results.push({
-        docid: nameWithoutExt,
-        path: safePath,
-        snippet: "", // populated by augmentWithDirectAndTemporal after merge
-        score,
-        transport: "scoped_prefilter",
-        agentSource: "direct",
-      });
+      results.push(
+        namespaceRelativeResult(
+          {
+            docid: nameWithoutExt,
+            path: safePath,
+            snippet: "", // populated by augmentWithDirectAndTemporal after merge
+            score,
+            transport: "scoped_prefilter",
+            agentSource: "direct",
+          },
+          memoryDir,
+          namespaceFromPath,
+        ),
+      );
     }
 
     return results
@@ -194,6 +217,7 @@ export async function runTemporalAgent(
   /** Optional candidate set from query-aware prefilter. Applied BEFORE the top-K cap so
    * in-scope entries are not displaced by newer out-of-scope entries. */
   candidatePaths?: Set<string> | null,
+  namespaceFromPath?: (p: string) => string,
 ): Promise<ParallelSearchResult[]> {
   try {
     const canonicalRoot = await realpath(memoryDir);
@@ -306,14 +330,20 @@ export async function runTemporalAgent(
 
       const baseName = path.basename(safePath, ".md");
 
-      results.push({
-        docid: baseName,
-        path: safePath,
-        snippet: "", // populated by augmentWithDirectAndTemporal after merge
-        score,
-        transport: "scoped_prefilter",
-        agentSource: "temporal",
-      });
+      results.push(
+        namespaceRelativeResult(
+          {
+            docid: baseName,
+            path: safePath,
+            snippet: "", // populated by augmentWithDirectAndTemporal after merge
+            score,
+            transport: "scoped_prefilter",
+            agentSource: "temporal",
+          },
+          memoryDir,
+          namespaceFromPath,
+        ),
+      );
     }
 
     return results
