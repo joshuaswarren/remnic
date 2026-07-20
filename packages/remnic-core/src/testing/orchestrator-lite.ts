@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { parseConfig } from "../config.js";
 import type { Orchestrator } from "../orchestrator.js";
+import type { ExtractionRunCoordinatorDeps } from "../orchestration/extraction-run.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "../types.js";
 
 /**
@@ -106,6 +107,44 @@ export function stubExtraction(
       return factory(turns, calls.length);
     },
   };
+  return calls;
+}
+
+/**
+ * The production `persistExtraction` signature (issue #2068). Sourced from the
+ * extraction-run delegate contract — the single canonical shape the orchestrator
+ * both exposes as a private method and delegates to. Test doubles and typed
+ * private-access surfaces import THIS so any production signature change breaks
+ * every consumer at compile time instead of drifting into stale inline casts.
+ */
+export type PersistExtractionFn = ExtractionRunCoordinatorDeps["persistExtraction"];
+
+/** The method-level persist seam replaced by {@link stubPersistExtraction}. */
+interface PersistExtractionSeam {
+  persistExtraction: PersistExtractionFn;
+}
+
+/**
+ * Stub the orchestrator's `persistExtraction` method (the mutation surface the
+ * extraction-run pipeline drives). Records the ExtractionResult of every call
+ * for assertions; returns the factory's persisted-id list, or `[]` when no
+ * factory is given. The replacement is typed as the production
+ * {@link PersistExtractionFn}, so a production return-type change fails to
+ * compile here rather than silently passing a stale mock.
+ */
+export function stubPersistExtraction(
+  orchestrator: Orchestrator,
+  factory?: (result: ExtractionResult, call: number) => string[] | Promise<string[]>,
+): ExtractionResult[] {
+  const calls: ExtractionResult[] = [];
+  // `persistExtraction` is private and structurally unexpressible from outside
+  // the class; the recorder replaces it in place. Named cast per rule.
+  const seam = orchestrator as unknown as PersistExtractionSeam;
+  const impl: PersistExtractionFn = async (result) => {
+    calls.push(result);
+    return factory ? factory(result, calls.length) : [];
+  };
+  seam.persistExtraction = impl;
   return calls;
 }
 

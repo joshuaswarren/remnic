@@ -26,6 +26,8 @@ import { readEdges } from "./graph.js";
 import type { ExtractionResult, PluginConfig } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
 import type { BufferTurn, ConversationThread } from "./types.js";
+import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
+import type { StorageManager } from "./storage.js";
 
 /**
  * Stub local LLM whose `chatCompletion` only answers faithfulness-gate calls
@@ -126,33 +128,18 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
       faithfulnessStubLocalLlm((c) =>
         c.includes("closed permanently") ? "unsupported" : "entailed",
       );
-    const storage = await (orchestrator as unknown as {
-      getStorage: (ns: string) => Promise<{
-        ensureDirectories: () => Promise<void>;
-        readAllMemories: () => Promise<
-          Array<{
-            path: string;
-            frontmatter: { id: string; status?: string };
-          }>
-        >;
-      }>;
-    }).getStorage("default");
+    // getStorage + persistExtraction are private; reach them through a named production-typed surface.
+    const persist = orchestrator as unknown as {
+      getStorage: (ns: string) => Promise<StorageManager>;
+      persistExtraction: PersistExtractionFn;
+    };
+    const storage = await persist.getStorage("default");
     await storage.ensureDirectories();
 
     const sourceText =
       "The widget factory produces widgets. It launched last year. The team is small.";
 
-    const ids0 = await (orchestrator as unknown as {
-      persistExtraction: (
-        r: ExtractionResult,
-        s: unknown,
-        t: unknown,
-        ctx: unknown,
-        bn: unknown,
-        plan: unknown,
-        src: string,
-      ) => Promise<string[]>;
-    }).persistExtraction(
+    const ids0 = await persist.persistExtraction(
       factResult("The widget factory produces widgets daily.", "widget-factory"),
       storage,
       null,
@@ -166,17 +153,7 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
 
     // fact1 → unsupported (pending_review). Under the bug it would originate an
     // entity edge to fact0; under the guard it must NOT.
-    const ids1 = await (orchestrator as unknown as {
-      persistExtraction: (
-        r: ExtractionResult,
-        s: unknown,
-        t: unknown,
-        ctx: unknown,
-        bn: unknown,
-        plan: unknown,
-        src: string,
-      ) => Promise<string[]>;
-    }).persistExtraction(
+    const ids1 = await persist.persistExtraction(
       factResult(
         "The widget factory closed permanently.",
         "widget-factory",
@@ -216,17 +193,7 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
 
     // Control: an ACTIVE fact with the same entityRef DOES create entity edges
     // (proving the graph is wired and only pending_review is excluded).
-    const ids2 = await (orchestrator as unknown as {
-      persistExtraction: (
-        r: ExtractionResult,
-        s: unknown,
-        t: unknown,
-        ctx: unknown,
-        bn: unknown,
-        plan: unknown,
-        src: string,
-      ) => Promise<string[]>;
-    }).persistExtraction(
+    const ids2 = await persist.persistExtraction(
       factResult("The widget factory reopened this quarter.", "widget-factory"),
       storage,
       null,
@@ -312,26 +279,6 @@ function twoFactResult(
   } as unknown as ExtractionResult;
 }
 
-interface StorageLike {
-  ensureDirectories: () => Promise<void>;
-  dir: string;
-  readAllMemories: () => Promise<
-    Array<{ path: string; frontmatter: { id: string; status?: string } }>
-  >;
-}
-
-interface PersistExtractionSig {
-  (
-    r: ExtractionResult,
-    s: unknown,
-    t: string | null,
-    ctx: unknown,
-    bn: unknown,
-    plan: unknown,
-    src: string,
-  ): Promise<string[]>;
-}
-
 test("pending_review id must NOT enter persisted thread episodes across a cross-flush (#1635)", async () => {
   const { orchestrator, memoryDir } = await makeThreadHarness();
   try {
@@ -342,7 +289,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
       );
 
     const getStorage = orchestrator as unknown as {
-      getStorage: (ns: string) => Promise<StorageLike>;
+      getStorage: (ns: string) => Promise<StorageManager>;
     };
     const storage = await getStorage.getStorage("default");
     await storage.ensureDirectories();
@@ -365,7 +312,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     assert.ok(threadId, "thread established via processTurn");
 
     const persist = orchestrator as unknown as {
-      persistExtraction: PersistExtractionSig;
+      persistExtraction: PersistExtractionFn;
       appendPersistedThreadEpisodes: (
         threadId: string,
         persistedIds: string[],

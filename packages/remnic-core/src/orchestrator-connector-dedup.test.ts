@@ -27,28 +27,16 @@ import { ContentHashIndex, StorageManager } from "./storage.js";
 import type { ExtractionResult, ExtractedFact, MemoryFile, MemoryCategory } from "./types.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { buildProcedurePersistBody } from "./procedural/procedure-types.js";
+import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 
 // ---------------------------------------------------------------------------
 // Types — minimal surface of Orchestrator needed by these tests.
 // persistExtraction is private; cast through unknown to reach it without `any`.
 // ---------------------------------------------------------------------------
 
-/** Source-context shape accepted by persistExtraction (connector subset). */
-interface TestSourceContext {
-  sourceConnector?: string;
-  validAt?: string;
-}
-
 /** Orchestrator fields the tests touch (all exist on the real instance). */
 interface OrchestratorTestSurface {
-  persistExtraction: (
-    result: ExtractionResult,
-    storage: StorageManager,
-    threadId: string | null,
-    sourceContext?: TestSourceContext,
-    baseNamespace?: string,
-    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
-  ) => Promise<string[]>;
+  persistExtraction: PersistExtractionFn;
   getStorage: (namespace: string) => Promise<StorageManager>;
   contentHashIndex: ContentHashIndex | null;
   // Private on the real instance; reached through the unknown-cast surface for
