@@ -18,6 +18,7 @@ import { type RecallSectionAppendOptions, type RecallSectionBuckets } from "./re
 import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-helpers.js";
 import { ProfilingCollector } from "../profiling.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
+import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
 
 export interface RecallEntryDeps {
@@ -38,12 +39,7 @@ export interface RecallEntryDeps {
   ): void;
   evalShadowWriteChain: Promise<void>;
   extractMemoryIdsFromResults(results: QmdSearchResult[]): string[];
-  formatQmdResultEntries(
-    title: string,
-    results: QmdSearchResult[],
-    sessionKey?: string,
-    trustByPath?: Map<string, TrustStageResultItem> | null,
-  ): { heading: string; entries: string[] };
+  recallResultFormatter: RecallResultFormatter;
   readonly initPromise: Promise<void> | null;
   lastRecallFailureAtMs: number;
   lastRecallFailureLogAtMs: number;
@@ -283,7 +279,7 @@ export class RecallEntryCoordinator {
       : options.results;
     if (injectable.length === 0) return;
 
-    const formatted = this.deps.formatQmdResultEntries(
+    const formatted = this.deps.recallResultFormatter.formatQmdResultEntries(
       options.title,
       injectable,
       options.sessionKey,

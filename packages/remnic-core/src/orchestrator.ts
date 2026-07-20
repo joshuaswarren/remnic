@@ -372,7 +372,6 @@ import { resolveNamespaceCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
   resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities ,
-  resolveRecallEnhancementCapabilities,
   resolvePipelineProcessingCapabilities,
   resolveConversationContextCapabilities,
 } from "./capabilities.js";
@@ -3309,19 +3308,6 @@ export class Orchestrator {
   ): string {
     return this.recallResultFormatter.formatQmdResults(title, results, sessionKey, trustByPath);
   }
-  private formatQmdResultEntries(
-    title: string,
-    results: QmdSearchResult[],
-    sessionKey?: string,
-    trustByPath?: Map<string, TrustStageResultItem> | null,
-  ): { heading: string; entries: string[] } {
-    return this.recallResultFormatter.formatQmdResultEntries(
-      title,
-      results,
-      sessionKey,
-      trustByPath,
-    );
-  }
 
   private formatObjectiveStateResults(
     results: ObjectiveStateSearchResult[],
@@ -3676,44 +3662,7 @@ export class Orchestrator {
    * Updates are batched in memory and flushed during consolidation.
    */
   trackMemoryAccess(memoryIds: string[], memoryPaths: string[] = []): void {
-    if (!resolveRecallEnhancementCapabilities(this.config).accessTracking) return;
-
-    const now = new Date().toISOString();
-    const pathsByMemoryId = new Map<string, string[]>();
-    for (const memoryPath of memoryPaths) {
-      const basename = memoryPath.split(/[\\/]/).pop() ?? memoryPath;
-      const memoryId = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-      if (memoryId.length > 0 && memoryIds.includes(memoryId)) {
-        const paths = pathsByMemoryId.get(memoryId) ?? [];
-        paths.push(memoryPath);
-        pathsByMemoryId.set(memoryId, paths);
-      }
-    }
-    for (const id of memoryIds) {
-      const paths = pathsByMemoryId.get(id);
-      const memoryPath = paths?.shift();
-      const namespace = memoryPath
-        ? this.namespaceFromPath(memoryPath)
-        : this.config.defaultNamespace;
-      const key = `${namespace}:${id}`;
-      const existing = this.accessTrackingBuffer.get(key);
-      this.accessTrackingBuffer.set(key, {
-        memoryId: id,
-        ...(memoryPath ? { memoryPath, namespace } : {}),
-        count: (existing?.count ?? 0) + 1,
-        lastAccessed: now,
-      });
-    }
-
-    // Flush if buffer exceeds max size
-    if (
-      this.accessTrackingBuffer.size >= this.config.accessTrackingBufferMaxSize
-    ) {
-      this.trackRecallBackgroundWrite(
-        this.flushAccessTracking(),
-        "background access tracking flush",
-      );
-    }
+    this.workspaceOpsCoordinator.trackMemoryAccess(memoryIds, memoryPaths);
   }
 
   async flushAccessTracking(): Promise<void> {

@@ -17,7 +17,7 @@
 
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import { formatDaySummaryMemories } from "../day-summary.js";
 import { type JudgeVerdict, judgeFactDurability } from "../extraction-judge.js";
 import { ExtractionEngine } from "../extraction.js";
@@ -58,6 +58,7 @@ export interface WorkspaceOpsDeps {
       lastAccessed: string;
     }
   >;
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   bulkImportWriteNamespace(): string;
   readonly config: PluginConfig;
   readonly extraction: ExtractionEngine;
@@ -748,6 +749,42 @@ export class WorkspaceOpsCoordinator {
       // consolidation does not set), and `markWrite` is idempotent regardless.
       log.info(
         `IDENTITY(${namespace}) consolidated: ${identityContent.length} → ${newContent.length} chars, ${result.learnedPatterns.length} patterns`,
+      );
+    }
+  }
+  trackMemoryAccess(memoryIds: string[], memoryPaths: string[] = []): void {
+    if (!resolveRecallEnhancementCapabilities(this.deps.config).accessTracking) return;
+
+    const now = new Date().toISOString();
+    const pathsByMemoryId = new Map<string, string[]>();
+    for (const memoryPath of memoryPaths) {
+      const basename = memoryPath.split(/[\\/]/).pop() ?? memoryPath;
+      const memoryId = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
+      if (memoryId.length > 0 && memoryIds.includes(memoryId)) {
+        const paths = pathsByMemoryId.get(memoryId) ?? [];
+        paths.push(memoryPath);
+        pathsByMemoryId.set(memoryId, paths);
+      }
+    }
+    for (const id of memoryIds) {
+      const paths = pathsByMemoryId.get(id);
+      const memoryPath = paths?.shift();
+      const namespace = memoryPath
+        ? this.deps.namespaceFromPath(memoryPath)
+        : this.deps.config.defaultNamespace;
+      const key = `${namespace}:${id}`;
+      const existing = this.deps.accessTrackingBuffer.get(key);
+      this.deps.accessTrackingBuffer.set(key, {
+        memoryId: id,
+        ...(memoryPath ? { memoryPath, namespace } : {}),
+        count: (existing?.count ?? 0) + 1,
+        lastAccessed: now,
+      });
+    }
+    if (this.deps.accessTrackingBuffer.size >= this.deps.config.accessTrackingBufferMaxSize) {
+      this.deps.trackRecallBackgroundWrite(
+        this.flushAccessTracking(),
+        "background access tracking flush",
       );
     }
   }
