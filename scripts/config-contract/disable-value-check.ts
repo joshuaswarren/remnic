@@ -252,32 +252,140 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   return found;
 }
 
-/** A `<path> <op> 0|1` short-circuit within a scope, matched on the FULL access path so a same-named nested setting can't vouch for it. */
-function scopeHasZeroGuardFor(scope: ts.Node, guardedPath: string): boolean {
-  let found = false;
+/**
+ * How a condition treats the disable value for `guardedPath`: "active" when a
+ * value of 0 makes it FALSE and a positive value TRUE (`x > 0`, `x !== 0`),
+ * "disabling" when 0 makes it TRUE (`x <= 0`, `x === 0`). `>= 0` (true for
+ * both) yields undefined — not a real disable guard.
+ */
+function pathGuardKind(condition: ts.Node, guardedPath: string): "active" | "disabling" | undefined {
+  let kind: "active" | "disabling" | undefined;
   const visit = (node: ts.Node): void => {
-    if (found) return;
+    if (kind) return;
     if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
       const leftPath = ts.isPropertyAccessExpression(node.left) ? accessPath(node.left) : undefined;
       const rightPath = ts.isPropertyAccessExpression(node.right) ? accessPath(node.right) : undefined;
-      const leftLit = numericLiteralValue(node.left);
-      const rightLit = numericLiteralValue(node.right);
-      // The guard must be `<path> <op> <lit>` whose operator actually branches
-      // on the disable value (e.g. `<= 0`, `> 0`, `=== 0`) — not `>= 0`, which
-      // never distinguishes 0 from a positive value.
       const op = node.operatorToken.kind;
-      if (
-        (leftPath === guardedPath && rightLit !== undefined && distinguishesDisabled(op, true, rightLit)) ||
-        (rightPath === guardedPath && leftLit !== undefined && distinguishesDisabled(op, false, leftLit))
-      ) {
-        found = true;
-        return;
+      let valueOnLeft: boolean | undefined;
+      let lit: number | undefined;
+      if (leftPath === guardedPath && numericLiteralValue(node.right) !== undefined) {
+        valueOnLeft = true;
+        lit = numericLiteralValue(node.right);
+      } else if (rightPath === guardedPath && numericLiteralValue(node.left) !== undefined) {
+        valueOnLeft = false;
+        lit = numericLiteralValue(node.left);
+      }
+      if (valueOnLeft !== undefined && lit !== undefined) {
+        const atZero = satisfiesComparison(op, valueOnLeft, lit, 0);
+        const atPositive = satisfiesComparison(op, valueOnLeft, lit, 2);
+        if (atZero === false && atPositive === true) {
+          kind = "active";
+          return;
+        }
+        if (atZero === true && atPositive === false) {
+          kind = "disabling";
+          return;
+        }
       }
     }
     ts.forEachChild(node, visit);
   };
-  visit(scope);
-  return found;
+  visit(condition);
+  return kind;
+}
+
+function isDescendant(ancestor: ts.Node, node: ts.Node): boolean {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (current === ancestor) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/** A statement that unconditionally leaves the current block (return/throw/break/continue), directly or as a block's first exit. */
+function branchAlwaysExits(node: ts.Statement): boolean {
+  if (
+    ts.isReturnStatement(node) ||
+    ts.isThrowStatement(node) ||
+    ts.isBreakStatement(node) ||
+    ts.isContinueStatement(node)
+  ) {
+    return true;
+  }
+  if (ts.isBlock(node)) {
+    return node.statements.some((s) => branchAlwaysExits(s));
+  }
+  return false;
+}
+
+/** The nearest ancestor that is a statement (its parent holds a statement list). */
+function enclosingStatement(node: ts.Node): ts.Statement | undefined {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (ts.isStatement(current)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/** A preceding `if (<disabling guard>) <exit>` guard clause in the use's block or an ancestor block. */
+function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
+  let stmt = enclosingStatement(use);
+  while (stmt) {
+    const container = stmt.parent;
+    const list = container && (ts.isBlock(container) || ts.isSourceFile(container)) ? container.statements : undefined;
+    if (list) {
+      const idx = list.indexOf(stmt);
+      for (let i = 0; i < idx; i++) {
+        const s = list[i];
+        if (
+          ts.isIfStatement(s) &&
+          !s.elseStatement &&
+          pathGuardKind(s.expression, guardedPath) === "disabling" &&
+          branchAlwaysExits(s.thenStatement)
+        ) {
+          return true;
+        }
+      }
+    }
+    stmt = container ? enclosingStatement(container) : undefined;
+  }
+  return false;
+}
+
+/** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&` conjunct, or an enclosing active/else branch. */
+function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
+  let node: ts.Node = use;
+  while (node.parent) {
+    const parent = node.parent;
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      node === parent.right &&
+      pathGuardKind(parent.left, guardedPath) === "active"
+    ) {
+      return true;
+    }
+    if (ts.isIfStatement(parent)) {
+      if (isDescendant(parent.thenStatement, use) && pathGuardKind(parent.expression, guardedPath) === "active") {
+        return true;
+      }
+      if (
+        parent.elseStatement &&
+        isDescendant(parent.elseStatement, use) &&
+        pathGuardKind(parent.expression, guardedPath) === "disabling"
+      ) {
+        return true;
+      }
+    }
+    if (ts.isConditionalExpression(parent)) {
+      if (node === parent.whenTrue && pathGuardKind(parent.condition, guardedPath) === "active") return true;
+      if (node === parent.whenFalse && pathGuardKind(parent.condition, guardedPath) === "disabling") return true;
+    }
+    node = parent;
+  }
+  return precedingGuardClauseExits(use, guardedPath);
 }
 
 /** Evaluate `<value> <op> <lit>` (or the mirror `<lit> <op> <value>`) for a concrete value. */
@@ -308,18 +416,18 @@ function satisfiesComparison(
   return undefined;
 }
 
-/** A comparison of a config value to `lit` is a real disable guard only if it distinguishes 0 (disabled) from a positive value. */
-function distinguishesDisabled(op: ts.SyntaxKind, valueOnLeft: boolean, lit: number): boolean {
-  const atZero = satisfiesComparison(op, valueOnLeft, lit, 0);
-  const atPositive = satisfiesComparison(op, valueOnLeft, lit, 2);
-  return atZero !== undefined && atPositive !== undefined && atZero !== atPositive;
+/** Identifier or member-access text of an operand (`raw`, `cfg.raw`), for tying a ternary condition to its clamped value. */
+function operandText(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) return accessPath(node);
+  return undefined;
 }
 
-/** For a condition comparing a value to 0/1, which ternary branch runs when the value is 0. */
-function zeroCaseBranch(condition: ts.Expression): "whenTrue" | "whenFalse" | undefined {
-  let branch: "whenTrue" | "whenFalse" | undefined;
+/** For a condition comparing a value to 0/1: which ternary branch runs when the value is 0, plus the compared value's text. */
+function zeroCaseBranch(condition: ts.Expression): { branch: "whenTrue" | "whenFalse"; valueText: string | undefined } | undefined {
+  let result: { branch: "whenTrue" | "whenFalse"; valueText: string | undefined } | undefined;
   const visit = (node: ts.Node): void => {
-    if (branch) return;
+    if (result) return;
     if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
       const leftLit = numericLiteralValue(node.left);
       const rightLit = numericLiteralValue(node.right);
@@ -335,7 +443,8 @@ function zeroCaseBranch(condition: ts.Expression): "whenTrue" | "whenFalse" | un
       if (lit !== undefined) {
         const satisfied = satisfiesComparison(node.operatorToken.kind, valueOnLeft, lit, 0);
         if (satisfied !== undefined) {
-          branch = satisfied ? "whenTrue" : "whenFalse";
+          const valueNode = valueOnLeft ? node.left : node.right;
+          result = { branch: satisfied ? "whenTrue" : "whenFalse", valueText: operandText(valueNode) };
           return;
         }
       }
@@ -343,18 +452,46 @@ function zeroCaseBranch(condition: ts.Expression): "whenTrue" | "whenFalse" | un
     ts.forEachChild(node, visit);
   };
   visit(condition);
-  return branch;
+  return result;
 }
 
-/** A ternary whose zero case yields literal 0 — the disable value is genuinely preserved (`raw <= 0 ? 0 : Math.max(1, raw)`). */
+/** Does a subtree reference an operand with the given identifier/access text? */
+function subtreeReferencesText(root: ts.Node, text: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) && operandText(node) === text) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+/**
+ * A ternary whose zero case yields literal 0 AND whose clamp branch operates on
+ * the SAME value the condition tested (`raw <= 0 ? 0 : Math.max(1, raw)`). The
+ * same-value tie prevents an unrelated `legacy === 0 ? 0 : Math.max(1, raw)`
+ * from masking a coercion of `raw`.
+ */
 function initializerPreservesZero(root: ts.Node): boolean {
   let preserves = false;
   const visit = (node: ts.Node): void => {
     if (preserves) return;
     if (ts.isConditionalExpression(node)) {
-      const branch = zeroCaseBranch(node.condition);
-      if (branch === "whenTrue" && numericLiteralValue(node.whenTrue) === 0) preserves = true;
-      if (branch === "whenFalse" && numericLiteralValue(node.whenFalse) === 0) preserves = true;
+      const info = zeroCaseBranch(node.condition);
+      if (info) {
+        const zeroBranch = info.branch === "whenTrue" ? node.whenTrue : node.whenFalse;
+        const clampBranch = info.branch === "whenTrue" ? node.whenFalse : node.whenTrue;
+        if (
+          numericLiteralValue(zeroBranch) === 0 &&
+          (info.valueText === undefined || subtreeReferencesText(clampBranch, info.valueText))
+        ) {
+          preserves = true;
+        }
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -413,9 +550,10 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
           left && flags.has(left.leaf) && rightLit !== 0 && rightLit !== 1 ? left : undefined,
         ];
         for (const bound of bounds) {
-          // Guarded only by a zero short-circuit on the SAME access path, so a
-          // same-named nested/other-object setting can't vouch for it.
-          if (bound && !scopeHasZeroGuardFor(enclosingScope(node), bound.path)) {
+          // Guarded only when a disable check on the SAME access path actually
+          // short-circuits this use (preceding guard clause, && conjunct, or
+          // enclosing active/else branch) — not merely present in the function.
+          if (bound && !guardShortCircuitsUse(node, bound.path)) {
             flags.get(bound.leaf)!.thresholdUnguarded = true;
           }
         }
