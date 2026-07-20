@@ -229,11 +229,19 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "dedupe-replay": {
-        // A replayed identical append is coalesced into one protected section.
-        coordinator.appendRecallSection(buckets, "memories", body("memories", 120));
-        coordinator.appendRecallSection(buckets, "recent", body("recent", 400));
+        // A genuine recall replay: run the full inject-then-assemble path
+        // twice over independent buckets and assert the second run reproduces
+        // the first exactly. This exercises the real replay flow (re-injecting
+        // the same recall), not merely re-calling a pure function on one Map.
+        const inject = (target: Map<string, string[]>): void => {
+          coordinator.appendRecallSection(target, "memories", body("memories", 120));
+          coordinator.appendRecallSection(target, "recent", body("recent", 400));
+        };
+        inject(buckets);
         state.assembled = coordinator.assembleRecallSections(buckets);
-        state.assembledReplay = coordinator.assembleRecallSections(buckets);
+        const replayBuckets = new Map<string, string[]>();
+        inject(replayBuckets);
+        state.assembledReplay = coordinator.assembleRecallSections(replayBuckets);
         return;
       }
       default: {
@@ -314,7 +322,12 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.ok(chunks && chunks.length === 1, "the section holds one truncated chunk");
         const chunk = chunks![0]!;
         assert.ok(chunk.includes("...(trimmed)"), "the per-section truncation marker is present");
-        assert.equal(chunk.slice(0, perSectionCap!).length, perSectionCap, "content is cut to the per-section budget");
+        // The chunk is exactly the first `perSectionCap` chars of the original
+        // content followed by the trim marker — proving where the cut landed,
+        // not merely that a re-slice has the cap length.
+        const original = body("memories", 500);
+        assert.equal(chunk, `${original.slice(0, perSectionCap!)}\n\n...(trimmed)\n`, "content is cut at the per-section budget, then marked");
+        assert.ok(chunk.length < original.length, "the truncated chunk is shorter than the original content");
         // truncateRecallSectionToBudget respects a hard per-section budget too.
         const truncated = coordinator.truncateRecallSectionToBudget(body("m", 200), 50);
         assert.equal(truncated.length, 50, "budget-aware truncation lands exactly on the per-section limit");
@@ -355,7 +368,7 @@ const subject: LifecycleSubject<RecallBudgetState> = {
       case "dedupe-replay": {
         const replay = state.assembledReplay;
         assert.ok(replay, "replayed assembly must exist");
-        assert.deepEqual(replay, assembled, "assembly is idempotent across an identical replay");
+        assert.deepEqual(replay, assembled, "a re-injected recall replay reproduces the assembly exactly");
         // "memories" is protected — retained even though "recent" overflows.
         assert.ok(assembled.includedIds.includes("memories"), "the protected memories section is always kept");
         assert.ok(assembled.finalChars <= budget, "protected assembly still respects the budget");
