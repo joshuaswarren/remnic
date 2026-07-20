@@ -1,4 +1,4 @@
-import type { MemoryFile, QmdSearchResult } from "../types.js";
+import type { MemoryFile, QmdSearchResult } from "./types.js";
 
 export function memoryMapKey(result: Pick<QmdSearchResult, "namespace" | "path">): string {
   return `${result.namespace ?? ""}\0${result.path}`;

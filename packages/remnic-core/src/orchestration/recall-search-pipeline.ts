@@ -46,7 +46,7 @@ import {
   memoryForResult,
   memoryMapKey,
   resultHasKey,
-} from "./recall-memory-map.js";
+} from "../recall-memory-map.js";
 import { type UtilityRuntimeValues, applyUtilityRankingRuntimeDelta } from "../utility-runtime.js";
 import {
   computeArtifactCandidateFetchLimit,

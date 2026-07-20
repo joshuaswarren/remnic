@@ -33,7 +33,7 @@ import {
 import type { TrustSignals } from "../trust-score.js";
 import { reorderRecallResultsWithMmr } from "../recall-mmr.js";
 import { applyReasoningTraceBoost } from "../reasoning-trace-recall.js";
-import { memoryMapKey } from "./recall-memory-map.js";
+import { memoryMapKey } from "../recall-memory-map.js";
 
 /**
  * Coordinator for the recall-result reranking subsystem.
