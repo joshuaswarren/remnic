@@ -647,3 +647,174 @@ test("guard: a coerced local passed via shorthand to a call (not returned) is no
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
 });
+
+test("guard: a zero check gated behind another condition (`force && cap <= 0`) does not protect the threshold", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, force: boolean, config: { cap: number }) {",
+        "  if (force && config.cap <= 0) return;",
+        "  if (used > config.cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1, "a conditional zero check must not count as a disable guard");
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: a separate zero-preserving ternary does not mask a clamp that still coerces 0", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const raw = coerceNumber(cfg.cap) ?? 0;",
+        "  const cap = (raw <= 0 ? 0 : raw) + Math.max(1, raw);",
+        "  return { cap };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: a destructured config threshold (`const { cap } = config`) with no zero short-circuit is flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  const { cap } = config;",
+        "  if (used > cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: a destructured/aliased config threshold WITH a zero short-circuit is clean", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  const { cap: limit } = config;",
+        "  if (limit <= 0) return;",
+        "  if (used > limit) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("guard: a nested schema zero-disable doc does not flag an unrelated top-level field with the same leaf", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { limit: number }) {",
+        "  if (used > config.limit) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        block: {
+          type: "object",
+          properties: { limit: { type: "integer", minimum: 0, description: "0 disables the block." } },
+        },
+        limit: { type: "integer", minimum: 0 },
+      },
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests }).violations, []);
+});
+
+test("guard: a nested schema zero-disable doc with a UNIQUE leaf still scans its consumers", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(count: number, config: { autoPromote: number }) {",
+        "  if (count >= config.autoPromote) promote();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        procedural: {
+          type: "object",
+          properties: { autoPromote: { type: "integer", minimum: 0, description: "0 disables auto-promotion." } },
+        },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-guard");
+  assert.equal(violations[0].key, "autoPromote");
+});
+
+test("schema-min: a documented zero-disable field whose anyOf branches all reject 0 is flagged", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        cap: {
+          description: "Set to 0 to disable.",
+          anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
+        },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+  assert.equal(violations[0].key, "cap@openclaw.plugin.json");
+});
+
+test("schema-min: a documented zero-disable field with an anyOf branch that admits 0 is clean", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        cap: {
+          description: "Set to 0 to disable.",
+          anyOf: [{ type: "integer", minimum: 1 }, { type: "integer", minimum: 0 }],
+        },
+      },
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
+});
