@@ -15,6 +15,7 @@ import type { BufferState, BufferTurn } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
+import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -995,7 +996,6 @@ test("runExtraction fails closed on invalid extraction results when required", a
     config.extractionMinUserTurns = 1;
 
     let clearCalls = 0;
-    let persistCalls = 0;
     const orchestrator = Object.create(Orchestrator.prototype) as any;
     orchestrator.config = config;
     orchestrator.buffer = {
@@ -1020,10 +1020,7 @@ test("runExtraction fails closed on invalid extraction results when required", a
     orchestrator.extraction = {
       extract: async () => extractionResult,
     };
-    orchestrator.persistExtraction = async () => {
-      persistCalls += 1;
-      return ["fact-1"];
-    };
+    const persistCalls = stubPersistExtraction(orchestrator, () => ["fact-1"]);
 
     await assert.rejects(
       orchestrator.runExtraction([makeTurn("session-invalid", "remember bad output")], {
@@ -1034,7 +1031,7 @@ test("runExtraction fails closed on invalid extraction results when required", a
     );
 
     assert.equal(clearCalls, 0);
-    assert.equal(persistCalls, 0);
+    assert.equal(persistCalls.length, 0);
   }
 });
 
@@ -1044,7 +1041,6 @@ test("runExtraction persists processed fingerprints for empty extraction results
   config.extractionMinUserTurns = 1;
 
   let clearCalls = 0;
-  let persistCalls = 0;
   let saveMetaCalls = 0;
   let savedMeta:
     | {
@@ -1096,10 +1092,7 @@ test("runExtraction persists processed fingerprints for empty extraction results
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => {
-    persistCalls += 1;
-    return [];
-  };
+  const persistCalls = stubPersistExtraction(orchestrator);
 
   const turns = [
     {
@@ -1116,7 +1109,7 @@ test("runExtraction persists processed fingerprints for empty extraction results
 
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "empty_extraction_result");
-  assert.equal(persistCalls, 0);
+  assert.equal(persistCalls.length, 0);
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
   assert.equal(savedMeta?.extractionCount, 1);
@@ -1135,7 +1128,6 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
   config.extractionMinUserTurns = 1;
 
   let clearCalls = 0;
-  let persistCalls = 0;
   let saveMetaCalls = 0;
 
   const meta = {
@@ -1175,10 +1167,7 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
       extractionFailure: "gateway_unavailable",
     }),
   };
-  orchestrator.persistExtraction = async () => {
-    persistCalls += 1;
-    return [];
-  };
+  const persistCalls = stubPersistExtraction(orchestrator);
 
   const turns = [
     {
@@ -1194,7 +1183,7 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
 
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "empty_extraction_result");
-  assert.equal(persistCalls, 0);
+  assert.equal(persistCalls.length, 0);
   // #1908: a failed extraction now persists per-fingerprint retry-state to meta (one
   // saveMeta call), but MUST NOT record a processed fingerprint — the invariant
   // below (processedExtractionFingerprints stays []) is the real contract.
@@ -1226,7 +1215,7 @@ test("runExtraction clears the buffer on a failed extraction when extractionRetr
   orchestrator.extraction = {
     extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [], extractionFailure: "gateway_unavailable" }),
   };
-  orchestrator.persistExtraction = async () => [];
+  stubPersistExtraction(orchestrator);
   const turns = [{ ...makeTurn("session-retry-off", "failed gateway"), logicalSessionKey: "logical-thread:retry-off", turnFingerprint: "fp-retry-off", persistProcessedFingerprint: true }];
   const result = await orchestrator.runExtraction(turns, { bufferKey: "logical-thread:retry-off" });
   assert.equal(result.status, "skipped");
@@ -1379,7 +1368,6 @@ test("runExtraction still clears the buffer when fingerprint persistence fails a
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
   let clearCalls = 0;
-  let persistCalls = 0;
   let fingerprintWrites = 0;
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
@@ -1417,10 +1405,7 @@ test("runExtraction still clears the buffer when fingerprint persistence fails a
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => {
-    persistCalls += 1;
-    return ["fact-1"];
-  };
+  const persistCalls = stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.recordProcessedExtractionFingerprint = async () => {
     fingerprintWrites += 1;
     throw new Error("saveMeta failed");
@@ -1442,7 +1427,7 @@ test("runExtraction still clears the buffer when fingerprint persistence fails a
     },
   );
 
-  assert.equal(persistCalls, 1);
+  assert.equal(persistCalls.length, 1);
   assert.equal(fingerprintWrites, 1);
   assert.equal(clearCalls, 1);
 });
@@ -1515,7 +1500,7 @@ test("runExtraction persists fingerprint and extraction counters through one coh
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => ["fact-1"];
+  stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.runTierMigrationCycle = async () => undefined;
 
@@ -1623,7 +1608,7 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => ["fact-1"];
+  stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.runTierMigrationCycle = async () => undefined;
 
@@ -1704,7 +1689,7 @@ test("runExtraction completes after late threading failures and saves the proces
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => ["fact-1"];
+  stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.threading = {
     processTurn: async () => "thread-15",
     appendEpisodeIds: async () => undefined,
@@ -1806,7 +1791,7 @@ test("runExtraction completes and clears the buffer when the post-persist meta s
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => ["fact-1"];
+  stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.runTierMigrationCycle = async () => undefined;
 
@@ -1889,7 +1874,7 @@ test("runExtraction still runs follow-on extraction helpers when the post-persis
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => ["fact-1"];
+  stubPersistExtraction(orchestrator, () => ["fact-1"]);
   orchestrator.threading = {
     processTurn: async () => "thread-17",
     appendEpisodeIds: async () => {
@@ -1948,7 +1933,6 @@ test("runExtraction aborts before late buffer clearing when the caller cancels",
   config.extractionMinUserTurns = 1;
 
   let clearCalls = 0;
-  let persistCalls = 0;
   let resolveExtract!: (value: {
     facts: [];
     entities: [];
@@ -1986,10 +1970,7 @@ test("runExtraction aborts before late buffer clearing when the caller cancels",
   orchestrator.extraction = {
     extract: async () => extractPromise,
   };
-  orchestrator.persistExtraction = async () => {
-    persistCalls += 1;
-    return [];
-  };
+  const persistCalls = stubPersistExtraction(orchestrator);
 
   const abortController = new AbortController();
   const runPromise = orchestrator.runExtraction(
@@ -2012,7 +1993,7 @@ test("runExtraction aborts before late buffer clearing when the caller cancels",
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(clearCalls, 0);
-  assert.equal(persistCalls, 0);
+  assert.equal(persistCalls.length, 0);
 });
 
 test("runExtraction still clears the session buffer after persistence even if reset abort fires late", async () => {
@@ -2057,10 +2038,10 @@ test("runExtraction still clears the session buffer after persistence even if re
       profileUpdates: [],
     }),
   };
-  orchestrator.persistExtraction = async () => {
+  stubPersistExtraction(orchestrator, () => {
     abortController.abort();
     return ["fact-1"];
-  };
+  });
   orchestrator.maybeScheduleConsolidation = () => undefined;
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.nonZeroExtractionsSinceConsolidation = 0;

@@ -29,15 +29,11 @@ import { Orchestrator } from "./orchestrator.js";
 import { ContentHashIndex, StorageManager } from "./storage.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import type { ExtractionResult, MemoryFile } from "./types.js";
+import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 
 /** persistExtraction is private; reach it through an unknown-cast surface. */
 interface OrchestratorTestSurface {
-  persistExtraction: (
-    result: ExtractionResult,
-    storage: StorageManager,
-    threadId: string | null,
-    sourceContext?: { sourceConnector?: string; validAt?: string },
-  ) => Promise<string[]>;
+  persistExtraction: PersistExtractionFn;
   getStorage: (namespace: string) => Promise<StorageManager>;
 }
 

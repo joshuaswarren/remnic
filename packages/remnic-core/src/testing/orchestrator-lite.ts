@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { parseConfig } from "../config.js";
 import type { Orchestrator } from "../orchestrator.js";
+import type { ExtractionRunCoordinatorDeps } from "../orchestration/extraction-run.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "../types.js";
 
 /**
@@ -106,6 +107,52 @@ export function stubExtraction(
       return factory(turns, calls.length);
     },
   };
+  return calls;
+}
+
+/**
+ * The production `persistExtraction` signature (issue #2068). Sourced from the
+ * extraction-run delegate contract — the single canonical shape the orchestrator
+ * both exposes as a private method and delegates to. Test doubles and typed
+ * private-access surfaces import THIS so any production signature change breaks
+ * every consumer at compile time instead of drifting into stale inline casts.
+ */
+export type PersistExtractionFn = ExtractionRunCoordinatorDeps["persistExtraction"];
+
+/**
+ * The full argument tuple of a {@link PersistExtractionFn} call. Recording the
+ * whole tuple — not just the leading ExtractionResult — means a change to ANY
+ * parameter (storage, source-context, capability sets) surfaces in every
+ * consumer that reads the call log, not only the first argument.
+ */
+export type PersistExtractionArgs = Parameters<PersistExtractionFn>;
+
+/** The method-level persist seam replaced by {@link stubPersistExtraction}. */
+interface PersistExtractionSeam {
+  persistExtraction: PersistExtractionFn;
+}
+
+/**
+ * Stub the orchestrator's `persistExtraction` method (the mutation surface the
+ * extraction-run pipeline drives). Records the full {@link PersistExtractionArgs}
+ * tuple of every call for assertions; returns the factory's persisted-id list,
+ * or `[]` when no factory is given. The replacement is typed as the production
+ * {@link PersistExtractionFn}, so a production signature change fails to compile
+ * here rather than silently passing a stale mock.
+ */
+export function stubPersistExtraction(
+  orchestrator: Orchestrator,
+  factory?: (args: PersistExtractionArgs, call: number) => string[] | Promise<string[]>,
+): PersistExtractionArgs[] {
+  const calls: PersistExtractionArgs[] = [];
+  // `persistExtraction` is private and structurally unexpressible from outside
+  // the class; the recorder replaces it in place. Named cast per rule.
+  const seam = orchestrator as unknown as PersistExtractionSeam;
+  const impl: PersistExtractionFn = async (...args) => {
+    calls.push(args);
+    return factory ? factory(args, calls.length) : [];
+  };
+  seam.persistExtraction = impl;
   return calls;
 }
 
