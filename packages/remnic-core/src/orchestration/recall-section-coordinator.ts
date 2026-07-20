@@ -410,6 +410,19 @@ export class RecallSectionCoordinator {
             : chunk.content;
           if (candidate.length > allocatedSectionAvailable) {
             if (
+              chunk.atomic &&
+              includedAtomicCount === 0 &&
+              includedLeadingContent &&
+              chunk.content.length <= allocatedSectionAvailable
+            ) {
+              rendered = chunk.content;
+              includedLeadingContent = false;
+              includedAtomicCount = 1;
+              if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
+              if (chunk.memoryPath) includedMemoryPaths.push(chunk.memoryPath);
+              continue;
+            }
+            if (
               !chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&

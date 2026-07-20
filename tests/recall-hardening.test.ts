@@ -1336,6 +1336,35 @@ test("assembleRecallSections omits an empty memories section when no chunk fits"
   assert.equal(assembled.finalChars, 0);
 });
 
+test("assembleRecallSections drops an oversized leading heading before a fitting memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-heading-memory-", {
+    recallBudgetChars: 40,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-fits", memoryPath: "facts/fits.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.sections, ["M".repeat(20)]);
+  assert.deepEqual(assembled.includedIds, ["memories"]);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-fits"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits.md"]);
+});
+
 test("assembleRecallSections does not reserve an oversized atomic memory", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-oversized-memory-", {
     recallBudgetChars: 120,

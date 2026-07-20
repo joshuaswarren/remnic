@@ -37,6 +37,7 @@ import { type AccessTrackingEntry, type MemoryActionEvent, type MemoryFile, type
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { WearablesService } from "../wearables/service.js";
+import { qmdCollectionPathParts, qmdResultPathCandidates } from "./qmd-result-resolver.js";
 import {
   Orchestrator,
   filterHourlySummaryMarkdownForLocalDay,
@@ -100,6 +101,18 @@ export interface WorkspaceOpsDeps {
 function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
   const normalizedCandidate = path.resolve(candidatePath);
   return normalizedCandidate === path.resolve(requestedPath) || normalizedCandidate === path.resolve(memoryDir, requestedPath);
+}
+
+function accessTrackingPathCandidates(storageDir: string, memoryPath: string): string[] {
+  const candidates = qmdResultPathCandidates(storageDir, memoryPath);
+  const parts = qmdCollectionPathParts(memoryPath);
+  if (!parts) return candidates;
+
+  candidates.push(
+    ...qmdResultPathCandidates(storageDir, parts.relativePath),
+    ...qmdResultPathCandidates(path.join(storageDir, "cold"), parts.relativePath),
+  );
+  return [...new Set(candidates)];
 }
 
 function canonicalMemoryPath(memoryPath: string, memoryDir: string): string {
@@ -825,6 +838,7 @@ export class WorkspaceOpsCoordinator {
     }
 
     const entriesByNamespace = new Map<string, AccessTrackingEntry[]>();
+    const storageDirByNamespace = new Map<string, string | null>();
     for (const [, update] of this.deps.accessTrackingBuffer) {
       const memoryPath = update.memoryPath;
       const namespace =
@@ -833,9 +847,23 @@ export class WorkspaceOpsCoordinator {
           ? this.deps.namespaceFromPath(memoryPath)
           : this.deps.config.defaultNamespace);
       const namespaceMemories = memoriesByNamespace.get(namespace);
+      let storageDir = storageDirByNamespace.get(namespace);
+      if (storageDir === undefined) {
+        const storage = await this.deps.storageRouter.storageFor(namespace);
+        storageDir = typeof storage.dir === "string" && storage.dir.length > 0 ? storage.dir : null;
+        storageDirByNamespace.set(namespace, storageDir);
+      }
+      const requestedPaths = memoryPath
+        ? [
+            memoryPath,
+            ...(storageDir ? accessTrackingPathCandidates(storageDir, memoryPath) : []),
+          ]
+        : [];
       const memory = memoryPath
         ? namespaceMemories?.find((candidate) =>
-            matchesMemoryPath(candidate.path, memoryPath, this.deps.config.memoryDir),
+            requestedPaths.some((requestedPath) =>
+              matchesMemoryPath(candidate.path, requestedPath, this.deps.config.memoryDir),
+            ),
           )
         : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
       if (!memory) continue;
