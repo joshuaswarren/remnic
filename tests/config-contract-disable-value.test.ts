@@ -942,3 +942,24 @@ test("guard: a coercion routed through a differently named alias into a returned
   assert.equal(violations.length, 1);
   assert.equal(violations[0].key, "maxItems");
 });
+
+test("guard: a ternary whose zero check tests an un-nameable value does not excuse the clamp", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const cap = coerceNumber(cfg.cap) <= 0 ? 0 : Math.max(1, coerceNumber(cfg.other));",
+        "  return { cap };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});

@@ -630,10 +630,15 @@ function clampIsZeroPreserved(clamp: ts.Node): boolean {
       if (info) {
         const zeroBranch = info.branch === "whenTrue" ? parent.whenTrue : parent.whenFalse;
         const clampBranch = info.branch === "whenTrue" ? parent.whenFalse : parent.whenTrue;
+        // Require a VERIFIED same-value tie: the zero branch yields 0 and the
+        // clamp branch operates on the exact value the condition tested. If the
+        // tested value can't be named (e.g. `coerceNumber(x) <= 0`), fail closed
+        // (still a coercion) rather than excuse an unrelated clamp.
         if (
           node === clampBranch &&
           numericLiteralValue(zeroBranch) === 0 &&
-          (info.valueText === undefined || subtreeReferencesText(clampBranch, info.valueText))
+          info.valueText !== undefined &&
+          subtreeReferencesText(clampBranch, info.valueText)
         ) {
           return true;
         }
