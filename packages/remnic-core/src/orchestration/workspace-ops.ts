@@ -838,6 +838,7 @@ export class WorkspaceOpsCoordinator {
     }
 
     const entriesByNamespace = new Map<string, AccessTrackingEntry[]>();
+    const mergedEntriesByNamespace = new Map<string, Map<string, AccessTrackingEntry>>();
     const storageDirByNamespace = new Map<string, string | null>();
     for (const [, update] of this.deps.accessTrackingBuffer) {
       const memoryPath = update.memoryPath;
@@ -868,14 +869,19 @@ export class WorkspaceOpsCoordinator {
         : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
       if (!memory) continue;
 
-      const entries = entriesByNamespace.get(namespace) ?? [];
-      entries.push({
-        memoryId: update.memoryId,
+      const namespaceEntries = mergedEntriesByNamespace.get(namespace) ?? new Map();
+      const existing = namespaceEntries.get(memory.path);
+      namespaceEntries.set(memory.path, {
+        memoryId: existing?.memoryId ?? update.memoryId,
         memoryPath: memory.path,
-        newCount: (memory.frontmatter.accessCount ?? 0) + update.count,
+        newCount:
+          (existing?.newCount ?? (memory.frontmatter.accessCount ?? 0)) + update.count,
         lastAccessed: update.lastAccessed,
       });
-      entriesByNamespace.set(namespace, entries);
+      mergedEntriesByNamespace.set(namespace, namespaceEntries);
+    }
+    for (const [namespace, entries] of mergedEntriesByNamespace) {
+      entriesByNamespace.set(namespace, Array.from(entries.values()));
     }
 
     let flushedCount = 0;

@@ -152,6 +152,63 @@ test("flushAccessTracking resolves collection-prefixed QMD paths", async () => {
   ]);
 });
 
+test("flushAccessTracking coalesces aliases for one memory", async () => {
+  const memoryPath = path.join("/memory", "facts", "same-id.md");
+  const memories = [{ path: memoryPath, frontmatter: { id: "same-id", accessCount: 2 } }];
+  let flushed: AccessTrackingEntry[] = [];
+  const config = {
+    namespacesEnabled: false,
+    memoryDir: "/memory",
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer: new Map([
+      [
+        "default:facts/same-id.md",
+        {
+          memoryId: "same-id",
+          memoryPath: "facts/same-id.md",
+          count: 1,
+          lastAccessed: "2026-07-19T00:00:00.000Z",
+        },
+      ],
+      [
+        "default:collection/facts/same-id.md",
+        {
+          memoryId: "same-id",
+          memoryPath: "collection/facts/same-id.md",
+          count: 1,
+          lastAccessed: "2026-07-19T00:00:01.000Z",
+        },
+      ],
+    ]),
+    readAllMemoriesForNamespaces: async () => memories,
+    namespaceFromPath: () => "default",
+    storageRouter: {
+      storageFor: async () => ({
+        dir: "/memory",
+        flushAccessTracking: async (entries: AccessTrackingEntry[]) => {
+          flushed = entries;
+        },
+      }),
+    },
+  } as unknown as WorkspaceOpsDeps);
+
+  await coordinator.flushAccessTracking();
+
+  assert.deepEqual(flushed, [
+    {
+      memoryId: "same-id",
+      memoryPath,
+      newCount: 4,
+      lastAccessed: "2026-07-19T00:00:01.000Z",
+    },
+  ]);
+});
+
 test("trackMemoryAccess keeps same-id accesses separate by path", () => {
   const firstPath = path.join("/memory", "facts", "first", "same-id.md");
   const secondPath = path.join("/memory", "facts", "second", "same-id.md");
