@@ -477,3 +477,52 @@ test("guard: threshold detection catches every inequality ordering", () => {
     assert.equal(violations[0].key, "cap");
   }
 });
+
+test("guard: a zero check on a DIFFERENT object with the same leaf does not vouch for the real threshold", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  backlogThreshold: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(state: { queued: number }, config: { backlogThreshold: number }, other: { backlogThreshold: number }) {",
+        "  if (other.backlogThreshold <= 0) return;",
+        "  if (state.queued > config.backlogThreshold) flush();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "backlogThreshold");
+});
+
+test("guard: a same-named helper local NOT returned via shorthand is not a false coercion", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the section. */\n  maxFollowups: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const maxFollowups = coerceNumber(cfg.maxFollowups) ?? 0;",
+        "  return { maxFollowups };",
+        "}",
+      ].join("\n"),
+    },
+    {
+      path: "helper.ts",
+      text: [
+        "function renderFollowups(request: { maxFollowups: number }) {",
+        "  const maxFollowups = Math.max(1, request.maxFollowups);",
+        "  return maxFollowups * 2;",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
