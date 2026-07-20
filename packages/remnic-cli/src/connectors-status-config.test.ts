@@ -67,3 +67,43 @@ test("connectors status reflects config enabled flags (issue #2062)", async () =
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("connectors status fails cleanly on invalid connector config (issue #2062)", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "remnic-2062-status-bad-"));
+  try {
+    const memoryDir = join(tempRoot, "mem");
+    const configPath = join(tempRoot, "remnic.json");
+    // Valid JSON, but a value parseConfig rejects (poll interval below the
+    // allowed floor). This exercises the status branch's own config guard,
+    // which must exit 2 without echoing the parser message (it can contain
+    // raw config values, e.g. secrets — Cursor Bugbot learned rule).
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        memoryDir,
+        connectors: { googleDrive: { pollIntervalMs: 5 } },
+      })
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["--conditions=remnic-source", "--import", "tsx", cliEntry, "connectors", "status", "--format", "json"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          REMNIC_CLI_BIN: "1",
+          REMNIC_CONFIG_PATH: configPath,
+        },
+      }
+    );
+
+    assert.equal(result.status, 2, `expected exit 2, got ${result.status}: ${result.stderr}`);
+    assert.match(result.stderr, /^connectors status:/m);
+    // The caught parser message must not be echoed (it can carry config values).
+    assert.doesNotMatch(result.stderr, /pollIntervalMs/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

@@ -10093,15 +10093,17 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     // uses) instead of hardcoding true, so disabled connectors report
     // enabled:false in status/list output (issue #2062).
     let connectorsCfg: PluginConfig["connectors"];
+    const configPath = resolveConfigPath();
     try {
-      const configPath = resolveConfigPath();
       const raw = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
       connectorsCfg = parseConfig(resolveRemnicConfigRecord(raw)).connectors;
-    } catch (err) {
+    } catch {
+      // Report the path, never the caught error message: parse/validation
+      // errors can echo raw config values (e.g. secrets) into CLI output.
       process.stderr.write(
-        `connectors status: ${err instanceof Error ? err.message : String(err)}\n`,
+        `connectors status: failed to read config at ${configPath}\n`,
       );
       process.exitCode = 2;
       return;
