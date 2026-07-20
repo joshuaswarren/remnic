@@ -8,12 +8,26 @@ import { parseIgnoreManifest } from "../scripts/effective-diff.mjs";
 import {
   CORE_PATH_PREFIXES,
   EXEMPT_LABEL,
+  MIN_SHARED_ANCESTOR_SEGMENTS,
+  classifySubsystem,
   evaluateScopeBudget,
+  extractIssueRefs,
+  loadSubsystemGroups,
   loadThresholds,
+  sharedAncestorSegments,
 } from "../scripts/pr-scope-budget.mjs";
 
 const THRESHOLDS = { warnLines: 1500, failLines: 4000 };
 const NO_IGNORES = [];
+
+// Representative subsystem-group map for the detection tests (issue #2067).
+const GROUPS = {
+  "packages/remnic-core/src/recall": "recall",
+  "packages/remnic-core/src/config": "config",
+  "packages/remnic-core/src/storage": "storage",
+  "packages/remnic-cli/": "cli",
+  "src/": "root-src",
+};
 
 function coreFile(lines, filename = "packages/remnic-core/src/storage.ts") {
   return { filename, additions: lines, deletions: 0 };
@@ -110,7 +124,7 @@ test("input validation: pathless files and bad thresholds are rejected", () => {
         thresholds: THRESHOLDS,
         ignorePatterns: NO_IGNORES,
       }),
-    /no filename/,
+    /no filename/
   );
 
   const dir = mkdtempSync(path.join(tmpdir(), "scope-budget-"));
@@ -137,7 +151,12 @@ test("renames out of core paths still count against the budget (round 3)", () =>
   const result = evaluateScopeBudget({
     files: [
       // Core file renamed into an ignored artifact dir: counts.
-      { filename: "gen/parked.json", previous_filename: "packages/remnic-core/src/old.ts", additions: 900, deletions: 900 },
+      {
+        filename: "gen/parked.json",
+        previous_filename: "packages/remnic-core/src/old.ts",
+        additions: 900,
+        deletions: 900,
+      },
       // Core file renamed into a non-core docs path: counts.
       { filename: "docs/moved.md", previous_filename: "src/tools.ts", additions: 0, deletions: 100 },
       // Pure artifact shuffle: does not count.
@@ -149,4 +168,179 @@ test("renames out of core paths still count against the budget (round 3)", () =>
   });
   assert.equal(result.coreLines, 1900);
   assert.equal(result.verdict, "warn");
+});
+
+// --- Subsystem-group / multi-issue detection (issue #2067) ---
+
+test("issue references are extracted, deduped, boundary-checked, and code-stripped", () => {
+  const issues = extractIssueRefs("Closes #12, part of #34 and see #12 again (no digits: #).");
+  assert.deepEqual(
+    [...issues].sort((a, b) => a - b),
+    [12, 34]
+  );
+  assert.equal(extractIssueRefs("").size, 0);
+  assert.equal(extractIssueRefs(undefined).size, 0);
+  // Non-issue hashes must not count: hex color / commit-ish in code spans are
+  // stripped, and alphanumeric neighbours break the reference boundary.
+  const filtered = extractIssueRefs(
+    "real #42, hidden <!-- see #77 -->, color `#123456`, block ```\n#999\n```, run#7 x#8y ##9"
+  );
+  assert.deepEqual([...filtered], [42]);
+});
+
+test("classifySubsystem picks the longest matching prefix", () => {
+  const map = {
+    "packages/remnic-core/": "core",
+    "packages/remnic-core/src/recall": "recall",
+  };
+  assert.equal(classifySubsystem("packages/remnic-core/src/recall-state.ts", map).group, "recall");
+  assert.equal(classifySubsystem("packages/remnic-core/src/other.ts", map).group, "core");
+  assert.equal(classifySubsystem("docs/x.md", map), null);
+});
+
+test("sharedAncestorSegments measures the common path-prefix depth", () => {
+  assert.equal(sharedAncestorSegments(["packages/remnic-core/src/recall", "packages/remnic-core/src/config"]), 3);
+  assert.equal(sharedAncestorSegments(["packages/remnic-core/src/recall", "packages/remnic-cli/"]), 1);
+  assert.equal(sharedAncestorSegments(["src/tools.ts", "packages/remnic-core/x"]), 0);
+  assert.equal(sharedAncestorSegments([]), 0);
+});
+
+test("single-group PR is unaffected by multi-issue text (line-count behavior unchanged)", () => {
+  const result = evaluateScopeBudget({
+    files: [
+      coreFile(100, "packages/remnic-core/src/recall-state.ts"),
+      coreFile(120, "packages/remnic-core/src/recall/archive-scoring.ts"),
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 and #222",
+  });
+  assert.equal(result.verdict, "pass");
+  assert.doesNotMatch(result.detail, /subsystem groups/);
+});
+
+test(">=3 related groups + >=2 issues warns without failing (shared package ancestor)", () => {
+  const result = evaluateScopeBudget({
+    files: [
+      coreFile(80, "packages/remnic-core/src/recall-state.ts"),
+      coreFile(80, "packages/remnic-core/src/config.ts"),
+      coreFile(80, "packages/remnic-core/src/storage.ts"),
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Part of #111 and #222",
+  });
+  assert.equal(result.verdict, "warn");
+  assert.match(result.detail, /span 3 subsystem groups/);
+  assert.match(result.detail, /#111, #222/);
+  assert.match(result.detail, /one PR per issue/);
+});
+
+test("unrelated groups (no package ancestor) + >=2 issues fails; exempt bypasses", () => {
+  const base = {
+    files: [coreFile(80, "packages/remnic-core/src/recall-state.ts"), coreFile(80, "packages/remnic-cli/src/index.ts")],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111, also #222",
+  };
+  const fail = evaluateScopeBudget({ ...base, labels: [] });
+  assert.equal(fail.verdict, "fail");
+  assert.match(fail.detail, /share no package-level ancestor/);
+  assert.match(fail.detail, /cli, recall/);
+
+  const exempt = evaluateScopeBudget({ ...base, labels: [EXEMPT_LABEL] });
+  assert.equal(exempt.verdict, "exempt");
+  assert.match(exempt.detail, /passing ONLY because/);
+  assert.match(exempt.detail, /share no package-level ancestor/);
+});
+
+test("rename classifies by the core side (previous_filename) not the destination", () => {
+  // A core recall file renamed out to docs, plus an unrelated cli change, both
+  // for two issues: grouping must follow the core previous_filename so the
+  // recall+cli split fail still triggers (review: cursor + codex on #2067).
+  const result = evaluateScopeBudget({
+    files: [
+      {
+        filename: "docs/moved.md",
+        previous_filename: "packages/remnic-core/src/recall-state.ts",
+        additions: 40,
+        deletions: 40,
+      },
+      coreFile(80, "packages/remnic-cli/src/index.ts"),
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 and #222",
+  });
+  assert.equal(result.verdict, "fail");
+  assert.match(result.detail, /cli, recall/);
+});
+
+test("core-to-core rename classifies both the source and destination subsystems", () => {
+  // Move recall code into remnic-cli (both sides count): one file yields two
+  // groups, so a two-issue PR trips the unrelated-subsystem split fail even
+  // though only a single entry changed (review: codex on #2067).
+  const result = evaluateScopeBudget({
+    files: [
+      {
+        filename: "packages/remnic-cli/src/recall-moved.ts",
+        previous_filename: "packages/remnic-core/src/recall-state.ts",
+        additions: 60,
+        deletions: 60,
+      },
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 and #222",
+  });
+  assert.equal(result.verdict, "fail");
+  assert.match(result.detail, /cli, recall/);
+});
+
+test("unrelated groups but a single distinct issue does not trigger the split rule", () => {
+  const result = evaluateScopeBudget({
+    files: [coreFile(80, "packages/remnic-core/src/recall-state.ts"), coreFile(80, "packages/remnic-cli/src/index.ts")],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 (and #111 mentioned twice)",
+  });
+  assert.equal(result.verdict, "pass");
+});
+
+test("loadThresholds reads and validates the subsystemGroups map", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "scope-groups-"));
+  try {
+    const file = path.join(dir, "cfg.json");
+    writeFileSync(file, JSON.stringify({ warnLines: 1500, failLines: 4000, subsystemGroups: GROUPS }));
+    assert.deepEqual(loadThresholds(file).subsystemGroups, GROUPS);
+
+    writeFileSync(file, JSON.stringify({ warnLines: 1500, failLines: 4000 }));
+    assert.deepEqual(loadThresholds(file).subsystemGroups, {});
+
+    writeFileSync(file, JSON.stringify({ warnLines: 1500, failLines: 4000, subsystemGroups: { "a/": 5 } }));
+    assert.throws(() => loadThresholds(file), /must be a non-empty string/);
+
+    writeFileSync(file, JSON.stringify({ warnLines: 1500, failLines: 4000, subsystemGroups: { "/abs": "x" } }));
+    assert.throws(() => loadThresholds(file), /must be repo-relative/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadSubsystemGroups rejects non-object shapes; MIN ancestor is package-level", () => {
+  assert.deepEqual(loadSubsystemGroups(undefined), {});
+  assert.deepEqual(loadSubsystemGroups(null), {});
+  assert.throws(() => loadSubsystemGroups([]), /must be an object/);
+  assert.equal(MIN_SHARED_ANCESTOR_SEGMENTS, 2);
 });

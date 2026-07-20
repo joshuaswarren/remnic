@@ -1,4 +1,5 @@
-# PR scope budget (issue #1991 PR2, umbrella #1988).
+# PR scope budget (issue #1991 PR2, umbrella #1988; subsystem-group and
+# multi-issue detection added in issue #2067).
 #
 # Own workflow (not a ci.yml job) so `labeled`/`unlabeled` events re-evaluate
 # the check without re-running the full CI matrix — applying or removing
@@ -14,7 +15,8 @@ on:
   pull_request:
     # `edited` fires on base-branch retargets (and title/body edits — cheap
     # no-op re-runs); a retarget changes the diff and must re-evaluate
-    # (review finding on #2003 round 5).
+    # (review finding on #2003 round 5). Title/body edits also refresh the
+    # multi-issue signal (issue #2067).
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
 
 permissions:
@@ -34,8 +36,8 @@ jobs:
       # Trusted-code checkout (review finding on #2003 round 4, P1): the
       # evaluator scripts run from the PR's BASE revision, so an over-budget
       # PR cannot neuter scripts/pr-scope-budget.mjs or effective-diff.mjs in
-      # the same head. PR data (files/labels) comes from the API; budget
-      # config comes from the base ref via getContent.
+      # the same head. PR data (files/labels/title/body) comes from the API;
+      # budget config comes from the base ref via getContent.
       - name: Checkout base revision
         uses: actions/checkout@v4
         with:
@@ -59,7 +61,7 @@ jobs:
         with:
           node-version: '22.12.0'
 
-      - name: Fetch PR files, fresh labels, and base-ref budget config
+      - name: Fetch PR files, fresh labels, PR text, and base-ref budget config
         uses: actions/github-script@v7
         with:
           script: |
@@ -96,6 +98,12 @@ jobs:
               owner, repo, issue_number: pull_number, per_page: 100,
             });
             fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels.map((l) => l.name)));
+
+            // PR title + body — DATA only, scanned for #<n> issue references by
+            // the evaluator (issue #2067). Fetched fresh so `edited` events
+            // pick up title/body changes.
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number });
+            fs.writeFileSync('/tmp/pr-meta.txt', `${pr.data.title ?? ''}\n\n${pr.data.body ?? ''}`);
 
             // Thresholds + ignore manifest from the BASE ref: a PR can never
             // weaken its own budget by editing them in the same head. Changes
@@ -136,9 +144,23 @@ jobs:
             core.info(`Fetched ${files.length} changed files, ${labels.length} labels, base-ref config @ ${baseRef.slice(0, 7)}.`);
 
       - name: Evaluate scope budget
-        run: >-
-          node scripts/pr-scope-budget.mjs
-          --files /tmp/pr-files.json
-          --labels /tmp/pr-labels.json
-          --thresholds /tmp/budget-thresholds.json
-          --ignore /tmp/budget-ignore
+        run: |
+          args=(
+            --files /tmp/pr-files.json
+            --labels /tmp/pr-labels.json
+            --thresholds /tmp/budget-thresholds.json
+            --ignore /tmp/budget-ignore
+          )
+          # The evaluator runs from the BASE ref (trusted code). Pass the
+          # multi-issue --pr-meta signal (issue #2067) only when that base
+          # copy actually ACCEPTS the flag. Match the quoted flag literal as
+          # it appears in the parser's CLI_FLAGS declaration ("--pr-meta"),
+          # not any mention (comments/usage text also contain --pr-meta), so a
+          # base predating #2067 never receives an argument it would reject.
+          # Self-heals once #2067 is on the base branch (review: coderabbit).
+          if grep -qF '"--pr-meta"' scripts/pr-scope-budget.mjs; then
+            args+=(--pr-meta /tmp/pr-meta.txt)
+          else
+            echo "::notice title=scope-budget::base-ref evaluator predates --pr-meta; multi-issue signal skipped until it merges"
+          fi
+          node scripts/pr-scope-budget.mjs "${args[@]}"
