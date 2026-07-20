@@ -1431,3 +1431,34 @@ test("assembleRecallSections reserves a later fitting atomic memory", async () =
   assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits-later.md"]);
   assert.match(assembled.sections.join("\n"), /M{20}/);
 });
+
+test("assembleRecallSections reserves a memory that fits its section cap without the separator", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-separator-", {
+    recallBudgetChars: 50,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true, maxChars: 20 },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(30),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-section-fit", memoryPath: "facts/section-fit.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-section-fit"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/section-fit.md"]);
+  assert.ok(assembled.finalChars <= 50);
+});

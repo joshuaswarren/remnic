@@ -308,17 +308,11 @@ export class RecallSectionCoordinator {
       const candidate = memoryPrefix
         ? `${memoryPrefix}\n\n${chunk.content}`
         : chunk.content;
-      if (
-        chunk.atomic &&
-        candidate.length + separator.length <= memoryAllocationBudget
-      ) {
+      if (chunk.atomic && candidate.length <= memoryAllocationBudget) {
         firstAtomicMemoryReserveChars = candidate.length;
         break;
       }
-      if (
-        chunk.atomic &&
-        chunk.content.length + separator.length <= memoryAllocationBudget
-      ) {
+      if (chunk.atomic && chunk.content.length <= memoryAllocationBudget) {
         firstAtomicMemoryReserveChars = chunk.content.length;
         break;
       }

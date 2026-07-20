@@ -53,22 +53,20 @@ export async function recordCitationUsage(
 
   if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
   const storage = await deps.getStorage(resolvedNamespace);
-  const preferredPathsById = new Map<string, string[]>();
-  for (const entry of memoryEntries) {
-    const paths = preferredPathsById.get(entry.id) ?? [];
-    paths.push(entry.citedPath);
-    preferredPathsById.set(entry.id, paths);
-  }
-  const pathsById = await storage.findExistingMemoryPaths(
-    memoryEntries.map((entry) => entry.id),
-    preferredPathsById,
+  const matchedEntries = (
+    await Promise.all(
+      memoryEntries.map(async (entry) => {
+        const pathsById = await storage.findExistingMemoryPaths(
+          [entry.id],
+          new Map([[entry.id, [entry.citedPath]]]),
+        );
+        const memoryPath = pathsById.get(entry.id);
+        return memoryPath ? { id: entry.id, path: memoryPath } : null;
+      }),
+    )
+  ).filter(
+    (entry): entry is { id: string; path: string } => entry !== null,
   );
-  const matchedEntries = memoryEntries
-    .map((entry) => {
-      const memoryPath = pathsById.get(entry.id);
-      return memoryPath ? { id: entry.id, path: memoryPath } : null;
-    })
-    .filter((entry): entry is { id: string; path: string } => entry !== null);
 
   if (matchedEntries.length > 0) {
     try {

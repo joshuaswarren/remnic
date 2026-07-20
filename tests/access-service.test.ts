@@ -4806,12 +4806,12 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
         ids: string[],
         preferredPaths: Map<string, string[]>,
       ) => {
-        assert.deepEqual(ids, ["same-id", "same-id"]);
-        assert.deepEqual(preferredPaths.get("same-id"), [
-          "facts/first/same-id.md",
-          "facts/second/same-id.md",
+        assert.deepEqual(ids, ["same-id"]);
+        const preferredPath = preferredPaths.get("same-id")?.[0];
+        assert.ok(preferredPath);
+        return new Map([
+          ["same-id", preferredPath.includes("/first/") ? firstPath : secondPath],
         ]);
-        return new Map([["same-id", secondPath]]);
       },
     }),
     trackMemoryAccess: (ids: string[], paths: string[]) => {
@@ -4830,6 +4830,5 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
   });
 
   assert.deepEqual(result, { submitted: 2, matched: 2 });
-  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [secondPath, secondPath] }]);
-  assert.notEqual(firstPath, secondPath);
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, secondPath] }]);
 });
