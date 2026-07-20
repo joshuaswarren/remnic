@@ -1065,3 +1065,36 @@ test("guard: a coerced same-named local returned under a DIFFERENT key is not a 
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
 });
+
+test("guard: a destructured-alias threshold guarded via the full config path is clean", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  const { cap } = config;",
+        "  if (config.cap <= 0) return;",
+        "  if (used > cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("schema-min: a documented zero-disable field with a fractional minimum (0.1) is flagged", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: { ratio: { type: "number", minimum: 0.1, description: "Set to 0 to disable." } },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+  assert.equal(violations[0].key, "ratio@openclaw.plugin.json");
+});

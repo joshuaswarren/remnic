@@ -141,15 +141,16 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
 
 /**
  * The positive floor a numeric schema imposes on the value, or undefined when it
- * admits 0 (or isn't numeric). A schema's own `minimum` applies IN ADDITION to
- * any `anyOf`/`oneOf` (JSON Schema allOf semantics), so `minimum: 1` with a
- * `minimum: 0` branch still rejects 0. A combinator with no own floor admits 0
- * only when some numeric branch admits it, so a lone `minimum: 1` branch rejects
- * the documented disable value.
+ * admits 0 (or isn't numeric). ANY `minimum > 0` (including a fractional floor
+ * like `0.1`) rejects the documented disable value. A schema's own `minimum`
+ * applies IN ADDITION to any `anyOf`/`oneOf` (JSON Schema allOf semantics), so
+ * `minimum: 1` with a `minimum: 0` branch still rejects 0. A combinator with no
+ * own floor admits 0 only when some numeric branch admits it, so a lone
+ * positive-floor branch rejects the documented disable value.
  */
 function positiveNumericFloor(prop: DisableValueSchemaProperty): number | undefined {
   const ownFloor =
-    numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum >= 1 ? prop.minimum : undefined;
+    numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum > 0 ? prop.minimum : undefined;
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
     // The parent floor applies regardless of which branch matches: if it rejects
@@ -255,25 +256,24 @@ function propertyAccess(node: ts.Expression): { leaf: string; path: string } | u
  * Restricted to destructuring off a plain object reference (identifier or member
  * access) to avoid binding unrelated call-result locals.
  */
-function destructuredConfigField(operand: ts.Identifier): string | undefined {
+function destructuredConfigField(operand: ts.Identifier): { field: string; sourcePath: string } | undefined {
   const scope = enclosingScope(operand);
   const name = operand.text;
-  let field: string | undefined;
+  let result: { field: string; sourcePath: string } | undefined;
   const visit = (node: ts.Node): void => {
-    if (field) return;
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer &&
-      accessPath(node.initializer) !== undefined
-    ) {
-      for (const element of node.name.elements) {
-        if (ts.isBindingElement(element) && ts.isIdentifier(element.name) && element.name.text === name) {
-          field =
-            element.propertyName && ts.isIdentifier(element.propertyName)
-              ? element.propertyName.text
-              : element.name.text;
-          return;
+    if (result) return;
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer) {
+      const sourcePath = accessPath(node.initializer);
+      if (sourcePath !== undefined) {
+        for (const element of node.name.elements) {
+          if (ts.isBindingElement(element) && ts.isIdentifier(element.name) && element.name.text === name) {
+            const field =
+              element.propertyName && ts.isIdentifier(element.propertyName)
+                ? element.propertyName.text
+                : element.name.text;
+            result = { field, sourcePath };
+            return;
+          }
         }
       }
     }
@@ -282,7 +282,7 @@ function destructuredConfigField(operand: ts.Identifier): string | undefined {
     });
   };
   visit(scope);
-  return field;
+  return result;
 }
 
 /** A function-like scope node (excludes SourceFile). */
@@ -736,12 +736,20 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
   for (const name of zeroDisable) flags.set(name, { thresholdUnguarded: false, coercion: false });
   for (const source of sources) {
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
-    const operandBound = (operand: ts.Expression): { leaf: string; path: string } | undefined => {
+    const operandBound = (operand: ts.Expression): { leaf: string; paths: string[] } | undefined => {
       if (ts.isIdentifier(operand)) {
-        const leaf = destructuredConfigField(operand);
-        if (leaf) return { leaf, path: operand.text };
+        const destructured = destructuredConfigField(operand);
+        if (destructured) {
+          // A guard may reference the alias (`cap <= 0`) or the full config path
+          // (`config.cap <= 0`); accept either.
+          return {
+            leaf: destructured.field,
+            paths: [operand.text, `${destructured.sourcePath}.${destructured.field}`],
+          };
+        }
       }
-      return propertyAccess(operand);
+      const access = propertyAccess(operand);
+      return access ? { leaf: access.leaf, paths: [access.path] } : undefined;
     };
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && isInequalityOperator(node.operatorToken.kind)) {
@@ -757,10 +765,10 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
           left && flags.has(left.leaf) && rightLit !== 0 && rightLit !== 1 ? left : undefined,
         ];
         for (const bound of bounds) {
-          // Guarded only when a disable check on the SAME access path actually
-          // short-circuits this use (preceding guard clause, && conjunct, or
-          // enclosing active/else branch) — not merely present in the function.
-          if (bound && !guardShortCircuitsUse(node, bound.path)) {
+          // Guarded when a disable check on ANY of the bound's access paths (the
+          // property path, or a destructured alias / its full config path) actually
+          // short-circuits this use — not merely present in the function.
+          if (bound && !bound.paths.some((guardPath) => guardShortCircuitsUse(node, guardPath))) {
             flags.get(bound.leaf)!.thresholdUnguarded = true;
           }
         }
