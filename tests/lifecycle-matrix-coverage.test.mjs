@@ -606,6 +606,8 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
   for (const p of [
     "packages/remnic-core/src/retrieval-agents.ts",
     "src/retrieval-agents.ts",
+    "src/retrieval.ts",
+    "src/orchestration/recall-section-coordinator.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
@@ -629,12 +631,9 @@ test("recall-budget subject covers the recall-output budgeting paths", () => {
   const manifest = loadReal();
   for (const p of [
     "packages/remnic-core/src/orchestration/recall-section-coordinator.ts",
-    "src/orchestration/recall-section-coordinator.ts",
     "packages/remnic-core/src/retrieval.ts",
-    "src/retrieval.ts",
     "packages/remnic-core/src/recall-mmr.ts",
     "packages/remnic-core/src/recall-qos.ts",
-    "src/recall-qos.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "covered", `${p} must be covered by the recall-budget subject`);
     assert.equal(manifest.coverage[p], "recall-budget", `${p} maps to the recall-budget subject`);

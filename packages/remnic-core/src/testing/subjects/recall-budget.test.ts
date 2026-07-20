@@ -30,7 +30,7 @@ import { parseConfig } from "../../config.js";
 import { RecallSectionCoordinator } from "../../orchestration/recall-section-coordinator.js";
 import { formatRecallSectionMetric } from "../../recall-qos.js";
 import { reorderRecallResultsWithMmr } from "../../recall-mmr.js";
-import { expandQuery } from "../../retrieval.js";
+import { applyRuntimeRetrievalPolicy, expandQuery } from "../../retrieval.js";
 import type { PluginConfig, RecallSectionConfig } from "../../types.js";
 import { type LifecycleSubject, type MatrixRow, runLifecycleMatrix } from "../lifecycle-matrix.js";
 
@@ -313,6 +313,12 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const expanded = expandQuery("budget aware recall pipeline section caps", { maxQueries: 3, minTokenLen: 3 });
         assert.ok(expanded.length <= 3, "query expansion caps the number of derived queries");
         assert.equal(expanded[0], "budget aware recall pipeline section caps", "the original query is always retained first");
+        // A rebinding may carry a runtime retrieval-policy override; the policy
+        // resolver clamps the recency weight into [0,1] rather than trusting an
+        // out-of-range value, and falls back to the base when none is supplied.
+        assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, { recencyWeight: 5 }).recencyWeight, 1, "an over-range runtime recency weight is clamped to 1");
+        assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, { recencyWeight: -5 }).recencyWeight, 0, "an under-range runtime recency weight is clamped to 0");
+        assert.equal(applyRuntimeRetrievalPolicy({ recencyWeight: 0.4 }, null).recencyWeight, 0.4, "no runtime override falls back to the base recency weight");
         return;
       }
       case "restart-reload-recovery": {
