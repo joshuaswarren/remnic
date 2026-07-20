@@ -237,7 +237,7 @@ export class ExtractionPersistCoordinator {
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
-  ): Promise<string[]> {
+  ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
     // the citation survives hostile memory text, copy/paste, and LLM quoting.
@@ -290,14 +290,12 @@ export class ExtractionPersistCoordinator {
       return attachCitation(content, citationContext, citationTemplate);
     };
     const persistedIds: string[] = [];
+    const memoryPathById = new Map<string, string>();
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
     const pendingReviewPersistedIds: string[] = [];
-    const persistedIdsByStorage = new Map<
-      string,
-      { storage: StorageManager; ids: string[] }
-    >();
+    const persistedIdsByStorage = new Map<string, { storage: StorageManager; ids: string[] }>();
     const trackPersistedId = (
       targetStorage: StorageManager,
       id: string,
@@ -305,6 +303,7 @@ export class ExtractionPersistCoordinator {
         includeReturnedIds?: boolean;
         /** #1635: keep this id out of the persisted thread episode set. */
         pendingReview?: boolean;
+        category?: MemoryCategory;
       } = {},
     ): void => {
       if (options.includeReturnedIds !== false) {
@@ -317,14 +316,16 @@ export class ExtractionPersistCoordinator {
       const existing = persistedIdsByStorage.get(key);
       if (existing) {
         existing.ids.push(id);
-        return;
+      } else {
+        persistedIdsByStorage.set(key, { storage: targetStorage, ids: [id] });
       }
-      persistedIdsByStorage.set(key, { storage: targetStorage, ids: [id] });
+      if (options.category && !memoryPathById.has(id)) {
+        const relPath = resolvePersistedMemoryRelativePath({ memoryId: id, pathById: memoryPathById, category: options.category });
+        memoryPathById.set(id, relPath);
+      }
     };
     let dedupedCount = 0;
     // Counter for facts skipped by the importance write-gate (issue #372).
-    // Emitted via the `importance_gated` metric below and rolled into the
-    // final `persisted:` log line so operators can tune the threshold.
     let importanceGatedCount = 0;
     // UUI2: short-circuit semantic dedup after first backend-unavailable signal
     // within this batch. Once any fact in the batch gets reason="backend_unavailable"
@@ -1140,7 +1141,7 @@ export class ExtractionPersistCoordinator {
         "persistExtraction: result or result.facts is invalid, skipping",
         { resultType: typeof result, factsType: typeof result?.facts },
       );
-      return persistedIds;
+      return { persistedIds, memoryPathById };
     }
 
     // Chunking config from plugin settings
@@ -2992,6 +2993,6 @@ export class ExtractionPersistCoordinator {
     // #1635: surface pending_review ids so the thread episode set excludes them.
     this.deps.setLastPersistExtractionPendingReviewIds(pendingReviewPersistedIds);
     // Return the persisted fact IDs for threading
-    return persistedIds;
+    return { persistedIds, memoryPathById };
   }
 }

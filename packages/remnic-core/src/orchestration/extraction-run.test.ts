@@ -141,7 +141,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => "thread-1",
       updateThreadTitle: async (..._args: Parameters<ThreadingManager["updateThreadTitle"]>) => {},
     }),
-    persistExtraction: async () => ["memory-1"],
+    persistExtraction: async () => ({ persistedIds: ["memory-1"], memoryPathById: new Map() }),
     maybeCapturePassiveCorrections: async () => {},
     resolveSelfNamespace: () => "default",
     getCodingContextForSession: () => null,

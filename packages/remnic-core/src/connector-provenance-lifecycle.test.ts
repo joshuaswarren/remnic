@@ -295,9 +295,9 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
             validAt?: string;
             sourceConnector?: string;
           }
-        ): Promise<string[]> => {
+        ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> => {
           spy(sourceContext);
-          return ["fact-1"];
+          return { persistedIds: ["fact-1"], memoryPathById: new Map() };
         },
         maybeCapturePassiveCorrections: async () => {},
         resolveSelfNamespace: () => "default",
@@ -397,9 +397,9 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
           validAt?: string;
           sourceConnector?: string;
         }
-      ): Promise<string[]> => {
+      ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> => {
         capturedConnector = sourceContext?.sourceConnector;
-        return ["fact-1"];
+        return { persistedIds: ["fact-1"], memoryPathById: new Map() };
       },
       maybeCapturePassiveCorrections: async () => {},
       resolveSelfNamespace: () => "default",

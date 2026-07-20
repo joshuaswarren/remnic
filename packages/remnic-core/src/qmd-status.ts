@@ -30,6 +30,33 @@ export interface QmdStatusCapable {
  *   Pending embedding: 108186
  * Returns null fields for unparseable or missing lines.
  */
+function parseLeadingInt(s: string): number | null {
+  let digits = "";
+  for (const ch of s) {
+    if (ch >= "0" && ch <= "9") digits += ch;
+    else if (ch === "," && digits.length > 0) continue;
+    else break;
+  }
+  return digits.length > 0 ? Number.parseInt(digits, 10) : null;
+}
+
+function parseLeadingDurationMs(s: string): number | null {
+  let digits = "";
+  let i = 0;
+  for (; i < s.length; i++) {
+    if (s[i] >= "0" && s[i] <= "9") digits += s[i];
+    else break;
+  }
+  if (digits.length === 0) return null;
+  const val = Number.parseInt(digits, 10);
+  const unit = s.slice(i).trim();
+  if (unit === "ms") return val;
+  if (unit === "s") return val * 1000;
+  if (unit === "m") return val * 60_000;
+  if (unit === "h") return val * 3_600_000;
+  return null;
+}
+
 export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
   const raw = stdout;
   let totalFiles: number | null = null;
@@ -37,22 +64,22 @@ export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
   let pendingEmbeddings: number | null = null;
   let oldestPendingAgeMs: number | null = null;
 
-  const totalMatch = stdout.match(/total\s+files?\s*:?\s*(\d[\d,]*)/i);
-  if (totalMatch) totalFiles = Number.parseInt(totalMatch[1].replace(/,/g, ""), 10);
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim().toLowerCase();
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = line.slice(0, colonIdx).trim();
+    const value = line.slice(colonIdx + 1).trim();
 
-  const embeddedMatch = stdout.match(/embedded\s*:?\s*(\d[\d,]*)/i);
-  if (embeddedMatch) embeddedFiles = Number.parseInt(embeddedMatch[1].replace(/,/g, ""), 10);
-
-  const pendingMatch = stdout.match(/pending\s*(?:embedding|embed|files?)?\s*:?\s*(\d[\d,]*)/i)
-    ?? stdout.match(/pending\s+(\d[\d,]*)/i);
-  if (pendingMatch) pendingEmbeddings = Number.parseInt(pendingMatch[1].replace(/,/g, ""), 10);
-
-  // Some QMD versions report oldest pending age directly
-  const oldestMatch = stdout.match(/oldest\s+pending\s*:?\s*(\d+)\s*(ms|s|m|h)/i);
-  if (oldestMatch) {
-    const val = Number.parseInt(oldestMatch[1], 10);
-    const unit = oldestMatch[2].toLowerCase();
-    oldestPendingAgeMs = unit === "ms" ? val : unit === "s" ? val * 1000 : unit === "m" ? val * 60_000 : val * 3_600_000;
+    if (key === "total files" || key === "total file") {
+      totalFiles = parseLeadingInt(value);
+    } else if (key === "embedded") {
+      embeddedFiles = parseLeadingInt(value);
+    } else if (key === "oldest pending") {
+      oldestPendingAgeMs = parseLeadingDurationMs(value);
+    } else if (key.startsWith("pending")) {
+      pendingEmbeddings = parseLeadingInt(value);
+    }
   }
 
   return { totalFiles, embeddedFiles, pendingEmbeddings, oldestPendingAgeMs, raw };
@@ -80,7 +107,7 @@ export function formatBacklogLinesFromReport(
 
   if (report.pendingEmbeddings != null) {
     lines.push(`  Pending embeddings: ${report.pendingEmbeddings}`);
-    if (report.pendingEmbeddings > threshold) {
+    if (threshold > 0 && report.pendingEmbeddings > threshold) {
       lines.push(`  ⚠ Embedding backlog exceeds threshold (${threshold}) — degraded`);
     }
   }

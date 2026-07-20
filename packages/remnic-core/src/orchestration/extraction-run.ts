@@ -71,7 +71,7 @@ export interface ExtractionRunCoordinatorDeps {
     sourceText?: string,
     graphCaps?: GraphConstructionCapabilitySet,
     lifecycleCaps?: MemoryLifecycleCapabilitySet
-  ) => Promise<string[]>;
+  ) => Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }>;
 
   maybeCapturePassiveCorrections: (
     turns: readonly BufferTurn[],
@@ -929,7 +929,7 @@ export class ExtractionRunCoordinator {
       }
     }
 
-    const persistedIds = await this.deps.persistExtraction(
+    const { persistedIds } = await this.deps.persistExtraction(
       result,
       storage,
       threadIdForExtraction,

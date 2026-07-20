@@ -539,14 +539,11 @@ import type {
 } from "./types.js";
 import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
-
 // Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
 export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 
-
 // Issue #1526 seam 15: deriveTopicsFromExtraction moved to orchestration/extraction-run.ts.
 export { deriveTopicsFromExtraction } from "./orchestration/extraction-run.js";
-
 
 export class Orchestrator {
 
@@ -564,6 +561,7 @@ export class Orchestrator {
    * runners (consolidation/pattern-reinforcement/governance) stay here.
    */
   readonly maintenanceScheduler: MaintenanceScheduler;
+  private enqueuePrioritizedEmbed?: (filePath: string) => void;
   private readonly conversationQmd?: ConversationQmdRuntime;
   private readonly conversationFaiss?: ReturnType<
     typeof createConversationIndexRuntime
@@ -608,7 +606,6 @@ export class Orchestrator {
   get fastGatewayLlm(): FallbackLlmClient | null {
     return this._fastGatewayLlm;
   }
-
   getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters | undefined {
     return this.recallIntrospection.getConsoleFaithfulnessDistribution(
     );
@@ -747,7 +744,7 @@ export class Orchestrator {
         getStorageRouter: () => this.storageRouter,
         getThreading: () => this.threading,
         persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
-          this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
+          this.persistExtractionWithPaths(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
         maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
         resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
         getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
@@ -932,12 +929,10 @@ export class Orchestrator {
       this.deferredInitAbort = null;
     }
   }
-
   /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
     trackRecallWrite(this, promise, label);
   }
-
   /**
    * Stop background initialization and release runtime-owned handles.
    * Long-lived hosts should call this from their shutdown path; one-shot
@@ -1005,12 +1000,10 @@ export class Orchestrator {
   setRecallWorkspaceOverride(sessionKey: string, dir: string): void {
     this._recallWorkspaceOverrides.set(sessionKey, dir);
   }
-
   /** Remove a per-session workspace selection (cleanup on error or early return). @internal */
   clearRecallWorkspaceOverride(sessionKey: string): void {
     this._recallWorkspaceOverrides.delete(sessionKey);
   }
-
   resolvePrincipal(sessionKey?: string): string | undefined {
     return resolvePrincipal(sessionKey, this.config);
   }
@@ -1463,7 +1456,7 @@ export class Orchestrator {
     this.qmd = createSearchBackend(config);
     // #2019: prioritized embedding for write-path searchability.
     if (resolveQmdCapabilities(config).qmdAutoEmbed) {
-      installPrioritizedEmbedding(this.storage, () => this.qmd);
+      this.enqueuePrioritizedEmbed = installPrioritizedEmbedding(() => this.qmd, (msg) => log.debug(msg));
     }
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
@@ -2055,7 +2048,6 @@ export class Orchestrator {
       },
     });
   }
-
 
   async applyBehaviorRuntimePolicy(
     state: BehaviorLoopPolicyState,
@@ -2698,7 +2690,6 @@ export class Orchestrator {
     );
   }
 
-
   /**
    * Clock source for the shared post-retrieval assembly/enrichment budget. The
    * deadline is set from this value and every expiry check reads it back, so a
@@ -3137,7 +3128,7 @@ export class Orchestrator {
     this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
 
-  private async persistExtraction(
+  private async persistExtractionWithPaths(
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
@@ -3148,8 +3139,8 @@ export class Orchestrator {
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
-  ): Promise<string[]> {
-    return this.extractionPersistCoordinator.persistExtraction(
+  ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
+    const { persistedIds, memoryPathById } = await this.extractionPersistCoordinator.persistExtraction(
       result,
       storage,
       threadIdForExtraction,
@@ -3160,7 +3151,25 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
+    for (const memoryPath of memoryPathById.values()) {
+      this.enqueuePrioritizedEmbed?.(memoryPath);
+    }
+    return { persistedIds, memoryPathById };
   }
+  /** Public wrapper returning just persisted IDs (test compatibility); caps default in persistExtractionWithPaths. */
+  async persistExtraction(
+    result: ExtractionResult,
+    storage: StorageManager,
+    threadIdForExtraction?: string | null,
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
+    baseNamespace?: string,
+    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
+    sourceText?: string,
+  ): Promise<string[]> {
+    const { persistedIds } = await this.persistExtractionWithPaths(result, storage, threadIdForExtraction, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText);
+    return persistedIds;
+  }
+
   /**
    * Append persisted ids to the thread episode set, excluding pending_review
    * fact ids (#1635) so they don't re-seed predecessor edges. Fail-open like
@@ -3261,7 +3270,6 @@ export class Orchestrator {
   private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
-
 
   async runLifecyclePolicyNow(storage: StorageManager = this.storage): Promise<{ memoriesAssessed: number }> {
     const lifecycleCorpus = await storage.readAllMemories();
@@ -3954,7 +3962,6 @@ export class Orchestrator {
    * default rather than skipping it (round 6, codex P2 — default `memory_store`
    * and inline-note writes were missing from `writtenSince`/maintenance).
    */
-
 
   // markCatalogRead removed — use storageRouter.recordRead() instead (#1522).
 
