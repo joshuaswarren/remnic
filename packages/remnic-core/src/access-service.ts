@@ -165,6 +165,7 @@ import {
   type GraphSnapshotNodeMetadata,
 } from "./graph-snapshot.js";
 import * as nodePath from "node:path";
+import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 import {
   buildBriefing,
   FileCalendarSource,
@@ -5042,10 +5043,9 @@ export class EngramAccessService {
             if (nodePath.isAbsolute(memoryPath)) {
               throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
             }
-            // "namespace/relative" citation form: attribute to the leading authorized namespace (#2020).
-            const slash = memoryPath.indexOf("/");
-            const candidate = slash > 0 ? memoryPath.slice(0, slash) : "";
-            if (authorizedNamespaces.includes(candidate)) return candidate;
+            // Category-dir leads (default `facts/a.md`) are not namespaces (#2020).
+            const cand = memoryPath.includes("/") ? memoryPath.slice(0, memoryPath.indexOf("/")) : "";
+            if (cand && !ALL_CATEGORY_DIRS.includes(cand) && authorizedNamespaces.includes(cand)) return cand;
             return fallbackNamespace;
           }
           return resolved.namespace;

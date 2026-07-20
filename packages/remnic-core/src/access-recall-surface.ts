@@ -374,11 +374,12 @@ export class AccessRecallSurface {
       const collectionNamespace = parts
         ? collectionNamespaceFromPrefix(parts.collection)
         : null;
-      if (
+      const preferredAttempted = Boolean(
         preferredNamespace &&
-        (!parts ||
-          (collectionNamespace === null && parts.collection !== coldCollection))
-      ) {
+          (!parts ||
+            (collectionNamespace === null && parts.collection !== coldCollection)),
+      );
+      if (preferredAttempted) {
         try {
           const preferredStorage = await this.deps.orchestrator.getStorage(
             this.deps.resolveNamespace(preferredNamespace),
@@ -465,6 +466,12 @@ export class AccessRecallSurface {
         }
         return null;
       }
+
+      // A preferred namespace was supplied but its file is missing/stale. For a
+      // relative path the preferred store was the only correct lead, so do not
+      // fall through to the default store and surface a same-relative-path file
+      // from the wrong namespace (#2020). Absolute paths self-identify above.
+      if (preferredAttempted && !nodePath.isAbsolute(memoryPath)) return null;
 
       for (const candidate of qmdResultPathCandidates(storageDir, memoryPath)) {
         const memory = await storage.readMemoryByPath(candidate);

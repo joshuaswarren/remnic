@@ -280,12 +280,15 @@ export class RecallSectionCoordinator {
     }
 
     const budget = this.getRecallBudgetChars(budgetOverride);
-    const candidateMemoryIds = orderedSections
-      .find((section) => section.id === "memories")
-      ?.chunks
-      .filter((chunk) => chunk.atomic && chunk.memoryId)
-      .map((chunk) => chunk.memoryId!)
-      ?? [];
+    const candidateMemoryChunks =
+      orderedSections
+        .find((section) => section.id === "memories")
+        ?.chunks.filter((chunk) => chunk.atomic && chunk.memoryId)
+        .map((chunk) => ({
+          id: chunk.memoryId!,
+          namespace: chunk.memoryNamespace,
+        })) ?? [];
+    const candidateMemoryIds = candidateMemoryChunks.map((chunk) => chunk.id);
     if (budget === 0) {
       return {
         sections: [],
@@ -502,9 +505,22 @@ export class RecallSectionCoordinator {
       includedMemoryIds,
       includedMemoryPaths,
       includedMemoryNamespaces,
-      omittedMemoryIds: candidateMemoryIds.filter(
-        (id) => !includedMemoryIds.includes(id),
-      ),
+      omittedMemoryIds: (() => {
+        // Key by (namespace, id): the same memory id can exist in more than one
+        // namespace, so an id-only subtraction would hide a budget-dropped copy
+        // when another namespace's copy was included (#2020).
+        const includedKeys = new Set(
+          includedMemoryIds.map(
+            (id, i) => `${includedMemoryNamespaces[i] ?? ""}\u0000${id}`,
+          ),
+        );
+        return candidateMemoryChunks
+          .filter(
+            (chunk) =>
+              !includedKeys.has(`${chunk.namespace ?? ""}\u0000${chunk.id}`),
+          )
+          .map((chunk) => chunk.id);
+      })(),
     };
   }
 
