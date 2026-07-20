@@ -135,3 +135,25 @@ test("trackMemoryAccess keeps same-id accesses separate by path", () => {
     ],
   );
 });
+
+test("trackMemoryAccess coalesces absolute and relative paths for one file", () => {
+  const absolutePath = path.join("/memory", "facts", "same-id.md");
+  const relativePath = path.join("facts", "same-id.md");
+  const accessTrackingBuffer = new Map<string, AccessTrackingEntry & { count: number }>();
+  const config = {
+    accessTrackingEnabled: true,
+    accessTrackingBufferMaxSize: 100,
+    memoryDir: "/memory",
+    defaultNamespace: "default",
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer,
+    namespaceFromPath: () => "default",
+  } as unknown as WorkspaceOpsDeps);
+
+  coordinator.trackMemoryAccess(["same-id", "same-id"], [absolutePath, relativePath]);
+
+  assert.equal(accessTrackingBuffer.size, 1);
+  assert.equal(Array.from(accessTrackingBuffer.values())[0]?.count, 2);
+});

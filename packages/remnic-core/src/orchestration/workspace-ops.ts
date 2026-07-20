@@ -101,6 +101,10 @@ function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryD
   const normalizedCandidate = path.resolve(candidatePath);
   return normalizedCandidate === path.resolve(requestedPath) || normalizedCandidate === path.resolve(memoryDir, requestedPath);
 }
+
+function canonicalMemoryPath(memoryPath: string, memoryDir: string): string {
+  return path.resolve(path.isAbsolute(memoryPath) ? memoryPath : path.resolve(memoryDir, memoryPath));
+}
 export class WorkspaceOpsCoordinator {
   constructor(
     private readonly deps: WorkspaceOpsDeps,
@@ -776,7 +780,9 @@ export class WorkspaceOpsCoordinator {
       const namespace = memoryPath
         ? this.deps.namespaceFromPath(memoryPath)
         : this.deps.config.defaultNamespace;
-      const key = memoryPath ? `${namespace}:${memoryPath}` : `${namespace}:${id}`;
+      const key = memoryPath
+        ? `${namespace}:${canonicalMemoryPath(memoryPath, this.deps.config.memoryDir)}`
+        : `${namespace}:${id}`;
       const existing = this.deps.accessTrackingBuffer.get(key);
       this.deps.accessTrackingBuffer.set(key, {
         memoryId: id,
