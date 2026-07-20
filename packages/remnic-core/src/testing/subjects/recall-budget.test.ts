@@ -123,7 +123,7 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         config = buildConfig({
           recallBudgetChars: 4000,
           recallPipeline: [
-            { id: "memories", enabled: true },
+            { id: "memories", enabled: true, maxResults: 7 },
             // The fallback section is disabled — a no-recall-style gate.
             { id: "peer-profile", enabled: false },
           ],
@@ -273,6 +273,27 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.deepEqual(assembled.includedIds, ["profile", "memories"], "only enabled, non-empty sections assemble");
         assert.ok(assembled.finalChars <= budget, "assembled chars stay within the budget cap");
         assert.equal(assembled.finalChars, assembledCharLength(assembled.sections), "finalChars accounts for separators");
+        // The coordinator's budget-summary + source-collection contracts feed
+        // the recall snapshot: the summary echoes the applied budget/topK and
+        // sections, and the source list records the recall source plus every
+        // populated section id.
+        const summary = coordinator.buildLastRecallBudgetSummary({
+          requestedTopK: 5,
+          recallResultLimit: assembled.includedIds.length,
+          qmdFetchLimit: 10,
+          qmdHybridFetchLimit: 4,
+          finalContextChars: assembled.finalChars,
+          truncated: assembled.truncated,
+          includedSections: assembled.includedIds,
+          omittedSections: assembled.omittedIds,
+        });
+        assert.equal(summary.recallBudgetChars, budget, "budget summary reports the resolved char budget");
+        assert.equal(summary.maxMemoryTokens, config.maxMemoryTokens, "budget summary reports maxMemoryTokens");
+        assert.equal(summary.appliedTopK, assembled.includedIds.length, "budget summary reports the applied topK");
+        assert.deepEqual(summary.includedSections, assembled.includedIds, "budget summary lists the included sections");
+        const sources = coordinator.collectLastRecallSources(state.buckets, "hot_qmd");
+        assert.ok(sources.includes("hot_qmd"), "the recall source is recorded");
+        assert.ok(sources.includes("memories"), "a populated section id is recorded as a source");
         return;
       }
       case "sparse-metadata-with-binding": {
@@ -289,6 +310,12 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.equal(state.appendReturns.get("memories"), true, "the bound section still injects");
         assert.ok(!assembled.includedIds.includes("peer-profile"), "gated fallback absent from assembly");
         assert.deepEqual(assembled.includedIds, ["memories"], "only the resolvable section assembles");
+        // Per-section numeric budget knobs resolve from config, and a disabled
+        // section stays gated even when its subsystem is top-level enabled.
+        assert.equal(coordinator.getRecallSectionNumber("memories", "maxResults"), 7, "a per-section numeric budget is read from config");
+        assert.equal(coordinator.getRecallSectionNumber("memories", "maxTurns"), undefined, "an unset per-section field is undefined");
+        assert.equal(coordinator.isSpecializedRecallSectionEnabled("peer-profile", true), false, "a disabled section stays off even when its subsystem is enabled");
+        assert.equal(coordinator.isSpecializedRecallSectionEnabled("memories", false), true, "an explicitly-enabled section overrides a disabled subsystem default");
         return;
       }
       case "provider-rebinding": {
