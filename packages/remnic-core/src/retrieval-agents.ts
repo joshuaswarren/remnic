@@ -123,20 +123,18 @@ async function resolveContainedRegularFile(
  * Cost: readdir on entities/ + filename scoring. Typically <5ms.
  *
  */
-// Agents scan one namespace storage dir and return absolute paths; contextual
-// fanout hits are namespace-relative. Normalize agent results to the SAME
-// (namespace, relative-path) identity so a memory found by both merges once
-// instead of being injected/counted twice (#2020). No-op without a resolver.
+// Agents scan one namespace storage dir and return absolute paths. Contextual
+// fanout hits are also absolute (globally-unique identity), so we keep the
+// agent path absolute and only stamp the owning namespace here — that carries
+// the namespace through merge/tracking without re-deriving it (#2020). No-op
+// without a resolver.
 function namespaceRelativeResult(
   result: ParallelSearchResult,
-  memoryDir: string,
+  _memoryDir: string,
   namespaceFromPath?: (p: string) => string,
 ): ParallelSearchResult {
-  if (!namespaceFromPath || !result.path) return result;
-  const namespace = result.namespace ?? namespaceFromPath(result.path);
-  if (!path.isAbsolute(result.path)) return { ...result, namespace };
-  const rel = path.relative(memoryDir, result.path).split(path.sep).join("/");
-  return { ...result, namespace, path: rel.startsWith("..") ? result.path : rel };
+  if (!namespaceFromPath || !result.path || result.namespace) return result;
+  return { ...result, namespace: namespaceFromPath(result.path) };
 }
 
 export async function runDirectAgent(

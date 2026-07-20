@@ -350,10 +350,9 @@ export class GraphRecallCoordinator {
         });
         expandedResults.push({
           docid: memory.frontmatter.id,
-          // Storage-relative path (candidate.path), matching the namespace-relative
-          // form of primary fanout hits, so the merge dedups a memory found by
-          // both paths instead of keying it twice (#2020).
-          path: candidate.path,
+          // Absolute path, matching the globally-unique identity of primary
+          // fanout hits, so the merge dedups a memory found by both (#2020).
+          path: memory.path,
           namespace,
           snippet,
           score,

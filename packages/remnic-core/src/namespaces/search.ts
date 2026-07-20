@@ -169,13 +169,11 @@ export class NamespaceSearchRouter {
         results = filterNamespaceSubtreeResults(record, results).map((result) => ({
           ...result,
           namespace,
-          // Keep the path relative and carry `namespace` as the storage owner:
-          // downstream reads resolve (namespace, path) via the namespace store,
-          // and same-relative-path hits stay distinct by their composite
-          // identity. Absolutizing here would leak operator filesystem paths
-          // into recall prompts/citations and break cross-machine portability
-          // (#2020). Only strip any qmd://collection prefix.
-          path: normalizeQmdResultPath(result.path, record.collection),
+          // Resolve to an absolute path so the (namespace, path) identity is
+          // globally unique — same-relative-path hits from different namespaces
+          // stay distinct across every downstream consumer with no special
+          // handling. Display/citation surfaces relativize for portability (#2020).
+          path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
         }));
         return { namespace, results };
       }),
@@ -587,6 +585,21 @@ export function normalizeQmdResultPath(resultPath: string, collection: string): 
     value = value.slice(collectionPrefix.length);
   }
   return value;
+}
+function resolveNamespaceResultPath(
+  memoryDir: string,
+  collection: string,
+  resultPath: string,
+): string {
+  const normalized = normalizeQmdResultPath(resultPath, collection);
+  if (path.isAbsolute(normalized)) return normalized;
+  const root = path.resolve(memoryDir);
+  const resolved = path.resolve(root, normalized);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return resultPath;
+  }
+  return resolved;
 }
 function mergeNamespaceSearchResults(
   lists: Array<{ namespace: string; results: QmdSearchResult[] }>,

@@ -18,6 +18,7 @@
  */
 
 import { buildHandleIndexForResults } from "../recall-handles.js";
+import path from "node:path";
 import { renderEpistemicHedge } from "../trust-score.js";
 import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
@@ -66,6 +67,20 @@ export function resolveEffectiveIdentityInjectionMode(options: {
   return { mode: options.configuredMode, shouldInject: true };
 }
 
+/**
+ * Render an internal (possibly absolute) result path as a memoryDir-relative
+ * path for display in prompts/citations, so operator-specific filesystem paths
+ * never leak into recall output and citations stay portable across machines
+ * (#2020). Non-absolute or out-of-root paths are returned unchanged.
+ */
+export function displayResultPath(resultPath: string, memoryDir: string): string {
+  if (!path.isAbsolute(resultPath)) return resultPath;
+  const rel = path.relative(path.resolve(memoryDir), resultPath);
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel)
+    ? rel.split(path.sep).join("/")
+    : resultPath;
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
@@ -99,7 +114,8 @@ export class RecallResultFormatter {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
-      const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
+      const displayPath = displayResultPath(r.path, this.config.memoryDir);
+      const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
       const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
