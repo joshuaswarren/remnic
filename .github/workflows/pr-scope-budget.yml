@@ -144,10 +144,21 @@ jobs:
             core.info(`Fetched ${files.length} changed files, ${labels.length} labels, base-ref config @ ${baseRef.slice(0, 7)}.`);
 
       - name: Evaluate scope budget
-        run: >-
-          node scripts/pr-scope-budget.mjs
-          --files /tmp/pr-files.json
-          --labels /tmp/pr-labels.json
-          --thresholds /tmp/budget-thresholds.json
-          --ignore /tmp/budget-ignore
-          --pr-meta /tmp/pr-meta.txt
+        run: |
+          args=(
+            --files /tmp/pr-files.json
+            --labels /tmp/pr-labels.json
+            --thresholds /tmp/budget-thresholds.json
+            --ignore /tmp/budget-ignore
+          )
+          # The evaluator runs from the BASE ref (trusted code). Pass the
+          # multi-issue --pr-meta signal (issue #2067) only when that base
+          # copy actually understands the flag — a base predating #2067 would
+          # otherwise reject the unknown flag during the merge-window
+          # transition. Self-heals once #2067 is on the base branch.
+          if grep -q -- '--pr-meta' scripts/pr-scope-budget.mjs; then
+            args+=(--pr-meta /tmp/pr-meta.txt)
+          else
+            echo "::notice title=scope-budget::base-ref evaluator predates --pr-meta; multi-issue signal skipped until it merges"
+          fi
+          node scripts/pr-scope-budget.mjs "${args[@]}"
