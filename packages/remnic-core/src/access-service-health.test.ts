@@ -99,6 +99,9 @@ test("health reports active QMD version and collection state", async () => {
       upgradeAvailable: false,
       doctorAvailable: true,
       debugStatus: "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+      pendingEmbeddings: null,
+      oldestPendingAgeMs: null,
+      embeddingBacklogThreshold: 1000,
     });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

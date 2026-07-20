@@ -33,6 +33,7 @@ import {
   versionAtLeast,
   type QmdProbeFailureKind,
 } from "./qmd-preflight.js";
+import { fetchQmdStatus, embedQmdFiles, EMPTY_QMD_STATUS, type QmdStatusReport } from "./qmd-status.js";
 // Re-export version-check / probe-preflight helpers (moved to qmd-preflight.ts,
 // issue #1841) so existing imports from "./qmd.js" keep resolving.
 export {
@@ -149,16 +150,13 @@ export interface QmdDoctorReport {
   error?: string;
 }
 
+export { parseQmdStatusOutput } from "./qmd-status.js";
+export type { QmdStatusReport } from "./qmd-status.js";
+
 const QMD_TIMEOUT_MS = 30_000;
-// Daemon timeout for individual search calls. Keep well under RECALL_TIMEOUT_MS (75s) so a
-// slow/loading daemon fails fast and the caller can return early rather than hanging.
-// After the daemon has loaded its index (~90s for 75K files), actual searches complete in <3s.
-// During the loading window, searches will timeout/return [] quickly — this is preferable to
-// blocking the full 75s on every recall request.
-// Note: keep this ≥ 5s to allow normal searches (post-load) to complete reliably.
-// This is the DEFAULT only — operators can override per-client via the
-// `qmdDaemonTimeoutMs` config knob (issue #1335), e.g. to give CPU-only HyDE
-// queries more headroom. The effective value lives in `this.daemonTimeoutMs`.
+// Daemon timeout for search calls. Keep under RECALL_TIMEOUT_MS (75s) so a slow
+// daemon fails fast. Default only — override via `qmdDaemonTimeoutMs` (#1335).
+// Keep ≥ 5s for normal post-load searches to complete reliably.
 const QMD_DAEMON_TIMEOUT_MS = 8_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
@@ -687,10 +685,7 @@ class QmdDaemonSession {
       return this.startPromise;
     }
     this.startPromise = (async () => {
-      // If the process is already running but not yet initialized (e.g. it is still
-      // loading its index after a previous handshake timeout), reuse it instead of
-      // killing and re-spawning. This prevents accumulating zombie qmd-mcp processes
-      // when the daemon takes >15s to load a large collection.
+      // Reuse already-running uninitialized process to avoid zombie accumulation.
       const processAlreadyRunning = this.child != null && !this.child.killed;
       if (!processAlreadyRunning) {
         if (this.child) {
@@ -715,10 +710,7 @@ class QmdDaemonSession {
             if (msg) log.debug(`QMD mcp stderr: ${stripControlChars(msg)}`);
           });
           child.stdin?.on("error", (err) => {
-            // Swallow EPIPE/ERR_STREAM_DESTROYED — these happen when the child
-            // process is killed (e.g. due to recall timeout) and a write arrives
-            // after the pipe is broken.  Without this handler Node.js would throw
-            // an uncaught exception and crash the process.
+            // Swallow EPIPE/ERR_STREAM_DESTROYED from killed child processes.
             log.debug(`QMD mcp stdin error (suppressed): ${err.message}`);
           });
           child.on("error", (err) => {
@@ -1328,12 +1320,8 @@ export class QmdClient implements SearchBackend {
       this.daemonSessionPath = daemonSessionPath;
     }
     try {
-      // Race start() against a short window: if the session is already initialized
-      // this returns instantly; if the process is still loading its index we fail
-      // fast and let the caller fall back gracefully. The underlying start() promise
-      // continues running in the background so the process is NOT killed. On the
-      // next recheck cycle (daemonRecheckIntervalMs=15s) start() returns true
-      // immediately once the handshake has completed.
+      // Race start() against a short window: fail fast if still loading; the
+      // underlying promise continues so the process is NOT killed.
       const PROBE_QUICK_TIMEOUT_MS = 3_000;
       const ok = await Promise.race([
         this.daemonSession.start(),
@@ -1422,10 +1410,7 @@ export class QmdClient implements SearchBackend {
 
     if (this.configuredQmdPath) {
       const configuredPath = this.configuredQmdPath;
-      // Retry only TRANSIENT (timeout/abort) probes of the configured path: a
-      // binary that resolved and ran before is more likely slow under load than
-      // gone. ENOENT/EACCES is a hard misconfiguration and must fail fast.
-      // Issue #1841.
+      // Retry only transient probes; ENOENT/EACCES is a hard misconfiguration (#1841).
       let failureKind: QmdProbeFailureKind = "other";
       let retries = 0;
       let callerCancelled = false;
@@ -1437,10 +1422,7 @@ export class QmdClient implements SearchBackend {
         } catch (err) {
           markProbeFailure(err);
           configuredProbeFailure = this.lastCliProbeError;
-          // Detect CALLER cancellation FIRST: an aborted signal / AbortError is
-          // non-actionable noise — the caller chose to stop. Other QMD paths
-          // treat it via `isCallerCancellation`; do the same here so a cancelled
-          // probe never reads as a transient host-load failure. Issue #1841.
+          // Detect caller cancellation first — non-actionable noise (#1841).
           if (isCallerCancellation(err, options.signal)) {
             callerCancelled = true;
             break;
@@ -1468,11 +1450,7 @@ export class QmdClient implements SearchBackend {
           break;
         }
       }
-      // Distinct operator-facing warnings so a slow binary is not mistaken for
-      // a misconfiguration (and vice versa). Do not hard-fail here: fall through
-      // to PATH/fallback probing so recall stays healthy when config is stale.
-      // Caller cancellation is silent noise (issue #1841): suppress all warnings
-      // for it exactly as the other QMD paths do.
+      // Distinct warnings for slow binary vs misconfiguration; suppress on caller cancellation (#1841).
       if (!callerCancelled) {
         if (failureKind === "transient") {
           this.logCliProbeWarning(
@@ -1736,6 +1714,18 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  /**
+   * Query QMD collection status for embedding backlog metrics.
+   * Runs `qmd status -c <collection>` and parses the text output.
+   * Returns null fields when the command fails or output is unparseable.
+   */
+  async status(): Promise<QmdStatusReport> {
+    if (!this.isAvailable()) {
+      return EMPTY_QMD_STATUS;
+    }
+    return fetchQmdStatus((args, timeoutMs) => this.runQmdCommand(args, timeoutMs), this.collection, QMD_TIMEOUT_MS);
+  }
+
   isDaemonMode(): boolean {
     return this.daemonAvailable;
   }
@@ -1947,23 +1937,14 @@ export class QmdClient implements SearchBackend {
     // repeated queries within the same recall cycle (e.g., primary + hybrid
     // top-up, or conversation recall using the same collection).
     const optionsFingerprint = searchOptions ? JSON.stringify(searchOptions) : "";
-    // The QMD search cache is a process-global keyed map (memory-cache.ts), so the
-    // key must capture every input that changes the result — including the daemon
-    // and subprocess strategies. Otherwise two QmdClient instances (or a reloaded
-    // config) with different strategies collide within the TTL and one plan serves
-    // another plan's cached results. Issue #1335 (codex review on #1422).
+    // Key must capture daemon/subprocess strategies to avoid cross-instance collisions (#1335).
     const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
     const cacheKey = createHash("sha256")
       .update(`${strategyFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
       .digest("hex");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
-      // No degradation fires on a cache hit BY DESIGN (#1536): only
-      // trustworthy results are ever cached (degraded empties are excluded
-      // at the write below), so a TTL hit is a healthy serve of a recently
-      // valid answer — the backend's live state is irrelevant because no
-      // live call is attempted. Reporting unavailability here would fabricate
-      // a degradation for a recall that was not degraded.
+      // No degradation on cache hit by design (#1536): only trustworthy results are cached.
       log.debug(`QMD search cache hit (${cached.length} results)`);
       return cached as QmdSearchResult[];
     }
@@ -2778,6 +2759,24 @@ export class QmdClient implements SearchBackend {
 
   async embedCollectionStrict(collection: string): Promise<void> {
     await this.runEmbedForCollection(collection, { perCollectionThrottle: true, strict: true });
+  }
+
+  /**
+   * Embed specific files by path (prioritized embedding for hot writes).
+   * Non-blocking callers should wrap in fire-and-forget with error handling.
+   * Returns true if the embed command succeeded, false otherwise.
+   */
+  async embedFiles(filePaths: string[]): Promise<boolean> {
+    if (this.available === false || filePaths.length === 0) {
+      return false;
+    }
+    const result = await embedQmdFiles(
+      (args, timeoutMs) => this.runQmdCommand(args, timeoutMs),
+      this.collection,
+      filePaths,
+      QMD_TIMEOUT_MS,
+    );
+    return result.ok;
   }
 
   private async runEmbedForCollection(

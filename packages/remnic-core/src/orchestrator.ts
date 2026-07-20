@@ -279,6 +279,7 @@ import {
 } from "./dedup/semantic.js";
 import { BootstrapEngine } from "./bootstrap.js";
 import { parseQmdExplain } from "./qmd.js";
+import { installPrioritizedEmbedding } from "./prioritized-embed.js";
 import {
   buildQmdRecallCacheKey,
   getCachedQmdRecall,
@@ -1460,6 +1461,10 @@ export class Orchestrator {
       // and writes will throw SecureStoreLockedError via resolveWriteKey().
     }
     this.qmd = createSearchBackend(config);
+    // #2019: prioritized embedding for write-path searchability.
+    if (resolveQmdCapabilities(config).qmdAutoEmbed) {
+      installPrioritizedEmbedding(this.storage, () => this.qmd);
+    }
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
       getQmd: () => this.qmd,

@@ -140,6 +140,9 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: null,
         doctorAvailable: null,
         debugStatus: searchBackend !== "qmd" ? `backend=${searchBackend}` : "backend=disabled",
+        pendingEmbeddings: null,
+        oldestPendingAgeMs: null,
+        embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,
       };
     }
 
@@ -163,6 +166,9 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: null,
         doctorAvailable: null,
         debugStatus: "backend=unavailable",
+        pendingEmbeddings: null,
+        oldestPendingAgeMs: null,
+        embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,
       };
     }
     const diagnosticAvailable = await this.deps.qmdProbeAvailable(searchBackend, qmdEnabled);
@@ -171,7 +177,7 @@ export class AccessObserveWriteSurface {
       ? await this.deps.qmdCollectionState(searchBackend, qmdEnabled, collection)
       : "unknown";
     const active = operationalAvailable && collectionState !== "missing";
-    const degraded =
+    let degraded =
       searchBackend === "qmd" && qmdEnabled && (!active || !diagnosticAvailable || collectionState === "unknown");
     const debugStatus = qmd.debugStatus();
     const versionStatus =
@@ -189,6 +195,22 @@ export class AccessObserveWriteSurface {
               ? "daemon"
               : "cli";
 
+    const threshold = this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold;
+    let pendingEmbeddings: number | null = null;
+    let oldestPendingAgeMs: number | null = null;
+    let degradedReason: string | undefined;
+    if (typeof (qmd as { status?: unknown }).status === "function") {
+      try {
+        const statusReport = await (qmd as unknown as { status: () => Promise<{ pendingEmbeddings: number | null; oldestPendingAgeMs: number | null }> }).status();
+        pendingEmbeddings = statusReport.pendingEmbeddings;
+        oldestPendingAgeMs = statusReport.oldestPendingAgeMs;
+      } catch { /* status probe failed — non-fatal */ }
+    }
+    if (pendingEmbeddings !== null && pendingEmbeddings > threshold) {
+      degraded = true;
+      degradedReason = `embedding-backlog: ${pendingEmbeddings} pending > threshold ${threshold}`;
+    }
+
     return {
       enabled: qmdEnabled,
       active,
@@ -202,6 +224,10 @@ export class AccessObserveWriteSurface {
       upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
       doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
       debugStatus,
+      pendingEmbeddings,
+      oldestPendingAgeMs,
+      embeddingBacklogThreshold: threshold,
+      ...(degradedReason ? { degradedReason } : {}),
     };
   }
 
@@ -257,6 +283,9 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: health.upgradeAvailable,
         doctorAvailable: health.doctorAvailable,
         debugStatus: health.debugStatus,
+        pendingEmbeddings: null,
+        oldestPendingAgeMs: null,
+        embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,
       };
     } catch (error) {
       const detail = displayErrorDetail(error) || "unknown";
@@ -273,6 +302,9 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: null,
         doctorAvailable: null,
         debugStatus: `backend=namespace-unavailable error=${detail}`,
+        pendingEmbeddings: null,
+        oldestPendingAgeMs: null,
+        embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,
       };
     } finally {
       clearTimeout(timer);

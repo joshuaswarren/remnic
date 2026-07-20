@@ -216,6 +216,57 @@ opt-in and `query` remains the default. (See issue #1335.)
 > because QMD handles it). Switching the default to `qmd search` would silently remove
 > that capability, so it is gated behind `qmdSubprocessStrategy` instead.
 
+### Embedding backlog visibility and prioritized embedding
+
+QMD's vector index is built by `qmd embed`, which Remnic does **not** own or
+schedule — the QMD binary and its collection config decide when full
+re-embedding runs. Remnic only *observes* the backlog and, optionally, nudges
+it for freshly written memories.
+
+**Backlog metrics.** `engram/v1/health` (and `remnic status`) report:
+
+- `pendingEmbeddings` — documents QMD has indexed but not yet embedded
+- `oldestPendingAgeMs` — age of the oldest un-embedded document
+- `embeddingBacklogThreshold` — the configured ceiling (below)
+
+When `pendingEmbeddings` exceeds `qmdEmbeddingBacklogThreshold`, health is
+marked `degraded: true` with a reason naming the backlog. This is advisory:
+search still works (BM25/fulltext), only vector recall lags.
+
+**Config:**
+
+```jsonc
+{
+  "qmdEmbeddingBacklogThreshold": 1000, // pending embeddings before health degrades
+  "qmdAutoEmbedEnabled": false          // opt-in prioritized embedding on write
+}
+```
+
+**Prioritized embedding** (`qmdAutoEmbedEnabled: true`). When enabled, each
+memory write queues its file for a targeted `qmd embed --files <path>` call.
+Writes are debounced and batched (max 5 paths per flush) so a burst of
+extractions produces one embed call, not one per file. The path is
+fire-and-forget: an embed failure logs a warning and never blocks the write.
+This keeps new hot-collection memories vector-searchable within minutes
+instead of waiting for the next full `qmd embed`.
+
+**`qmd embed` ownership and cadence by deployment mode:**
+
+| Mode | Who runs `qmd embed` | Cadence |
+|------|----------------------|---------|
+| Standalone / CLI | Operator (or cron) | Periodic full re-embed; Remnic never schedules it |
+| OpenClaw plugin | Operator's gateway host | Same — Remnic only reports the backlog |
+| `qmdAutoEmbedEnabled: true` | Remnic, per-write | Debounced targeted embed of new files only |
+
+In every mode the full-collection `qmd embed` remains the operator's
+responsibility; Remnic's prioritized path only covers newly written files and
+does not replace periodic full re-embedding.
+
+**Alerting.** Alert when `pendingEmbeddings` grows monotonically across
+consecutive health checks (the backlog is never draining). A steadily rising
+count means `qmd embed` is not running or is failing — check the QMD daemon
+and embedding provider before raising the threshold.
+
 ## Orama
 
 Orama is an embedded, pure JavaScript search engine with hybrid FTS + vector support. Zero native dependencies — the easiest backend to get running.

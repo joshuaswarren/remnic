@@ -399,6 +399,10 @@ export interface EngramAccessQmdHealthResponse {
   upgradeAvailable: boolean | null;
   doctorAvailable: boolean | null;
   debugStatus: string;
+  pendingEmbeddings: number | null;
+  oldestPendingAgeMs: number | null;
+  embeddingBacklogThreshold: number;
+  degradedReason?: string;
 }
 
 export interface EngramAccessRecallRequest {
@@ -3288,7 +3292,6 @@ export class EngramAccessService {
   get correctionSurfaceVisible(): boolean {
     return isCorrectionFeatureEnabled(this.orchestrator.config);
   }
-
 
   private _correctionService: CorrectionService | null = null;
 

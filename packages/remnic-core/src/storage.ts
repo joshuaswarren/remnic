@@ -2033,6 +2033,15 @@ export class StorageManager {
   citationTemplate: string = DEFAULT_CITATION_FORMAT;
   /** Post-write catalog hook (#1522). Installed by the namespace router; fire-and-forget. */
   onCatalogWrite?: () => void;
+  /** Post-write embedding hook (#2019). Installed by the orchestrator; fire-and-forget. */
+  onMemoryWrite?: (filePath: string) => void;
+  private notifyMemoryWrite(filePath: string): void {
+    try {
+      this.onMemoryWrite?.(filePath);
+    } catch {
+      /* fire-and-forget — embedding failures must not block writes */
+    }
+  }
   private notifyCatalogWrite(): void {
     try {
       this.onCatalogWrite?.();
@@ -3836,6 +3845,7 @@ export class StorageManager {
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
+    this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
       memoryId: id,
       eventType: "created",

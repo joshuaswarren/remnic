@@ -1467,6 +1467,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `maintenance.namespaceLockStaleMs` / `maintenanceNamespaceLockStaleMs` | `600000` | Stale threshold for per-job/per-namespace maintenance locks under `state/maintenance-locks/`. |
 | `qmdAutoEmbedEnabled` | `false` | `false` |
 | `qmdEmbedMinIntervalMs` | `3600000` | `3600000` |
+| `qmdEmbeddingBacklogThreshold` | `1000` | `1000` |
 | `qmdUpdateTimeoutMs` | `90000` | `90000` |
 | `qmdUpdateMinIntervalMs` | `900000` | `900000` |
 | `localLlmRetry5xxCount` | `1` | `1` |

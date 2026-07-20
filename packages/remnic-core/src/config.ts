@@ -587,6 +587,7 @@ const DEFAULT_BEHAVIOR_LOOP_PROTECTED_PARAMS = [
   "maxMemoryTokens",
   "qmdMaxResults",
   "qmdColdMaxResults",
+  "qmdEmbeddingBacklogThreshold",
   "recallPlannerMaxQmdResultsMinimal",
   "verbatimArtifactsMaxRecall",
 ];
@@ -1612,6 +1613,10 @@ export function parseConfig(
         : "openclaw-engram",
     qmdMaxResults:
       typeof cfg.qmdMaxResults === "number" ? cfg.qmdMaxResults : 8,
+    qmdEmbeddingBacklogThreshold:
+      typeof cfg.qmdEmbeddingBacklogThreshold === "number"
+        ? Math.max(0, Math.floor(cfg.qmdEmbeddingBacklogThreshold))
+        : 1000,
     qmdColdTierEnabled: cfg.qmdColdTierEnabled === true,
     qmdColdCollection:
       typeof cfg.qmdColdCollection === "string" && cfg.qmdColdCollection.length > 0
