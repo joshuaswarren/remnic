@@ -445,8 +445,8 @@ export class RecallSectionCoordinator {
           rendered = candidate;
           if (chunk.atomic) {
             includedAtomicCount += 1;
-            if (chunk.memoryId) includedMemoryIds.push(chunk.memoryId);
-            if (chunk.memoryPath) {
+            if (chunk.memoryId && chunk.memoryPath) {
+              includedMemoryIds.push(chunk.memoryId);
               includedMemoryPaths.push(chunk.memoryPath);
               includedMemoryNamespaces.push(chunk.memoryNamespace);
             }

@@ -727,18 +727,23 @@ export class RecallSearchPipelineCoordinator {
     const scored: QmdSearchResult[] = scoredResults.map((r) => ({
       docid: r.docid,
       path: r.path,
+      namespace: this.deps.namespaceFromPath(r.path),
       score: r.score,
       snippet: r.snippet,
     }));
 
     const mergedByPath = new Map<string, QmdSearchResult>();
     for (const result of [...scopedSeedResults, ...scored]) {
-      const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
+      const namespacedResult = {
+        ...result,
+        namespace: result.namespace ?? this.deps.namespaceFromPath(result.path),
+      };
+      const key = `${namespacedResult.namespace}\0${namespacedResult.path || namespacedResult.docid}`;
       const existing = mergedByPath.get(key);
-      if (!existing || result.score > existing.score) {
+      if (!existing || namespacedResult.score > existing.score) {
         mergedByPath.set(key, {
-          ...result,
-          snippet: result.snippet || existing?.snippet || "",
+          ...namespacedResult,
+          snippet: namespacedResult.snippet || existing?.snippet || "",
         });
       }
     }
