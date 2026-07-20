@@ -29,6 +29,7 @@
  * kinds). The manifest is shrink-only: an entry that no longer violates is a
  * failure, not a comfort, so fixing a property forces removing its exception.
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -137,8 +138,7 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
 }
 
 interface GuardFlags {
-  thresholdUse: boolean;
-  zeroGuard: boolean;
+  thresholdUnguarded: boolean;
   coercion: boolean;
 }
 
@@ -154,35 +154,6 @@ function numericLiteralValue(node: ts.Expression): number | undefined {
     return -Number(node.operand.text.replace(/_/g, ""));
   }
   return undefined;
-}
-
-/** True when the expression references the property (identifier, `x.prop`, `this.prop`). */
-function referencesProperty(node: ts.Expression, name: string): boolean {
-  if (ts.isIdentifier(node)) return node.text === name;
-  if (ts.isPropertyAccessExpression(node)) return node.name.text === name;
-  return false;
-}
-
-/** Does a subtree contain a comparison of `name` to the literal 0 or 1 (a zero short-circuit)? */
-function subtreeHasZeroGuard(root: ts.Node, name: string): boolean {
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-      const left = numericLiteralValue(node.left);
-      const right = numericLiteralValue(node.right);
-      if (
-        (referencesProperty(node.left, name) && (right === 0 || right === 1)) ||
-        (referencesProperty(node.right, name) && (left === 0 || left === 1))
-      ) {
-        found = true;
-        return;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(root);
-  return found;
 }
 
 function isComparisonOperator(kind: ts.SyntaxKind): boolean {
@@ -220,71 +191,72 @@ function propertyAccessName(node: ts.Expression): string | undefined {
   return ts.isPropertyAccessExpression(node) ? node.name.text : undefined;
 }
 
-/**
- * One pass per source collecting guard flags for every zero-disable property
- * at once. Comparisons match config reads written `obj.prop` (threshold use vs
- * zero short-circuit); the coercion scan is scoped to a property's own
- * initializer, so a parser clamp is caught rename-immune.
- */
-function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string>): Map<string, GuardFlags> {
-  const flags = new Map<string, GuardFlags>();
-  for (const name of zeroDisable) flags.set(name, { thresholdUse: false, zeroGuard: false, coercion: false });
-  for (const source of sources) {
-    const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
-    const visit = (node: ts.Node): void => {
-      if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-        const op = node.operatorToken.kind;
-        const leftName = propertyAccessName(node.left);
-        const rightName = propertyAccessName(node.right);
-        const leftLit = numericLiteralValue(node.left);
-        const rightLit = numericLiteralValue(node.right);
-        if (leftName && flags.has(leftName) && (rightLit === 0 || rightLit === 1)) {
-          flags.get(leftName)!.zeroGuard = true;
-        }
-        if (rightName && flags.has(rightName) && (leftLit === 0 || leftLit === 1)) {
-          flags.get(rightName)!.zeroGuard = true;
-        }
-        // Property used as a bound against a dynamic value: `X > prop` / `X >= prop`.
-        if (
-          rightName &&
-          flags.has(rightName) &&
-          (op === ts.SyntaxKind.GreaterThanToken || op === ts.SyntaxKind.GreaterThanEqualsToken) &&
-          leftLit !== 0 &&
-          leftLit !== 1
-        ) {
-          flags.get(rightName)!.thresholdUse = true;
-        }
-        // `prop < X` / `prop <= X`.
-        if (
-          leftName &&
-          flags.has(leftName) &&
-          (op === ts.SyntaxKind.LessThanToken || op === ts.SyntaxKind.LessThanEqualsToken) &&
-          rightLit !== 0 &&
-          rightLit !== 1
-        ) {
-          flags.get(leftName)!.thresholdUse = true;
-        }
-      }
-      const assignedName = propertyNodeName(node);
-      if (assignedName && flags.has(assignedName)) {
-        const initializer = ts.isPropertyAssignment(node)
-          ? node.initializer
-          : ts.isPropertyDeclaration(node)
-            ? node.initializer
-            : undefined;
-        if (initializer && initializerCoercesZero(initializer, assignedName)) {
-          flags.get(assignedName)!.coercion = true;
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sf);
+/** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
+function enclosingScope(node: ts.Node): ts.Node {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (
+      ts.isFunctionDeclaration(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isArrowFunction(current) ||
+      ts.isMethodDeclaration(current) ||
+      ts.isConstructorDeclaration(current) ||
+      ts.isGetAccessorDeclaration(current) ||
+      ts.isSetAccessorDeclaration(current) ||
+      ts.isSourceFile(current)
+    ) {
+      return current;
+    }
+    current = current.parent;
   }
-  return flags;
+  return node.getSourceFile();
 }
 
-/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) with no zero short-circuit. */
-function initializerCoercesZero(initializer: ts.Expression, name: string): boolean {
+/** A `obj.name <op> 0|1` short-circuit somewhere within a scope. */
+function scopeHasZeroGuardFor(scope: ts.Node, name: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
+      const leftName = propertyAccessName(node.left);
+      const rightName = propertyAccessName(node.right);
+      const leftLit = numericLiteralValue(node.left);
+      const rightLit = numericLiteralValue(node.right);
+      if (
+        (leftName === name && (rightLit === 0 || rightLit === 1)) ||
+        (rightName === name && (leftLit === 0 || leftLit === 1))
+      ) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return found;
+}
+
+/** Any comparison of any operand to the literal 0 or 1 — a zero-aware short-circuit in a parser initializer. */
+function subtreeHasZeroComparison(root: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
+      const leftLit = numericLiteralValue(node.left);
+      const rightLit = numericLiteralValue(node.right);
+      if (leftLit === 0 || leftLit === 1 || rightLit === 0 || rightLit === 1) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) with no zero-aware short-circuit. */
+function initializerCoercesZero(initializer: ts.Expression): boolean {
   let coerces = false;
   const visit = (node: ts.Node): void => {
     if (coerces) return;
@@ -292,10 +264,7 @@ function initializerCoercesZero(initializer: ts.Expression, name: string): boole
       coerces = true;
       return;
     }
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.BarBarToken
-    ) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
       const rightLit = numericLiteralValue(node.right);
       if (rightLit !== undefined && rightLit !== 0) {
         coerces = true;
@@ -305,8 +274,68 @@ function initializerCoercesZero(initializer: ts.Expression, name: string): boole
     ts.forEachChild(node, visit);
   };
   visit(initializer);
-  // A short-circuit that preserves 0 inside the same initializer clears it.
-  return coerces && !subtreeHasZeroGuard(initializer, name);
+  // A comparison to 0/1 anywhere in the initializer means the parser already
+  // branches on the disable value (e.g. `raw <= 0 ? 0 : Math.max(1, raw)`).
+  return coerces && !subtreeHasZeroComparison(initializer);
+}
+
+/**
+ * One pass per source collecting guard flags for every zero-disable property at
+ * once. A threshold comparison (`obj.prop` as a bound) is unguarded only when
+ * its OWN enclosing function lacks a `obj.prop <op> 0|1` short-circuit — a guard
+ * in a different consumer does not vouch for it. Coercion is caught in a
+ * property's own initializer AND in a local of the same name (parser values
+ * returned via shorthand).
+ */
+function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string>): Map<string, GuardFlags> {
+  const flags = new Map<string, GuardFlags>();
+  for (const name of zeroDisable) flags.set(name, { thresholdUnguarded: false, coercion: false });
+  for (const source of sources) {
+    const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
+        const op = node.operatorToken.kind;
+        const leftName = propertyAccessName(node.left);
+        const rightName = propertyAccessName(node.right);
+        const leftLit = numericLiteralValue(node.left);
+        const rightLit = numericLiteralValue(node.right);
+        // Property as a bound against a dynamic value: `X > prop` / `X >= prop` / `prop < X` / `prop <= X`.
+        const boundName =
+          rightName &&
+          flags.has(rightName) &&
+          (op === ts.SyntaxKind.GreaterThanToken || op === ts.SyntaxKind.GreaterThanEqualsToken) &&
+          leftLit !== 0 &&
+          leftLit !== 1
+            ? rightName
+            : leftName &&
+                flags.has(leftName) &&
+                (op === ts.SyntaxKind.LessThanToken || op === ts.SyntaxKind.LessThanEqualsToken) &&
+                rightLit !== 0 &&
+                rightLit !== 1
+              ? leftName
+              : undefined;
+        if (boundName && !scopeHasZeroGuardFor(enclosingScope(node), boundName)) {
+          flags.get(boundName)!.thresholdUnguarded = true;
+        }
+      }
+      const assignedName = propertyNodeName(node);
+      if (assignedName && flags.has(assignedName)) {
+        const initializer = ts.isPropertyAssignment(node)
+          ? node.initializer
+          : ts.isPropertyDeclaration(node)
+            ? node.initializer
+            : undefined;
+        if (initializer && initializerCoercesZero(initializer)) flags.get(assignedName)!.coercion = true;
+      }
+      // Parser values computed in a same-named local and returned via shorthand.
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && flags.has(node.name.text) && node.initializer) {
+        if (initializerCoercesZero(node.initializer)) flags.get(node.name.text)!.coercion = true;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return flags;
 }
 
 interface FlatSchemaEntry {
@@ -385,7 +414,7 @@ export function findDisableValueViolations(input: {
         key: name,
         detail: `${name} is documented "0 disables" but its parser coerces 0 away (Math.max floor >= 1 or falsy-default) with no zero short-circuit`,
       });
-    } else if (guard.thresholdUse && !guard.zeroGuard) {
+    } else if (guard.thresholdUnguarded) {
       violations.push({
         kind: "disable-value-guard",
         key: name,
@@ -427,6 +456,52 @@ function loadGrandfather(grandfatherPath: string): DisableValueGrandfatherEntry[
   });
 }
 
+/**
+ * Grandfather keys as of the merge-base with the base ref, or null when the
+ * manifest does not yet exist there (first introduction) or git is unavailable.
+ * Enables the shrink-only ban: an entry absent from the baseline is a newly
+ * added exception.
+ */
+function baselineGrandfatherKeys(repoRoot: string, grandfatherPath: string, baseRef: string): Set<string> | null {
+  try {
+    const rel = path.relative(repoRoot, grandfatherPath).split(path.sep).join("/");
+    const mergeBase = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", baseRef], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const content = execFileSync("git", ["-C", repoRoot, "show", `${mergeBase}:${rel}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const arr: unknown = JSON.parse(content);
+    if (!Array.isArray(arr)) return null;
+    return new Set(
+      arr
+        .filter((e): e is DisableValueGrandfatherEntry => Boolean(e) && typeof e.kind === "string" && typeof e.key === "string")
+        .map((e) => `${e.kind}:${e.key}`),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Reject any exception not present in the baseline — the manifest may only shrink. No-op when baseline is null. */
+export function assertGrandfatherShrinkOnly(
+  current: DisableValueGrandfatherEntry[],
+  baseline: Set<string> | null,
+  grandfatherPath = "disable-value-grandfathered.json",
+): void {
+  if (!baseline) return;
+  for (const entry of current) {
+    const key = `${entry.kind}:${entry.key}`;
+    if (!baseline.has(key)) {
+      throw new Error(
+        `${grandfatherPath}: new exception ${key} is not allowed — the manifest is shrink-only; fix the §33 drift instead of suppressing it`,
+      );
+    }
+  }
+}
+
 function readSchemaProperties(manifestPath: string): Record<string, DisableValueSchemaProperty> {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
     configSchema?: { properties?: Record<string, DisableValueSchemaProperty> };
@@ -463,6 +538,10 @@ export function runDisableValueCheck(options: {
   sourceFiles?: string[];
   manifestPaths?: string[];
   grandfatherPath?: string;
+  /** Enforce the shrink-only grandfather ban against the git base (default true). Unit tests on non-git dirs opt out. */
+  checkGrandfatherBaseline?: boolean;
+  /** Git ref for the shrink-only baseline (default env REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main"). */
+  baselineRef?: string;
 }): DisableValueCheckResult {
   const repoRoot = options.repoRoot;
   const sourceFiles =
@@ -495,6 +574,14 @@ export function runDisableValueCheck(options: {
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key));
 
   const grandfathered = loadGrandfather(grandfatherPath);
+  if (options.checkGrandfatherBaseline !== false) {
+    const baseRef = options.baselineRef ?? process.env.REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main";
+    assertGrandfatherShrinkOnly(
+      grandfathered,
+      baselineGrandfatherKeys(repoRoot, grandfatherPath, baseRef),
+      path.relative(repoRoot, grandfatherPath).split(path.sep).join("/"),
+    );
+  }
   const grandfatherIndex = new Set(grandfathered.map((entry) => `${entry.kind}:${entry.key}`));
   const currentIndex = new Set(unique.map((violation) => `${violation.kind}:${violation.key}`));
 
