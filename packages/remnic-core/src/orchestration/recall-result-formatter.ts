@@ -73,9 +73,21 @@ export function resolveEffectiveIdentityInjectionMode(options: {
  * never leak into recall output and citations stay portable across machines
  * (#2020). Non-absolute or out-of-root paths are returned unchanged.
  */
-export function displayResultPath(resultPath: string, memoryDir: string): string {
+export function displayResultPath(
+  resultPath: string,
+  memoryDir: string,
+  namespace?: string,
+): string {
   if (!path.isAbsolute(resultPath)) return resultPath;
-  const rel = path.relative(path.resolve(memoryDir), resultPath);
+  const root = path.resolve(memoryDir);
+  const nsRoot = path.join(root, "namespaces");
+  if (namespace && (resultPath === nsRoot || resultPath.startsWith(nsRoot + path.sep))) {
+    // memoryDir/namespaces/<token>/<rel> -> "<namespace>/<rel>", the exact
+    // form the citation resolver decodes back to the owning namespace.
+    const afterNs = path.relative(nsRoot, resultPath).split(path.sep).slice(1).join("/");
+    if (afterNs) return `${namespace}/${afterNs}`;
+  }
+  const rel = path.relative(root, resultPath);
   return rel && !rel.startsWith("..") && !path.isAbsolute(rel)
     ? rel.split(path.sep).join("/")
     : resultPath;
@@ -114,7 +126,7 @@ export class RecallResultFormatter {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
-      const displayPath = displayResultPath(r.path, this.config.memoryDir);
+      const displayPath = displayResultPath(r.path, this.config.memoryDir, r.namespace);
       const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);

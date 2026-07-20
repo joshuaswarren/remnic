@@ -253,6 +253,12 @@ export class QmdResultResolver {
           error: (err as Error).message,
         });
       }
+      // The caller supplied an explicit owning namespace. For a relative path
+      // the preferred store was the only correct lead, so a miss means the hit
+      // is stale/deleted — do NOT fall through to the default store and validate
+      // a same-relative-path memory from the wrong namespace (#2020). Absolute
+      // paths still fall through: the absolute branch resolves the true owner.
+      if (!path.isAbsolute(resultPath)) return null;
     }
     if (path.isAbsolute(resultPath)) {
       if (!fallbackStorageDir) {
