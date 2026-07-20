@@ -1,5 +1,5 @@
 {
-  "note": "PR scope budget thresholds (issue #1991 PR2, umbrella #1988). Changed lines counted against core package paths only, artifact paths (.github/ai-review-ignore) excluded. warn is advisory; fail blocks unless a maintainer applies the scope-budget-exempt label. Tightening decisions cite two weeks of check telemetry per #1988 decision C. subsystemGroups powers the multi-subsystem / multi-issue split heuristic (issue #2067): each core changed file is classified by its longest matching path prefix; a PR spanning >=3 groups AND referencing >=2 issues warns, and one whose groups share no package-level ancestor AND references >=2 issues fails (bypassed by scope-budget-exempt). Longest prefix wins, so package-level keys are only consulted when no finer subsystem prefix matches.",
+  "note": "PR scope budget thresholds (issue #1991 PR2, umbrella #1988). Changed lines counted against core package paths only, artifact paths (.github/ai-review-ignore) excluded. warn is advisory; fail blocks unless a maintainer applies the scope-budget-exempt label. Tightening decisions cite two weeks of check telemetry per #1988 decision C. subsystemGroups powers the multi-subsystem / multi-issue split heuristic (issue #2067): each core changed file is classified by its longest matching path prefix; a PR spanning >=3 groups AND referencing >=2 issues warns, and one whose groups share no package-level ancestor AND references >=2 issues fails (bypassed by scope-budget-exempt). Longest prefix wins, so package-level keys (including the packages/remnic-core/ catch-all) are only consulted when no finer subsystem prefix matches — every core file therefore lands in exactly one group.",
   "warnLines": 1500,
   "failLines": 4000,
   "subsystemGroups": {
@@ -55,6 +55,7 @@
     "packages/remnic-core/src/peers": "peers",
     "packages/remnic-core/src/memory": "memory",
     "packages/remnic-core/src/cli": "core-cli",
+    "packages/remnic-core/": "remnic-core",
     "packages/remnic-cli/": "cli",
     "packages/remnic-server/": "server",
     "packages/plugin-openclaw/": "plugin-openclaw",

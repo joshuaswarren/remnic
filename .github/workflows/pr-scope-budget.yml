@@ -153,10 +153,12 @@ jobs:
           )
           # The evaluator runs from the BASE ref (trusted code). Pass the
           # multi-issue --pr-meta signal (issue #2067) only when that base
-          # copy actually understands the flag — a base predating #2067 would
-          # otherwise reject the unknown flag during the merge-window
-          # transition. Self-heals once #2067 is on the base branch.
-          if grep -q -- '--pr-meta' scripts/pr-scope-budget.mjs; then
+          # copy actually ACCEPTS the flag. Match the quoted flag literal as
+          # it appears in the parser's CLI_FLAGS declaration ("--pr-meta"),
+          # not any mention (comments/usage text also contain --pr-meta), so a
+          # base predating #2067 never receives an argument it would reject.
+          # Self-heals once #2067 is on the base branch (review: coderabbit).
+          if grep -qF '"--pr-meta"' scripts/pr-scope-budget.mjs; then
             args+=(--pr-meta /tmp/pr-meta.txt)
           else
             echo "::notice title=scope-budget::base-ref evaluator predates --pr-meta; multi-issue signal skipped until it merges"

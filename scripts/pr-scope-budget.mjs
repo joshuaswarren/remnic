@@ -110,11 +110,18 @@ export function loadThresholds(thresholdsPath) {
   };
 }
 
-/** All #<n> issue references in free text, deduped (issue #2067). */
+/**
+ * All #<n> issue references in free text, deduped (issue #2067). Fenced and
+ * inline code spans are dropped first so hashes inside code samples (a CSS hex
+ * color like #123456, a shell prompt) are never mistaken for issue refs, and
+ * the match requires GitHub issue-reference boundaries (no leading/trailing
+ * alphanumerics) so `abc#12`, `#12ab`, and `##12` do not count.
+ */
 export function extractIssueRefs(text) {
   const issues = new Set();
   if (typeof text !== "string") return issues;
-  for (const match of text.matchAll(/#(\d+)/g)) {
+  const prose = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+  for (const match of prose.matchAll(/(?<![0-9A-Za-z_#])#(\d+)(?![0-9A-Za-z_])/g)) {
     issues.add(Number(match[1]));
   }
   return issues;
@@ -123,7 +130,7 @@ export function extractIssueRefs(text) {
 /**
  * Classify a path into its subsystem group by LONGEST matching prefix — so a
  * fine subsystem key (packages/remnic-core/src/recall) wins over a broad
- * package key (packages/remnic-cli/). Returns { group, prefix } or null.
+ * package key (packages/remnic-core/). Returns { group, prefix } or null.
  */
 export function classifySubsystem(filename, subsystemGroups) {
   let best = null;
@@ -172,13 +179,18 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
     // file renamed into a non-core or ignored destination still changed core
     // (review finding on #2003 round 3; mirrors splitEffectiveDiff's rule).
     const previous = typeof file?.previous_filename === "string" ? file.previous_filename : null;
-    if (!countsAgainstBudget(filename) && !(previous !== null && countsAgainstBudget(previous))) {
+    const currentCounts = countsAgainstBudget(filename);
+    if (!currentCounts && !(previous !== null && countsAgainstBudget(previous))) {
       continue;
     }
     const additions = Number.isInteger(file.additions) ? file.additions : 0;
     const deletions = Number.isInteger(file.deletions) ? file.deletions : 0;
     coreLines += additions + deletions;
-    coreFiles.push({ filename, lines: additions + deletions });
+    // Classify by the CORE side of a rename: a core file renamed into a
+    // non-core/ignored destination still changed that subsystem, so grouping
+    // must follow previous_filename when the new name is not itself core
+    // (review: cursor + codex on #2067).
+    coreFiles.push({ filename, lines: additions + deletions, classifyPath: currentCounts ? filename : previous });
   }
   coreFiles.sort((a, b) => b.lines - a.lines || a.filename.localeCompare(b.filename));
 
@@ -193,7 +205,7 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
   const groups = new Set();
   const prefixes = new Set();
   for (const file of coreFiles) {
-    const classified = classifySubsystem(file.filename, subsystemGroups);
+    const classified = classifySubsystem(file.classifyPath, subsystemGroups);
     if (classified) {
       groups.add(classified.group);
       prefixes.add(classified.prefix);

@@ -172,7 +172,7 @@ test("renames out of core paths still count against the budget (round 3)", () =>
 
 // --- Subsystem-group / multi-issue detection (issue #2067) ---
 
-test("issue references are extracted and deduped from PR text", () => {
+test("issue references are extracted, deduped, boundary-checked, and code-stripped", () => {
   const issues = extractIssueRefs("Closes #12, part of #34 and see #12 again (no digits: #).");
   assert.deepEqual(
     [...issues].sort((a, b) => a - b),
@@ -180,6 +180,10 @@ test("issue references are extracted and deduped from PR text", () => {
   );
   assert.equal(extractIssueRefs("").size, 0);
   assert.equal(extractIssueRefs(undefined).size, 0);
+  // Non-issue hashes must not count: hex color / commit-ish in code spans are
+  // stripped, and alphanumeric neighbours break the reference boundary.
+  const filtered = extractIssueRefs("real #42, color `#123456`, block ```\n#999\n```, run#7 x#8y ##9");
+  assert.deepEqual([...filtered], [42]);
 });
 
 test("classifySubsystem picks the longest matching prefix", () => {
@@ -251,6 +255,30 @@ test("unrelated groups (no package ancestor) + >=2 issues fails; exempt bypasses
   assert.equal(exempt.verdict, "exempt");
   assert.match(exempt.detail, /passing ONLY because/);
   assert.match(exempt.detail, /share no package-level ancestor/);
+});
+
+test("rename classifies by the core side (previous_filename) not the destination", () => {
+  // A core recall file renamed out to docs, plus an unrelated cli change, both
+  // for two issues: grouping must follow the core previous_filename so the
+  // recall+cli split fail still triggers (review: cursor + codex on #2067).
+  const result = evaluateScopeBudget({
+    files: [
+      {
+        filename: "docs/moved.md",
+        previous_filename: "packages/remnic-core/src/recall-state.ts",
+        additions: 40,
+        deletions: 40,
+      },
+      coreFile(80, "packages/remnic-cli/src/index.ts"),
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 and #222",
+  });
+  assert.equal(result.verdict, "fail");
+  assert.match(result.detail, /cli, recall/);
 });
 
 test("unrelated groups but a single distinct issue does not trigger the split rule", () => {
