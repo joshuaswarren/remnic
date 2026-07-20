@@ -6,7 +6,6 @@ condition:
   - '\.persistExtraction\s*=\s*(async\b|\([^)]*\)\s*=>)'
 globs:
   - "**/packages/remnic-core/src/**/*.test.ts"
-  - "**/*.test.ts"
 ---
 
 You are replacing the orchestrator's `persistExtraction` method with an
@@ -20,7 +19,7 @@ Use the shared, production-typed factory instead:
 ```ts
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 
-// records each ExtractionResult; returns the factory's ids (or [] by default)
+// records each call's PersistExtractionArgs tuple; returns the factory's ids (or [] by default)
 const persistCalls = stubPersistExtraction(orchestrator, () => ["fact-1"]);
 // ...
 assert.equal(persistCalls.length, 1);

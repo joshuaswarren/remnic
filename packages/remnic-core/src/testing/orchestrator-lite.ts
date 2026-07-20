@@ -119,6 +119,14 @@ export function stubExtraction(
  */
 export type PersistExtractionFn = ExtractionRunCoordinatorDeps["persistExtraction"];
 
+/**
+ * The full argument tuple of a {@link PersistExtractionFn} call. Recording the
+ * whole tuple — not just the leading ExtractionResult — means a change to ANY
+ * parameter (storage, source-context, capability sets) surfaces in every
+ * consumer that reads the call log, not only the first argument.
+ */
+export type PersistExtractionArgs = Parameters<PersistExtractionFn>;
+
 /** The method-level persist seam replaced by {@link stubPersistExtraction}. */
 interface PersistExtractionSeam {
   persistExtraction: PersistExtractionFn;
@@ -126,23 +134,23 @@ interface PersistExtractionSeam {
 
 /**
  * Stub the orchestrator's `persistExtraction` method (the mutation surface the
- * extraction-run pipeline drives). Records the ExtractionResult of every call
- * for assertions; returns the factory's persisted-id list, or `[]` when no
- * factory is given. The replacement is typed as the production
- * {@link PersistExtractionFn}, so a production return-type change fails to
- * compile here rather than silently passing a stale mock.
+ * extraction-run pipeline drives). Records the full {@link PersistExtractionArgs}
+ * tuple of every call for assertions; returns the factory's persisted-id list,
+ * or `[]` when no factory is given. The replacement is typed as the production
+ * {@link PersistExtractionFn}, so a production signature change fails to compile
+ * here rather than silently passing a stale mock.
  */
 export function stubPersistExtraction(
   orchestrator: Orchestrator,
-  factory?: (result: ExtractionResult, call: number) => string[] | Promise<string[]>,
-): ExtractionResult[] {
-  const calls: ExtractionResult[] = [];
+  factory?: (args: PersistExtractionArgs, call: number) => string[] | Promise<string[]>,
+): PersistExtractionArgs[] {
+  const calls: PersistExtractionArgs[] = [];
   // `persistExtraction` is private and structurally unexpressible from outside
   // the class; the recorder replaces it in place. Named cast per rule.
   const seam = orchestrator as unknown as PersistExtractionSeam;
-  const impl: PersistExtractionFn = async (result) => {
-    calls.push(result);
-    return factory ? factory(result, calls.length) : [];
+  const impl: PersistExtractionFn = async (...args) => {
+    calls.push(args);
+    return factory ? factory(args, calls.length) : [];
   };
   seam.persistExtraction = impl;
   return calls;
