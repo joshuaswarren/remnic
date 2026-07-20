@@ -209,6 +209,15 @@ export interface BenchmarkResult {
     tasks: TaskResult[];
     aggregates: AggregateMetrics;
     statistics?: StatisticalReport;
+    /**
+     * Optional per-category aggregate breakdown keyed by a benchmark-defined
+     * category label (e.g. LoCoMo's single_hop/adversarial). Populated by
+     * benchmarks whose tasks carry a `categoryName` detail so per-category
+     * metrics — such as the adversarial-vs-answerable split issue #1878
+     * tracks — are read straight from the artifact instead of hand-computed
+     * from task ids.
+     */
+    categoryAggregates?: Record<string, AggregateMetrics>;
   };
   environment: {
     os: string;
