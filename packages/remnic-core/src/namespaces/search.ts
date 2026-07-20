@@ -8,6 +8,7 @@ import type {
 } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 const NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR = 4;
 const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
@@ -560,8 +561,7 @@ function pathIsInsideNamespaceSubtree(
   const relative = path.relative(namespacesRoot, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
-
-function normalizeQmdResultPath(resultPath: string, collection: string): string {
+export function normalizeQmdResultPath(resultPath: string, collection: string): string {
   let value = resultPath.trim();
   if (value.startsWith("qmd://")) {
     try {
@@ -578,8 +578,12 @@ function normalizeQmdResultPath(resultPath: string, collection: string): string 
     }
   }
 
+  // Only strip a genuine QMD collection prefix — never when the collection name
+  // collides with a memory category dir (e.g. qmdCollection == "facts"), or a
+  // bare "facts/<id>.md" hit would be corrupted to "<id>.md" and fail namespace
+  // reads/access tracking (#2020).
   const collectionPrefix = `${collection}/`;
-  if (value.startsWith(collectionPrefix)) {
+  if (value.startsWith(collectionPrefix) && !ALL_CATEGORY_DIRS.includes(collection)) {
     value = value.slice(collectionPrefix.length);
   }
   return value;
