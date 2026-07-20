@@ -6445,28 +6445,32 @@ export class StorageManager {
   }
 
   /**
-   * Check which of the given memory IDs actually exist on disk.
+   * Resolve existing active memory IDs to their on-disk paths.
    *
    * Uses a lightweight directory scan (collectActiveMemoryPaths) that reads
    * file names without parsing frontmatter — much cheaper than readAllMemories()
-   * for simple existence checks like citation usage tracking.
-   *
-   * Returns the subset of `ids` that correspond to real memory files.
+   * for citation usage tracking and other existence checks.
    */
-  async filterExistingMemoryIds(ids: string[]): Promise<Set<string>> {
-    if (ids.length === 0) return new Set();
+  async findExistingMemoryPaths(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
     const wantedIds = new Set(ids);
     const filePaths = await this.collectActiveMemoryPaths();
-    const foundIds = new Set<string>();
+    const foundPaths = new Map<string, string>();
     for (const filePath of filePaths) {
-      const basename = path.basename(filePath, ".md");
-      if (wantedIds.has(basename)) {
-        foundIds.add(basename);
-        // Short-circuit once all requested IDs are found.
-        if (foundIds.size === wantedIds.size) break;
+      const memoryId = path.basename(filePath, ".md");
+      if (wantedIds.has(memoryId)) {
+        foundPaths.set(memoryId, filePath);
+        if (foundPaths.size === wantedIds.size) break;
       }
     }
-    return foundIds;
+    return foundPaths;
+  }
+
+  /**
+   * Check which of the given memory IDs actually exist on disk.
+   */
+  async filterExistingMemoryIds(ids: string[]): Promise<Set<string>> {
+    return new Set((await this.findExistingMemoryPaths(ids)).keys());
   }
 
   async getProjectedMemoryState(id: string): Promise<MemoryProjectionCurrentState | null> {

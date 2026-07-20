@@ -302,12 +302,19 @@ export class RecallSectionCoordinator {
     const memoryIndex = allocationOrder.indexOf("memories");
     const firstAtomicMemoryIndex =
       memorySection?.chunks.findIndex((chunk) => chunk.atomic) ?? -1;
-    const reservedMemoryContent =
+    const firstAtomicMemoryContentChars =
       memorySection && firstAtomicMemoryIndex >= 0
         ? memorySection.chunks
             .slice(0, firstAtomicMemoryIndex + 1)
             .map((chunk) => chunk.content)
             .join("\n\n").length
+        : 0;
+    const memoryBudget = this.getRecallSectionMaxChars("memories") ?? budget;
+    const firstAtomicMemoryReserveChars =
+      firstAtomicMemoryContentChars > 0 &&
+      firstAtomicMemoryContentChars + separator.length <=
+        Math.min(budget, memoryBudget)
+        ? firstAtomicMemoryContentChars
         : 0;
     const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
@@ -327,9 +334,10 @@ export class RecallSectionCoordinator {
           : available;
       const reservesFirstMemory =
         memoryIndex > allocationOrder.indexOf(id) &&
-        reservedMemoryContent > 0;
-      const memoryReserve =
-        reservesFirstMemory ? reservedMemoryContent + separator.length : 0;
+        firstAtomicMemoryReserveChars > 0;
+      const memoryReserve = reservesFirstMemory
+        ? firstAtomicMemoryReserveChars + separator.length
+        : 0;
       const allocatedSectionAvailable = sectionAvailable - memoryReserve;
       if (allocatedSectionAvailable <= 0) {
         truncated = true;

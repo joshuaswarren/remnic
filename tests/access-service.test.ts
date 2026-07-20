@@ -4755,7 +4755,10 @@ test("recordCitationUsage tracks duplicate citations with resolved namespace pat
       ],
     },
     getStorage: async () => ({
-      readAllMemories: async () => [{ frontmatter: { id: "same-id" }, path: memoryPath }],
+      readAllMemories: async () => {
+        throw new Error("citation tracking must not parse all memories");
+      },
+      findExistingMemoryPaths: async () => new Map([["same-id", memoryPath]]),
     }),
     trackMemoryAccess: (ids: string[], paths: string[]) => {
       tracked.push({ ids, paths });

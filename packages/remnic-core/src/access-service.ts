@@ -5031,9 +5031,8 @@ export class EngramAccessService {
     if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
 
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const memories = await storage.readAllMemories();
-    const pathsById = new Map(
-      memories.map((memory) => [memory.frontmatter.id, memory.path] as const),
+    const pathsById = await storage.findExistingMemoryPaths(
+      memoryEntries.map((entry) => entry.id),
     );
     const matchedEntries = memoryEntries
       .map((entry) => {

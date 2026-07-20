@@ -437,9 +437,11 @@ export class NamespaceReadFanoutCoordinator {
       ? computeQmdCollectionNamespaceFromPrefix(parts.collection, this.deps.config)
       : null;
     if (collectionNamespace) return collectionNamespace;
-    const m = p.match(/[\\/]+namespaces[\\/]+([^\\/]+)(?:[\\/]|$)/);
-    if (!m?.[1]) return this.deps.config.defaultNamespace;
-    return namespaceIdentityFromToken(m[1]) ?? m[1];
+    const pathParts = p.replaceAll("\\", "/").split("/");
+    const namespaceIndex = pathParts.indexOf("namespaces");
+    const namespaceToken = namespaceIndex >= 0 ? pathParts[namespaceIndex + 1] : undefined;
+    if (!namespaceToken) return this.deps.config.defaultNamespace;
+    return namespaceIdentityFromToken(namespaceToken) ?? namespaceToken;
   }
 
   storageDirNamespace(storageDir: string): string {

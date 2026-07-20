@@ -1304,3 +1304,34 @@ test("assembleRecallSections omits an empty memories section when no chunk fits"
   assert.deepEqual(assembled.omittedIds, ["memories"]);
   assert.equal(assembled.finalChars, 0);
 });
+
+test("assembleRecallSections does not reserve an oversized atomic memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-oversized-memory-", {
+    recallBudgetChars: 120,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "profile context",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(200),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedIds, ["profile"]);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.match(assembled.sections.join("\n"), /profile context/);
+});
