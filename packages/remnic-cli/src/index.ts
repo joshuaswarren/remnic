@@ -44,6 +44,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import {
   parseConfig,
+  type PluginConfig,
   isOpenaiApiKeyDisabled,
   resolveEnvVars,
   resolveRemnicConfigRecord,
@@ -10088,17 +10089,39 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const memoryDir = resolveMemoryDir();
     const states = await listLiveConnectorStates(memoryDir);
     const stateMap = new Map(states.map((s: { id: string }) => [s.id, s]));
+    // Reflect the parsed config's enabled flags (same source `connectors run`
+    // uses) instead of hardcoding true, so disabled connectors report
+    // enabled:false in status/list output (issue #2062).
+    let connectorsCfg: PluginConfig["connectors"];
+    const configPath = resolveConfigPath();
+    try {
+      const raw = fs.existsSync(configPath)
+        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+        : {};
+      // parseConfigQuietly (not parseConfig): this branch installs no logger,
+      // so parseConfig's coercion warnings would print raw config values
+      // (e.g. secrets) via console.warn (#2033).
+      connectorsCfg = parseConfigQuietly(raw).connectors;
+    } catch {
+      // Report the path, never the caught error message: parse/validation
+      // errors can echo raw config values (e.g. secrets) into CLI output.
+      process.stderr.write(
+        `connectors status: failed to read config at ${configPath}\n`,
+      );
+      process.exitCode = 2;
+      return;
+    }
     const rows = [
       {
         id: GDRIVE_ID as string,
         displayName: "Google Drive",
-        enabled: true,
+        enabled: connectorsCfg.googleDrive.enabled,
         state: stateMap.get(GDRIVE_ID as string) ?? null,
       },
       {
         id: NOTION_ID as string,
         displayName: "Notion",
-        enabled: true,
+        enabled: connectorsCfg.notion.enabled,
         state: stateMap.get(NOTION_ID as string) ?? null,
       },
     ];
