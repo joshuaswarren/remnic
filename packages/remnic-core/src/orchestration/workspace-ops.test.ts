@@ -60,3 +60,45 @@ test("flushAccessTracking keeps duplicate memory IDs scoped by memory path", asy
     },
   ]);
 });
+
+test("flushAccessTracking selects the buffered path within one namespace", async () => {
+  const firstPath = path.join("/memory", "facts", "first.md");
+  const secondPath = path.join("/memory", "facts", "second.md");
+  const memories = [
+    { path: secondPath, frontmatter: { id: "same-id", accessCount: 7 } },
+    { path: firstPath, frontmatter: { id: "same-id", accessCount: 2 } },
+  ];
+  let flushed: AccessTrackingEntry[] = [];
+  const config = {
+    namespacesEnabled: false,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+  } as unknown as PluginConfig;
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    accessTrackingBuffer: new Map([
+      ["default:same-id", { memoryId: "same-id", memoryPath: firstPath, count: 1, lastAccessed: "2026-07-19T00:00:00.000Z" }],
+    ]),
+    readAllMemoriesForNamespaces: async () => memories,
+    namespaceFromPath: () => "default",
+    storageRouter: {
+      storageFor: async () => ({
+        flushAccessTracking: async (entries: AccessTrackingEntry[]) => {
+          flushed = entries;
+        },
+      }),
+    },
+  } as unknown as WorkspaceOpsDeps);
+
+  await coordinator.flushAccessTracking();
+
+  assert.deepEqual(flushed, [
+    {
+      memoryId: "same-id",
+      memoryPath: firstPath,
+      newCount: 3,
+      lastAccessed: "2026-07-19T00:00:00.000Z",
+    },
+  ]);
+});

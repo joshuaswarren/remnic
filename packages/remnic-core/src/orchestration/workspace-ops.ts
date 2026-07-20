@@ -816,14 +816,16 @@ export class WorkspaceOpsCoordinator {
 
     const entriesByNamespace = new Map<string, AccessTrackingEntry[]>();
     for (const [, update] of this.deps.accessTrackingBuffer) {
+      const memoryPath = update.memoryPath;
       const namespace =
         update.namespace ??
-        (update.memoryPath
-          ? this.deps.namespaceFromPath(update.memoryPath)
+        (memoryPath
+          ? this.deps.namespaceFromPath(memoryPath)
           : this.deps.config.defaultNamespace);
-      const memory = memoriesByNamespace
-        .get(namespace)
-        ?.find((candidate) => candidate.frontmatter.id === update.memoryId);
+      const namespaceMemories = memoriesByNamespace.get(namespace);
+      const memory = memoryPath
+        ? namespaceMemories?.find((candidate) => path.resolve(candidate.path) === path.resolve(memoryPath))
+        : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
       if (!memory) continue;
 
       const entries = entriesByNamespace.get(namespace) ?? [];
