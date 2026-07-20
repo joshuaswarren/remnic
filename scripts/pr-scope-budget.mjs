@@ -186,11 +186,17 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
     const additions = Number.isInteger(file.additions) ? file.additions : 0;
     const deletions = Number.isInteger(file.deletions) ? file.deletions : 0;
     coreLines += additions + deletions;
-    // Classify by the CORE side of a rename: a core file renamed into a
-    // non-core/ignored destination still changed that subsystem, so grouping
-    // must follow previous_filename when the new name is not itself core
+    // Classify BOTH core sides of a rename: a core file moved between
+    // subsystems (core->core) changed both, and one moved to a
+    // non-core/ignored destination still changed its source subsystem — so
+    // grouping follows every core side, never just the new name
     // (review: cursor + codex on #2067).
-    coreFiles.push({ filename, lines: additions + deletions, classifyPath: currentCounts ? filename : previous });
+    const classifyPaths = [];
+    if (currentCounts) classifyPaths.push(filename);
+    if (previous !== null && previous !== filename && countsAgainstBudget(previous)) {
+      classifyPaths.push(previous);
+    }
+    coreFiles.push({ filename, lines: additions + deletions, classifyPaths });
   }
   coreFiles.sort((a, b) => b.lines - a.lines || a.filename.localeCompare(b.filename));
 
@@ -205,10 +211,12 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
   const groups = new Set();
   const prefixes = new Set();
   for (const file of coreFiles) {
-    const classified = classifySubsystem(file.classifyPath, subsystemGroups);
-    if (classified) {
-      groups.add(classified.group);
-      prefixes.add(classified.prefix);
+    for (const candidate of file.classifyPaths) {
+      const classified = classifySubsystem(candidate, subsystemGroups);
+      if (classified) {
+        groups.add(classified.group);
+        prefixes.add(classified.prefix);
+      }
     }
   }
   const issues = extractIssueRefs(prText);

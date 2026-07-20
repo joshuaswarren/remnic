@@ -281,6 +281,29 @@ test("rename classifies by the core side (previous_filename) not the destination
   assert.match(result.detail, /cli, recall/);
 });
 
+test("core-to-core rename classifies both the source and destination subsystems", () => {
+  // Move recall code into remnic-cli (both sides count): one file yields two
+  // groups, so a two-issue PR trips the unrelated-subsystem split fail even
+  // though only a single entry changed (review: codex on #2067).
+  const result = evaluateScopeBudget({
+    files: [
+      {
+        filename: "packages/remnic-cli/src/recall-moved.ts",
+        previous_filename: "packages/remnic-core/src/recall-state.ts",
+        additions: 60,
+        deletions: 60,
+      },
+    ],
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #111 and #222",
+  });
+  assert.equal(result.verdict, "fail");
+  assert.match(result.detail, /cli, recall/);
+});
+
 test("unrelated groups but a single distinct issue does not trigger the split rule", () => {
   const result = evaluateScopeBudget({
     files: [coreFile(80, "packages/remnic-core/src/recall-state.ts"), coreFile(80, "packages/remnic-cli/src/index.ts")],
