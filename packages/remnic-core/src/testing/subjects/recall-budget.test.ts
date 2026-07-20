@@ -411,6 +411,10 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.ok(assembled.finalChars <= budget, "oversized sections never overrun the budget");
         assert.ok(assembled.truncated, "oversized assembly is marked truncated");
         assert.ok(assembled.omittedIds.length >= 1, "sections past the budget are omitted");
+        // The protected "memories" section survives even when every section is
+        // oversized: budget reservation keeps it in, it is never omitted.
+        assert.ok(assembled.includedIds.includes("memories"), "the protected memories section survives budget pressure");
+        assert.ok(!assembled.omittedIds.includes("memories"), "the protected memories section is never omitted under pressure");
         assert.equal(assembled.finalChars, assembledCharLength(assembled.sections), "finalChars is accurate under pressure");
         return;
       }
