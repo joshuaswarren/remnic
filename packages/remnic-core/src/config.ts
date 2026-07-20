@@ -52,6 +52,7 @@ import {
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
+import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
@@ -3534,10 +3535,9 @@ export function parseConfig(
       Number.isFinite(cfg.graphEdgeDecayVisibilityThreshold)
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
-    // Issue #681 PR 3/3 — confidence-aware traversal & PageRank refinement.
-    // Floor clamps to [0, 1] so misconfigured input cannot accept negative
-    // confidences or reject every edge. Iterations floors at 0 so a
-    // documented 0 disables PageRank refinement and BFS scores pass through.
+    ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
+    // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
+    // documented 0 iterations disables PageRank refinement (BFS scores pass through).
     graphTraversalConfidenceFloor:
       typeof cfg.graphTraversalConfidenceFloor === "number" &&
       Number.isFinite(cfg.graphTraversalConfidenceFloor)

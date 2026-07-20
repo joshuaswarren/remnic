@@ -875,6 +875,8 @@ test("offline sync re-snapshots local files after push before applying pull", as
       includeTranscripts: true,
       statePath,
       statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(result.pushed?.appliedUpserts, 1);
@@ -954,6 +956,8 @@ test("offline sync re-snapshots local files after hydrating pull content", async
       includeTranscripts: true,
       statePath,
       statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.deepEqual(result.pull?.conflicts.map((conflict) => conflict.path), [targetPath]);
@@ -1068,6 +1072,8 @@ test("offline sync re-snapshots inline changes after direct pushes", async () =>
       includeTranscripts: true,
       statePath,
       statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(pushedLargeFile, true);
@@ -1263,6 +1269,8 @@ test("offline sync partial push checkpoints resolve namespace like successful sy
       includeTranscripts: true,
       statePath,
       statePathExplicit: false,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(pushedLargeFile, true);
@@ -1333,6 +1341,8 @@ test("offline sync checkpoints successful direct pushes before later upload fail
       includeTranscripts: true,
       statePath,
       statePathExplicit: false,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.deepEqual(pushedPaths, [firstPath, secondPath]);
@@ -1405,6 +1415,8 @@ test("offline sync checkpoints successful inline batches before later apply fail
       includeTranscripts: true,
       statePath,
       statePathExplicit: false,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.deepEqual(appliedBatches, [[firstPath], [secondPath]]);
@@ -1491,6 +1503,8 @@ test("offline sync partial pull checkpoints directly hydrated files without a pu
       includeTranscripts: true,
       statePath,
       statePathExplicit: false,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(result.partial, true);
@@ -1598,6 +1612,8 @@ test("offline sync re-snapshots after direct hydration before filtering content 
       includeTranscripts: true,
       statePath,
       statePathExplicit: false,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
     });
 
     assert.equal(filesEndpointCalled, false);

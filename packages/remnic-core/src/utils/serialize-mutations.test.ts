@@ -948,6 +948,128 @@ test("heartbeat does NOT refresh a REPLACEMENT lock's mtime (ownership check, co
   }
 });
 
+test("held-lock controller.refresh() re-stamps the mtime and reports still-held (#1910/#2033)", async () => {
+  // A CPU-bound critical section blocks the timer heartbeat, so a caller about
+  // to perform a destructive write re-stamps the lock manually via refresh().
+  // Real platform clock (mtime) — no fake-timer analog for fs.stat().mtimeMs.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "refresh-held.lock");
+    let held: boolean | undefined;
+    let bumped = false;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 60_000, heartbeatMs: 30_000 },
+      async (acquired, lock) => {
+        assert.equal(acquired, true, "test holder acquires the lock");
+        const before = (await stat(lockPath)).mtimeMs;
+        await delay(50); // let the clock advance so a bump is observable
+        held = await lock.refresh();
+        bumped = (await stat(lockPath)).mtimeMs > before;
+      },
+    );
+    assert.equal(held, true, "refresh reports the lock still held");
+    assert.ok(bumped, "refresh re-stamped the lock mtime");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("held-lock controller.refresh() reports LOST and never stamps a peer replacement lock (#1910/#2033)", async () => {
+  // If our event loop was blocked long enough for a peer to judge us stale,
+  // break the lock, and replace it, refresh() MUST report the lock lost (so the
+  // caller aborts its destructive write) and MUST NOT refresh the replacement's
+  // mtime. Real platform clock (mtime): no fake-timer analog.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "refresh-lost.lock");
+    let held: boolean | undefined;
+    let ageAfter = 0;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 60_000, heartbeatMs: 30_000 },
+      async (acquired, lock) => {
+        assert.equal(acquired, true, "test holder acquires the lock");
+        // Peer stale-break + replacement: overwrite with a DIFFERENT owner id
+        // and an old mtime.
+        const replacement = `999999 deadbeef-0000-4000-8000-000000000000 ${new Date().toISOString()}\n`;
+        const old = new Date(Date.now() - 5_000);
+        await writeFile(lockPath, replacement, "utf8");
+        await utimes(lockPath, old, old);
+        held = await lock.refresh();
+        ageAfter = Date.now() - (await stat(lockPath)).mtimeMs;
+      },
+    );
+    assert.equal(held, false, "refresh reports the lock lost to a peer replacement");
+    assert.ok(
+      ageAfter > 4_000,
+      `replacement lock mtime NOT bumped by refresh (age=${ageAfter}ms; expected >4000ms)`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("held-lock controller.refresh() reports LOST when the mtime bump fails (#2033)", async () => {
+  // The ownership pre-check passes (still ours), but a peer deletes the lock
+  // before the mtime bump so `utimes` throws. Fresh evidence: the old refresh
+  // only warned and returned true, letting the caller rewrite on a lock it can
+  // no longer prove it holds and clobber a peer's append. It MUST report LOST.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "refresh-utimes-fail.lock");
+    let held: boolean | undefined;
+    let warned = false;
+    await withHeldFileLock(
+      lockPath,
+      {
+        staleMs: 60_000,
+        heartbeatMs: 30_000,
+        onLockWarning: () => { warned = true; },
+        // Delete our lock file AFTER the ownership check, BEFORE the bump, so
+        // utimes(held.path) throws ENOENT.
+        onBeforeRefreshUtimesForTest: async () => { await rm(lockPath, { force: true }); },
+      },
+      async (acquired, lock) => {
+        assert.equal(acquired, true, "test holder acquires the lock");
+        held = await lock.refresh();
+      },
+    );
+    assert.equal(held, false, "refresh reports LOST when the mtime bump throws");
+    assert.equal(warned, true, "the bump failure is surfaced via the warning hook");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("held-lock controller.refresh() reports LOST when a peer replaces the lock between the check and the bump (#2033)", async () => {
+  // The ownership pre-check passes, then a peer replaces the lock with a
+  // different owner BEFORE our bump. `utimes` would then refresh the
+  // replacement's mtime; the post-bump ownership RE-CHECK must catch this and
+  // report LOST so the caller aborts rather than clobbering the peer.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "refresh-replaced-midbump.lock");
+    let held: boolean | undefined;
+    const replacement = `999999 deadbeef-0000-4000-8000-000000000000 ${new Date().toISOString()}\n`;
+    await withHeldFileLock(
+      lockPath,
+      {
+        staleMs: 60_000,
+        heartbeatMs: 30_000,
+        onBeforeRefreshUtimesForTest: async () => { await writeFile(lockPath, replacement, "utf8"); },
+      },
+      async (acquired, lock) => {
+        assert.equal(acquired, true, "test holder acquires the lock");
+        held = await lock.refresh();
+      },
+    );
+    assert.equal(held, false, "refresh reports LOST when a peer replaces the lock mid-bump");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("breakStaleLock uses atomic rename so a replacement lock is never unlinked by a second contender", async () => {
   // Two contenders both judge the same stale lock. One atomically renames
   // it away and acquires a replacement; the other's break must NOT unlink

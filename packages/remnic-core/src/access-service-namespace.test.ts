@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,8 +10,11 @@ import { type LoggerBackend, initLogger } from "./logger.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
-import type { StorageManager } from "./storage.js";
-import type { PluginConfig } from "./types.js";
+import { StorageManager } from "./storage.js";
+import { serializeLifecycleAppendPayload } from "./storage/memory-lifecycle-ledger-access.js";
+import type { MemoryLifecycleEvent, PluginConfig } from "./types.js";
+import { LastRecallStore } from "./recall-state.js";
+import type { DrainPendingImpressionsResult } from "./recall-state.js";
 
 function makeConfig(): PluginConfig {
   return {
@@ -61,6 +64,7 @@ function makeService(): {
         searchGlobal(query: string, maxResults?: number): Promise<unknown[]>;
       };
       getStorage(namespace: string): Promise<StorageManager>;
+      drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
       searchAcrossNamespaces(params: {
         query: string;
         namespaces?: string[];
@@ -81,6 +85,9 @@ function makeService(): {
     async getStorage(namespace: string): Promise<StorageManager> {
       getStorageCalls.push(namespace);
       return storage;
+    },
+    async drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult> {
+      return { folded: false, pendingDeferred: false };
     },
     async searchAcrossNamespaces() {
       return [];
@@ -1201,6 +1208,9 @@ test("offlineSyncFiles reports invalid requested paths as input errors", async (
     };
   }).orchestrator.getStorage = async () => ({
     dir: os.tmpdir(),
+    async drainPendingMemoryLifecycleEventsForSync() {
+      return { folded: false, pendingDeferred: false };
+    },
     async readOfflineSyncFile() {
       throw new Error("should not read invalid paths");
     },
@@ -1231,6 +1241,9 @@ test("offlineSyncFiles reports symlink requested paths as input errors", async (
       };
     }).orchestrator.getStorage = async () => ({
       dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile() {
         throw new Error("should not read symlink paths");
       },
@@ -1278,6 +1291,9 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
       };
     }).orchestrator.getStorage = async () => ({
       dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
       },
@@ -1306,6 +1322,270 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
   }
 });
 
+test("offlineSyncSnapshot drains pending recall-impression spills so a recorded impression reaches the snapshot (#2033)", async () => {
+  // A record() that timed out on the rotation lock spills to the offline-sync
+  // EXCLUDED recall_impressions.jsonl.pending.d/. Without a pre-snapshot drain
+  // the impression is absent from the pushed snapshot and lost if this node is
+  // discarded. offlineSyncSnapshot() must fold the spill into the synced active
+  // recall_impressions.jsonl before building.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-impression-drain-"));
+  try {
+    const impressionsPath = path.join(root, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    const { service } = makeService();
+    const orchestrator = (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+        drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
+      };
+    }).orchestrator;
+    // The writer store roots at config.memoryDir — the SAME instance the drain
+    // must fold from. Here memoryDir === storage.dir (the offline-synced root),
+    // so the folded active file lands in the snapshot.
+    orchestrator.config.memoryDir = root;
+    const writerStore = new LastRecallStore(root, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+    orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
+    orchestrator.getStorage = async () => ({
+      dir: root,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        return { folded: false, pendingDeferred: false };
+      },
+      async readOfflineSyncFile(targetPath: string) {
+        return readFile(targetPath);
+      },
+      async digestOfflineSyncFile(targetPath: string) {
+        const content = await readFile(targetPath);
+        return {
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.byteLength,
+        };
+      },
+    } as unknown as StorageManager);
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    const active = snapshot.files.find((f) => f.path === "state/recall_impressions.jsonl");
+    assert.ok(active, "drained active impressions file is present in the snapshot");
+    assert.equal(
+      Buffer.from(active!.contentBase64!, "base64").toString("utf-8"),
+      row,
+      "the recorded impression was folded into the synced active file",
+    );
+    // The node-local pending spill dir stays excluded from the snapshot...
+    assert.ok(
+      !snapshot.files.some((f) => f.path.startsWith("state/recall_impressions.jsonl.pending.d")),
+      "pending spill dir remains offline-sync excluded",
+    );
+    // ...because the drain already emptied it.
+    assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot does NOT drain the global impression queue during a namespace snapshot (#2033)", async () => {
+  // Recall impressions are global: the orchestrator's single LastRecallStore roots
+  // at config.memoryDir, so the active recall_impressions.jsonl lives at
+  // <memoryDir>/state/ and a namespace-rooted snapshot (storage.dir under
+  // namespaces/<token>/) can never carry it. Draining the global pending queue
+  // during such a snapshot would empty the durable queue into a file this
+  // snapshot omits - stranding the row until a root sync - so the drain is scoped
+  // to the snapshot whose root actually contains the file. Here it must be a
+  // no-op, leaving the writer-root spill pending for the root sync, while the
+  // per-namespace lifecycle drain still runs.
+  const writerRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-writer-"));
+  const nsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-ns-"));
+  try {
+    const impressionsPath = path.join(writerRoot, "state", "recall_impressions.jsonl");
+    const pendingDir = `${impressionsPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const row = `${JSON.stringify({ sessionKey: "s1", writeNonce: "n-1", memoryIds: ["m-1"] })}\n`;
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), row, "utf-8");
+
+    const { service } = makeService();
+    const orchestrator = (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+        drainPendingRecallImpressions(): Promise<DrainPendingImpressionsResult>;
+      };
+    }).orchestrator;
+    // Writer root (config.memoryDir) is deliberately DISTINCT from the resolved
+    // namespace's storage.dir.
+    orchestrator.config.memoryDir = writerRoot;
+    const writerStore = new LastRecallStore(writerRoot, {
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+    let impressionDrainCalls = 0;
+    orchestrator.drainPendingRecallImpressions = () => {
+      impressionDrainCalls += 1;
+      return writerStore.drainPendingImpressions();
+    };
+    let lifecycleDrainCalls = 0;
+    orchestrator.getStorage = async () => ({
+      dir: nsDir,
+      async drainPendingMemoryLifecycleEventsForSync() {
+        lifecycleDrainCalls += 1;
+        return { folded: false, pendingDeferred: false };
+      },
+      async readOfflineSyncFile(targetPath: string) {
+        return readFile(targetPath);
+      },
+      async digestOfflineSyncFile(targetPath: string) {
+        const content = await readFile(targetPath);
+        return {
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.byteLength,
+        };
+      },
+    } as unknown as StorageManager);
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    // The global impression drain is scoped OUT of a namespace snapshot: it is
+    // never invoked, so the writer-root pending spill is retained for the root
+    // sync and no writer-root active file is created.
+    assert.equal(impressionDrainCalls, 0, "global impression drain must be skipped for a namespace snapshot");
+    assert.deepEqual(
+      await readdir(pendingDir),
+      ["spill-1.jsonl"],
+      "writer-root pending spill retained for the eventual root sync",
+    );
+    await assert.rejects(
+      () => readFile(impressionsPath, "utf-8"),
+      /ENOENT/,
+      "no writer-root active impressions file is written during a namespace snapshot",
+    );
+    // The per-namespace lifecycle drain still runs.
+    assert.equal(lifecycleDrainCalls, 1, "per-namespace lifecycle drain still runs");
+    // The namespace-rooted snapshot never carries the writer-root impressions file.
+    assert.ok(
+      !snapshot.files.some((f) => f.path === "state/recall_impressions.jsonl"),
+      "namespace-rooted snapshot does not carry the writer-root active file",
+    );
+  } finally {
+    await rm(writerRoot, { recursive: true, force: true });
+    await rm(nsDir, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-only row reaches the snapshot (#2033)", async () => {
+  // An appendMemoryLifecycleEvents() that timed out on the ledger lock spills the
+  // durable row into the offline-sync-EXCLUDED memory-lifecycle-ledger.jsonl.pending.d/.
+  // Without a pre-snapshot drain the promotion/import/explicit-capture row is
+  // absent from the pushed snapshot and lost if this node is discarded before a
+  // later append or maintenance pass folds it. Unlike recall impressions (writer
+  // root), the lifecycle ledger is per-namespace, so the drain runs on the
+  // RESOLVED-namespace storage and the folded ledger lands in the snapshot.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-lifecycle-drain-"));
+  try {
+    const storage = new StorageManager(root);
+    const ledgerPath = path.join(root, "state", "memory-lifecycle-ledger.jsonl");
+    const pendingDir = `${ledgerPath}.pending.d`;
+    await mkdir(pendingDir, { recursive: true });
+    const event: MemoryLifecycleEvent = {
+      eventId: "evt-spilled-1",
+      memoryId: "memory-a",
+      eventType: "promoted",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "system",
+      ruleVersion: "v1",
+    };
+    // Spill file written exactly as a lock-timed-out append leaves it (plaintext
+    // here: no secure key is configured on this store).
+    const spillPayload = serializeLifecycleAppendPayload([event]);
+    await writeFile(path.join(pendingDir, "spill-1.jsonl"), spillPayload, "utf-8");
+
+    const { service } = makeService();
+    const orchestrator = (service as unknown as {
+      orchestrator: { config: PluginConfig; getStorage(namespace: string): Promise<StorageManager> };
+    }).orchestrator;
+    orchestrator.getStorage = async () => storage;
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: true,
+    });
+
+    const active = snapshot.files.find((f) => f.path === "state/memory-lifecycle-ledger.jsonl");
+    assert.ok(active, "drained active lifecycle ledger is present in the snapshot");
+    assert.equal(
+      Buffer.from(active!.contentBase64!, "base64").toString("utf-8"),
+      spillPayload,
+      "the spilled lifecycle event was folded into the synced active ledger",
+    );
+    // The node-local pending spill dir stays excluded from the snapshot...
+    assert.ok(
+      !snapshot.files.some((f) => f.path.startsWith("state/memory-lifecycle-ledger.jsonl.pending.d")),
+      "pending spill dir remains offline-sync excluded",
+    );
+    // ...because the drain already folded and emptied it.
+    assert.deepEqual(await readdir(pendingDir), [], "pending spill drained before the snapshot");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offlineSyncSnapshot aborts when pending lifecycle rows cannot be drained (#2033)", async () => {
+  // When the ledger lock is held by a peer the drain leaves durable rows in the
+  // EXCLUDED pending queue and reports pendingDeferred. A snapshot built then
+  // would silently omit those append-only rows, so the buffered snapshot, the
+  // streaming snapshot, AND the path-enumeration (offlineSyncFiles) entrypoints
+  // MUST abort rather than report success.
+  const { service } = makeService();
+  const orchestrator = (service as unknown as {
+    orchestrator: { getStorage(namespace: string): Promise<StorageManager> };
+  }).orchestrator;
+  let drainAttempts = 0;
+  orchestrator.getStorage = async () =>
+    ({
+      dir: "/unused",
+      async drainPendingMemoryLifecycleEventsForSync() {
+        drainAttempts++;
+        return { folded: false, pendingDeferred: true };
+      },
+    }) as unknown as StorageManager;
+
+  await assert.rejects(
+    () => service.offlineSyncSnapshot({ namespace: "team", principal: "reader" }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "buffered snapshot aborts on a persistent lifecycle deferral",
+  );
+  await assert.rejects(
+    () => service.offlineSyncSnapshotStream({ namespace: "team", principal: "reader" }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "streaming snapshot aborts on a persistent lifecycle deferral",
+  );
+  await assert.rejects(
+    () =>
+      service.offlineSyncFiles({
+        namespace: "team",
+        principal: "reader",
+        paths: ["state/memory-lifecycle-ledger.jsonl"],
+      }),
+    /lifecycle drain could not fold pending memory-lifecycle events.*aborting snapshot/s,
+    "path enumeration aborts on a persistent lifecycle deferral",
+  );
+  assert.ok(drainAttempts >= 9, "each aborted entrypoint retried the drain before giving up");
+});
 // ─── Issue #2018: memory_search must reach the base collection ───────────────
 //
 // On a namespaces-enabled deployment with a flat-root default namespace, the

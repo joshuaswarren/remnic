@@ -977,6 +977,23 @@ of truth for similarity logic across read-time and write-time code paths.
 | `fileHygiene.indexEnabled` | `false` | Maintain an optional operator-facing workspace index file during hygiene passes |
 | `fileHygiene.indexPath` | `ENGRAM_INDEX.md` | Workspace-relative path for the optional generated index file |
 
+## Bounded JSONL State (issue #1910)
+
+Append-only JSONL files under `<memoryDir>/state/` are size-bounded **by
+default** so they cannot grow without limit and cannot cross V8's ~512MB string
+ceiling. Setting a byte knob (`memoryLifecycleLedgerCompactBytes` /
+`recallImpressionsRotateBytes`) to `0` disables that control for its file (`0`
+is honored, never coerced to a default); a file whose bound is disabled can
+once again grow without limit. Keep the defaults, or any non-zero bound, to
+retain the guarantee.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `memoryLifecycleLedgerCompactBytes` | `67108864` | Auto-compact `state/memory-lifecycle-ledger.jsonl` when it exceeds this many bytes, triggered off the debounced maintenance path. The compactor archives the original verbatim under `archive/memory-lifecycle-ledger/<stamp>/` before an atomic rewrite. Set `0` to disable (never coerced to a default). Default 64MB. |
+| `memoryLifecycleLedgerCompactMinIntervalMs` | `21600000` | Minimum interval between auto-compactions of the lifecycle ledger, so the heavy rebuild cannot run back-to-back. Minimum enforced at `60000` ms. Default 6 hours. |
+| `recallImpressionsRotateBytes` | `33554432` | Rotate `state/recall_impressions.jsonl` to `.1..N` once it exceeds this many bytes. The active file name and format are unchanged; only historical rows move to archives. Rotated files are excluded from offline-sync push. Set `0` to disable. Default 32MB. |
+| `recallImpressionsRotateKeep` | `5` | Number of rotated recall-impression archives to keep (`.1 .. .N`). Minimum enforced at `1` when rotation is enabled. Default 5. |
+
 ## Access Tracking
 
 | Setting | Default | Description |

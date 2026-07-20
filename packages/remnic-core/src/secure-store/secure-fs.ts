@@ -60,6 +60,7 @@ import {
   seal,
 } from "./cipher.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 // ---------------------------------------------------------------------------
 // Error classes
@@ -105,6 +106,18 @@ export const FILE_FORMAT_FLAGS = 0x00;
 /** Total size of the magic header prefix (magic + version + flags). */
 export const MAGIC_HEADER_SIZE = MAGIC_BYTES.length + 2; // 12 bytes
 
+/**
+ * Exact, deterministic bytes `writeMaybeEncryptedFile` adds to an encrypted
+ * file beyond its plaintext body: the magic header prefix plus the fixed
+ * envelope header (version + salt + IV + auth tag). AES-256-GCM ciphertext
+ * matches the plaintext length and the state-file write path applies no
+ * compression, so an encrypted state file is exactly `plaintext +
+ * SECURE_STORE_ENVELOPE_OVERHEAD_BYTES` on disk. Compaction reserves this so an
+ * encrypted ledger lands strictly below the reader's whole-file decrypt cap
+ * (issue #2033).
+ */
+export const SECURE_STORE_ENVELOPE_OVERHEAD_BYTES = MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
+
 // ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------
@@ -117,6 +130,41 @@ export function isEncryptedFile(buf: Uint8Array): boolean {
   if (buf.length < MAGIC_HEADER_SIZE) return false;
   const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
   return b.subarray(0, MAGIC_BYTES.length).equals(MAGIC_BYTES);
+}
+
+/**
+ * True when the REGULAR file at `probePath` is encrypted at rest (its first
+ * bytes are the REMNIC-ENC magic header). ENOENT resolves to false — an absent
+ * file has nothing to probe. A symlink, FIFO, device, or any other non-regular
+ * path is REFUSED with a throw rather than opened: opening a FIFO blocks until a
+ * writer appears and a symlink would redirect the probe outside our tree. The
+ * ledgers and per-event spills we manage are always regular files, so a
+ * non-regular path is an anomaly the caller must treat as unsafe, never follow
+ * (#2033). Shared by the CLI ledger recovery probe and the auto-compaction probe
+ * so both enforce identical open safety.
+ */
+export async function probeEncryptedRegularFileHeader(probePath: string): Promise<boolean> {
+  let entryStat;
+  try {
+    entryStat = await lstat(probePath);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return false;
+    throw err;
+  }
+  if (!entryStat.isFile()) {
+    throw new Error(
+      `refusing to probe non-regular state path ${probePath} `
+      + `(symlink/FIFO/device); opening it could block or escape containment (#2033)`,
+    );
+  }
+  const handle = await openFile(probePath, "r");
+  try {
+    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    return isEncryptedFile(header.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
 }
 
 // ---------------------------------------------------------------------------

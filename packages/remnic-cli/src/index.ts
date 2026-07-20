@@ -38,7 +38,7 @@ import { persistEnrichmentCandidate } from "./enrichment-persist.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createDecipheriv, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as childProcess from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -138,6 +138,7 @@ import {
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
   buildOfflineSyncChangesetFromSnapshot,
+  drainPendingLifecycleForOfflineSync,
   compileOfflineSyncExcludeGlobs,
   buildOfflineSyncSnapshotFromBase,
   defaultOfflineSyncStatePath,
@@ -148,8 +149,7 @@ import {
   shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncChangeset,
   summarizeOfflineSyncPendingChanges,
-  summarizeOfflineSyncPendingFiles,
-  writeOfflineSyncState,
+  summarizeOfflineSyncPendingFiles, writeOfflineSyncState,
   type OfflineSyncApplyFileContentChunkResult,
   type OfflineSyncFileDigest,
   type OfflineSyncFileRecord,
@@ -170,28 +170,16 @@ import {
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
-import {
-  AUTH_TAG_LENGTH,
-  ENVELOPE_HEADER_SIZE,
-  ENVELOPE_LAYOUT,
-  ENVELOPE_SALT_LENGTH,
-  ENVELOPE_VERSION,
-  FILE_FORMAT_FLAGS,
-  FILE_FORMAT_VERSION,
-  IV_LENGTH,
-  MAGIC_BYTES,
-  MAGIC_HEADER_SIZE,
-  SecureStoreLockedError,
-  filePathAad,
-  isEncryptedFile,
-  keyring,
-  readHeader,
-  secureStoreDir,
-} from "@remnic/core/secure-store";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
+import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
+import {
+  createConfiguredOfflineStorage,
+  createOfflineStorageForPath,
+  createOfflineStorageIo,
+} from "./offline-storage-io.js";
 import type {
   BinaryLifecycleConfig,
 } from "@remnic/core";
@@ -8746,174 +8734,6 @@ function waitForOfflineInterval(
   });
 }
 
-async function createOfflineStorageIo(memoryDir: string): Promise<{
-  readFile: Parameters<typeof buildOfflineSyncChangeset>[0]["readFile"];
-  readFileDigest: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
-  readFileChunks: OfflineFileChunkReader;
-  writeFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["writeFile"];
-  writeStagingFile: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeStagingFile"];
-  writeFileChunks: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeFileChunks"];
-  deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
-}> {
-  const storage = new StorageManager(memoryDir);
-  const header = await readHeader(memoryDir);
-  let secureStoreKey: Buffer | null = null;
-  if (header) {
-    storage.setSecureStoreRequired(true);
-    const key = keyring.getKey(secureStoreDir(memoryDir));
-    if (key) {
-      storage.setSecureStoreKey(key);
-      secureStoreKey = key;
-    }
-  }
-  return {
-    readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
-    readFileDigest: async ({ filePath }) => {
-      const hash = createHash("sha256");
-      let bytes = 0;
-      for await (const rawChunk of readOfflineSyncFileChunks({
-        filePath,
-        memoryDir,
-        secureStoreKey,
-        chunkSize: OFFLINE_SYNC_FILE_CONTENT_UPLOAD_CHUNK_BYTES,
-      })) {
-        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-        hash.update(chunk);
-        bytes += chunk.length;
-      }
-      return {
-        sha256: hash.digest("hex"),
-        bytes,
-      };
-    },
-    readFileChunks: ({ filePath, chunkSize }) => readOfflineSyncFileChunks({
-      filePath,
-      memoryDir,
-      secureStoreKey,
-      chunkSize,
-    }),
-    writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-    writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
-    writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
-    deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
-  };
-}
-
-async function* readOfflineSyncFileChunks(options: {
-  filePath: string;
-  memoryDir: string;
-  secureStoreKey: Buffer | null;
-  chunkSize: number;
-}): AsyncIterable<Buffer> {
-  const header = await readFilePrefix(options.filePath, MAGIC_HEADER_SIZE);
-  if (!isEncryptedFile(header)) {
-    yield* readPlainOfflineFileChunks(options.filePath, options.chunkSize);
-    return;
-  }
-  if (!options.secureStoreKey) {
-    throw new SecureStoreLockedError(
-      `secure-store is locked — cannot read encrypted file at ${options.filePath}. ` +
-        "Run `remnic secure-store unlock` to decrypt.",
-    );
-  }
-  yield* readEncryptedOfflineFileChunks({
-    filePath: options.filePath,
-    memoryDir: options.memoryDir,
-    key: options.secureStoreKey,
-    chunkSize: options.chunkSize,
-  });
-}
-
-async function readFilePrefix(filePath: string, length: number): Promise<Buffer> {
-  const handle = await fs.promises.open(filePath, "r");
-  try {
-    const out = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(out, 0, length, 0);
-    return out.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
-}
-
-async function* readPlainOfflineFileChunks(filePath: string, chunkSize: number): AsyncIterable<Buffer> {
-  const stream = fs.createReadStream(filePath, { highWaterMark: chunkSize });
-  for await (const chunk of stream) {
-    yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-  }
-}
-
-async function* readEncryptedOfflineFileChunks(options: {
-  filePath: string;
-  memoryDir: string;
-  key: Buffer;
-  chunkSize: number;
-}): AsyncIterable<Buffer> {
-  const header = await readFilePrefix(options.filePath, MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE);
-  if (header.length < MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE || !isEncryptedFile(header)) {
-    throw new Error(`secure-store encrypted file is truncated: ${options.filePath}`);
-  }
-  const version = header.readUInt8(MAGIC_BYTES.length);
-  const flags = header.readUInt8(MAGIC_BYTES.length + 1);
-  if (version !== FILE_FORMAT_VERSION) {
-    throw new Error(`secure-store file has unsupported version ${version}: ${options.filePath}`);
-  }
-  if (flags !== FILE_FORMAT_FLAGS) {
-    throw new Error(`secure-store file has unsupported flags 0x${flags.toString(16)}: ${options.filePath}`);
-  }
-
-  const envelopeHeader = header.subarray(MAGIC_HEADER_SIZE);
-  const envelopeVersion = envelopeHeader.readUInt8(ENVELOPE_LAYOUT.version);
-  if (envelopeVersion !== ENVELOPE_VERSION) {
-    throw new Error(`secure-store envelope has unsupported version ${envelopeVersion}: ${options.filePath}`);
-  }
-  const salt = envelopeHeader.subarray(
-    ENVELOPE_LAYOUT.salt,
-    ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH,
-  );
-  const iv = envelopeHeader.subarray(ENVELOPE_LAYOUT.iv, ENVELOPE_LAYOUT.iv + IV_LENGTH);
-  const authTag = envelopeHeader.subarray(
-    ENVELOPE_LAYOUT.authTag,
-    ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH,
-  );
-  const decipher = createDecipheriv("aes-256-gcm", options.key, iv, {
-    authTagLength: AUTH_TAG_LENGTH,
-  });
-  decipher.setAuthTag(authTag);
-  decipher.setAAD(Buffer.concat([secureStoreEnvelopeHeaderAad(salt), filePathAad(options.filePath, options.memoryDir)]));
-
-  let pending = Buffer.alloc(0);
-  const stream = fs.createReadStream(options.filePath, {
-    start: MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE,
-    highWaterMark: options.chunkSize,
-  });
-  for await (const encryptedChunk of stream) {
-    const plain = decipher.update(Buffer.isBuffer(encryptedChunk) ? encryptedChunk : Buffer.from(encryptedChunk));
-    if (plain.length > 0) {
-      pending = Buffer.concat([pending, plain], pending.length + plain.length);
-    }
-    while (pending.length >= options.chunkSize) {
-      yield pending.subarray(0, options.chunkSize);
-      pending = pending.subarray(options.chunkSize);
-    }
-  }
-  const finalPlain = decipher.final();
-  if (finalPlain.length > 0) {
-    pending = Buffer.concat([pending, finalPlain], pending.length + finalPlain.length);
-  }
-  while (pending.length >= options.chunkSize) {
-    yield pending.subarray(0, options.chunkSize);
-    pending = pending.subarray(options.chunkSize);
-  }
-  if (pending.length > 0) yield pending;
-}
-
-function secureStoreEnvelopeHeaderAad(salt: Uint8Array): Buffer {
-  const out = Buffer.alloc(1 + ENVELOPE_SALT_LENGTH);
-  out.writeUInt8(ENVELOPE_VERSION, 0);
-  Buffer.from(salt).copy(out, 1);
-  return out;
-}
-
 export function formatOfflineLargeFilePushFailureMessage(
   failures: readonly { path: string; error: string }[],
 ): string {
@@ -9007,7 +8827,9 @@ export async function runOfflineSyncOnce(options: {
   userExcludeRegexps?: readonly RegExp[];
   /** Large files permanently skipped by the watch 3-strikes policy (#1786). */
   skipLargeFilePaths?: ReadonlySet<string>;
-}): Promise<OfflineSyncRunResult> {
+  /** Preserve the configured secure-store write policy when loading the key. */
+  secureStoreEncryptOnWrite?: boolean;
+} & { impressionsRotateBytes: number; impressionsRotateKeep: number }): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
   let priorState = await readOfflineSyncState(activeStatePath);
@@ -9046,8 +8868,23 @@ export async function runOfflineSyncOnce(options: {
   }
   const baseFiles = priorState?.baseFiles ?? [];
   const baseCapturedAt = priorState ? new Date(priorState.lastSyncedAt) : undefined;
-  const storageIo = await createOfflineStorageIo(options.memoryDir);
+  const offlineStorage = await createConfiguredOfflineStorage(
+    options.memoryDir,
+    options.secureStoreEncryptOnWrite,
+  );
+  const storageIo = await createOfflineStorageIo(options.memoryDir, offlineStorage);
   const localSourceId = localOfflineSourceId(options.memoryDir);
+  await drainOfflineSyncImpressions(options.memoryDir, options);
+  await drainPendingLifecycleForOfflineSync(
+    options.memoryDir,
+    (ledgerPath) =>
+      createOfflineStorageForPath(
+        options.memoryDir,
+        ledgerPath,
+        offlineStorage,
+        options.secureStoreEncryptOnWrite ?? true,
+      ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+  );
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
@@ -9635,7 +9472,10 @@ export function advanceOfflineLargeFileFailureCounts(options: {
  * built-in node-local state excludes applied inside offline-sync.ts.
  * Invalid globs throw with a per-entry message instead of being ignored.
  */
-function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
+function resolveOfflineSyncUserExcludes(
+  rest: string[],
+  config: ReturnType<typeof parseConfig>,
+): RegExp[] {
   const globs: string[] = [];
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] !== "--exclude") continue;
@@ -9646,31 +9486,17 @@ function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
     globs.push(value.trim());
     i += 1;
   }
-  const configPath = resolveConfigPath();
-  try {
-    const raw = fs.existsSync(configPath)
-      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-      : {};
-    const remnicCfg = resolveRemnicConfigRecord(raw);
-    const configured = remnicCfg.offlineSyncExcludes;
-    if (configured !== undefined && configured !== null) {
-      if (!Array.isArray(configured)) {
-        throw new Error("offlineSyncExcludes config must be an array of non-empty glob strings");
-      }
-      for (const entry of configured) {
-        if (typeof entry !== "string" || entry.trim().length === 0) {
-          throw new Error("offlineSyncExcludes config must contain only non-empty glob strings");
-        }
-        globs.push(entry.trim());
-      }
+  const configured = config.offlineSyncExcludes;
+  if (configured !== undefined && configured !== null) {
+    if (!Array.isArray(configured)) {
+      throw new Error("offlineSyncExcludes config must be an array of non-empty glob strings");
     }
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      // Unparseable config file: offline commands historically run without
-      // config; surface loudly rather than silently dropping excludes.
-      throw new Error(`cannot read offlineSyncExcludes from ${configPath}: ${error.message}`);
+    for (const entry of configured) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        throw new Error("offlineSyncExcludes config must contain only non-empty glob strings");
+      }
+      globs.push(entry.trim());
     }
-    throw error;
   }
   return compileOfflineSyncExcludeGlobs(globs);
 }
@@ -9702,7 +9528,20 @@ Environment fallbacks:
   const includeTranscripts = !hasFlag(rest, "--no-transcripts");
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const statePathExplicit = stateOverride !== undefined;
-  const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest);
+  const configPath = resolveConfigPath();
+  let config: ReturnType<typeof parseConfig>;
+  try {
+    const rawConfig = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+      : {};
+    config = parseConfigQuietly(pickOfflineConfigRecord(rawConfig));
+  } catch {
+    throw new Error(
+      "offline sync: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
+    );
+  }
+  const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest, config);
+  const impressionRotation = resolveOfflineImpressionRotation(configPath);
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
@@ -9742,7 +9581,10 @@ Environment fallbacks:
         statePath: existingState.statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(memoryDir);
+    const storageIo = await createOfflineStorageIo(
+      memoryDir,
+      await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
+    );
     const pull = await applyOfflineSyncSnapshot({
       root: memoryDir,
       snapshot: remoteSnapshot,
@@ -9789,6 +9631,8 @@ Environment fallbacks:
       statePath,
       statePathExplicit,
       userExcludeRegexps,
+      secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
+      ...impressionRotation,
     });
     if (json) {
       console.log(JSON.stringify(offlineSyncResultJsonSummary(result), null, 2));
@@ -9822,7 +9666,25 @@ Environment fallbacks:
         statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(memoryDir);
+    const configuredStorage = await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite);
+    const storageIo = await createOfflineStorageIo(memoryDir, configuredStorage);
+    // Fold durable pending impression/lifecycle spills before summarizing so
+    // `status` reports the same pending set a following `sync` would push
+    // (#2033). runOfflineSyncOnce drains these queues before every snapshot; a
+    // status that skipped them would undercount. A deferred/failed drain aborts
+    // here for the same reason sync aborts — an accurate count beats a silent
+    // undercount.
+    await drainOfflineSyncImpressions(memoryDir, impressionRotation);
+    await drainPendingLifecycleForOfflineSync(
+      memoryDir,
+      (ledgerPath) =>
+        createOfflineStorageForPath(
+          memoryDir,
+          ledgerPath,
+          configuredStorage,
+          config.secureStoreEncryptOnWrite ?? true,
+        ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+    );
     const summary = await summarizeOfflineSyncPendingChanges({
       root: memoryDir,
       sourceId: localOfflineSourceId(memoryDir),
@@ -9872,6 +9734,8 @@ Environment fallbacks:
           statePath,
           statePathExplicit,
           userExcludeRegexps,
+          secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
+          ...impressionRotation,
           skipLargeFilePaths: skippedLargeFiles,
         });
         const advanced = advanceOfflineLargeFileFailureCounts({
@@ -11131,14 +10995,11 @@ Options:
 }
 
 // ── Daemon management ────────────────────────────────────────────────────────
-
 const LOGS_DIR = path.join(PID_DIR, "logs");
 const LAUNCHD_PLIST_PATHS = launchdPlistPaths(resolveHomeDir());
 const [LAUNCHD_PLIST_PATH] = LAUNCHD_PLIST_PATHS;
 const SYSTEMD_UNIT_PATHS = systemdUnitPaths(resolveHomeDir());
 const [SYSTEMD_UNIT_PATH] = SYSTEMD_UNIT_PATHS;
-
-
 function readPid(): number | undefined {
   return readVerifiedDaemonPid({
     pidFiles: [PID_FILE, LEGACY_PID_FILE],

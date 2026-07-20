@@ -51,7 +51,11 @@ import {
   type ProcessBatchFn,
 } from "./bulk-import/index.js";
 import { archiveObservations } from "./maintenance/archive-observations.js";
-import { rebuildMemoryLifecycleLedger } from "./maintenance/rebuild-memory-lifecycle-ledger.js";
+import {
+  runRebuildMemoryLifecycleLedgerCliCommand,
+  type RebuildMemoryLifecycleLedgerCliCommandOptions,
+} from "./maintenance/rebuild-memory-lifecycle-ledger-cli.js";
+export { runRebuildMemoryLifecycleLedgerCliCommand, type RebuildMemoryLifecycleLedgerCliCommandOptions };
 import {
   listMemoryGovernanceRuns,
   readMemoryGovernanceRunArtifact,
@@ -460,12 +464,6 @@ export interface ArchiveObservationsCliCommandOptions {
 }
 
 export interface RebuildObservationsCliCommandOptions {
-  memoryDir: string;
-  write?: boolean;
-  now?: Date;
-}
-
-export interface RebuildMemoryLifecycleLedgerCliCommandOptions {
   memoryDir: string;
   write?: boolean;
   now?: Date;
@@ -1018,16 +1016,6 @@ export async function runRebuildObservationsCliCommand(
   options: RebuildObservationsCliCommandOptions,
 ) {
   return rebuildObservations({
-    memoryDir: options.memoryDir,
-    dryRun: options.write !== true,
-    now: options.now,
-  });
-}
-
-export async function runRebuildMemoryLifecycleLedgerCliCommand(
-  options: RebuildMemoryLifecycleLedgerCliCommandOptions,
-) {
-  return rebuildMemoryLifecycleLedger({
     memoryDir: options.memoryDir,
     dryRun: options.write !== true,
     now: options.now,
@@ -7035,13 +7023,24 @@ export function registerCli(
         .command("rebuild-memory-lifecycle-ledger")
         .description("Rebuild the generic memory lifecycle ledger from markdown memories (dry-run by default)")
         .option("--write", "Write rebuilt ledger (default: dry-run)")
+        .option("--namespace <ns>", "Namespace whose ledger to rebuild (default: config defaultNamespace)", "")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const namespace = typeof options.namespace === "string" && options.namespace.trim().length > 0
+            ? options.namespace.trim()
+            : undefined;
+          // Route BOTH the undefined/default and explicit namespace through the
+          // router (#2033 finding 2): a store may live at a tokenized
+          // namespaces/<token>/ path, and the default can migrate off the legacy
+          // root, so storage.dir keeps the rebuild aligned with the namespace
+          // router and secure store. The raw resolver still validates the segment.
+          await resolveMemoryDirForNamespace(orchestrator, namespace, { rejectUnsupportedOverride: true });
+          const storage = await orchestrator.getStorageForNamespace(namespace);
           const result = await runRebuildMemoryLifecycleLedgerCliCommand({
-            memoryDir: orchestrator.config.memoryDir,
+            memoryDir: storage.dir,
             write: options.write === true,
+            storage,
           });
-
           console.log(`Dry run: ${result.dryRun ? "yes" : "no"}`);
           console.log(`Scanned memories: ${result.scannedMemories}`);
           console.log(`Rebuilt rows: ${result.rebuiltRows}`);

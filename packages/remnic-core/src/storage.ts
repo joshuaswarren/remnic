@@ -20,6 +20,16 @@ import { log } from "./logger.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
+import {
+  appendLifecycleEventsSerialized,
+  type DrainPendingLifecycleForSyncResult,
+  drainPendingLifecycleLedgerForSync,
+  drainPendingLifecycleLedgerIfAny,
+  readAllLifecycleEventsFromLedger,
+  readAllLifecycleEventsFromLedgerBuffer,
+  readBoundedLifecycleEventsFromLedger,
+  serializeLifecycleAppendPayload,
+} from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
@@ -64,6 +74,7 @@ import {
   SecureStoreLockedError,
   MAGIC_HEADER_SIZE,
   isEncryptedFile,
+  probeEncryptedRegularFileHeader,
   readMaybeEncryptedFileBuffer,
   readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
@@ -181,7 +192,6 @@ import {
 import {
   inferMemoryStatus,
   isArchivedMemoryPath,
-  sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
@@ -2201,20 +2211,28 @@ export class StorageManager {
     return this._secureStoreKey !== null;
   }
 
+  /** Whether a state-file write encrypts at rest (encrypt-on-write on AND key
+   *  set) — the write mode lifecycle compaction reserves the envelope for (#2033). */
+  willEncryptStateWrites(): boolean {
+    return this._secureStoreEncryptOnWrite && this._secureStoreKey !== null;
+  }
+
   /**
-   * Resolve the effective write key.
+   * Resolve the effective write key: null when encrypt-on-write is off or the
+   * store is unlocked-optional; the key when set; else throws
+   * SecureStoreLockedError under a required-but-locked store (PR #767) instead
+   * of silently writing plaintext.
    *
-   * - If `_secureStoreEncryptOnWrite` is false: returns null (plain write).
-   * - If `_secureStoreEncryptOnWrite` is true AND key is set: returns key.
-   * - If `_secureStoreEncryptOnWrite` is true AND key is null AND
-   *   `_secureStoreRequired` is true: throws SecureStoreLockedError so the
-   *   write fails loudly rather than silently writing plaintext (P1 finding
-   *   from Cursor review of PR #767).
-   * - If `_secureStoreEncryptOnWrite` is true AND key is null AND
-   *   `_secureStoreRequired` is false: returns null (unencrypted store).
+   * `forceEncrypt` overrides the encrypt-on-write policy flag ONLY (issue
+   * #2033): a lifecycle-ledger compaction of an already-encrypted ledger/backup
+   * must preserve encryption at rest even when `secureStoreEncryptOnWrite` is
+   * paused, or it would silently downgrade encrypted state to plaintext. It
+   * never bypasses the LOCK: when the store has no key it still returns null
+   * (optional) or throws (required), so a keyless caller can never fabricate an
+   * encrypted write.
    */
-  private resolveWriteKey(): Buffer | null {
-    if (!this._secureStoreEncryptOnWrite) return null;
+  private resolveWriteKey(forceEncrypt = false): Buffer | null {
+    if (!forceEncrypt && !this._secureStoreEncryptOnWrite) return null;
     if (this._secureStoreKey !== null) return this._secureStoreKey;
     if (this._secureStoreRequired) {
       throw new SecureStoreLockedError(
@@ -2706,8 +2724,8 @@ export class StorageManager {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
-    const writeKey = this.resolveWriteKey();
+  private writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+    const writeKey = this.resolveWriteKey(forceEncrypt);
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
       // changes the file's (size, mtime), so isEncryptedFileHeader re-sniffs on
@@ -5272,20 +5290,77 @@ export class StorageManager {
   async appendMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): Promise<number> {
     if (events.length === 0) return 0;
     await this.ensureDirectories();
-
-    const nowIso = new Date().toISOString();
-    const payload = events
-      .map((event) => {
-        const normalized: MemoryLifecycleEvent = {
-          ...event,
-          timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
-        };
-        return `${JSON.stringify(normalized)}\n`;
-      })
-      .join("");
-
-    await this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, payload);
+    // Lock-serialized against compaction; on lock-budget exhaustion the event
+    // spills to a durable encrypted pending queue, not dropped (#1910, #2033).
+    await appendLifecycleEventsSerialized(
+      this.memoryLifecycleLedgerPath,
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      serializeLifecycleAppendPayload(events),
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+    );
     return events.length;
+  }
+
+  /** Drain the durable pending lifecycle-append spill into the ledger (#2033);
+   *  fast no-op when nothing is pending. Returns true when rows were drained. */
+  async drainPendingMemoryLifecycleEvents(): Promise<boolean> {
+    return drainPendingLifecycleLedgerIfAny(
+      this.memoryLifecycleLedgerPath,
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      () => this.ensureDirectories(),
+    );
+  }
+
+  /** Offline-sync pre-snapshot drain (#2033): fold pending lifecycle spills into
+   *  the active ledger and report whether durable rows STILL remain in the
+   *  offline-sync-EXCLUDED pending queue. The caller aborts the snapshot when
+   *  `pendingDeferred` is true so append-only rows are never silently omitted. */
+  async drainPendingMemoryLifecycleEventsForSync(): Promise<DrainPendingLifecycleForSyncResult> {
+    return drainPendingLifecycleLedgerForSync(
+      this.memoryLifecycleLedgerPath,
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+      (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
+      () => this.ensureDirectories(),
+    );
+  }
+
+  /** Drain pending lifecycle spills for any ledger inside this storage root.
+   * The offline CLI uses this path-aware variant for per-namespace ledgers so
+   * secure-store encryption and path-bound authentication remain consistent. */
+  async drainPendingMemoryLifecycleEventsForSyncAt(
+    ledgerPath: string,
+  ): Promise<DrainPendingLifecycleForSyncResult> {
+    const target = this.assertManagedStoragePath(
+      ledgerPath,
+      "storage.drainPendingMemoryLifecycleEventsForSyncAt",
+    );
+    return drainPendingLifecycleLedgerForSync(
+      target,
+      {
+        writeSecure: (p, c) => this.writeStorageSecureFile(p, c),
+        readSecure: (p) => this.readStorageSecureFile(p),
+      },
+      (payload) => this.appendStorageSecureFile(target, payload),
+      async () => {
+        await mkdir(path.dirname(target), { recursive: true });
+      },
+    );
+  }
+
+  /** Rewrite the ledger through the secure writer (#1910); re-encrypts when unlocked, throws when locked.
+   *  `targetPath` re-encrypts under a decryptable backup path's own AAD;
+   *  Buffer content passes through verbatim (#2033). `forceEncrypt` preserves
+   *  encryption at rest for an already-encrypted ledger/backup even when the
+   *  `secureStoreEncryptOnWrite` policy is paused, so a compaction never
+   *  downgrades encrypted state to plaintext (#2033); it never bypasses the lock. */
+  async writeMemoryLifecycleLedgerContent(
+    content: string | Buffer,
+    targetPath: string = this.memoryLifecycleLedgerPath,
+    forceEncrypt = false,
+  ): Promise<void> {
+    await this.ensureDirectories();
+    await this.writeStorageSecureFile(targetPath, content, forceEncrypt);
   }
 
   async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]): Promise<number> {
@@ -5520,42 +5595,30 @@ export class StorageManager {
   }
 
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
-    try {
-      const out: MemoryLifecycleEvent[] = [];
-      for await (const line of readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
-        this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
-      )) {
-        const row = line.trim();
-        if (!row) continue;
-        try {
-          const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
-          if (
-            typeof parsed.eventId === "string" &&
-            typeof parsed.memoryId === "string" &&
-            typeof parsed.eventType === "string" &&
-            typeof parsed.timestamp === "string" &&
-            typeof parsed.actor === "string" &&
-            typeof parsed.ruleVersion === "string"
-          ) {
-            out.push(parsed as MemoryLifecycleEvent);
-          }
-        } catch {
-          // Ignore malformed rows (fail-open).
-        }
-      }
-      return sortMemoryLifecycleEvents(out);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return [];
+    return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
+  }
+
+  /** Raw decrypted ledger bytes as a Buffer, never a string, so an oversized
+   *  ledger cannot throw on decode before recovery (#2033). */
+  async readMemoryLifecycleLedgerRawBufferForCompaction(): Promise<Buffer> {
+    return readMaybeEncryptedFileBuffer(this.memoryLifecycleLedgerPath, this._secureStoreKey, this.baseDir);
+  }
+  async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+    if (!(await probeEncryptedRegularFileHeader(this.memoryLifecycleLedgerPath))) {
+      return readAllLifecycleEventsFromLedger(
+        this.memoryLifecycleLedgerPath,
+        (p) => this.readStorageSecureFile(p),
+      );
     }
+    return readAllLifecycleEventsFromLedgerBuffer(
+      this.memoryLifecycleLedgerPath,
+      (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir),
+    );
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {
-    const cappedLimit = Math.max(0, Math.floor(limit));
-    if (cappedLimit === 0) return [];
-    const events = await this.readAllMemoryLifecycleEvents();
-    return events.slice(-cappedLimit);
+    return readBoundedLifecycleEventsFromLedger(
+      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), limit);
   }
 
   async writeCompressionGuidelines(content: string): Promise<void> {
@@ -6462,8 +6525,8 @@ export class StorageManager {
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
     warnProjectionFallback(this.baseDir, "getMemoryTimeline");
-    const events = await this.readAllMemoryLifecycleEvents();
-    return events.filter((event) => event.memoryId === memoryId).slice(-cappedLimit);
+    return readBoundedLifecycleEventsFromLedger(
+      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), cappedLimit, memoryId);
   }
 
   // ---------------------------------------------------------------------------

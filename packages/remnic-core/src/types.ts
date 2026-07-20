@@ -1,3 +1,5 @@
+import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
+
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
 export type SignalLevel = "none" | "low" | "medium" | "high";
@@ -661,7 +663,7 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
-export interface PluginConfig {
+export interface PluginConfig extends BoundedJsonlStateConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -2107,11 +2109,9 @@ export interface PluginConfig {
   graphEdgeDecayVisibilityThreshold: number;
 
   /**
-   * Issue #681 PR 3/3 — minimum edge confidence required for an edge to be
-   * traversed during spreading activation. Edges with `confidence` below this
-   * floor are pruned and contribute neither activation nor downstream
-   * neighbors. Legacy edges without `confidence` are treated as 1.0 so they
-   * always pass the floor. Range `[0, 1]`; default `0.2`.
+   * Issue #681 PR 3/3 — minimum edge confidence to traverse during spreading
+   * activation. Edges below are pruned (no activation, no downstream neighbors);
+   * legacy edges without `confidence` are treated as 1.0. Range `[0, 1]`; default `0.2`.
    */
   graphTraversalConfidenceFloor: number;
   /**

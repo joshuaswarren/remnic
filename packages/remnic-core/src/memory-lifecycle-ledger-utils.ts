@@ -24,6 +24,47 @@ export const MEMORY_LIFECYCLE_EVENT_SORT_ORDER: Record<MemoryLifecycleEventType,
   archived: 10,
 };
 
+/**
+ * Deterministic sort rank for a lifecycle event type. The ledger readers admit
+ * any structurally valid row (permissive `eventType`, issue #1910), so an
+ * unknown/typoed type must still sort deterministically: it ranks AFTER every
+ * known type and keeps the comparator total. Without this fallback,
+ * `map[unknown] - map[known]` is `NaN`, an invalid comparator result.
+ */
+const UNKNOWN_LIFECYCLE_EVENT_SORT_RANK = Number.MAX_SAFE_INTEGER;
+
+export function lifecycleEventSortRank(eventType: string): number {
+  return (
+    MEMORY_LIFECYCLE_EVENT_SORT_ORDER[eventType as MemoryLifecycleEventType] ??
+    UNKNOWN_LIFECYCLE_EVENT_SORT_RANK
+  );
+}
+
+/**
+ * Cross-process lock path guarding lifecycle-ledger mutations (issue #1910,
+ * codex): `appendMemoryLifecycleEvents` and the compaction rewrite both hold
+ * this lock so a lifecycle event appended during compaction's read->rewrite
+ * window cannot be clobbered by the atomic rename that replaces the ledger.
+ */
+export function memoryLifecycleLedgerLockPath(ledgerPath: string): string {
+  return `${ledgerPath}.lock`;
+}
+
+/** Stale-break window for the lifecycle-ledger lock, shared by append + rewrite. */
+export const MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS = 30_000;
+
+/**
+ * Acquisition budget for a lifecycle append waiting on the shared ledger lock
+ * (issue #2033). Set to twice the stale-break window so a normal append waits
+ * out an in-progress compaction rewrite instead of giving up at
+ * withHeldFileLock's 5s default and dropping the event: a live compaction
+ * releases within its own runtime, and a crashed holder's lock is stale-broken
+ * at MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS, so the append still acquires well
+ * inside this budget rather than failing open.
+ */
+export const MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS =
+  MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS * 2;
+
 export function toMemoryPathRel(baseDir: string, filePath: string): string {
   if (!baseDir) return filePath.split(path.sep).join("/");
   return path.relative(baseDir, filePath).split(path.sep).join("/");
@@ -107,10 +148,15 @@ export function buildLifecycleEventsForMemory(memory: MemoryFile): MemoryLifecyc
   return events;
 }
 
+export function compareMemoryLifecycleEvents(
+  a: MemoryLifecycleEvent,
+  b: MemoryLifecycleEvent,
+): number {
+  if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
+  if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
+  return lifecycleEventSortRank(a.eventType) - lifecycleEventSortRank(b.eventType);
+}
+
 export function sortMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): MemoryLifecycleEvent[] {
-  return [...events].sort((a, b) => {
-    if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
-    if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
-    return MEMORY_LIFECYCLE_EVENT_SORT_ORDER[a.eventType] - MEMORY_LIFECYCLE_EVENT_SORT_ORDER[b.eventType];
-  });
+  return [...events].sort(compareMemoryLifecycleEvents);
 }

@@ -286,6 +286,23 @@ test("offline status reports the offline-state label", async () => {
   assert.match(result.stdout, /Offline state/i);
 });
 
+test("offline config errors do not echo config secrets", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-config-error-"));
+  const secret = "synthetic-config-secret";
+  try {
+    fs.writeFileSync(
+      path.join(dir, "remnic.config.json"),
+      `{"openaiApiKey":"${secret}",`,
+      "utf8",
+    );
+    const result = await runCli(["offline", "status"], { cwd: dir });
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.stderr.includes(secret), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("extensions list against an empty workspace reports none found", async () => {
   const result = await runCli(["extensions", "list"]);
   assert.equal(result.exitCode, 0);

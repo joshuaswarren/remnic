@@ -1462,13 +1462,10 @@ export class Orchestrator {
     this.qmd = createSearchBackend(config);
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
-      // Live accessor: the orchestrator reassigns this.qmd to NoopSearchBackend
-      // after construction when the collection is missing (initialize /
-      // startupSearchSync); the scheduler must read the current backend so
-      // debounced maintenance never runs against a stale/disposed one.
       getQmd: () => this.qmd,
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
+      getStorage: () => this.storage, storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
@@ -1535,7 +1532,10 @@ export class Orchestrator {
     });
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
-    this.lastRecall = new LastRecallStore(config.memoryDir);
+    this.lastRecall = new LastRecallStore(config.memoryDir, {
+      impressionsRotateBytes: config.recallImpressionsRotateBytes,
+      impressionsRotateKeep: config.recallImpressionsRotateKeep,
+    });
     this.handleHistory = new RecallHandleHistoryStore(config.memoryDir, {
       maxDepth: config.recallHandleSnapshotDepth,
     });
@@ -3797,6 +3797,10 @@ export class Orchestrator {
 
   getLastRecall(sessionKey: string): LastRecallSnapshot | null {
     return this.lastRecall.get(sessionKey);
+  }
+
+  async drainPendingRecallImpressions() {
+    return this.lastRecall.drainPendingImpressions();
   }
 
   /**

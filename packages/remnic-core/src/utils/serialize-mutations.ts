@@ -194,12 +194,42 @@ export interface HeldFileLockOptions {
    */
   readonly onAfterReleaseRenameForTest?: () => Promise<void> | void;
   /**
+   * Test seam (#2033): fires inside {@link HeldFileLockController.refresh} AFTER
+   * the ownership pre-check passes and BEFORE the `utimes` mtime bump —
+   * simulating a peer that deletes the lock (making the bump throw) or replaces
+   * it (a different owner the post-bump re-check must catch). No-op in
+   * production; proves refresh reports LOST rather than clobbering a peer.
+   */
+  readonly onBeforeRefreshUtimesForTest?: () => Promise<void> | void;
+  /**
    * Best-effort hook for non-fatal lock warnings (heartbeat refresh failure,
    * release-time ownership check failure). Never throws into the caller. If
    * omitted, warnings are swallowed (the lock is advisory; release/heartbeat
    * failures must never crash the guarded op).
    */
   readonly onLockWarning?: (message: string, err: unknown) => void;
+}
+
+/**
+ * Control surface handed to a held-lock task so a long, CPU-bound critical
+ * section can re-assert ownership immediately before its destructive write.
+ */
+export interface HeldFileLockController {
+  /**
+   * Re-verify THIS acquirer still owns the lock and, when it does, refresh the
+   * lock's mtime. Returns `true` only while we still hold it.
+   *
+   * The timer heartbeat cannot fire while a synchronous, CPU-bound section
+   * (a large parse/merge/sort/serialize) blocks the event loop, so a peer can
+   * judge the lock stale, break it, and start its own write within the stale
+   * window. A caller about to perform a destructive rewrite MUST call this
+   * first: `false` means the lock was stale-broken/replaced and the caller MUST
+   * abort rather than clobber the peer that now holds it; `true` also re-stamps
+   * the mtime so the bounded write that immediately follows cannot itself be
+   * judged stale mid-write. On the best-effort unlocked path (`acquired` was
+   * `false`) this always resolves `false` — there is no lock to hold.
+   */
+  refresh(): Promise<boolean>;
 }
 
 /** Default bounded acquisition wait, mirroring the catalog. */
@@ -254,7 +284,7 @@ interface HeldLock {
 export async function withHeldFileLock<T>(
   lockPath: string,
   opts: HeldFileLockOptions,
-  task: (acquired: boolean) => Promise<T>,
+  task: (acquired: boolean, lock: HeldFileLockController) => Promise<T>,
 ): Promise<T> {
   if (typeof lockPath !== "string" || lockPath.length === 0) {
     throw new TypeError("withHeldFileLock: lockPath must be a non-empty string");
@@ -319,7 +349,7 @@ export async function withHeldFileLock<T>(
     // Best-effort: run the task WITHOUT the lock. The caller decides what to
     // do (the catalog touch path will drop its append); we never crash the
     // primary op on contention.
-    return task(false);
+    return task(false, { refresh: async () => false });
   }
 
   // Heartbeat: while WE hold the lock, refresh its mtime so age-based stale
@@ -344,8 +374,11 @@ export async function withHeldFileLock<T>(
   }, heartbeatMs);
   // Don't keep the event loop alive solely for the heartbeat.
   heartbeat.unref?.();
+  const controller: HeldFileLockController = {
+    refresh: () => refreshHeldLock(held, warn, opts.onBeforeRefreshUtimesForTest),
+  };
   try {
-    return await task(true);
+    return await task(true, controller);
   } finally {
     clearInterval(heartbeat);
     await releaseLock(held, warn, opts.onAfterReleaseRenameForTest);
@@ -667,6 +700,38 @@ async function lockHeldBySelf(held: HeldLock): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Re-assert ownership and refresh the lock mtime for {@link HeldFileLockController.refresh}.
+ * Returns `true` only while THIS acquirer still owns the lock. When ownership
+ * was lost (a peer stale-broke and replaced the lock while a CPU-bound section
+ * blocked the event loop), returns `false` WITHOUT touching the replacement's
+ * mtime — mirroring the heartbeat's ownership guard.
+ *
+ * FAIL-CLOSED on the mtime bump (#2033): a `utimes` failure means we cannot
+ * prove the lock is still ours AND fresh — the file may have been stale-broken,
+ * deleted, or replaced between the ownership check and the bump — so we report
+ * lost ownership rather than let the caller rewrite the ledger on an unrefreshed
+ * (soon-stale) or already-replaced lock. After a successful bump we RE-CHECK
+ * ownership: a peer could have broken and replaced the lock in the window, in
+ * which case `utimes` just refreshed the replacement's mtime and we must not
+ * report held.
+ */
+async function refreshHeldLock(
+  held: HeldLock,
+  warn: (message: string, err: unknown) => void,
+  onBeforeRefreshUtimesForTest?: () => Promise<void> | void,
+): Promise<boolean> {
+  if (!(await lockHeldBySelf(held))) return false;
+  if (onBeforeRefreshUtimesForTest) await onBeforeRefreshUtimesForTest();
+  try {
+    await utimes(held.path, new Date(), new Date());
+  } catch (err) {
+    warn("withHeldFileLock manual refresh failed", err);
+    return false;
+  }
+  return lockHeldBySelf(held);
 }
 
 function sleep(ms: number): Promise<void> {

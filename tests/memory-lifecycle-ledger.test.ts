@@ -4,10 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
+import type { MemoryLifecycleEvent } from "../src/types.ts";
 import {
   backupExistingLedger,
+  boundLifecycleEventsToByteCap,
   rebuildMemoryLifecycleLedger,
 } from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
+import {
+  memoryLifecycleLedgerLockPath,
+} from "../src/memory-lifecycle-ledger-utils.ts";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -629,6 +634,605 @@ duplicate
     assert.equal(result.skippedDuplicateEvents.every((entry) => entry.eventId.includes("duplicate-id")), true);
     const rows = (await readFile(result.outputPath, "utf-8")).trim().split("\n");
     assert.equal(rows.length, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger rejects a storage whose dir does not match memoryDir (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dir-mismatch-a-"));
+  const otherDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dir-mismatch-b-"));
+  try {
+    const mismatched = new StorageManager(otherDir);
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({ memoryDir, dryRun: false, storage: mismatched }),
+      /storage\.dir .* must match .*memoryDir/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(otherDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger aborts and leaves the ledger intact when preserve read fails (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-preserve-readfail-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row a frontmatter-only rebuild cannot reconstruct.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Simulate a genuinely unreadable ledger during the preserve read (e.g.
+    // corruption, or a locked required secure store). storage.dir === memoryDir
+    // so the dir-match guard passes and the compaction preserve read is what
+    // fails. (An oversize encrypted ledger no longer fails here — the uncapped
+    // buffer read shrinks it — so the abort contract is now exercised through a
+    // real read failure, #2033.)
+    class UnreadableLedgerStorage extends StorageManager {
+      override async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+        // A path-bearing, coded fs failure: the abort must surface only the
+        // path-free class + errno code, never this absolute ledger path (#2033).
+        const err = new Error(
+          `EIO: i/o error, read '${path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl")}'`,
+        );
+        (err as NodeJS.ErrnoException).code = "EIO";
+        throw err;
+      }
+    }
+    const storage = new UnreadableLedgerStorage(memoryDir);
+
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        storage,
+        preserveExistingEvents: true,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /rebuild aborted: cannot read existing events to preserve/);
+        assert.ok(
+          !err.message.includes(memoryDir),
+          "abort must not leak the ledger's absolute path (#2033)",
+        );
+        assert.match(err.message, /EIO/, "the path-free error class + code still surfaces");
+        return true;
+      },
+    );
+    // No lossy rewrite: the append-only history must survive the failed compaction.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "ledger must be untouched after a preserve-read abort",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger does not lose a lifecycle event appended during compaction (#1910)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-concurrent-append-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row that only the preserve path can carry over.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const capOne: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(ledgerPath, `${JSON.stringify(capOne)}\n`, "utf-8");
+
+    // Fire a concurrent append the instant the rebuild reads the ledger to
+    // preserve it — i.e. while the rebuild holds the ledger lock. The append
+    // must block on that lock and land on the compacted ledger afterwards
+    // instead of being clobbered by the rewrite/rename.
+    const appender = new StorageManager(memoryDir);
+    const capTwo: MemoryLifecycleEvent = {
+      eventId: "cap-2",
+      memoryId: "fact-1",
+      eventType: "imported",
+      timestamp: "2026-03-08T03:00:00.000Z",
+      actor: "importer",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    let appendPromise: Promise<number> | undefined;
+    class RebuildStorageWithConcurrentAppend extends StorageManager {
+      private fired = false;
+      override async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
+        const events = await super.readAllMemoryLifecycleEventsForCompaction();
+        if (!this.fired) {
+          this.fired = true;
+          // Not awaited: it cannot complete until the rebuild releases the lock.
+          appendPromise = appender.appendMemoryLifecycleEvents([capTwo]);
+        }
+        return events;
+      }
+    }
+    const storage = new RebuildStorageWithConcurrentAppend(memoryDir);
+
+    await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage,
+      preserveExistingEvents: true,
+    });
+    assert.ok(appendPromise, "concurrent append must have been fired during the preserve read");
+    await appendPromise;
+
+    const finalIds = (await new StorageManager(memoryDir).readAllMemoryLifecycleEvents())
+      .map((event) => event.eventId)
+      .sort();
+    assert.ok(finalIds.includes("cap-1"), "preserved append-only event must survive compaction");
+    assert.ok(
+      finalIds.includes("cap-2"),
+      "event appended during compaction must land on the compacted ledger, not be lost",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger refuses to run unlocked when the ledger lock cannot be acquired (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-lock-timeout-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row a frontmatter-only rebuild cannot reconstruct: proves
+    // the ledger is left untouched, not rewritten from frontmatter alone.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Hold the cross-process lock with a FRESH (non-stale) lock file so
+    // acquisition times out and withHeldFileLock invokes the rebuild with
+    // acquired=false. A short lockOptions budget keeps the test deterministic.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} held-by-test ${new Date().toISOString()}\n`, "utf-8");
+
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        preserveExistingEvents: true,
+        lockOptions: { maxWaitMs: 100, pollMs: 20 },
+      }),
+      /could not acquire the ledger lock/,
+    );
+    // No unlocked rewrite: the append-only history must survive untouched.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "ledger must be untouched when the lock is not acquired",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("compaction preserves a frontmatter-derived lifecycle row that raced the corpus scan (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-scan-race-"));
+  try {
+    // A memory present at scan time → the reconstruction emits fact-1 created@T0.
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `source: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Seed the ledger with fact-1's live created row (same content key as the
+    // reconstruction → must collapse to one) plus fact-2's created row: a
+    // memory the corpus scan never saw because it was created after the scan.
+    // That is a frontmatter-derived ("created") row the reconstruction cannot
+    // reproduce; the old eventType-only filter deleted it. It must survive.
+    const liveCreatedFact1: MemoryLifecycleEvent = {
+      eventId: "mle-fact1-created",
+      memoryId: "fact-1",
+      eventType: "created",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "storage.writeMemory",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const racedCreatedFact2: MemoryLifecycleEvent = {
+      eventId: "mle-fact2-created",
+      memoryId: "fact-2",
+      eventType: "created",
+      timestamp: "2026-03-08T05:00:00.000Z",
+      actor: "storage.writeMemory",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify(liveCreatedFact1)}\n${JSON.stringify(racedCreatedFact2)}\n`,
+      "utf-8",
+    );
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      storage: new StorageManager(memoryDir),
+      preserveExistingEvents: true,
+    });
+
+    const final = await new StorageManager(memoryDir).readAllMemoryLifecycleEvents();
+    const fact2Created = final.filter((e) => e.memoryId === "fact-2" && e.eventType === "created");
+    assert.equal(fact2Created.length, 1, "raced frontmatter-derived row must survive compaction");
+    assert.equal(fact2Created[0]?.eventId, "mle-fact2-created");
+    const fact1Created = final.filter((e) => e.memoryId === "fact-1" && e.eventType === "created");
+    assert.equal(
+      fact1Created.length,
+      1,
+      "the scanned memory's created event must collapse to exactly one row",
+    );
+    assert.equal(
+      fact1Created[0]?.eventId,
+      "rebuild-fact-1-created-2026-03-08T00:00:00.000Z",
+      "the collapsed row must be the fresh reconstruction, not the live duplicate",
+    );
+    assert.ok(
+      (result.preservedAppendOnlyRows ?? 0) >= 1,
+      "the raced row is counted as preserved beyond the reconstruction",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild bounds a large append-only history under maxLedgerBytes, archiving the overflow to the backup (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-bound-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    // Many append-only events with no frontmatter equivalent — a preserving
+    // rebuild would otherwise carry ALL of them and could leave the ledger over
+    // the read/decrypt cap. Distinct ascending timestamps make "newest" precise.
+    const total = 200;
+    const events: MemoryLifecycleEvent[] = [];
+    for (let i = 0; i < total; i += 1) {
+      events.push({
+        eventId: `cap-${String(i).padStart(3, "0")}`,
+        memoryId: "mem-a",
+        eventType: "explicit_capture_accepted",
+        // Monotonic ascending ISO timestamps so "newest" is unambiguous.
+        timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+        actor: "explicit-capture",
+        ruleVersion: "memory-lifecycle-ledger.v1",
+      });
+    }
+    const originalLedger = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap admits only ~20 rows so bounding must drop the rest.
+    const cap = rowBytes * 20 + Math.floor(rowBytes / 2);
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      preserveExistingEvents: true,
+      maxLedgerBytes: cap,
+    });
+
+    const rewritten = await readFile(ledgerPath, "utf-8");
+    assert.ok(Buffer.byteLength(rewritten, "utf8") < cap, "rewritten ledger is under the byte cap");
+    assert.ok((result.archivedOverflowRows ?? 0) > 0, "overflow rows were archived, not all kept");
+    assert.equal(
+      result.rebuiltRows + (result.archivedOverflowRows ?? 0),
+      total,
+      "kept + archived rows account for every original row",
+    );
+    // The NEWEST events survive in the active ledger; the oldest were dropped.
+    const keptIds = rewritten.trim().split("\n").map((l) => (JSON.parse(l) as MemoryLifecycleEvent).eventId);
+    assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event kept");
+    assert.ok(!keptIds.includes("cap-000"), "oldest event dropped from the active ledger");
+    // The dropped rows are archived in the verbatim backup, so nothing is lost.
+    assert.ok(result.backupPath, "a backup was written");
+    const backup = await readFile(result.backupPath!, "utf-8");
+    assert.equal(backup, originalLedger, "backup holds every original row verbatim");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild bounds finalEvents under maxLedgerBytes even when the on-disk ledger is all-invalid (existing empty) (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-bound-empty-existing-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    // Many memories → a large frontmatter reconstruction (created + updated per
+    // memory) that must be bounded by the cap.
+    const total = 60;
+    for (let i = 0; i < total; i += 1) {
+      const created = new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 2000).toISOString();
+      const updated = new Date(Date.UTC(2026, 2, 8, 0, 0, 1, 0) + i * 2000).toISOString();
+      await writeText(
+        memoryDir,
+        `facts/2026-03-08/fact-${String(i).padStart(3, "0")}.md`,
+        `---\nid: fact-${String(i).padStart(3, "0")}\ncategory: fact\ncreated: ${created}\nupdated: ${updated}\nsource: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: ["t"]\n---\n\nbody ${i}\n`,
+      );
+    }
+    // The on-disk ledger is oversized but EVERY row fails validation, so the
+    // preserve read returns [] — the exact case that previously skipped the byte
+    // cap and let a large frontmatter reconstruction be written unbounded (#2033).
+    const garbage = `${"not-a-valid-lifecycle-row\n".repeat(400)}`;
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, garbage, "utf-8");
+    const cap = 2000;
+
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      dryRun: false,
+      preserveExistingEvents: true,
+      maxLedgerBytes: cap,
+    });
+
+    const rewritten = await readFile(ledgerPath, "utf-8");
+    assert.ok(Buffer.byteLength(rewritten, "utf8") < cap, "rewritten ledger is under the byte cap despite empty existing");
+    assert.ok((result.archivedOverflowRows ?? 0) > 0, "overflow rows were dropped from the active ledger");
+    // The verbatim (invalid) on-disk bytes are preserved in the backup.
+    assert.ok(result.backupPath, "a backup was written");
+    assert.equal(await readFile(result.backupPath!, "utf-8"), garbage, "backup holds the original bytes verbatim");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("byte-cap skips one oversized future row and keeps older fit rows under the cap (#2033)", () => {
+  // Five small, older rows that each comfortably fit, in canonical (input)
+  // order, plus ONE oversized row dated in the far future so recency ordering
+  // places it FIRST. The old code broke at that first newest overflow row and
+  // dropped everything older; the fix skips it and keeps scanning.
+  const fitRows: MemoryLifecycleEvent[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    fitRows.push({
+      eventId: `fit-${String(i).padStart(2, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, i, 0)).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    });
+  }
+  const oversizedFuture: MemoryLifecycleEvent = {
+    eventId: "oversized-future",
+    memoryId: "mem-z",
+    eventType: "explicit_capture_accepted",
+    // Far-future timestamp → sorts newest → visited first by the recency scan.
+    timestamp: new Date(Date.UTC(2099, 0, 1, 0, 0, 0, 0)).toISOString(),
+    actor: `explicit-capture-${"x".repeat(4096)}`,
+    ruleVersion: "memory-lifecycle-ledger.v1",
+  };
+  // Input (canonical) order: fit rows first, oversized future row appended.
+  const events = [...fitRows, oversizedFuture];
+  const fitBytes = fitRows
+    .map((e) => Buffer.byteLength(`${JSON.stringify(e)}\n`, "utf8"))
+    .reduce((a, b) => a + b, 0);
+  // Cap admits every fit row (plus slack) but nowhere near the oversized row,
+  // and is below the grand total so bounding actually engages.
+  const cap = fitBytes + 16;
+
+  const { kept, dropped } = boundLifecycleEventsToByteCap(events, cap);
+
+  const keptIds = kept.map((e) => e.eventId);
+  assert.deepEqual(
+    keptIds,
+    fitRows.map((e) => e.eventId),
+    "every fit row survives, in canonical input order",
+  );
+  assert.ok(!keptIds.includes("oversized-future"), "the oversized future row is dropped");
+  assert.equal(dropped, 1, "exactly the oversized row is dropped");
+  const keptBytes = Buffer.byteLength(`${kept.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+  assert.ok(keptBytes <= cap, "kept output stays bounded under the cap");
+});
+
+test("dry-run rebuild computes the preserve/merge preview without acquiring the ledger lock (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dryrun-lock-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    // An append-only row a frontmatter reconstruction cannot regenerate; the
+    // dry-run preview must still read and count it as preserved.
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Hold the shared lifecycle lock with a fresh mtime for the whole run. A
+    // write would exhaust the short budget below and abort; the dry run must
+    // still complete because it computes its preview WITHOUT taking the lock.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} test-holder ${new Date().toISOString()}\n`, { flag: "wx" });
+    try {
+      const storage = new StorageManager(memoryDir);
+      const result = await rebuildMemoryLifecycleLedger({
+        memoryDir,
+        // Default dry run (dryRun omitted), exactly as the CLI invokes it.
+        storage,
+        preserveExistingEvents: true,
+        // A short budget: were the dry run to contend for the held lock, it
+        // would throw here instead of resolving. It never takes the lock.
+        lockOptions: { maxWaitMs: 200, pollMs: 20 },
+      });
+      assert.equal(result.dryRun, true);
+      // Preview parity with --write: the append-only row is read and counted,
+      // and the reconstruction includes it — but nothing is rewritten.
+      assert.equal(
+        result.preservedAppendOnlyRows,
+        1,
+        "dry-run preview counts the append-only row a --write would preserve",
+      );
+      assert.equal(
+        result.rebuiltRows,
+        3,
+        "dry-run preview = 2 frontmatter rows + 1 preserved append-only row",
+      );
+      assert.equal(result.backupPath, undefined, "dry run writes no backup");
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+
+    // The on-disk ledger is byte-for-byte untouched by the dry run.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "dry run must not rewrite the ledger",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("dry-run rebuild previews byte-cap trimming without rewriting the ledger (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-dryrun-cap-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    const storage = new StorageManager(memoryDir);
+    // A 1-byte cap fits no row, so every row overflows: the preview must report
+    // the cap trimming a --write would apply (archivedOverflowRows) while
+    // leaving the ledger on disk untouched.
+    const result = await rebuildMemoryLifecycleLedger({
+      memoryDir,
+      storage,
+      preserveExistingEvents: true,
+      maxLedgerBytes: 1,
+    });
+    assert.equal(result.dryRun, true);
+    assert.equal(result.archivedOverflowRows, 3, "dry-run preview reports every over-cap row");
+    assert.equal(result.rebuiltRows, 0, "no row fits the 1-byte cap in the preview");
+    assert.equal(result.backupPath, undefined, "dry run writes no backup");
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "dry run must not rewrite the ledger even when the cap trims every row",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("write-mode rebuild still acquires the ledger lock and aborts when it is held (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-write-lock-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: []\n---\n\nalpha\n`,
+    );
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const appendOnly: MemoryLifecycleEvent = {
+      eventId: "cap-1",
+      memoryId: "fact-1",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-08T02:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    const originalLedger = `${JSON.stringify(appendOnly)}\n`;
+    await writeFile(ledgerPath, originalLedger, "utf-8");
+
+    // Unlike a dry run, a write MUST take the lock. With the lock held (fresh
+    // mtime, unbreakable within the short budget), the write aborts rather than
+    // rewriting unlocked — proving write mode still contends for the lock.
+    const lockPath = memoryLifecycleLedgerLockPath(ledgerPath);
+    await writeFile(lockPath, `${process.pid} test-holder ${new Date().toISOString()}\n`, { flag: "wx" });
+    try {
+      const storage = new StorageManager(memoryDir);
+      await assert.rejects(
+        () => rebuildMemoryLifecycleLedger({
+          memoryDir,
+          dryRun: false,
+          storage,
+          preserveExistingEvents: true,
+          lockOptions: { maxWaitMs: 200, pollMs: 20 },
+        }),
+        /could not acquire the ledger lock/,
+        "write mode must contend for the ledger lock and abort when it cannot acquire it",
+      );
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+
+    // The abort happens before any rewrite: the ledger is untouched.
+    assert.equal(
+      await readFile(ledgerPath, "utf-8"),
+      originalLedger,
+      "an aborted write must not rewrite the ledger",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

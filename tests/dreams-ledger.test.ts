@@ -1,11 +1,12 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import {
   appendDreamsLedgerEntry,
   readDreamsLedgerEntries,
+  streamDreamsLedgerLines,
   getDreamsStatus,
   dreamsLedgerPath,
   summarizeGovernanceResultForDreams,
@@ -17,9 +18,21 @@ import {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+const createdTmpDirs: string[] = [];
+
 async function makeTmpDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "engram-dreams-ledger-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-dreams-ledger-"));
+  createdTmpDirs.push(dir);
+  return dir;
 }
+
+// Remove every temp dir this suite created so the run leaves no litter under
+// os.tmpdir() (issue #1910 review).
+after(async () => {
+  await Promise.all(
+    createdTmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const fullPath = path.join(baseDir, relPath);
@@ -431,4 +444,93 @@ test("summarizeGovernanceResultForDreams does not double-count proposed actions"
   assert.equal(result.scannedMemories, 5);
   assert.equal(result.appliedActionCount, 1);
   assert.match(result.notes ?? "", /2 actions proposed/);
+});
+
+// ── Streaming reads (issue #1910) ──────────────────────────────────────────
+
+test("streamDreamsLedgerLines yields nothing when the ledger is missing", async () => {
+  const dir = await makeTmpDir();
+  const lines: string[] = [];
+  for await (const line of streamDreamsLedgerLines(dir)) lines.push(line);
+  assert.deepEqual(lines, []);
+});
+
+test("streamDreamsLedgerLines streams appended rows line by line", async () => {
+  const dir = await makeTmpDir();
+  await appendDreamsLedgerEntry(dir, makeEntry({ itemsProcessed: 1 }));
+  await appendDreamsLedgerEntry(dir, makeEntry({ itemsProcessed: 2 }));
+  const lines: string[] = [];
+  for await (const line of streamDreamsLedgerLines(dir)) {
+    if (line.trim()) lines.push(line);
+  }
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /"itemsProcessed":1/);
+  assert.match(lines[1]!, /"itemsProcessed":2/);
+});
+
+test("getDreamsStatus over a large ledger aggregates only in-window rows", async () => {
+  const dir = await makeTmpDir();
+  const now = new Date("2026-04-27T12:00:00.000Z");
+  // Many out-of-window rows (30 days old) plus a few in-window rows. A correct
+  // streaming window filter must aggregate ONLY the in-window rows regardless
+  // of how many stale rows precede them.
+  const stale = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const staleRows: string[] = [];
+  for (let i = 0; i < 5000; i += 1) {
+    staleRows.push(JSON.stringify(makeEntry({ completedAt: stale, itemsProcessed: 7 })));
+  }
+  const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const recentRows = [
+    JSON.stringify(makeEntry({ phase: "lightSleep", completedAt: recent, itemsProcessed: 3 })),
+    JSON.stringify(makeEntry({ phase: "rem", completedAt: recent, itemsProcessed: 4 })),
+  ];
+  await writeText(dir, "state/dreams-ledger.jsonl", [...staleRows, ...recentRows].join("\n") + "\n");
+
+  const status = await getDreamsStatus(dir, 24, now);
+  assert.equal(status.phases.lightSleep.runCount, 1);
+  assert.equal(status.phases.lightSleep.totalItemsProcessed, 3);
+  assert.equal(status.phases.rem.runCount, 1);
+  assert.equal(status.phases.rem.totalItemsProcessed, 4);
+  assert.equal(status.phases.deepSleep.runCount, 0);
+});
+
+test("getDreamsStatus aggregates every in-window row past the former 100k cap (issue #1910)", async () => {
+  const dir = await makeTmpDir();
+  const now = new Date("2026-04-27T12:00:00.000Z");
+  const inWindow = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  // 100_001 in-window rows — one past the old MAX_DREAMS_WINDOW_ENTRIES cap.
+  // A correct aggregator counts all of them; the old cap truncated at 100_000.
+  const total = 100_001;
+  const row = JSON.stringify(makeEntry({ phase: "lightSleep", completedAt: inWindow, itemsProcessed: 1 }));
+  await writeText(dir, "state/dreams-ledger.jsonl", (row + "\n").repeat(total));
+
+  const status = await getDreamsStatus(dir, 24, now);
+  assert.equal(status.phases.lightSleep.runCount, total);
+  assert.equal(status.phases.lightSleep.totalItemsProcessed, total);
+});
+
+test("readDreamsLedgerEntries rejects rows with a present-but-malformed schemaVersion/dryRun/trigger (issue #1910)", async () => {
+  const dir = await makeTmpDir();
+  const ledgerPath = dreamsLedgerPath(dir);
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  const base = {
+    startedAt: "2026-04-27T00:00:00.000Z",
+    completedAt: "2026-04-27T00:00:01.000Z",
+    durationMs: 1000,
+    phase: "lightSleep" as const,
+    itemsProcessed: 5,
+  };
+  const rows = [
+    JSON.stringify({ ...base, schemaVersion: 2 }), // wrong schema version → reject
+    JSON.stringify({ ...base, dryRun: "yes" }), // non-boolean dryRun → reject
+    JSON.stringify({ ...base, trigger: "cron" }), // unknown trigger → reject
+    JSON.stringify({ ...base, itemsProcessed: 9 }), // valid (no optional fields) → keep
+  ];
+  await writeFile(ledgerPath, rows.join("\n") + "\n", "utf-8");
+
+  const entries = await readDreamsLedgerEntries(dir);
+  assert.equal(entries.length, 1, "only the fully-valid row survives");
+  assert.equal(entries[0]!.itemsProcessed, 9);
+  assert.equal(entries[0]!.dryRun, false);
+  assert.equal(entries[0]!.trigger, "scheduled");
 });

@@ -38,22 +38,6 @@ function collectTsFiles(dirPath: string): string[] {
   return out;
 }
 
-function getPluginConfigKeys(source: ts.SourceFile): Set<string> {
-  for (const stmt of source.statements) {
-    if (!ts.isInterfaceDeclaration(stmt) || stmt.name.text !== "PluginConfig") continue;
-    const keys = new Set<string>();
-    for (const member of stmt.members) {
-      if (!ts.isPropertySignature(member)) continue;
-      if (!member.name) continue;
-      if (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) {
-        keys.add(member.name.text);
-      }
-    }
-    return keys;
-  }
-  throw new Error("Could not find interface PluginConfig in packages/remnic-core/src/types.ts");
-}
-
 function collectObjectLiteralKeys(expr: ts.ObjectLiteralExpression): Set<string> {
   const keys = new Set<string>();
   for (const prop of expr.properties) {
@@ -266,7 +250,20 @@ function main() {
     );
   }
 
-  const pluginConfigKeys = getPluginConfigKeys(typesSf);
+  // Resolve the PluginConfig TYPE (not just its own AST members) so keys
+  // contributed by `extends` heritage — e.g. BoundedJsonlStateConfig, extracted
+  // to a sibling module for the god-file ratchets (#1910/#1995) — are counted.
+  let pluginConfigType: ts.Type | undefined;
+  for (const stmt of typesSf.statements) {
+    if (ts.isInterfaceDeclaration(stmt) && stmt.name.text === "PluginConfig") {
+      pluginConfigType = checker.getTypeAtLocation(stmt.name);
+      break;
+    }
+  }
+  if (!pluginConfigType) {
+    throw new Error("Could not resolve TypeScript type for PluginConfig in packages/remnic-core/src/types.ts");
+  }
+  const pluginConfigKeys = new Set<string>(pluginConfigType.getProperties().map((prop) => prop.getName()));
   const parseConfigReturnKeys = getParseConfigReturnKeys(configSf, program);
   const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf8"));
   const schemaKeys = new Set<string>(Object.keys(pluginJson?.configSchema?.properties ?? {}));
@@ -313,17 +310,6 @@ function main() {
   }
   if (parseExtra.length > 0) {
     failures.push({ message: `parseConfig() return has keys not in PluginConfig: ${parseExtra.join(", ")}` });
-  }
-
-  let pluginConfigType: ts.Type | undefined;
-  for (const stmt of typesSf.statements) {
-    if (ts.isInterfaceDeclaration(stmt) && stmt.name.text === "PluginConfig") {
-      pluginConfigType = checker.getTypeAtLocation(stmt.name);
-      break;
-    }
-  }
-  if (!pluginConfigType) {
-    throw new Error("Could not resolve TypeScript type for PluginConfig");
   }
 
   failures.push(...collectUnknownPluginConfigObjectKeys(program, pluginConfigType, pluginConfigKeys));

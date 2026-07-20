@@ -3,7 +3,7 @@ import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
   runArchiveObservationsCliCommand,
   runMemoryTimelineCliCommand,
@@ -14,6 +14,10 @@ import {
   runRebuildObservationsCliCommand,
   runVerifyMemoryProjectionCliCommand,
 } from "../src/cli.js";
+import { StorageManager } from "../src/storage.js";
+import { isEncryptedFile, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "../src/secure-store/index.js";
+import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
+import type { PluginConfig } from "../src/types.js";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -95,6 +99,265 @@ alpha
   });
   assert.equal(writeResult.dryRun, false);
   await stat(writeResult.outputPath);
+});
+
+test("rebuild-memory-lifecycle-ledger CLI recovery preserves append-only history frontmatter cannot reconstruct (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-preserve-"));
+  try {
+    // A memory file the rebuild reconstructs created/updated events from.
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---\nid: fact-1\ncategory: fact\ncreated: 2026-03-08T00:00:00.000Z\n`
+      + `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n`
+      + `confidenceTier: implied\ntags: ["alpha"]\n---\n\nalpha\n`,
+    );
+    // An APPEND-ONLY ledger row with NO backing memory file: frontmatter cannot
+    // reconstruct it, so a frontmatter-only recovery rebuild would silently drop
+    // this history. The recovery command must preserve it (#2033).
+    const appendOnly = {
+      schemaVersion: 1,
+      eventId: "evt-capture",
+      memoryId: "m-ghost",
+      eventType: "explicit_capture_accepted",
+      timestamp: "2026-03-07T00:00:00.000Z",
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeText(memoryDir, "state/memory-lifecycle-ledger.jsonl", `${JSON.stringify(appendOnly)}\n`);
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+    });
+    assert.equal(writeResult.dryRun, false);
+
+    const ledger = await readFile(writeResult.outputPath, "utf-8");
+    assert.ok(
+      ledger.includes("evt-capture"),
+      "append-only history preserved by the recovery rebuild — not dropped",
+    );
+    assert.ok(ledger.includes("fact-1"), "frontmatter-derived events still reconstructed");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger CLI refuses a locked secure store instead of a keyless plaintext rewrite (#2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-secure-"));
+  const key = Buffer.alloc(32, 0x3c);
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  try {
+    // Seed an encrypted-at-rest store: an encrypted memory to reconstruct from
+    // plus an encrypted lifecycle ledger on disk.
+    const unlocked = new StorageManager(memoryDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key, true);
+    await unlocked.ensureDirectories();
+    await unlocked.writeMemory("fact", "encrypted lifecycle fact");
+    await unlocked.writeMemoryLifecycleLedgerContent(
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId: "evt-seed",
+        memoryId: "m-seed",
+        eventType: "created",
+        timestamp: "2026-03-08T00:00:00.000Z",
+      }) + "\n",
+    );
+    const encryptedBefore = await readFile(ledgerPath);
+    assert.ok(isEncryptedFile(encryptedBefore), "precondition: ledger encrypted at rest");
+
+    // A locked secure store (required, no key) must be refused, never rewritten
+    // — a keyless rewrite would downgrade the ledger to plaintext.
+    const locked = new StorageManager(memoryDir);
+    locked.setSecureStoreRequired(true);
+    await assert.rejects(
+      () => runRebuildMemoryLifecycleLedgerCliCommand({ memoryDir, write: true, storage: locked }),
+      /secure store is locked/,
+    );
+    assert.deepEqual(
+      await readFile(ledgerPath),
+      encryptedBefore,
+      "locked refusal must leave the encrypted ledger untouched",
+    );
+
+    // With the unlocked secure store the rebuild proceeds and stays encrypted.
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage: unlocked,
+    });
+    assert.equal(writeResult.dryRun, false);
+    assert.ok(
+      isEncryptedFile(await readFile(ledgerPath)),
+      "rebuilt ledger stays encrypted at rest through the unlocked secure storage",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger CLI recovers a namespaced encrypted ledger through namespace-scoped secure storage (#2033)", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-ns-"));
+  // A namespace store lives under namespaces/<ns>/ — the exact path an oversized
+  // encrypted namespace ledger occupies. The namespace-aware CLI resolves this
+  // memoryDir and its secure StorageManager so the recovery targets it instead of
+  // the root store.
+  const namespaceDir = path.join(rootDir, "namespaces", "team");
+  const key = Buffer.alloc(32, 0x5a);
+  const ledgerPath = path.join(namespaceDir, "state", "memory-lifecycle-ledger.jsonl");
+  try {
+    const unlocked = new StorageManager(namespaceDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key, true);
+    await unlocked.ensureDirectories();
+    await unlocked.writeMemory("fact", "encrypted namespace fact");
+    await unlocked.writeMemoryLifecycleLedgerContent(
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId: "evt-ns-seed",
+        memoryId: "m-ns-seed",
+        eventType: "created",
+        timestamp: "2026-03-08T00:00:00.000Z",
+      }) + "\n",
+    );
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "precondition: namespace ledger encrypted at rest");
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir: namespaceDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage: unlocked,
+    });
+    assert.equal(writeResult.dryRun, false);
+    assert.equal(path.resolve(writeResult.outputPath), path.resolve(ledgerPath), "rebuilt the namespace ledger, not the root");
+    assert.ok(
+      isEncryptedFile(await readFile(ledgerPath)),
+      "rebuilt namespace ledger stays encrypted at rest through the namespace secure storage",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger recovery targets the router-resolved (tokenized) namespace dir, not the raw namespaces/<ns> path (#2033)", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-ns-token-"));
+  try {
+    const config = {
+      memoryDir: rootDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      entitySchemas: {},
+      inlineSourceAttributionFormat: undefined,
+    } as unknown as PluginConfig;
+    const router = new NamespaceStorageRouter(config);
+    const namespace = "team";
+
+    // The router serves a non-default namespace from the TOKENIZED root
+    // (namespaces/ns-<hex>), which diverges from the raw namespaces/<ns> path the
+    // legacy resolver builds. Recovery must follow the router-resolved storage.dir.
+    const storage = await router.storageFor(namespace);
+    const routerDir = storage.dir;
+    const rawDir = path.join(rootDir, "namespaces", namespace);
+    assert.notEqual(
+      path.resolve(routerDir),
+      path.resolve(rawDir),
+      "precondition: router dir is tokenized and differs from the raw namespaces/<ns> path",
+    );
+    await storage.writeMemory("fact", "namespace fact for tokenized recovery");
+
+    // The FIX: recovery uses the router-resolved storage.dir and rebuilds in place.
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir: routerDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage,
+    });
+    assert.equal(
+      path.resolve(writeResult.outputPath),
+      path.resolve(path.join(routerDir, "state", "memory-lifecycle-ledger.jsonl")),
+      "rebuilt the ledger under the router-resolved tokenized namespace dir",
+    );
+
+    // The OLD wiring — raw namespaces/<ns> path as memoryDir with the tokenized
+    // storage — is the exact mismatch the fix avoids: it REJECTS the tokenized
+    // storage rather than recovering it.
+    await assert.rejects(
+      () => runRebuildMemoryLifecycleLedgerCliCommand({
+        memoryDir: rawDir,
+        write: true,
+        storage,
+      }),
+      /storage\.dir.*must match.*memoryDir/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild-memory-lifecycle-ledger CLI reserves the envelope when a PLAINTEXT ledger will be rewritten encrypted (write-mode budget, #2033)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-lifecycle-writemode-"));
+  try {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    const total = 200;
+    const events = Array.from({ length: total }, (_unused, i) => ({
+      eventId: `cap-${String(i).padStart(3, "0")}`,
+      memoryId: "mem-a",
+      eventType: "explicit_capture_accepted",
+      timestamp: new Date(Date.UTC(2026, 2, 8, 0, 0, 0, 0) + i * 1000).toISOString(),
+      actor: "explicit-capture",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    }));
+    const plaintext = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+    // The on-disk ledger is PLAINTEXT (header not encrypted), so the pre-fix
+    // budget keyed off `probeEncryptedRegularFileHeader` alone and SKIPPED the
+    // envelope reserve. But the rewrite below encrypts (encrypt-on-write +
+    // unlocked key), so the on-disk file gains the secure-store envelope and the
+    // reserve is mandatory — exactly the write-mode parity auto-compaction has.
+    await writeFile(ledgerPath, plaintext, "utf-8");
+    assert.ok(!isEncryptedFile(await readFile(ledgerPath)), "precondition: existing ledger is plaintext");
+
+    const rowBytes = Buffer.byteLength(`${JSON.stringify(events[0])}\n`, "utf8");
+    // Cap so the UNRESERVED budget (cap − 1) keeps 20 rows whose encrypted size
+    // (20 rows + envelope) reaches the cap, while the reserving budget
+    // (cap − envelope − 1) keeps 19 rows that land strictly below it.
+    const cap = rowBytes * 20 + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES;
+    assert.ok(
+      20 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES >= cap,
+      "sanity: an unreserved 20-row plaintext budget encrypts to at/over the cap",
+    );
+    assert.ok(
+      19 * rowBytes + SECURE_STORE_ENVELOPE_OVERHEAD_BYTES < cap,
+      "sanity: a reserved 19-row budget encrypts to strictly below the cap",
+    );
+
+    const key = Buffer.alloc(32, 5);
+    const storage = new StorageManager(memoryDir);
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key); // unlocked + encrypt-on-write ⇒ the rewrite encrypts.
+    assert.ok(storage.willEncryptStateWrites(), "precondition: writes will be encrypted at rest");
+
+    const writeResult = await runRebuildMemoryLifecycleLedgerCliCommand({
+      memoryDir,
+      write: true,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+      storage,
+      maxLedgerBytesCap: cap,
+    });
+    assert.equal(writeResult.dryRun, false);
+
+    const onDisk = (await stat(ledgerPath)).size;
+    assert.ok(isEncryptedFile(await readFile(ledgerPath)), "rewritten ledger encrypted at rest");
+    assert.ok(onDisk < cap, `encrypted on-disk ledger (${onDisk}B) must be strictly below the cap (${cap}B)`);
+    const keptIds = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
+    assert.ok(keptIds.includes(`cap-${String(total - 1).padStart(3, "0")}`), "newest event survives");
+    assert.ok(!keptIds.includes("cap-000"), "oldest event archived out of the active ledger");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("rebuild-memory-projection CLI wrapper respects dry-run default and write mode", { skip: skipUnlessBetterSqlite3() }, async () => {

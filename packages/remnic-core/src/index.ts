@@ -830,7 +830,7 @@ export {
 // ---------------------------------------------------------------------------
 // Offline Sync
 // ---------------------------------------------------------------------------
-
+export { drainPendingImpressionsForOfflineSync, drainPendingLifecycleForOfflineSync } from "./offline-sync-impression-drain.js";
 export {
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
   OFFLINE_SYNC_CHANGESET_FORMAT,
