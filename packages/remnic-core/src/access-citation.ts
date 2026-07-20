@@ -12,7 +12,7 @@ export interface CitationStorage {
   findExistingMemoryPaths(
     ids: string[],
     preferredPaths?: Map<string, string[]>,
-  ): Promise<Map<string, string>>;
+  ): Promise<Map<string, string[]>>;
 }
 
 export interface CitationUsageDependencies {
@@ -65,9 +65,13 @@ export async function recordCitationUsage(
     preferredPaths.set(entry.id, paths);
   }
   const pathsById = await storage.findExistingMemoryPaths(ids, preferredPaths);
+  const remainingPathsById = new Map(
+    Array.from(pathsById.entries()).map(([id, paths]) => [id, [...paths]]),
+  );
   const matchedEntries = memoryEntries
     .map((entry) => {
-      const memoryPath = pathsById.get(entry.id);
+      const paths = remainingPathsById.get(entry.id);
+      const memoryPath = paths?.shift();
       return memoryPath ? { id: entry.id, path: memoryPath } : null;
     })
     .filter(

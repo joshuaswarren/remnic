@@ -226,6 +226,7 @@ export interface RecallInternalDeps {
     omittedSections?: string[];
     includedMemoryIds?: string[];
     includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
   }): LastRecallBudgetSummary;
   buildQueryAwarePrefilter(
@@ -5354,6 +5355,7 @@ export class RecallInternalCoordinator {
       omittedSections: assembledRecall.omittedIds,
       includedMemoryIds: assembledRecall.includedMemoryIds,
       includedMemoryPaths: assembledRecall.includedMemoryPaths,
+      includedMemoryNamespaces: assembledRecall.includedMemoryNamespaces,
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
 

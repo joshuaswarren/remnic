@@ -392,7 +392,7 @@ test("citation path lookup resolves collection-prefixed QMD paths", async () => 
       new Map([[id, [`collection/${path.relative(dir, memory.path)}`]]]),
     );
 
-    assert.equal(found.get(id), memory.path);
+    assert.deepEqual(found.get(id), [memory.path]);
   } finally {
     resetStaticCaches();
     await rm(dir, { recursive: true, force: true });

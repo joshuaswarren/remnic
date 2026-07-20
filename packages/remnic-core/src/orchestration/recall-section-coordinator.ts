@@ -516,6 +516,7 @@ export class RecallSectionCoordinator {
     includedSections?: string[];
     includedMemoryIds?: string[];
     includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
@@ -530,6 +531,7 @@ export class RecallSectionCoordinator {
       truncated: options.truncated,
       includedMemoryIds: [...(options.includedMemoryIds ?? [])],
       includedMemoryPaths: [...(options.includedMemoryPaths ?? [])],
+      includedMemoryNamespaces: [...(options.includedMemoryNamespaces ?? [])],
       omittedMemoryIds: [...(options.omittedMemoryIds ?? [])],
       includedSections: [...(options.includedSections ?? [])],
       omittedSections: [...(options.omittedSections ?? [])],

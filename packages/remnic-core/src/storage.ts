@@ -6464,53 +6464,44 @@ export class StorageManager {
   async findExistingMemoryPaths(
     ids: string[],
     preferredPaths: Map<string, string[]> = new Map(),
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, string[]>> {
     if (ids.length === 0) return new Map();
     const wantedIds = new Set(ids);
     const filePaths = await this.collectActiveMemoryPaths();
-    const foundPaths = new Map<string, string>();
-    const fallbackPaths = new Map<string, string>();
-    const preferredAbsolutePaths = new Map(
-      Array.from(preferredPaths.entries()).map(([id, paths]) => {
-        const candidates = new Set<string>();
-        for (const preferredPath of paths) {
-          for (const candidate of qmdResultPathCandidates(
-            this.baseDir,
-            preferredPath,
-          )) {
-            candidates.add(candidate);
-          }
-          const parts = qmdCollectionPathParts(preferredPath);
-          if (parts) {
-            for (const candidate of qmdResultPathCandidates(
-              this.baseDir,
-              parts.relativePath,
-            )) {
-              candidates.add(candidate);
-            }
-          }
-        }
-        return [id, candidates] as const;
-      }),
-    );
+    const pathsById = new Map<string, string[]>();
+    const filePathsById = new Map<string, string[]>();
     for (const filePath of filePaths) {
       const memoryId = path.basename(filePath, ".md");
       if (!wantedIds.has(memoryId)) continue;
-      const preferred = preferredAbsolutePaths.get(memoryId);
-      if (preferred?.has(path.resolve(filePath))) {
-        foundPaths.set(memoryId, filePath);
-      } else if (!fallbackPaths.has(memoryId)) {
-        fallbackPaths.set(memoryId, filePath);
-      }
-      if (foundPaths.size === wantedIds.size) break;
+      const paths = filePathsById.get(memoryId) ?? [];
+      paths.push(filePath);
+      filePathsById.set(memoryId, paths);
     }
     for (const id of wantedIds) {
-      if (!foundPaths.has(id)) {
-        const fallbackPath = fallbackPaths.get(id);
-        if (fallbackPath) foundPaths.set(id, fallbackPath);
+      const existingPaths = filePathsById.get(id) ?? [];
+      const preferred = preferredPaths.get(id) ?? [];
+      const preferredMatches: string[] = [];
+      for (const preferredPath of preferred) {
+        const candidates = new Set<string>();
+        for (const candidate of qmdResultPathCandidates(this.baseDir, preferredPath)) {
+          candidates.add(candidate);
+        }
+        const parts = qmdCollectionPathParts(preferredPath);
+        if (parts) {
+          for (const candidate of qmdResultPathCandidates(this.baseDir, parts.relativePath)) {
+            candidates.add(candidate);
+          }
+        }
+        const match = existingPaths.find((filePath) => candidates.has(path.resolve(filePath)));
+        if (match) preferredMatches.push(match);
+      }
+      if (preferredMatches.length > 0) {
+        pathsById.set(id, preferredMatches);
+      } else if (existingPaths[0]) {
+        pathsById.set(id, [existingPaths[0]]);
       }
     }
-    return foundPaths;
+    return pathsById;
   }
 
   /**

@@ -26,6 +26,7 @@ export interface LastRecallBudgetSummary {
   omittedSections?: string[];
   includedMemoryIds?: string[];
   includedMemoryPaths?: string[];
+  includedMemoryNamespaces?: Array<string | undefined>;
   omittedMemoryIds?: string[];
 }
 

@@ -4758,7 +4758,7 @@ test("recordCitationUsage tracks duplicate citations with resolved namespace pat
       readAllMemories: async () => {
         throw new Error("citation tracking must not parse all memories");
       },
-      findExistingMemoryPaths: async () => new Map([["same-id", memoryPath]]),
+      findExistingMemoryPaths: async () => new Map([["same-id", [memoryPath, memoryPath]]]),
     }),
     trackMemoryAccess: (ids: string[], paths: string[]) => {
       tracked.push({ ids, paths });
@@ -4813,7 +4813,7 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
           "facts/first/same-id.md",
           "facts/second/same-id.md",
         ]);
-        return new Map([["same-id", firstPath]]);
+        return new Map([["same-id", [firstPath, secondPath]]]);
       },
     }),
     trackMemoryAccess: (ids: string[], paths: string[]) => {
@@ -4832,5 +4832,5 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
   });
 
   assert.equal(findCalls, 1);
-  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, firstPath] }]);
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, secondPath] }]);
 });

@@ -3528,6 +3528,7 @@ export class Orchestrator {
     includedSections?: string[];
     includedMemoryIds?: string[];
     includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
