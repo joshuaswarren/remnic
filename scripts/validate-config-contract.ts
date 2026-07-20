@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { runContractCheck } from "./config-contract/contract-check.js";
+import { runDisableValueCheck } from "./config-contract/disable-value-check.js";
 
 type Failure = {
   message: string;
@@ -349,6 +350,22 @@ function main() {
     });
   }
 
+  // §33 disable-value check (issue #2070): a property documented "0 disables"
+  // must have schema minimum 0 and a parser that short-circuits on 0. Its own
+  // shrink-only manifest (disable-value-grandfathered.json) — the shared v2
+  // grandfathered.json rejects foreign violation kinds.
+  const disableValue = runDisableValueCheck({ repoRoot });
+  for (const violation of disableValue.violations) {
+    failures.push({
+      message: `[§33:${violation.kind}] ${violation.key} — ${violation.detail} (grandfather via scripts/config-contract/disable-value-grandfathered.json with a tracking issue, or fix the property)`,
+    });
+  }
+  for (const stale of disableValue.staleGrandfatherEntries) {
+    failures.push({
+      message: `[§33:stale-grandfather] ${stale.kind}:${stale.key} (${stale.issue}) no longer violates — prune it from scripts/config-contract/disable-value-grandfathered.json`,
+    });
+  }
+
   if (failures.length > 0) {
     console.error("Config contract validation failed:");
     for (const f of failures) {
@@ -362,7 +379,7 @@ function main() {
   }
 
   console.log(
-    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}, v2 grandfathered=${contract.grandfatheredActive}`
+    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}, v2 grandfathered=${contract.grandfatheredActive}, §33 zero-disable=${disableValue.zeroDisableProperties.length} (grandfathered=${disableValue.grandfatheredActive})`
   );
 }
 
