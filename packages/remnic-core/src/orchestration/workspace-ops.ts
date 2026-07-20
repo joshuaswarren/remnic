@@ -884,6 +884,9 @@ export class WorkspaceOpsCoordinator {
         : [];
       const memory = memoryPath
         ? namespaceMemories?.find((candidate) =>
+            matchesMemoryPath(candidate.path, memoryPath, this.deps.config.memoryDir),
+          ) ??
+          namespaceMemories?.find((candidate) =>
             requestedPaths.some((requestedPath) =>
               matchesMemoryPath(candidate.path, requestedPath, this.deps.config.memoryDir),
             ),

@@ -6482,10 +6482,18 @@ export class StorageManager {
       const preferred = preferredPaths.get(id) ?? [];
       const preferredMatches: string[] = [];
       for (const preferredPath of preferred) {
-        const candidates = new Set<string>();
-        for (const candidate of qmdResultPathCandidates(this.baseDir, preferredPath)) {
-          candidates.add(candidate);
+        const directCandidates = new Set(
+          qmdResultPathCandidates(this.baseDir, preferredPath),
+        );
+        const directMatch = existingPaths.find((filePath) =>
+          directCandidates.has(path.resolve(filePath)),
+        );
+        if (directMatch) {
+          preferredMatches.push(directMatch);
+          continue;
         }
+
+        const candidates = new Set<string>();
         const parts = qmdCollectionPathParts(preferredPath);
         if (parts) {
           for (const candidate of qmdResultPathCandidates(this.baseDir, parts.relativePath)) {
