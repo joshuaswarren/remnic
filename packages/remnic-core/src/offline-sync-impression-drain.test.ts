@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   drainPendingImpressionsForOfflineSync,
   drainPendingLifecycleForOfflineSync,
+  getOfflineSyncStorage,
 } from "./offline-sync-impression-drain.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
@@ -237,4 +238,79 @@ test("drainPendingLifecycleForOfflineSync refuses a symlinked namespaces base (#
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
+});
+
+type FakeLifecycleStorage = {
+  dir: string;
+  drainPendingMemoryLifecycleEventsForSync(): Promise<{ folded: boolean; pendingDeferred: boolean }>;
+};
+
+function fakeOfflineOrchestrator(memoryRoot: string, namespaceDirs: Record<string, string>) {
+  const lifecycleDrains: string[] = [];
+  let impressionDrains = 0;
+  const storages: Record<string, FakeLifecycleStorage> = {};
+  for (const [name, dir] of Object.entries(namespaceDirs)) {
+    storages[name] = {
+      dir,
+      drainPendingMemoryLifecycleEventsForSync: async () => {
+        lifecycleDrains.push(name);
+        return { folded: false, pendingDeferred: false };
+      },
+    };
+  }
+  const orchestrator = {
+    config: { memoryDir: memoryRoot },
+    drainPendingRecallImpressions: async () => {
+      impressionDrains += 1;
+      return { pendingDeferred: false };
+    },
+    getStorage: async (ns: string) => {
+      const storage = storages[ns];
+      if (!storage) throw new Error(`no fake storage for namespace ${ns}`);
+      return storage;
+    },
+    listOfflineSyncNamespaces: async () => Object.keys(namespaceDirs).filter((n) => n !== "root"),
+  };
+  return { orchestrator, lifecycleDrains, impressions: () => impressionDrains };
+}
+
+test("getOfflineSyncStorage drains every namespace ledger for a root snapshot (#2033)", async () => {
+  const memoryRoot = path.join(os.tmpdir(), "remnic-root-drain-fanout");
+  const { orchestrator, lifecycleDrains, impressions } = fakeOfflineOrchestrator(memoryRoot, {
+    root: memoryRoot,
+    team: path.join(memoryRoot, "namespaces", "team"),
+    ops: path.join(memoryRoot, "namespaces", "ops"),
+  });
+
+  await getOfflineSyncStorage(orchestrator, "root");
+
+  assert.deepEqual(lifecycleDrains, ["root", "team", "ops"], "root snapshot folds root + every namespace ledger");
+  assert.equal(impressions(), 1, "global impressions are folded for a root snapshot");
+});
+
+test("getOfflineSyncStorage folds only the namespace's own ledger for a namespace snapshot (#2033)", async () => {
+  const memoryRoot = path.join(os.tmpdir(), "remnic-ns-drain-scope");
+  const { orchestrator, lifecycleDrains, impressions } = fakeOfflineOrchestrator(memoryRoot, {
+    root: memoryRoot,
+    team: path.join(memoryRoot, "namespaces", "team"),
+  });
+
+  await getOfflineSyncStorage(orchestrator, "team");
+
+  assert.deepEqual(lifecycleDrains, ["team"], "namespace snapshot folds only its own ledger");
+  assert.equal(impressions(), 0, "global impressions are left pending for the root sync");
+});
+
+test("getOfflineSyncStorage never double-folds the root ledger when it is listed as a namespace (#2033)", async () => {
+  const memoryRoot = path.join(os.tmpdir(), "remnic-root-drain-dedup");
+  const { orchestrator, lifecycleDrains } = fakeOfflineOrchestrator(memoryRoot, {
+    root: memoryRoot,
+    // A listing that also surfaces the default namespace pointing back at root.
+    default: memoryRoot,
+    team: path.join(memoryRoot, "namespaces", "team"),
+  });
+
+  await getOfflineSyncStorage(orchestrator, "root");
+
+  assert.deepEqual(lifecycleDrains, ["root", "team"], "root ledger is folded exactly once");
 });

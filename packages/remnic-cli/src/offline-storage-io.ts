@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import { createDecipheriv, createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
 } from "@remnic/core";
+import { OFFLINE_DECRYPT_STAGING_DIR_PREFIX } from "@remnic/core/offline-sync-exclude-globs";
 import type {
   applyOfflineSyncFileContentChunk,
   applyOfflineSyncSnapshot,
@@ -103,6 +104,13 @@ export async function createOfflineStorageIo(
   memoryDir: string,
   configuredStorage?: ConfiguredOfflineStorage,
 ): Promise<OfflineStorageIo> {
+  // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
+  // (#2033 P1). The normal decrypt path removes its own staging dir in a
+  // `finally`; a hard crash can strand one. The default exclude glob already
+  // keeps such a dir out of any push, so this is defense-in-depth to stop
+  // unbounded accumulation. Age-gated so a concurrent in-flight decrypt on the
+  // same memory root is never removed mid-use.
+  await cleanupOrphanedOfflineDecryptStaging(memoryDir);
   const { storage, secureStoreKey } =
     configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
   return {
@@ -136,6 +144,43 @@ export async function createOfflineStorageIo(
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
   };
+}
+
+/**
+ * Age in ms before a decrypt staging dir is treated as a crash orphan. Comfortably
+ * longer than any legitimate chunked decrypt so a concurrent in-flight staging dir
+ * on the same memory root is never removed mid-use (#2033 P1).
+ */
+const OFFLINE_DECRYPT_STAGING_ORPHAN_MS = 60 * 60 * 1000;
+
+/**
+ * Best-effort removal of crash-orphaned `<OFFLINE_DECRYPT_STAGING_DIR_PREFIX>*`
+ * decrypt staging dirs directly under `memoryDir` (#2033 P1). The normal decrypt
+ * path removes its own dir in a `finally`; a hard crash can strand one holding
+ * decrypted secure-store plaintext. The default offline-sync exclude glob already
+ * keeps these out of every push, so this only bounds accumulation. Swallows all
+ * errors — a sweep failure must never abort an offline op.
+ */
+export async function cleanupOrphanedOfflineDecryptStaging(memoryDir: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(memoryDir);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of entries) {
+    if (!name.startsWith(OFFLINE_DECRYPT_STAGING_DIR_PREFIX)) continue;
+    const dir = path.join(memoryDir, name);
+    try {
+      const info = await stat(dir);
+      if (!info.isDirectory()) continue;
+      if (now - info.mtimeMs < OFFLINE_DECRYPT_STAGING_ORPHAN_MS) continue;
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort: skip entries that vanish or cannot be removed
+    }
+  }
 }
 
 async function* readOfflineSyncFileChunks(options: {
@@ -223,7 +268,7 @@ async function* readEncryptedOfflineFileChunks(options: {
     // creates an owner-only (0700) unique dir; the content file is 0600 and the
     // dir is removed in `finally`. A hard-crash orphan stays owner-only inside
     // the protected root - the same trust domain as the encrypted originals.
-    const tempDir = await mkdtemp(path.join(options.memoryDir, ".remnic-offline-decrypt-"));
+    const tempDir = await mkdtemp(path.join(options.memoryDir, OFFLINE_DECRYPT_STAGING_DIR_PREFIX));
     const tempPath = path.join(tempDir, "content");
     try {
       const decipher = createDecipheriv("aes-256-gcm", options.key, iv, {

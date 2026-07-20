@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveOfflineImpressionRotation } from "./offline-impression-rotation.js";
+import { pickOfflineConfigRecord, resolveOfflineImpressionRotation } from "./offline-impression-rotation.js";
 
 // A value a hostile/typo'd config might put where a rotation number belongs. It
 // stands in for an operator secret (API key) that parseConfig would otherwise
@@ -86,4 +86,57 @@ test("an unparseable-JSON config is redacted to a generic error, never the raw b
       return true;
     },
   );
+});
+
+test("an UNRELATED invalid config field does not abort rotation resolution and never leaks (#2033)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-unrelated-"));
+  const configPath = path.join(dir, "config.json");
+  // A field offline never consumes (`correction.maxAffected`) with an invalid,
+  // secret-bearing value. Full parseConfig would THROW on it; the offline path
+  // must drop it and still resolve rotation from valid offline keys.
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      correction: { maxAffected: SECRET },
+      recallImpressionsRotateBytes: 4096,
+      recallImpressionsRotateKeep: 3,
+    }),
+    "utf-8",
+  );
+
+  assert.deepEqual(resolveOfflineImpressionRotation(configPath), {
+    impressionsRotateBytes: 4096,
+    impressionsRotateKeep: 3,
+  });
+});
+
+test("pickOfflineConfigRecord keeps only offline keys and drops unrelated fields (#2033)", () => {
+  const picked = pickOfflineConfigRecord({
+    offlineSyncExcludes: ["scratch/**"],
+    secureStoreEncryptOnWrite: false,
+    recallImpressionsRotateBytes: 100,
+    recallImpressionsRotateKeep: 2,
+    correction: { maxAffected: SECRET },
+    openaiApiKey: SECRET,
+  });
+  assert.deepEqual(picked, {
+    offlineSyncExcludes: ["scratch/**"],
+    secureStoreEncryptOnWrite: false,
+    recallImpressionsRotateBytes: 100,
+    recallImpressionsRotateKeep: 2,
+  });
+  assert.ok(!("correction" in picked) && !("openaiApiKey" in picked));
+});
+
+test("pickOfflineConfigRecord unwraps a nested remnic/engram block (#2033)", () => {
+  assert.deepEqual(
+    pickOfflineConfigRecord({ remnic: { secureStoreEncryptOnWrite: false }, openaiApiKey: SECRET }),
+    { secureStoreEncryptOnWrite: false },
+  );
+});
+
+test("pickOfflineConfigRecord returns an empty record for a non-object config (#2033)", () => {
+  assert.deepEqual(pickOfflineConfigRecord(null), {});
+  assert.deepEqual(pickOfflineConfigRecord("nope"), {});
+  assert.deepEqual(pickOfflineConfigRecord([1, 2, 3]), {});
 });

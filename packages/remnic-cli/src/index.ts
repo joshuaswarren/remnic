@@ -174,7 +174,7 @@ import {
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
-import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly } from "./offline-impression-rotation.js";
+import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
 import {
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
@@ -9534,7 +9534,7 @@ Environment fallbacks:
     const rawConfig = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    config = parseConfigQuietly(rawConfig);
+    config = parseConfigQuietly(pickOfflineConfigRecord(rawConfig));
   } catch {
     throw new Error(
       "offline sync: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
@@ -9666,9 +9666,24 @@ Environment fallbacks:
         statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(
+    const configuredStorage = await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite);
+    const storageIo = await createOfflineStorageIo(memoryDir, configuredStorage);
+    // Fold durable pending impression/lifecycle spills before summarizing so
+    // `status` reports the same pending set a following `sync` would push
+    // (#2033). runOfflineSyncOnce drains these queues before every snapshot; a
+    // status that skipped them would undercount. A deferred/failed drain aborts
+    // here for the same reason sync aborts — an accurate count beats a silent
+    // undercount.
+    await drainOfflineSyncImpressions(memoryDir, impressionRotation);
+    await drainPendingLifecycleForOfflineSync(
       memoryDir,
-      await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
+      (ledgerPath) =>
+        createOfflineStorageForPath(
+          memoryDir,
+          ledgerPath,
+          configuredStorage,
+          config.secureStoreEncryptOnWrite ?? true,
+        ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
     );
     const summary = await summarizeOfflineSyncPendingChanges({
       root: memoryDir,

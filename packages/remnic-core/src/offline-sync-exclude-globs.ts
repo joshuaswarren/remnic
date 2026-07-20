@@ -3,6 +3,17 @@
 // dir, and trips the large-file push retry loop on a live SQLite database.
 // Extracted from offline-sync.ts (issue #1995) so the god-file line-count
 // ratchet does not grow when the list gains entries; behavior is unchanged.
+/**
+ * Directory-name prefix for the transient plaintext staging dir the CLI offline
+ * decrypt path (`offline-storage-io.ts`) creates under the memory root when it
+ * must materialize a decrypted secure-store file before hashing/pushing (#2033
+ * P1). Shared here so the hard-exclude glob below and the CLI's `mkdtemp` prefix
+ * can never drift apart: a crash-orphaned staging dir must NEVER be enumerated
+ * into an offline snapshot, or decrypted secure-store plaintext would leak into
+ * the remote push.
+ */
+export const OFFLINE_DECRYPT_STAGING_DIR_PREFIX = ".remnic-offline-decrypt-";
+
 export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // Leading `**/` matches zero or more segments, so each pattern covers both
   // the root `state/` dir AND per-namespace `namespaces/<ns>/state/` dirs
@@ -35,4 +46,13 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // The active lifecycle ledger lock is node-local and must never be
   // transferred to another node during an offline snapshot.
   "**/state/memory-lifecycle-ledger.jsonl.lock",
+  // Transient plaintext decrypt staging (issue #2033 P1). The CLI offline
+  // decrypt path materializes a decrypted secure-store file under an owner-only
+  // `<OFFLINE_DECRYPT_STAGING_DIR_PREFIX>*` dir before hashing/pushing, removing
+  // it in a `finally`. A hard crash between create and cleanup would otherwise
+  // let a later snapshot walk `<prefix>*/content` and push decrypted secure-store
+  // plaintext to the remote. Exclude the dir and its contents unconditionally so
+  // a crash-orphan can never be enumerated into a snapshot; the leading `**/`
+  // matches the root-level dir (zero segments) and any nested placement.
+  "**/.remnic-offline-decrypt-*/**",
 ];

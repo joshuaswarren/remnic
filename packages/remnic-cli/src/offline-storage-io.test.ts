@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { StorageManager } from "@remnic/core";
+import {
+  StorageManager,
+  globToRegExp,
+} from "@remnic/core";
+import {
+  DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS,
+  OFFLINE_DECRYPT_STAGING_DIR_PREFIX,
+} from "@remnic/core/offline-sync-exclude-globs";
 import {
   buildHeader,
   buildMetadata,
@@ -16,6 +23,7 @@ import {
 import { encryptFileBody, filePathAad } from "@remnic/core/secure-store";
 
 import {
+  cleanupOrphanedOfflineDecryptStaging,
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
   createOfflineStorageIo,
@@ -196,4 +204,48 @@ test("offline storage IO stages encrypted decryption inside the memory root, not
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("the default exclude globs keep crash-orphaned decrypt staging out of any snapshot (#2033 P1)", () => {
+  const regexps = DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS.map((glob) => globToRegExp(glob));
+  const excluded = (relPosix: string): boolean => regexps.some((re) => re.test(relPosix));
+  assert.ok(
+    excluded(`${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}AbCd/content`),
+    "a root-level staging dir's content must be excluded",
+  );
+  assert.ok(
+    excluded(`namespaces/team/${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}xyz/content`),
+    "a nested staging dir's content must be excluded",
+  );
+  assert.ok(!excluded("facts/note.md"), "ordinary files stay in the snapshot");
+});
+
+test("cleanupOrphanedOfflineDecryptStaging removes stale orphans but keeps in-flight staging (#2033 P1)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-decrypt-cleanup-"));
+  try {
+    const stale = path.join(memoryDir, `${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}stale`);
+    const fresh = path.join(memoryDir, `${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}fresh`);
+    const unrelated = path.join(memoryDir, "facts");
+    await mkdir(stale, { recursive: true });
+    await writeFile(path.join(stale, "content"), "decrypted plaintext");
+    await mkdir(fresh, { recursive: true });
+    await writeFile(path.join(fresh, "content"), "in-flight plaintext");
+    await mkdir(unrelated, { recursive: true });
+    await writeFile(path.join(unrelated, "note.md"), "keep me");
+    // Age the stale dir past the orphan threshold (2h ago); leave `fresh` recent.
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(stale, twoHoursAgo, twoHoursAgo);
+
+    await cleanupOrphanedOfflineDecryptStaging(memoryDir);
+
+    await assert.rejects(stat(stale), "a stale orphan staging dir must be removed");
+    assert.ok((await stat(fresh)).isDirectory(), "an in-flight staging dir must be preserved");
+    assert.ok((await stat(unrelated)).isDirectory(), "unrelated dirs must be untouched");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("cleanupOrphanedOfflineDecryptStaging is a no-op on a missing memory dir (#2033 P1)", async () => {
+  await cleanupOrphanedOfflineDecryptStaging(path.join(os.tmpdir(), "remnic-decrypt-cleanup-absent-xyz"));
 });

@@ -23,6 +23,45 @@ export function parseConfigQuietly(raw: unknown): PluginConfig {
 }
 
 /**
+ * Config keys the offline-sync CLI actually consumes: push-side excludes, the
+ * secure-store write policy, and the recall-impression rotation bounds. Nothing
+ * else influences an offline command.
+ */
+const OFFLINE_CONFIG_KEYS = [
+  "offlineSyncExcludes",
+  "secureStoreEncryptOnWrite",
+  "recallImpressionsRotateBytes",
+  "recallImpressionsRotateKeep",
+] as const;
+
+/**
+ * Reduce a raw config to ONLY the keys an offline command needs (#2033). Every
+ * `remnic offline` subcommand previously ran full `parseConfig`, so an invalid
+ * UNRELATED field (e.g. `correction.maxAffected`) both aborted offline work that
+ * never touches it AND embedded the offending raw value in the thrown message,
+ * leaking secrets. Picking the offline keys before parsing drops unrelated
+ * fields entirely: they can neither throw nor leak, while the offline keys keep
+ * parseConfig's exact validation/coercion/defaults (redacted by the caller when
+ * an OFFLINE key is itself invalid). A structurally malformed wrapper is treated
+ * as unrelated to offline settings and falls back to the flat record.
+ */
+export function pickOfflineConfigRecord(raw: unknown): Record<string, unknown> {
+  let resolved: Record<string, unknown>;
+  try {
+    resolved = resolveRemnicConfigRecord(raw);
+  } catch {
+    resolved = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  }
+  const picked: Record<string, unknown> = {};
+  for (const key of OFFLINE_CONFIG_KEYS) {
+    if (key in resolved) picked[key] = resolved[key];
+  }
+  return picked;
+}
+
+/**
  * Recall-impression rotation bounds the daemon writer uses (#2033). A standalone
  * CLI push drains pending impressions through its own `LastRecallStore`; passing
  * these bounds keeps that drain's rotation identical to the writer's instead of
@@ -56,7 +95,7 @@ export function resolveOfflineImpressionRotation(configPath: string): OfflineImp
   }
   let config: PluginConfig;
   try {
-    config = parseConfigQuietly(raw);
+    config = parseConfigQuietly(pickOfflineConfigRecord(raw));
   } catch {
     throw new Error(
       `cannot read recall-impression rotation from ${configPath}: config failed validation`,

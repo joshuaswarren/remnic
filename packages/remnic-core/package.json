@@ -1660,6 +1660,16 @@
       "remnic-source": "./src/objective-state.ts",
       "import": "./dist/objective-state.js"
     },
+    "./offline-sync-exclude-globs": {
+      "types": "./dist/offline-sync-exclude-globs.d.ts",
+      "remnic-source": "./src/offline-sync-exclude-globs.ts",
+      "import": "./dist/offline-sync-exclude-globs.js"
+    },
+    "./offline-sync-exclude-globs.js": {
+      "types": "./dist/offline-sync-exclude-globs.d.ts",
+      "remnic-source": "./src/offline-sync-exclude-globs.ts",
+      "import": "./dist/offline-sync-exclude-globs.js"
+    },
     "./openai-chat-compat": {
       "types": "./dist/openai-chat-compat.d.ts",
       "remnic-source": "./src/openai-chat-compat.ts",

@@ -11,6 +11,8 @@ import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { assertPathInsideRoot, pathIsInside } from "./utils/path-containment.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
+import { getConfiguredNamespaces } from "./scopes/scope-plan.js";
+import type { PluginConfig } from "./types.js";
 
 type PendingImpressionDrain = () => Promise<{ pendingDeferred: boolean }>;
 
@@ -57,10 +59,12 @@ export async function getOfflineSyncStorage<T extends PendingLifecycleDrain & { 
   orchestrator: PendingImpressionHost & {
     config: { memoryDir: string };
     getStorage(namespace: string): Promise<T>;
+    listOfflineSyncNamespaces?(): Promise<string[]>;
   },
   namespace: string,
 ): Promise<T> {
   const storage = await orchestrator.getStorage(namespace);
+  const memoryRoot = path.resolve(orchestrator.config.memoryDir);
   // Recall impressions are global: the orchestrator's single LastRecallStore
   // roots at config.memoryDir, so the active recall_impressions.jsonl lives at
   // <memoryDir>/state/. Fold the global pending queue ONLY when THIS snapshot's
@@ -69,12 +73,76 @@ export async function getOfflineSyncStorage<T extends PendingLifecycleDrain & { 
   // draining there would empty the durable pending queue into a file this
   // snapshot omits and strand the row until a root sync; leave it pending for
   // the root sync instead (#2033).
-  const impressionsFile = path.resolve(orchestrator.config.memoryDir, "state", "recall_impressions.jsonl");
+  const impressionsFile = path.join(memoryRoot, "state", "recall_impressions.jsonl");
   if (pathIsInside(path.resolve(storage.dir), impressionsFile)) {
     await drainPendingImpressionsForOfflineSync(() => orchestrator.drainPendingRecallImpressions());
   }
   await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
+  // Root snapshot: buildOfflineSyncSnapshot walks `namespaces/<ns>/state/` for
+  // every namespace under the memory root and INCLUDES each namespace's active
+  // lifecycle ledger, but the per-namespace pending spill dirs are offline-sync
+  // EXCLUDED. Draining only the root ledger above would let a root snapshot omit
+  // append-only rows still sitting in a namespace's spill queue, so fold every
+  // namespace ledger too - each through its OWN namespace storage so secure-store
+  // AAD stays namespace-scoped (#2033, matching the CLI all-ledger drain). A
+  // namespace snapshot folds only its own ledger, already done above.
+  if (path.resolve(storage.dir) === memoryRoot && orchestrator.listOfflineSyncNamespaces) {
+    const drained = new Set<string>([memoryRoot]);
+    for (const ns of await orchestrator.listOfflineSyncNamespaces()) {
+      const nsStorage = await orchestrator.getStorage(ns);
+      const nsDir = path.resolve(nsStorage.dir);
+      if (drained.has(nsDir)) continue;
+      drained.add(nsDir);
+      await drainPendingLifecycleForSyncOrThrow(() => nsStorage.drainPendingMemoryLifecycleEventsForSync());
+    }
+  }
   return storage;
+}
+
+type OfflineSyncNamespaceHost = {
+  config: PluginConfig;
+  namespaceCatalog: { listNamespaces(): Promise<Array<{ namespace: string }>> };
+};
+
+/**
+ * Every namespace whose lifecycle ledger a ROOT offline snapshot enumerates.
+ * Configured namespaces plus catalog-discovered ones; the catalog is queried
+ * best-effort so a catalog read failure still drains the configured set (#2033).
+ */
+export async function listOfflineSyncNamespaces(host: OfflineSyncNamespaceHost): Promise<string[]> {
+  const names = new Set<string>(getConfiguredNamespaces(host.config));
+  try {
+    for (const record of await host.namespaceCatalog.listNamespaces()) {
+      names.add(record.namespace);
+    }
+  } catch {
+    // best-effort: fall back to the configured namespace set
+  }
+  return [...names];
+}
+
+/**
+ * Resolve the offline-sync storage for a snapshot, folding pending spills first.
+ * For a root snapshot this also folds every namespace lifecycle ledger the
+ * snapshot will enumerate, so append-only rows in a namespace spill queue are
+ * never omitted (#2033).
+ */
+export function offlineSyncStorageForSnapshot<T extends PendingLifecycleDrain & { dir: string }>(
+  host: PendingImpressionHost &
+    OfflineSyncNamespaceHost & {
+      getStorage(namespace: string): Promise<T>;
+    },
+  namespace: string,
+): Promise<T> {
+  return getOfflineSyncStorage(
+    {
+      config: { memoryDir: host.config.memoryDir },
+      drainPendingRecallImpressions: () => host.drainPendingRecallImpressions(),
+      getStorage: (ns: string) => host.getStorage(ns),
+      listOfflineSyncNamespaces: () => listOfflineSyncNamespaces(host),
+    },
+    namespace,
+  );
 }
 
 const LIFECYCLE_LEDGER_FILE = "memory-lifecycle-ledger.jsonl";

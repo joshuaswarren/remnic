@@ -250,7 +250,7 @@ import {
   type OfflineSyncFileState,
   type OfflineSyncSnapshot,
 } from "./offline-sync.js";
-import { getOfflineSyncStorage } from "./offline-sync-impression-drain.js";
+import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
 import {
   evaluateActionConfidence,
   type ActionConfidenceInput,
@@ -5507,7 +5507,7 @@ export class EngramAccessService {
     options: EngramAccessOfflineSyncSnapshotRequest & { signal?: AbortSignal } = {},
   ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
-    const storage = await getOfflineSyncStorage(this.orchestrator, resolvedNamespace);
+    const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     const snapshotBuilder = options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
       ? buildOfflineSyncSnapshotFromBase
@@ -5533,7 +5533,7 @@ export class EngramAccessService {
     options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> & { signal?: AbortSignal } = {},
   ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
-    const storage = await getOfflineSyncStorage(this.orchestrator, resolvedNamespace);
+    const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     return {
       namespace: resolvedNamespace,
@@ -5558,7 +5558,7 @@ export class EngramAccessService {
     options: EngramAccessOfflineSyncFilesRequest,
   ): Promise<EngramAccessOfflineSyncFilesResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
-    const storage = await getOfflineSyncStorage(this.orchestrator, resolvedNamespace);
+    const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     try {
       const snapshot = await buildOfflineSyncSnapshotForPaths({
