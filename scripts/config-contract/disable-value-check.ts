@@ -293,7 +293,53 @@ function enclosingScope(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-/** True when a same-named field is emitted via shorthand inside a `return {…}` in the declaration's enclosing scope — a parsed config field being returned, not a helper local passed elsewhere. */
+/** The `const name = <initializer>` initializer for `name` within `scope`, if any. */
+function localInitializer(name: string, scope: ts.Node): ts.Expression | undefined {
+  let init: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (init) return;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer) {
+      init = node.initializer;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return init;
+}
+
+/**
+ * Does `expr` emit config field `name` into a returned value — directly
+ * (`return name`), via a same-named shorthand (`return { name }`), or through a
+ * nested/aliased object it is assigned to (`const p = { name }; return { p }`)?
+ * `seen` breaks alias cycles (`const a = b; const b = a`).
+ */
+function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node, seen: Set<string>): boolean {
+  if (ts.isParenthesizedExpression(expr)) return expressionEmitsField(expr.expression, name, scope, seen);
+  if (ts.isIdentifier(expr)) {
+    if (expr.text === name) return true;
+    if (seen.has(expr.text)) return false;
+    seen.add(expr.text);
+    const init = localInitializer(expr.text, scope);
+    return init ? expressionEmitsField(init, name, scope, seen) : false;
+  }
+  if (ts.isObjectLiteralExpression(expr)) {
+    return expr.properties.some((prop) => {
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        if (prop.name.text === name) return true;
+        if (seen.has(prop.name.text)) return false;
+        seen.add(prop.name.text);
+        const init = localInitializer(prop.name.text, scope);
+        return init ? expressionEmitsField(init, name, scope, seen) : false;
+      }
+      if (ts.isPropertyAssignment(prop)) return expressionEmitsField(prop.initializer, name, scope, seen);
+      return false;
+    });
+  }
+  return false;
+}
+
+/** True when the parsed local `decl` flows into its scope's return value — directly, via a same-named shorthand, or through nested/aliased returned objects. A returned config field, not a helper local passed elsewhere. */
 function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   if (!ts.isIdentifier(decl.name)) return false;
   const name = decl.name.text;
@@ -301,7 +347,7 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (ts.isShorthandPropertyAssignment(node) && node.name.text === name && withinReturn(node, scope)) {
+    if (ts.isReturnStatement(node) && node.expression && expressionEmitsField(node.expression, name, scope, new Set())) {
       found = true;
       return;
     }
@@ -309,16 +355,6 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
   };
   visit(scope);
   return found;
-}
-
-/** Does the node sit inside a `return` statement without crossing out of `scope`? */
-function withinReturn(node: ts.Node, scope: ts.Node): boolean {
-  let current: ts.Node | undefined = node.parent;
-  while (current && current !== scope) {
-    if (ts.isReturnStatement(current)) return true;
-    current = current.parent;
-  }
-  return false;
 }
 
 type Tri = true | false | "unknown";

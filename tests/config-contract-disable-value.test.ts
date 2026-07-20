@@ -818,3 +818,26 @@ test("schema-min: a documented zero-disable field with an anyOf branch that admi
   ];
   assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
 });
+
+test("guard: a coercion on a local emitted through a nested returned object is flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable auto-promotion. */\n  autoPromoteOccurrences: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const autoPromoteOccurrences = Math.max(1, coerceNumber(cfg.autoPromoteOccurrences) ?? 0);",
+        "  const procedural = { autoPromoteOccurrences };",
+        "  return { procedural };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-guard");
+  assert.equal(violations[0].key, "autoPromoteOccurrences");
+});
