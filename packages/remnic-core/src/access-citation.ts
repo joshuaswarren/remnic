@@ -64,7 +64,14 @@ export async function recordCitationUsage(
             request.authenticatedPrincipal,
           )
         : fallbackNamespace;
-      return { id, citedPath: entry.path, namespace };
+      // Strip the resolved namespace prefix so citedPath is storage-relative for
+      // both preferred-path matching and the exact-match lookup below. Namespace
+      // names may contain "/", which the storage helper cannot strip alone (#2020).
+      const citedPath =
+        namespace && entry.path.startsWith(`${namespace}/`)
+          ? entry.path.slice(namespace.length + 1)
+          : entry.path;
+      return { id, citedPath, namespace };
     }),
   )).filter(
     (
@@ -93,14 +100,7 @@ export async function recordCitationUsage(
     const preferredPaths = new Map<string, string[]>();
     for (const entry of namespaceEntries) {
       const paths = preferredPaths.get(entry.id) ?? [];
-      // Strip the resolved namespace prefix so the preferred path is storage-
-      // relative. Namespace names may contain "/", and the storage helper only
-      // strips a single leading segment, so a namespace-qualified cited path
-      // would otherwise miss the exact match (#2020).
-      const relPath = entry.citedPath.startsWith(`${namespace}/`)
-        ? entry.citedPath.slice(namespace.length + 1)
-        : entry.citedPath;
-      paths.push(relPath);
+      paths.push(entry.citedPath);
       preferredPaths.set(entry.id, paths);
     }
     const pathsById = await storage.findExistingMemoryPaths(ids, preferredPaths);
