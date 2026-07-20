@@ -526,3 +526,64 @@ test("guard: a same-named helper local NOT returned via shorthand is not a false
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
 });
+
+test("guard: a `>= 0` comparison is not a real disable guard (operator semantics)", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  if (config.cap >= 0) {",
+        "    if (used > config.cap) act();",
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1, "`>= 0` must not count as a disable guard");
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: `> 0` and `=== 0` DO count as disable guards", () => {
+  for (const guard of ["config.cap > 0", "config.cap === 0"]) {
+    const sources: DisableValueSource[] = [
+      {
+        path: "types.ts",
+        text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+      },
+      {
+        path: "consumer.ts",
+        text: [
+          "function tick(used: number, config: { cap: number }) {",
+          `  if (${guard}) return;`,
+          "  if (used > config.cap) act();",
+          "}",
+        ].join("\n"),
+      },
+    ];
+    assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, [], `guard not honored: ${guard}`);
+  }
+});
+
+test("schema-min: a nested zero-disable doc does not falsely flag an undocumented top-level entry with the same leaf", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        // Nested, documented zero-disable, correctly minimum 0 — clean.
+        block: {
+          type: "object",
+          properties: { limit: { type: "integer", minimum: 0, description: "0 disables the block." } },
+        },
+        // Top-level, same leaf, minimum 1, but NOT documented zero-disable — must NOT be flagged.
+        limit: { type: "integer", minimum: 1 },
+      },
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
+});

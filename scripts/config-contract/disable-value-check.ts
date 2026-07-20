@@ -262,9 +262,13 @@ function scopeHasZeroGuardFor(scope: ts.Node, guardedPath: string): boolean {
       const rightPath = ts.isPropertyAccessExpression(node.right) ? accessPath(node.right) : undefined;
       const leftLit = numericLiteralValue(node.left);
       const rightLit = numericLiteralValue(node.right);
+      // The guard must be `<path> <op> <lit>` whose operator actually branches
+      // on the disable value (e.g. `<= 0`, `> 0`, `=== 0`) — not `>= 0`, which
+      // never distinguishes 0 from a positive value.
+      const op = node.operatorToken.kind;
       if (
-        (leftPath === guardedPath && (rightLit === 0 || rightLit === 1)) ||
-        (rightPath === guardedPath && (leftLit === 0 || leftLit === 1))
+        (leftPath === guardedPath && rightLit !== undefined && distinguishesDisabled(op, true, rightLit)) ||
+        (rightPath === guardedPath && leftLit !== undefined && distinguishesDisabled(op, false, leftLit))
       ) {
         found = true;
         return;
@@ -276,10 +280,15 @@ function scopeHasZeroGuardFor(scope: ts.Node, guardedPath: string): boolean {
   return found;
 }
 
-/** Does value === 0 satisfy `<value> <op> <lit>` (or the mirror `<lit> <op> <value>`)? */
-function zeroSatisfiesComparison(op: ts.SyntaxKind, valueOnLeft: boolean, lit: number): boolean | undefined {
-  const a = valueOnLeft ? 0 : lit;
-  const b = valueOnLeft ? lit : 0;
+/** Evaluate `<value> <op> <lit>` (or the mirror `<lit> <op> <value>`) for a concrete value. */
+function satisfiesComparison(
+  op: ts.SyntaxKind,
+  valueOnLeft: boolean,
+  lit: number,
+  value: number,
+): boolean | undefined {
+  const a = valueOnLeft ? value : lit;
+  const b = valueOnLeft ? lit : value;
   switch (op) {
     case ts.SyntaxKind.GreaterThanToken:
       return a > b;
@@ -297,6 +306,13 @@ function zeroSatisfiesComparison(op: ts.SyntaxKind, valueOnLeft: boolean, lit: n
       return a !== b;
   }
   return undefined;
+}
+
+/** A comparison of a config value to `lit` is a real disable guard only if it distinguishes 0 (disabled) from a positive value. */
+function distinguishesDisabled(op: ts.SyntaxKind, valueOnLeft: boolean, lit: number): boolean {
+  const atZero = satisfiesComparison(op, valueOnLeft, lit, 0);
+  const atPositive = satisfiesComparison(op, valueOnLeft, lit, 2);
+  return atZero !== undefined && atPositive !== undefined && atZero !== atPositive;
 }
 
 /** For a condition comparing a value to 0/1, which ternary branch runs when the value is 0. */
@@ -317,7 +333,7 @@ function zeroCaseBranch(condition: ts.Expression): "whenTrue" | "whenFalse" | un
         valueOnLeft = false;
       }
       if (lit !== undefined) {
-        const satisfied = zeroSatisfiesComparison(node.operatorToken.kind, valueOnLeft, lit);
+        const satisfied = satisfiesComparison(node.operatorToken.kind, valueOnLeft, lit, 0);
         if (satisfied !== undefined) {
           branch = satisfied ? "whenTrue" : "whenFalse";
           return;
@@ -461,10 +477,14 @@ export function findDisableValueViolations(input: {
   sources: DisableValueSource[];
   manifests: DisableValueManifest[];
 }): { violations: DisableValueViolation[]; zeroDisableProperties: string[] } {
-  const zeroDisable = new Set<string>();
+  // Leaves documented via source JSDoc are real top-level config field names; a
+  // schema *description* documents only the entry at its own path, so it must
+  // not vouch for an unrelated top-level entry sharing the leaf.
+  const jsDocLeaves = new Set<string>();
   for (const source of input.sources) {
-    for (const name of collectZeroDisablePropertiesFromSource(source)) zeroDisable.add(name);
+    for (const name of collectZeroDisablePropertiesFromSource(source)) jsDocLeaves.add(name);
   }
+  const zeroDisable = new Set<string>(jsDocLeaves);
   const flattenedByManifest = input.manifests.map((manifest) => ({
     manifest,
     entries: flattenManifestProperties(manifest.properties),
@@ -486,7 +506,7 @@ export function findDisableValueViolations(input: {
     for (const entry of entries) {
       const documented =
         isZeroDisableDoc(entry.prop.description ?? "") ||
-        (entry.path === entry.leaf && zeroDisable.has(entry.leaf));
+        (entry.path === entry.leaf && jsDocLeaves.has(entry.leaf));
       if (documented && numericSchema(entry.prop) && typeof entry.prop.minimum === "number" && entry.prop.minimum >= 1) {
         violations.push({
           kind: "disable-value-schema-min",
