@@ -15,7 +15,48 @@ import {
 } from "@remnic/core/secure-store";
 import { encryptFileBody, filePathAad } from "@remnic/core/secure-store";
 
-import { createConfiguredOfflineStorage, createOfflineStorageIo } from "./offline-storage-io.js";
+import {
+  createConfiguredOfflineStorage,
+  createOfflineStorageForPath,
+  createOfflineStorageIo,
+} from "./offline-storage-io.js";
+
+test("offline storage creates namespace-scoped secure storage for lifecycle drains", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-namespace-"));
+  const key = Buffer.alloc(32, 43);
+  try {
+    const configured = {
+      storage: new StorageManager(memoryDir),
+      secureStoreKey: key,
+      secureStoreRequired: true,
+    };
+    const ledgerPath = path.join(
+      memoryDir,
+      "namespaces",
+      "project-a",
+      "state",
+      "memory-lifecycle-ledger.jsonl",
+    );
+    const namespaceStorage = createOfflineStorageForPath(memoryDir, ledgerPath, configured, true);
+    const pendingPath = path.join(
+      memoryDir,
+      "namespaces",
+      "project-a",
+      "state",
+      "memory-lifecycle-ledger.jsonl.pending.d",
+      "spill.jsonl",
+    );
+    await mkdir(path.dirname(pendingPath), { recursive: true });
+    await namespaceStorage.writeMemoryLifecycleLedgerContent('{"memoryId":"mem-1"}\n', pendingPath);
+    await namespaceStorage.drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath);
+
+    assert.ok((await namespaceStorage.readMemoryLifecycleLedgerRawBufferForCompaction()).includes(
+      Buffer.from('{"memoryId":"mem-1"}'),
+    ));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 
 test("offline storage IO decrypts encrypted files for reads and streaming digests", async () => {
@@ -29,7 +70,11 @@ test("offline storage IO decrypts encrypted files for reads and streaming digest
     const content = Buffer.from("encrypted offline sync content\n".repeat(128));
 
     await storage.writeOfflineSyncFile(filePath, content);
-    const io = await createOfflineStorageIo(memoryDir, { storage, secureStoreKey: key });
+    const io = await createOfflineStorageIo(memoryDir, {
+      storage,
+      secureStoreKey: key,
+      secureStoreRequired: true,
+    });
     const target = { root: memoryDir, path: "facts/example.md", filePath };
     const readFile = io.readFile;
     assert.ok(readFile);
@@ -64,7 +109,11 @@ test("offline storage IO decrypts legacy namespaced AAD files in chunks", async 
     const content = Buffer.from("legacy namespaced offline sync content\n".repeat(96));
     await writeFile(filePath, encryptFileBody(content, key, filePathAad(filePath, namespaceRoot)));
 
-    const io = await createOfflineStorageIo(memoryDir, { storage, secureStoreKey: key });
+    const io = await createOfflineStorageIo(memoryDir, {
+      storage,
+      secureStoreKey: key,
+      secureStoreRequired: true,
+    });
     const target = { root: memoryDir, path: "namespaces/project-a/facts/legacy.md", filePath };
     const chunks: Buffer[] = [];
     for await (const chunk of io.readFileChunks({ ...target, chunkSize: 37 })) {

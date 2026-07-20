@@ -175,7 +175,11 @@ import {
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation } from "./offline-impression-rotation.js";
-import { createConfiguredOfflineStorage, createOfflineStorageIo } from "./offline-storage-io.js";
+import {
+  createConfiguredOfflineStorage,
+  createOfflineStorageForPath,
+  createOfflineStorageIo,
+} from "./offline-storage-io.js";
 import type {
   BinaryLifecycleConfig,
 } from "@remnic/core";
@@ -8873,7 +8877,13 @@ export async function runOfflineSyncOnce(options: {
   await drainOfflineSyncImpressions(options.memoryDir, options);
   await drainPendingLifecycleForOfflineSync(
     options.memoryDir,
-    (ledgerPath) => offlineStorage.storage.drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+    (ledgerPath) =>
+      createOfflineStorageForPath(
+        options.memoryDir,
+        ledgerPath,
+        offlineStorage,
+        options.secureStoreEncryptOnWrite ?? true,
+      ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
   );
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,

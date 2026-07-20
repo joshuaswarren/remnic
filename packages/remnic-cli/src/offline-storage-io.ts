@@ -42,6 +42,7 @@ export type OfflineFileChunkReader = (
 export type ConfiguredOfflineStorage = {
   storage: StorageManager;
   secureStoreKey: Buffer | null;
+  secureStoreRequired: boolean;
 };
 
 export interface OfflineStorageIo {
@@ -61,7 +62,9 @@ export async function createConfiguredOfflineStorage(
   const storage = new StorageManager(memoryDir);
   const header = await readHeader(memoryDir);
   let secureStoreKey: Buffer | null = null;
+  let secureStoreRequired = false;
   if (header) {
+    secureStoreRequired = true;
     storage.setSecureStoreRequired(true);
     const key = keyring.getKey(secureStoreDir(memoryDir));
     if (key) {
@@ -69,8 +72,33 @@ export async function createConfiguredOfflineStorage(
       secureStoreKey = key;
     }
   }
-  return { storage, secureStoreKey };
+  return { storage, secureStoreKey, secureStoreRequired };
 }
+export function createOfflineStorageForPath(
+  memoryDir: string,
+  filePath: string,
+  configured: ConfiguredOfflineStorage,
+  secureStoreEncryptOnWrite: boolean,
+): StorageManager {
+  const memoryRoot = path.resolve(memoryDir);
+  const stateDir = path.dirname(filePath);
+  if (path.basename(stateDir) !== "state" || path.basename(filePath) !== "memory-lifecycle-ledger.jsonl") {
+    throw new Error(`invalid lifecycle ledger path: ${filePath}`);
+  }
+  const storageRoot = path.resolve(path.dirname(stateDir));
+  if (storageRoot !== memoryRoot && !storageRoot.startsWith(`${memoryRoot}${path.sep}`)) {
+    throw new Error(`lifecycle ledger path is outside the offline memory directory: ${filePath}`);
+  }
+  const storage = new StorageManager(storageRoot);
+  if (configured.secureStoreRequired) {
+    storage.setSecureStoreRequired(true);
+  }
+  if (configured.secureStoreKey) {
+    storage.setSecureStoreKey(configured.secureStoreKey, secureStoreEncryptOnWrite);
+  }
+  return storage;
+}
+
 
 export async function createOfflineStorageIo(
   memoryDir: string,
