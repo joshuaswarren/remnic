@@ -963,3 +963,47 @@ test("guard: a ternary whose zero check tests an un-nameable value does not excu
   assert.equal(violations.length, 1);
   assert.equal(violations[0].key, "cap");
 });
+
+test("guard: a ternary whose zero check is gated by another condition (`flag && raw <= 0`) does not preserve zero", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const raw = coerceNumber(cfg.cap) ?? 0;",
+        "  const cap = flag && raw <= 0 ? 0 : Math.max(1, raw);",
+        "  return { cap };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: a coerced local returned only from a nested inner function is not treated as outer parser output", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  maxItems: number;\n}",
+    },
+    {
+      path: "helper.ts",
+      text: [
+        "function render(request: { maxItems: number }) {",
+        "  const maxItems = Math.max(1, request.maxItems);",
+        "  const build = () => {",
+        "    return { maxItems };",
+        "  };",
+        "  return build();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
