@@ -277,28 +277,32 @@ function destructuredConfigField(operand: ts.Identifier): string | undefined {
         }
       }
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => {
+      if (!isFunctionScope(child)) visit(child);
+    });
   };
   visit(scope);
   return field;
+}
+
+/** A function-like scope node (excludes SourceFile). */
+function isFunctionScope(node: ts.Node): boolean {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
 }
 
 /** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
 function enclosingScope(node: ts.Node): ts.Node {
   let current: ts.Node | undefined = node.parent;
   while (current) {
-    if (
-      ts.isFunctionDeclaration(current) ||
-      ts.isFunctionExpression(current) ||
-      ts.isArrowFunction(current) ||
-      ts.isMethodDeclaration(current) ||
-      ts.isConstructorDeclaration(current) ||
-      ts.isGetAccessorDeclaration(current) ||
-      ts.isSetAccessorDeclaration(current) ||
-      ts.isSourceFile(current)
-    ) {
-      return current;
-    }
+    if (isFunctionScope(current) || ts.isSourceFile(current)) return current;
     current = current.parent;
   }
   return node.getSourceFile();
@@ -313,7 +317,9 @@ function localInitializer(name: string, scope: ts.Node): ts.Expression | undefin
       init = node.initializer;
       return;
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => {
+      if (!isFunctionScope(child)) visit(child);
+    });
   };
   visit(scope);
   return init;
@@ -362,7 +368,9 @@ function localReturnedViaShorthand(decl: ts.VariableDeclaration): boolean {
       found = true;
       return;
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => {
+      if (!isFunctionScope(child)) visit(child);
+    });
   };
   visit(scope);
   return found;
@@ -566,36 +574,33 @@ function operandText(node: ts.Expression): string | undefined {
   return undefined;
 }
 
-/** For a condition comparing a value to 0/1: which ternary branch runs when the value is 0, plus the compared value's text. */
+/**
+ * For a condition that is a BARE comparison of a single value to 0/1: which
+ * ternary branch runs when the value is 0, plus the compared value's text. A
+ * comparison gated by `&&`/`||` (`flag && raw <= 0`) is NOT a zero-preserving
+ * test — the branch can run with the value at 0 when the gate flips — so only
+ * the whole top-level comparison (parens unwrapped) qualifies.
+ */
 function zeroCaseBranch(condition: ts.Expression): { branch: "whenTrue" | "whenFalse"; valueText: string | undefined } | undefined {
-  let result: { branch: "whenTrue" | "whenFalse"; valueText: string | undefined } | undefined;
-  const visit = (node: ts.Node): void => {
-    if (result) return;
-    if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-      const leftLit = numericLiteralValue(node.left);
-      const rightLit = numericLiteralValue(node.right);
-      let lit: number | undefined;
-      let valueOnLeft = true;
-      if (rightLit === 0 || rightLit === 1) {
-        lit = rightLit;
-        valueOnLeft = true;
-      } else if (leftLit === 0 || leftLit === 1) {
-        lit = leftLit;
-        valueOnLeft = false;
-      }
-      if (lit !== undefined) {
-        const satisfied = satisfiesComparison(node.operatorToken.kind, valueOnLeft, lit, 0);
-        if (satisfied !== undefined) {
-          const valueNode = valueOnLeft ? node.left : node.right;
-          result = { branch: satisfied ? "whenTrue" : "whenFalse", valueText: operandText(valueNode) };
-          return;
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(condition);
-  return result;
+  let node: ts.Expression = condition;
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isBinaryExpression(node) || !isComparisonOperator(node.operatorToken.kind)) return undefined;
+  const leftLit = numericLiteralValue(node.left);
+  const rightLit = numericLiteralValue(node.right);
+  let lit: number | undefined;
+  let valueOnLeft = true;
+  if (rightLit === 0 || rightLit === 1) {
+    lit = rightLit;
+    valueOnLeft = true;
+  } else if (leftLit === 0 || leftLit === 1) {
+    lit = leftLit;
+    valueOnLeft = false;
+  }
+  if (lit === undefined) return undefined;
+  const satisfied = satisfiesComparison(node.operatorToken.kind, valueOnLeft, lit, 0);
+  if (satisfied === undefined) return undefined;
+  const valueNode = valueOnLeft ? node.left : node.right;
+  return { branch: satisfied ? "whenTrue" : "whenFalse", valueText: operandText(valueNode) };
 }
 
 /** Does a subtree reference an operand with the given identifier/access text? */
