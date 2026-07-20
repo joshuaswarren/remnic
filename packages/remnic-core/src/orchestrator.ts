@@ -3127,7 +3127,6 @@ export class Orchestrator {
   requestQmdMaintenanceForTool(reason: string): void {
     this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
-
   private async persistExtractionWithPaths(
     result: ExtractionResult,
     storage: StorageManager,
@@ -3151,12 +3150,9 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
-    for (const memoryPath of memoryPathById.values()) {
-      this.enqueuePrioritizedEmbed?.(memoryPath);
-    }
+    for (const memoryPath of memoryPathById.values()) this.enqueuePrioritizedEmbed?.(memoryPath);
     return { persistedIds, memoryPathById };
   }
-  /** Public wrapper returning just persisted IDs (test compatibility); caps default in persistExtractionWithPaths. */
   async persistExtraction(
     result: ExtractionResult,
     storage: StorageManager,
@@ -3169,7 +3165,6 @@ export class Orchestrator {
     const { persistedIds } = await this.persistExtractionWithPaths(result, storage, threadIdForExtraction, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText);
     return persistedIds;
   }
-
   /**
    * Append persisted ids to the thread episode set, excluding pending_review
    * fact ids (#1635) so they don't re-seed predecessor edges. Fail-open like

@@ -4743,8 +4743,6 @@ export class EngramAccessService {
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
   }
-
-
   // ── Memory search & debug ─────────────────────────────────────────────
 
   async memorySearch(request: {
