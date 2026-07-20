@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -417,20 +418,35 @@ test("assertGrandfatherShrinkOnly: a subset of the baseline is allowed, and a nu
   );
 });
 
-test("runDisableValueCheck fails closed when the shrink-only baseline cannot be resolved", () => {
-  // In a real Git work tree, an unresolvable base ref must refuse to run open
-  // (never silently skip the ban), matching the v2 contract checker.
-  assert.throws(
-    () =>
-      runDisableValueCheck({
-        repoRoot: process.cwd(),
-        sourceFiles: [],
-        manifestPaths: [],
-        grandfatherPath: path.join(process.cwd(), "scripts/config-contract/disable-value-grandfathered.json"),
-        baselineRef: "refs/remnic-nonexistent-baseline-ref-2070",
-      }),
-    /refusing to run the §33 check open|cannot resolve the shrink-only baseline/,
-  );
+test("runDisableValueCheck fails closed when the shrink-only baseline cannot be resolved", async () => {
+  // Self-contained: build a throwaway Git work tree so the test does not depend
+  // on the ambient cwd being a repo. An unresolvable base ref must refuse to run
+  // open (never silently skip the ban), matching the v2 contract checker.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-disable-value-failclosed-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    git("init", "-q");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "init");
+    const grandfatherPath = path.join(dir, "gf.json");
+    await writeFile(
+      grandfatherPath,
+      JSON.stringify([{ kind: "disable-value-guard", key: "x", issue: "#2070" }]),
+      "utf8",
+    );
+    assert.throws(
+      () =>
+        runDisableValueCheck({
+          repoRoot: dir,
+          sourceFiles: [],
+          manifestPaths: [],
+          grandfatherPath,
+          baselineRef: "refs/remnic-nonexistent-baseline-ref-2070",
+        }),
+      /refusing to run the §33 check open|cannot resolve the shrink-only baseline/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("guard: a ternary whose zero branch does NOT return 0 still coerces (flagged)", () => {
@@ -549,8 +565,17 @@ test("guard: a `>= 0` comparison is not a real disable guard (operator semantics
   assert.equal(violations[0].key, "cap");
 });
 
-test("guard: `> 0` and `=== 0` DO count as disable guards", () => {
-  for (const guard of ["config.cap > 0", "config.cap === 0"]) {
+test("guard: valid disable guards short-circuit the use (guard clause, && conjunct, active if-block)", () => {
+  const bodies = [
+    // disabling guard clause with early return
+    "  if (config.cap === 0) return;\n  if (used > config.cap) act();",
+    "  if (config.cap <= 0) return;\n  if (used > config.cap) act();",
+    // && short-circuit conjunct
+    "  if (config.cap > 0 && used > config.cap) act();",
+    // enclosing active if-block
+    "  if (config.cap > 0) {\n    if (used > config.cap) act();\n  }",
+  ];
+  for (const body of bodies) {
     const sources: DisableValueSource[] = [
       {
         path: "types.ts",
@@ -558,16 +583,32 @@ test("guard: `> 0` and `=== 0` DO count as disable guards", () => {
       },
       {
         path: "consumer.ts",
-        text: [
-          "function tick(used: number, config: { cap: number }) {",
-          `  if (${guard}) return;`,
-          "  if (used > config.cap) act();",
-          "}",
-        ].join("\n"),
+        text: `function tick(used: number, config: { cap: number }) {\n${body}\n}`,
       },
     ];
-    assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, [], `guard not honored: ${guard}`);
+    assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, [], `guard not honored: ${body}`);
   }
+});
+
+test("guard: an in-scope disable check that does NOT short-circuit the use is still flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  log(config.cap === 0);", // present in scope but does not gate the use
+        "  if (used > config.cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
 });
 
 test("schema-min: a nested zero-disable doc does not falsely flag an undocumented top-level entry with the same leaf", () => {
