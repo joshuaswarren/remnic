@@ -5027,9 +5027,7 @@ export class EngramAccessService {
                 new Set([
                   ...recallNamespacesForPrincipal(principal, this.orchestrator.config),
                   ...this.orchestrator.config.namespacePolicies
-                    .filter((policy) =>
-                      canReadNamespace(principal, policy.name, this.orchestrator.config),
-                    )
+                    .filter((policy) => canReadNamespace(principal, policy.name, this.orchestrator.config))
                     .map((policy) => policy.name),
                   fallbackNamespace,
                 ]),
@@ -5042,10 +5040,12 @@ export class EngramAccessService {
           );
           if (!resolved) {
             if (nodePath.isAbsolute(memoryPath)) {
-              throw new EngramAccessInputError(
-                "cited path is outside the caller's readable namespaces",
-              );
+              throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
             }
+            // "namespace/relative" citation form: attribute to the leading authorized namespace (#2020).
+            const slash = memoryPath.indexOf("/");
+            const candidate = slash > 0 ? memoryPath.slice(0, slash) : "";
+            if (authorizedNamespaces.includes(candidate)) return candidate;
             return fallbackNamespace;
           }
           return resolved.namespace;

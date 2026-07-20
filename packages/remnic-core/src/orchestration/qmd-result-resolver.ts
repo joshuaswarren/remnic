@@ -296,6 +296,7 @@ export class QmdResultResolver {
       result.path,
       fallbackStorage,
       recallNamespaces,
+      result.namespace,
     );
     if (!memory) return null;
 
