@@ -97,6 +97,10 @@ export interface WorkspaceOpsDeps {
   wearablesServiceInstance: WearablesService | null;
 }
 
+function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
+  const normalizedCandidate = path.resolve(candidatePath);
+  return normalizedCandidate === path.resolve(requestedPath) || normalizedCandidate === path.resolve(memoryDir, requestedPath);
+}
 export class WorkspaceOpsCoordinator {
   constructor(
     private readonly deps: WorkspaceOpsDeps,
@@ -824,7 +828,9 @@ export class WorkspaceOpsCoordinator {
           : this.deps.config.defaultNamespace);
       const namespaceMemories = memoriesByNamespace.get(namespace);
       const memory = memoryPath
-        ? namespaceMemories?.find((candidate) => path.resolve(candidate.path) === path.resolve(memoryPath))
+        ? namespaceMemories?.find((candidate) =>
+            matchesMemoryPath(candidate.path, memoryPath, this.deps.config.memoryDir),
+          )
         : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
       if (!memory) continue;
 

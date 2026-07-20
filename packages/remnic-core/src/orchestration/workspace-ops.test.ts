@@ -71,6 +71,7 @@ test("flushAccessTracking selects the buffered path within one namespace", async
   let flushed: AccessTrackingEntry[] = [];
   const config = {
     namespacesEnabled: false,
+    memoryDir: "/memory",
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
@@ -78,7 +79,7 @@ test("flushAccessTracking selects the buffered path within one namespace", async
   const coordinator = new WorkspaceOpsCoordinator({
     config,
     accessTrackingBuffer: new Map([
-      ["default:same-id", { memoryId: "same-id", memoryPath: firstPath, count: 1, lastAccessed: "2026-07-19T00:00:00.000Z" }],
+      ["default:same-id", { memoryId: "same-id", memoryPath: "facts/first.md", count: 1, lastAccessed: "2026-07-19T00:00:00.000Z" }],
     ]),
     readAllMemoriesForNamespaces: async () => memories,
     namespaceFromPath: () => "default",
