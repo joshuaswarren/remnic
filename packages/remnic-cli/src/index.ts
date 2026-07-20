@@ -44,6 +44,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import {
   parseConfig,
+  type PluginConfig,
   isOpenaiApiKeyDisabled,
   resolveEnvVars,
   resolveRemnicConfigRecord,
@@ -10088,17 +10089,34 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const memoryDir = resolveMemoryDir();
     const states = await listLiveConnectorStates(memoryDir);
     const stateMap = new Map(states.map((s: { id: string }) => [s.id, s]));
+    // Reflect the parsed config's enabled flags (same source `connectors run`
+    // uses) instead of hardcoding true, so disabled connectors report
+    // enabled:false in status/list output (issue #2062).
+    let connectorsCfg: PluginConfig["connectors"];
+    try {
+      const configPath = resolveConfigPath();
+      const raw = fs.existsSync(configPath)
+        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+        : {};
+      connectorsCfg = parseConfig(resolveRemnicConfigRecord(raw)).connectors;
+    } catch (err) {
+      process.stderr.write(
+        `connectors status: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      process.exitCode = 2;
+      return;
+    }
     const rows = [
       {
         id: GDRIVE_ID as string,
         displayName: "Google Drive",
-        enabled: true,
+        enabled: connectorsCfg.googleDrive.enabled,
         state: stateMap.get(GDRIVE_ID as string) ?? null,
       },
       {
         id: NOTION_ID as string,
         displayName: "Notion",
-        enabled: true,
+        enabled: connectorsCfg.notion.enabled,
         state: stateMap.get(NOTION_ID as string) ?? null,
       },
     ];
