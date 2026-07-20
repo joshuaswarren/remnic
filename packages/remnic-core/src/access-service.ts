@@ -5024,15 +5024,23 @@ export class EngramAccessService {
       .map((entry) => {
         const basename = entry.path.split("/").pop() ?? entry.path;
         const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-        return id.length > 0 ? { id } : null;
+        return id.length > 0 ? { id, citedPath: entry.path } : null;
       })
-      .filter((entry): entry is { id: string } => entry !== null);
+      .filter(
+        (entry): entry is { id: string; citedPath: string } => entry !== null,
+      );
 
     if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
-
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const preferredPathsById = new Map<string, string[]>();
+    for (const entry of memoryEntries) {
+      const paths = preferredPathsById.get(entry.id) ?? [];
+      paths.push(entry.citedPath);
+      preferredPathsById.set(entry.id, paths);
+    }
     const pathsById = await storage.findExistingMemoryPaths(
       memoryEntries.map((entry) => entry.id),
+      preferredPathsById,
     );
     const matchedEntries = memoryEntries
       .map((entry) => {

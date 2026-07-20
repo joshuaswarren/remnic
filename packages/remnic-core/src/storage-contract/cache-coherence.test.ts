@@ -376,3 +376,25 @@ test("hot cache (#2020): path-scoped access flush updates the cited duplicate ID
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("citation path lookup resolves collection-prefixed QMD paths", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-citation-path-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "citation target");
+    const [memory] = await storage.readAllMemories();
+    assert.ok(memory);
+
+    const found = await storage.findExistingMemoryPaths(
+      [id],
+      new Map([[id, [`collection/${path.relative(dir, memory.path)}`]]]),
+    );
+
+    assert.equal(found.get(id), memory.path);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

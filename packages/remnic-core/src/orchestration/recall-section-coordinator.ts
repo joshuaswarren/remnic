@@ -300,22 +300,30 @@ export class RecallSectionCoordinator {
     const allocationOrder = orderedSections.map((section) => section.id);
     const memorySection = sectionById.get("memories");
     const memoryIndex = allocationOrder.indexOf("memories");
-    const firstAtomicMemoryIndex =
-      memorySection?.chunks.findIndex((chunk) => chunk.atomic) ?? -1;
-    const firstAtomicMemoryContentChars =
-      memorySection && firstAtomicMemoryIndex >= 0
-        ? memorySection.chunks
-            .slice(0, firstAtomicMemoryIndex + 1)
-            .map((chunk) => chunk.content)
-            .join("\n\n").length
-        : 0;
     const memoryBudget = this.getRecallSectionMaxChars("memories") ?? budget;
-    const firstAtomicMemoryReserveChars =
-      firstAtomicMemoryContentChars > 0 &&
-      firstAtomicMemoryContentChars + separator.length <=
-        Math.min(budget, memoryBudget)
-        ? firstAtomicMemoryContentChars
-        : 0;
+    const memoryAllocationBudget = Math.min(budget, memoryBudget);
+    let firstAtomicMemoryReserveChars = 0;
+    let memoryPrefix = "";
+    for (const chunk of memorySection?.chunks ?? []) {
+      const candidate = memoryPrefix
+        ? `${memoryPrefix}\n\n${chunk.content}`
+        : chunk.content;
+      if (
+        chunk.atomic &&
+        candidate.length + separator.length <= memoryAllocationBudget
+      ) {
+        firstAtomicMemoryReserveChars = candidate.length;
+        break;
+      }
+      if (
+        chunk.atomic &&
+        chunk.content.length + separator.length <= memoryAllocationBudget
+      ) {
+        firstAtomicMemoryReserveChars = chunk.content.length;
+        break;
+      }
+      memoryPrefix = candidate;
+    }
     const selected = new Map<string, string>();
     const includedMemoryIds: string[] = [];
     const includedMemoryPaths: string[] = [];

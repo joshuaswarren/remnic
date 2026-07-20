@@ -39,6 +39,10 @@ import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/c
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import {
+  qmdCollectionPathParts,
+  qmdResultPathCandidates,
+} from "./orchestration/qmd-result-resolver.js";
+import {
   clearMemoryCache,
   getCachedEntities,
   getCachedMemories,
@@ -6457,16 +6461,53 @@ export class StorageManager {
    * file names without parsing frontmatter — much cheaper than readAllMemories()
    * for citation usage tracking and other existence checks.
    */
-  async findExistingMemoryPaths(ids: string[]): Promise<Map<string, string>> {
+  async findExistingMemoryPaths(
+    ids: string[],
+    preferredPaths: Map<string, string[]> = new Map(),
+  ): Promise<Map<string, string>> {
     if (ids.length === 0) return new Map();
     const wantedIds = new Set(ids);
     const filePaths = await this.collectActiveMemoryPaths();
     const foundPaths = new Map<string, string>();
+    const fallbackPaths = new Map<string, string>();
+    const preferredAbsolutePaths = new Map(
+      Array.from(preferredPaths.entries()).map(([id, paths]) => {
+        const candidates = new Set<string>();
+        for (const preferredPath of paths) {
+          for (const candidate of qmdResultPathCandidates(
+            this.baseDir,
+            preferredPath,
+          )) {
+            candidates.add(candidate);
+          }
+          const parts = qmdCollectionPathParts(preferredPath);
+          if (parts) {
+            for (const candidate of qmdResultPathCandidates(
+              this.baseDir,
+              parts.relativePath,
+            )) {
+              candidates.add(candidate);
+            }
+          }
+        }
+        return [id, candidates] as const;
+      }),
+    );
     for (const filePath of filePaths) {
       const memoryId = path.basename(filePath, ".md");
-      if (wantedIds.has(memoryId)) {
+      if (!wantedIds.has(memoryId)) continue;
+      const preferred = preferredAbsolutePaths.get(memoryId);
+      if (preferred?.has(path.resolve(filePath))) {
         foundPaths.set(memoryId, filePath);
-        if (foundPaths.size === wantedIds.size) break;
+      } else if (!fallbackPaths.has(memoryId)) {
+        fallbackPaths.set(memoryId, filePath);
+      }
+      if (foundPaths.size === wantedIds.size) break;
+    }
+    for (const id of wantedIds) {
+      if (!foundPaths.has(id)) {
+        const fallbackPath = fallbackPaths.get(id);
+        if (fallbackPath) foundPaths.set(id, fallbackPath);
       }
     }
     return foundPaths;

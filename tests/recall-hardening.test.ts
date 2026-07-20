@@ -1395,3 +1395,39 @@ test("assembleRecallSections does not reserve an oversized atomic memory", async
   assert.deepEqual(assembled.omittedIds, ["memories"]);
   assert.match(assembled.sections.join("\n"), /profile context/);
 });
+test("assembleRecallSections reserves a later fitting atomic memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-later-memory-", {
+    recallBudgetChars: 100,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(200),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-fits-later", memoryPath: "facts/fits-later.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-fits-later"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits-later.md"]);
+  assert.match(assembled.sections.join("\n"), /M{20}/);
+});
