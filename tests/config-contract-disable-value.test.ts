@@ -841,3 +841,104 @@ test("guard: a coercion on a local emitted through a nested returned object is f
   assert.equal(violations[0].kind, "disable-value-guard");
   assert.equal(violations[0].key, "autoPromoteOccurrences");
 });
+
+test("guard: a zero short-circuit combined with an independent feature gate (`!enabled || cap <= 0`) is honored", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, enabled: boolean, config: { cap: number }) {",
+        "  if (!enabled || config.cap <= 0) return;",
+        "  if (used > config.cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("guard: a feature-gated active guard (`enabled && cap > 0`) is honored", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, enabled: boolean, config: { cap: number }) {",
+        "  if (enabled && config.cap > 0 && used > config.cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("schema-min: a parent `minimum: 1` with a `minimum: 0` anyOf branch still rejects 0 (flagged)", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        cap: {
+          type: "integer",
+          minimum: 1,
+          description: "Set to 0 to disable.",
+          anyOf: [{ minimum: 0 }, { minimum: 5 }],
+        },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+  assert.equal(violations[0].key, "cap@openclaw.plugin.json");
+});
+
+test("guard: a destructured config alias does not leak into an unrelated sibling function", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function withConfig(config: { cap: number }) {",
+        "  const { cap } = config;",
+        "  if (cap <= 0) return;",
+        "  emit(cap);",
+        "}",
+        "function unrelated(used: number, cap: number) {",
+        "  if (used > cap) act();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("guard: a coercion routed through a differently named alias into a returned config field is flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  maxItems: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const parsed = Math.max(1, coerceNumber(cfg.maxItems) ?? 0);",
+        "  return { maxItems: parsed };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "maxItems");
+});
