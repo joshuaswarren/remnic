@@ -6,6 +6,11 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import {
+  recordCitationUsage as recordCitationUsageForAccess,
+  type CitationUsageRequest,
+  type CitationUsageResult,
+} from "./access-citation.js";
 import { coordinateRecall, type RecallCoordinatorHost, type RecallExecResult } from "./access-recall-concurrency.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -4999,68 +5004,19 @@ export class EngramAccessService {
     };
   }
 
-  /**
-   * Record citation usage from an observed oai-mem-citation block.
-   * For each citation entry, extract the memory ID from the path and
-   * increment its access tracking via the orchestrator. Returns the
-   * count of submitted IDs and the count of IDs that matched real memories.
-   */
-  async recordCitationUsage(request: {
-    sessionId?: string;
-    namespace?: string;
-    authenticatedPrincipal?: string;
-    entries: Array<{ path: string; lineStart: number; lineEnd: number; note: string }>;
-    rolloutIds: string[];
-  }): Promise<{ submitted: number; matched: number }> {
-    if (request.entries.length === 0) return { submitted: 0, matched: 0 };
-
-    const resolvedNamespace = this.writableNamespaceFor(
-      request.namespace,
-      request.sessionId,
-      request.authenticatedPrincipal,
+  async recordCitationUsage(
+    request: CitationUsageRequest,
+  ): Promise<CitationUsageResult> {
+    return recordCitationUsageForAccess(
+      {
+        resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
+          this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
+        getStorage: (namespace) => this.orchestrator.getStorage(namespace),
+        trackMemoryAccess: (memoryIds, memoryPaths) =>
+          this.orchestrator.trackMemoryAccess(memoryIds, memoryPaths),
+      },
+      request,
     );
-
-    const memoryEntries = request.entries
-      .map((entry) => {
-        const basename = entry.path.split("/").pop() ?? entry.path;
-        const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-        return id.length > 0 ? { id, citedPath: entry.path } : null;
-      })
-      .filter(
-        (entry): entry is { id: string; citedPath: string } => entry !== null,
-      );
-
-    if (memoryEntries.length === 0) return { submitted: 0, matched: 0 };
-    const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const preferredPathsById = new Map<string, string[]>();
-    for (const entry of memoryEntries) {
-      const paths = preferredPathsById.get(entry.id) ?? [];
-      paths.push(entry.citedPath);
-      preferredPathsById.set(entry.id, paths);
-    }
-    const pathsById = await storage.findExistingMemoryPaths(
-      memoryEntries.map((entry) => entry.id),
-      preferredPathsById,
-    );
-    const matchedEntries = memoryEntries
-      .map((entry) => {
-        const memoryPath = pathsById.get(entry.id);
-        return memoryPath ? { id: entry.id, path: memoryPath } : null;
-      })
-      .filter((entry): entry is { id: string; path: string } => entry !== null);
-
-    if (matchedEntries.length > 0) {
-      try {
-        this.orchestrator.trackMemoryAccess(
-          matchedEntries.map((entry) => entry.id),
-          matchedEntries.map((entry) => entry.path),
-        );
-      } catch {
-        log.debug("citation usage tracking: failed to record access for cited memories");
-      }
-    }
-
-    return { submitted: memoryEntries.length, matched: matchedEntries.length };
   }
 
   // ── Operator Console state (issue #688 PR 2/3) ────────────────────────────
