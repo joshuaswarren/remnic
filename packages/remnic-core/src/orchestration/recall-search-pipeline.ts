@@ -39,6 +39,7 @@ import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
+import { hasMemoryForResult, markResultKey, memoryForResult, memoryMapKey, resultHasKey } from "./recall-memory-map.js";
 import { type UtilityRuntimeValues, applyUtilityRankingRuntimeDelta } from "../utility-runtime.js";
 import {
   computeArtifactCandidateFetchLimit,
@@ -1186,14 +1187,15 @@ export class RecallSearchPipelineCoordinator {
     const unreadablePaths = new Set<string>();
 
     const markChecked = (result: QmdSearchResult): void => {
-      if (result.path) checkedPaths.add(result.path);
+      if (result.path) markResultKey(checkedPaths, result);
     };
     const markUnreadable = (result: QmdSearchResult, err: unknown): void => {
       if (!result.path) return;
-      checkedPaths.add(result.path);
-      unreadablePaths.add(result.path);
+      markChecked(result);
+      markResultKey(unreadablePaths, result);
       log.warn("recall safety filter dropped unreadable secure-store candidate", {
         path: result.path,
+        namespace: result.namespace,
         error: (err as Error).message,
       });
     };
@@ -1213,28 +1215,28 @@ export class RecallSearchPipelineCoordinator {
           };
         }
         await Promise.all(
-          results.slice(offset, offset + batchSize).map(async (r) => {
-            if (!r.path) return;
-            if (memoryByPath.has(r.path)) {
-              markChecked(r);
+        results.slice(offset, offset + batchSize).map(async (r) => {
+          if (!r.path) return;
+          if (hasMemoryForResult(memoryByPath, r)) {
+            markChecked(r);
+            return;
+          }
+          try {
+            const mem = await this.deps.readQmdResultMemory(
+              r.path,
+              this.deps.storage,
+              options?.recallNamespaces,
+              r.namespace,
+            );
+            markChecked(r);
+            if (mem) memoryByPath.set(memoryMapKey(r), mem);
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError) {
+              markUnreadable(r, err);
               return;
             }
-            try {
-              const mem = await this.deps.readQmdResultMemory(
-                r.path,
-                this.deps.storage,
-                options?.recallNamespaces,
-                r.namespace,
-              );
-              markChecked(r);
-              if (mem) memoryByPath.set(r.path, mem);
-            } catch (err) {
-              if (err instanceof SecureStoreLockedError) {
-                markUnreadable(r, err);
-                return;
-              }
-              throw err;
-            }
+            throw err;
+          }
           }),
         );
       }
@@ -1244,7 +1246,7 @@ export class RecallSearchPipelineCoordinator {
 
     for (const result of results) {
       if (!result.path) continue;
-      if (memoryByPath.has(result.path)) {
+      if (hasMemoryForResult(memoryByPath, result)) {
         markChecked(result);
         continue;
       }
@@ -1259,7 +1261,7 @@ export class RecallSearchPipelineCoordinator {
           result.namespace,
         );
         markChecked(result);
-        if (mem) memoryByPath.set(result.path, mem);
+        if (mem) memoryByPath.set(memoryMapKey(result), mem);
       } catch (err) {
         if (err instanceof SecureStoreLockedError) {
           markUnreadable(result, err);
@@ -1291,11 +1293,11 @@ export class RecallSearchPipelineCoordinator {
     let blockedPathFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
     for (const r of results) {
-      if (r.path && options?.blockedPaths?.has(r.path)) {
+      if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
         blockedPathFilteredCount += 1;
         continue;
       }
-      const memory = memoryByPath.get(r.path);
+      const memory = memoryForResult(memoryByPath, r);
       if (memory) {
         // Review-lifecycle statuses never enter active recall injection
         // (forgotten, pending_review, rejected, quarantined). Superseded and
@@ -1450,17 +1452,17 @@ export class RecallSearchPipelineCoordinator {
     );
     const candidateResults = loaded.completed
       ? results
-      : results.filter((result) => !result.path || loaded.checkedPaths.has(result.path));
+      : results.filter((result) => !result.path || resultHasKey(loaded.checkedPaths, result));
     if (!loaded.completed) {
       log.debug(
         `recall safety filter stopped before validating all candidates (${candidateResults.length}/${results.length} eligible)`,
       );
     }
-    const blockedPaths = new Set(loaded.unreadablePaths);
+    const blockedPaths = new Set<string>();
     if (options?.dropUnresolved === true) {
-      for (const resultPath of loaded.checkedPaths) {
-        if (!loaded.memoryByPath.has(resultPath)) {
-          blockedPaths.add(resultPath);
+      for (const result of candidateResults) {
+        if (result.path && resultHasKey(loaded.checkedPaths, result) && !hasMemoryForResult(loaded.memoryByPath, result)) {
+          markResultKey(blockedPaths, result);
         }
       }
     }
@@ -1569,7 +1571,7 @@ export class RecallSearchPipelineCoordinator {
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.deps.effectiveRecencyWeight();
     for (const r of safeResults) {
-      const memory = memoryByPath.get(r.path);
+      const memory = memoryForResult(memoryByPath, r);
       let score = r.score;
 
       if (memory) {

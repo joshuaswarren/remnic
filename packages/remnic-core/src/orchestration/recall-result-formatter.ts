@@ -28,7 +28,7 @@ import type { HarmonicRetrievalResult } from "../harmonic-retrieval.js";
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
-import type { TrustStageResultItem } from "../trust-score-stage.js";
+import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -104,7 +104,7 @@ export class RecallResultFormatter {
       const handle = handleByIndex.get(i);
       const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
       if (hedgeMap) {
-        const item = hedgeMap.get(r.path);
+        const item = trustResultFor(hedgeMap, r);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
           if (hedge.length > 0) return `${withHandle} ${hedge}`;

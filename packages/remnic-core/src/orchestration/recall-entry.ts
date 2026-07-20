@@ -17,7 +17,7 @@ import { resolvePrincipal } from "../namespaces/principal.js";
 import { type RecallSectionAppendOptions, type RecallSectionBuckets } from "./recall-section-coordinator.js";
 import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-helpers.js";
 import { ProfilingCollector } from "../profiling.js";
-import type { TrustStageResultItem } from "../trust-score-stage.js";
+import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
 
@@ -275,7 +275,7 @@ export class RecallEntryCoordinator {
     const sectionId = "memories";
     const trustByPath = options.trustByPath ?? null;
     const injectable = trustByPath
-      ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
+      ? options.results.filter((r) => !trustResultFor(trustByPath, r)?.quarantined)
       : options.results;
     if (injectable.length === 0) return;
 

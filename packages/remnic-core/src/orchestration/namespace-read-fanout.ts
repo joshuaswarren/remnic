@@ -369,13 +369,16 @@ export class NamespaceReadFanoutCoordinator {
             ? this.deps.namespaceFromPath(memoryPath)
             : this.deps.config.defaultNamespace;
           const storage = await this.deps.storageRouter.storageFor(namespace);
-          return await storage.readMemoryByPath(memoryPath);
+          const memory = await storage.readMemoryByPath(memoryPath);
+          return memory ? { memory, namespace } : null;
         }),
       )
-    ).filter((memory): memory is MemoryFile => memory !== null);
+    ).filter(
+      (entry): entry is { memory: MemoryFile; namespace: string } => entry !== null,
+    );
 
     const results: QmdSearchResult[] = [];
-    for (const memory of memories) {
+    for (const { memory, namespace } of memories) {
       const status = memory.frontmatter.status ?? "active";
       if (!options?.allowArchived && status !== "active") continue;
 
@@ -395,6 +398,7 @@ export class NamespaceReadFanoutCoordinator {
 
       results.push({
         docid: memory.frontmatter.id,
+        namespace,
         path: memory.path,
         score,
         snippet: memory.content.slice(0, 400).replace(/\n/g, " "),

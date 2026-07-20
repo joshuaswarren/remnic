@@ -1,3 +1,18 @@
+import type { QmdSearchResult } from "./types.js";
+
+/** Stable key for a recall result whose path may repeat across namespaces. */
+export function trustResultKey(result: Pick<QmdSearchResult, "path" | "namespace">): string {
+  return JSON.stringify([result.namespace ?? "", result.path]);
+}
+
+/** Read trust metadata while accepting pre-namespace path-only maps. */
+export function trustResultFor(
+  trustByPath: ReadonlyMap<string, TrustStageResultItem>,
+  result: Pick<QmdSearchResult, "path" | "namespace">,
+): TrustStageResultItem | undefined {
+  return trustByPath.get(trustResultKey(result)) ?? trustByPath.get(result.path);
+}
+
 /**
  * trust-score-stage.ts — signal adapters + recall pipeline stage (issue #1577 PR 2).
  *
@@ -133,11 +148,15 @@ export function buildTrustSignalMap(
 export interface TrustStageCandidate {
   path: string;
   score: number;
+  /** Namespace-aware result key used to preserve result identity through rerank. */
+  key?: string;
 }
 
 /** One candidate after the TrustScore stage. */
 export interface TrustStageResultItem {
   path: string;
+  /** Namespace-aware result key used to preserve result identity through rerank. */
+  key?: string;
   /** Final score after the trust multiplier is applied. */
   score: number;
   /** The untouched input score — for telemetry / X-ray. */
@@ -224,6 +243,7 @@ export function applyTrustScoreStage(
     const scored = safeBase * multiplier;
     const item: TrustStageResultItem = {
       path: c.path,
+      ...(c.key === undefined ? {} : { key: c.key }),
       score: scored,
       originalScore: c.score,
       multiplier,

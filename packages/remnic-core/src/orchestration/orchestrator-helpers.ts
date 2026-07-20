@@ -619,7 +619,7 @@ export function filterRecallCandidates(
 ): QmdSearchResult[] {
   const scopedByNamespace = options.namespacesEnabled
     ? candidates.filter((r) =>
-        options.recallNamespaces.includes(options.resolveNamespace(r.path)),
+        options.recallNamespaces.includes(r.namespace ?? options.resolveNamespace(r.path)),
       )
     : candidates;
   return scopedByNamespace

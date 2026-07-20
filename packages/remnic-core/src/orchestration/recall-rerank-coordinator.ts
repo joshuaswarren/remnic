@@ -27,6 +27,7 @@ import {
 import {
   applyTrustScoreStage,
   buildTrustSignalsForRerank,
+  trustResultKey,
   type TrustStageResultItem,
 } from "../trust-score-stage.js";
 import type { TrustSignals } from "../trust-score.js";
@@ -370,8 +371,11 @@ export class RecallRerankCoordinator {
       return { results, trustByPath: null };
     }
     // Synthetic monotone-decreasing rank so the multiplier rebias is applied
-    // on top of upstream ordering, not raw QMD scores (see applyMemoryWorthRerank).
-    const rankedInputs = results.map((r, i) => ({ path: r.path, score: results.length - i }));
+    const rankedInputs = results.map((r, i) => ({
+      path: r.path,
+      key: trustResultKey(r),
+      score: results.length - i,
+    }));
     const stage = applyTrustScoreStage(rankedInputs, {
       signals,
       weights: config.trustScoreWeights,
@@ -379,10 +383,22 @@ export class RecallRerankCoordinator {
       maxMultiplier: config.trustScoreMaxMultiplier,
       quarantine: config.trustScoreQuarantine,
     });
-    const trustByPath = new Map(stage.all.map((item) => [item.path, item]));
-    const byPath = new Map(results.map((r) => [r.path, r]));
+    const trustByPath = new Map(
+      stage.all.map((item) => [item.key ?? item.path, item] as const),
+    );
+    const byKey = new Map<string, QmdSearchResult[]>();
+    for (const result of results) {
+      const key = trustResultKey(result);
+      const bucket = byKey.get(key);
+      if (bucket) bucket.push(result);
+      else byKey.set(key, [result]);
+    }
     const admitted = stage.admitted
-      .map((item) => byPath.get(item.path))
+      .map((item) => {
+        const key = item.key ?? item.path;
+        if (item.key !== undefined) return byKey.get(key)?.shift();
+        return results.find((result) => result.path === item.path);
+      })
       .filter((r): r is QmdSearchResult => r !== undefined);
     return { results: admitted, trustByPath };
   }
