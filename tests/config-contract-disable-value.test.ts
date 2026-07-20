@@ -147,7 +147,7 @@ test("guard: consumer `queued > threshold` with no zero short-circuit is flagged
     },
     {
       path: "consumer.ts",
-      text: "function tick(state: { queued: number }, backlogThreshold: number) {\n  if (state.queued > backlogThreshold) flush();\n}",
+      text: "function tick(state: { queued: number }, config: { backlogThreshold: number }) {\n  if (state.queued > config.backlogThreshold) flush();\n}",
     },
   ];
   const { violations } = findDisableValueViolations({ sources, manifests: [] });
@@ -165,9 +165,9 @@ test("guard: consumer threshold WITH a `<= 0` short-circuit is clean", () => {
     {
       path: "consumer.ts",
       text: [
-        "function tick(state: { queued: number }, backlogThreshold: number) {",
-        "  if (backlogThreshold <= 0) return;",
-        "  if (state.queued > backlogThreshold) flush();",
+        "function tick(state: { queued: number }, config: { backlogThreshold: number }) {",
+        "  if (config.backlogThreshold <= 0) return;",
+        "  if (state.queued > config.backlogThreshold) flush();",
         "}",
       ].join("\n"),
     },
@@ -257,4 +257,67 @@ test("runDisableValueCheck: a grandfather entry with an unknown kind is rejected
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("zero-disable phrasing wrapped across JSDoc lines is detected", () => {
+  const wrapped = "/**\n * Retry budget before giving up. Setting to 0\n * disables the retry loop entirely.\n */";
+  assert.equal(isZeroDisableDoc(wrapped), true);
+
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: [
+        "export interface Cfg {",
+        "  /**",
+        "   * Retry budget. Setting to 0",
+        "   * disables retries.",
+        "   */",
+        "  retryBudget: number;",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    { path: "openclaw.plugin.json", properties: { retryBudget: { type: "number", minimum: 1 } } },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests });
+  assert.equal(violations.some((v) => v.kind === "disable-value-schema-min" && v.key.startsWith("retryBudget@")), true);
+});
+
+test("schema-min keys stay distinct across manifests that share a basename", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  maxCandidates: number;\n}",
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    { path: "openclaw.plugin.json", properties: { maxCandidates: { type: "number", minimum: 1 } } },
+    { path: "packages/plugin-openclaw/openclaw.plugin.json", properties: { maxCandidates: { type: "number", minimum: 1 } } },
+  ];
+  const keys = findDisableValueViolations({ sources, manifests })
+    .violations.filter((v) => v.kind === "disable-value-schema-min")
+    .map((v) => v.key);
+  assert.equal(keys.length, 2);
+  assert.equal(new Set(keys).size, 2);
+});
+
+test("nested schema property (procedural.*) with minimum >= 1 is flagged by dotted path", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        procedural: {
+          type: "object",
+          properties: {
+            minOccurrences: { type: "integer", minimum: 1, description: "Minimum occurrences (0 disables mining)." },
+          },
+        },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+  assert.equal(violations[0].key, "procedural.minOccurrences@openclaw.plugin.json");
 });

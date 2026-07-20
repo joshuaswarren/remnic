@@ -57,6 +57,8 @@ export interface DisableValueSchemaProperty {
   type?: string | string[];
   minimum?: number;
   description?: string;
+  properties?: Record<string, DisableValueSchemaProperty>;
+  items?: { properties?: Record<string, DisableValueSchemaProperty> };
 }
 
 export interface DisableValueManifest {
@@ -74,13 +76,23 @@ export interface DisableValueCheckResult {
 /**
  * A literal `0` within a short window before "disabl(e|es|ed)" — matches
  * "0 disables", "set to 0 to disable", "0 to disable the gate", "<= 0
- * disables", "0 (disabled)". The window stops at a sentence boundary so a `0`
- * in one sentence cannot bind to "disable" in the next.
+ * disables", "0 (disabled)". The window stops at a sentence boundary (`.`) so a
+ * `0` in one sentence cannot bind to "disable" in the next. Runs on normalized
+ * text (comment markers stripped, whitespace collapsed), so phrasing wrapped
+ * across JSDoc lines still matches.
  */
-export const ZERO_DISABLE_PATTERN = /\b0\b[^.\n]{0,40}?disabl/i;
+export const ZERO_DISABLE_PATTERN = /\b0\b[^.]{0,40}?disabl/i;
+
+/** Strip JSDoc/line-comment markers and collapse whitespace so wrapped phrasing reads as one line. */
+function normalizeDocText(text: string): string {
+  return text
+    .replace(/\/\*\*?|\*\/|^\s*\*|\/\//gm, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 export function isZeroDisableDoc(text: string): boolean {
-  return ZERO_DISABLE_PATTERN.test(text);
+  return ZERO_DISABLE_PATTERN.test(normalizeDocText(text));
 }
 
 function propertyNodeName(node: ts.Node): string | undefined {
@@ -203,51 +215,65 @@ function isFloorAboveZero(node: ts.CallExpression): boolean {
   });
 }
 
+/** Name accessed as `obj.name` — config reads in consumers. Bare identifiers are excluded to avoid renamed-local false positives. */
+function propertyAccessName(node: ts.Expression): string | undefined {
+  return ts.isPropertyAccessExpression(node) ? node.name.text : undefined;
+}
+
 /**
- * Guard flags for a property, aggregated over every provided source. The
- * coercion scan is scoped to the property's own initializer (rename-immune);
- * the comparison scan is repo-wide by exact name so a consumer threshold shows
- * up even when the parser is clean.
+ * One pass per source collecting guard flags for every zero-disable property
+ * at once. Comparisons match config reads written `obj.prop` (threshold use vs
+ * zero short-circuit); the coercion scan is scoped to a property's own
+ * initializer, so a parser clamp is caught rename-immune.
  */
-function analyzeGuards(sources: DisableValueSource[], name: string): GuardFlags {
-  const flags: GuardFlags = { thresholdUse: false, zeroGuard: false, coercion: false };
+function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string>): Map<string, GuardFlags> {
+  const flags = new Map<string, GuardFlags>();
+  for (const name of zeroDisable) flags.set(name, { thresholdUse: false, zeroGuard: false, coercion: false });
   for (const source of sources) {
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
         const op = node.operatorToken.kind;
-        const leftRef = referencesProperty(node.left, name);
-        const rightRef = referencesProperty(node.right, name);
+        const leftName = propertyAccessName(node.left);
+        const rightName = propertyAccessName(node.right);
         const leftLit = numericLiteralValue(node.left);
         const rightLit = numericLiteralValue(node.right);
-        if ((leftRef && (rightLit === 0 || rightLit === 1)) || (rightRef && (leftLit === 0 || leftLit === 1))) {
-          flags.zeroGuard = true;
+        if (leftName && flags.has(leftName) && (rightLit === 0 || rightLit === 1)) {
+          flags.get(leftName)!.zeroGuard = true;
         }
-        // Property used as a bound against a dynamic value: `X > prop`,
-        // `X >= prop`, `prop < X`, `prop <= X` where X is not the 0/1 literal.
-        const propOnRightBound =
-          rightRef &&
+        if (rightName && flags.has(rightName) && (leftLit === 0 || leftLit === 1)) {
+          flags.get(rightName)!.zeroGuard = true;
+        }
+        // Property used as a bound against a dynamic value: `X > prop` / `X >= prop`.
+        if (
+          rightName &&
+          flags.has(rightName) &&
           (op === ts.SyntaxKind.GreaterThanToken || op === ts.SyntaxKind.GreaterThanEqualsToken) &&
           leftLit !== 0 &&
-          leftLit !== 1;
-        const propOnLeftBound =
-          leftRef &&
+          leftLit !== 1
+        ) {
+          flags.get(rightName)!.thresholdUse = true;
+        }
+        // `prop < X` / `prop <= X`.
+        if (
+          leftName &&
+          flags.has(leftName) &&
           (op === ts.SyntaxKind.LessThanToken || op === ts.SyntaxKind.LessThanEqualsToken) &&
           rightLit !== 0 &&
-          rightLit !== 1;
-        if (propOnRightBound || propOnLeftBound) {
-          flags.thresholdUse = true;
+          rightLit !== 1
+        ) {
+          flags.get(leftName)!.thresholdUse = true;
         }
       }
-      // Coercion is scoped to the property's own assignment initializer.
       const assignedName = propertyNodeName(node);
-      if (assignedName === name) {
-        const initializer =
-          ts.isPropertyAssignment(node) || ts.isPropertyDeclaration(node) || ts.isPropertySignature(node)
-            ? (node as ts.PropertyAssignment).initializer
+      if (assignedName && flags.has(assignedName)) {
+        const initializer = ts.isPropertyAssignment(node)
+          ? node.initializer
+          : ts.isPropertyDeclaration(node)
+            ? node.initializer
             : undefined;
-        if (initializer && initializerCoercesZero(initializer, name)) {
-          flags.coercion = true;
+        if (initializer && initializerCoercesZero(initializer, assignedName)) {
+          flags.get(assignedName)!.coercion = true;
         }
       }
       ts.forEachChild(node, visit);
@@ -283,6 +309,28 @@ function initializerCoercesZero(initializer: ts.Expression, name: string): boole
   return coerces && !subtreeHasZeroGuard(initializer, name);
 }
 
+interface FlatSchemaEntry {
+  /** Dotted path from the configSchema root (`procedural.minOccurrences`, `foo[].bar`). */
+  path: string;
+  leaf: string;
+  prop: DisableValueSchemaProperty;
+}
+
+/** Flatten a configSchema property map into dotted paths, recursing objects and array items. */
+function flattenManifestProperties(
+  properties: Record<string, DisableValueSchemaProperty>,
+  prefix = "",
+): FlatSchemaEntry[] {
+  const out: FlatSchemaEntry[] = [];
+  for (const [leaf, prop] of Object.entries(properties)) {
+    const dotted = prefix ? `${prefix}.${leaf}` : leaf;
+    out.push({ path: dotted, leaf, prop });
+    if (prop.properties) out.push(...flattenManifestProperties(prop.properties, dotted));
+    if (prop.items?.properties) out.push(...flattenManifestProperties(prop.items.properties, `${dotted}[]`));
+  }
+  return out;
+}
+
 /**
  * Pure core: given source texts and manifest property maps, return every §33
  * violation (unsorted). No filesystem, no grandfather — the unit-test seam.
@@ -295,28 +343,42 @@ export function findDisableValueViolations(input: {
   for (const source of input.sources) {
     for (const name of collectZeroDisablePropertiesFromSource(source)) zeroDisable.add(name);
   }
-  for (const manifest of input.manifests) {
-    for (const [name, prop] of Object.entries(manifest.properties)) {
-      if (typeof prop?.description === "string" && isZeroDisableDoc(prop.description)) {
-        zeroDisable.add(name);
+  const flattenedByManifest = input.manifests.map((manifest) => ({
+    manifest,
+    entries: flattenManifestProperties(manifest.properties),
+  }));
+  for (const { entries } of flattenedByManifest) {
+    for (const entry of entries) {
+      if (typeof entry.prop.description === "string" && isZeroDisableDoc(entry.prop.description)) {
+        zeroDisable.add(entry.leaf);
       }
     }
   }
 
   const violations: DisableValueViolation[] = [];
-  for (const name of zeroDisable) {
-    for (const manifest of input.manifests) {
-      const prop = manifest.properties[name];
-      if (prop && numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum >= 1) {
+  // schema-min over every flattened entry (nested blocks included). An entry is
+  // zero-disable via its own schema description at any depth, or via a top-level
+  // leaf documented in a source JSDoc — never a nested leaf coinciding with an
+  // unrelated top-level name.
+  for (const { manifest, entries } of flattenedByManifest) {
+    for (const entry of entries) {
+      const documented =
+        isZeroDisableDoc(entry.prop.description ?? "") ||
+        (entry.path === entry.leaf && zeroDisable.has(entry.leaf));
+      if (documented && numericSchema(entry.prop) && typeof entry.prop.minimum === "number" && entry.prop.minimum >= 1) {
         violations.push({
           kind: "disable-value-schema-min",
-          key: `${name}@${path.basename(manifest.path)}`,
-          detail: `${name} is documented "0 disables" but configSchema of ${path.basename(manifest.path)} sets minimum ${prop.minimum} (must be 0 to honor the documented disable value)`,
+          key: `${entry.path}@${manifest.path}`,
+          detail: `${entry.path} is documented "0 disables" but configSchema of ${manifest.path} sets minimum ${entry.prop.minimum} (must be 0 to honor the documented disable value)`,
         });
       }
     }
+  }
 
-    const guard = analyzeGuards(input.sources, name);
+  const guards = analyzeAllGuards(input.sources, zeroDisable);
+  for (const name of [...zeroDisable].sort()) {
+    const guard = guards.get(name);
+    if (!guard) continue;
     if (guard.coercion) {
       violations.push({
         kind: "disable-value-guard",
@@ -327,7 +389,7 @@ export function findDisableValueViolations(input: {
       violations.push({
         kind: "disable-value-guard",
         key: name,
-        detail: `${name} is documented "0 disables" but is compared as a threshold (\`> ${name}\`/\`< ${name}\`) with no \`<= 0\`/\`=== 0\` short-circuit`,
+        detail: `${name} is documented "0 disables" but is compared as a threshold (\`obj.${name} >\`/\`< obj.${name}\`) with no \`<= 0\`/\`=== 0\` short-circuit`,
       });
     }
   }
@@ -372,6 +434,26 @@ function readSchemaProperties(manifestPath: string): Record<string, DisableValue
   return manifest.configSchema?.properties ?? {};
 }
 
+/** Every non-test, non-declaration `.ts` under a directory (the runtime consumers to scan for guards). */
+function collectCoreSourceFiles(dirPath: string): string[] {
+  const out: string[] = [];
+  if (!fs.existsSync(dirPath)) return out;
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    const full = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectCoreSourceFiles(full));
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.endsWith(".test.ts") &&
+      !entry.name.endsWith(".d.ts")
+    ) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 /**
  * Filesystem wiring: read the config surface (declarations + parser) and every
  * present manifest, run the core, then apply the shrink-only grandfather.
@@ -383,10 +465,8 @@ export function runDisableValueCheck(options: {
   grandfatherPath?: string;
 }): DisableValueCheckResult {
   const repoRoot = options.repoRoot;
-  const sourceFiles = options.sourceFiles ?? [
-    path.join(repoRoot, "packages", "remnic-core", "src", "types.ts"),
-    path.join(repoRoot, "packages", "remnic-core", "src", "config.ts"),
-  ];
+  const sourceFiles =
+    options.sourceFiles ?? collectCoreSourceFiles(path.join(repoRoot, "packages", "remnic-core", "src"));
   const manifestPaths = (
     options.manifestPaths ?? [
       path.join(repoRoot, "openclaw.plugin.json"),
@@ -402,7 +482,7 @@ export function runDisableValueCheck(options: {
     .filter((file) => fs.existsSync(file))
     .map((file) => ({ path: file, text: fs.readFileSync(file, "utf8") }));
   const manifests: DisableValueManifest[] = manifestPaths.map((manifestPath) => ({
-    path: manifestPath,
+    path: path.relative(repoRoot, manifestPath).split(path.sep).join("/"),
     properties: readSchemaProperties(manifestPath),
   }));
 

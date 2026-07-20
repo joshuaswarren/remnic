@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "kind": "disable-value-guard",
+    "key": "autoPromoteOccurrences",
+    "issue": "#2070"
+  }
+]
