@@ -1,7 +1,7 @@
+import { mkdtemp, readdir, lstat, rm } from "node:fs/promises";
 import fs from "node:fs";
-import { createDecipheriv, createHash } from "node:crypto";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { createHash, createDecipheriv } from "node:crypto";
 import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
@@ -173,8 +173,8 @@ export async function cleanupOrphanedOfflineDecryptStaging(memoryDir: string): P
     if (!name.startsWith(OFFLINE_DECRYPT_STAGING_DIR_PREFIX)) continue;
     const dir = path.join(memoryDir, name);
     try {
-      const info = await stat(dir);
-      if (!info.isDirectory()) continue;
+      const info = await lstat(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
       if (now - info.mtimeMs < OFFLINE_DECRYPT_STAGING_ORPHAN_MS) continue;
       await rm(dir, { recursive: true, force: true });
     } catch {

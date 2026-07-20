@@ -112,11 +112,21 @@ type OfflineSyncNamespaceHost = {
 export async function listOfflineSyncNamespaces(host: OfflineSyncNamespaceHost): Promise<string[]> {
   const names = new Set<string>(getConfiguredNamespaces(host.config));
   try {
+    for (const ledgerPath of await offlineSyncLifecycleLedgerPaths(host.config.memoryDir)) {
+      const namespaceDir = path.dirname(path.dirname(ledgerPath));
+      if (path.basename(path.dirname(namespaceDir)) === "namespaces") {
+        names.add(path.basename(namespaceDir));
+      }
+    }
+  } catch {
+    // best-effort: a filesystem scan failure must not block configured/catalog namespaces
+  }
+  try {
     for (const record of await host.namespaceCatalog.listNamespaces()) {
       names.add(record.namespace);
     }
   } catch {
-    // best-effort: fall back to the configured namespace set
+    // best-effort: fall back to the configured and filesystem namespace sets
   }
   return [...names];
 }
