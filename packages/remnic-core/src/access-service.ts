@@ -2254,7 +2254,7 @@ export class EngramAccessService {
     memoryPath: string,
     primaryNamespace: string,
     recallNamespaces: readonly string[] = [],
-  ): Promise<{ storage: StorageManager; dir: string } | null> {
+  ): Promise<{ storage: StorageManager; dir: string; namespace: string } | null> {
     const resolvedPath = nodePath.resolve(memoryPath);
     const memoryRoot = nodePath.resolve(this.orchestrator.config.memoryDir);
     const namespacesRoot = nodePath.join(memoryRoot, "namespaces");
@@ -2265,20 +2265,8 @@ export class EngramAccessService {
     }
     configuredNamespaces.add(this.orchestrator.config.defaultNamespace);
     configuredNamespaces.add(this.orchestrator.config.sharedNamespace);
-    if (isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
-      const relativeToNamespaces = nodePath.relative(namespacesRoot, resolvedPath);
-      const [namespaceSegment] = relativeToNamespaces.split(/[\\/]/);
-      if (namespaceSegment) {
-        configuredNamespaces.add(
-          namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment,
-        );
-      }
-    }
-    for (const policy of this.orchestrator.config.namespacePolicies ?? []) {
-      configuredNamespaces.add(policy.name);
-    }
 
-    const matches: Array<{ storage: StorageManager; dir: string }> = [];
+    const matches: Array<{ storage: StorageManager; dir: string; namespace: string }> = [];
     for (const ns of configuredNamespaces) {
       if (!ns) continue;
       let candidateStorage: StorageManager;
@@ -2295,7 +2283,7 @@ export class EngramAccessService {
       ) {
         continue;
       }
-      matches.push({ storage: candidateStorage, dir: candidateRoot });
+      matches.push({ storage: candidateStorage, dir: candidateRoot, namespace: ns });
     }
 
     matches.sort((a, b) => b.dir.length - a.dir.length);
@@ -5011,32 +4999,53 @@ export class EngramAccessService {
       {
         resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
           this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
-        resolveNamespaceForPath: async (memoryPath, fallbackNamespace) => {
+        resolveNamespaceForPath: async (
+          memoryPath,
+          fallbackNamespace,
+          sessionId,
+          authenticatedPrincipal,
+        ) => {
+          const principal = this.resolveRequestPrincipal(sessionId, authenticatedPrincipal);
+          const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
+          if (
+            namespacesEnabled &&
+            !canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)
+          ) {
+            throw new EngramAccessInputError(
+              `namespace is not readable: ${fallbackNamespace}`,
+            );
+          }
+          const authorizedNamespaces = namespacesEnabled
+            ? Array.from(
+                new Set([
+                  ...recallNamespacesForPrincipal(principal, this.orchestrator.config),
+                  ...this.orchestrator.config.namespacePolicies
+                    .filter((policy) =>
+                      canReadNamespace(principal, policy.name, this.orchestrator.config),
+                    )
+                    .map((policy) => policy.name),
+                  fallbackNamespace,
+                ]),
+              )
+            : [fallbackNamespace];
           const resolved = await this.storageForAbsoluteRecallPath(
             memoryPath,
             fallbackNamespace,
+            authorizedNamespaces,
           );
-          if (!resolved) return fallbackNamespace;
-          const namespacesRoot = nodePath.join(
-            nodePath.resolve(this.orchestrator.config.memoryDir),
-            "namespaces",
-          );
-          const relative = nodePath.relative(namespacesRoot, resolved.dir);
-          const [namespaceSegment] = relative.split(/[\\/]/);
-          return namespaceSegment
-            ? namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment
-            : fallbackNamespace;
+          if (!resolved) {
+            if (nodePath.isAbsolute(memoryPath)) {
+              throw new EngramAccessInputError(
+                "cited path is outside the caller's readable namespaces",
+              );
+            }
+            return fallbackNamespace;
+          }
+          return resolved.namespace;
         },
         getStorage: (namespace) => this.orchestrator.getStorage(namespace),
-        trackMemoryAccess: (
-          memoryIds,
-          memoryPaths,
-          memoryNamespaces,
-        ) => this.orchestrator.trackMemoryAccess(
-          memoryIds,
-          memoryPaths,
-          memoryNamespaces,
-        ),
+        trackMemoryAccess: (memoryIds, memoryPaths, memoryNamespaces) =>
+          this.orchestrator.trackMemoryAccess(memoryIds, memoryPaths, memoryNamespaces),
       },
       request,
     );

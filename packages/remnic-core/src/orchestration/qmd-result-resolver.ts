@@ -137,6 +137,7 @@ export class QmdResultResolver {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null> {
     const parts = qmdCollectionPathParts(resultPath);
     const fallbackStorageDir = storageDirOrNull(fallbackStorage);
@@ -234,6 +235,25 @@ export class QmdResultResolver {
       }
     }
 
+    if (preferredNamespace) {
+      try {
+        const preferredStorage = await this.storageFor(preferredNamespace);
+        for (const candidate of qmdResultPathCandidates(
+          preferredStorage.dir,
+          resultPath,
+        )) {
+          const memory = await preferredStorage.readMemoryByPath(candidate);
+          if (memory) return memory;
+        }
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        log.debug("qmd preferred namespace path lookup failed open", {
+          path: resultPath,
+          namespace: preferredNamespace,
+          error: (err as Error).message,
+        });
+      }
+    }
     if (path.isAbsolute(resultPath)) {
       if (!fallbackStorageDir) {
         return await fallbackStorage.readMemoryByPath(resultPath);

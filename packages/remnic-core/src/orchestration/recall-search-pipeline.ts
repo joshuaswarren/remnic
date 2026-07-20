@@ -177,13 +177,12 @@ export interface RecallSearchPipelineDeps {
   namespaceFromPath(p: string): string;
   readonly negatives: NegativeExampleStore;
   readonly qmd: SearchBackend;
-  readArchivedMemoriesForNamespaces(
-    namespaces: string[],
-  ): Promise<MemoryFile[]>;
+  readArchivedMemoriesForNamespaces(namespaces: string[]): Promise<MemoryFile[]>;
   readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces?: readonly string[],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null>;
   readonly relevance: RelevanceStore;
   readonly rerankCache: RerankCache;
@@ -1225,6 +1224,7 @@ export class RecallSearchPipelineCoordinator {
                 r.path,
                 this.deps.storage,
                 options?.recallNamespaces,
+                r.namespace,
               );
               markChecked(r);
               if (mem) memoryByPath.set(r.path, mem);
@@ -1256,6 +1256,7 @@ export class RecallSearchPipelineCoordinator {
           result.path,
           this.deps.storage,
           options?.recallNamespaces,
+          result.namespace,
         );
         markChecked(result);
         if (mem) memoryByPath.set(result.path, mem);

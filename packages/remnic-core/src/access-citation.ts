@@ -24,6 +24,8 @@ export interface CitationUsageDependencies {
   resolveNamespaceForPath?: (
     path: string,
     fallbackNamespace: string,
+    sessionId: string | undefined,
+    authenticatedPrincipal: string | undefined,
   ) => Promise<string>;
   getStorage: (namespace: string) => Promise<CitationStorage>;
   trackMemoryAccess: (
@@ -51,11 +53,16 @@ export async function recordCitationUsage(
   );
   const memoryEntries = (await Promise.all(
     request.entries.map(async (entry) => {
-      const basename = entry.path.split("/").pop() ?? entry.path;
+      const basename = entry.path.split(/[\\/]/).pop() ?? entry.path;
       const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
       if (id.length === 0) return null;
       const namespace = deps.resolveNamespaceForPath
-        ? await deps.resolveNamespaceForPath(entry.path, fallbackNamespace)
+        ? await deps.resolveNamespaceForPath(
+            entry.path,
+            fallbackNamespace,
+            request.sessionId,
+            request.authenticatedPrincipal,
+          )
         : fallbackNamespace;
       return { id, citedPath: entry.path, namespace };
     }),

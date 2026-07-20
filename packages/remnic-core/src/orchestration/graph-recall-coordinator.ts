@@ -137,6 +137,7 @@ export class GraphRecallCoordinator {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[],
+    preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
 
   constructor(options: {
@@ -159,6 +160,7 @@ export class GraphRecallCoordinator {
       resultPath: string,
       fallbackStorage: StorageManager,
       recallNamespaces: readonly string[],
+      preferredNamespace?: string,
     ) => Promise<MemoryFile | null>;
   }) {
     this.getConfig = options.getConfig;
@@ -447,6 +449,7 @@ export class GraphRecallCoordinator {
         result.path,
         storage,
         recallNamespaces,
+        result.namespace,
       );
       return memory
         ? graphPathRelativeToStorage(storage.dir, memory.path)

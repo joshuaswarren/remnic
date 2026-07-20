@@ -47,6 +47,7 @@ export class RecallRerankCoordinator {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[],
+    preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
 
   // Per-namespace corpus-fallback caches (issue #1905). Keyed on the shared
@@ -97,6 +98,7 @@ export class RecallRerankCoordinator {
       resultPath: string,
       fallbackStorage: StorageManager,
       recallNamespaces: readonly string[],
+      preferredNamespace?: string,
     ) => Promise<MemoryFile | null>;
   }) {
     this.getConfig = options.getConfig;
@@ -218,7 +220,12 @@ export class RecallRerankCoordinator {
           await Promise.all(
             missing.slice(off, off + BATCH).map(async (r) => {
               try {
-                const memory = await this.readQmdResultMemory(r.path, readerNn, namespaces);
+                const memory = await this.readQmdResultMemory(
+                  r.path,
+                  readerNn,
+                  namespaces,
+                  r.namespace,
+                );
                 if (!memory) return;
                 const fm = memory.frontmatter;
                 if (fm.mw_success === undefined && fm.mw_fail === undefined) return;
@@ -337,7 +344,11 @@ export class RecallRerankCoordinator {
             }
           }
           if (!fallbackReader) return null;
-          const memory = await this.readQmdResultMemory(path, fallbackReader, namespaces);
+          const memory = await this.readQmdResultMemory(
+            path,
+            fallbackReader,
+            namespaces,
+          );
           return memory ? memory.frontmatter : null;
         },
         // Corpus version bumps on every memory mutation (including mw counter

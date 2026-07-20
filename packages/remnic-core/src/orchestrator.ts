@@ -1509,8 +1509,8 @@ export class Orchestrator {
     this.recallRerankCoordinator = new RecallRerankCoordinator({
       getConfig: () => this.config,
       getStorage: (namespace) => this.getStorage(namespace),
-      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) =>
-        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces, preferredNamespace) =>
+        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace),
     });
     this.recallSectionCoordinator = new RecallSectionCoordinator({
       getConfig: () => this.config,
@@ -1536,8 +1536,8 @@ export class Orchestrator {
         this.resolveColdQmdResultForRecall(result, fallbackStorage, recallNamespaces),
       storageForAbsoluteQmdResultPath: (resultPath, fallbackStorage, recallNamespaces) =>
         this.storageForAbsoluteQmdResultPath(resultPath, fallbackStorage, recallNamespaces),
-      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) =>
-        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces, preferredNamespace) =>
+        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace),
     });
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
@@ -3432,14 +3432,13 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526 seam 11: QMD result-resolution methods moved to QmdResultResolver.
-  // Thin delegation keeps the private API stable for callers + tests.
   private async readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null> {
-    return this.qmdResultResolver.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces);
+    return this.qmdResultResolver.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace);
   }
 
   private async resolveColdQmdResultForRecall(
@@ -3765,15 +3764,10 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Extract memory IDs from QMD search results for access tracking.
-   */
   private extractMemoryIdsFromResults(results: QmdSearchResult[]): string[] {
-    // QMD results have paths like /path/to/fact-123.md
-    // Extract the ID from the filename
     return results
       .map((r) => {
-        const match = r.path.match(/([^/]+)\.md$/);
+        const match = r.path.match(/([^/\\]+)\.md$/);
         return match ? match[1] : null;
       })
       .filter((id): id is string => id !== null);
