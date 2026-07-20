@@ -1,11 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { lstat, realpath } from "node:fs/promises";
 import {
   drainPendingLifecycleForSyncOrThrow,
   drainPendingLifecycleLedgerForSync,
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
+import { log } from "./logger.js";
+import { isErrnoCode } from "./utils/errno.js";
+import { assertPathInsideRoot, pathIsInside } from "./utils/path-containment.js";
+import { displayErrorDetail } from "./runtime/better-sqlite.js";
 
 type PendingImpressionDrain = () => Promise<{ pendingDeferred: boolean }>;
 
@@ -40,7 +45,7 @@ export async function drainPendingImpressionsForOfflineSync(
     }
   }
   const detail = lastError
-    ? `: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    ? `: ${displayErrorDetail(lastError) || "unknown error"}`
     : " (rotation lock held by a peer)";
   throw new Error(
     `offline-sync impression drain could not fold pending recall impressions after ${maxAttempts} attempts${detail}; aborting snapshot so the pending rows are not silently excluded (#2033)`,
@@ -48,14 +53,26 @@ export async function drainPendingImpressionsForOfflineSync(
 }
 
 
-export async function getOfflineSyncStorage<T extends PendingLifecycleDrain>(
+export async function getOfflineSyncStorage<T extends PendingLifecycleDrain & { dir: string }>(
   orchestrator: PendingImpressionHost & {
+    config: { memoryDir: string };
     getStorage(namespace: string): Promise<T>;
   },
   namespace: string,
 ): Promise<T> {
   const storage = await orchestrator.getStorage(namespace);
-  await drainPendingImpressionsForOfflineSync(() => orchestrator.drainPendingRecallImpressions());
+  // Recall impressions are global: the orchestrator's single LastRecallStore
+  // roots at config.memoryDir, so the active recall_impressions.jsonl lives at
+  // <memoryDir>/state/. Fold the global pending queue ONLY when THIS snapshot's
+  // root actually contains that active file - a root snapshot. A namespace
+  // snapshot (storage.dir under namespaces/<token>/) cannot carry it, so
+  // draining there would empty the durable pending queue into a file this
+  // snapshot omits and strand the row until a root sync; leave it pending for
+  // the root sync instead (#2033).
+  const impressionsFile = path.resolve(orchestrator.config.memoryDir, "state", "recall_impressions.jsonl");
+  if (pathIsInside(path.resolve(storage.dir), impressionsFile)) {
+    await drainPendingImpressionsForOfflineSync(() => orchestrator.drainPendingRecallImpressions());
+  }
   await drainPendingLifecycleForSyncOrThrow(() => storage.drainPendingMemoryLifecycleEventsForSync());
   return storage;
 }
@@ -84,18 +101,50 @@ function plaintextLifecyclePendingIo(): LifecyclePendingIo {
  * pushes the whole memory dir, so every namespace's ledger can carry pending
  * spills that must be folded first.
  */
-function offlineSyncLifecycleLedgerPaths(memoryDir: string): string[] {
+async function offlineSyncLifecycleLedgerPaths(memoryDir: string): Promise<string[]> {
   const paths = [path.join(memoryDir, "state", LIFECYCLE_LEDGER_FILE)];
+  const namespacesBase = path.join(memoryDir, "namespaces");
+  // Symlink/traversal containment (#2033): a symlinked <memoryDir>/namespaces
+  // (or a symlinked child) must not redirect the pre-sync drain - and the
+  // ledger appends/mkdirs it drives - outside memoryDir. Resolve the memory
+  // root and the scan base through realpath, reject a symlinked/escaping/
+  // non-directory base, and skip any symlinked/escaping child, mirroring the
+  // lifecycle-compaction scanner (orchestration/maintenance.ts) and the
+  // memory-store walkers (utils/path-containment). A rejected base is
+  // non-fatal: drain the root ledger only, never through the poisoned link.
+  let memoryDirReal: string;
+  try {
+    memoryDirReal = await realpath(memoryDir);
+    const baseStat = await lstat(namespacesBase);
+    if (baseStat.isSymbolicLink() || !baseStat.isDirectory()) {
+      throw new Error("namespaces base is a symlink or not a directory");
+    }
+    assertPathInsideRoot(memoryDirReal, await realpath(namespacesBase), namespacesBase);
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) {
+      log.debug(`offline-sync lifecycle drain: namespaces base rejected (non-fatal): ${err}`);
+    }
+    return paths;
+  }
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(path.join(memoryDir, "namespaces"), { withFileTypes: true });
+    entries = fs.readdirSync(namespacesBase, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return paths;
-    throw err;
+    if (!isErrnoCode(err, "ENOENT")) {
+      log.debug(`offline-sync lifecycle drain: namespaces dir scan failed (non-fatal): ${err}`);
+    }
+    return paths;
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    paths.push(path.join(memoryDir, "namespaces", entry.name, "state", LIFECYCLE_LEDGER_FILE));
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const childPath = path.join(namespacesBase, entry.name);
+    try {
+      assertPathInsideRoot(memoryDirReal, await realpath(childPath), childPath);
+    } catch (err) {
+      log.debug(`offline-sync lifecycle drain: skipping out-of-root namespace dir ${childPath}: ${err}`);
+      continue;
+    }
+    paths.push(path.join(childPath, "state", LIFECYCLE_LEDGER_FILE));
   }
   return paths;
 }
@@ -127,7 +176,7 @@ export async function drainPendingLifecycleForOfflineSync(
     );
   },
 ): Promise<void> {
-  for (const ledgerPath of offlineSyncLifecycleLedgerPaths(memoryDir)) {
+  for (const ledgerPath of await offlineSyncLifecycleLedgerPaths(memoryDir)) {
     await drainPendingLifecycleForSyncOrThrow(() => drainAtPath(ledgerPath));
   }
 }

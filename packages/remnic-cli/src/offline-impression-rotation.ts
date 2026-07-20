@@ -3,6 +3,26 @@ import { parseConfig, resolveRemnicConfigRecord, drainPendingImpressionsForOffli
 import { LastRecallStore } from "@remnic/core/recall-state";
 
 /**
+ * Parse config with parseConfig's coercion diagnostics suppressed so a
+ * secret-bearing config value (e.g. an API key placed where a number belongs)
+ * cannot leak to stderr before a redacted throw (#2033). On the standalone CLI
+ * path no logger is installed, so parseConfig's numeric/boolean coercion warns
+ * the RAW value via `console.warn`; a redacted catch only sanitizes the thrown
+ * error, not that warning. Silence `console.warn` across the parse and restore
+ * it in `finally`. The parse is synchronous, so no interleaved caller loses a
+ * warning.
+ */
+export function parseConfigQuietly(raw: unknown): PluginConfig {
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    return parseConfig(resolveRemnicConfigRecord(raw));
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+/**
  * Recall-impression rotation bounds the daemon writer uses (#2033). A standalone
  * CLI push drains pending impressions through its own `LastRecallStore`; passing
  * these bounds keeps that drain's rotation identical to the writer's instead of
@@ -36,7 +56,7 @@ export function resolveOfflineImpressionRotation(configPath: string): OfflineImp
   }
   let config: PluginConfig;
   try {
-    config = parseConfig(resolveRemnicConfigRecord(raw));
+    config = parseConfigQuietly(raw);
   } catch {
     throw new Error(
       `cannot read recall-impression rotation from ${configPath}: config failed validation`,

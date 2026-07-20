@@ -174,7 +174,7 @@ import {
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
-import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation } from "./offline-impression-rotation.js";
+import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly } from "./offline-impression-rotation.js";
 import {
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
@@ -9534,7 +9534,7 @@ Environment fallbacks:
     const rawConfig = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+    config = parseConfigQuietly(rawConfig);
   } catch {
     throw new Error(
       "offline sync: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",

@@ -35,15 +35,19 @@ test("falls back to the writer defaults (not rotation-off) when the config is ab
   assert.ok(rotation.impressionsRotateKeep >= 1, "keep must floor at 1");
 });
 
-test("a config validation failure is redacted to a generic error, never the raw value (#2033)", async () => {
+test("a config validation failure is redacted - and the coercion warning is suppressed - so the raw value never leaks (#2033)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-rotation-validation-"));
   const configPath = path.join(dir, "config.json");
   // A string where an integer is expected makes parseConfig throw a message that
-  // embeds the offending value verbatim (`got "<value>"`).
+  // embeds the offending value verbatim (`got "<value>"`), and - with no logger
+  // installed - console.warn the same raw value from its numeric coercion path.
   await writeFile(configPath, JSON.stringify({ recallImpressionsRotateBytes: SECRET }), "utf-8");
 
   const originalWarn = console.warn;
-  console.warn = () => {}; // silence parseConfig's own coercion warning (also secret-bearing)
+  const warnMessages: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warnMessages.push(args.map((a) => String(a)).join(" "));
+  };
   try {
     assert.throws(
       () => resolveOfflineImpressionRotation(configPath),
@@ -58,6 +62,12 @@ test("a config validation failure is redacted to a generic error, never the raw 
   } finally {
     console.warn = originalWarn;
   }
+  // The redacted parse suppresses parseConfig's own coercion diagnostic, so the
+  // raw value never reaches stderr even though a warning would otherwise fire.
+  assert.ok(
+    !warnMessages.some((m) => m.includes(SECRET)),
+    "the raw config value must not leak through a console.warn coercion diagnostic",
+  );
 });
 
 test("an unparseable-JSON config is redacted to a generic error, never the raw bytes (#2033)", async () => {

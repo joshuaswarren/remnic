@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -134,9 +134,107 @@ test("drainPendingLifecycleForOfflineSync aborts when pending rows cannot be fol
 
     await assert.rejects(
       drainPendingLifecycleForOfflineSync(root),
-      /lifecycle drain could not fold pending memory-lifecycle events after 3 attempts.*aborting snapshot/s,
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(
+          err.message,
+          /lifecycle drain could not fold pending memory-lifecycle events after 3 attempts.*aborting snapshot/s,
+        );
+        assert.ok(
+          !err.message.includes(root),
+          "abort error must not leak the ledger's absolute path (#2033)",
+        );
+        return true;
+      },
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("aborted impression drain redacts the underlying error path (#2033)", async () => {
+  // A persona path standing in for a real operator's memory dir. displayErrorDetail
+  // must reduce the thrown fs error to its class + errno code so the absolute path
+  // never reaches CLI stderr / the offline snapshot failure.
+  const secretPath = "/home/user/.remnic/state/recall_impressions.jsonl";
+  await assert.rejects(
+    drainPendingImpressionsForOfflineSync(async () => {
+      const err = new Error(`EACCES: permission denied, open '${secretPath}'`);
+      (err as NodeJS.ErrnoException).code = "EACCES";
+      throw err;
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.ok(!err.message.includes(secretPath), "raw fs path must not leak into the abort error");
+      assert.match(err.message, /could not fold pending recall impressions after 3 attempts/);
+      assert.match(err.message, /EACCES/, "the path-free error class + code still surfaces");
+      return true;
+    },
+  );
+});
+
+test("drainPendingLifecycleForOfflineSync skips a symlinked namespace child (#2033 containment)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-symlink-child-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-outside-"));
+  try {
+    const rootNonce = await seedPendingLifecycle(root, "state");
+    const teamNonce = await seedPendingLifecycle(root, "namespaces/team/state");
+    // A poisoned namespace child symlinked outside the memory root, carrying its
+    // own pending spill. The drain must NOT fold through it (no ledger appended
+    // outside memoryDir) yet still fold the root and the legit namespace.
+    await seedPendingLifecycle(outside, "state");
+    await mkdir(path.join(root, "namespaces"), { recursive: true });
+    await symlink(outside, path.join(root, "namespaces", "evil"));
+
+    await drainPendingLifecycleForOfflineSync(root);
+
+    assert.deepEqual(await readdir(path.join(root, LIFECYCLE_PENDING_REL)).catch(() => [] as string[]), []);
+    assert.ok((await readFile(path.join(root, LIFECYCLE_LEDGER_REL), "utf-8")).includes(rootNonce));
+    assert.ok(
+      (await readFile(path.join(root, "namespaces/team", LIFECYCLE_LEDGER_REL), "utf-8")).includes(teamNonce),
+    );
+    // The escaping child's spill is left untouched and no ledger was written
+    // through the link.
+    assert.equal(
+      (await readdir(path.join(outside, LIFECYCLE_PENDING_REL))).length,
+      1,
+      "escaping namespace spill must be left untouched",
+    );
+    await assert.rejects(
+      () => readFile(path.join(outside, LIFECYCLE_LEDGER_REL), "utf-8"),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("drainPendingLifecycleForOfflineSync refuses a symlinked namespaces base (#2033 containment)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-symlink-base-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-drain-base-outside-"));
+  try {
+    const rootNonce = await seedPendingLifecycle(root, "state");
+    // A legit-looking namespace living under the symlinked base target.
+    await seedPendingLifecycle(outside, "team/state");
+    await symlink(outside, path.join(root, "namespaces"));
+
+    await drainPendingLifecycleForOfflineSync(root);
+
+    // The root ledger is still folded through the real state dir.
+    assert.ok((await readFile(path.join(root, LIFECYCLE_LEDGER_REL), "utf-8")).includes(rootNonce));
+    // The symlinked base is refused wholesale: nothing under it is drained.
+    assert.equal(
+      (await readdir(path.join(outside, "team", "state", "memory-lifecycle-ledger.jsonl.pending.d"))).length,
+      1,
+      "namespaces base symlink must be refused, leaving its spills untouched",
+    );
+    await assert.rejects(
+      () => readFile(path.join(outside, "team", LIFECYCLE_LEDGER_REL), "utf-8"),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

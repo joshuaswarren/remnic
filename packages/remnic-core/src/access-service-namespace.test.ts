@@ -1395,14 +1395,16 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
   }
 });
 
-test("offlineSyncSnapshot drains pending impression spills at the writer root, not the namespace storage.dir (#2033)", async () => {
-  // Recall impressions are appended by the orchestrator's single LastRecallStore
-  // rooted at config.memoryDir, never per-namespace. A record() that times out on
-  // the rotation lock spills to config.memoryDir/state/recall_impressions.jsonl.pending.d.
-  // The pre-snapshot drain MUST fold from that writer root; draining the resolved
-  // namespace's storage.dir (which can differ, e.g. namespaces/<token>/) looks
-  // under the wrong tree and strands the impression in the offline-sync-EXCLUDED
-  // pending queue — the exact defect this regression guards.
+test("offlineSyncSnapshot does NOT drain the global impression queue during a namespace snapshot (#2033)", async () => {
+  // Recall impressions are global: the orchestrator's single LastRecallStore roots
+  // at config.memoryDir, so the active recall_impressions.jsonl lives at
+  // <memoryDir>/state/ and a namespace-rooted snapshot (storage.dir under
+  // namespaces/<token>/) can never carry it. Draining the global pending queue
+  // during such a snapshot would empty the durable queue into a file this
+  // snapshot omits - stranding the row until a root sync - so the drain is scoped
+  // to the snapshot whose root actually contains the file. Here it must be a
+  // no-op, leaving the writer-root spill pending for the root sync, while the
+  // per-namespace lifecycle drain still runs.
   const writerRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-writer-"));
   const nsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-ns-"));
   try {
@@ -1421,16 +1423,22 @@ test("offlineSyncSnapshot drains pending impression spills at the writer root, n
       };
     }).orchestrator;
     // Writer root (config.memoryDir) is deliberately DISTINCT from the resolved
-    // namespace's storage.dir so a storage.dir-rooted drain would miss the spill.
+    // namespace's storage.dir.
     orchestrator.config.memoryDir = writerRoot;
     const writerStore = new LastRecallStore(writerRoot, {
       impressionsRotateBytes: 0,
       impressionsRotateKeep: 5,
     });
-    orchestrator.drainPendingRecallImpressions = () => writerStore.drainPendingImpressions();
+    let impressionDrainCalls = 0;
+    orchestrator.drainPendingRecallImpressions = () => {
+      impressionDrainCalls += 1;
+      return writerStore.drainPendingImpressions();
+    };
+    let lifecycleDrainCalls = 0;
     orchestrator.getStorage = async () => ({
       dir: nsDir,
       async drainPendingMemoryLifecycleEventsForSync() {
+        lifecycleDrainCalls += 1;
         return { folded: false, pendingDeferred: false };
       },
       async readOfflineSyncFile(targetPath: string) {
@@ -1451,24 +1459,23 @@ test("offlineSyncSnapshot drains pending impression spills at the writer root, n
       includeContent: true,
     });
 
-    // Drained into the WRITER root's synced active recall_impressions.jsonl — the
-    // offline-sync-ALWAYS file — so the recorded impression is included wherever
-    // that writer root is synced, not lost in the excluded pending queue.
-    assert.equal(
-      await readFile(impressionsPath, "utf-8"),
-      row,
-      "spill folded into the writer-root active recall_impressions.jsonl",
+    // The global impression drain is scoped OUT of a namespace snapshot: it is
+    // never invoked, so the writer-root pending spill is retained for the root
+    // sync and no writer-root active file is created.
+    assert.equal(impressionDrainCalls, 0, "global impression drain must be skipped for a namespace snapshot");
+    assert.deepEqual(
+      await readdir(pendingDir),
+      ["spill-1.jsonl"],
+      "writer-root pending spill retained for the eventual root sync",
     );
-    assert.deepEqual(await readdir(pendingDir), [], "writer-root pending spill drained");
-    // The drain did NOT write under the namespace storage.dir (the pre-fix target).
     await assert.rejects(
-      () => readFile(path.join(nsDir, "state", "recall_impressions.jsonl"), "utf-8"),
+      () => readFile(impressionsPath, "utf-8"),
       /ENOENT/,
-      "drain must not fold under the namespace storage.dir",
+      "no writer-root active impressions file is written during a namespace snapshot",
     );
-    // The namespace-rooted snapshot enumerates storage.dir (nsDir), which never
-    // holds the writer-root impressions; inclusion in a writer-root snapshot is
-    // covered by the aligned-root test above.
+    // The per-namespace lifecycle drain still runs.
+    assert.equal(lifecycleDrainCalls, 1, "per-namespace lifecycle drain still runs");
+    // The namespace-rooted snapshot never carries the writer-root impressions file.
     assert.ok(
       !snapshot.files.some((f) => f.path === "state/recall_impressions.jsonl"),
       "namespace-rooted snapshot does not carry the writer-root active file",

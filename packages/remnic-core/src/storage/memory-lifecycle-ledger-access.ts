@@ -1,5 +1,6 @@
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import { rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -594,7 +595,7 @@ export async function drainPendingLifecycleForSyncOrThrow(
     }
   }
   const detail = lastError
-    ? `: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    ? `: ${displayErrorDetail(lastError) || "unknown error"}`
     : " (ledger lock held by a peer)";
   throw new Error(
     `offline-sync lifecycle drain could not fold pending memory-lifecycle events after ${maxAttempts} attempts${detail}; aborting snapshot so the pending rows are not silently excluded (#2033)`,

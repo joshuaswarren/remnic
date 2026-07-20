@@ -2,6 +2,7 @@ import path from "node:path";
 import { stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
 import { log } from "../logger.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { MemoryLifecycleEvent } from "../types.js";
 import { toBackupStamp } from "./backup-stamp.js";
 import { copyExistingFileToBackup, writeFileAtomically } from "./atomic-file.js";
@@ -308,7 +309,7 @@ export async function rebuildMemoryLifecycleLedger(
       } catch (err) {
         throw new Error(
           `lifecycle ledger rebuild aborted: cannot read existing events to preserve `
-          + `(${err instanceof Error ? err.message : String(err)})`,
+          + `(${displayErrorDetail(err) || "unknown error"})`,
         );
       }
       // The corpus scan (`events`) runs OUTSIDE the lock and is therefore a

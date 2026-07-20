@@ -686,7 +686,13 @@ test("rebuildMemoryLifecycleLedger aborts and leaves the ledger intact when pres
     // real read failure, #2033.)
     class UnreadableLedgerStorage extends StorageManager {
       override async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
-        throw new Error("simulated lifecycle ledger read failure (corruption or locked store)");
+        // A path-bearing, coded fs failure: the abort must surface only the
+        // path-free class + errno code, never this absolute ledger path (#2033).
+        const err = new Error(
+          `EIO: i/o error, read '${path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl")}'`,
+        );
+        (err as NodeJS.ErrnoException).code = "EIO";
+        throw err;
       }
     }
     const storage = new UnreadableLedgerStorage(memoryDir);
@@ -698,7 +704,16 @@ test("rebuildMemoryLifecycleLedger aborts and leaves the ledger intact when pres
         storage,
         preserveExistingEvents: true,
       }),
-      /rebuild aborted: cannot read existing events to preserve/,
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /rebuild aborted: cannot read existing events to preserve/);
+        assert.ok(
+          !err.message.includes(memoryDir),
+          "abort must not leak the ledger's absolute path (#2033)",
+        );
+        assert.match(err.message, /EIO/, "the path-free error class + code still surfaces");
+        return true;
+      },
     );
     // No lossy rewrite: the append-only history must survive the failed compaction.
     assert.equal(

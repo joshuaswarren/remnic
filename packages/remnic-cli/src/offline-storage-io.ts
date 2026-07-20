@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { createDecipheriv, createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
@@ -217,7 +216,14 @@ async function* readEncryptedOfflineFileChunks(options: {
   const aadCandidates = offlineFileAadCandidates(options.filePath, options.memoryDir);
   let lastError: unknown;
   for (const aad of aadCandidates) {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-decrypt-"));
+    // Stage the decrypted plaintext INSIDE the secure-store-protected memory
+    // root, never os.tmpdir() (#2033 P1): /tmp can be world-readable, shared
+    // tmpfs, or on unencrypted storage another local process can inspect, so a
+    // crash there could strand secure-store plaintext outside the store. mkdtemp
+    // creates an owner-only (0700) unique dir; the content file is 0600 and the
+    // dir is removed in `finally`. A hard-crash orphan stays owner-only inside
+    // the protected root - the same trust domain as the encrypted originals.
+    const tempDir = await mkdtemp(path.join(options.memoryDir, ".remnic-offline-decrypt-"));
     const tempPath = path.join(tempDir, "content");
     try {
       const decipher = createDecipheriv("aes-256-gcm", options.key, iv, {
