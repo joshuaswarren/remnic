@@ -7,7 +7,8 @@ import type { PluginConfig } from "../src/types.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
 function tmpDir(prefix: string): string {
-  return path.join(os.tmpdir(), "remnic-tests", prefix);
+  const uniqueSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(os.tmpdir(), "remnic-tests", `${prefix}-${uniqueSuffix}`);
 }
 
 function baseConfig(memoryDir: string): PluginConfig {
