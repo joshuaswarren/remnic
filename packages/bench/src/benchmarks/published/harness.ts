@@ -393,6 +393,13 @@ async function executeTrialWithFailure(
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
       details: {
+        // Preserve the trial's category so a failed trial is still attributed
+        // to its per-category bucket (computeCategoryAggregates), keeping the
+        // per-category breakdown consistent with the overall aggregates that
+        // already count this failure row (issue #1878).
+        ...(typeof trial.extraDetails?.categoryName === "string"
+          ? { categoryName: trial.extraDetails.categoryName }
+          : {}),
         // `error` is retained for compatibility with existing diagnostics.
         // The structured marker is the authoritative run-status signal; an
         // arbitrary benchmark-owned `extraDetails.error` must not make a

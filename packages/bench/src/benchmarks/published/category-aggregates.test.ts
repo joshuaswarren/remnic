@@ -17,6 +17,19 @@ function makeTask(categoryName: string | undefined, scores: Record<string, numbe
   };
 }
 
+function makeRawTask(details: Record<string, unknown>): TaskResult {
+  return {
+    taskId: "t-raw",
+    question: "q",
+    expected: "e",
+    actual: "a",
+    scores: { llm_judge: 1 },
+    latencyMs: 0,
+    tokens: { input: 0, output: 0 },
+    details,
+  };
+}
+
 function meanOf(result: Record<string, AggregateMetrics>, category: string, metric: string): number {
   const categoryAgg = result[category];
   assert.ok(categoryAgg, `expected category "${category}"`);
@@ -69,4 +82,27 @@ test("computeCategoryAggregates output keys are sorted regardless of task order"
 test("computeCategoryAggregates returns an empty map for no categorized tasks", () => {
   assert.deepEqual(computeCategoryAggregates([]), {});
   assert.deepEqual(computeCategoryAggregates([makeTask(undefined, { llm_judge: 1 })]), {});
+});
+
+test("computeCategoryAggregates skips non-string and whitespace-only categoryName", () => {
+  const tasks: TaskResult[] = [
+    makeRawTask({ categoryName: null }),
+    makeRawTask({ categoryName: 3 }),
+    makeRawTask({ categoryName: { name: "adversarial" } }),
+    makeRawTask({ categoryName: "   " }),
+    makeRawTask({}),
+    makeTask("adversarial", { llm_judge: 0 }),
+  ];
+
+  const result = computeCategoryAggregates(tasks);
+
+  assert.deepEqual(Object.keys(result), ["adversarial"]);
+  assert.equal(meanOf(result, "adversarial", "llm_judge"), 0);
+});
+
+test("computeCategoryAggregates keeps a __proto__ category as an own key", () => {
+  const result = computeCategoryAggregates([makeRawTask({ categoryName: "__proto__" })]);
+
+  assert.deepEqual(Object.keys(result), ["__proto__"]);
+  assert.ok(Object.hasOwn(result, "__proto__"));
 });

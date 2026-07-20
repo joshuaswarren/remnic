@@ -19,7 +19,7 @@ export function computeCategoryAggregates(tasks: readonly TaskResult[]): Record<
   const scoresByCategory = new Map<string, Record<string, number>[]>();
   for (const task of tasks) {
     const categoryName = task.details?.categoryName;
-    if (typeof categoryName !== "string" || categoryName.length === 0) {
+    if (typeof categoryName !== "string" || categoryName.trim().length === 0) {
       continue;
     }
     const bucket = scoresByCategory.get(categoryName);
@@ -29,12 +29,9 @@ export function computeCategoryAggregates(tasks: readonly TaskResult[]): Record<
       scoresByCategory.set(categoryName, [task.scores]);
     }
   }
-  const categoryAggregates: Record<string, AggregateMetrics> = {};
-  for (const categoryName of [...scoresByCategory.keys()].sort()) {
-    const scores = scoresByCategory.get(categoryName);
-    if (scores) {
-      categoryAggregates[categoryName] = aggregateTaskScores(scores);
-    }
-  }
-  return categoryAggregates;
+  // Build via Object.fromEntries (own-property define, not assignment) so a
+  // category literally named "__proto__" becomes an own key instead of
+  // invoking the prototype setter and vanishing from Object.keys.
+  const sortedEntries = [...scoresByCategory.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(sortedEntries.map(([categoryName, scores]) => [categoryName, aggregateTaskScores(scores)]));
 }
