@@ -406,9 +406,11 @@ test("searchAcrossNamespaces preserves same path results from distinct namespace
 
   assert.deepEqual(results.map((result) => result.snippet), ["main", "shared"]);
   assert.deepEqual(results.map((result) => result.namespace), ["main", "shared"]);
+  // Paths stay relative; same-relative-path hits remain distinct by their
+  // (namespace, path) identity, not by an absolutized filesystem path (#2020).
   assert.deepEqual(results.map((result) => result.path), [
-    "/tmp/remnic/main/facts/a.md",
-    "/tmp/remnic/shared/facts/a.md",
+    "facts/a.md",
+    "facts/a.md",
   ]);
 });
 

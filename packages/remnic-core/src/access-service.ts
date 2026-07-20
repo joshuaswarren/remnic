@@ -2265,6 +2265,13 @@ export class EngramAccessService {
     }
     configuredNamespaces.add(this.orchestrator.config.defaultNamespace);
     configuredNamespaces.add(this.orchestrator.config.sharedNamespace);
+    // Legacy snapshots persist an absolute resultPath with no per-result namespace;
+    // derive the on-disk owner (decoded) so those paths still resolve (#2020).
+    if (isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
+      const [seg] = nodePath.relative(namespacesRoot, resolvedPath).split(/[\\/]/);
+      if (seg) configuredNamespaces.add(namespaceIdentityFromToken(seg) ?? seg);
+    }
+    for (const policy of this.orchestrator.config.namespacePolicies ?? []) configuredNamespaces.add(policy.name);
 
     const matches: Array<{ storage: StorageManager; dir: string; namespace: string }> = [];
     for (const ns of configuredNamespaces) {
