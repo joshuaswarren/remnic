@@ -230,14 +230,15 @@ it for freshly written memories.
 - `embeddingBacklogThreshold` — the configured ceiling (below)
 
 When `pendingEmbeddings` exceeds `qmdEmbeddingBacklogThreshold`, health is
-marked `degraded: true` with a reason naming the backlog. This is advisory:
-search still works (BM25/fulltext), only vector recall lags.
+marked `degraded: true` with a reason naming the backlog. Set the threshold to
+`0` to disable backlog-based degradation entirely. This is advisory: search
+still works (BM25/fulltext), only vector recall lags.
 
 **Config:**
 
 ```jsonc
 {
-  "qmdEmbeddingBacklogThreshold": 1000, // pending embeddings before health degrades
+  "qmdEmbeddingBacklogThreshold": 1000, // pending embeddings before health degrades (0 disables backlog degradation)
   "qmdAutoEmbedEnabled": false          // opt-in prioritized embedding on write
 }
 ```

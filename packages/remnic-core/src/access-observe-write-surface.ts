@@ -206,7 +206,7 @@ export class AccessObserveWriteSurface {
         oldestPendingAgeMs = statusReport.oldestPendingAgeMs;
       } catch { /* status probe failed — non-fatal */ }
     }
-    if (pendingEmbeddings !== null && pendingEmbeddings > threshold) {
+    if (threshold > 0 && pendingEmbeddings !== null && pendingEmbeddings > threshold) {
       degraded = true;
       degradedReason = `embedding-backlog: ${pendingEmbeddings} pending > threshold ${threshold}`;
     }
