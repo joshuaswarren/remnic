@@ -56,6 +56,8 @@ interface RecallBudgetState {
   assembled?: AssembledSections;
   /** Second assembly for the idempotency row. */
   assembledReplay?: AssembledSections;
+  /** Assembly after a replayed injection into the same buckets (dedupe row). */
+  assembledAfterReplayAppend?: AssembledSections;
   /** appendRecallSection return values, keyed by section id (gating row). */
   appendReturns: Map<string, boolean>;
 }
@@ -242,6 +244,12 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const replayBuckets = new Map<string, string[]>();
         inject(replayBuckets);
         state.assembledReplay = coordinator.assembleRecallSections(replayBuckets);
+        // Replay the SAME memories injection back into the original buckets: a
+        // duplicated recall must not overrun the budget nor drop the protected
+        // section. The coordinator does not dedup at this layer (the bucket now
+        // holds two chunks); the budget cap is the backstop against replay growth.
+        coordinator.appendRecallSection(buckets, "memories", body("memories", 120));
+        state.assembledAfterReplayAppend = coordinator.assembleRecallSections(buckets);
         return;
       }
       default: {
@@ -372,6 +380,14 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         // "memories" is protected — retained even though "recent" overflows.
         assert.ok(assembled.includedIds.includes("memories"), "the protected memories section is always kept");
         assert.ok(assembled.finalChars <= budget, "protected assembly still respects the budget");
+        // The replayed injection duplicated the memories chunk in the bucket
+        // (no coordinator-level dedup), yet the budget still bounds the output
+        // and the protected section survives.
+        assert.equal(state.buckets.get("memories")?.length, 2, "a replayed append is not coalesced by the coordinator");
+        const afterReplay = state.assembledAfterReplayAppend;
+        assert.ok(afterReplay, "post-replay-append assembly must exist");
+        assert.ok(afterReplay.finalChars <= budget, "a replayed injection cannot overrun the budget");
+        assert.ok(afterReplay.includedIds.includes("memories"), "the protected section survives a replayed injection");
         return;
       }
       default: {

@@ -640,6 +640,8 @@ test("recall-budget subject covers the recall-output budgeting paths", () => {
     assert.equal(manifest.coverage[p], "recall-budget", `${p} maps to the recall-budget subject`);
     const { covered, warnings, violations } = evaluateCoverage([p], manifest);
     assert.equal(covered.length, 1, `${p} touch is a covered pass`);
+    assert.equal(covered[0].file, p, `${p} is the covered file the evaluator returns`);
+    assert.equal(covered[0].subject, "recall-budget", `${p} is covered specifically by recall-budget`);
     assert.equal(warnings.length, 0);
     assert.equal(violations.length, 0);
   }
