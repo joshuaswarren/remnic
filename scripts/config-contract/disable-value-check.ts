@@ -60,6 +60,8 @@ export interface DisableValueSchemaProperty {
   description?: string;
   properties?: Record<string, DisableValueSchemaProperty>;
   items?: { properties?: Record<string, DisableValueSchemaProperty> };
+  anyOf?: DisableValueSchemaProperty[];
+  oneOf?: DisableValueSchemaProperty[];
 }
 
 export interface DisableValueManifest {
@@ -135,6 +137,31 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
   if (type === undefined) return typeof prop.minimum === "number";
   const types = Array.isArray(type) ? type : [type];
   return types.some((t) => t === "number" || t === "integer");
+}
+
+/**
+ * The positive floor a numeric schema imposes on the value, or undefined when it
+ * admits 0 (or isn't numeric). Handles `anyOf`/`oneOf` (recursively): a
+ * combinator admits 0 when ANY numeric branch admits it, so a `minimum: 1`
+ * branch alone still rejects the documented disable value.
+ */
+function positiveNumericFloor(prop: DisableValueSchemaProperty): number | undefined {
+  const branches = prop.anyOf ?? prop.oneOf;
+  if (branches && branches.length > 0) {
+    let floor: number | undefined;
+    let admitsZero = false;
+    for (const branch of branches) {
+      const branchFloor = positiveNumericFloor(branch);
+      if (branchFloor === undefined) {
+        if (numericSchema(branch) || branch.anyOf || branch.oneOf) admitsZero = true;
+      } else {
+        floor = floor === undefined ? branchFloor : Math.min(floor, branchFloor);
+      }
+    }
+    return admitsZero ? undefined : floor;
+  }
+  if (numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum >= 1) return prop.minimum;
+  return undefined;
 }
 
 interface GuardFlags {
@@ -213,6 +240,38 @@ function propertyAccess(node: ts.Expression): { leaf: string; path: string } | u
   return path ? { leaf: node.name.text, path } : undefined;
 }
 
+/**
+ * Map of local name → config field leaf for `const { field } = config` /
+ * `const { field: alias } = config`, so a destructured threshold bound
+ * (`const { cap } = config; if (used > cap) …`) is tied back to its config field.
+ * Restricted to destructuring off a plain object reference (identifier or member
+ * access) to avoid binding unrelated call-result locals.
+ */
+function collectDestructuredConfigLocals(sf: ts.SourceFile): Map<string, string> {
+  const map = new Map<string, string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      node.initializer &&
+      accessPath(node.initializer) !== undefined
+    ) {
+      for (const element of node.name.elements) {
+        if (ts.isBindingElement(element) && ts.isIdentifier(element.name)) {
+          const field =
+            element.propertyName && ts.isIdentifier(element.propertyName)
+              ? element.propertyName.text
+              : element.name.text;
+          map.set(element.name.text, field);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return map;
+}
+
 /** Nearest enclosing function/method scope (or the SourceFile), so a threshold's guard is checked in its own scope, not repo-wide. */
 function enclosingScope(node: ts.Node): ts.Node {
   let current: ts.Node | undefined = node.parent;
@@ -262,46 +321,70 @@ function withinReturn(node: ts.Node, scope: ts.Node): boolean {
   return false;
 }
 
+type Tri = true | false | "unknown";
+
 /**
- * How a condition treats the disable value for `guardedPath`: "active" when a
- * value of 0 makes it FALSE and a positive value TRUE (`x > 0`, `x !== 0`),
- * "disabling" when 0 makes it TRUE (`x <= 0`, `x === 0`). `>= 0` (true for
- * both) yields undefined — not a real disable guard.
+ * Three-valued truth of a boolean condition when `guardedPath` holds `value`.
+ * A comparison of `guardedPath` to a numeric literal evaluates concretely; every
+ * other operand (a different path, a call, a bare flag like `force`) is "unknown"
+ * and propagates through `&&`/`||`/`!`. This is what lets the guard classifier
+ * respect boolean operators: `force && cap <= 0` is "unknown" at value 0, so it
+ * is not accepted as a disable guard for `cap`.
  */
-function pathGuardKind(condition: ts.Node, guardedPath: string): "active" | "disabling" | undefined {
-  let kind: "active" | "disabling" | undefined;
-  const visit = (node: ts.Node): void => {
-    if (kind) return;
-    if (ts.isBinaryExpression(node) && isComparisonOperator(node.operatorToken.kind)) {
-      const leftPath = ts.isPropertyAccessExpression(node.left) ? accessPath(node.left) : undefined;
-      const rightPath = ts.isPropertyAccessExpression(node.right) ? accessPath(node.right) : undefined;
-      const op = node.operatorToken.kind;
-      let valueOnLeft: boolean | undefined;
-      let lit: number | undefined;
-      if (leftPath === guardedPath && numericLiteralValue(node.right) !== undefined) {
-        valueOnLeft = true;
-        lit = numericLiteralValue(node.right);
-      } else if (rightPath === guardedPath && numericLiteralValue(node.left) !== undefined) {
-        valueOnLeft = false;
-        lit = numericLiteralValue(node.left);
+function evalConditionAt(node: ts.Node, guardedPath: string, value: number): Tri {
+  if (ts.isParenthesizedExpression(node)) return evalConditionAt(node.expression, guardedPath, value);
+  if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = evalConditionAt(node.operand, guardedPath, value);
+    return inner === "unknown" ? "unknown" : !inner;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const op = node.operatorToken.kind;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const l = evalConditionAt(node.left, guardedPath, value);
+      const r = evalConditionAt(node.right, guardedPath, value);
+      if (l === false || r === false) return false;
+      if (l === true && r === true) return true;
+      return "unknown";
+    }
+    if (op === ts.SyntaxKind.BarBarToken) {
+      const l = evalConditionAt(node.left, guardedPath, value);
+      const r = evalConditionAt(node.right, guardedPath, value);
+      if (l === true || r === true) return true;
+      if (l === false && r === false) return false;
+      return "unknown";
+    }
+    if (isComparisonOperator(op)) {
+      const leftPath = accessPath(node.left);
+      const rightPath = accessPath(node.right);
+      const leftLit = numericLiteralValue(node.right);
+      const rightLit = numericLiteralValue(node.left);
+      if (leftPath === guardedPath && leftLit !== undefined) {
+        const r = satisfiesComparison(op, true, leftLit, value);
+        return r === undefined ? "unknown" : r;
       }
-      if (valueOnLeft !== undefined && lit !== undefined) {
-        const atZero = satisfiesComparison(op, valueOnLeft, lit, 0);
-        const atPositive = satisfiesComparison(op, valueOnLeft, lit, 2);
-        if (atZero === false && atPositive === true) {
-          kind = "active";
-          return;
-        }
-        if (atZero === true && atPositive === false) {
-          kind = "disabling";
-          return;
-        }
+      if (rightPath === guardedPath && rightLit !== undefined) {
+        const r = satisfiesComparison(op, false, rightLit, value);
+        return r === undefined ? "unknown" : r;
       }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(condition);
-  return kind;
+  }
+  return "unknown";
+}
+
+/**
+ * How a condition treats the disable value for `guardedPath`: "active" when a
+ * value of 0 makes the WHOLE condition FALSE and a positive value TRUE (`x > 0`,
+ * `x !== 0`), "disabling" when 0 makes it TRUE and a positive value FALSE
+ * (`x <= 0`, `x === 0`). `>= 0` (true for both) and boolean-combined conditions
+ * whose other operands are unknown (`force && x <= 0`) yield undefined — not a
+ * real disable guard.
+ */
+function pathGuardKind(condition: ts.Node, guardedPath: string): "active" | "disabling" | undefined {
+  const atZero = evalConditionAt(condition, guardedPath, 0);
+  const atPositive = evalConditionAt(condition, guardedPath, 2);
+  if (atZero === false && atPositive === true) return "active";
+  if (atZero === true && atPositive === false) return "disabling";
+  return undefined;
 }
 
 function isDescendant(ancestor: ts.Node, node: ts.Node): boolean {
@@ -481,46 +564,48 @@ function subtreeReferencesText(root: ts.Node, text: string): boolean {
 }
 
 /**
- * A ternary whose zero case yields literal 0 AND whose clamp branch operates on
- * the SAME value the condition tested (`raw <= 0 ? 0 : Math.max(1, raw)`). The
- * same-value tie prevents an unrelated `legacy === 0 ? 0 : Math.max(1, raw)`
- * from masking a coercion of `raw`.
+ * True when `clamp` runs only for a non-zero value: it sits in the clamp branch
+ * of an enclosing ternary whose zero case yields literal 0 and whose condition
+ * tests the value the clamp operates on (`raw <= 0 ? 0 : Math.max(1, raw)`).
+ * Checked PER clamp site, so a separate zero-preserving ternary elsewhere in the
+ * initializer (`(raw <= 0 ? 0 : raw) + Math.max(1, raw)`) does not mask a clamp
+ * that still coerces 0.
  */
-function initializerPreservesZero(root: ts.Node): boolean {
-  let preserves = false;
-  const visit = (node: ts.Node): void => {
-    if (preserves) return;
-    if (ts.isConditionalExpression(node)) {
-      const info = zeroCaseBranch(node.condition);
+function clampIsZeroPreserved(clamp: ts.Node): boolean {
+  let node: ts.Node = clamp;
+  while (node.parent) {
+    const parent = node.parent;
+    if (ts.isConditionalExpression(parent)) {
+      const info = zeroCaseBranch(parent.condition);
       if (info) {
-        const zeroBranch = info.branch === "whenTrue" ? node.whenTrue : node.whenFalse;
-        const clampBranch = info.branch === "whenTrue" ? node.whenFalse : node.whenTrue;
+        const zeroBranch = info.branch === "whenTrue" ? parent.whenTrue : parent.whenFalse;
+        const clampBranch = info.branch === "whenTrue" ? parent.whenFalse : parent.whenTrue;
         if (
+          node === clampBranch &&
           numericLiteralValue(zeroBranch) === 0 &&
           (info.valueText === undefined || subtreeReferencesText(clampBranch, info.valueText))
         ) {
-          preserves = true;
+          return true;
         }
       }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(root);
-  return preserves;
+    node = parent;
+  }
+  return false;
 }
 
-/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) with no zero branch that preserves 0. */
+/** Initializer clamps 0 up (`Math.max(1, …)`) or falsy-defaults it (`… || 5`) at a site that is not confined to the non-zero branch of a zero-preserving ternary. */
 function initializerCoercesZero(initializer: ts.Expression): boolean {
   let coerces = false;
   const visit = (node: ts.Node): void => {
     if (coerces) return;
-    if (ts.isCallExpression(node) && isFloorAboveZero(node)) {
+    if (ts.isCallExpression(node) && isFloorAboveZero(node) && !clampIsZeroPreserved(node)) {
       coerces = true;
       return;
     }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
       const rightLit = numericLiteralValue(node.right);
-      if (rightLit !== undefined && rightLit !== 0) {
+      if (rightLit !== undefined && rightLit !== 0 && !clampIsZeroPreserved(node)) {
         coerces = true;
         return;
       }
@@ -528,9 +613,7 @@ function initializerCoercesZero(initializer: ts.Expression): boolean {
     ts.forEachChild(node, visit);
   };
   visit(initializer);
-  // A ternary whose zero case returns literal 0 preserves the disable value, so
-  // the clamp only runs for values > 0 (`raw <= 0 ? 0 : Math.max(1, raw)`).
-  return coerces && !initializerPreservesZero(initializer);
+  return coerces;
 }
 
 /**
@@ -546,10 +629,18 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
   for (const name of zeroDisable) flags.set(name, { thresholdUnguarded: false, coercion: false });
   for (const source of sources) {
     const sf = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true);
+    const destructured = collectDestructuredConfigLocals(sf);
+    const operandBound = (operand: ts.Expression): { leaf: string; path: string } | undefined => {
+      if (ts.isIdentifier(operand)) {
+        const leaf = destructured.get(operand.text);
+        if (leaf) return { leaf, path: operand.text };
+      }
+      return propertyAccess(operand);
+    };
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && isInequalityOperator(node.operatorToken.kind)) {
-        const left = propertyAccess(node.left);
-        const right = propertyAccess(node.right);
+        const left = operandBound(node.left);
+        const right = operandBound(node.right);
         const leftLit = numericLiteralValue(node.left);
         const rightLit = numericLiteralValue(node.right);
         // A property is a threshold bound in ANY inequality ordering (`prop > X`,
@@ -637,12 +728,24 @@ export function findDisableValueViolations(input: {
     manifest,
     entries: flattenManifestProperties(manifest.properties),
   }));
-  for (const { entries } of flattenedByManifest) {
-    for (const entry of entries) {
-      if (typeof entry.prop.description === "string" && isZeroDisableDoc(entry.prop.description)) {
-        zeroDisable.add(entry.leaf);
-      }
+  // A schema *description* contributes its leaf to the leaf-keyed guard scan only
+  // when the leaf is unambiguously zero-disable: another numeric (or combinator)
+  // entry sharing the leaf without the zero-disable contract would poison that
+  // unrelated field's consumer scan, so such a leaf is left out (schema-min still
+  // keys by full dotted path, so nested docs are still checked there).
+  const schemaEntries = flattenedByManifest.flatMap(({ entries }) => entries);
+  const leafDisableStats = new Map<string, { zeroDisable: number; plainNumeric: number }>();
+  for (const entry of schemaEntries) {
+    const stats = leafDisableStats.get(entry.leaf) ?? { zeroDisable: 0, plainNumeric: 0 };
+    if (typeof entry.prop.description === "string" && isZeroDisableDoc(entry.prop.description)) {
+      stats.zeroDisable += 1;
+    } else if (numericSchema(entry.prop) || entry.prop.anyOf || entry.prop.oneOf) {
+      stats.plainNumeric += 1;
     }
+    leafDisableStats.set(entry.leaf, stats);
+  }
+  for (const [leaf, stats] of leafDisableStats) {
+    if (stats.zeroDisable > 0 && stats.plainNumeric === 0) zeroDisable.add(leaf);
   }
 
   const violations: DisableValueViolation[] = [];
@@ -655,11 +758,12 @@ export function findDisableValueViolations(input: {
       const documented =
         isZeroDisableDoc(entry.prop.description ?? "") ||
         (entry.path === entry.leaf && jsDocLeaves.has(entry.leaf));
-      if (documented && numericSchema(entry.prop) && typeof entry.prop.minimum === "number" && entry.prop.minimum >= 1) {
+      const floor = positiveNumericFloor(entry.prop);
+      if (documented && floor !== undefined) {
         violations.push({
           kind: "disable-value-schema-min",
           key: `${entry.path}@${manifest.path}`,
-          detail: `${entry.path} is documented "0 disables" but configSchema of ${manifest.path} sets minimum ${entry.prop.minimum} (must be 0 to honor the documented disable value)`,
+          detail: `${entry.path} is documented "0 disables" but configSchema of ${manifest.path} sets minimum ${floor} (must be 0 to honor the documented disable value)`,
         });
       }
     }
