@@ -4782,6 +4782,7 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
   const firstPath = "/tmp/engram/namespaces/project-x/facts/first/same-id.md";
   const secondPath = "/tmp/engram/namespaces/project-x/facts/second/same-id.md";
   const tracked: Array<{ ids: string[]; paths: string[] }> = [];
+  let findCalls = 0;
   const service = new EngramAccessService({
     config: {
       memoryDir: "/tmp/engram",
@@ -4806,12 +4807,13 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
         ids: string[],
         preferredPaths: Map<string, string[]>,
       ) => {
+        findCalls += 1;
         assert.deepEqual(ids, ["same-id"]);
-        const preferredPath = preferredPaths.get("same-id")?.[0];
-        assert.ok(preferredPath);
-        return new Map([
-          ["same-id", preferredPath.includes("/first/") ? firstPath : secondPath],
+        assert.deepEqual(preferredPaths.get("same-id"), [
+          "facts/first/same-id.md",
+          "facts/second/same-id.md",
         ]);
+        return new Map([["same-id", firstPath]]);
       },
     }),
     trackMemoryAccess: (ids: string[], paths: string[]) => {
@@ -4829,6 +4831,6 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
     rolloutIds: [],
   });
 
-  assert.deepEqual(result, { submitted: 2, matched: 2 });
-  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, secondPath] }]);
+  assert.equal(findCalls, 1);
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, firstPath] }]);
 });

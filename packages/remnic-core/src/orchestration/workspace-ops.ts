@@ -871,12 +871,18 @@ export class WorkspaceOpsCoordinator {
 
       const namespaceEntries = mergedEntriesByNamespace.get(namespace) ?? new Map();
       const existing = namespaceEntries.get(memory.path);
+      const existingLastAccessed = existing?.lastAccessed;
+      const lastAccessed =
+        existingLastAccessed &&
+        Date.parse(existingLastAccessed) > Date.parse(update.lastAccessed)
+          ? existingLastAccessed
+          : update.lastAccessed;
       namespaceEntries.set(memory.path, {
         memoryId: existing?.memoryId ?? update.memoryId,
         memoryPath: memory.path,
         newCount:
           (existing?.newCount ?? (memory.frontmatter.accessCount ?? 0)) + update.count,
-        lastAccessed: update.lastAccessed,
+        lastAccessed,
       });
       mergedEntriesByNamespace.set(namespace, namespaceEntries);
     }

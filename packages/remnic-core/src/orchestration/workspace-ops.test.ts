@@ -167,21 +167,21 @@ test("flushAccessTracking coalesces aliases for one memory", async () => {
     config,
     accessTrackingBuffer: new Map([
       [
-        "default:facts/same-id.md",
-        {
-          memoryId: "same-id",
-          memoryPath: "facts/same-id.md",
-          count: 1,
-          lastAccessed: "2026-07-19T00:00:00.000Z",
-        },
-      ],
-      [
         "default:collection/facts/same-id.md",
         {
           memoryId: "same-id",
           memoryPath: "collection/facts/same-id.md",
           count: 1,
           lastAccessed: "2026-07-19T00:00:01.000Z",
+        },
+      ],
+      [
+        "default:facts/same-id.md",
+        {
+          memoryId: "same-id",
+          memoryPath: "facts/same-id.md",
+          count: 1,
+          lastAccessed: "2026-07-19T00:00:00.000Z",
         },
       ],
     ]),
