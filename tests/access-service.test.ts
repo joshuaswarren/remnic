@@ -4755,6 +4755,7 @@ test("recordCitationUsage tracks duplicate citations with resolved namespace pat
       ],
     },
     getStorage: async () => ({
+      dir: "/tmp/engram/namespaces/project-x",
       readAllMemories: async () => {
         throw new Error("citation tracking must not parse all memories");
       },
@@ -4800,6 +4801,7 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
       ],
     },
     getStorage: async () => ({
+      dir: "/tmp/engram/namespaces/project-x",
       readAllMemories: async () => {
         throw new Error("citation tracking must not parse all memories");
       },
