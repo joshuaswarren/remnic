@@ -4099,15 +4099,15 @@
         "default": 30000,
         "description": "Debounce window for background QMD maintenance updates (ms)."
       },
-      "qmdEmbeddingBacklogThreshold": {
-        "type": "number",
-        "default": 1000,
-        "description": "Mark QMD health degraded when pending embeddings exceed this count"
-      },
       "qmdMaintenanceEnabled": {
         "type": "boolean",
         "default": true,
         "description": "Enable debounced background QMD maintenance instead of immediate updates on extraction."
+      },
+      "qmdEmbeddingBacklogThreshold": {
+        "type": "number",
+        "default": 1000,
+        "description": "Pending-embedding count above which QMD health reports degraded. Set to 0 to disable backlog degradation."
       },
       "qmdMaxResults": {
         "type": "number",
