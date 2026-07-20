@@ -359,8 +359,8 @@ export async function runContextualAgent(
 
 /**
  * Merge results from multiple agents into a single deduplicated, weighted list.
- * Preserves snippets: if a higher-scoring result lacks a snippet, the existing
- * snippet from a lower-scoring source is retained.
+ * Deduplicates by namespace and path. Preserves snippets: if a higher-scoring
+ * result lacks a snippet, the existing snippet from a lower-scoring source is retained.
  */
 function mergeAgentResults(
   allResults: ParallelSearchResult[],
@@ -369,13 +369,14 @@ function mergeAgentResults(
 ): QmdSearchResult[] {
   const merged = new Map<string, QmdSearchResult>();
   for (const result of allResults) {
-    const key = result.path || result.docid;
+    const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
     const weightedScore = result.score * weights[result.agentSource];
     const existing = merged.get(key);
     if (!existing || weightedScore > existing.score) {
       merged.set(key, {
         docid: result.docid,
         path: result.path,
+        namespace: result.namespace,
         // Preserve any snippet from the existing entry when the new one has none
         snippet: result.snippet || existing?.snippet || "",
         score: weightedScore,

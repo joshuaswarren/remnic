@@ -349,6 +349,7 @@ export class GraphRecallCoordinator {
         expandedResults.push({
           docid: memory.frontmatter.id,
           path: memory.path,
+          namespace,
           snippet,
           score,
         });
