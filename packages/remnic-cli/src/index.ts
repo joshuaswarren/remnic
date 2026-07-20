@@ -10098,7 +10098,10 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       const raw = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
-      connectorsCfg = parseConfig(resolveRemnicConfigRecord(raw)).connectors;
+      // parseConfigQuietly (not parseConfig): this branch installs no logger,
+      // so parseConfig's coercion warnings would print raw config values
+      // (e.g. secrets) via console.warn (#2033).
+      connectorsCfg = parseConfigQuietly(raw).connectors;
     } catch {
       // Report the path, never the caught error message: parse/validation
       // errors can echo raw config values (e.g. secrets) into CLI output.
