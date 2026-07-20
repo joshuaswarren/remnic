@@ -416,3 +416,19 @@ test("assertGrandfatherShrinkOnly: a subset of the baseline is allowed, and a nu
     assertGrandfatherShrinkOnly([{ kind: "disable-value-guard", key: "anything", issue: "#2070" }], null),
   );
 });
+
+test("runDisableValueCheck fails closed when the shrink-only baseline cannot be resolved", () => {
+  // In a real Git work tree, an unresolvable base ref must refuse to run open
+  // (never silently skip the ban), matching the v2 contract checker.
+  assert.throws(
+    () =>
+      runDisableValueCheck({
+        repoRoot: process.cwd(),
+        sourceFiles: [],
+        manifestPaths: [],
+        grandfatherPath: path.join(process.cwd(), "scripts/config-contract/disable-value-grandfathered.json"),
+        baselineRef: "refs/remnic-nonexistent-baseline-ref-2070",
+      }),
+    /refusing to run the §33 check open|cannot resolve the shrink-only baseline/,
+  );
+});

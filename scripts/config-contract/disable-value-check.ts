@@ -457,32 +457,71 @@ function loadGrandfather(grandfatherPath: string): DisableValueGrandfatherEntry[
 }
 
 /**
- * Grandfather keys as of the merge-base with the base ref, or null when the
- * manifest does not yet exist there (first introduction) or git is unavailable.
- * Enables the shrink-only ban: an entry absent from the baseline is a newly
- * added exception.
+ * Resolve the grandfather baseline for the shrink-only ban, mirroring the v2
+ * contract checker. `baselineRequired` lets the caller FAIL CLOSED rather than
+ * run open: a real Git checkout whose base ref or baseline JSON cannot be
+ * resolved must not silently skip the ban. A missing Git work tree (unit
+ * fixture) and the PR that first introduces the manifest legitimately have no
+ * baseline (`keys: null, baselineRequired: false`).
  */
-function baselineGrandfatherKeys(repoRoot: string, grandfatherPath: string, baseRef: string): Set<string> | null {
+function readBaselineGrandfather(
+  repoRoot: string,
+  grandfatherPath: string,
+  baseRef: string,
+): { keys: Set<string> | null; baselineRequired: boolean } {
+  const rel = path.relative(repoRoot, grandfatherPath);
+  if (!rel || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return { keys: null, baselineRequired: false };
+  }
+  const relPosix = rel.split(path.sep).join("/");
+  let insideWorkTree = false;
   try {
-    const rel = path.relative(repoRoot, grandfatherPath).split(path.sep).join("/");
-    const mergeBase = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", baseRef], {
+    insideWorkTree =
+      execFileSync("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "true";
+  } catch {
+    insideWorkTree = false;
+  }
+  if (!insideWorkTree) return { keys: null, baselineRequired: false };
+
+  let base = "";
+  try {
+    base = execFileSync("git", ["-C", repoRoot, "merge-base", "HEAD", baseRef], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    const content = execFileSync("git", ["-C", repoRoot, "show", `${mergeBase}:${rel}`], {
+  } catch {
+    return { keys: null, baselineRequired: true };
+  }
+  if (!base) return { keys: null, baselineRequired: true };
+
+  let content: string;
+  try {
+    content = execFileSync("git", ["-C", repoRoot, "show", `${base}:${relPosix}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const arr: unknown = JSON.parse(content);
-    if (!Array.isArray(arr)) return null;
-    return new Set(
-      arr
-        .filter((e): e is DisableValueGrandfatherEntry => Boolean(e) && typeof e.kind === "string" && typeof e.key === "string")
-        .map((e) => `${e.kind}:${e.key}`),
-    );
   } catch {
-    return null;
+    // Absent at the base → this PR introduces the manifest; not a new exception.
+    return { keys: null, baselineRequired: false };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { keys: null, baselineRequired: true };
+  }
+  if (!Array.isArray(parsed)) return { keys: null, baselineRequired: true };
+  return {
+    keys: new Set(
+      parsed
+        .filter((e): e is DisableValueGrandfatherEntry => Boolean(e) && typeof (e as DisableValueGrandfatherEntry).kind === "string")
+        .map((e) => `${e.kind}:${e.key}`),
+    ),
+    baselineRequired: true,
+  };
 }
 
 /** Reject any exception not present in the baseline — the manifest may only shrink. No-op when baseline is null. */
@@ -576,11 +615,15 @@ export function runDisableValueCheck(options: {
   const grandfathered = loadGrandfather(grandfatherPath);
   if (options.checkGrandfatherBaseline !== false) {
     const baseRef = options.baselineRef ?? process.env.REMNIC_CONFIG_CONTRACT_BASE_REF ?? "origin/main";
-    assertGrandfatherShrinkOnly(
-      grandfathered,
-      baselineGrandfatherKeys(repoRoot, grandfatherPath, baseRef),
-      path.relative(repoRoot, grandfatherPath).split(path.sep).join("/"),
-    );
+    const relPosix = path.relative(repoRoot, grandfatherPath).split(path.sep).join("/");
+    const { keys, baselineRequired } = readBaselineGrandfather(repoRoot, grandfatherPath, baseRef);
+    if (baselineRequired && keys === null) {
+      throw new Error(
+        `${relPosix}: cannot resolve the shrink-only baseline (git merge-base HEAD ${baseRef} or the base manifest JSON). ` +
+          "Fetch the PR base branch; refusing to run the §33 check open.",
+      );
+    }
+    assertGrandfatherShrinkOnly(grandfathered, keys, relPosix);
   }
   const grandfatherIndex = new Set(grandfathered.map((entry) => `${entry.kind}:${entry.key}`));
   const currentIndex = new Set(unique.map((violation) => `${violation.kind}:${violation.key}`));
