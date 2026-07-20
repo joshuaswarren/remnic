@@ -22,6 +22,7 @@ test("parseConfig sets proactive/policy-learning defaults", () => {
     "maxMemoryTokens",
     "qmdMaxResults",
     "qmdColdMaxResults",
+    "qmdEmbeddingBacklogThreshold",
     "recallPlannerMaxQmdResultsMinimal",
     "verbatimArtifactsMaxRecall",
   ]);
