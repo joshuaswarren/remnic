@@ -515,6 +515,30 @@ function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
   return false;
 }
 
+/**
+ * True when a boolean `||`/`&&`/paren expression is (part of) an if-condition
+ * whose then-branch always exits (return/throw/break/continue). Used so a
+ * disabling `||` conjunct only counts as a guard when disabling short-circuits
+ * to an exit, not to running an action.
+ */
+function orConditionBranchExits(orExpr: ts.Node): boolean {
+  let node: ts.Node = orExpr;
+  while (node.parent) {
+    const parent = node.parent;
+    if (ts.isIfStatement(parent) && node === parent.expression) {
+      return !parent.elseStatement && branchAlwaysExits(parent.thenStatement);
+    }
+    const boolChain =
+      ts.isParenthesizedExpression(parent) ||
+      (ts.isBinaryExpression(parent) &&
+        (parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+          parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken));
+    if (!boolChain) return false;
+    node = parent;
+  }
+  return false;
+}
+
 /** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&`/`||` conjunct, or an enclosing active/else branch. */
 function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
   let node: ts.Node = use;
@@ -528,11 +552,15 @@ function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
       ) {
         return true;
       }
-      // `cfg.x <= 0 || use` — the disabling left operand short-circuits, so the
-      // use is only evaluated when the value is enabled.
+      // `cfg.x <= 0 || use` — a disabling left operand short-circuits, but only
+      // PROTECTS when the whole `||` is an if-condition whose branch EXITS
+      // (`if (cfg.x <= 0 || used > cfg.x) return`). In an action context
+      // (`if (cfg.x <= 0 || used > cfg.x) flush()`) the disable value TRIGGERS
+      // the action, so it is not a guard.
       if (
         parent.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
-        pathGuardKind(parent.left, guardedPath) === "disabling"
+        pathGuardKind(parent.left, guardedPath) === "disabling" &&
+        orConditionBranchExits(parent)
       ) {
         return true;
       }

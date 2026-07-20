@@ -1008,7 +1008,7 @@ test("guard: a coerced local returned only from a nested inner function is not t
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
 });
 
-test("guard: a disabling `||` short-circuit (`cap <= 0 || used > cap`) is honored", () => {
+test("guard: a disabling `||` short-circuit that EXITS (`cap <= 0 || used > cap) return`) is honored", () => {
   const sources: DisableValueSource[] = [
     {
       path: "types.ts",
@@ -1018,12 +1018,33 @@ test("guard: a disabling `||` short-circuit (`cap <= 0 || used > cap`) is honore
       path: "consumer.ts",
       text: [
         "function tick(used: number, config: { cap: number }) {",
-        "  if (config.cap <= 0 || used > config.cap) act();",
+        "  if (config.cap <= 0 || used > config.cap) return;",
+        "  proceed();",
         "}",
       ].join("\n"),
     },
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("guard: a disabling `||` in an ACTION context (`cap <= 0 || used > cap) flush()`) is still flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "function tick(used: number, config: { cap: number }) {",
+        "  if (config.cap <= 0 || used > config.cap) flush();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
 });
 
 test("guard: a coerced same-named local returned under a DIFFERENT key is not a false coercion", () => {
