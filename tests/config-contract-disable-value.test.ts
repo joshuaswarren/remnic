@@ -5,9 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertGrandfatherShrinkOnly,
   findDisableValueViolations,
   isZeroDisableDoc,
   runDisableValueCheck,
+  type DisableValueGrandfatherEntry,
   type DisableValueManifest,
   type DisableValueSource,
 } from "../scripts/config-contract/disable-value-check.js";
@@ -197,6 +199,7 @@ test("runDisableValueCheck: grandfather suppresses a real violation and reports 
       sourceFiles: [typesPath],
       manifestPaths: [manifestPath],
       grandfatherPath,
+      checkGrandfatherBaseline: false,
     });
     assert.equal(ungated.violations.length, 1, "ungated run flags the schema-min violation");
 
@@ -212,6 +215,7 @@ test("runDisableValueCheck: grandfather suppresses a real violation and reports 
       sourceFiles: [typesPath],
       manifestPaths: [manifestPath],
       grandfatherPath,
+      checkGrandfatherBaseline: false,
     });
     assert.deepEqual(gated.violations, [], "grandfathered violation is suppressed");
     assert.equal(gated.grandfatheredActive, 1);
@@ -237,6 +241,7 @@ test("runDisableValueCheck: a grandfather entry that no longer violates is repor
       sourceFiles: [typesPath],
       manifestPaths: [],
       grandfatherPath,
+      checkGrandfatherBaseline: false,
     });
     assert.equal(result.staleGrandfatherEntries.length, 1);
     assert.equal(result.staleGrandfatherEntries[0].key, "somethingFixed");
@@ -320,4 +325,94 @@ test("nested schema property (procedural.*) with minimum >= 1 is flagged by dott
   assert.equal(violations.length, 1);
   assert.equal(violations[0].kind, "disable-value-schema-min");
   assert.equal(violations[0].key, "procedural.minOccurrences@openclaw.plugin.json");
+});
+
+test("guard: a zero short-circuit in ONE consumer does not vouch for an unguarded use in another", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  backlogThreshold: number;\n}",
+    },
+    {
+      path: "guarded.ts",
+      text: [
+        "function safe(state: { queued: number }, config: { backlogThreshold: number }) {",
+        "  if (config.backlogThreshold <= 0) return;",
+        "  if (state.queued > config.backlogThreshold) flush();",
+        "}",
+      ].join("\n"),
+    },
+    {
+      path: "unguarded.ts",
+      text: [
+        "function risky(state: { queued: number }, config: { backlogThreshold: number }) {",
+        "  if (state.queued > config.backlogThreshold) flush();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "backlogThreshold");
+});
+
+test("guard: parser value in a same-named local returned via shorthand is scanned for coercion", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  maxMemoriesPerDay: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const maxMemoriesPerDay = Math.max(1, coerceNumber(cfg.maxMemoriesPerDay) ?? 0);",
+        "  return { maxMemoriesPerDay };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "maxMemoriesPerDay");
+});
+
+test("guard: a raw-local zero short-circuit before the clamp is NOT a false positive", () => {
+  // Mirrors the real procedural.autoPromoteOccurrences parser: the disable value
+  // is branched on the raw local, so Math.max(1, …) only runs for values > 0.
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable auto-promotion by count. */\n  autoPromote: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  const raw = coerceNumber(cfg.autoPromote);",
+        "  const autoPromote = raw !== undefined ? (raw <= 0 ? 0 : Math.max(1, Math.floor(raw))) : 8;",
+        "  return { autoPromote };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("assertGrandfatherShrinkOnly: a new exception absent from the baseline is rejected", () => {
+  const baseline = new Set<string>(["disable-value-guard:existing"]);
+  const current: DisableValueGrandfatherEntry[] = [
+    { kind: "disable-value-guard", key: "existing", issue: "#2070" },
+    { kind: "disable-value-schema-min", key: "brandNew@openclaw.plugin.json", issue: "#2070" },
+  ];
+  assert.throws(() => assertGrandfatherShrinkOnly(current, baseline), /new exception .* is not allowed/);
+});
+
+test("assertGrandfatherShrinkOnly: a subset of the baseline is allowed, and a null baseline is a no-op", () => {
+  const baseline = new Set<string>(["disable-value-guard:a", "disable-value-guard:b"]);
+  const shrunk: DisableValueGrandfatherEntry[] = [{ kind: "disable-value-guard", key: "a", issue: "#2070" }];
+  assert.doesNotThrow(() => assertGrandfatherShrinkOnly(shrunk, baseline));
+  assert.doesNotThrow(() =>
+    assertGrandfatherShrinkOnly([{ kind: "disable-value-guard", key: "anything", issue: "#2070" }], null),
+  );
 });
