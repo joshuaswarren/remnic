@@ -182,7 +182,9 @@ test("issue references are extracted, deduped, boundary-checked, and code-stripp
   assert.equal(extractIssueRefs(undefined).size, 0);
   // Non-issue hashes must not count: hex color / commit-ish in code spans are
   // stripped, and alphanumeric neighbours break the reference boundary.
-  const filtered = extractIssueRefs("real #42, color `#123456`, block ```\n#999\n```, run#7 x#8y ##9");
+  const filtered = extractIssueRefs(
+    "real #42, hidden <!-- see #77 -->, color `#123456`, block ```\n#999\n```, run#7 x#8y ##9"
+  );
   assert.deepEqual([...filtered], [42]);
 });
 

@@ -111,16 +111,21 @@ export function loadThresholds(thresholdsPath) {
 }
 
 /**
- * All #<n> issue references in free text, deduped (issue #2067). Fenced and
- * inline code spans are dropped first so hashes inside code samples (a CSS hex
- * color like #123456, a shell prompt) are never mistaken for issue refs, and
- * the match requires GitHub issue-reference boundaries (no leading/trailing
- * alphanumerics) so `abc#12`, `#12ab`, and `##12` do not count.
+ * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
+ * content is dropped first — HTML comments (template/generated <!-- ... -->
+ * blocks) and fenced + inline code spans — so a hidden `<!-- related #2 -->`
+ * or a hash in a code sample (a CSS hex color like #123456, a shell prompt) is
+ * never mistaken for an issue ref, and the match requires GitHub
+ * issue-reference boundaries (no adjacent alphanumerics, no leading #) so
+ * `abc#12`, `#12ab`, and `##12` do not count.
  */
 export function extractIssueRefs(text) {
   const issues = new Set();
   if (typeof text !== "string") return issues;
-  const prose = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+  const prose = text
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ");
   for (const match of prose.matchAll(/(?<![0-9A-Za-z_#])#(\d+)(?![0-9A-Za-z_])/g)) {
     issues.add(Number(match[1]));
   }
