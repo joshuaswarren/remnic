@@ -5037,9 +5037,15 @@ export class EngramAccessService {
             if (nodePath.isAbsolute(memoryPath)) {
               throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
             }
-            // Category-dir leads (default `facts/a.md`) are not namespaces (#2020).
-            const cand = memoryPath.includes("/") ? memoryPath.slice(0, memoryPath.indexOf("/")) : "";
-            if (cand && !ALL_CATEGORY_DIRS.includes(cand) && authorizedNamespaces.includes(cand)) return cand;
+            // Attribute to the longest authorized namespace that prefixes the cited
+            // path (namespace names may contain "/"); a bare category lead like a
+            // default `facts/a.md` is not a namespace (#2020).
+            let nsMatch = "";
+            for (const ns of authorizedNamespaces) {
+              if (!ns || ALL_CATEGORY_DIRS.includes(ns)) continue;
+              if ((memoryPath === ns || memoryPath.startsWith(`${ns}/`)) && ns.length > nsMatch.length) nsMatch = ns;
+            }
+            if (nsMatch) return nsMatch;
             return fallbackNamespace;
           }
           return resolved.namespace;
