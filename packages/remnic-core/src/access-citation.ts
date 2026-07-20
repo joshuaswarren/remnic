@@ -93,7 +93,14 @@ export async function recordCitationUsage(
     const preferredPaths = new Map<string, string[]>();
     for (const entry of namespaceEntries) {
       const paths = preferredPaths.get(entry.id) ?? [];
-      paths.push(entry.citedPath);
+      // Strip the resolved namespace prefix so the preferred path is storage-
+      // relative. Namespace names may contain "/", and the storage helper only
+      // strips a single leading segment, so a namespace-qualified cited path
+      // would otherwise miss the exact match (#2020).
+      const relPath = entry.citedPath.startsWith(`${namespace}/`)
+        ? entry.citedPath.slice(namespace.length + 1)
+        : entry.citedPath;
+      paths.push(relPath);
       preferredPaths.set(entry.id, paths);
     }
     const pathsById = await storage.findExistingMemoryPaths(ids, preferredPaths);
