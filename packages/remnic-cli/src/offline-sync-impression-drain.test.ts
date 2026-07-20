@@ -266,12 +266,11 @@ test("offline sync aborts (never pushes) when the pending impression drain canno
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-impression-drain-abort-"));
   const originalFetch = globalThis.fetch;
   try {
-    // A file where the pending spill DIRECTORY is expected makes the drain's
-    // readdir fail (ENOTDIR) on every attempt: the durable rows can never be
-    // folded, so the drain helper aborts rather than let runOfflineSyncOnce build
-    // and push a snapshot that silently omits them.
-    await mkdir(path.join(root, "state"), { recursive: true });
-    await writeFile(path.join(root, PENDING_DIR_REL), "not a directory", "utf-8");
+    // A real pending spill is present, but the active impression path is a
+    // directory, so every append attempt fails. The durable row cannot be
+    // committed, and the drain helper must abort before building a snapshot.
+    await mkdir(path.join(root, IMPRESSIONS_REL), { recursive: true });
+    await seedPendingImpression(root);
 
     const statePath = path.join(root, ".offline-sync", "state", "test.json");
     await writeOfflineSyncState(statePath, {
