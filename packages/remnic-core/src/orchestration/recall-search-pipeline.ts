@@ -580,7 +580,7 @@ export class RecallSearchPipelineCoordinator {
           if (hybridResults.length > 0) {
             const mergedByPath = new Map<string, QmdSearchResult>();
             for (const result of [...primaryResults, ...hybridResults]) {
-              const key = result.path || result.docid;
+              const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
               const existing = mergedByPath.get(key);
               if (!existing || result.score > existing.score) {
                 mergedByPath.set(key, {
@@ -600,7 +600,7 @@ export class RecallSearchPipelineCoordinator {
       if (scopedSeedResults.length > 0) {
         const mergedByPath = new Map<string, QmdSearchResult>();
         for (const result of [...scopedSeedResults, ...mergedResults]) {
-          const key = result.path || result.docid;
+          const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
           const existing = mergedByPath.get(key);
           if (!existing || result.score > existing.score) {
             mergedByPath.set(key, {
@@ -733,7 +733,7 @@ export class RecallSearchPipelineCoordinator {
 
     const mergedByPath = new Map<string, QmdSearchResult>();
     for (const result of [...scopedSeedResults, ...scored]) {
-      const key = result.path || result.docid;
+      const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
       const existing = mergedByPath.get(key);
       if (!existing || result.score > existing.score) {
         mergedByPath.set(key, {
