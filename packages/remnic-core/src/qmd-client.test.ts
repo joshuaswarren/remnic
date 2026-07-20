@@ -277,6 +277,21 @@ test("parseQmdStatusOutput parses full status output", () => {
   assert.equal(report.raw, stdout);
 });
 
+test("parseQmdStatusOutput parses documented QMD status format", () => {
+  const stdout = [
+    "Collection: remnic-memory",
+    "Total: 1,200 files indexed",
+    "Vectors: 1,150 embedded",
+    "Pending: 50",
+    "Oldest pending: 2h",
+  ].join("\n");
+  const report = parseQmdStatusOutput(stdout);
+  assert.equal(report.totalFiles, 1200);
+  assert.equal(report.embeddedFiles, 1150);
+  assert.equal(report.pendingEmbeddings, 50);
+  assert.equal(report.oldestPendingAgeMs, 2 * 60 * 60 * 1000);
+});
+
 test("parseQmdStatusOutput parses time units correctly", () => {
   assert.equal(parseQmdStatusOutput("Oldest pending: 45s").oldestPendingAgeMs, 45_000);
   assert.equal(parseQmdStatusOutput("Oldest pending: 3m").oldestPendingAgeMs, 180_000);

@@ -71,9 +71,9 @@ export function parseQmdStatusOutput(stdout: string): QmdStatusReport {
     const key = line.slice(0, colonIdx).trim();
     const value = line.slice(colonIdx + 1).trim();
 
-    if (key === "total files" || key === "total file") {
+    if (key === "total" || key === "total files" || key === "total file") {
       totalFiles = parseLeadingInt(value);
-    } else if (key === "embedded") {
+    } else if (key === "vectors" || key === "embedded") {
       embeddedFiles = parseLeadingInt(value);
     } else if (key === "oldest pending") {
       oldestPendingAgeMs = parseLeadingDurationMs(value);
