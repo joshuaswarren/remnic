@@ -369,7 +369,16 @@ export class AccessRecallSurface {
       preferredNamespace?: string,
     ): Promise<{ memory: MemoryFile; baseDir: string } | null> => {
       const parts = qmdCollectionPathParts(memoryPath);
-      if (preferredNamespace && !parts) {
+      const coldCollection =
+        this.deps.orchestrator.config.qmdColdCollection ?? "openclaw-engram-cold";
+      const collectionNamespace = parts
+        ? collectionNamespaceFromPrefix(parts.collection)
+        : null;
+      if (
+        preferredNamespace &&
+        (!parts ||
+          (collectionNamespace === null && parts.collection !== coldCollection))
+      ) {
         try {
           const preferredStorage = await this.deps.orchestrator.getStorage(
             this.deps.resolveNamespace(preferredNamespace),
@@ -387,8 +396,6 @@ export class AccessRecallSurface {
           return null;
         }
       }
-      const coldCollection =
-        this.deps.orchestrator.config.qmdColdCollection ?? "openclaw-engram-cold";
       if (parts && parts.collection === coldCollection) {
         const storages: Array<{ storage: StorageManager; dir: string }> = [];
         const seenStorageDirs = new Set<string>();
@@ -425,9 +432,6 @@ export class AccessRecallSurface {
         return null;
       }
 
-      const collectionNamespace = parts
-        ? collectionNamespaceFromPrefix(parts.collection)
-        : null;
 
       if (parts && collectionNamespace) {
         try {
