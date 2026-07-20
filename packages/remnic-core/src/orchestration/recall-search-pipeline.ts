@@ -39,7 +39,14 @@ import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
-import { hasMemoryForResult, markResultKey, memoryForResult, memoryMapKey, resultHasKey } from "./recall-memory-map.js";
+import {
+  dedupeResultsByNamespace,
+  hasMemoryForResult,
+  markResultKey,
+  memoryForResult,
+  memoryMapKey,
+  resultHasKey,
+} from "./recall-memory-map.js";
 import { type UtilityRuntimeValues, applyUtilityRankingRuntimeDelta } from "../utility-runtime.js";
 import {
   computeArtifactCandidateFetchLimit,
@@ -578,40 +585,24 @@ export class RecallSearchPipelineCoordinator {
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
-            const mergedByPath = new Map<string, QmdSearchResult>();
-            for (const result of [...primaryResults, ...hybridResults]) {
-              const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
-              const existing = mergedByPath.get(key);
-              if (!existing || result.score > existing.score) {
-                mergedByPath.set(key, {
-                  ...result,
-                  transport: result.transport ?? "hybrid",
-                  snippet: result.snippet || existing?.snippet || "",
-                });
-              }
-            }
-            mergedResults = [...mergedByPath.values()]
-              .sort((a, b) => b.score - a.score)
-              .slice(0, fetchLimit);
+            // Dedup by composite (namespace, path) so a fanout hit and a
+            // seed/hybrid hit for the same memory never inject twice (#2020).
+            mergedResults = dedupeResultsByNamespace(
+              [...primaryResults, ...hybridResults],
+              this.deps.namespaceFromPath,
+              fetchLimit,
+              { transportFallback: "hybrid" },
+            );
           }
         }
       }
 
       if (scopedSeedResults.length > 0) {
-        const mergedByPath = new Map<string, QmdSearchResult>();
-        for (const result of [...scopedSeedResults, ...mergedResults]) {
-          const key = `${result.namespace ?? ""}\0${result.path || result.docid}`;
-          const existing = mergedByPath.get(key);
-          if (!existing || result.score > existing.score) {
-            mergedByPath.set(key, {
-              ...result,
-              snippet: result.snippet || existing?.snippet || "",
-            });
-          }
-        }
-        mergedResults = [...mergedByPath.values()]
-          .sort((a, b) => b.score - a.score)
-          .slice(0, fetchLimit);
+        mergedResults = dedupeResultsByNamespace(
+          [...scopedSeedResults, ...mergedResults],
+          this.deps.namespaceFromPath,
+          fetchLimit,
+        );
       }
 
       const filteredResults = filterRecallCandidates(mergedResults, {
@@ -731,26 +722,12 @@ export class RecallSearchPipelineCoordinator {
       snippet: r.snippet,
     }));
 
-    const mergedByPath = new Map<string, QmdSearchResult>();
-    for (const result of [...scopedSeedResults, ...scored]) {
-      const namespacedResult = {
-        ...result,
-        namespace: result.namespace ?? this.deps.namespaceFromPath(result.path),
-      };
-      const key = `${namespacedResult.namespace}\0${namespacedResult.path || namespacedResult.docid}`;
-      const existing = mergedByPath.get(key);
-      if (!existing || namespacedResult.score > existing.score) {
-        mergedByPath.set(key, {
-          ...namespacedResult,
-          snippet: namespacedResult.snippet || existing?.snippet || "",
-        });
-      }
-    }
-
-    return [...mergedByPath.values()]
-      .filter((result) => !isArtifactMemoryPath(result.path))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, cappedLimit);
+    return dedupeResultsByNamespace(
+      [...scopedSeedResults, ...scored],
+      this.deps.namespaceFromPath,
+      cappedLimit,
+      { filter: (result) => !isArtifactMemoryPath(result.path) },
+    );
   }
 
   async applyColdFallbackPipeline(options: {

@@ -33,6 +33,7 @@ import {
 import type { TrustSignals } from "../trust-score.js";
 import { reorderRecallResultsWithMmr } from "../recall-mmr.js";
 import { applyReasoningTraceBoost } from "../reasoning-trace-recall.js";
+import { memoryMapKey } from "./recall-memory-map.js";
 
 /**
  * Coordinator for the recall-result reranking subsystem.
@@ -135,12 +136,16 @@ export class RecallRerankCoordinator {
     // neutral prior, identical to the corpus scan.
     if (preloadedFrontmatter) {
       for (const r of results) {
-        const mem = preloadedFrontmatter.get(r.path);
+        const key = memoryMapKey(r);
+        // Composite (namespace, path) key is authoritative — it can never hit a
+        // wrong-namespace entry. The bare-path fallback keeps path-keyed callers
+        // working and is inert in production (loaded maps are composite-keyed).
+        const mem = preloadedFrontmatter.get(key) ?? preloadedFrontmatter.get(r.path);
         if (!mem) continue;
-        preloadedPaths.add(r.path);
+        preloadedPaths.add(key);
         const fm = mem.frontmatter;
         if (fm.mw_success === undefined && fm.mw_fail === undefined) continue;
-        counters.set(r.path, {
+        counters.set(key, {
           mw_success: fm.mw_success,
           mw_fail: fm.mw_fail,
           lastAccessed: fm.lastAccessed,
@@ -161,7 +166,7 @@ export class RecallRerankCoordinator {
         if (abortSignal?.aborted) break;
         if (seenNamespaces.has(ns)) continue;
         seenNamespaces.add(ns);
-        if (results.every((r) => counters.has(r.path) || preloadedPaths.has(r.path))) break;
+        if (results.every((r) => counters.has(memoryMapKey(r)) || preloadedPaths.has(memoryMapKey(r)))) break;
         try {
           const storage = await this.getStorage(ns);
           const version = storage.getMemoryCorpusVersion();
@@ -181,9 +186,14 @@ export class RecallRerankCoordinator {
           for (const r of results) {
             // Skip candidates already satisfied by a counter OR already examined
             // via preloaded frontmatter (neutral prior — no corpus lookup needed).
-            if (counters.has(r.path) || preloadedPaths.has(r.path)) continue;
+            const key = memoryMapKey(r);
+            if (counters.has(key) || preloadedPaths.has(key)) continue;
+            // A namespaced result belongs to exactly one namespace: never seed
+            // its counters from a different namespace's corpus map, or two
+            // same-path results in different namespaces collapse (#2020).
+            if (r.namespace !== undefined && r.namespace !== ns) continue;
             const c = nsMap.get(r.path);
-            if (c) counters.set(r.path, c);
+            if (c) counters.set(key, c);
           }
         } catch (err) {
           log.debug("memory-worth: failed to read namespace, skipping", {
@@ -198,7 +208,9 @@ export class RecallRerankCoordinator {
     // disabled), try a direct per-path read. Bounded-parallel (≤16) to match
     // loadSearchResultMemoryMap's batch size (issue #1905). Errors are swallowed
     // so a single unreadable archive entry can't break the whole recall.
-    const missing = results.filter((r) => !counters.has(r.path) && !preloadedPaths.has(r.path));
+    const missing = results.filter(
+      (r) => !counters.has(memoryMapKey(r)) && !preloadedPaths.has(memoryMapKey(r)),
+    );
     if (missing.length > 0) {
       // Use the first-seen namespace's storage as the reader — all
       // StorageManagers share the same on-disk format, and readMemoryByPath
@@ -230,7 +242,7 @@ export class RecallRerankCoordinator {
                 if (!memory) return;
                 const fm = memory.frontmatter;
                 if (fm.mw_success === undefined && fm.mw_fail === undefined) return;
-                counters.set(r.path, {
+                counters.set(memoryMapKey(r), {
                   mw_success: fm.mw_success,
                   mw_fail: fm.mw_fail,
                   lastAccessed: fm.lastAccessed,
@@ -261,7 +273,9 @@ export class RecallRerankCoordinator {
     // multiplier on top. Ties fall back to the stable secondary key in
     // `applyMemoryWorthFilter`.
     const rankedInputs = results.map((r, i) => ({
-      path: r.path,
+      // Composite (namespace, path) identity so same-path results in different
+      // namespaces stay distinct through the filter and reconstruction (#2020).
+      path: memoryMapKey(r),
       // Large positive rank score so multiplier math stays well-scaled and
       // we never hit zero; descending so earlier items rank higher.
       score: results.length - i,
@@ -280,7 +294,7 @@ export class RecallRerankCoordinator {
     // we only reorder. Writing the synthetic rank-weighted score back
     // would contaminate downstream logic (telemetry, confidence gates)
     // that expects the original QMD/rerank score semantics.
-    const byPath = new Map(results.map((r) => [r.path, r]));
+    const byPath = new Map(results.map((r) => [memoryMapKey(r), r]));
     const reordered: QmdSearchResult[] = [];
     for (const item of filtered) {
       const original = byPath.get(item.path);
@@ -329,7 +343,15 @@ export class RecallRerankCoordinator {
     // candidate (mirrors the memory-worth filter's reader selection).
     let fallbackReader: StorageManager | null = null;
     const signals = await buildTrustSignalsForRerank(
-      results.map((r) => r.path),
+      results.map((r) => ({
+        path: r.path,
+        // Signals are keyed by the SAME composite key the trust stage looks up
+        // (trustResultKey), and preloaded frontmatter by memoryMapKey, so
+        // same-path results in different namespaces stay distinct (#2020).
+        signalKey: trustResultKey(r),
+        lookupKey: memoryMapKey(r),
+        namespace: r.namespace,
+      })),
       namespaces,
       {
         readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),

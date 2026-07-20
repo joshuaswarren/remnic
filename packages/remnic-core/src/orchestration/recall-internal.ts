@@ -2658,6 +2658,8 @@ export class RecallInternalCoordinator {
                   this.deps.config.parallelAgentWeights,
                   qmdFetchLimit + lifecycleHeadroom,
                   this.deps.config.memoryDir,
+                  // Derive agent-hit namespace so a same (namespace,path) memory merges once (#2020).
+                  (p) => this.deps.namespaceFromPath(p),
                 );
               }
             } catch (err) {

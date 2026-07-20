@@ -390,10 +390,8 @@ export class AccessRecallSurface {
             const memory = await preferredStorage.readMemoryByPath(candidate);
             if (memory) return { memory, baseDir: preferredStorage.dir };
           }
-          return null;
         } catch (err) {
           if (err instanceof SecureStoreLockedError) throw err;
-          return null;
         }
       }
       if (parts && parts.collection === coldCollection) {
