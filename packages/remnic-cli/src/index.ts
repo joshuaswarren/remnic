@@ -9913,7 +9913,7 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
     }
     return;
   }
-  await runQuarantineReplay(rest, format, resolveConfigPath());
+  await runQuarantineReplay(rest, format, resolveConfigPath);
 }
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {

@@ -8,13 +8,21 @@ import test from "node:test";
 
 import { runQuarantineReplay } from "./quarantine-replay.js";
 
+// The config resolver is never invoked on these paths (validation fails first),
+// so it throws to prove that: a leaked call would surface here.
+const resolver = (): string => {
+  throw new Error("config resolver must not run when argument validation fails");
+};
+
 async function exitCodeFor(rest: string[]): Promise<number | undefined> {
   const prev = process.exitCode;
   process.exitCode = 0;
-  await runQuarantineReplay(rest, "json", "/nonexistent-remnic-config.json");
-  const code = process.exitCode;
-  process.exitCode = prev;
-  return code;
+  try {
+    await runQuarantineReplay(rest, "json", resolver);
+    return process.exitCode;
+  } finally {
+    process.exitCode = prev;
+  }
 }
 
 test("runQuarantineReplay: missing --namespace is a usage error (exit 2)", async () => {
@@ -27,4 +35,13 @@ test("runQuarantineReplay: an unknown flag is rejected (exit 2)", async () => {
 
 test("runQuarantineReplay: --namespace without a value is rejected (exit 2)", async () => {
   assert.equal(await exitCodeFor(["--namespace", "--json"]), 2);
+});
+
+test("runQuarantineReplay: a repeated value flag is rejected (exit 2)", async () => {
+  assert.equal(await exitCodeFor(["--namespace", "ns", "--namespace", "other"]), 2);
+  assert.equal(await exitCodeFor(["--namespace", "ns", "--principal", "a", "--principal", "b"]), 2);
+});
+
+test("runQuarantineReplay: a blank principal override is rejected (exit 2)", async () => {
+  assert.equal(await exitCodeFor(["--namespace", "ns", "--principal", "   "]), 2);
 });

@@ -13,16 +13,26 @@ import { type QuarantineFormat, renderReplayResult, replayQuarantine } from "./q
 
 /** Required-value flag: undefined when absent, throws when present without a value. */
 function valueFlag(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  if (i === -1) return undefined;
-  const value = args[i + 1];
+  const occurrences = args.filter((a) => a === flag).length;
+  if (occurrences === 0) return undefined;
+  if (occurrences > 1) {
+    throw new Error(`${flag} may be given at most once.`);
+  }
+  const value = args[args.indexOf(flag) + 1];
   if (value === undefined || value.startsWith("--")) {
     throw new Error(`${flag} requires a value. Provide it as \`${flag} <value>\`, not a bare flag.`);
+  }
+  if (value.trim().length === 0) {
+    throw new Error(`${flag} requires a non-empty value.`);
   }
   return value;
 }
 
-export async function runQuarantineReplay(rest: string[], format: QuarantineFormat, configPath: string): Promise<void> {
+export async function runQuarantineReplay(
+  rest: string[],
+  format: QuarantineFormat,
+  resolveConfigPath: () => string
+): Promise<void> {
   let targetNamespace: string | undefined;
   let principal: string | undefined;
   try {
@@ -51,7 +61,9 @@ export async function runQuarantineReplay(rest: string[], format: QuarantineForm
   initLogger();
   let orchestrator: Orchestrator | undefined;
   try {
-    // Bootstrap inside the boundary so bad config JSON / construction fails cleanly (exit 2).
+    // Resolve + read config inside the boundary so a throw (bad path or invalid
+    // JSON) fails cleanly (exit 2) rather than propagating to the global handler.
+    const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
     const config = parseConfig(resolveRemnicConfigRecord(raw));
     orchestrator = new Orchestrator(config);
