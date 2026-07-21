@@ -171,3 +171,10 @@ test("timeline keeps a second machine's span even with the same app/window", () 
   const timelineLines = body.split("\n").filter((line) => line.startsWith("- ["));
   assert.equal(timelineLines.length, 2);
 });
+
+test("machine labels with YAML-special chars round-trip through the digest", () => {
+  const body = composeActivityDigestBody("2026-03-10", "UTC", DAY);
+  const meta = composeActivityDigestMeta("2026-03-10", ["alpha, beta", "macstudio"], DAY, body);
+  const parsed = parseActivityDigest(serializeActivityDigest(meta, body));
+  assert.deepEqual(parsed?.meta.machines, ["alpha, beta", "macstudio"]);
+});

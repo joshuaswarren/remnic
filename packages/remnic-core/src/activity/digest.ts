@@ -70,10 +70,18 @@ function zonedDayStartIso(date: string, timezone: string): string {
   // offset (so it is genuinely local midnight, not a wall-clock that never
   // occurred), then take the EARLIEST such instant — the FIRST 00:00 across a
   // DST fall-back that repeats local midnight.
+  // Probe the previous UTC day too: for zones east of UTC the requested date's
+  // UTC instants all fall after local midnight, so the pre-transition offset
+  // valid at the real local 00:00 is only observable on the prior UTC day.
+  const prevDate = shiftIsoDate(date, -1);
   const probeOffsets = new Set(
-    [`${date}T00:00:00Z`, `${date}T12:00:00Z`, `${date}T23:00:00Z`].map((iso) =>
-      timezoneOffsetIso(new Date(iso), timezone),
-    ),
+    [
+      `${prevDate}T12:00:00Z`,
+      `${prevDate}T23:00:00Z`,
+      `${date}T00:00:00Z`,
+      `${date}T12:00:00Z`,
+      `${date}T23:00:00Z`,
+    ].map((iso) => timezoneOffsetIso(new Date(iso), timezone)),
   );
   let best: number | null = null;
   for (const offset of probeOffsets) {
@@ -108,10 +116,14 @@ function zonedDayStartIso(date: string, timezone: string): string {
   return new Date(best).toISOString();
 }
 
-function nextIsoDate(date: string): string {
+function shiftIsoDate(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00Z`);
-  parsed.setUTCDate(parsed.getUTCDate() + 1);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
   return parsed.toISOString().slice(0, 10);
+}
+
+function nextIsoDate(date: string): string {
+  return shiftIsoDate(date, 1);
 }
 
 /** Half-open [start, end) UTC ISO bounds of a local day. */
@@ -130,8 +142,11 @@ export function activityDayWindow(date: string, timezone: string): { startUtc: s
 
 function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {
   return [...snapshots].sort((a, b) => {
-    if (a.capturedAtUtc < b.capturedAtUtc) return -1;
-    if (a.capturedAtUtc > b.capturedAtUtc) return 1;
+    // Compare by parsed instant, not raw string, so mixed valid ISO forms
+    // (Z vs offset, varying precision) still order chronologically.
+    const at = Date.parse(a.capturedAtUtc);
+    const bt = Date.parse(b.capturedAtUtc);
+    if (at !== bt && Number.isFinite(at) && Number.isFinite(bt)) return at < bt ? -1 : 1;
     const aid = a.id ?? 0;
     const bid = b.id ?? 0;
     if (aid < bid) return -1;
@@ -336,7 +351,7 @@ export function serializeActivityDigest(meta: ActivityDayMeta, body: string): st
     "---",
     `kind: ${meta.kind}`,
     `date: ${meta.date}`,
-    `machines: [${meta.machines.join(", ")}]`,
+    `machines: ${JSON.stringify(meta.machines)}`,
     `snapshotCount: ${meta.snapshotCount}`,
     `contentHash: ${meta.contentHash}`,
     `formatVersion: ${meta.formatVersion}`,
@@ -362,13 +377,7 @@ export function parseActivityDigest(raw: string): ActivityDayDigest | null {
   const contentHash = fields.get("contentHash");
   if (date === undefined || !isValidActivityDate(date) || contentHash === undefined) return null;
   if (fields.get("kind") !== "activity-digest") return null;
-  const machinesRaw = fields.get("machines") ?? "[]";
-  const machines = machinesRaw
-    .replace(/^\[/, "")
-    .replace(/\]$/, "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+  const machines = parseMachinesList(fields.get("machines") ?? "[]");
   const snapshotCount = parseNonNegativeInt(fields.get("snapshotCount"));
   const formatVersion = parseNonNegativeInt(fields.get("formatVersion"));
   if (snapshotCount === null || formatVersion === null) return null;
@@ -391,4 +400,21 @@ function parseNonNegativeInt(value: string | undefined): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseMachinesList(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    // Legacy unquoted inline form (`[a, b]`) — fall through to the split parse.
+  }
+  return raw
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
