@@ -114,4 +114,19 @@ test("parseConfig coerces proactiveExtractionSkipWhenLocalLlmBusy string/bool fo
     parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: "true" }).proactiveExtractionSkipWhenLocalLlmBusy,
     true,
   );
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: true }).proactiveExtractionSkipWhenLocalLlmBusy,
+    true,
+  );
+});
+
+test("parseConfig rejects an invalid present proactiveExtractionSkipWhenLocalLlmBusy value (issue #2011)", () => {
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: "flase" }),
+    /proactiveExtractionSkipWhenLocalLlmBusy must be boolean-like/,
+  );
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: 2 }),
+    /proactiveExtractionSkipWhenLocalLlmBusy must be boolean-like/,
+  );
 });
