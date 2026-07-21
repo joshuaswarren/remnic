@@ -68,6 +68,31 @@ export function canWriteNamespace(principal: string | undefined, namespace: stri
 }
 
 /**
+ * Config-time namespace-policy lint (issue #1888 improvement 3). Principal-
+ * agnostic mirror of {@link canWriteNamespace}: true when the namespace is
+ * writable by AT LEAST ONE principal. When namespace enforcement is off every
+ * write is allowed. Otherwise an explicit `namespacePolicies` entry takes
+ * precedence (exactly as `canWriteNamespace`): with a matching policy the
+ * namespace is covered only if that policy grants at least one non-blank
+ * writer — even when the name equals `defaultNamespace`; without a policy it
+ * is covered only if it IS the `defaultNamespace`. The `sharedNamespace` is
+ * NOT implicitly writable (matching
+ * `canWriteNamespace`), and a policy entry with no `writePrincipals` grants
+ * nobody. A configured namespace that is NOT covered is writable for no one,
+ * so every write to it is rejected by the ACL and dead-lettered — `remnic
+ * doctor` warns on that before a session silently loses memory.
+ */
+export function isNamespacePolicyCovered(namespace: string, config: PluginConfig): boolean {
+  if (!resolveNamespaceCapabilities(config).namespaces) return true;
+  // An explicit policy wins over the default fallback (exactly as
+  // canWriteNamespace), so a policy naming the default with no writers is NOT
+  // covered. Only fall back to defaultNamespace when no policy matches.
+  const policy = config.namespacePolicies.find((p) => p.name === namespace);
+  if (!policy) return namespace === config.defaultNamespace;
+  return policy.writePrincipals.some((w) => w.trim().length > 0);
+}
+
+/**
  * Default "self" namespace for a principal.
  *
  * Heuristic:

@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canReadNamespace, resolvePrincipal } from "./principal.js";
+import { canReadNamespace, isNamespacePolicyCovered, resolvePrincipal } from "./principal.js";
 import type { PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -248,4 +248,40 @@ test("resolvePrincipal: regex rules are skipped for overlong session keys", () =
   });
 
   assert.equal(resolvePrincipal("a".repeat(1_000), config), "default");
+});
+
+test("isNamespacePolicyCovered mirrors canWriteNamespace: default + policy-with-writers covered; shared/no-writers/uncovered not", () => {
+  const config = makeConfig(true, [
+    { name: "team-a", readPrincipals: [], writePrincipals: ["alice"] },
+    { name: "readonly-ns", readPrincipals: ["*"], writePrincipals: [] },
+    { name: "blank-writer-ns", readPrincipals: ["*"], writePrincipals: [""] },
+  ]);
+  // Covered: the default namespace, and a policy that grants at least one writer.
+  assert.equal(isNamespacePolicyCovered("default", config), true);
+  assert.equal(isNamespacePolicyCovered("team-a", config), true);
+  // NOT covered: shared is not implicitly writable (matches canWriteNamespace),
+  // a policy with no writePrincipals grants nobody, and an unlisted namespace is
+  // the jw14m2-class misconfiguration #1888 targets (writes rejected + parked).
+  assert.equal(isNamespacePolicyCovered("shared", config), false);
+  assert.equal(isNamespacePolicyCovered("readonly-ns", config), false);
+  // Blank writer entries never match a real principal, so they grant no one.
+  assert.equal(isNamespacePolicyCovered("blank-writer-ns", config), false);
+  assert.equal(isNamespacePolicyCovered("team-b", config), false);
+  // Namespaces disabled: every write is allowed, so nothing is flagged.
+  const disabled = makeConfig(false);
+  assert.equal(isNamespacePolicyCovered("anything", disabled), true);
+  assert.equal(isNamespacePolicyCovered("team-b", disabled), true);
+});
+
+test("isNamespacePolicyCovered: an explicit default-namespace policy overrides the default fallback", () => {
+  // canWriteNamespace looks up a policy BEFORE falling back to defaultNamespace,
+  // so a policy naming the default with no (or blank-only) writers makes the
+  // default unwritable. The lint must mirror that precedence, not short-circuit
+  // on `namespace === defaultNamespace`.
+  const emptyDefault = makeConfig(true, [{ name: "default", readPrincipals: ["*"], writePrincipals: [] }]);
+  assert.equal(isNamespacePolicyCovered("default", emptyDefault), false);
+  const blankDefault = makeConfig(true, [{ name: "default", readPrincipals: [], writePrincipals: [" "] }]);
+  assert.equal(isNamespacePolicyCovered("default", blankDefault), false);
+  const grantedDefault = makeConfig(true, [{ name: "default", readPrincipals: [], writePrincipals: ["alice"] }]);
+  assert.equal(isNamespacePolicyCovered("default", grantedDefault), true);
 });

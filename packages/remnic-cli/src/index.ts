@@ -175,6 +175,11 @@ import {
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
+import {
+  type ConfiguredNamespace,
+  readConfiguredNamespace,
+  buildNamespacePolicyCheck,
+} from "./doctor-namespace-lint.js";
 import { WriteQuarantineStore } from "@remnic/core/write-quarantine.js";
 import { renderQuarantineList, type QuarantineFormat } from "./quarantine-cli.js";
 import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
@@ -6542,11 +6547,13 @@ async function cmdDoctor(): Promise<void> {
   let standaloneConfig: ReturnType<typeof parseConfig> | undefined;
   let standaloneConfigError: string | undefined;
   let standaloneOpenaiApiKeyExplicitlyFalse = false;
+  let configuredNs: ConfiguredNamespace = { invalid: false };
   if (configExists) {
     try {
       const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
       const remnicCfg = resolveRemnicConfigRecord(raw);
       standaloneOpenaiApiKeyExplicitlyFalse = isOpenaiApiKeyDisabled(remnicCfg.openaiApiKey);
+      configuredNs = readConfiguredNamespace(remnicCfg);
       standaloneConfig = parseConfig(remnicCfg);
     } catch (err) {
       standaloneConfigError = err instanceof Error ? err.message : String(err);
@@ -6593,6 +6600,14 @@ async function cmdDoctor(): Promise<void> {
       detail: "unable to inspect quarantine store",
     });
   }
+
+  // Config-time namespace-policy lint (issue #1888 improvement 3): see doctor-namespace-lint.ts.
+  const nsPolicyCheck = buildNamespacePolicyCheck({
+    invalid: configuredNs.invalid,
+    configuredNamespace: configuredNs.configuredNamespace,
+    config: standaloneConfig,
+  });
+  if (nsPolicyCheck) checks.push(nsPolicyCheck);
 
   // ── OpenClaw config checks ──────────────────────────────────────────────────
   const openclawConfigPath = resolveOpenclawConfigPath();
