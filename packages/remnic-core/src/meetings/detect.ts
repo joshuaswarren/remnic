@@ -66,19 +66,16 @@ function roundToMinuteUtc(startMs: number): string {
   return new Date(Math.floor(startMs / 60_000) * 60_000).toISOString();
 }
 
-/** Re-run-stable id: same date + rounded start + rounded end ⇒ same id, so a
- *  re-sync with slightly more data never renumbers existing records. The app is
- *  deliberately NOT hashed (a merge can pick a different app across runs); the
- *  rounded end disambiguates two meetings that start in the same UTC minute. */
-export function meetingId(date: string, startUtc: string, endUtc: string): string {
+/** Re-run-stable id: same date + rounded START ⇒ same id. Anchored on start
+ *  ONLY so a resync that extends the meeting's end (a late source, a rejoin) or
+ *  reassigns its app never renumbers an existing record — start is the stable
+ *  identity. Post-merge meetings never share a start (overlapping candidates
+ *  merge, and the audio-only 15-min / app-overlap 2-min floors preclude two
+ *  distinct sub-minute meetings in one minute), so start alone is collision-free. */
+export function meetingId(date: string, startUtc: string): string {
   const startMs = ms(startUtc);
-  const endMs = ms(endUtc);
-  const startAnchor = Number.isNaN(startMs) ? startUtc : roundToMinuteUtc(startMs);
-  const endAnchor = Number.isNaN(endMs) ? endUtc : roundToMinuteUtc(endMs);
-  const hash = createHash("sha256")
-    .update(`${date}|${startAnchor}|${endAnchor}`, "utf8")
-    .digest("hex")
-    .slice(0, 8);
+  const anchor = Number.isNaN(startMs) ? startUtc : roundToMinuteUtc(startMs);
+  const hash = createHash("sha256").update(`${date}|${anchor}`, "utf8").digest("hex").slice(0, 8);
   return `mtg-${date}-${hash}`;
 }
 
@@ -235,7 +232,7 @@ export function detectMeetings(
     const startUtc = new Date(candidate.startMs).toISOString();
     const endUtc = new Date(candidate.endMs).toISOString();
     return {
-      id: meetingId(input.date, startUtc, endUtc),
+      id: meetingId(input.date, startUtc),
       date: input.date,
       startUtc,
       endUtc,

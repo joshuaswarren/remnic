@@ -39,7 +39,9 @@ export type MeetingDetectionSource = "app+audio" | "audio" | "provider";
 
 /** One detected meeting for a day (non-overlapping after merge). */
 export interface DetectedMeeting {
-  /** Stable id: `mtg-<date>-<hash>` (derives from date + rounded start + app). */
+  /** Stable id `mtg-<date>-<hash>`, hashed from date + rounded START only
+   *  (app excluded, end excluded) so a resync that grows the meeting never
+   *  renumbers it. */
   id: string;
   /** Local day YYYY-MM-DD. */
   date: string;

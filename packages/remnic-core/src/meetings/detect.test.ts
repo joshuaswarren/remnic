@@ -174,15 +174,34 @@ test("ids are stable across a re-run with 10% more fixture data appended", () =>
   assert.equal(sameId, firstId, "the earlier meeting keeps its id when later data is added");
 });
 
-test("meetingId is deterministic and rounds start+end to the minute", () => {
-  const a = meetingId(DATE, "2026-03-10T14:00:05.000Z", "2026-03-10T15:00:05.000Z");
-  const b = meetingId(DATE, "2026-03-10T14:00:59.000Z", "2026-03-10T15:00:59.000Z");
-  assert.equal(a, b); // same start+end minute → same id
+test("meetingId is deterministic and start-anchored (rounds start to the minute)", () => {
+  const a = meetingId(DATE, "2026-03-10T14:00:05.000Z");
+  const b = meetingId(DATE, "2026-03-10T14:00:59.000Z");
+  assert.equal(a, b); // same start minute → same id
   assert.match(a, /^mtg-2026-03-10-[0-9a-f]{8}$/);
-  // Same start minute, different end minute → different id (disambiguates collisions).
-  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:00:05.000Z", "2026-03-10T15:06:00.000Z"));
-  // Different start minute → different id.
-  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z", "2026-03-10T15:00:05.000Z"));
+  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z")); // different start minute
+});
+
+test("meeting id is unchanged when a late source extends the end (resync stability)", () => {
+  const first = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  const extended = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "desktop", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+        audio({ source: "limitless", startUtc: "2026-03-10T14:18:00.000Z", endUtc: "2026-03-10T14:45:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(first.length, 1);
+  assert.equal(extended.length, 1);
+  assert.equal(extended[0]?.endUtc, "2026-03-10T14:45:00.000Z"); // end grew
+  assert.equal(extended[0]?.id, first[0]?.id); // …but the id is unchanged
 });
 
 test("default config matches the issue-specified thresholds", () => {

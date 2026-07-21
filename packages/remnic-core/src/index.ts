@@ -1208,6 +1208,9 @@ export {
 
 export * from "./wearables/index.js";
 
+// Retrospective meeting-detection subsystem (issue #1900).
+export * from "./meetings/index.js";
+
 // ---------------------------------------------------------------------------
 // Shared importer base (issue #568)
 // ---------------------------------------------------------------------------
