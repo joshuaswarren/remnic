@@ -175,3 +175,19 @@ test("a symlinked state directory is not followed outside the memory dir", async
     }
   });
 });
+
+test("list() surfaces a symlink-escaping root instead of reporting empty", async () => {
+  await withTempDir(async (dir) => {
+    const external = await mkdtemp(path.join(tmpdir(), "remnic-quarantine-ext-"));
+    try {
+      // A symlinked `state` that escapes the memory dir must not read back as
+      // an empty (all-clear) store — the inspection failure has to surface.
+      await symlink(external, path.join(dir, "state"), "dir");
+      const store = new WriteQuarantineStore(dir);
+      await assert.rejects(store.list());
+      await assert.rejects(store.count());
+    } finally {
+      await rm(external, { recursive: true, force: true });
+    }
+  });
+});
