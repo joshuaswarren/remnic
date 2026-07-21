@@ -4993,4 +4993,75 @@ test("recordCitationUsage surfaces a locked-store error during category-namespac
     }),
     (err: unknown) => err instanceof SecureStoreLockedError,
   );
+test("recall debug snapshot relativizes absolute internal paths (#2077)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-2077-debug-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-07-19/fact-1.md",
+      memoryDoc("fact-1", "Debug relativization coverage."),
+    );
+    const storage = new StorageManager(memoryDir);
+    const includedAbs = path.join(memoryDir, "facts/2026-07-19/fact-1.md");
+    const snapshot = {
+      sessionKey: "sess-dbg",
+      recordedAt: "2026-07-19T00:00:00.000Z",
+      queryHash: "hash",
+      queryLen: 5,
+      memoryIds: ["fact-1"],
+      namespace: "global",
+      fallbackUsed: false,
+      sourcesUsed: ["memories"],
+      budgetsApplied: {
+        appliedTopK: 1,
+        includedMemoryPaths: [includedAbs],
+        includedMemoryNamespaces: [undefined],
+      },
+      resultPaths: [includedAbs],
+      resultNamespaces: [undefined],
+    };
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: true,
+        defaultNamespace: "global",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [],
+        namespacePolicies: [],
+        defaultRecallNamespaces: ["self"],
+        searchBackend: "qmd",
+        qmdEnabled: true,
+      },
+      recall: async () => "ctx",
+      lastRecall: { get: () => snapshot, getMostRecent: () => snapshot },
+      getStorage: async () => storage,
+      recallIntrospection: {
+        getLastIntentSnapshot: async () => null,
+        getLastGraphRecallSnapshot: async () => null,
+      },
+    } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+    const response = await service.recall({
+      query: "hello",
+      sessionKey: "sess-dbg",
+      namespace: "global",
+      includeDebug: true,
+    });
+
+    // Debug snapshot must be display-relative, not operator-absolute (#2077).
+    assert.deepEqual(response.debug?.snapshot?.resultPaths, ["facts/2026-07-19/fact-1.md"]);
+    assert.deepEqual(
+      response.debug?.snapshot?.budgetsApplied?.includedMemoryPaths,
+      ["facts/2026-07-19/fact-1.md"],
+    );
+    // Top-level budget metadata stays relative (unchanged behavior).
+    assert.deepEqual(response.budgetsApplied?.includedMemoryPaths, ["facts/2026-07-19/fact-1.md"]);
+    // The live cached snapshot must NOT be mutated — it keeps absolute paths
+    // for tracking / x-ray; only the debug copy is relativized.
+    assert.deepEqual(snapshot.resultPaths, [includedAbs]);
+    assert.deepEqual(snapshot.budgetsApplied.includedMemoryPaths, [includedAbs]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
