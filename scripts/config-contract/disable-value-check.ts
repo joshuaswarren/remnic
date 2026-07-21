@@ -65,6 +65,7 @@ export interface DisableValueSchemaProperty {
   items?: { properties?: Record<string, DisableValueSchemaProperty> };
   anyOf?: DisableValueSchemaProperty[];
   oneOf?: DisableValueSchemaProperty[];
+  allOf?: DisableValueSchemaProperty[];
 }
 
 export interface DisableValueManifest {
@@ -169,6 +170,13 @@ function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefin
   }
   if (prop.const !== undefined && prop.const !== 0) return `const ${JSON.stringify(prop.const)}`;
   if (Array.isArray(prop.enum) && !prop.enum.includes(0)) return `enum ${JSON.stringify(prop.enum)}`;
+  // allOf is an intersection: 0 is rejected if ANY branch rejects it.
+  if (prop.allOf && prop.allOf.length > 0) {
+    for (const branch of prop.allOf) {
+      const reason = zeroRejectionReason(branch);
+      if (reason !== undefined) return `allOf ${reason}`;
+    }
+  }
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
     // Parent admits 0 here (nothing rejected above). Count branches that admit 0:
@@ -608,8 +616,13 @@ function orConditionBranchExits(orExpr: ts.Node): boolean {
 /** A disable guard actually short-circuits the threshold use: a preceding guard clause, an `&&`/`||` conjunct, or an enclosing active/else branch. */
 function guardShortCircuitsUse(use: ts.Node, guardedPath: string): boolean {
   let node: ts.Node = use;
+  const useScope = enclosingScope(use);
   while (node.parent) {
     const parent = node.parent;
+    // Stop at the use's own function boundary: an enclosing `if`/guard in an
+    // outer function cannot protect a threshold inside a nested function, whose
+    // parameter can still be the disable value.
+    if (isFunctionScope(parent) && parent !== useScope) break;
     if (ts.isBinaryExpression(parent) && node === parent.right) {
       // `cfg.x > 0 && use` — the use only runs when the guard is active.
       if (
