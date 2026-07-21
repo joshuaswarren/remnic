@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readdir, rm, readFile, writeFile, mkdir, symlink } from "node:fs/promises";
+import { withTempDir as sharedWithTempDir } from "../helpers/tmp-dir.mjs";
 
 import {
   MAGIC_BYTES,
@@ -41,14 +42,8 @@ function makeKey(seed = 0x42): Buffer {
   return Buffer.alloc(32, seed);
 }
 
-async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-secure-fs-"));
-  try {
-    await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = (fn: (dir: string) => Promise<void>): Promise<void> =>
+  sharedWithTempDir(fn, "remnic-secure-fs-");
 
 // ---------------------------------------------------------------------------
 // isEncryptedFile
