@@ -9927,18 +9927,19 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
     process.exitCode = 2;
     return;
   }
-  const valueFlags: Record<string, true> = { "--namespace": true, "--principal": true };
-  const stray = rest.filter((a, i) => !a.startsWith("--") && !valueFlags[rest[i - 1]]);
-  if (stray.length > 0) {
-    process.stderr.write(`quarantine replay: unexpected argument(s): ${stray.join(", ")}.\n`);
+  const valued = new Set(["--namespace", "--principal"]);
+  const bad = rest.filter((a, i) => (a.startsWith("--") ? a !== "--json" && !valued.has(a) : !valued.has(rest[i - 1])));
+  if (bad.length > 0) {
+    process.stderr.write(`quarantine replay: unexpected argument(s): ${bad.join(", ")}. Use: replay --namespace <ns> [--principal <p>] [--json].\n`);
     process.exitCode = 2;
     return;
   }
   initLogger();
-  const configPath = resolveConfigPath();
-  const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-  const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
+  let orchestrator: Orchestrator | undefined;
   try {
+    const configPath = resolveConfigPath();
+    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+    orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
     await orchestrator.initialize();
     await orchestrator.deferredReady;
     const service = new EngramAccessService(orchestrator);
@@ -9958,12 +9959,12 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
       },
     });
     console.log(renderReplayResult(result, targetNamespace, format));
-    if (result.failures.length > 0) process.exitCode = 1;
+    if (result.failures.length > 0 || result.deleteFailures.length > 0) process.exitCode = 1;
   } catch {
     process.stderr.write("quarantine replay: unable to replay quarantine store\n");
     process.exitCode = 2;
   } finally {
-    await orchestrator.destroy();
+    if (orchestrator) await orchestrator.destroy();
   }
 }
 

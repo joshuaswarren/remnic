@@ -11,6 +11,7 @@
  * re-quarantined into a duplicate record.
  */
 
+import { basename } from "node:path";
 import type { QuarantineOperation, QuarantinedRecord, WriteQuarantineStore } from "@remnic/core/write-quarantine.js";
 
 export type QuarantineFormat = "text" | "json";
@@ -67,11 +68,23 @@ export async function replayQuarantine(opts: {
   for (const entry of await opts.store.entries()) {
     const { record } = entry;
     const basePayload = record.payload as Record<string, unknown>;
+    // Default to the principal the write was originally attributed to, so authz
+    // resolves against that identity unless the operator overrides with --principal.
+    const principal = opts.principal ?? record.principal ?? undefined;
+    // Stable idempotency key derived from the parked file name: if a re-submit
+    // succeeds but the record cannot be removed, a later replay dedupes to the
+    // same write server-side instead of duplicating the side effect (observe has
+    // no content dedupe). A key already present in the payload is preserved.
+    const idempotencyKey =
+      typeof basePayload.idempotencyKey === "string" && basePayload.idempotencyKey.length > 0
+        ? basePayload.idempotencyKey
+        : `quarantine-replay:${basename(entry.path)}`;
     const request: Record<string, unknown> = {
       ...basePayload,
       namespace: opts.targetNamespace,
       suppressQuarantine: true,
-      ...(opts.principal ? { authenticatedPrincipal: opts.principal } : {}),
+      idempotencyKey,
+      ...(principal ? { authenticatedPrincipal: principal } : {}),
     };
     try {
       await opts.submit(record.operation, request);

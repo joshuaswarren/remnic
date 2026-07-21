@@ -24,7 +24,7 @@ import type { Dirent } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { encodeStoragePathSegment, isPathInsideStorageRoot, resolveSafeStoragePath } from "./storage-paths.js";
+import { encodeStoragePathSegment, resolveSafeStoragePath } from "./storage-paths.js";
 
 export type QuarantineOperation = "observe" | "memory_store" | "suggestion_submit";
 
@@ -195,10 +195,24 @@ export class WriteQuarantineStore {
    * absent — removes nothing. Returns true only when a file was actually deleted.
    */
   async removeEntry(entryPath: string): Promise<boolean> {
-    const abs = path.resolve(entryPath);
-    if (!isPathInsideStorageRoot(path.resolve(this.root), abs)) return false;
+    const rootAbs = path.resolve(this.root);
+    const rel = path.relative(rootAbs, path.resolve(entryPath));
+    if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      return false;
+    }
+    // Symlink-race-safe resolution (issue #1888): resolveSafeStoragePath rejects
+    // any symlinked path component and verifies the REAL path stays inside the
+    // real quarantine root before we touch it, so a swapped component cannot
+    // redirect the deletion outside the store — lexical containment alone is not
+    // sufficient against a TOCTOU symlink swap.
+    let safe: string;
     try {
-      await rm(abs, { force: false });
+      safe = await resolveSafeStoragePath(rootAbs, rel);
+    } catch {
+      return false;
+    }
+    try {
+      await rm(safe, { force: false });
       return true;
     } catch (err) {
       const errno = err as NodeJS.ErrnoException;

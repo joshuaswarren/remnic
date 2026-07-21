@@ -97,6 +97,51 @@ test("replayQuarantine re-submits with the target namespace + suppression and re
   });
 });
 
+test("replayQuarantine defaults the principal to the record and sets a stable idempotency key", async () => {
+  await withStore(async (store) => {
+    await store.quarantine({
+      operation: "memory_store",
+      principal: "dave",
+      attemptedNamespace: "ns-x",
+      payload: { content: "yo" },
+    });
+    const seen: Array<Record<string, unknown>> = [];
+    const result = await replayQuarantine({
+      store,
+      targetNamespace: "dave-self",
+      submit: async (_op, request) => {
+        seen.push(request as Record<string, unknown>);
+      },
+    });
+    assert.equal(result.replayed, 1);
+    // No --principal override: authz falls back to the parked principal.
+    assert.equal(seen[0]?.authenticatedPrincipal, "dave");
+    // A stable idempotency key lets a re-run after a failed delete dedupe.
+    assert.equal(typeof seen[0]?.idempotencyKey, "string");
+    assert.match(String(seen[0]?.idempotencyKey), /^quarantine-replay:/);
+  });
+});
+
+test("replayQuarantine preserves an idempotencyKey already present in the payload", async () => {
+  await withStore(async (store) => {
+    await store.quarantine({
+      operation: "memory_store",
+      principal: "erin",
+      attemptedNamespace: "ns-x",
+      payload: { content: "z", idempotencyKey: "caller-key-1" },
+    });
+    const seen: Array<Record<string, unknown>> = [];
+    await replayQuarantine({
+      store,
+      targetNamespace: "erin-self",
+      submit: async (_op, request) => {
+        seen.push(request as Record<string, unknown>);
+      },
+    });
+    assert.equal(seen[0]?.idempotencyKey, "caller-key-1");
+  });
+});
+
 test("replayQuarantine records a failure and leaves the entry parked when submit throws", async () => {
   await withStore(async (store) => {
     await store.quarantine({

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { memoryStoreRequestSchema, observeRequestSchema } from "./access-schema.js";
 import { EngramAccessService, NamespaceNotWritableError } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { CodingContext, PluginConfig } from "./types.js";
@@ -148,4 +149,24 @@ test("suppressQuarantine skips dead-lettering an ACL-rejected write; without it 
     );
     assert.equal(await store.count(), 1);
   });
+});
+
+test("public write schemas strip suppressQuarantine — external callers cannot skip quarantine", () => {
+  // The write surface honors suppressQuarantine (in-process replay sets it), but
+  // it is NOT a field on the public HTTP/MCP request schemas. zod strips unknown
+  // keys, so a body carrying it is scrubbed before the service — and the access
+  // boundary re-validates the cleaned envelope — keeping ACL-rejected external
+  // writes parked rather than silently discarded.
+  const stored = memoryStoreRequestSchema.parse({
+    sessionKey: "s",
+    content: "hello",
+    suppressQuarantine: true,
+  } as Record<string, unknown>);
+  assert.equal("suppressQuarantine" in stored, false);
+  const observed = observeRequestSchema.parse({
+    sessionKey: "s",
+    messages: [{ role: "user", content: "hi" }],
+    suppressQuarantine: true,
+  } as Record<string, unknown>);
+  assert.equal("suppressQuarantine" in observed, false);
 });
