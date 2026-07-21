@@ -1350,3 +1350,45 @@ test("guard: a destructured alias guard protects a property-access threshold", (
   const { violations } = findDisableValueViolations({ sources, manifests: [] });
   assert.deepEqual(violations, []);
 });
+
+test("guard: an outer enclosing-if guard does not protect a threshold in a nested function", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "export function outer(config: Cfg) {",
+        "  if (config.cap > 0) {",
+        "    function inner(cfg: Cfg) {",
+        "      if (used > cfg.cap) flush();",
+        "    }",
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("schema-min: allOf with a rejecting branch is flagged", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        cap: {
+          type: "integer",
+          description: "Set to 0 to disable the cap.",
+          allOf: [{ type: "integer", minimum: 1 }],
+        },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+});
