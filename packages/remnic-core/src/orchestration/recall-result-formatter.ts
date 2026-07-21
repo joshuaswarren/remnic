@@ -18,6 +18,7 @@
  */
 
 import { buildHandleIndexForResults } from "../recall-handles.js";
+import path from "node:path";
 import { renderEpistemicHedge } from "../trust-score.js";
 import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
@@ -28,7 +29,7 @@ import type { HarmonicRetrievalResult } from "../harmonic-retrieval.js";
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
-import type { TrustStageResultItem } from "../trust-score-stage.js";
+import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -66,6 +67,53 @@ export function resolveEffectiveIdentityInjectionMode(options: {
   return { mode: options.configuredMode, shouldInject: true };
 }
 
+/**
+ * Render an internal (possibly absolute) result path as a memoryDir-relative
+ * path for display in prompts/citations, so operator-specific filesystem paths
+ * never leak into recall output and citations stay portable across machines
+ * (#2020). Non-absolute or out-of-root paths are returned unchanged.
+ */
+export function displayResultPath(
+  resultPath: string,
+  memoryDir: string,
+  namespace?: string,
+): string {
+  if (!path.isAbsolute(resultPath)) return resultPath;
+  const root = path.resolve(memoryDir);
+  const nsRoot = path.join(root, "namespaces");
+  if (namespace && (resultPath === nsRoot || resultPath.startsWith(nsRoot + path.sep))) {
+    // memoryDir/namespaces/<token>/<rel> -> "<namespace>/<rel>", the exact
+    // form the citation resolver decodes back to the owning namespace.
+    const afterNs = path.relative(nsRoot, resultPath).split(path.sep).slice(1).join("/");
+    if (afterNs) return `${namespace}/${afterNs}`;
+  }
+  const rel = path.relative(root, resultPath);
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel)
+    ? rel.split(path.sep).join("/")
+    : resultPath;
+}
+
+/**
+ * Return a copy of budget metadata with `includedMemoryPaths` rendered
+ * memoryDir-relative, so recall/last-recall API callers never receive operator
+ * filesystem paths via budget output even though the internal snapshot keeps
+ * absolute paths for tracking/x-ray (#2020). Other fields are unchanged.
+ */
+export function displaySafeBudgetsApplied<
+  T extends {
+    includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
+  },
+>(budgetsApplied: T | undefined, memoryDir: string): T | undefined {
+  if (!budgetsApplied?.includedMemoryPaths) return budgetsApplied;
+  return {
+    ...budgetsApplied,
+    includedMemoryPaths: budgetsApplied.includedMemoryPaths.map((p, i) =>
+      displayResultPath(p, memoryDir, budgetsApplied.includedMemoryNamespaces?.[i]),
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
@@ -80,39 +128,32 @@ export class RecallResultFormatter {
 
   // ── QMD results (memory handles + epistemic hedge) ──────────────────────
 
-  formatQmdResults(
+  formatQmdResultEntries(
     title: string,
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
-  ): string {
-    // Issue #1582 — handles are only rendered when a session key is available:
-    // resolution requires the handle history to have been recorded for this
-    // session, which only happens when sessionKey is present. Rendering handles
-    // without recording would show tokens a user can never resolve (cursor
-    // review). The rendering logic itself lives in the pure handles module.
+  ): { heading: string; entries: string[] } {
     const handleByIndex = buildHandleIndexForResults(
       results,
       this.config.recallMemoryHandles === true && sessionKey != null,
     );
-    // Issue #1577 — epistemic hedge. Append a deterministic, component-derived
-    // suffix so the downstream model knows each memory's trust status (the
-    // cheap lever against confident-stale-answer failures). Gated separately
-    // from scoring so rendering can ship after the stage is stable. High-band
-    // and neutral items get no suffix (don't waste tokens on the common case).
-    const renderHedge = this.config.trustScoreEpistemicRendering && trustByPath !== null && trustByPath !== undefined;
+    const renderHedge =
+      this.config.trustScoreEpistemicRendering &&
+      trustByPath !== null &&
+      trustByPath !== undefined;
     const hedgeMap = renderHedge ? trustByPath : null;
-    const lines = results.map((r, i) => {
+    const entries = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
-      const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
+      const displayPath = displayResultPath(r.path, this.config.memoryDir, r.namespace);
+      const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      const hedged = head.replace(/\s+$/, "");
-      const withHandle = handle ? `${hedged} ${handle}` : hedged;
+      const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
       if (hedgeMap) {
-        const item = hedgeMap.get(r.path);
+        const item = trustResultFor(hedgeMap, r);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
           if (hedge.length > 0) return `${withHandle} ${hedge}`;
@@ -120,7 +161,22 @@ export class RecallResultFormatter {
       }
       return withHandle;
     });
-    return `## ${title}\n\n${lines.join("\n\n")}`;
+    return { heading: `## ${title}`, entries };
+  }
+
+  formatQmdResults(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
+  ): string {
+    const formatted = this.formatQmdResultEntries(
+      title,
+      results,
+      sessionKey,
+      trustByPath,
+    );
+    return [formatted.heading, ...formatted.entries].join("\n\n");
   }
 
   // ── Specialized recall result formatters ────────────────────────────────

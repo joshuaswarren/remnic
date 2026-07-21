@@ -1,3 +1,18 @@
+import type { QmdSearchResult } from "./types.js";
+
+/** Stable key for a recall result whose path may repeat across namespaces. */
+export function trustResultKey(result: Pick<QmdSearchResult, "path" | "namespace">): string {
+  return JSON.stringify([result.namespace ?? "", result.path]);
+}
+
+/** Read trust metadata while accepting pre-namespace path-only maps. */
+export function trustResultFor(
+  trustByPath: ReadonlyMap<string, TrustStageResultItem>,
+  result: Pick<QmdSearchResult, "path" | "namespace">,
+): TrustStageResultItem | undefined {
+  return trustByPath.get(trustResultKey(result)) ?? trustByPath.get(result.path);
+}
+
 /**
  * trust-score-stage.ts — signal adapters + recall pipeline stage (issue #1577 PR 2).
  *
@@ -133,11 +148,15 @@ export function buildTrustSignalMap(
 export interface TrustStageCandidate {
   path: string;
   score: number;
+  /** Namespace-aware result key used to preserve result identity through rerank. */
+  key?: string;
 }
 
 /** One candidate after the TrustScore stage. */
 export interface TrustStageResultItem {
   path: string;
+  /** Namespace-aware result key used to preserve result identity through rerank. */
+  key?: string;
   /** Final score after the trust multiplier is applied. */
   score: number;
   /** The untouched input score — for telemetry / X-ray. */
@@ -210,7 +229,9 @@ export function applyTrustScoreStage(
 
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i]!;
-    const signals = options.signals.get(c.path);
+    // Prefer the namespace-aware composite key; fall back to path for callers
+    // (and tests) that key signals by bare path (#2020).
+    const signals = options.signals.get(c.key ?? c.path) ?? options.signals.get(c.path);
     const trust = computeTrustScore(signals, options.weights);
     const isQuarantined = quarantine && trust.band === "quarantine";
     // Quarantined items are excluded from injection. Keep their score unchanged
@@ -224,6 +245,7 @@ export function applyTrustScoreStage(
     const scored = safeBase * multiplier;
     const item: TrustStageResultItem = {
       path: c.path,
+      ...(c.key === undefined ? {} : { key: c.key }),
       score: scored,
       originalScore: c.score,
       multiplier,
@@ -305,8 +327,13 @@ export interface TrustScoreRerankDeps {
   readNamespaceMemories(
     namespace: string,
   ): Promise<ReadonlyArray<{ path: string; frontmatter: TrustFrontmatterProjection }>>;
-  /** Read one memory's frontmatter by path (cold-tier direct fallback). */
-  readMemoryFrontmatter(path: string): Promise<TrustFrontmatterProjection | null>;
+  /** Read one memory's frontmatter by path (cold-tier direct fallback). The
+   * owning namespace is passed so a relative path resolves against the correct
+   * namespace store instead of the first fallback (#2020). */
+  readMemoryFrontmatter(
+    path: string,
+    preferredNamespace?: string,
+  ): Promise<TrustFrontmatterProjection | null>;
   /**
    * Current cross-process corpus version for a namespace (issue #1905). Used
    * to key the per-namespace corpus-fallback cache so it invalidates on the
@@ -358,7 +385,10 @@ function capTrustSignalCache(cache: TrustScoreSignalCache["cache"], max: number)
  * a storage hiccup never breaks recall (mirrors `memory-worth-filter.ts`).
  */
 export async function buildTrustSignalsForRerank(
-  candidatePaths: readonly string[],
+  candidates: readonly (
+    | string
+    | { path: string; signalKey?: string; lookupKey?: string; namespace?: string }
+  )[],
   namespaces: readonly string[],
   deps: TrustScoreRerankDeps,
   signalCache: TrustScoreSignalCache,
@@ -401,22 +431,42 @@ export async function buildTrustSignalsForRerank(
   // for every uninstrumented hot candidate, defeating the O(candidates) path.
   // Absent-from-signals still means multiplier 1.0 downstream, exactly what a
   // corpus scan would have produced for the same neutral memory.
-  const preloadedPaths = new Set<string>();
+  const preloadedKeys = new Set<string>();
+
+  // Normalize candidates to a composite identity: `signalKey` is what the
+  // trust stage looks up (namespace-aware), `lookupKey` matches the preloaded
+  // frontmatter map's key, `path` is the raw store path used for corpus/direct
+  // reads. A bare string keeps the legacy path-only behavior (#2020).
+  const normalized = candidates.map((c) =>
+    typeof c === "string"
+      ? { path: c, signalKey: c, lookupKey: c, namespace: undefined as string | undefined }
+      : {
+          path: c.path,
+          signalKey: c.signalKey ?? c.path,
+          lookupKey: c.lookupKey ?? c.path,
+          namespace: c.namespace,
+        },
+  );
 
   // O(candidates) fast path: seed signals from candidate frontmatter already
   // loaded on the hot recall path. Reuses the exact `buildTrustSignalMap`
   // computation so a candidate's signals equal what a corpus scan produced.
   if (options.preloadedFrontmatter) {
     const preloaded: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
-    for (const path of candidatePaths) {
-      const mem = options.preloadedFrontmatter.get(path);
+    for (const c of normalized) {
+      // Composite lookupKey is authoritative; the bare-path fallback keeps
+      // path-keyed preloaded maps (e.g. the recent-scan branch) hitting the
+      // fast path and is inert in production composite-keyed maps (#2020).
+      const mem =
+        options.preloadedFrontmatter.get(c.lookupKey) ??
+        options.preloadedFrontmatter.get(c.path);
       if (!mem) continue;
-      preloadedPaths.add(path);
-      preloaded.push({ path, frontmatter: mem.frontmatter });
+      preloadedKeys.add(c.signalKey);
+      preloaded.push({ path: c.signalKey, frontmatter: mem.frontmatter });
     }
     if (preloaded.length > 0) {
       const seeded = buildTrustSignalMap(preloaded, now, halfLife);
-      for (const [path, s] of seeded) signals.set(path, s);
+      for (const [key, s] of seeded) signals.set(key, s);
     }
   }
 
@@ -432,7 +482,7 @@ export async function buildTrustSignalsForRerank(
       if (options.abortSignal?.aborted) break;
       if (seenNamespaces.has(ns)) continue;
       seenNamespaces.add(ns);
-      if (candidatePaths.every((p) => signals.has(p) || preloadedPaths.has(p))) break;
+      if (normalized.every((c) => signals.has(c.signalKey) || preloadedKeys.has(c.signalKey))) break;
       try {
         const version = await deps.getNamespaceVersion(ns);
         const cached = signalCache.cache.get(ns);
@@ -453,12 +503,16 @@ export async function buildTrustSignalsForRerank(
           signalCache.cache.set(ns, { version, cachedAt: nowMs, signals: nsMap });
           capTrustSignalCache(signalCache.cache, TRUST_SIGNAL_CACHE_MAX_NAMESPACES);
         }
-        for (const p of candidatePaths) {
-          // Preloaded paths were already examined — absent-from-signals means
+        for (const c of normalized) {
+          // Preloaded keys were already examined — absent-from-signals means
           // neutral (multiplier 1.0), identical to what the corpus map holds.
-          if (signals.has(p) || preloadedPaths.has(p)) continue;
-          const s = nsMap.get(p);
-          if (s) signals.set(p, s);
+          if (signals.has(c.signalKey) || preloadedKeys.has(c.signalKey)) continue;
+          // A namespaced candidate belongs to exactly one namespace: never seed
+          // its signals from a different namespace's corpus map, or two
+          // same-path candidates in different namespaces collapse (#2020).
+          if (c.namespace !== undefined && c.namespace !== ns) continue;
+          const s = nsMap.get(c.path);
+          if (s) signals.set(c.signalKey, s);
         }
       } catch (err) {
         logDebug("trust-score: failed to read namespace, skipping", {
@@ -472,7 +526,9 @@ export async function buildTrustSignalsForRerank(
   // Direct per-path fallback for candidates still absent (cold-tier / archive).
   // Preloaded paths are excluded — they were examined and are neutral priors.
   // Bounded-parallel (≤16) to match loadSearchResultMemoryMap's batch size.
-  const missing = candidatePaths.filter((p) => !signals.has(p) && !preloadedPaths.has(p));
+  const missing = normalized.filter(
+    (c) => !signals.has(c.signalKey) && !preloadedKeys.has(c.signalKey),
+  );
   if (missing.length > 0) {
     const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
     const BATCH = 16;
@@ -480,13 +536,13 @@ export async function buildTrustSignalsForRerank(
       // Cooperative cancellation between batches (#1905, Codex).
       if (options.abortSignal?.aborted) break;
       const batch = await Promise.all(
-        missing.slice(off, off + BATCH).map(async (path) => {
+        missing.slice(off, off + BATCH).map(async (c) => {
           try {
-            const frontmatter = await deps.readMemoryFrontmatter(path);
-            return frontmatter ? { path, frontmatter } : null;
+            const frontmatter = await deps.readMemoryFrontmatter(c.path, c.namespace);
+            return frontmatter ? { path: c.signalKey, frontmatter } : null;
           } catch (err) {
             logDebug("trust-score: direct path lookup failed", {
-              path,
+              path: c.path,
               error: (err as Error).message,
             });
             return null;
@@ -497,7 +553,7 @@ export async function buildTrustSignalsForRerank(
     }
     if (fallbackMemories.length > 0) {
       const fallbackSignals = buildTrustSignalMap(fallbackMemories, now, halfLife);
-      for (const [path, s] of fallbackSignals) signals.set(path, s);
+      for (const [key, s] of fallbackSignals) signals.set(key, s);
     }
   }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NamespaceSearchRouter } from "./search.js";
+import { NamespaceSearchRouter, normalizeQmdResultPath } from "./search.js";
 import type {
   SearchBackend,
   SearchExecutionOptions,
@@ -404,10 +404,14 @@ test("searchAcrossNamespaces preserves same path results from distinct namespace
     maxResults: 10,
   });
 
-  assert.deepEqual(
-    results.map((result) => result.snippet),
-    ["main", "shared"],
-  );
+  assert.deepEqual(results.map((result) => result.snippet), ["main", "shared"]);
+  assert.deepEqual(results.map((result) => result.namespace), ["main", "shared"]);
+  // Same-relative-path hits from distinct namespaces resolve to distinct
+  // absolute paths (globally-unique identity); display surfaces relativize.
+  assert.deepEqual(results.map((result) => result.path), [
+    "/tmp/remnic/main/facts/a.md",
+    "/tmp/remnic/shared/facts/a.md",
+  ]);
 });
 
 test("searchAcrossNamespaces passes scoped collection to backend search methods", async () => {
@@ -852,4 +856,18 @@ test("legacy default namespace root overfetches before filtering nested namespac
     results.map((result) => result.docid),
     ["main-a", "main-b"],
   );
+});
+
+test("normalizeQmdResultPath strips a real collection prefix but not a category dir (#2020)", () => {
+  // Genuine QMD collection prefix (qmd:// URI) is stripped.
+  assert.equal(
+    normalizeQmdResultPath("qmd://openclaw-engram/facts/a.md", "openclaw-engram"),
+    "facts/a.md",
+  );
+  // Plain relative hit is left untouched when its leading segment is a memory
+  // category dir that happens to equal the collection name (qmdCollection ==
+  // "facts"): stripping would corrupt "facts/a.md" -> "a.md" and break reads.
+  assert.equal(normalizeQmdResultPath("facts/a.md", "facts"), "facts/a.md");
+  // A non-category collection prefix on a plain hit is still stripped.
+  assert.equal(normalizeQmdResultPath("openclaw-engram/facts/a.md", "openclaw-engram"), "facts/a.md");
 });

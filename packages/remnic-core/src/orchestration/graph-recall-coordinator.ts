@@ -60,18 +60,19 @@ export function mergeGraphExpandedResults(
   primary: QmdSearchResult[],
   expanded: QmdSearchResult[],
 ): QmdSearchResult[] {
-  const mergedByPath = new Map<string, QmdSearchResult>();
+  const mergedByNamespaceAndPath = new Map<string, QmdSearchResult>();
   for (const item of [...primary, ...expanded]) {
-    const prev = mergedByPath.get(item.path);
+    const key = `${item.namespace ?? ""}\0${item.path}`;
+    const prev = mergedByNamespaceAndPath.get(key);
     if (!prev) {
-      mergedByPath.set(item.path, item);
+      mergedByNamespaceAndPath.set(key, item);
       continue;
     }
     const better = item.score > prev.score ? item : prev;
     const snippet = prev.snippet || item.snippet;
-    mergedByPath.set(item.path, { ...better, snippet });
+    mergedByNamespaceAndPath.set(key, { ...better, snippet });
   }
-  return Array.from(mergedByPath.values());
+  return Array.from(mergedByNamespaceAndPath.values());
 }
 
 export function graphPathRelativeToStorage(
@@ -136,6 +137,7 @@ export class GraphRecallCoordinator {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[],
+    preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
 
   constructor(options: {
@@ -158,6 +160,7 @@ export class GraphRecallCoordinator {
       resultPath: string,
       fallbackStorage: StorageManager,
       recallNamespaces: readonly string[],
+      preferredNamespace?: string,
     ) => Promise<MemoryFile | null>;
   }) {
     this.getConfig = options.getConfig;
@@ -265,7 +268,7 @@ export class GraphRecallCoordinator {
         }
         continue;
       }
-      const ns = this.namespaceFromPath(result.path);
+      const ns = result.namespace ?? this.namespaceFromPath(result.path);
       if (!options.recallNamespaces.includes(ns)) continue;
       addResultForNamespace(ns, result);
     }
@@ -347,7 +350,10 @@ export class GraphRecallCoordinator {
         });
         expandedResults.push({
           docid: memory.frontmatter.id,
+          // Absolute path, matching the globally-unique identity of primary
+          // fanout hits, so the merge dedups a memory found by both (#2020).
           path: memory.path,
+          namespace,
           snippet,
           score,
         });
@@ -368,8 +374,12 @@ export class GraphRecallCoordinator {
       }
     }
 
+    const namespacedPrimaryResults = Array.from(byNamespace.entries()).flatMap(
+      ([namespace, results]) =>
+        results.map((result) => ({ ...result, namespace })),
+    );
     return {
-      merged: mergeGraphExpandedResults(options.memoryResults, expandedResults),
+      merged: mergeGraphExpandedResults(namespacedPrimaryResults, expandedResults),
       seedPaths,
       expandedPaths,
       seedResults,
@@ -441,6 +451,7 @@ export class GraphRecallCoordinator {
         result.path,
         storage,
         recallNamespaces,
+        result.namespace,
       );
       return memory
         ? graphPathRelativeToStorage(storage.dir, memory.path)

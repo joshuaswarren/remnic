@@ -8,6 +8,7 @@ import type {
 } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 const NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR = 4;
 const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
@@ -165,7 +166,15 @@ export class NamespaceSearchRouter {
             );
             break;
         }
-        results = filterNamespaceSubtreeResults(record, results);
+        results = filterNamespaceSubtreeResults(record, results).map((result) => ({
+          ...result,
+          namespace,
+          // Resolve to an absolute path so the (namespace, path) identity is
+          // globally unique — same-relative-path hits from different namespaces
+          // stay distinct across every downstream consumer with no special
+          // handling. Display/citation surfaces relativize for portability (#2020).
+          path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
+        }));
         return { namespace, results };
       }),
     );
@@ -550,8 +559,7 @@ function pathIsInsideNamespaceSubtree(
   const relative = path.relative(namespacesRoot, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
-
-function normalizeQmdResultPath(resultPath: string, collection: string): string {
+export function normalizeQmdResultPath(resultPath: string, collection: string): string {
   let value = resultPath.trim();
   if (value.startsWith("qmd://")) {
     try {
@@ -568,13 +576,31 @@ function normalizeQmdResultPath(resultPath: string, collection: string): string 
     }
   }
 
+  // Only strip a genuine QMD collection prefix — never when the collection name
+  // collides with a memory category dir (e.g. qmdCollection == "facts"), or a
+  // bare "facts/<id>.md" hit would be corrupted to "<id>.md" and fail namespace
+  // reads/access tracking (#2020).
   const collectionPrefix = `${collection}/`;
-  if (value.startsWith(collectionPrefix)) {
+  if (value.startsWith(collectionPrefix) && !ALL_CATEGORY_DIRS.includes(collection)) {
     value = value.slice(collectionPrefix.length);
   }
   return value;
 }
-
+function resolveNamespaceResultPath(
+  memoryDir: string,
+  collection: string,
+  resultPath: string,
+): string {
+  const normalized = normalizeQmdResultPath(resultPath, collection);
+  if (path.isAbsolute(normalized)) return normalized;
+  const root = path.resolve(memoryDir);
+  const resolved = path.resolve(root, normalized);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return resultPath;
+  }
+  return resolved;
+}
 function mergeNamespaceSearchResults(
   lists: Array<{ namespace: string; results: QmdSearchResult[] }>,
   maxResults: number,
@@ -586,12 +612,13 @@ function mergeNamespaceSearchResults(
       const key = `${namespace}\0${result.path || result.docid}`;
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, result);
+        merged.set(key, { ...result, namespace });
         continue;
       }
       if (result.score > existing.score) {
         merged.set(key, {
           ...result,
+          namespace,
           snippet: existing.snippet || result.snippet || "",
         });
       }

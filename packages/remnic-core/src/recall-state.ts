@@ -24,6 +24,10 @@ export interface LastRecallBudgetSummary {
   truncated?: boolean;
   includedSections?: string[];
   omittedSections?: string[];
+  includedMemoryIds?: string[];
+  includedMemoryPaths?: string[];
+  includedMemoryNamespaces?: Array<string | undefined>;
+  omittedMemoryIds?: string[];
 }
 
 export interface LastRecallSnapshot {
@@ -43,6 +47,7 @@ export interface LastRecallSnapshot {
   budgetsApplied?: LastRecallBudgetSummary;
   latencyMs?: number;
   resultPaths?: string[];
+  resultNamespaces?: Array<string | undefined>;
   policyVersion?: string;
   identityInjectionMode?: IdentityInjectionMode | "none";
   identityInjectedChars?: number;
@@ -346,6 +351,7 @@ export class LastRecallStore {
     budgetsApplied?: LastRecallBudgetSummary;
     latencyMs?: number;
     resultPaths?: string[];
+    resultNamespaces?: Array<string | undefined>;
     policyVersion?: string;
     appendImpression?: boolean;
     identityInjection?: {
@@ -372,8 +378,8 @@ export class LastRecallStore {
 
     // Build the snapshot from opts, then deep-copy it via
     // cloneLastRecallSnapshot so caller arrays/objects passed in
-    // `opts` cannot retain a live reference to the persisted state
-    // and tear it after record() returns.
+    // `opts` cannot retain a live reference to the persisted state and
+    // tear it after `record()` returns.
     const liveSnapshot: LastRecallSnapshot = {
       sessionKey: opts.sessionKey,
       recordedAt: now,
@@ -392,6 +398,7 @@ export class LastRecallStore {
       budgetsApplied: opts.budgetsApplied,
       latencyMs: opts.latencyMs,
       resultPaths: opts.resultPaths,
+      resultNamespaces: opts.resultNamespaces,
       policyVersion: opts.policyVersion,
       identityInjectionMode: opts.identityInjection?.mode,
       identityInjectedChars: opts.identityInjection?.injectedChars,

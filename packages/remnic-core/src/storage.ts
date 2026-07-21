@@ -39,6 +39,10 @@ import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/c
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import {
+  qmdCollectionPathParts,
+  qmdResultPathCandidates,
+} from "./orchestration/qmd-result-resolver.js";
+import {
   clearMemoryCache,
   getCachedEntities,
   getCachedMemories,
@@ -6346,6 +6350,7 @@ export class StorageManager {
 
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
+    const memoryPathMap = new Map(memories.map((m) => [path.resolve(m.path), m]));
     let updated = 0;
     // Capture the corpus version + warmth BEFORE writing so we can patch the hot
     // entries in place and then re-key them to the version this flush produces
@@ -6365,7 +6370,9 @@ export class StorageManager {
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
 
     for (const entry of entries) {
-      const memory = memoryMap.get(entry.memoryId);
+      const memory = entry.memoryPath
+        ? memoryPathMap.get(path.resolve(entry.memoryPath))
+        : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
       const newFm: MemoryFrontmatter = {
@@ -6384,7 +6391,10 @@ export class StorageManager {
         if (warm) {
           updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
         }
-        appliedPatches.set(entry.memoryId, { accessCount: entry.newCount, lastAccessed: entry.lastAccessed });
+        appliedPatches.set(path.resolve(memory.path), {
+          accessCount: entry.newCount,
+          lastAccessed: entry.lastAccessed,
+        });
         updated++;
       } catch (err) {
         log.debug(`failed to update access tracking for ${entry.memoryId}: ${err}`);
@@ -6417,7 +6427,7 @@ export class StorageManager {
           // re-key robust to that race; the publish guard blocks any scan
           // finishing AFTER our bump, so this is the only window.
           const reapplied = cur.map((m) => {
-            const patch = appliedPatches.get(m.frontmatter.id);
+            const patch = appliedPatches.get(path.resolve(m.path));
             return patch
               ? { ...m, frontmatter: { ...m.frontmatter, accessCount: patch.accessCount, lastAccessed: patch.lastAccessed } }
               : m;
@@ -6445,28 +6455,68 @@ export class StorageManager {
   }
 
   /**
-   * Check which of the given memory IDs actually exist on disk.
+   * Resolve existing active memory IDs to their on-disk paths.
    *
    * Uses a lightweight directory scan (collectActiveMemoryPaths) that reads
    * file names without parsing frontmatter — much cheaper than readAllMemories()
-   * for simple existence checks like citation usage tracking.
-   *
-   * Returns the subset of `ids` that correspond to real memory files.
+   * for citation usage tracking and other existence checks.
    */
-  async filterExistingMemoryIds(ids: string[]): Promise<Set<string>> {
-    if (ids.length === 0) return new Set();
+  async findExistingMemoryPaths(
+    ids: string[],
+    preferredPaths: Map<string, string[]> = new Map(),
+  ): Promise<Map<string, string[]>> {
+    if (ids.length === 0) return new Map();
     const wantedIds = new Set(ids);
     const filePaths = await this.collectActiveMemoryPaths();
-    const foundIds = new Set<string>();
+    const pathsById = new Map<string, string[]>();
+    const filePathsById = new Map<string, string[]>();
     for (const filePath of filePaths) {
-      const basename = path.basename(filePath, ".md");
-      if (wantedIds.has(basename)) {
-        foundIds.add(basename);
-        // Short-circuit once all requested IDs are found.
-        if (foundIds.size === wantedIds.size) break;
+      const memoryId = path.basename(filePath, ".md");
+      if (!wantedIds.has(memoryId)) continue;
+      const paths = filePathsById.get(memoryId) ?? [];
+      paths.push(filePath);
+      filePathsById.set(memoryId, paths);
+    }
+    for (const id of wantedIds) {
+      const existingPaths = filePathsById.get(id) ?? [];
+      const preferred = preferredPaths.get(id) ?? [];
+      const preferredMatches: string[] = [];
+      for (const preferredPath of preferred) {
+        const directCandidates = new Set(
+          qmdResultPathCandidates(this.baseDir, preferredPath),
+        );
+        const directMatch = existingPaths.find((filePath) =>
+          directCandidates.has(path.resolve(filePath)),
+        );
+        if (directMatch) {
+          preferredMatches.push(directMatch);
+          continue;
+        }
+
+        const candidates = new Set<string>();
+        const parts = qmdCollectionPathParts(preferredPath);
+        if (parts) {
+          for (const candidate of qmdResultPathCandidates(this.baseDir, parts.relativePath)) {
+            candidates.add(candidate);
+          }
+        }
+        const match = existingPaths.find((filePath) => candidates.has(path.resolve(filePath)));
+        if (match) preferredMatches.push(match);
+      }
+      if (preferredMatches.length > 0) {
+        pathsById.set(id, preferredMatches);
+      } else if (existingPaths.length > 0) {
+        pathsById.set(id, existingPaths);
       }
     }
-    return foundIds;
+    return pathsById;
+  }
+
+  /**
+   * Check which of the given memory IDs actually exist on disk.
+   */
+  async filterExistingMemoryIds(ids: string[]): Promise<Set<string>> {
+    return new Set((await this.findExistingMemoryPaths(ids)).keys());
   }
 
   async getProjectedMemoryState(id: string): Promise<MemoryProjectionCurrentState | null> {

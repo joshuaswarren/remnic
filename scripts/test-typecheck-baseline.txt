@@ -525,16 +525,7 @@ tests/query-aware-prefilter.test.ts(261,27): TS7006
 tests/query-aware-prefilter.test.ts(262,27): TS7006
 tests/query-aware-prefilter.test.ts(299,38): TS2339
 tests/query-aware-prefilter.test.ts(304,34): TS2339
-tests/recall-hardening.test.ts(183,14): TS2304
-tests/recall-hardening.test.ts(253,14): TS2304
-tests/recall-hardening.test.ts(358,3): TS2349
-tests/recall-hardening.test.ts(433,3): TS2349
-tests/recall-hardening.test.ts(627,3): TS2349
-tests/recall-hardening.test.ts(674,3): TS2349
-tests/recall-hardening.test.ts(749,3): TS2349
-tests/recall-hardening.test.ts(807,3): TS2349
-tests/recall-hardening.test.ts(809,3): TS2349
-tests/recall-no-recall-short-circuit.test.ts(14,3): TS2740
+tests/recall-no-recall-short-circuit.test.ts(15,3): TS2740
 tests/release-workflow-public-packages.test.ts(152,41): TS7016
 tests/remnic-cli-service-candidates.test.ts(17,82): TS7006
 tests/remnic-plugin-register-migration.test.ts(66,12): TS2352

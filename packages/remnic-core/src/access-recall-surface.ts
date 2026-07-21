@@ -366,10 +366,35 @@ export class AccessRecallSurface {
     };
     const readResultPath = async (
       memoryPath: string,
+      preferredNamespace?: string,
     ): Promise<{ memory: MemoryFile; baseDir: string } | null> => {
       const parts = qmdCollectionPathParts(memoryPath);
       const coldCollection =
         this.deps.orchestrator.config.qmdColdCollection ?? "openclaw-engram-cold";
+      const collectionNamespace = parts
+        ? collectionNamespaceFromPrefix(parts.collection)
+        : null;
+      const preferredAttempted = Boolean(
+        preferredNamespace &&
+          (!parts ||
+            (collectionNamespace === null && parts.collection !== coldCollection)),
+      );
+      if (preferredAttempted) {
+        try {
+          const preferredStorage = await this.deps.orchestrator.getStorage(
+            this.deps.resolveNamespace(preferredNamespace),
+          );
+          for (const candidate of qmdResultPathCandidates(
+            preferredStorage.dir,
+            memoryPath,
+          )) {
+            const memory = await preferredStorage.readMemoryByPath(candidate);
+            if (memory) return { memory, baseDir: preferredStorage.dir };
+          }
+        } catch (err) {
+          if (err instanceof SecureStoreLockedError) throw err;
+        }
+      }
       if (parts && parts.collection === coldCollection) {
         const storages: Array<{ storage: StorageManager; dir: string }> = [];
         const seenStorageDirs = new Set<string>();
@@ -406,9 +431,6 @@ export class AccessRecallSurface {
         return null;
       }
 
-      const collectionNamespace = parts
-        ? collectionNamespaceFromPrefix(parts.collection)
-        : null;
 
       if (parts && collectionNamespace) {
         try {
@@ -444,6 +466,12 @@ export class AccessRecallSurface {
         }
         return null;
       }
+
+      // A preferred namespace was supplied but its file is missing/stale. For a
+      // relative path the preferred store was the only correct lead, so do not
+      // fall through to the default store and surface a same-relative-path file
+      // from the wrong namespace (#2020). Absolute paths self-identify above.
+      if (preferredAttempted && !nodePath.isAbsolute(memoryPath)) return null;
 
       for (const candidate of qmdResultPathCandidates(storageDir, memoryPath)) {
         const memory = await storage.readMemoryByPath(candidate);
@@ -487,12 +515,17 @@ export class AccessRecallSurface {
           );
     const rawExcerpts = rawExcerptsResult ?? undefined;
 
-    for (const memoryPath of snapshot.resultPaths ?? []) {
-      if (!memoryPath || seen.has(memoryPath)) continue;
-      const resolved = await readResultPath(memoryPath);
+    const resultNamespaces = snapshot.resultNamespaces ?? [];
+    for (let index = 0; index < (snapshot.resultPaths ?? []).length; index += 1) {
+      const memoryPath = snapshot.resultPaths?.[index];
+      const memoryNamespace = resultNamespaces[index];
+      if (!memoryPath) continue;
+      const seenKey = `${memoryNamespace ?? ""}\0${memoryPath}`;
+      if (seen.has(seenKey)) continue;
+      const resolved = await readResultPath(memoryPath, memoryNamespace);
       if (!resolved) continue;
       const { memory, baseDir } = resolved;
-      seen.add(memoryPath);
+      seen.add(seenKey);
       results.push(
         this.deps.serializeMemorySummary(
           memory,

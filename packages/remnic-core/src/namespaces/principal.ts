@@ -102,3 +102,26 @@ export function recallNamespacesForPrincipal(principal: string | undefined, conf
 
   return out;
 }
+
+/**
+ * Namespaces a principal may attribute a citation to: the default-recall
+ * namespaces, every readable policy namespace, and the readable built-in
+ * default/shared namespaces — which `defaultRecallNamespaces` can omit even
+ * though `canReadNamespace` grants access (#2020).
+ */
+export function citationAuthorizedNamespaces(
+  principal: string | undefined,
+  config: PluginConfig,
+): string[] {
+  return Array.from(
+    new Set([
+      ...recallNamespacesForPrincipal(principal, config),
+      ...config.namespacePolicies
+        .filter((p) => canReadNamespace(principal, p.name, config))
+        .map((p) => p.name),
+      ...[config.defaultNamespace, config.sharedNamespace].filter((ns) =>
+        canReadNamespace(principal, ns, config),
+      ),
+    ]),
+  );
+}

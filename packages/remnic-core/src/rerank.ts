@@ -173,3 +173,25 @@ export async function rerankLocalOrNoop(opts: {
 
   return rankedIds;
 }
+
+/**
+ * Reorder `results` to match `rankedKeys` (a ranker's output order), keying by
+ * `keyOf`. Items not present in `rankedKeys` are appended in their original
+ * order. `keyOf` must return a stable identity (e.g. namespace-qualified) so
+ * same-relative-path items across namespaces are not conflated.
+ */
+export function reorderByRankedKeys<T>(
+  results: readonly T[],
+  rankedKeys: readonly string[],
+  keyOf: (item: T) => string,
+): T[] {
+  const byKey = new Map(results.map((r) => [keyOf(r), r]));
+  const reordered: T[] = [];
+  for (const key of rankedKeys) {
+    const it = byKey.get(key);
+    if (it) reordered.push(it);
+  }
+  const rankedSet = new Set(rankedKeys);
+  for (const r of results) if (!rankedSet.has(keyOf(r))) reordered.push(r);
+  return reordered;
+}

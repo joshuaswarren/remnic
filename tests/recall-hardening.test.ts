@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
+import type { RecallSectionBuckets } from "../src/orchestration/recall-section-coordinator.js";
 import {
   buildQmdRecallCacheKey,
   clearQmdRecallCache,
@@ -123,6 +124,78 @@ test("assembleRecallSections preserves memories within the recall budget", async
   assert.ok(context.length <= 220);
 });
 
+test("assembleRecallSections allocates budget in configured pipeline order", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-pipeline-order-", {
+    recallBudgetChars: 80,
+    recallProfileMaxRatio: 1,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(25),
+    { atomic: true, memoryId: "memory-pipeline", memoryPath: "facts/pipeline.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedIds, ["profile", "memories"]);
+  assert.deepEqual(assembled.omittedIds, []);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-pipeline"]);
+  assert.equal(assembled.includedMemoryPaths[0], "facts/pipeline.md");
+  assert.match(assembled.sections.join("\n\n---\n\n"), /M{25}/);
+  assert.doesNotMatch(assembled.sections.join("\n\n---\n\n"), /Relevant Memories/);
+  assert.ok(assembled.finalChars <= 80);
+});
+
+test("assembleRecallSections applies memory reservations before section caps", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-reservation-", {
+    recallBudgetChars: 4000,
+    recallPipeline: [
+      { id: "profile", enabled: true, maxChars: 500 },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(500),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(900),
+    { atomic: true, memoryId: "memory-reserved", memoryPath: "facts/reserved.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedIds, ["profile", "memories"]);
+  assert.deepEqual(assembled.omittedIds, []);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-reserved"]);
+});
+
 test("assembleRecallSections does not omit earlier sections when protected sections will truncate anyway", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-budget-tight-", {
     recallBudgetChars: 60,
@@ -155,6 +228,146 @@ test("assembleRecallSections does not omit earlier sections when protected secti
   assert.ok(context.length <= 60);
 });
 
+test("assembleRecallSections reports included and omitted memory metadata", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-metadata-", {
+    recallBudgetChars: 55,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+
+  const sectionBuckets: RecallSectionBuckets = new Map();
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "first memory",
+    { atomic: true, memoryId: "memory-first", memoryPath: "facts/first.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "second memory that exceeds the remaining budget",
+    { atomic: true, memoryId: "memory-second", memoryPath: "facts/second.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-first"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/first.md"]);
+  assert.deepEqual(assembled.omittedMemoryIds, ["memory-second"]);
+});
+
+test("assembleRecallSections keeps earlier atomic memories ahead of later helper text", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-atomic-order-", {
+    recallBudgetChars: 80,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "atomic memory",
+    { atomic: true, memoryId: "memory-atomic", memoryPath: "facts/atomic.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Retrieval Feedback Helper\n\nThis later helper must not starve the memory.",
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+  const context = assembled.sections.join("\n\n---\n\n");
+
+  assert.match(context, /atomic memory/);
+  assert.doesNotMatch(context, /Retrieval Feedback Helper/);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-atomic"]);
+});
+
+test("assembleRecallSections keeps later helper text when no atomic memory fits", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-helper-fallback-", {
+    recallBudgetChars: 70,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "A".repeat(100),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "Retrieval Feedback Helper",
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.match(assembled.sections.join("\n\n---\n\n"), /Retrieval Feedback Helper/);
+  assert.doesNotMatch(assembled.sections.join("\n\n---\n\n"), /## Relevant Memories/);
+  assert.deepEqual(assembled.includedMemoryIds, []);
+  assert.deepEqual(assembled.omittedMemoryIds, ["memory-too-large"]);
+});
+
+
+test("assembleRecallSections uses the profile truncation marker at the shared budget boundary", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-profile-boundary-", {
+    recallBudgetChars: 140,
+    recallProfileMaxRatio: 0.8,
+    recallPipeline: [
+      { id: "memories", enabled: true },
+      { id: "profile", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "memory content that consumes part of the budget",
+    { atomic: true, memoryId: "memory-budget", memoryPath: "facts/budget.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    `${"profile line\n".repeat(20)}`,
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+  const context = assembled.sections.join("\n\n---\n\n");
+
+  assert.match(context, /\.\.\.\(profile context trimmed\)/);
+  assert.doesNotMatch(context, /\.\.\.\(memory context trimmed\)/);
+});
+
 test("recall aborts the in-flight pipeline when the outer timeout fires", async () => {
   const orchestrator = await makeOrchestrator("engram-recall-timeout-");
   let observedAbortSignal: AbortSignal | undefined;
@@ -180,7 +393,7 @@ test("recall aborts the in-flight pipeline when the outer timeout fires", async 
 
   const originalSetTimeout = global.setTimeout;
   global.setTimeout = ((
-    handler: TimerHandler,
+    handler: Parameters<typeof setTimeout>[0],
     timeout?: number,
     ...args: any[]
   ) =>
@@ -250,7 +463,7 @@ test("recall aborts while waiting on the init gate", async () => {
 
   const originalSetTimeout = global.setTimeout;
   global.setTimeout = ((
-    handler: TimerHandler,
+    handler: Parameters<typeof setTimeout>[0],
     timeout?: number,
     ...args: any[]
   ) =>
@@ -355,7 +568,8 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
   );
   const elapsedMs = Date.now() - startedAt;
 
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   assert.equal(sharedReadStarted, true);
   assert.ok(
@@ -430,7 +644,8 @@ test("recallInternal fails open when qmd enrichment rejects before phase-two ass
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -624,7 +839,8 @@ test("recallInternal times out hung enrichment work without blocking assembly", 
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   const elapsedMs = Date.now() - startedAt;
@@ -671,7 +887,8 @@ test("recallInternal fails open when a deferred enrichment promise rejects befor
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -746,7 +963,8 @@ test("recallInternal cancels timed-out qmd enrichment work", async () => {
   }
   assert.ok(observedAbortSignal, "expected qmd enrichment to start");
   await new Promise((resolve) => setTimeout(resolve, 90));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
 
   const context = await recallPromise;
   assert.match(context, /stable shared priorities/);
@@ -804,9 +1022,11 @@ test("recallInternal shares one enrichment timeout budget across sequential enri
   );
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSharedRead?.();
+  const release = releaseSharedRead as (() => void) | null;
+  release?.();
   await new Promise((resolve) => setTimeout(resolve, 70));
-  releaseQmd?.();
+  const releaseQmdNow = releaseQmd as (() => void) | null;
+  releaseQmdNow?.();
 
   const context = await recallPromise;
   const elapsedMs = Date.now() - startedAt;
@@ -1086,4 +1306,198 @@ test("recallInternal skips no-QMD hot fallback after assembly budget expires", a
   assert.equal(embeddingCalls, 0);
   assert.equal(recentScanReads, 0);
   assert.doesNotMatch(context, /late no-qmd embedding memory/);
+});
+
+test("assembleRecallSections omits an empty memories section when no chunk fits", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-empty-memory-", {
+    recallBudgetChars: 40,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(100),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.sections, []);
+  assert.deepEqual(assembled.includedIds, []);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.equal(assembled.finalChars, 0);
+});
+
+test("assembleRecallSections drops an oversized leading heading before a fitting memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-heading-memory-", {
+    recallBudgetChars: 40,
+    recallPipeline: [{ id: "memories", enabled: true }],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "## Relevant Memories",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-fits", memoryPath: "facts/fits.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.sections, ["M".repeat(20)]);
+  assert.deepEqual(assembled.includedIds, ["memories"]);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-fits"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits.md"]);
+});
+
+test("assembleRecallSections reserves only the atomic memory after a leading heading", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-heading-reserve-", {
+    recallBudgetChars: 100,
+    recallProfileMaxRatio: 1,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "H".repeat(50),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-heading-reserve", memoryPath: "facts/heading-reserve.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.match(assembled.sections[0] ?? "", /^P{40}$/);
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-heading-reserve"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/heading-reserve.md"]);
+  assert.ok(assembled.finalChars <= 100);
+});
+
+test("assembleRecallSections does not reserve an oversized atomic memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-oversized-memory-", {
+    recallBudgetChars: 120,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "profile context",
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(200),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedIds, ["profile"]);
+  assert.deepEqual(assembled.omittedIds, ["memories"]);
+  assert.match(assembled.sections.join("\n"), /profile context/);
+});
+test("assembleRecallSections reserves a later fitting atomic memory", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-later-memory-", {
+    recallBudgetChars: 100,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(40),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(200),
+    { atomic: true, memoryId: "memory-too-large", memoryPath: "facts/too-large.md" },
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-fits-later", memoryPath: "facts/fits-later.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-fits-later"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/fits-later.md"]);
+  assert.match(assembled.sections.join("\n"), /M{20}/);
+});
+
+test("assembleRecallSections reserves a memory that fits its section cap without the separator", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-budget-separator-", {
+    recallBudgetChars: 50,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true, maxChars: 20 },
+    ],
+  });
+  const sectionBuckets: RecallSectionBuckets = new Map();
+
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "profile",
+    "P".repeat(30),
+  );
+  orchestrator.recallSectionCoordinator.appendRecallSection(
+    sectionBuckets,
+    "memories",
+    "M".repeat(20),
+    { atomic: true, memoryId: "memory-section-fit", memoryPath: "facts/section-fit.md" },
+  );
+
+  const assembled = orchestrator.recallSectionCoordinator.assembleRecallSections(
+    sectionBuckets,
+  );
+
+  assert.deepEqual(assembled.includedMemoryIds, ["memory-section-fit"]);
+  assert.deepEqual(assembled.includedMemoryPaths, ["facts/section-fit.md"]);
+  assert.ok(assembled.finalChars <= 50);
 });

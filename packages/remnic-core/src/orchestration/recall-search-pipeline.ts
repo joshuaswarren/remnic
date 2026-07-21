@@ -30,7 +30,7 @@ import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { getDefaultArchiveScoring, memoryFileToScoreItem } from "../recall/archive-scoring.js";
 import { RelevanceStore } from "../relevance.js";
-import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
+import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
@@ -39,6 +39,14 @@ import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
+import {
+  dedupeResultsByNamespace,
+  hasMemoryForResult,
+  markResultKey,
+  memoryForResult,
+  memoryMapKey,
+  resultHasKey,
+} from "../recall-memory-map.js";
 import { type UtilityRuntimeValues, applyUtilityRankingRuntimeDelta } from "../utility-runtime.js";
 import {
   computeArtifactCandidateFetchLimit,
@@ -177,13 +185,12 @@ export interface RecallSearchPipelineDeps {
   namespaceFromPath(p: string): string;
   readonly negatives: NegativeExampleStore;
   readonly qmd: SearchBackend;
-  readArchivedMemoriesForNamespaces(
-    namespaces: string[],
-  ): Promise<MemoryFile[]>;
+  readArchivedMemoriesForNamespaces(namespaces: string[]): Promise<MemoryFile[]>;
   readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces?: readonly string[],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null>;
   readonly relevance: RelevanceStore;
   readonly rerankCache: RerankCache;
@@ -578,40 +585,24 @@ export class RecallSearchPipelineCoordinator {
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
-            const mergedByPath = new Map<string, QmdSearchResult>();
-            for (const result of [...primaryResults, ...hybridResults]) {
-              const key = result.path || result.docid;
-              const existing = mergedByPath.get(key);
-              if (!existing || result.score > existing.score) {
-                mergedByPath.set(key, {
-                  ...result,
-                  transport: result.transport ?? "hybrid",
-                  snippet: result.snippet || existing?.snippet || "",
-                });
-              }
-            }
-            mergedResults = [...mergedByPath.values()]
-              .sort((a, b) => b.score - a.score)
-              .slice(0, fetchLimit);
+            // Dedup by composite (namespace, path) so a fanout hit and a
+            // seed/hybrid hit for the same memory never inject twice (#2020).
+            mergedResults = dedupeResultsByNamespace(
+              [...primaryResults, ...hybridResults],
+              this.deps.namespaceFromPath,
+              fetchLimit,
+              { transportFallback: "hybrid" },
+            );
           }
         }
       }
 
       if (scopedSeedResults.length > 0) {
-        const mergedByPath = new Map<string, QmdSearchResult>();
-        for (const result of [...scopedSeedResults, ...mergedResults]) {
-          const key = result.path || result.docid;
-          const existing = mergedByPath.get(key);
-          if (!existing || result.score > existing.score) {
-            mergedByPath.set(key, {
-              ...result,
-              snippet: result.snippet || existing?.snippet || "",
-            });
-          }
-        }
-        mergedResults = [...mergedByPath.values()]
-          .sort((a, b) => b.score - a.score)
-          .slice(0, fetchLimit);
+        mergedResults = dedupeResultsByNamespace(
+          [...scopedSeedResults, ...mergedResults],
+          this.deps.namespaceFromPath,
+          fetchLimit,
+        );
       }
 
       const filteredResults = filterRecallCandidates(mergedResults, {
@@ -731,22 +722,12 @@ export class RecallSearchPipelineCoordinator {
       snippet: r.snippet,
     }));
 
-    const mergedByPath = new Map<string, QmdSearchResult>();
-    for (const result of [...scopedSeedResults, ...scored]) {
-      const key = result.path || result.docid;
-      const existing = mergedByPath.get(key);
-      if (!existing || result.score > existing.score) {
-        mergedByPath.set(key, {
-          ...result,
-          snippet: result.snippet || existing?.snippet || "",
-        });
-      }
-    }
-
-    return [...mergedByPath.values()]
-      .filter((result) => !isArtifactMemoryPath(result.path))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, cappedLimit);
+    return dedupeResultsByNamespace(
+      [...scopedSeedResults, ...scored],
+      this.deps.namespaceFromPath,
+      cappedLimit,
+      { filter: (result) => !isArtifactMemoryPath(result.path) },
+    );
   }
 
   async applyColdFallbackPipeline(options: {
@@ -984,19 +965,12 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
         if (path.isAbsolute(result.path)) {
-          const resolvedPath = path.resolve(result.path);
-          if (
-            recallRoots.some((recallRoot) =>
-              isPathInsideStorageRoot(recallRoot, resolvedPath),
-            )
-          ) {
+          if (recallRoots.some((recallRoot) => isPathInsideStorageRoot(recallRoot, path.resolve(result.path)))) {
             scopedResults.push(result);
           }
           continue;
         }
-        if (options.recallNamespaces.includes(this.deps.namespaceFromPath(result.path))) {
-          scopedResults.push(result);
-        }
+        if (options.recallNamespaces.includes(result.namespace ?? this.deps.namespaceFromPath(result.path))) scopedResults.push(result);
       }
       results = scopedResults;
     }
@@ -1090,12 +1064,14 @@ export class RecallSearchPipelineCoordinator {
     }
 
     if (caps.rerank && this.deps.config.rerankProvider === "local") {
+      // (namespace, path) id so same-relative-path cross-namespace hits are not collapsed (#2020).
+      const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
       const ranked = await rerankLocalOrNoop({
         query: options.prompt,
         candidates: results
           .slice(0, this.deps.config.rerankMaxCandidates)
           .map((r) => ({
-            id: r.path,
+            id: rerankId(r),
             snippet: r.snippet || r.path,
           })),
         local: this.deps.fastLlmForRerank,
@@ -1107,17 +1083,7 @@ export class RecallSearchPipelineCoordinator {
         cacheTtlMs: this.deps.config.rerankCacheTtlMs,
       });
       if (ranked && ranked.length > 0) {
-        const byPath = new Map(results.map((r) => [r.path, r]));
-        const reordered: QmdSearchResult[] = [];
-        for (const p of ranked) {
-          const it = byPath.get(p);
-          if (it) reordered.push(it);
-        }
-        const rankedSet = new Set(ranked);
-        for (const r of results) {
-          if (!rankedSet.has(r.path)) reordered.push(r);
-        }
-        results = reordered;
+        results = reorderByRankedKeys(results, ranked, rerankId);
       }
     }
     if (caps.rerank && this.deps.config.rerankProvider === "cloud") {
@@ -1190,14 +1156,15 @@ export class RecallSearchPipelineCoordinator {
     const unreadablePaths = new Set<string>();
 
     const markChecked = (result: QmdSearchResult): void => {
-      if (result.path) checkedPaths.add(result.path);
+      if (result.path) markResultKey(checkedPaths, result);
     };
     const markUnreadable = (result: QmdSearchResult, err: unknown): void => {
       if (!result.path) return;
-      checkedPaths.add(result.path);
-      unreadablePaths.add(result.path);
+      markChecked(result);
+      markResultKey(unreadablePaths, result);
       log.warn("recall safety filter dropped unreadable secure-store candidate", {
         path: result.path,
+        namespace: result.namespace,
         error: (err as Error).message,
       });
     };
@@ -1217,27 +1184,28 @@ export class RecallSearchPipelineCoordinator {
           };
         }
         await Promise.all(
-          results.slice(offset, offset + batchSize).map(async (r) => {
-            if (!r.path) return;
-            if (memoryByPath.has(r.path)) {
-              markChecked(r);
+        results.slice(offset, offset + batchSize).map(async (r) => {
+          if (!r.path) return;
+          if (hasMemoryForResult(memoryByPath, r)) {
+            markChecked(r);
+            return;
+          }
+          try {
+            const mem = await this.deps.readQmdResultMemory(
+              r.path,
+              this.deps.storage,
+              options?.recallNamespaces,
+              r.namespace,
+            );
+            markChecked(r);
+            if (mem) memoryByPath.set(memoryMapKey(r), mem);
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError) {
+              markUnreadable(r, err);
               return;
             }
-            try {
-              const mem = await this.deps.readQmdResultMemory(
-                r.path,
-                this.deps.storage,
-                options?.recallNamespaces,
-              );
-              markChecked(r);
-              if (mem) memoryByPath.set(r.path, mem);
-            } catch (err) {
-              if (err instanceof SecureStoreLockedError) {
-                markUnreadable(r, err);
-                return;
-              }
-              throw err;
-            }
+            throw err;
+          }
           }),
         );
       }
@@ -1247,7 +1215,7 @@ export class RecallSearchPipelineCoordinator {
 
     for (const result of results) {
       if (!result.path) continue;
-      if (memoryByPath.has(result.path)) {
+      if (hasMemoryForResult(memoryByPath, result)) {
         markChecked(result);
         continue;
       }
@@ -1259,9 +1227,10 @@ export class RecallSearchPipelineCoordinator {
           result.path,
           this.deps.storage,
           options?.recallNamespaces,
+          result.namespace,
         );
         markChecked(result);
-        if (mem) memoryByPath.set(result.path, mem);
+        if (mem) memoryByPath.set(memoryMapKey(result), mem);
       } catch (err) {
         if (err instanceof SecureStoreLockedError) {
           markUnreadable(result, err);
@@ -1293,11 +1262,11 @@ export class RecallSearchPipelineCoordinator {
     let blockedPathFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
     for (const r of results) {
-      if (r.path && options?.blockedPaths?.has(r.path)) {
+      if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
         blockedPathFilteredCount += 1;
         continue;
       }
-      const memory = memoryByPath.get(r.path);
+      const memory = memoryForResult(memoryByPath, r);
       if (memory) {
         // Review-lifecycle statuses never enter active recall injection
         // (forgotten, pending_review, rejected, quarantined). Superseded and
@@ -1452,17 +1421,20 @@ export class RecallSearchPipelineCoordinator {
     );
     const candidateResults = loaded.completed
       ? results
-      : results.filter((result) => !result.path || loaded.checkedPaths.has(result.path));
+      : results.filter((result) => !result.path || resultHasKey(loaded.checkedPaths, result));
     if (!loaded.completed) {
       log.debug(
         `recall safety filter stopped before validating all candidates (${candidateResults.length}/${results.length} eligible)`,
       );
     }
-    const blockedPaths = new Set(loaded.unreadablePaths);
+    // Always block secure-store-locked candidates that failed to load: they
+    // must never re-enter ranking/injection without a loaded memory, whether or
+    // not dropUnresolved is set. Keyed by composite (namespace, path).
+    const blockedPaths = new Set<string>(loaded.unreadablePaths);
     if (options?.dropUnresolved === true) {
-      for (const resultPath of loaded.checkedPaths) {
-        if (!loaded.memoryByPath.has(resultPath)) {
-          blockedPaths.add(resultPath);
+      for (const result of candidateResults) {
+        if (result.path && resultHasKey(loaded.checkedPaths, result) && !hasMemoryForResult(loaded.memoryByPath, result)) {
+          markResultKey(blockedPaths, result);
         }
       }
     }
@@ -1571,7 +1543,7 @@ export class RecallSearchPipelineCoordinator {
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.deps.effectiveRecencyWeight();
     for (const r of safeResults) {
-      const memory = memoryByPath.get(r.path);
+      const memory = memoryForResult(memoryByPath, r);
       let score = r.score;
 
       if (memory) {
