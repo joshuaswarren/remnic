@@ -2764,10 +2764,7 @@ export class QmdClient implements SearchBackend {
     await this.runEmbedForCollection(collection, { perCollectionThrottle: true, strict: true });
   }
 
-  /**
-   * Trigger a collection-level embed for fresh writes (QMD CLI has no per-file
-   * targeting; callers debounce/batch via prioritized-embed). Returns ok status.
-   */
+  /** Trigger a collection-level embed for fresh writes (debounced by prioritized-embed). */
   async embedFiles(filePaths: string[]): Promise<boolean> {
     if (this.available === false || filePaths.length === 0) {
       return false;
