@@ -1,5 +1,6 @@
 import * as nodePath from "node:path";
 import { isPathInsideStorageRoot } from "./storage-paths.js";
+import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 
 /** Minimal storage surface the citation namespace decoder probes. */
@@ -16,7 +17,9 @@ type CitationStorageResolver = (namespace: string) => Promise<CitationProbeStora
  * category dir (e.g. `facts`) from a bare default category lead: a namespaced
  * citation `facts/facts/a.md` (namespace `facts`, remaining `facts/a.md`) is
  * owned, while a default `facts/a.md` (remaining `a.md`, no category dir) is
- * not. Returns false on any resolution/read failure or path escape.
+ * not. Returns false on any resolution/read failure or path escape — except a
+ * locked encrypted store (`SecureStoreLockedError`), which propagates so a
+ * locked read is never silently mistaken for "not owned" (AGENTS.md §6).
  */
 async function namespaceOwnsRelativePath(
   getStorage: CitationStorageResolver,
@@ -34,7 +37,10 @@ async function namespaceOwnsRelativePath(
   const storageRoot = nodePath.resolve(storage.dir);
   const candidate = nodePath.resolve(storageRoot, remainder);
   if (!isPathInsideStorageRoot(storageRoot, candidate)) return false;
-  const memory = await storage.readMemoryByPath(candidate).catch(() => null);
+  const memory = await storage.readMemoryByPath(candidate).catch((err: unknown) => {
+    if (err instanceof SecureStoreLockedError) throw err;
+    return null;
+  });
   return memory !== null;
 }
 
