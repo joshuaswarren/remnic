@@ -21,6 +21,7 @@ import { buildHandleIndexForResults } from "../recall-handles.js";
 import path from "node:path";
 import { renderEpistemicHedge } from "../trust-score.js";
 import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
+import { namespaceIdentityFromToken } from "../namespaces/identity.js";
 import type { StorageManager } from "../index.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
@@ -115,6 +116,23 @@ export function displaySafeBudgetsApplied<
 }
 
 /**
+ * Decode the owning namespace of an absolute anchor path under
+ * `<memoryDir>/namespaces/<identity-token>/…` so `displayResultPath` renders it
+ * as `<namespace>/…` rather than exposing the reversible identity token (#2077).
+ * Returns undefined for default-namespace (flat-root) or non-absolute paths,
+ * whose memoryDir-relative form is already display-safe.
+ */
+function namespaceForAnchorPath(anchorPath: string, memoryDir: string): string | undefined {
+  if (!path.isAbsolute(anchorPath)) return undefined;
+  const nsRoot = path.join(path.resolve(memoryDir), "namespaces");
+  const rel = path.relative(nsRoot, path.resolve(anchorPath));
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+  const [token] = rel.split(path.sep);
+  if (!token) return undefined;
+  return namespaceIdentityFromToken(token) ?? undefined;
+}
+
+/**
  * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
  * surface (#2077). `resultPaths`, `budgetsApplied.includedMemoryPaths`, and
  * `tierExplain.sourceAnchors[].path` are rendered memoryDir-relative — the same
@@ -145,7 +163,7 @@ export function displaySafeRecallSnapshot<
           ...snapshot.tierExplain,
           sourceAnchors: snapshot.tierExplain.sourceAnchors.map((anchor) => ({
             ...anchor,
-            path: displayResultPath(anchor.path, memoryDir),
+            path: displayResultPath(anchor.path, memoryDir, namespaceForAnchorPath(anchor.path, memoryDir)),
           })),
         }
       : undefined;
