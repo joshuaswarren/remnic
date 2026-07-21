@@ -11,6 +11,7 @@ import {
   type CitationUsageRequest,
   type CitationUsageResult,
 } from "./access-citation.js";
+import { decodeCitationNamespace } from "./access-citation-namespace.js";
 import { coordinateRecall, type RecallCoordinatorHost, type RecallExecResult } from "./access-recall-concurrency.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -165,7 +166,6 @@ import {
   type GraphSnapshotNodeMetadata,
 } from "./graph-snapshot.js";
 import * as nodePath from "node:path";
-import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 import {
   buildBriefing,
   FileCalendarSource,
@@ -5037,16 +5037,12 @@ export class EngramAccessService {
             if (nodePath.isAbsolute(memoryPath)) {
               throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
             }
-            // Attribute to the longest authorized namespace that prefixes the cited
-            // path (namespace names may contain "/"); a bare category lead like a
-            // default `facts/a.md` is not a namespace (#2020).
-            let nsMatch = "";
-            for (const ns of authorizedNamespaces) {
-              if (!ns || ALL_CATEGORY_DIRS.includes(ns)) continue;
-              if ((memoryPath === ns || memoryPath.startsWith(`${ns}/`)) && ns.length > nsMatch.length) nsMatch = ns;
-            }
-            if (nsMatch) return nsMatch;
-            return fallbackNamespace;
+            return decodeCitationNamespace(
+              (ns) => this.orchestrator.getStorage(ns),
+              authorizedNamespaces,
+              memoryPath,
+              fallbackNamespace,
+            );
           }
           return resolved.namespace;
         },
