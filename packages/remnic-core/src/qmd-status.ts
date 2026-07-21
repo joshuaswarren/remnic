@@ -174,10 +174,11 @@ export async function embedQmdFiles(
   collection: string,
   _filePaths: string[],
   timeoutMs: number,
+  embedArgs?: string[],
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await runQmdCommand(["update", "-c", collection], timeoutMs);
-    await runQmdCommand(["embed", "-c", collection], timeoutMs);
+    await runQmdCommand(embedArgs ?? ["embed", "-c", collection], timeoutMs);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
