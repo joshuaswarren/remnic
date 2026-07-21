@@ -20,8 +20,7 @@
 import { buildHandleIndexForResults } from "../recall-handles.js";
 import path from "node:path";
 import { renderEpistemicHedge } from "../trust-score.js";
-import { resolveIdentityContinuityCapabilities, resolveNamespaceCapabilities } from "../capabilities.js";
-import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
+import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
@@ -116,31 +115,6 @@ export function displaySafeBudgetsApplied<
 }
 
 /**
- * Resolve the owning namespace of an absolute anchor path under
- * `<memoryDir>/namespaces/<segment>/…` via the canonical
- * `resolveNamespaceFromStorageDir` resolver, so `displayResultPath` renders it
- * as `<namespace>/…` (never the raw storage segment) while correctly preserving
- * a namespace whose literal name is itself token-shaped (#2077). Returns
- * undefined for a default-namespace (flat-root) or non-absolute path, whose
- * memoryDir-relative form is already display-safe.
- */
-function anchorNamespace(anchorPath: string, config: PluginConfig): string | undefined {
-  if (!path.isAbsolute(anchorPath)) return undefined;
-  const nsRoot = path.join(path.resolve(config.memoryDir), "namespaces");
-  const rel = path.relative(nsRoot, path.resolve(anchorPath));
-  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
-  const [segment] = rel.split(path.sep);
-  if (!segment) return undefined;
-  const configuredNamespaces = resolveNamespaceCapabilities(config).namespaces
-    ? [config.defaultNamespace, config.sharedNamespace, ...config.namespacePolicies.map((p) => p.name)]
-    : [config.defaultNamespace];
-  return resolveNamespaceFromStorageDir(path.join(nsRoot, segment), {
-    config,
-    configuredNamespaces,
-  });
-}
-
-/**
  * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
  * surface (#2077). `resultPaths`, `budgetsApplied.includedMemoryPaths`, and
  * `tierExplain.sourceAnchors[].path` are rendered memoryDir-relative — the same
@@ -161,8 +135,7 @@ export function displaySafeRecallSnapshot<
       sourceAnchors?: Array<{ path: string; lineRange?: [number, number] }>;
     };
   },
->(snapshot: T, config: PluginConfig): T {
-  const memoryDir = config.memoryDir;
+>(snapshot: T, memoryDir: string): T {
   const resultPaths = snapshot.resultPaths?.map((p, i) =>
     displayResultPath(p, memoryDir, snapshot.resultNamespaces?.[i]),
   );
@@ -172,7 +145,7 @@ export function displaySafeRecallSnapshot<
           ...snapshot.tierExplain,
           sourceAnchors: snapshot.tierExplain.sourceAnchors.map((anchor) => ({
             ...anchor,
-            path: displayResultPath(anchor.path, memoryDir, anchorNamespace(anchor.path, config)),
+            path: displayResultPath(anchor.path, memoryDir),
           })),
         }
       : undefined;
