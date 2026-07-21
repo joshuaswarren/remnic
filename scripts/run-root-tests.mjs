@@ -56,21 +56,38 @@ process.env.NODE_OPTIONS = appendNodeOption(
 // Sandbox TMPDIR for this run (#2083). os.tmpdir() reads TMPDIR/TMP/TEMP on
 // each call and child test processes inherit process.env, so pointing all
 // three at one per-run scratch dir makes every test's temp directory land
-// inside it. A single cleanup on exit then reclaims them all, so leaked
-// per-test dirs cannot accumulate in the shared /tmp across runs and exhaust
-// inodes on long-lived (self-hosted) runners. The scratch dir is created via
-// the current tmpdir() BEFORE the override so it is not nested under itself.
-const testRunScratchDir = mkdtempSync(join(tmpdir(), "remnic-test-run-"));
+// inside it. A single cleanup then reclaims them all, so leaked per-test dirs
+// cannot accumulate in the shared /tmp across runs and exhaust inodes on
+// long-lived (self-hosted) runners. The scratch dir is created via the current
+// tmpdir() BEFORE the override so it is not nested under itself. The prefix is
+// deliberately short: one test binds an AF_UNIX socket under os.tmpdir(), and
+// its path must stay within the ~107-byte sun_path limit even with this extra
+// nesting level.
+const testRunScratchDir = mkdtempSync(join(tmpdir(), "rt-"));
 process.env.TMPDIR = testRunScratchDir;
 process.env.TMP = testRunScratchDir;
 process.env.TEMP = testRunScratchDir;
-process.on("exit", () => {
+let testRunScratchCleaned = false;
+function cleanupTestRunScratchDir() {
+  if (testRunScratchCleaned) return;
+  testRunScratchCleaned = true;
   try {
     rmSync(testRunScratchDir, { recursive: true, force: true });
   } catch {
     // Best-effort cleanup — never mask the run's real exit status.
   }
-});
+}
+// Normal termination emits `exit`; a signal (CI cancel/timeout, Ctrl-C) does
+// NOT, so clean up in the signal handler too, then re-raise with the default
+// disposition so the parent still observes the real signal termination.
+process.on("exit", cleanupTestRunScratchDir);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    cleanupTestRunScratchDir();
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}
 
 let selectedGroups;
 let selectedPatterns;
