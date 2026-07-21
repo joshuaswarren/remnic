@@ -18,9 +18,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+
+import { makeTempDirSync as managedTempDirSync } from "./helpers/tmp-dir.mjs";
 
 import {
   runCodexMaterialize,
@@ -37,9 +38,7 @@ import { StorageManager } from "@remnic/core/storage";
 const isSecureStoreLockedError = (error: unknown): boolean =>
   error instanceof SecureStoreLockedError;
 
-function makeTempDir(prefix: string): string {
-  return mkdtempSync(path.join(os.tmpdir(), prefix));
-}
+const makeTempDir = (prefix: string): string => managedTempDirSync(prefix);
 
 function makeCodexHome(): { root: string; memoriesDir: string } {
   const root = makeTempDir("codex-materialize-runner-home-");

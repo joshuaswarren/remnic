@@ -13,12 +13,12 @@
  */
 
 import assert from "node:assert/strict";
-import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+import { makeTempDir as managedTempDir } from "../helpers/tmp-dir.mjs";
 
 import {
   writePeer,
@@ -35,9 +35,7 @@ const repoRoot = path.resolve(__dirname, "..", "..");
 // Fixtures
 // ──────────────────────────────────────────────────────────────────────
 
-async function makeTempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "peer-recall-test-"));
-}
+const makeTempDir = (): Promise<string> => managedTempDir("peer-recall-test-");
 
 function syntheticPeer(overrides: Partial<Peer> = {}): Peer {
   return {
