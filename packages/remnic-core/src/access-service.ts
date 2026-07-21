@@ -943,11 +943,10 @@ export interface EngramAccessWriteEnvelope {
   idempotencyKey?: string;
   dryRun?: boolean;
   sessionKey?: string;
-  /**
-   * Trusted transport-bound principal. This must never come from untrusted client payloads.
-   * When present, write authorization is evaluated against this principal instead of sessionKey.
-   */
+  /** Trusted transport-bound principal (never from client payloads); authorizes writes instead of sessionKey. */
   authenticatedPrincipal?: string;
+  /** When set, an ACL rejection is NOT dead-lettered (#1888) so `remnic quarantine replay` can re-submit through this same surface without re-quarantining and duplicating the parked record. */
+  readonly suppressQuarantine?: boolean;
 }
 
 /**
@@ -1068,6 +1067,7 @@ export interface EngramAccessObserveRequest extends SourceConnectorProvenance {
    * Creates a `CodingContext` with `projectId: "tag:<projectTag>"`.
    */
   projectTag?: string;
+  readonly suppressQuarantine?: boolean; // #1888: mirrors EngramAccessWriteEnvelope.suppressQuarantine (replay re-submit skips dead-lettering).
 }
 
 /**

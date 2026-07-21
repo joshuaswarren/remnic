@@ -24,7 +24,7 @@ import type { Dirent } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { encodeStoragePathSegment, resolveSafeStoragePath } from "./storage-paths.js";
+import { encodeStoragePathSegment, isPathInsideStorageRoot, resolveSafeStoragePath } from "./storage-paths.js";
 
 export type QuarantineOperation = "observe" | "memory_store" | "suggestion_submit";
 
@@ -46,6 +46,12 @@ export interface QuarantinedRecord {
   attemptedNamespace: string;
   timestamp: string;
   payload: unknown;
+}
+
+/** A quarantined record paired with the absolute on-disk path it was read from. */
+export interface QuarantineEntry {
+  record: QuarantinedRecord;
+  path: string;
 }
 
 export interface QuarantineCaps {
@@ -145,12 +151,13 @@ export class WriteQuarantineStore {
 
   /**
    * All valid, non-expired quarantined records across every principal, oldest
-   * first. Expired records are deleted on read (lazy GC), so an inactive
-   * principal bucket with no follow-up write is still bounded by age.
+   * first, each paired with its absolute on-disk path. Expired records are
+   * deleted on read (lazy GC), so an inactive principal bucket with no
+   * follow-up write is still bounded by age.
    */
-  async list(): Promise<QuarantinedRecord[]> {
+  async entries(): Promise<QuarantineEntry[]> {
     const now = Date.now();
-    const records: QuarantinedRecord[] = [];
+    const entries: QuarantineEntry[] = [];
     for (const dir of await this.principalDirs()) {
       for (const file of await this.entryFiles(dir)) {
         const info = await stat(file).catch(() => null);
@@ -165,11 +172,39 @@ export class WriteQuarantineStore {
         } catch {
           continue;
         }
-        if (isQuarantinedRecord(parsed)) records.push(parsed);
+        if (isQuarantinedRecord(parsed)) entries.push({ record: parsed, path: file });
       }
     }
-    records.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
-    return records;
+    entries.sort((a, b) => {
+      const at = a.record.timestamp;
+      const bt = b.record.timestamp;
+      return at < bt ? -1 : at > bt ? 1 : 0;
+    });
+    return entries;
+  }
+
+  /** As {@link entries} but projected to records only (backward-compatible view). */
+  async list(): Promise<QuarantinedRecord[]> {
+    return (await this.entries()).map((entry) => entry.record);
+  }
+
+  /**
+   * Delete one quarantined entry by its absolute on-disk path (as returned by
+   * {@link entries}). The path MUST resolve inside the quarantine root, mirroring
+   * the store's containment posture; a path outside the root — or one already
+   * absent — removes nothing. Returns true only when a file was actually deleted.
+   */
+  async removeEntry(entryPath: string): Promise<boolean> {
+    const abs = path.resolve(entryPath);
+    if (!isPathInsideStorageRoot(path.resolve(this.root), abs)) return false;
+    try {
+      await rm(abs, { force: false });
+      return true;
+    } catch (err) {
+      const errno = err as NodeJS.ErrnoException;
+      if (errno?.code === "ENOENT") return false;
+      throw err;
+    }
   }
 
   /** Total valid, non-expired quarantined record count across every principal. */

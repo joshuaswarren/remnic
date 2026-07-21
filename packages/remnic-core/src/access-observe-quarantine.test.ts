@@ -118,3 +118,34 @@ test("a dry-run rejected write is NOT quarantined (#1888)", async () => {
     assert.equal(await new WriteQuarantineStore(dir).count(), 0);
   });
 });
+
+test("suppressQuarantine skips dead-lettering an ACL-rejected write; without it it is parked (#1888 replay)", async () => {
+  await withService(async (service, dir) => {
+    const store = new WriteQuarantineStore(dir);
+    // Replay re-submits with suppressQuarantine set: the ACL rejection still
+    // throws, but the attempt is NOT re-parked, so replay cannot duplicate it.
+    await assert.rejects(
+      service.memoryStore({
+        content: "replayed",
+        namespace: "victim-secret",
+        authenticatedPrincipal: "alice",
+        sessionKey: "s-5",
+        suppressQuarantine: true,
+      } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]),
+      NamespaceNotWritableError
+    );
+    assert.equal(await store.count(), 0);
+
+    // The identical write WITHOUT the flag is dead-lettered as before.
+    await assert.rejects(
+      service.memoryStore({
+        content: "replayed",
+        namespace: "victim-secret",
+        authenticatedPrincipal: "alice",
+        sessionKey: "s-5",
+      } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]),
+      NamespaceNotWritableError
+    );
+    assert.equal(await store.count(), 1);
+  });
+});

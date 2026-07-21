@@ -191,3 +191,55 @@ test("list() surfaces a symlink-escaping root instead of reporting empty", async
     }
   });
 });
+
+test("entries() pairs each record with its on-disk path and list() projects records", async () => {
+  await withTempDir(async (dir) => {
+    const store = new WriteQuarantineStore(dir);
+    const written = await store.quarantine({
+      operation: "memory_store",
+      principal: "alice",
+      attemptedNamespace: "victim-secret",
+      payload: { content: "hi" },
+    });
+    const entries = await store.entries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.path, written);
+    assert.ok(isInside(store.root, entries[0]?.path ?? ""));
+    assert.equal(entries[0]?.record.operation, "memory_store");
+    assert.deepEqual(entries[0]?.record.payload, { content: "hi" });
+    assert.deepEqual(
+      await store.list(),
+      entries.map((entry) => entry.record)
+    );
+  });
+});
+
+test("removeEntry deletes an entry by its path and is idempotent", async () => {
+  await withTempDir(async (dir) => {
+    const store = new WriteQuarantineStore(dir);
+    await store.quarantine({ operation: "observe", principal: "alice", attemptedNamespace: "ns", payload: 1 });
+    const [entry] = await store.entries();
+    assert.ok(entry);
+    assert.equal(await store.removeEntry(entry.path), true);
+    assert.equal(await store.count(), 0);
+    // An already-absent path removes nothing.
+    assert.equal(await store.removeEntry(entry.path), false);
+  });
+});
+
+test("removeEntry refuses a path outside the quarantine root", async () => {
+  await withTempDir(async (dir) => {
+    const store = new WriteQuarantineStore(dir);
+    await store.quarantine({ operation: "observe", principal: "alice", attemptedNamespace: "ns", payload: 1 });
+    const outside = await mkdtemp(path.join(tmpdir(), "remnic-quarantine-outside-"));
+    const victim = path.join(outside, "keep.json");
+    await writeFile(victim, "{}", "utf8");
+    try {
+      assert.equal(await store.removeEntry(victim), false);
+      assert.equal((await readdir(outside)).length, 1, "file outside root must survive");
+      assert.equal(await store.count(), 1, "in-root entry untouched");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
