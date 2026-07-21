@@ -2776,7 +2776,7 @@ export class QmdClient implements SearchBackend {
       300_000,
       this.buildEmbedArgs(this.collection),
     );
-    clearQmdResultCaches();
+    if (result.ok) clearQmdResultCaches();
     return result.ok;
   }
 
