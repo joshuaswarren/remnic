@@ -103,7 +103,11 @@ import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coo
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
-import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
+import {
+  RecallSectionCoordinator,
+  type RecallSectionAppendOptions,
+  type RecallSectionBuckets,
+} from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
 import {
@@ -369,7 +373,6 @@ import { resolveNamespaceCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
   resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities ,
-  resolveRecallEnhancementCapabilities,
   resolvePipelineProcessingCapabilities,
   resolveConversationContextCapabilities,
 } from "./capabilities.js";
@@ -702,7 +705,13 @@ export class Orchestrator {
   // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
     string,
-    { count: number; lastAccessed: string }
+    {
+      memoryId: string;
+      memoryPath?: string;
+      namespace?: string;
+      count: number;
+      lastAccessed: string;
+    }
   > = new Map();
 
   // Passive correction capture (issue #1581) — dedup state + lazy service.
@@ -1511,8 +1520,8 @@ export class Orchestrator {
     this.recallRerankCoordinator = new RecallRerankCoordinator({
       getConfig: () => this.config,
       getStorage: (namespace) => this.getStorage(namespace),
-      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) =>
-        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces, preferredNamespace) =>
+        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace),
     });
     this.recallSectionCoordinator = new RecallSectionCoordinator({
       getConfig: () => this.config,
@@ -1538,8 +1547,8 @@ export class Orchestrator {
         this.resolveColdQmdResultForRecall(result, fallbackStorage, recallNamespaces),
       storageForAbsoluteQmdResultPath: (resultPath, fallbackStorage, recallNamespaces) =>
         this.storageForAbsoluteQmdResultPath(resultPath, fallbackStorage, recallNamespaces),
-      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) =>
-        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+      readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces, preferredNamespace) =>
+        this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace),
     });
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
@@ -2662,14 +2671,16 @@ export class Orchestrator {
   }
 
   private appendRecallSection(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     sectionId: string,
     content: string,
+    options?: RecallSectionAppendOptions,
   ): boolean {
     return this.recallSectionCoordinator.appendRecallSection(
       sectionBuckets,
       sectionId,
       content,
+      options,
     );
   }
 
@@ -2688,7 +2699,7 @@ export class Orchestrator {
   }
 
   private assembleRecallSections(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     budgetOverride?: number,
   ): {
     sections: string[];
@@ -2696,6 +2707,10 @@ export class Orchestrator {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
+    omittedMemoryIds: string[];
   } {
     return this.recallSectionCoordinator.assembleRecallSections(
       sectionBuckets,
@@ -3400,7 +3415,7 @@ export class Orchestrator {
   private publishRecallResults(options: {
     title: string;
     results: QmdSearchResult[];
-    sectionBuckets: Map<string, string[]>;
+    sectionBuckets: RecallSectionBuckets;
     retrievalQuery: string;
     sessionKey: string | undefined;
     identityInjection?: {
@@ -3425,14 +3440,13 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526 seam 11: QMD result-resolution methods moved to QmdResultResolver.
-  // Thin delegation keeps the private API stable for callers + tests.
   private async readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null> {
-    return this.qmdResultResolver.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces);
+    return this.qmdResultResolver.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces, preferredNamespace);
   }
 
   private async resolveColdQmdResultForRecall(
@@ -3519,13 +3533,17 @@ export class Orchestrator {
     finalContextChars?: number;
     truncated?: boolean;
     includedSections?: string[];
+    includedMemoryIds?: string[];
+    includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
+    omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
     return this.recallSectionCoordinator.buildLastRecallBudgetSummary(options);
   }
 
   private collectLastRecallSources(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     recallSource:
       | "none"
       | "hot_qmd"
@@ -3652,27 +3670,16 @@ export class Orchestrator {
    * Record that memories were accessed (retrieved).
    * Updates are batched in memory and flushed during consolidation.
    */
-  trackMemoryAccess(memoryIds: string[]): void {
-    if (!resolveRecallEnhancementCapabilities(this.config).accessTracking) return;
-
-    const now = new Date().toISOString();
-    for (const id of memoryIds) {
-      const existing = this.accessTrackingBuffer.get(id);
-      this.accessTrackingBuffer.set(id, {
-        count: (existing?.count ?? 0) + 1,
-        lastAccessed: now,
-      });
-    }
-
-    // Flush if buffer exceeds max size
-    if (
-      this.accessTrackingBuffer.size >= this.config.accessTrackingBufferMaxSize
-    ) {
-      this.trackRecallBackgroundWrite(
-        this.flushAccessTracking(),
-        "background access tracking flush",
-      );
-    }
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths: string[] = [],
+    memoryNamespaces: Array<string | undefined> = [],
+  ): void {
+    this.workspaceOpsCoordinator.trackMemoryAccess(
+      memoryIds,
+      memoryPaths,
+      memoryNamespaces,
+    );
   }
 
   async flushAccessTracking(): Promise<void> {
@@ -3765,15 +3772,10 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Extract memory IDs from QMD search results for access tracking.
-   */
   private extractMemoryIdsFromResults(results: QmdSearchResult[]): string[] {
-    // QMD results have paths like /path/to/fact-123.md
-    // Extract the ID from the filename
     return results
       .map((r) => {
-        const match = r.path.match(/([^/]+)\.md$/);
+        const match = r.path.match(/([^/\\]+)\.md$/);
         return match ? match[1] : null;
       })
       .filter((id): id is string => id !== null);

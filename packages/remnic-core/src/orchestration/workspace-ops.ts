@@ -17,7 +17,7 @@
 
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import { formatDaySummaryMemories } from "../day-summary.js";
 import { type JudgeVerdict, judgeFactDurability } from "../extraction-judge.js";
 import { ExtractionEngine } from "../extraction.js";
@@ -37,6 +37,7 @@ import { type AccessTrackingEntry, type MemoryActionEvent, type MemoryFile, type
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { WearablesService } from "../wearables/service.js";
+import { qmdCollectionPathParts, qmdResultPathCandidates } from "./qmd-result-resolver.js";
 import {
   Orchestrator,
   filterHourlySummaryMarkdownForLocalDay,
@@ -48,7 +49,17 @@ import {
 } from "../orchestrator.js";
 
 export interface WorkspaceOpsDeps {
-  readonly accessTrackingBuffer: Map<string, { count: number; lastAccessed: string }>;
+  readonly accessTrackingBuffer: Map<
+    string,
+    {
+      memoryId: string;
+      memoryPath?: string;
+      namespace?: string;
+      count: number;
+      lastAccessed: string;
+    }
+  >;
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   bulkImportWriteNamespace(): string;
   readonly config: PluginConfig;
   readonly extraction: ExtractionEngine;
@@ -87,6 +98,26 @@ export interface WorkspaceOpsDeps {
   wearablesServiceInstance: WearablesService | null;
 }
 
+function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
+  const normalizedCandidate = path.resolve(candidatePath);
+  return normalizedCandidate === path.resolve(requestedPath) || normalizedCandidate === path.resolve(memoryDir, requestedPath);
+}
+
+function accessTrackingPathCandidates(storageDir: string, memoryPath: string): string[] {
+  const candidates = qmdResultPathCandidates(storageDir, memoryPath);
+  const parts = qmdCollectionPathParts(memoryPath);
+  if (!parts) return candidates;
+
+  candidates.push(
+    ...qmdResultPathCandidates(storageDir, parts.relativePath),
+    ...qmdResultPathCandidates(path.join(storageDir, "cold"), parts.relativePath),
+  );
+  return [...new Set(candidates)];
+}
+
+function canonicalMemoryPath(memoryPath: string, memoryDir: string): string {
+  return path.resolve(path.isAbsolute(memoryPath) ? memoryPath : path.resolve(memoryDir, memoryPath));
+}
 export class WorkspaceOpsCoordinator {
   constructor(
     private readonly deps: WorkspaceOpsDeps,
@@ -742,6 +773,58 @@ export class WorkspaceOpsCoordinator {
       );
     }
   }
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths: string[] = [],
+    memoryNamespaces: Array<string | undefined> = [],
+  ): void {
+    if (!resolveRecallEnhancementCapabilities(this.deps.config).accessTracking) return;
+
+    const now = new Date().toISOString();
+    const pathsByMemoryId = new Map<
+      string,
+      Array<{ path: string; namespace?: string }>
+    >();
+    for (const [index, memoryPath] of memoryPaths.entries()) {
+      const basename = memoryPath.split(/[\\/]/).pop() ?? memoryPath;
+      const memoryId = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
+      if (memoryId.length > 0 && memoryIds.includes(memoryId)) {
+        const paths = pathsByMemoryId.get(memoryId) ?? [];
+        const namespace = memoryNamespaces[index];
+        paths.push({
+          path: memoryPath,
+          ...(namespace ? { namespace } : {}),
+        });
+        pathsByMemoryId.set(memoryId, paths);
+      }
+    }
+    for (const id of memoryIds) {
+      const references = pathsByMemoryId.get(id);
+      const reference = references?.shift();
+      const memoryPath = reference?.path;
+      const namespace = reference?.namespace ?? (
+        memoryPath
+          ? this.deps.namespaceFromPath(memoryPath)
+          : this.deps.config.defaultNamespace
+      );
+      const key = memoryPath
+        ? `${namespace}:${canonicalMemoryPath(memoryPath, this.deps.config.memoryDir)}`
+        : `${namespace}:${id}`;
+      const existing = this.deps.accessTrackingBuffer.get(key);
+      this.deps.accessTrackingBuffer.set(key, {
+        memoryId: id,
+        ...(memoryPath ? { memoryPath, namespace } : {}),
+        count: (existing?.count ?? 0) + 1,
+        lastAccessed: now,
+      });
+    }
+    if (this.deps.accessTrackingBuffer.size >= this.deps.config.accessTrackingBufferMaxSize) {
+      this.deps.trackRecallBackgroundWrite(
+        this.flushAccessTracking(),
+        "background access tracking flush",
+      );
+    }
+  }
 
   /**
    * Flush access tracking buffer to disk.
@@ -750,44 +833,95 @@ export class WorkspaceOpsCoordinator {
   async flushAccessTracking(): Promise<void> {
     if (this.deps.accessTrackingBuffer.size === 0) return;
 
-    // Build entries from buffer, merging with existing counts
-    const entries: AccessTrackingEntry[] = [];
-    const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-      ? Array.from(
-          new Set<string>([
-            this.deps.config.defaultNamespace,
-            this.deps.config.sharedNamespace,
-            ...this.deps.config.namespacePolicies.map((p) => p.name),
-          ]),
-        )
+    const bufferedNamespaces = new Set<string>();
+    for (const [, update] of this.deps.accessTrackingBuffer) {
+      bufferedNamespaces.add(
+        update.namespace ??
+          (update.memoryPath
+            ? this.deps.namespaceFromPath(update.memoryPath)
+            : this.deps.config.defaultNamespace),
+      );
+    }
+    const configuredNamespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
+      ? [
+          this.deps.config.defaultNamespace,
+          this.deps.config.sharedNamespace,
+          ...this.deps.config.namespacePolicies.map((p) => p.name),
+        ]
       : [this.deps.config.defaultNamespace];
+    const namespaces = Array.from(new Set([...configuredNamespaces, ...bufferedNamespaces]));
+    const memoriesByNamespace = new Map<string, MemoryFile[]>();
     const memories = await this.deps.readAllMemoriesForNamespaces(namespaces);
-    const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
+    for (const memory of memories) {
+      const namespace = this.deps.namespaceFromPath(memory.path);
+      const list = memoriesByNamespace.get(namespace) ?? [];
+      list.push(memory);
+      memoriesByNamespace.set(namespace, list);
+    }
 
-    for (const [memoryId, update] of this.deps.accessTrackingBuffer) {
-      const memory = memoryMap.get(memoryId);
-      const existingCount = memory?.frontmatter.accessCount ?? 0;
-      entries.push({
-        memoryId,
-        newCount: existingCount + update.count,
-        lastAccessed: update.lastAccessed,
+    const entriesByNamespace = new Map<string, AccessTrackingEntry[]>();
+    const mergedEntriesByNamespace = new Map<string, Map<string, AccessTrackingEntry>>();
+    const storageDirByNamespace = new Map<string, string | null>();
+    for (const [, update] of this.deps.accessTrackingBuffer) {
+      const memoryPath = update.memoryPath;
+      const namespace =
+        update.namespace ??
+        (memoryPath
+          ? this.deps.namespaceFromPath(memoryPath)
+          : this.deps.config.defaultNamespace);
+      const namespaceMemories = memoriesByNamespace.get(namespace);
+      let storageDir = storageDirByNamespace.get(namespace);
+      if (storageDir === undefined) {
+        const storage = await this.deps.storageRouter.storageFor(namespace);
+        storageDir = typeof storage.dir === "string" && storage.dir.length > 0 ? storage.dir : null;
+        storageDirByNamespace.set(namespace, storageDir);
+      }
+      const requestedPaths = memoryPath
+        ? [
+            memoryPath,
+            ...(storageDir ? accessTrackingPathCandidates(storageDir, memoryPath) : []),
+          ]
+        : [];
+      const memory = memoryPath
+        ? namespaceMemories?.find((candidate) =>
+            matchesMemoryPath(candidate.path, memoryPath, this.deps.config.memoryDir),
+          ) ??
+          namespaceMemories?.find((candidate) =>
+            requestedPaths.some((requestedPath) =>
+              matchesMemoryPath(candidate.path, requestedPath, this.deps.config.memoryDir),
+            ),
+          )
+        : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
+      if (!memory) continue;
+
+      const namespaceEntries = mergedEntriesByNamespace.get(namespace) ?? new Map();
+      const existing = namespaceEntries.get(memory.path);
+      const existingLastAccessed = existing?.lastAccessed;
+      const lastAccessed =
+        existingLastAccessed &&
+        Date.parse(existingLastAccessed) > Date.parse(update.lastAccessed)
+          ? existingLastAccessed
+          : update.lastAccessed;
+      namespaceEntries.set(memory.path, {
+        memoryId: existing?.memoryId ?? update.memoryId,
+        memoryPath: memory.path,
+        newCount:
+          (existing?.newCount ?? (memory.frontmatter.accessCount ?? 0)) + update.count,
+        lastAccessed,
       });
+      mergedEntriesByNamespace.set(namespace, namespaceEntries);
+    }
+    for (const [namespace, entries] of mergedEntriesByNamespace) {
+      entriesByNamespace.set(namespace, Array.from(entries.values()));
     }
 
-    const byNamespace = new Map<string, AccessTrackingEntry[]>();
-    for (const e of entries) {
-      const m = memoryMap.get(e.memoryId);
-      if (!m) continue;
-      const ns = this.deps.namespaceFromPath(m.path);
-      const list = byNamespace.get(ns) ?? [];
-      list.push(e);
-      byNamespace.set(ns, list);
-    }
-    for (const [ns, list] of byNamespace) {
-      const sm = await this.deps.storageRouter.storageFor(ns);
-      await sm.flushAccessTracking(list);
+    let flushedCount = 0;
+    for (const [namespace, entries] of entriesByNamespace) {
+      const storage = await this.deps.storageRouter.storageFor(namespace);
+      await storage.flushAccessTracking(entries);
+      flushedCount += entries.length;
     }
     this.deps.accessTrackingBuffer.clear();
-    log.debug(`flushed ${entries.length} access tracking entries`);
+    log.debug(`flushed ${flushedCount} access tracking entries`);
   }
 }

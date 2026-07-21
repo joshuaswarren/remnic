@@ -54,7 +54,7 @@ import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastR
 import { type RecallFilterTrace, type RecallXrayResult, type RecallXrayScoreDecomposition, type RecallXraySnapshot, buildXraySnapshot } from "../recall-xray.js";
 import { foldQueueWaitTiming, recordRecallTiming } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
-import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
+import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
 import { type ParallelSearchResult, mergeWithAgentResults, runDirectAgent, runTemporalAgent, shouldRunAgent } from "../retrieval-agents.js";
 import { resolveScopePlan } from "../scopes/scope-plan.js";
@@ -98,12 +98,18 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 
+import type {
+  RecallSectionAppendOptions,
+  RecallSectionBuckets,
+} from "./recall-section-coordinator.js";
+
 export interface RecallInternalDeps {
   readonly _recallWorkspaceOverrides: Map<string, string>;
   appendRecallSection(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     sectionId: string,
     content: string,
+    options?: RecallSectionAppendOptions,
   ): boolean;
   applyColdFallbackPipeline(options: {
     prompt: string;
@@ -158,7 +164,7 @@ export interface RecallInternalDeps {
     trustByPath: Map<string, TrustStageResultItem> | null;
   }>;
   assembleRecallSections(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     budgetOverride?: number,
   ): {
     sections: string[];
@@ -166,6 +172,10 @@ export interface RecallInternalDeps {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
+    omittedMemoryIds: string[];
   };
   boostSearchResults(
     results: QmdSearchResult[],
@@ -214,13 +224,17 @@ export interface RecallInternalDeps {
     truncated?: boolean;
     includedSections?: string[];
     omittedSections?: string[];
+    includedMemoryIds?: string[];
+    includedMemoryPaths?: string[];
+    includedMemoryNamespaces?: Array<string | undefined>;
+    omittedMemoryIds?: string[];
   }): LastRecallBudgetSummary;
   buildQueryAwarePrefilter(
     prompt: string,
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter>;
   collectLastRecallSources(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     recallSource:
       | "none"
       | "hot_qmd"
@@ -333,6 +347,11 @@ export interface RecallInternalDeps {
   ): number | undefined;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly handleHistory: RecallHandleHistoryStore;
+  trackMemoryAccess(
+    memoryIds: string[],
+    memoryPaths?: string[],
+    memoryNamespaces?: Array<string | undefined>,
+  ): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   isRecallSectionEnabled(
     sectionId: string,
@@ -352,7 +371,7 @@ export interface RecallInternalDeps {
   publishRecallResults(options: {
     title: string;
     results: QmdSearchResult[];
-    sectionBuckets: Map<string, string[]>;
+    sectionBuckets: RecallSectionBuckets;
     retrievalQuery: string;
     sessionKey: string | undefined;
     identityInjection?: {
@@ -539,7 +558,7 @@ export class RecallInternalCoordinator {
       .update(`${sessionKey ?? "default"}:${recallStart}:${promptHash}`)
       .digest("hex")
       .slice(0, 16);
-    const sectionBuckets = new Map<string, string[]>();
+    const sectionBuckets: RecallSectionBuckets = new Map();
     // The effective LCM read session_id SET is computed below from
     // `recallNamespaces` (the SAME read-authorized namespace set normal QMD/file
     // recall searches, incl. coding `readFallbacks`). See the
@@ -557,7 +576,6 @@ export class RecallInternalCoordinator {
       .update(retrievalQuery)
       .digest("hex");
     const policyVersion = this.deps.currentPolicyVersion();
-    let impressionRecorded = false;
     let recallSource:
       | "none"
       | "hot_qmd"
@@ -567,6 +585,7 @@ export class RecallInternalCoordinator {
     let recalledMemoryCount = 0;
     let recalledMemoryIds: string[] = [];
     let recalledMemoryPaths: string[] = [];
+    let recalledMemoryNamespaces: Array<string | undefined> = [];
     // Boosted QmdSearchResult array for the serving branch (issue #687 PR 3/4).
     // Populated alongside recalledMemoryPaths so the X-ray capture can read
     // per-result explain data (e.g. reinforcementBoost) from the result that
@@ -2534,6 +2553,7 @@ export class RecallInternalCoordinator {
                           retrievalQuery,
                           memoryDir,
                           maxPerAgent,
+                          (p) => this.deps.namespaceFromPath(p),
                         ).catch((err) => {
                           log.debug(`DirectAgent pre-start failed: ${err}`);
                           return [] as ParallelSearchResult[];
@@ -2543,7 +2563,7 @@ export class RecallInternalCoordinator {
                       const merged: ParallelSearchResult[] = [];
                       const seen = new Set<string>();
                       for (const result of groups.flat()) {
-                        const key = (result as any).path ?? JSON.stringify(result);
+                        const key = `${(result as any).namespace ?? ""}\0${(result as any).path ?? JSON.stringify(result)}`;
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
@@ -2561,6 +2581,7 @@ export class RecallInternalCoordinator {
                           memoryDir,
                           maxPerAgent,
                           queryAwarePrefilter.candidatePaths,
+                          (p) => this.deps.namespaceFromPath(p),
                         ).catch((err) => {
                           log.debug(`TemporalAgent pre-start failed for ${memoryDir}: ${err}`);
                           return [] as ParallelSearchResult[];
@@ -2570,7 +2591,7 @@ export class RecallInternalCoordinator {
                       const merged: ParallelSearchResult[] = [];
                       const seen = new Set<string>();
                       for (const result of groups.flat()) {
-                        const key = (result as any).path ?? JSON.stringify(result);
+                        const key = `${(result as any).namespace ?? ""}\0${(result as any).path ?? JSON.stringify(result)}`;
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
@@ -2639,6 +2660,8 @@ export class RecallInternalCoordinator {
                   this.deps.config.parallelAgentWeights,
                   qmdFetchLimit + lifecycleHeadroom,
                   this.deps.config.memoryDir,
+                  // Derive agent-hit namespace so a same (namespace,path) memory merges once (#2020).
+                  (p) => this.deps.namespaceFromPath(p),
                 );
               }
             } catch (err) {
@@ -4126,7 +4149,7 @@ export class RecallInternalCoordinator {
         maxSpecializedScore,
       } = qmdResult;
 
-      // Merge/dedupe by path; keep the best score and first non-empty snippet.
+      // Merge/dedupe by namespace and path; keep the best score and first non-empty snippet.
       const memoryResultsRaw = mergeGraphExpandedResults(
         memoryResultsLists.flat(),
         [],
@@ -4134,11 +4157,9 @@ export class RecallInternalCoordinator {
 
       let memoryResults = memoryResultsRaw;
 
-      // Enforce namespace read policies by filtering paths.
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         memoryResults = memoryResults.filter((r) =>
-          recallNamespaces.includes(this.deps.namespaceFromPath(r.path)),
-        );
+          recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
       // Artifacts are injected through dedicated verbatim recall flow only.
       memoryResults = memoryResults.filter(
@@ -4314,12 +4335,14 @@ export class RecallInternalCoordinator {
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
       if (caps.rerank && this.deps.config.rerankProvider === "local") {
+        // (namespace, path) id so cross-namespace same-path hits don't collapse; LLM-safe + cache-stable (#2020).
+        const rerankId = (r: QmdSearchResult): string => `${r.namespace ?? ""}|${r.path}`;
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
           candidates: memoryResults
             .slice(0, this.deps.config.rerankMaxCandidates)
             .map((r) => ({
-              id: r.path,
+              id: rerankId(r),
               snippet: r.snippet || r.path,
             })),
           local: this.deps.fastLlmForRerank,
@@ -4331,18 +4354,7 @@ export class RecallInternalCoordinator {
           cacheTtlMs: this.deps.config.rerankCacheTtlMs,
         });
         if (ranked && ranked.length > 0) {
-          const byPath = new Map(memoryResults.map((r) => [r.path, r]));
-          const reordered: QmdSearchResult[] = [];
-          for (const p of ranked) {
-            const it = byPath.get(p);
-            if (it) reordered.push(it);
-          }
-          // Append any unranked items in original order.
-          const rankedSet = new Set(ranked);
-          for (const r of memoryResults) {
-            if (!rankedSet.has(r.path)) reordered.push(r);
-          }
-          memoryResults = reordered;
+          memoryResults = reorderByRankedKeys(memoryResults, ranked, rerankId);
         }
       }
       if (caps.rerank && this.deps.config.rerankProvider === "cloud") {
@@ -4512,12 +4524,10 @@ export class RecallInternalCoordinator {
           },
         trustByPath: recallTrustByPath,
         });
-        recalledMemoryIds = this.deps.extractMemoryIdsFromResults(memoryResults);
         recalledMemoryPaths = memoryResults
           .map((result) => result.path)
           .filter(Boolean);
         xrayRecalledResults = memoryResults;
-        impressionRecorded = true;
       } else if (!confidenceGateRejected) {
         // Only attempt fallback paths if the confidence gate did NOT fire.
         // When the gate rejects, all recall pathways are skipped to prevent
@@ -4623,12 +4633,10 @@ export class RecallInternalCoordinator {
             },
           trustByPath: recallTrustByPath,
           });
-          recalledMemoryIds = this.deps.extractMemoryIdsFromResults(scoped);
           recalledMemoryPaths = scoped
             .map((result) => result.path)
             .filter(Boolean);
           xrayRecalledResults = scoped;
-          impressionRecorded = true;
         } else {
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
@@ -4674,12 +4682,10 @@ export class RecallInternalCoordinator {
               },
             trustByPath: recallTrustByPath,
             });
-            recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
               .map((result) => result.path)
               .filter(Boolean);
             xrayRecalledResults = longTerm;
-            impressionRecorded = true;
           }
         }
         }
@@ -4821,12 +4827,10 @@ export class RecallInternalCoordinator {
           },
         trustByPath: recallTrustByPath,
         });
-        recalledMemoryIds = this.deps.extractMemoryIdsFromResults(scoped);
         recalledMemoryPaths = scoped
           .map((result) => result.path)
           .filter(Boolean);
         xrayRecalledResults = scoped;
-        impressionRecorded = true;
       } else {
         const memories = await awaitAssemblyStep(
           "recent-memory-read",
@@ -4932,12 +4936,10 @@ export class RecallInternalCoordinator {
                 },
               trustByPath: recallTrustByPath,
               });
-              recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
               recalledMemoryPaths = longTerm
                 .map((result) => result.path)
                 .filter(Boolean);
               xrayRecalledResults = longTerm;
-              impressionRecorded = true;
             }
           } else {
             let recent = await awaitAssemblyStep(
@@ -4957,6 +4959,7 @@ export class RecallInternalCoordinator {
                   (m, i) => ({
                     docid: m.frontmatter.id,
                     path: m.path,
+                    namespace: this.deps.namespaceFromPath(m.path),
                     snippet: m.content,
                     score: 1.0 - i / Math.max(recentSorted.length, 1),
                   }),
@@ -5046,12 +5049,10 @@ export class RecallInternalCoordinator {
                 },
               trustByPath: recallTrustByPath,
               });
-              recalledMemoryIds = this.deps.extractMemoryIdsFromResults(recent);
               recalledMemoryPaths = recent
                 .map((result) => result.path)
                 .filter(Boolean);
               xrayRecalledResults = recent;
-              impressionRecorded = true;
             } else {
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
@@ -5096,12 +5097,10 @@ export class RecallInternalCoordinator {
                   },
                 trustByPath: recallTrustByPath,
                 });
-                recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
                 recalledMemoryPaths = longTerm
                   .map((result) => result.path)
                   .filter(Boolean);
                 xrayRecalledResults = longTerm;
-                impressionRecorded = true;
               }
             }
           }
@@ -5148,12 +5147,10 @@ export class RecallInternalCoordinator {
               },
             trustByPath: recallTrustByPath,
             });
-            recalledMemoryIds = this.deps.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
               .map((result) => result.path)
               .filter(Boolean);
             xrayRecalledResults = longTerm;
-            impressionRecorded = true;
           }
         }
       }
@@ -5326,6 +5323,15 @@ export class RecallInternalCoordinator {
       sectionBuckets,
       options.budgetCharsOverride,
     );
+    recalledMemoryIds = assembledRecall.includedMemoryIds;
+    recalledMemoryPaths = assembledRecall.includedMemoryPaths;
+    recalledMemoryNamespaces = assembledRecall.includedMemoryNamespaces;
+    recalledMemoryCount = assembledRecall.includedMemoryIds.length;
+    this.deps.trackMemoryAccess(
+      assembledRecall.includedMemoryIds,
+      assembledRecall.includedMemoryPaths,
+      assembledRecall.includedMemoryNamespaces,
+    );
     const context =
       assembledRecall.sections.length === 0
         ? ""
@@ -5343,6 +5349,10 @@ export class RecallInternalCoordinator {
       truncated: assembledRecall.truncated,
       includedSections: assembledRecall.includedIds,
       omittedSections: assembledRecall.omittedIds,
+      includedMemoryIds: assembledRecall.includedMemoryIds,
+      includedMemoryPaths: assembledRecall.includedMemoryPaths,
+      includedMemoryNamespaces: assembledRecall.includedMemoryNamespaces,
+      omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
 
     // X-ray capture (issue #570 PR 1).  Only fires when the caller
@@ -5372,20 +5382,23 @@ export class RecallInternalCoordinator {
         // from the path here guarantees `memoryId` and `path` refer to
         // the same underlying result.
         const idFromPath = (p: string): string | null => {
-          const match = p.match(/([^/]+)\.md$/);
+          const match = p.match(/([^/\\]+)\.md$/);
           return match ? match[1] ?? null : null;
         };
         // Build a path → QmdSearchResult index so we can pull per-result
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
         const xrayResultByPath = new Map<string, QmdSearchResult>(
-          xrayRecalledResults.map((xr) => [xr.path, xr]),
+          xrayRecalledResults.map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
         );
         const results: RecallXrayResult[] = [];
-        for (const recalledPath of recalledMemoryPaths) {
+        for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
+          const recalledPath = recalledMemoryPaths[xrayIdx]!;
+          // Namespace from the aligned capture array, not re-derived from a relative path (#2020).
+          const recalledNamespace = recalledMemoryNamespaces[xrayIdx];
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
-          const xrayResult = xrayResultByPath.get(recalledPath);
+          const xrayResult = xrayResultByPath.get(`${recalledNamespace ?? ""}\0${recalledPath}`);
           const scoreDecomposition: RecallXrayScoreDecomposition = {
             final: xrayResult?.score ?? 0,
           };
@@ -5396,7 +5409,7 @@ export class RecallInternalCoordinator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
-          const resultNamespace = this.deps.namespaceFromPath(recalledPath);
+          const resultNamespace = recalledNamespace ?? this.deps.namespaceFromPath(recalledPath);
           let provenance: RecallXrayResult["provenance"] | undefined;
           let sourceSpan: RecallXrayResult["sourceSpan"] | undefined;
           try {
@@ -5425,7 +5438,9 @@ export class RecallInternalCoordinator {
             // X-ray capture is best-effort; missing provenance must not
             // perturb recall or suppress the surfaced result.
           }
-          const trustItem = recallTrustByPath?.get(recalledPath);
+          const trustItem =
+            recallTrustByPath?.get(JSON.stringify([recalledNamespace ?? "", recalledPath])) ??
+            recallTrustByPath?.get(recalledPath);
           results.push({
             memoryId: derivedId,
             path: recalledPath,
@@ -5443,13 +5458,14 @@ export class RecallInternalCoordinator {
         // must never look like "no result"). These are NOT in recalledMemoryPaths
         // (they were excluded from injection) but ARE in the trust map.
         if (recallTrustByPath) {
-          for (const [qPath, qItem] of recallTrustByPath) {
-            if (!qItem.quarantined || recalledMemoryPaths.includes(qPath)) continue;
-            const qId = idFromPath(qPath);
+          for (const qItem of recallTrustByPath.values()) {
+            // Map is keyed by composite trustResultKey; read the plain path from the item (#2020).
+            if (!qItem.quarantined || recalledMemoryPaths.includes(qItem.path)) continue;
+            const qId = idFromPath(qItem.path);
             if (!qId) continue;
             results.push({
               memoryId: qId,
-              path: qPath,
+              path: qItem.path,
               servedBy,
               scoreDecomposition: { final: 0 },
               admittedBy: [],
@@ -5557,9 +5573,9 @@ export class RecallInternalCoordinator {
           budgetsApplied,
           latencyMs: Date.now() - recallStart,
           resultPaths: recalledMemoryPaths,
+          resultNamespaces: recalledMemoryNamespaces,
           policyVersion,
           appendImpression:
-            impressionRecorded ||
             recalledMemoryIds.length > 0 ||
             this.deps.config.recordEmptyRecallImpressions,
           identityInjection: {

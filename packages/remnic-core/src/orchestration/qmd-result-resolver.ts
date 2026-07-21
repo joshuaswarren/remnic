@@ -137,6 +137,7 @@ export class QmdResultResolver {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
+    preferredNamespace?: string,
   ): Promise<MemoryFile | null> {
     const parts = qmdCollectionPathParts(resultPath);
     const fallbackStorageDir = storageDirOrNull(fallbackStorage);
@@ -234,6 +235,31 @@ export class QmdResultResolver {
       }
     }
 
+    if (preferredNamespace) {
+      try {
+        const preferredStorage = await this.storageFor(preferredNamespace);
+        for (const candidate of qmdResultPathCandidates(
+          preferredStorage.dir,
+          resultPath,
+        )) {
+          const memory = await preferredStorage.readMemoryByPath(candidate);
+          if (memory) return memory;
+        }
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        log.debug("qmd preferred namespace path lookup failed open", {
+          path: resultPath,
+          namespace: preferredNamespace,
+          error: (err as Error).message,
+        });
+      }
+      // The caller supplied an explicit owning namespace. For a relative path
+      // the preferred store was the only correct lead, so a miss means the hit
+      // is stale/deleted — do NOT fall through to the default store and validate
+      // a same-relative-path memory from the wrong namespace (#2020). Absolute
+      // paths still fall through: the absolute branch resolves the true owner.
+      if (!path.isAbsolute(resultPath)) return null;
+    }
     if (path.isAbsolute(resultPath)) {
       if (!fallbackStorageDir) {
         return await fallbackStorage.readMemoryByPath(resultPath);
@@ -276,6 +302,7 @@ export class QmdResultResolver {
       result.path,
       fallbackStorage,
       recallNamespaces,
+      result.namespace,
     );
     if (!memory) return null;
 

@@ -3104,6 +3104,7 @@ export function parseConfig(
       typeof cfg.entityRetrievalRecentTurns === "number" ? cfg.entityRetrievalRecentTurns : 6,
     entitySchemas,
     recallBudgetChars: recallPipelineConfig.recallBudgetChars,
+    recallProfileMaxRatio: parseRecallProfileMaxRatio(cfg.recallProfileMaxRatio),
     recallOuterTimeoutMs:
       typeof cfg.recallOuterTimeoutMs === "number" ? Math.max(0, Math.floor(cfg.recallOuterTimeoutMs)) : 75_000,
     recallCoreDeadlineMs:
@@ -4106,6 +4107,17 @@ function parseBriefingConfig(raw: unknown): import("./types.js").BriefingConfig 
 function clampNonNegativeNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(0, Math.floor(value));
+}
+
+function parseRecallProfileMaxRatio(value: unknown): number {
+  if (value === undefined) return 0.3;
+  const ratio = coerceNumber(value);
+  if (ratio === undefined || ratio < 0 || ratio > 1) {
+    throw new Error(
+      `recallProfileMaxRatio must be a finite number in [0, 1]; got ${JSON.stringify(value)}`,
+    );
+  }
+  return ratio;
 }
 
 /**

@@ -148,6 +148,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for assembled recall context.** Controls how much memory context is injected into agent prompts. If unset, falls back to `maxMemoryTokens * 4`. See [Recall Budget Tuning](#recall-budget-tuning) below. |
+| `recallProfileMaxRatio` | `0.3` | Maximum fraction of `recallBudgetChars` available to the behavioral profile. The profile truncates at a line boundary so query-specific memory results can claim the remaining budget. Set to `1` to disable the share cap. |
 | `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
 | `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
@@ -194,6 +195,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `entityAliasesEnabled` | `true` | Track normalized aliases for entity resolution and merge safety |
 | `entitySummaryEnabled` | `true` | Maintain synthesized entity summaries used by retrieval and tooling |
 | `recallBudgetChars` | `maxMemoryTokens * 4` | Hard cap for total assembled recall context (final safety trim before system prompt injection) |
+| `recallProfileMaxRatio` | `0.3` | Maximum fraction of the final recall character budget available to the behavioral profile; set to `1` to disable the share cap |
 | `recallPipeline` | `(built-in ordered defaults)` | Ordered section controls for recall assembly, including per-section caps and knobs |
 | `recallDirectAnswerEnabled` | `false` | Opt in to the direct-answer retrieval tier (issue #518). When enabled, the tier runs in observation mode: it annotates recall tier explain data without short-circuiting the QMD path. See [Retrieval Explain](./retrieval-explain.md). |
 | `recallDirectAnswerTokenOverlapFloor` | `0.55` | Minimum query↔memory token-overlap ratio required for direct-answer eligibility. Set to `0` to disable the gate. |

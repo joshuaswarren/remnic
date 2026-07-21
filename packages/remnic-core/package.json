@@ -2979,6 +2979,16 @@
       "types": "./dist/write-envelope.d.ts",
       "remnic-source": "./src/write-envelope.ts",
       "import": "./dist/write-envelope.js"
+    },
+    "./write-quarantine": {
+      "types": "./dist/write-quarantine.d.ts",
+      "remnic-source": "./src/write-quarantine.ts",
+      "import": "./dist/write-quarantine.js"
+    },
+    "./write-quarantine.js": {
+      "types": "./dist/write-quarantine.d.ts",
+      "remnic-source": "./src/write-quarantine.ts",
+      "import": "./dist/write-quarantine.js"
     }
   },
   "files": [

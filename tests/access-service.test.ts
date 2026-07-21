@@ -4734,3 +4734,107 @@ test("a keyed recall whose idempotency.put FAILS rejects, persists nothing, and 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("recordCitationUsage tracks duplicate citations with resolved namespace paths", async () => {
+  const memoryPath = "/tmp/engram/namespaces/project-x/facts/2026-07-19/same-id.md";
+  const tracked: Array<{ ids: string[]; paths: string[] }> = [];
+  const service = new EngramAccessService({
+    config: {
+      memoryDir: "/tmp/engram",
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      defaultRecallNamespaces: ["self", "shared"],
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        {
+          name: "project-x",
+          readPrincipals: ["project-x"],
+          writePrincipals: ["project-x"],
+        },
+      ],
+    },
+    getStorage: async () => ({
+      dir: "/tmp/engram/namespaces/project-x",
+      readAllMemories: async () => {
+        throw new Error("citation tracking must not parse all memories");
+      },
+      findExistingMemoryPaths: async () => new Map([["same-id", [memoryPath, memoryPath]]]),
+    }),
+    trackMemoryAccess: (ids: string[], paths: string[]) => {
+      tracked.push({ ids, paths });
+    },
+  } as any);
+
+  const result = await service.recordCitationUsage({
+    namespace: "project-x",
+    authenticatedPrincipal: "project-x",
+    entries: [
+      { path: "facts/2026-07-19/same-id.md", lineStart: 1, lineEnd: 1, note: "" },
+      { path: "other/same-id.md", lineStart: 1, lineEnd: 1, note: "" },
+    ],
+    rolloutIds: [],
+  });
+
+  assert.deepEqual(result, { submitted: 2, matched: 2 });
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [memoryPath, memoryPath] }]);
+});
+test("recordCitationUsage prefers the cited path before id-only lookup", async () => {
+  const firstPath = "/tmp/engram/namespaces/project-x/facts/first/same-id.md";
+  const secondPath = "/tmp/engram/namespaces/project-x/facts/second/same-id.md";
+  const tracked: Array<{ ids: string[]; paths: string[] }> = [];
+  let findCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir: "/tmp/engram",
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      defaultRecallNamespaces: ["self", "shared"],
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        {
+          name: "project-x",
+          readPrincipals: ["project-x"],
+          writePrincipals: ["project-x"],
+        },
+      ],
+    },
+    getStorage: async () => ({
+      dir: "/tmp/engram/namespaces/project-x",
+      readAllMemories: async () => {
+        throw new Error("citation tracking must not parse all memories");
+      },
+      findExistingMemoryPaths: async (
+        ids: string[],
+        preferredPaths: Map<string, string[]>,
+      ) => {
+        findCalls += 1;
+        assert.deepEqual(ids, ["same-id"]);
+        assert.deepEqual(preferredPaths.get("same-id"), [
+          "facts/first/same-id.md",
+          "facts/second/same-id.md",
+        ]);
+        return new Map([["same-id", [firstPath, secondPath]]]);
+      },
+    }),
+    trackMemoryAccess: (ids: string[], paths: string[]) => {
+      tracked.push({ ids, paths });
+    },
+  } as any);
+
+  const result = await service.recordCitationUsage({
+    namespace: "project-x",
+    authenticatedPrincipal: "project-x",
+    entries: [
+      { path: "facts/first/same-id.md", lineStart: 1, lineEnd: 1, note: "" },
+      { path: "facts/second/same-id.md", lineStart: 2, lineEnd: 2, note: "" },
+    ],
+    rolloutIds: [],
+  });
+
+  assert.equal(findCalls, 1);
+  assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, secondPath] }]);
+});

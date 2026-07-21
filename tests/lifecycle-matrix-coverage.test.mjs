@@ -604,10 +604,10 @@ test("root flush-plan lifecycle entrypoint is tracked (grandfathered), not silen
 test("retrieval + namespace resolver paths are tracked (grandfathered), not silently ignored", () => {
   const manifest = loadReal();
   for (const p of [
-    "src/retrieval.ts",
-    "packages/remnic-core/src/retrieval.ts",
     "packages/remnic-core/src/retrieval-agents.ts",
     "src/retrieval-agents.ts",
+    "src/retrieval.ts",
+    "src/orchestration/recall-section-coordinator.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
@@ -624,6 +624,25 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
     assert.equal(covered.length, 0);
     assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
     assert.equal(warnings.length, 1, `${p} retrieval/namespace change must warn, not silently bypass the gate`);
+  }
+});
+
+test("recall-budget subject covers the recall-output budgeting paths", () => {
+  const manifest = loadReal();
+  for (const p of [
+    "packages/remnic-core/src/orchestration/recall-section-coordinator.ts",
+    "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/recall-mmr.ts",
+    "packages/remnic-core/src/recall-qos.ts",
+  ]) {
+    assert.equal(classifyGlob(p, manifest), "covered", `${p} must be covered by the recall-budget subject`);
+    assert.equal(manifest.coverage[p], "recall-budget", `${p} maps to the recall-budget subject`);
+    const { covered, warnings, violations } = evaluateCoverage([p], manifest);
+    assert.equal(covered.length, 1, `${p} touch is a covered pass`);
+    assert.equal(covered[0].file, p, `${p} is the covered file the evaluator returns`);
+    assert.equal(covered[0].subject, "recall-budget", `${p} is covered specifically by recall-budget`);
+    assert.equal(warnings.length, 0);
+    assert.equal(violations.length, 0);
   }
 });
 

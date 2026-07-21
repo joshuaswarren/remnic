@@ -72,6 +72,8 @@
     "src/openclaw-flush-plan-lifecycle.ts",
     "src/retrieval.ts",
     "packages/remnic-core/src/retrieval.ts",
+    "packages/remnic-core/src/recall-mmr.ts",
+    "packages/remnic-core/src/recall-qos.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",
@@ -133,7 +135,11 @@
     "packages/remnic-core/src/storage/memory-lifecycle-ledger-access.ts": "lifecycle-ledger",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts": "lifecycle-ledger",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger-cli.ts": "lifecycle-ledger",
-    "packages/remnic-core/src/maintenance/dreams-ledger.ts": "dreams-ledger"
+    "packages/remnic-core/src/maintenance/dreams-ledger.ts": "dreams-ledger",
+    "packages/remnic-core/src/orchestration/recall-section-coordinator.ts": "recall-budget",
+    "packages/remnic-core/src/retrieval.ts": "recall-budget",
+    "packages/remnic-core/src/recall-mmr.ts": "recall-budget",
+    "packages/remnic-core/src/recall-qos.ts": "recall-budget"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
@@ -172,7 +178,6 @@
     "packages/remnic-core/src/orchestration/recall-rerank-coordinator.ts",
     "packages/remnic-core/src/orchestration/recall-result-formatter.ts",
     "packages/remnic-core/src/orchestration/recall-search-pipeline.ts",
-    "packages/remnic-core/src/orchestration/recall-section-coordinator.ts",
     "packages/remnic-core/src/orchestration/self-deps.ts",
     "packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts",
     "packages/remnic-core/src/orchestration/tier-migration-coordinator.ts",
@@ -188,7 +193,6 @@
     "src/session-observer-state.ts",
     "src/openclaw-flush-plan-lifecycle.ts",
     "src/retrieval.ts",
-    "packages/remnic-core/src/retrieval.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
     "packages/remnic-core/src/namespaces/catalog.ts",

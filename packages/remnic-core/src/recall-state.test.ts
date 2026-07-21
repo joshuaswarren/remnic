@@ -55,6 +55,21 @@ test("LastRecallStore.record persists tierExplain and round-trips to JSON on dis
   assert.deepEqual(parsed["s1"]?.tierExplain, tierExplain);
 });
 
+test("LastRecallStore.record persists per-result namespaces", async () => {
+  const { store } = await freshStore();
+  const resultNamespaces = ["main", "shared"] as Array<string | undefined>;
+  await store.record({
+    sessionKey: "s1",
+    query: "namespaced recall",
+    memoryIds: ["same-id", "same-id"],
+    resultPaths: ["facts/same-id.md", "facts/same-id.md"],
+    resultNamespaces,
+  });
+  const snap = store.get("s1");
+  assert.ok(snap);
+  assert.deepEqual(snap.resultNamespaces, resultNamespaces);
+});
+
 // ── Defensive copies isolate the stored snapshot from caller mutation ──────
 
 test("LastRecallStore.record copies filteredBy so caller mutation does not tear the snapshot", async () => {

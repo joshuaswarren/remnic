@@ -40,6 +40,19 @@ export interface ObserveOptions extends RequestOptions {
   maxBytes?: number;
 }
 
+/**
+ * Result of a startup namespace-writability preflight (issue #1888 part 3).
+ * `not_writable` is a DEFINITIVE misconfiguration answer from the daemon (the
+ * configured namespace resolves as non-writable for this principal), which the
+ * client surfaces loudly. `indeterminate` means the daemon could not be reached
+ * or answered unexpectedly (timeout, network, auth, 5xx) — the client must NOT
+ * cry wolf about the namespace on those, since the answer is unknown.
+ */
+export type NamespacePreflightResult =
+  | { readonly status: "writable"; readonly namespace: string }
+  | { readonly status: "not_writable"; readonly reason: "not_writable" | "unsupported"; readonly namespace: string }
+  | { readonly status: "indeterminate"; readonly detail: string };
+
 export class RemnicHttpError extends Error {
   constructor(
     readonly status: number,
@@ -96,6 +109,58 @@ export class RemnicClient {
 
   async health(options: RequestOptions = {}): Promise<Record<string, unknown>> {
     return this.request("GET", "/engram/v1/health", undefined, options);
+  }
+
+  /**
+   * Startup namespace-writability preflight (issue #1888 part 3). Asks the
+   * daemon — read-only, no write, no side effect — whether the configured
+   * namespace resolves as writable for this client's (token-resolved)
+   * principal. A `not_writable` answer is definitive and surfaced loudly; any
+   * transport failure returns `indeterminate` so a flaky daemon never triggers
+   * a false namespace-misconfig alarm.
+   */
+  async preflightNamespace(
+    sessionKey: string | undefined,
+    options: RequestOptions = {},
+  ): Promise<NamespacePreflightResult> {
+    const params = new URLSearchParams();
+    if (this.config.namespace) params.set("namespace", this.config.namespace);
+    if (sessionKey) params.set("session", sessionKey);
+    // Check the op this client's ENABLED write path uses: automatic turn
+    // capture (observe) when observation is on, else the explicit store op.
+    params.set("op", this.config.observeEnabled ? "observe" : "memory_store");
+    const qs = params.toString();
+    const path = `/engram/v1/namespace/writable${qs ? `?${qs}` : ""}`;
+    try {
+      const payload = await this.request<{ ok?: unknown; reason?: unknown; namespace?: unknown }>(
+        "GET",
+        path,
+        undefined,
+        options,
+      );
+      // Both branches require the full contract before they are trusted: an
+      // `ok:true` without a concrete namespace, or an `ok:false` without a known
+      // reason + concrete namespace, is malformed → indeterminate, never a false
+      // writable/not-writable verdict.
+      if (
+        payload?.ok === true &&
+        typeof payload.namespace === "string" &&
+        payload.namespace.length > 0
+      ) {
+        return { status: "writable", namespace: payload.namespace };
+      }
+      if (
+        payload?.ok === false &&
+        (payload.reason === "not_writable" || payload.reason === "unsupported") &&
+        typeof payload.namespace === "string" &&
+        payload.namespace.length > 0
+      ) {
+        return { status: "not_writable", reason: payload.reason, namespace: payload.namespace };
+      }
+      return { status: "indeterminate", detail: "unexpected preflight response shape" };
+    } catch (err) {
+      return { status: "indeterminate", detail: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   async recall(

@@ -1864,6 +1864,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   entitySchemas?: Record<string, EntitySchemaDefinition>;
   // Recall assembly controls
   recallBudgetChars: number;
+  /** Maximum fraction of the total recall budget that the behavioral profile may consume. */
+  recallProfileMaxRatio: number;
   recallOuterTimeoutMs: number;
   recallCoreDeadlineMs: number;
   recallEnrichmentDeadlineMs: number;
@@ -3421,6 +3423,8 @@ export interface QmdSearchResult {
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
+  /** Namespace that owned this result when returned by a namespace fanout search. */
+  namespace?: string;
 }
 
 export interface QmdSearchExplain {
@@ -3643,6 +3647,7 @@ export type {
 /** Entry in the access tracking buffer (batched updates) */
 export interface AccessTrackingEntry {
   memoryId: string;
+  memoryPath?: string;
   newCount: number;
   lastAccessed: string;
 }

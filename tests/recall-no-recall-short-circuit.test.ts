@@ -7,7 +7,8 @@ import type { PluginConfig } from "../src/types.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
 function tmpDir(prefix: string): string {
-  return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const uniqueSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(os.tmpdir(), "remnic-tests", `${prefix}-${uniqueSuffix}`);
 }
 
 function baseConfig(memoryDir: string): PluginConfig {
@@ -762,6 +763,53 @@ test("recall records impressions when memories are injected even if empty impres
   assert.equal(recorded[0]?.sessionKey, "session-non-empty-impression");
   assert.deepEqual(recorded[0]?.memoryIds, ["fact-1"]);
   assert.equal(recorded[0]?.appendImpression, true);
+});
+
+test("recall does not append an empty impression when the shared budget admits no memories", async () => {
+  const memoryDir = tmpDir("engram-budget-empty-impression");
+  await mkdir(path.join(memoryDir, "facts/2026-02-01"), { recursive: true });
+  await writeFile(
+    path.join(memoryDir, "facts/2026-02-01/fact-budget.md"),
+    [
+      "---",
+      "id: fact-budget",
+      "category: fact",
+      "created: 2026-02-01T00:00:00.000Z",
+      "updated: 2026-02-01T00:00:00.000Z",
+      "source: extraction",
+      "confidence: 0.9",
+      "confidenceTier: explicit",
+      "---",
+      "",
+      "This memory is intentionally excluded by the tiny shared budget.",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const cfg = baseConfig(memoryDir);
+  cfg.recallPlannerEnabled = false;
+  cfg.qmdEnabled = false;
+  cfg.recallBudgetChars = 30;
+  cfg.recordEmptyRecallImpressions = false;
+  const orchestrator = new Orchestrator(cfg);
+
+  let recorded: Array<{ sessionKey: string; memoryIds: string[]; appendImpression?: boolean }> = [];
+  (orchestrator as any).lastRecall = {
+    record: async (payload: { sessionKey: string; memoryIds: string[]; appendImpression?: boolean }) => {
+      recorded.push(payload);
+    },
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "What do we know about the tiny budget?",
+    "session-budget-empty-impression",
+  );
+
+  assert.doesNotMatch(context, /## Relevant Memories/);
+  assert.equal(recorded.length, 1);
+  assert.deepEqual(recorded[0]?.memoryIds, []);
+  assert.equal(recorded[0]?.appendImpression, false);
 });
 
 test("recall rejects unreadable namespace overrides before fetching memories", async () => {

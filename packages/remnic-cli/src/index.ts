@@ -175,6 +175,8 @@ import {
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
+import { WriteQuarantineStore } from "@remnic/core/write-quarantine.js";
+import { renderQuarantineList, type QuarantineFormat } from "./quarantine-cli.js";
 import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
 import {
   createConfiguredOfflineStorage,
@@ -375,6 +377,7 @@ type CommandName =
   | "sync"
   | "dedup"
   | "connectors"
+  | "quarantine"
   | "space"
   | "bench"
   | "benchmark"
@@ -6543,6 +6546,33 @@ async function cmdDoctor(): Promise<void> {
     checks.push({ name: "Memory directory", ok: false, detail: `cannot create ${memoryDir}` });
   }
 
+  // Dead-lettered writes rejected by the namespace ACL (issue #1888). A
+  // non-zero count means a client namespace is misconfigured and writes are
+  // being parked instead of stored — surface it so it doesn't go unnoticed.
+  try {
+    const quarantined = await new WriteQuarantineStore(memoryDir).count();
+    checks.push({
+      name: "Quarantined writes",
+      ok: quarantined === 0,
+      warn: quarantined > 0,
+      detail: quarantined === 0 ? "none" : `${quarantined} parked`,
+      remediation:
+        quarantined > 0
+          ? "Inspect with `remnic quarantine list`, then fix the client's namespace config so writes are stored instead of parked."
+          : undefined,
+    });
+  } catch {
+    // Keep doctor non-failing, but surface that the quarantine store could not
+    // be read rather than dropping the check silently. Detail stays generic —
+    // the raw error can carry absolute paths/internal context meant for logs.
+    checks.push({
+      name: "Quarantined writes",
+      ok: false,
+      warn: true,
+      detail: "unable to inspect quarantine store",
+    });
+  }
+
   // ── OpenClaw config checks ──────────────────────────────────────────────────
   const openclawConfigPath = resolveOpenclawConfigPath();
   const openclawConfigExists = fs.existsSync(openclawConfigPath);
@@ -9821,6 +9851,41 @@ function snapshotConnectorTokenEntry(connectorId: string): TokenEntry | null {
 
 // ── M5 connectors command ────────────────────────────────────────────────────
 
+/**
+ * `remnic quarantine list` (issue #1888): show the writes the namespace ACL
+ * rejected and dead-lettered (recoverable) instead of destroying them. Read
+ * only — no orchestrator boot. Recovery (`replay`) is a deliberate follow-up:
+ * a correct replay must re-submit without the write surface re-quarantining the
+ * replay attempt, which needs a quarantine-suppression flag through the access
+ * layer.
+ */
+async function cmdQuarantine(action: string, rest: string[], json: boolean): Promise<void> {
+  if (action !== "list") {
+    process.stderr.write(`quarantine: unknown action "${action}". Use: list [--json].\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const extra = rest.filter((a) => !a.startsWith("--"));
+  if (extra.length > 0) {
+    process.stderr.write(`quarantine list: unexpected argument(s): ${extra.join(", ")}. Use: list [--json].\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const format: QuarantineFormat = json ? "json" : "text";
+  try {
+    // resolveMemoryDir() can throw on invalid config JSON, and list() surfaces
+    // an unreadable/symlink-invalid quarantine store — fail cleanly and exit 2
+    // rather than a raw stack trace, so the remediation command degrades the
+    // same way `doctor` does. The detail stays generic: the raw error can carry
+    // absolute paths/internal context meant for logs.
+    const store = new WriteQuarantineStore(resolveMemoryDir());
+    console.log(renderQuarantineList(await store.list(), format));
+  } catch {
+    process.stderr.write("quarantine list: unable to inspect quarantine store\n");
+    process.exitCode = 2;
+  }
+}
+
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
   const rawNonFlagArgs = rest.filter((a) => !a.startsWith("--"));
   const resolveConfigStrippedNonFlagArgs = (): string[] => {
@@ -13067,6 +13132,13 @@ Options:
       break;
     }
 
+    case "quarantine": {
+      const action = rest[0] ?? "list";
+      const json = rest.includes("--json");
+      await cmdQuarantine(action, rest.slice(1), json);
+      break;
+    }
+
     case "space": {
       const action = rest[0] ?? "list";
       const json = rest.includes("--json");
@@ -13492,6 +13564,7 @@ Usage:
     marketplace generate    Generate marketplace.json for Codex
     marketplace validate    Validate a marketplace.json file
     marketplace install     Install from a marketplace source
+  remnic quarantine list [--json]   Inspect writes the namespace ACL rejected
   remnic extensions <list|show|validate|reload>  Manage memory extensions
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship

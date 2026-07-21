@@ -14,6 +14,36 @@ test("parseConfig applies recall timeout and qmd recall cache defaults", () => {
   assert.equal(config.qmdRecallCacheMaxEntries, 128);
 });
 
+test("parseConfig applies the default profile share cap", () => {
+  assert.equal(parseConfig({}).recallProfileMaxRatio, 0.3);
+});
+
+test("parseConfig accepts a configurable profile share cap", () => {
+  assert.equal(
+    parseConfig({ recallProfileMaxRatio: 0.5 }).recallProfileMaxRatio,
+    0.5,
+  );
+});
+
+test("parseConfig preserves profile share cap boundaries", () => {
+  assert.equal(parseConfig({ recallProfileMaxRatio: 0 }).recallProfileMaxRatio, 0);
+  assert.equal(parseConfig({ recallProfileMaxRatio: 1 }).recallProfileMaxRatio, 1);
+});
+
+test("parseConfig rejects an explicit null profile share cap", () => {
+  assert.throws(
+    () => parseConfig({ recallProfileMaxRatio: null }),
+    /recallProfileMaxRatio must be a finite number in \[0, 1\]/,
+  );
+});
+
+test("parseConfig rejects an invalid profile share cap", () => {
+  assert.throws(
+    () => parseConfig({ recallProfileMaxRatio: 1.1 }),
+    /recallProfileMaxRatio must be a finite number in \[0, 1\]/,
+  );
+});
+
 test("parseConfig respects explicit recall timeout and qmd recall cache settings", () => {
   const config = parseConfig({
     recallOuterTimeoutMs: 18_000,

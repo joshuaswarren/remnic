@@ -123,10 +123,25 @@ async function resolveContainedRegularFile(
  * Cost: readdir on entities/ + filename scoring. Typically <5ms.
  *
  */
+// Agents scan one namespace storage dir and return absolute paths. Contextual
+// fanout hits are also absolute (globally-unique identity), so we keep the
+// agent path absolute and only stamp the owning namespace here — that carries
+// the namespace through merge/tracking without re-deriving it (#2020). No-op
+// without a resolver.
+function namespaceRelativeResult(
+  result: ParallelSearchResult,
+  _memoryDir: string,
+  namespaceFromPath?: (p: string) => string,
+): ParallelSearchResult {
+  if (!namespaceFromPath || !result.path || result.namespace) return result;
+  return { ...result, namespace: namespaceFromPath(result.path) };
+}
+
 export async function runDirectAgent(
   query: string,
   memoryDir: string,
   maxResults = 10,
+  namespaceFromPath?: (p: string) => string,
 ): Promise<ParallelSearchResult[]> {
   try {
     const canonicalRoot = await realpath(memoryDir);
@@ -156,14 +171,20 @@ export async function runDirectAgent(
       const safePath = await resolveContainedRegularFile(memoryDir, fullPath, canonicalRoot);
       if (!safePath) continue;
 
-      results.push({
-        docid: nameWithoutExt,
-        path: safePath,
-        snippet: "", // populated by augmentWithDirectAndTemporal after merge
-        score,
-        transport: "scoped_prefilter",
-        agentSource: "direct",
-      });
+      results.push(
+        namespaceRelativeResult(
+          {
+            docid: nameWithoutExt,
+            path: safePath,
+            snippet: "", // populated by augmentWithDirectAndTemporal after merge
+            score,
+            transport: "scoped_prefilter",
+            agentSource: "direct",
+          },
+          memoryDir,
+          namespaceFromPath,
+        ),
+      );
     }
 
     return results
@@ -194,6 +215,7 @@ export async function runTemporalAgent(
   /** Optional candidate set from query-aware prefilter. Applied BEFORE the top-K cap so
    * in-scope entries are not displaced by newer out-of-scope entries. */
   candidatePaths?: Set<string> | null,
+  namespaceFromPath?: (p: string) => string,
 ): Promise<ParallelSearchResult[]> {
   try {
     const canonicalRoot = await realpath(memoryDir);
@@ -306,14 +328,20 @@ export async function runTemporalAgent(
 
       const baseName = path.basename(safePath, ".md");
 
-      results.push({
-        docid: baseName,
-        path: safePath,
-        snippet: "", // populated by augmentWithDirectAndTemporal after merge
-        score,
-        transport: "scoped_prefilter",
-        agentSource: "temporal",
-      });
+      results.push(
+        namespaceRelativeResult(
+          {
+            docid: baseName,
+            path: safePath,
+            snippet: "", // populated by augmentWithDirectAndTemporal after merge
+            score,
+            transport: "scoped_prefilter",
+            agentSource: "temporal",
+          },
+          memoryDir,
+          namespaceFromPath,
+        ),
+      );
     }
 
     return results
@@ -359,23 +387,34 @@ export async function runContextualAgent(
 
 /**
  * Merge results from multiple agents into a single deduplicated, weighted list.
- * Preserves snippets: if a higher-scoring result lacks a snippet, the existing
- * snippet from a lower-scoring source is retained.
+ * Deduplicates by (namespace, path). Contextual results carry a `namespace`
+ * (from the namespace-fanout search); direct/temporal results do not. When a
+ * `resolveNamespace` resolver is supplied, the missing namespace is derived from
+ * the result path the same canonical way the contextual side derives it
+ * (`result.namespace ?? resolveNamespace(result.path)`), so a direct/temporal hit
+ * and a contextual hit for the same (namespace, path) collapse to ONE merge key
+ * instead of being injected and access-counted twice. Preserves snippets: if a
+ * higher-scoring result lacks a snippet, the existing snippet from a lower-scoring
+ * source is retained.
  */
 function mergeAgentResults(
   allResults: ParallelSearchResult[],
   weights: Record<SearchAgentSource, number>,
   maxResults: number,
+  resolveNamespace?: (path: string) => string,
 ): QmdSearchResult[] {
   const merged = new Map<string, QmdSearchResult>();
   for (const result of allResults) {
-    const key = result.path || result.docid;
+    const namespace =
+      result.namespace ?? (resolveNamespace && result.path ? resolveNamespace(result.path) : undefined);
+    const key = `${namespace ?? ""}\0${result.path || result.docid}`;
     const weightedScore = result.score * weights[result.agentSource];
     const existing = merged.get(key);
     if (!existing || weightedScore > existing.score) {
       merged.set(key, {
         docid: result.docid,
         path: result.path,
+        namespace,
         // Preserve any snippet from the existing entry when the new one has none
         snippet: result.snippet || existing?.snippet || "",
         score: weightedScore,
@@ -455,6 +494,10 @@ export async function mergeWithAgentResults(
   weights: Record<SearchAgentSource, number>,
   maxResults: number,
   memoryDir?: string,
+  /** Optional namespace resolver. Direct/temporal results lack a namespace under
+   * namespace fanout; deriving it from the path lets them collapse onto the same
+   * merge key as the contextual result for the same (namespace, path). */
+  resolveNamespace?: (path: string) => string,
 ): Promise<QmdSearchResult[]> {
   if (directResults.length === 0 && temporalResults.length === 0) {
     return contextualResults.slice(0, maxResults);
@@ -469,6 +512,7 @@ export async function mergeWithAgentResults(
     [...contextualTagged, ...directResults, ...temporalResults],
     weights,
     maxResults,
+    resolveNamespace,
   );
   return populateEmptySnippets(merged, memoryDir);
 }
@@ -511,6 +555,9 @@ export async function augmentWithDirectAndTemporal(
   /** Optional candidate set from query-aware prefilter (time/tag scoped). Agents' results are
    * filtered to this set when provided so recall stays within the operator-specified scope. */
   candidatePaths?: Set<string> | null,
+  /** Optional namespace resolver so direct/temporal results collapse onto the same
+   * (namespace, path) merge key as their contextual counterpart. */
+  resolveNamespace?: (path: string) => string,
 ): Promise<QmdSearchResult[]> {
   // maxPerAgent=0 is a hard disable: skip agents entirely and return contextual unchanged
   if (maxPerAgent === 0) return contextualResults;
@@ -575,6 +622,7 @@ export async function augmentWithDirectAndTemporal(
     [...contextualTagged, ...scopedDirect, ...temporalResults],
     weights,
     maxResults,
+    resolveNamespace,
   );
 
   // Populate snippets for results discovered only by direct/temporal (no contextual preview)
@@ -593,6 +641,9 @@ export interface ParallelRetrievalOptions {
   maxResultsPerAgent?: number;
   /** Override default agent weights. Falls back to PARALLEL_AGENT_WEIGHTS when absent. */
   agentWeights?: Record<SearchAgentSource, number>;
+  /** Optional namespace resolver so direct/temporal results collapse onto the same
+   * (namespace, path) merge key as the contextual result for the same path. */
+  resolveNamespace?: (path: string) => string;
 }
 
 /**
@@ -655,6 +706,7 @@ export async function parallelRetrieval(
     [...contextualResults, ...directResults, ...temporalResults],
     options.agentWeights ?? PARALLEL_AGENT_WEIGHTS,
     maxResults,
+    options.resolveNamespace,
   );
   return populateEmptySnippets(merged, memoryDir);
 }

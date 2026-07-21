@@ -14,16 +14,19 @@ import { type EvalShadowRecallRecord, recordEvalShadowRecall } from "../evals.js
 import { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { resolvePrincipal } from "../namespaces/principal.js";
+import { type RecallSectionAppendOptions, type RecallSectionBuckets } from "./recall-section-coordinator.js";
 import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-helpers.js";
 import { ProfilingCollector } from "../profiling.js";
-import type { TrustStageResultItem } from "../trust-score-stage.js";
+import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
+import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
 
 export interface RecallEntryDeps {
   appendRecallSection(
-    sectionBuckets: Map<string, string[]>,
+    sectionBuckets: RecallSectionBuckets,
     sectionId: string,
     content: string,
+    options?: RecallSectionAppendOptions,
   ): boolean;
   readonly config: PluginConfig;
   enqueueDirectAnswerObservation(
@@ -36,12 +39,7 @@ export interface RecallEntryDeps {
   ): void;
   evalShadowWriteChain: Promise<void>;
   extractMemoryIdsFromResults(results: QmdSearchResult[]): string[];
-  formatQmdResults(
-    title: string,
-    results: QmdSearchResult[],
-    sessionKey?: string,
-    trustByPath?: Map<string, TrustStageResultItem> | null,
-  ): string;
+  recallResultFormatter: RecallResultFormatter;
   readonly initPromise: Promise<void> | null;
   lastRecallFailureAtMs: number;
   lastRecallFailureLogAtMs: number;
@@ -57,7 +55,6 @@ export interface RecallEntryDeps {
   ): Promise<string>;
   readonly storage: StorageManager;
   suppressedRecallFailures: number;
-  trackMemoryAccess(memoryIds: string[]): void;
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
 }
 
@@ -258,7 +255,7 @@ export class RecallEntryCoordinator {
   publishRecallResults(options: {
     title: string;
     results: QmdSearchResult[];
-    sectionBuckets: Map<string, string[]>;
+    sectionBuckets: RecallSectionBuckets;
     retrievalQuery: string;
     sessionKey: string | undefined;
     identityInjection?: {
@@ -270,26 +267,44 @@ export class RecallEntryCoordinator {
      * Issue #1577 — per-recall trust map. When present, quarantined items
      * are filtered from injection on EVERY recall path (hot QMD, embedding
      * fallback, cold archive, recent) so a faithfulness-contradicted memory
-     * cannot sneak in via a branch that bypasses trust scoring (review:
-     * fallback paths bypass trust). The map is also threaded to
-     * formatQmdResults for the epistemic hedge.
+     * cannot sneak in via a branch that bypasses trust scoring. The map is
+     * also threaded to formatQmdResultEntries for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
   }): void {
     const sectionId = "memories";
-    // Filter quarantined items from ALL recall paths so no branch can inject
-    // a hard-negative memory that trust scoring excluded on another path.
     const trustByPath = options.trustByPath ?? null;
     const injectable = trustByPath
-      ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
+      ? options.results.filter((r) => !trustResultFor(trustByPath, r)?.quarantined)
       : options.results;
-    const memoryIds = this.deps.extractMemoryIdsFromResults(injectable);
-    this.deps.trackMemoryAccess(memoryIds);
+    if (injectable.length === 0) return;
 
+    const formatted = this.deps.recallResultFormatter.formatQmdResultEntries(
+      options.title,
+      injectable,
+      options.sessionKey,
+      trustByPath,
+    );
     this.deps.appendRecallSection(
       options.sectionBuckets,
       sectionId,
-      this.deps.formatQmdResults(options.title, injectable, options.sessionKey, trustByPath),
+      formatted.heading,
     );
+    for (const [index, entry] of formatted.entries.entries()) {
+      const result = injectable[index];
+      if (!result) continue;
+      const memoryId = this.deps.extractMemoryIdsFromResults([result])[0];
+      this.deps.appendRecallSection(
+        options.sectionBuckets,
+        sectionId,
+        entry,
+        {
+          atomic: true,
+          ...(memoryId ? { memoryId } : {}),
+          ...(result.path ? { memoryPath: result.path } : {}),
+          ...(result.namespace ? { memoryNamespace: result.namespace } : {}),
+        },
+      );
+    }
   }
 }

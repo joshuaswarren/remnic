@@ -183,6 +183,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/action-confidence", operation: "action_confidence" },
   { method: "GET", pathname: "/engram/v1/recall/tier-explain", operation: "recall_tier_explain" },
   { method: "GET", pathname: "/engram/v1/recall/xray", operation: "recall_xray" },
+  { method: "GET", pathname: "/engram/v1/namespace/writable", operation: "namespace_writable" },
   { method: "GET", pathname: "/engram/v1/wearables/status", operation: "wearables_status" },
   { method: "POST", pathname: "/engram/v1/wearables/sync", operation: "wearables_sync" },
   { method: "GET", pathname: "/engram/v1/wearables/transcript", operation: "transcript_day" },

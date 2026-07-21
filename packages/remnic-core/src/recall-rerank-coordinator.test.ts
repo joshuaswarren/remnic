@@ -480,3 +480,29 @@ test("#1907: assembly deadline aborts the losing task's injected signal but not 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("trust rerank preserves duplicate paths owned by different namespaces (#2020)", async () => {
+  const config = await baseConfig({
+    recallMemoryWorthFilterEnabled: false,
+    trustScoreEnabled: true,
+  });
+  const corpus = makeFakes([mem("same", 5, 0)]);
+  const coord = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const results: QmdSearchResult[] = [
+    { ...result("same", 2), namespace: "private" },
+    { ...result("same", 1), namespace: "shared" },
+  ];
+
+  const outcome = await coord.applyTrustScoreRerank(results, ["private", "shared"]);
+
+  assert.deepEqual(
+    outcome.results.map((r) => r.namespace),
+    ["private", "shared"],
+    "same paths in separate namespaces must retain their result identity",
+  );
+  assert.equal(outcome.trustByPath?.size, 2, "trust metadata must have one entry per namespaced result");
+});

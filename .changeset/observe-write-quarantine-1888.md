@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Dead-letter quarantine for writes rejected by the namespace write-ACL (issue #1888, part 1). When `observe` / `memory_store` / `suggestion_submit` fail namespace authorization, the payload used to be dropped with no recoverable copy — a misconfigured client namespace silently destroyed every write in the window. The ACL rejection stays fail-closed and loud; the payload is now parked under `<memoryDir>/state/quarantine/<principalSafe>/` (outside any memory namespace, principal-keyed, bounded by count and age) before the rejection re-throws, following the "reject loudly but never destroy state" posture. A new `NamespaceNotWritableError` (subclass of `EngramAccessInputError`, so existing HTTP-400 mapping is unchanged) carries the attempted namespace + principal to the write surface; `EngramAccessInputError` moved alongside it into `access-errors.ts` and is re-exported from `access-service.ts` for compatibility. Non-ACL input errors and writable namespaces are never quarantined. Doctor surfacing, a replay command, and the client-side startup preflight follow in separate PRs.

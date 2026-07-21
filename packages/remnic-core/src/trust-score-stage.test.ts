@@ -469,3 +469,36 @@ test("cooperative abort stops the corpus and direct-read fallbacks at loop bound
   assert.equal(corpusReads, 0, "an aborted signal must stop namespace scans before they start");
   assert.equal(directReads, 0, "an aborted signal must stop direct-read batches before they start");
 });
+
+test("trust direct-read fallback threads the candidate namespace (#2020)", async () => {
+  // A namespace-fanout candidate carries a relative path plus its owning
+  // namespace. The cold-tier direct read MUST pass that namespace so the
+  // relative path resolves against the right store instead of the first
+  // fallback namespace (which would apply the wrong memory's trust signals).
+  const { buildTrustSignalsForRerank } = await import("./trust-score-stage.js");
+  const now = new Date("2026-07-01T12:00:00.000Z");
+  const directReads: Array<{ path: string; namespace?: string }> = [];
+  const deps = {
+    readNamespaceMemories: async () => [],
+    readMemoryFrontmatter: async (path: string, preferredNamespace?: string) => {
+      directReads.push({ path, namespace: preferredNamespace });
+      return null;
+    },
+    getNamespaceVersion: async () => 1,
+  };
+
+  await buildTrustSignalsForRerank(
+    [{ path: "facts/a.md", signalKey: "shared\u0000facts/a.md", namespace: "shared" }],
+    ["shared"],
+    deps,
+    { cache: new Map() },
+    now,
+    { corpusFallbackEnabled: false },
+  );
+
+  assert.deepEqual(
+    directReads,
+    [{ path: "facts/a.md", namespace: "shared" }],
+    "direct read must receive the candidate's owning namespace",
+  );
+});

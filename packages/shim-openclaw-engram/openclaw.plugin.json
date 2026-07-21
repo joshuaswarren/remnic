@@ -4291,6 +4291,13 @@
         "type": "number",
         "description": "Hard character cap for total recall context. Defaults to maxMemoryTokens * 4."
       },
+      "recallProfileMaxRatio": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.3,
+        "description": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
+      },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
@@ -7139,6 +7146,12 @@
       "label": "Recall Budget (Chars)",
       "advanced": true,
       "placeholder": "8000"
+    },
+    "recallProfileMaxRatio": {
+      "label": "Recall Profile Budget Share",
+      "advanced": true,
+      "placeholder": "0.3",
+      "help": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
     },
     "recallPipeline": {
       "label": "Recall Pipeline",

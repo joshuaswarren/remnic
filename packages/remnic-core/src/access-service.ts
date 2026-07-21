@@ -6,6 +6,11 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import {
+  recordCitationUsage as recordCitationUsageForAccess,
+  type CitationUsageRequest,
+  type CitationUsageResult,
+} from "./access-citation.js";
 import { coordinateRecall, type RecallCoordinatorHost, type RecallExecResult } from "./access-recall-concurrency.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -113,7 +118,7 @@ import {
   toMemoryPathRel,
 } from "./memory-lifecycle-ledger-utils.js";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
-import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { canReadNamespace, canWriteNamespace, citationAuthorizedNamespaces, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
@@ -160,6 +165,7 @@ import {
   type GraphSnapshotNodeMetadata,
 } from "./graph-snapshot.js";
 import * as nodePath from "node:path";
+import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 import {
   buildBriefing,
   FileCalendarSource,
@@ -266,7 +272,10 @@ import { AccessRecallSurface } from "./access-recall-surface.js";
 import { AccessIdentityContinuitySurface } from "./access-identity-continuity-surface.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 
-export class EngramAccessInputError extends Error {}
+import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
+// Re-exported so existing `import { … } from "./access-service.js"` callers keep
+// working after these classes moved to ./access-errors (issue #1888).
+export { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
 
 function qmdCollectionPathParts(resultPath: string): {
   collection: string;
@@ -1480,10 +1489,12 @@ export class EngramAccessService {
       this.orchestrator.config,
     );
     if (!result.ok) {
-      throw new EngramAccessInputError(
-        result.reason === "unsupported"
-          ? `unsupported namespace: ${result.namespace}`
-          : `namespace is not writable: ${result.namespace}`,
+      if (result.reason === "unsupported") {
+        throw new EngramAccessInputError(`unsupported namespace: ${result.namespace}`);
+      }
+      throw new NamespaceNotWritableError(
+        result.namespace,
+        this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal),
       );
     }
     return result.namespace;
@@ -1609,9 +1620,8 @@ export class EngramAccessService {
         profilePlan.writeNamespace.length > 0 &&
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
-        );
+        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
       return profilePlan.writeNamespace;
     }
@@ -1630,7 +1640,7 @@ export class EngramAccessService {
     // no separate write policy.
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
-      throw new EngramAccessInputError(`namespace is not writable: ${base}`);
+      throw new NamespaceNotWritableError(base, principal);
     }
     return combineNamespaces(base, overlay.namespace);
   }
@@ -1841,9 +1851,8 @@ export class EngramAccessService {
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
         clearSeededContext();
-        throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
-        );
+        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
       const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
         ? recallNamespacesForPrincipal(principal, this.orchestrator.config)
@@ -1917,9 +1926,7 @@ export class EngramAccessService {
         !canWriteNamespace(principal, baseNamespace, this.orchestrator.config)
       ) {
         clearSeededContext();
-        throw new EngramAccessInputError(
-          `namespace is not writable: ${baseNamespace}`,
-        );
+        throw new NamespaceNotWritableError(baseNamespace, principal);
       }
       return {
         principal,
@@ -1946,9 +1953,7 @@ export class EngramAccessService {
     // it, so it needs no separate write policy — rule 42 / 47 / 48).
     if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
       clearSeededContext();
-      throw new EngramAccessInputError(
-        `namespace is not writable: ${baseNamespace}`,
-      );
+      throw new NamespaceNotWritableError(baseNamespace, principal);
     }
     const writeNamespace = overlaidBase;
     const readNamespaces = [writeNamespace];
@@ -2253,7 +2258,7 @@ export class EngramAccessService {
     memoryPath: string,
     primaryNamespace: string,
     recallNamespaces: readonly string[] = [],
-  ): Promise<{ storage: StorageManager; dir: string } | null> {
+  ): Promise<{ storage: StorageManager; dir: string; namespace: string } | null> {
     const resolvedPath = nodePath.resolve(memoryPath);
     const memoryRoot = nodePath.resolve(this.orchestrator.config.memoryDir);
     const namespacesRoot = nodePath.join(memoryRoot, "namespaces");
@@ -2264,20 +2269,15 @@ export class EngramAccessService {
     }
     configuredNamespaces.add(this.orchestrator.config.defaultNamespace);
     configuredNamespaces.add(this.orchestrator.config.sharedNamespace);
+    // Legacy snapshots persist an absolute resultPath with no per-result namespace;
+    // derive the on-disk owner (decoded) so those paths still resolve (#2020).
     if (isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
-      const relativeToNamespaces = nodePath.relative(namespacesRoot, resolvedPath);
-      const [namespaceSegment] = relativeToNamespaces.split(/[\\/]/);
-      if (namespaceSegment) {
-        configuredNamespaces.add(
-          namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment,
-        );
-      }
+      const [seg] = nodePath.relative(namespacesRoot, resolvedPath).split(/[\\/]/);
+      if (seg) configuredNamespaces.add(namespaceIdentityFromToken(seg) ?? seg);
     }
-    for (const policy of this.orchestrator.config.namespacePolicies ?? []) {
-      configuredNamespaces.add(policy.name);
-    }
+    for (const policy of this.orchestrator.config.namespacePolicies ?? []) configuredNamespaces.add(policy.name);
 
-    const matches: Array<{ storage: StorageManager; dir: string }> = [];
+    const matches: Array<{ storage: StorageManager; dir: string; namespace: string }> = [];
     for (const ns of configuredNamespaces) {
       if (!ns) continue;
       let candidateStorage: StorageManager;
@@ -2294,7 +2294,7 @@ export class EngramAccessService {
       ) {
         continue;
       }
-      matches.push({ storage: candidateStorage, dir: candidateRoot });
+      matches.push({ storage: candidateStorage, dir: candidateRoot, namespace: ns });
     }
 
     matches.sort((a, b) => b.dir.length - a.dir.length);
@@ -5000,61 +5000,62 @@ export class EngramAccessService {
     };
   }
 
-  /**
-   * Record citation usage from an observed oai-mem-citation block.
-   * For each citation entry, extract the memory ID from the path and
-   * increment its access tracking via the orchestrator. Returns the
-   * count of submitted IDs and the count of IDs that matched real memories.
-   */
-  async recordCitationUsage(request: {
-    sessionId?: string;
-    namespace?: string;
-    authenticatedPrincipal?: string;
-    entries: Array<{ path: string; lineStart: number; lineEnd: number; note: string }>;
-    rolloutIds: string[];
-  }): Promise<{ submitted: number; matched: number }> {
-    if (request.entries.length === 0) return { submitted: 0, matched: 0 };
-
-    // Enforce namespace ACLs — citation tracking is a write-like operation.
-    // Pass authenticatedPrincipal so the principal resolution matches other
-    // write endpoints (gotcha #42: read and write paths must resolve through
-    // the same namespace layer).
-    const resolvedNamespace = this.writableNamespaceFor(
-      request.namespace,
-      request.sessionId,
-      request.authenticatedPrincipal,
+  async recordCitationUsage(
+    request: CitationUsageRequest,
+  ): Promise<CitationUsageResult> {
+    return recordCitationUsageForAccess(
+      {
+        resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
+          this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
+        resolveNamespaceForPath: async (
+          memoryPath,
+          fallbackNamespace,
+          sessionId,
+          authenticatedPrincipal,
+        ) => {
+          const principal = this.resolveRequestPrincipal(sessionId, authenticatedPrincipal);
+          const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
+          if (
+            namespacesEnabled &&
+            !canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)
+          ) {
+            throw new EngramAccessInputError(
+              `namespace is not readable: ${fallbackNamespace}`,
+            );
+          }
+          const authorizedNamespaces = namespacesEnabled
+            ? Array.from(
+                new Set([...citationAuthorizedNamespaces(principal, this.orchestrator.config), fallbackNamespace]),
+              )
+            : [fallbackNamespace];
+          const resolved = await this.storageForAbsoluteRecallPath(
+            memoryPath,
+            fallbackNamespace,
+            authorizedNamespaces,
+          );
+          if (!resolved) {
+            if (nodePath.isAbsolute(memoryPath)) {
+              throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
+            }
+            // Attribute to the longest authorized namespace that prefixes the cited
+            // path (namespace names may contain "/"); a bare category lead like a
+            // default `facts/a.md` is not a namespace (#2020).
+            let nsMatch = "";
+            for (const ns of authorizedNamespaces) {
+              if (!ns || ALL_CATEGORY_DIRS.includes(ns)) continue;
+              if ((memoryPath === ns || memoryPath.startsWith(`${ns}/`)) && ns.length > nsMatch.length) nsMatch = ns;
+            }
+            if (nsMatch) return nsMatch;
+            return fallbackNamespace;
+          }
+          return resolved.namespace;
+        },
+        getStorage: (namespace) => this.orchestrator.getStorage(namespace),
+        trackMemoryAccess: (memoryIds, memoryPaths, memoryNamespaces) =>
+          this.orchestrator.trackMemoryAccess(memoryIds, memoryPaths, memoryNamespaces),
+      },
+      request,
     );
-
-    // Extract memory IDs from citation paths. The path in citations
-    // follows the pattern `facts/<id>.md` or just `<id>.md`.
-    const memoryIds: string[] = [];
-    for (const entry of request.entries) {
-      // Strip directory prefix and .md extension to derive the memory ID.
-      const basename = entry.path.split("/").pop() ?? entry.path;
-      const id = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
-      if (id.length > 0) {
-        memoryIds.push(id);
-      }
-    }
-
-    if (memoryIds.length === 0) return { submitted: 0, matched: 0 };
-
-    // Determine which IDs correspond to real memories in storage using a
-    // targeted file-existence scan instead of loading all memories (Finding #2).
-    const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const existingIds = await storage.filterExistingMemoryIds(memoryIds);
-    const matchedIds = memoryIds.filter((id) => existingIds.has(id));
-
-    if (matchedIds.length > 0) {
-      try {
-        this.orchestrator.trackMemoryAccess(matchedIds);
-      } catch {
-        // Fail gracefully — citation usage tracking is best-effort.
-        log.debug("citation usage tracking: failed to record access for cited memories");
-      }
-    }
-
-    return { submitted: memoryIds.length, matched: matchedIds.length };
   }
 
   // ── Operator Console state (issue #688 PR 2/3) ────────────────────────────
