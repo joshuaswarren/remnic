@@ -79,6 +79,8 @@ export interface TranscriptsPage {
   transcripts: FirefliesTranscript[];
   /** True when a full page came back (more may exist beyond this skip). */
   hadFullPage: boolean;
+  /** Raw row count Fireflies returned at this offset (drives the skip cursor). */
+  rawCount: number;
 }
 
 export interface FirefliesClientOptions {
@@ -152,7 +154,7 @@ export class FirefliesClient {
     const transcripts = raw.filter(
       (entry): entry is FirefliesTranscript => isRecord(entry) && typeof entry.id === "string",
     );
-    return { transcripts, hadFullPage: raw.length >= TRANSCRIPTS_MAX_PAGE_SIZE };
+    return { transcripts, hadFullPage: raw.length >= TRANSCRIPTS_MAX_PAGE_SIZE, rawCount: raw.length };
   }
 
   /** Cheap auth probe. */

@@ -136,3 +136,53 @@ test("missing API key surfaces an actionable error at call time, not constructio
     },
   );
 });
+
+test("a full page of id-less rows still advances the cursor by the raw count", async () => {
+  const originalFetch = globalThis.fetch;
+  const rows = Array.from({ length: 50 }, () => ({ noId: true, date: 0 }));
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: { transcripts: rows } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as typeof fetch;
+  try {
+    const connector = createFirefliesConnector({ settings: settings({ apiKey: "grn" }), timezone: "UTC" });
+    const page = await connector.fetchConversations({ date: "2026-03-10", timezone: "UTC" });
+    assert.equal(page.conversations.length, 0);
+    assert.equal(page.nextCursor, "50");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("transcripts with no resolvable date are dropped, not emitted with an empty start", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        data: {
+          transcripts: [
+            {
+              id: "ok",
+              date: Date.parse("2026-03-10T14:00:00.000Z"),
+              sentences: [{ text: "hi", speaker_id: 0, start_time: 0, end_time: 1 }],
+            },
+            {
+              id: "bad",
+              date: "not-a-date",
+              sentences: [{ text: "x", speaker_id: 0, start_time: 0, end_time: 1 }],
+            },
+          ],
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const connector = createFirefliesConnector({ settings: settings({ apiKey: "grn" }), timezone: "UTC" });
+    const page = await connector.fetchConversations({ date: "2026-03-10", timezone: "UTC" });
+    assert.equal(page.conversations.length, 1);
+    assert.equal(page.conversations[0]?.id, "ok");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

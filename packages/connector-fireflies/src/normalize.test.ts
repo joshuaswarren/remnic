@@ -102,3 +102,12 @@ test("UTC timezone yields plain UTC day bounds", () => {
   assert.equal(window.fromDate, "2026-07-01T00:00:00.000Z");
   assert.equal(window.toDate, "2026-07-02T00:00:00.000Z");
 });
+
+test("firefliesDayWindow rejects an invalid timezone instead of coercing to UTC", () => {
+  assert.throws(() => firefliesDayWindow("2026-03-10", "Not/AZone"), RangeError);
+});
+
+test("a transcript with no resolvable date yields an empty startIso (caller drops it)", () => {
+  const conv = transcriptToConversation({ id: "bad", date: "not-a-date", sentences: [] });
+  assert.equal(conv.startIso, "");
+});

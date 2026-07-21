@@ -56,6 +56,22 @@ export function nextIsoDate(date: string): string {
 }
 
 /**
+ * Reject an invalid/unsupported IANA timezone loudly. `Intl.DateTimeFormat`
+ * throws a RangeError for an unknown zone; without this guard a typo'd
+ * timezone would silently coerce to UTC and shift every meeting's day window
+ * and timestamps (AGENTS.md §39 — reject, don't silently default).
+ */
+function assertValidTimezone(timezone: string): void {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+  } catch {
+    throw new RangeError(
+      `Invalid IANA timezone "${timezone}" for the Fireflies connector — check wearables.timezone.`,
+    );
+  }
+}
+
+/**
  * Half-open [fromDate, toDate) UTC ISO bounds of a local day — the window the
  * Fireflies `transcripts` query filters on.
  */
@@ -63,6 +79,7 @@ export function firefliesDayWindow(
   date: string,
   timezone: string,
 ): { fromDate: string; toDate: string } {
+  assertValidTimezone(timezone);
   return {
     fromDate: new Date(zonedDayStartIso(date, timezone)).toISOString(),
     toDate: new Date(zonedDayStartIso(nextIsoDate(date), timezone)).toISOString(),

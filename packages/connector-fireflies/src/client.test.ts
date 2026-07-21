@@ -132,3 +132,13 @@ test("a missing data.transcripts array fails loudly", async () => {
   const client = new FirefliesClient({ apiKey: "grn_ok", fetchImpl });
   await assert.rejects(client.listTranscripts({ fromDate: "a", toDate: "b" }), FirefliesApiError);
 });
+
+test("rawCount reflects the raw page size even when id-less rows are filtered out", async () => {
+  const rows = Array.from({ length: 50 }, (_unused, i) => (i < 3 ? { id: `t${i}` } : { noId: true }));
+  const fetchImpl = (async () => jsonResponse(transcriptsBody(rows))) as typeof fetch;
+  const client = new FirefliesClient({ apiKey: "grn_ok", fetchImpl });
+  const page = await client.listTranscripts({ fromDate: "a", toDate: "b" });
+  assert.equal(page.transcripts.length, 3);
+  assert.equal(page.rawCount, 50);
+  assert.equal(page.hadFullPage, true);
+});

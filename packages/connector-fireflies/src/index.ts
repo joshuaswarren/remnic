@@ -98,10 +98,15 @@ export function createFirefliesConnector(
         signal: opts.signal,
       });
       return {
-        conversations: page.transcripts.map(transcriptToConversation),
-        // Advance the keyset only while full pages keep coming; a partial
-        // page ends the day. Guard against a runaway/looping cursor.
-        nextCursor: page.hadFullPage && page.transcripts.length > 0 ? String(skip + page.transcripts.length) : null,
+        conversations: page.transcripts
+          .map(transcriptToConversation)
+          // A transcript with no resolvable meeting date can't produce a
+          // valid conversation start; drop it rather than emit an empty
+          // startIso that would fail downstream parsing silently.
+          .filter((conversation) => conversation.startIso !== ""),
+        // Advance the keyset by the raw page size (not the id-filtered count)
+        // while full pages keep coming, so dropped rows never truncate the day.
+        nextCursor: page.hadFullPage ? String(skip + page.rawCount) : null,
       };
     },
   };
