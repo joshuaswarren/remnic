@@ -11,6 +11,7 @@
  * day queries use half-open [start, end) UTC bounds (AGENTS.md §23).
  */
 
+import { mkdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -28,6 +29,10 @@ export async function ensureActivityStateDir(memoryDir: string): Promise<void> {
 }
 
 export function openActivityDatabase(memoryDir: string): BetterSqlite3Database {
+  // Create the state/ dir synchronously first: better-sqlite3 can't open a file
+  // in a missing directory, and open() is the sync public entry point (callers
+  // don't await ensureActivityStateDir). Idempotent.
+  mkdirSync(path.join(memoryDir, "state"), { recursive: true });
   const db = openBetterSqlite3(activityDatabasePath(memoryDir));
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");

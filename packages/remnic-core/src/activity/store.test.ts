@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ActivityStore, ensureActivityStateDir, openActivityDatabase } from "./store.js";
+import { ActivityStore } from "./store.js";
 import type { ActivitySnapshot } from "./types.js";
 
 function snapshot(overrides: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
@@ -22,8 +22,7 @@ function snapshot(overrides: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
 
 async function withStore(fn: (store: ActivityStore) => void | Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "activity-store-"));
-  await ensureActivityStateDir(dir);
-  const store = new ActivityStore(openActivityDatabase(dir));
+  const store = ActivityStore.open(dir);
   try {
     await fn(store);
   } finally {
@@ -120,4 +119,17 @@ test("searchSnapshots never throws on FTS-special input (URLs, quotes, operators
     assert.deepEqual(store.searchSnapshots("   ", 10), []);
     assert.deepEqual(store.searchSnapshots('""', 10), []);
   });
+});
+
+test("ActivityStore.open works on a fresh memoryDir (creates state/ itself)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "activity-fresh-"));
+  try {
+    // No pre-created state/ dir: the public factory must not throw.
+    const store = ActivityStore.open(dir);
+    const result = store.insertSnapshot(snapshot());
+    assert.equal(result.inserted, true);
+    store.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

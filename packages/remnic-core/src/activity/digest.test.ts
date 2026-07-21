@@ -106,3 +106,33 @@ test("isValidActivityDate rejects impossible and malformed calendar days", () =>
   assert.equal(isValidActivityDate("not-a-date"), false);
   assert.equal(isValidActivityDate("2026-3-10"), false); // wrong shape
 });
+
+test("activityDigestPath rejects path-traversal / invalid dates", () => {
+  assert.equal(activityDigestPath("/mem", "2026-03-10"), "/mem/activity/2026-03-10.md");
+  assert.throws(() => activityDigestPath("/mem", "../../etc/passwd"), RangeError);
+  assert.throws(() => activityDigestPath("/mem", "2026-02-30"), RangeError);
+});
+
+test("activityDayWindow rejects an impossible date", () => {
+  assert.throws(() => activityDayWindow("2026-02-30", "UTC"), RangeError);
+  assert.throws(() => activityDayWindow("../evil", "UTC"), RangeError);
+});
+
+test("parseActivityDigest rejects a non-numeric snapshotCount/formatVersion", () => {
+  const body = composeActivityDigestBody("2026-03-10", "UTC", DAY);
+  const meta = composeActivityDigestMeta("2026-03-10", ["macstudio"], DAY, body);
+  const good = serializeActivityDigest(meta, body);
+  const broken = good.replace(/snapshotCount: \d+/, "snapshotCount: lots");
+  assert.equal(parseActivityDigest(broken), null);
+});
+
+test("dwell is scoped per capture machine — an interleaved machine can't steal it", () => {
+  const snaps = [
+    snap({ machine: "A", app: "A-app", capturedAtUtc: "2026-03-10T14:00:00.000Z", contentHash: "a1" }),
+    snap({ machine: "B", app: "B-app", capturedAtUtc: "2026-03-10T14:01:00.000Z", contentHash: "b1" }),
+    snap({ machine: "A", app: "A-app", capturedAtUtc: "2026-03-10T14:10:00.000Z", contentHash: "a2" }),
+  ];
+  const body = composeActivityDigestBody("2026-03-10", "UTC", snaps);
+  // A-app dwell = A@14:00 → A@14:10 = 10m (per-machine), not 1m (global next = B@14:01).
+  assert.ok(body.includes("- A-app: 10m"), body);
+});

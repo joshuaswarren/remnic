@@ -35,6 +35,11 @@ export function isValidActivityDate(date: string): boolean {
 }
 
 export function activityDigestPath(memoryDir: string, date: string): string {
+  if (!isValidActivityDate(date)) {
+    // Never interpolate an unvalidated date into a filesystem path (a `../`
+    // would escape <memoryDir>/activity/). Reject loudly.
+    throw new RangeError(`Invalid activity date "${date}"; expected YYYY-MM-DD.`);
+  }
   return path.join(memoryDir, ACTIVITY_DIR_NAME, `${date}.md`);
 }
 
@@ -73,6 +78,9 @@ function nextIsoDate(date: string): string {
 
 /** Half-open [start, end) UTC ISO bounds of a local day. */
 export function activityDayWindow(date: string, timezone: string): { startUtc: string; endUtc: string } {
+  if (!isValidActivityDate(date)) {
+    throw new RangeError(`Invalid activity date "${date}"; expected a real YYYY-MM-DD day.`);
+  }
   assertValidTimezone(timezone);
   return {
     startUtc: new Date(zonedDayStartIso(date, timezone)).toISOString(),
@@ -94,14 +102,34 @@ function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {
   });
 }
 
-/** Per-snapshot dwell: gap to the next snapshot, capped; last snapshot = 0. */
-function dwellMsAt(ordered: ActivitySnapshot[], index: number): number {
-  const current = ordered[index];
-  const next = ordered[index + 1];
-  if (current === undefined || next === undefined) return 0;
-  const delta = Date.parse(next.capturedAtUtc) - Date.parse(current.capturedAtUtc);
-  if (!Number.isFinite(delta) || delta <= 0) return 0;
-  return Math.min(delta, MAX_DWELL_MS);
+/**
+ * Per-snapshot dwell (gap to that machine's next snapshot, capped), scoped per
+ * capture machine so an interleaved snapshot from another machine can't steal
+ * or truncate a snapshot's dwell (multi-machine days).
+ */
+function computeDwell(snapshots: ActivitySnapshot[]): Map<ActivitySnapshot, number> {
+  const byMachine = new Map<string, ActivitySnapshot[]>();
+  for (const snapshot of snapshots) {
+    const list = byMachine.get(snapshot.machine);
+    if (list === undefined) byMachine.set(snapshot.machine, [snapshot]);
+    else list.push(snapshot);
+  }
+  const dwell = new Map<ActivitySnapshot, number>();
+  for (const list of byMachine.values()) {
+    const ordered = sortedByTime(list);
+    for (let index = 0; index < ordered.length; index++) {
+      const current = ordered[index];
+      if (current === undefined) continue;
+      const next = ordered[index + 1];
+      let value = 0;
+      if (next !== undefined) {
+        const delta = Date.parse(next.capturedAtUtc) - Date.parse(current.capturedAtUtc);
+        if (Number.isFinite(delta) && delta > 0) value = Math.min(delta, MAX_DWELL_MS);
+      }
+      dwell.set(current, value);
+    }
+  }
+  return dwell;
 }
 
 function formatDurationMinutes(ms: number): string {
@@ -126,11 +154,11 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function perAppSection(ordered: ActivitySnapshot[]): string {
+function perAppSection(ordered: ActivitySnapshot[], dwell: Map<ActivitySnapshot, number>): string {
   const totals = new Map<string, number>();
-  ordered.forEach((snapshot, index) => {
-    totals.set(snapshot.app, (totals.get(snapshot.app) ?? 0) + dwellMsAt(ordered, index));
-  });
+  for (const snapshot of ordered) {
+    totals.set(snapshot.app, (totals.get(snapshot.app) ?? 0) + (dwell.get(snapshot) ?? 0));
+  }
   const rows = [...totals.entries()].sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
     if (a[0] < b[0]) return -1;
@@ -193,8 +221,8 @@ function timelineSection(ordered: ActivitySnapshot[], timezone: string): string 
   return lines.join("\n");
 }
 
-function notableSection(ordered: ActivitySnapshot[]): string {
-  const withDwell = ordered.map((snapshot, index) => ({ snapshot, dwell: dwellMsAt(ordered, index) }));
+function notableSection(ordered: ActivitySnapshot[], dwell: Map<ActivitySnapshot, number>): string {
+  const withDwell = ordered.map((snapshot) => ({ snapshot, dwell: dwell.get(snapshot) ?? 0 }));
   const ranked = withDwell
     .filter((entry) => collapseWhitespace(entry.snapshot.text).length > 0)
     .sort((a, b) => {
@@ -223,14 +251,15 @@ export function composeActivityDigestBody(
 ): string {
   assertValidTimezone(timezone);
   const ordered = sortedByTime(snapshots);
+  const dwell = computeDwell(ordered);
   return [
     `# Activity — ${date}`,
     "",
-    perAppSection(ordered),
+    perAppSection(ordered, dwell),
     "",
     timelineSection(ordered, timezone),
     "",
-    notableSection(ordered),
+    notableSection(ordered, dwell),
     "",
   ].join("\n");
 }
@@ -294,17 +323,26 @@ export function parseActivityDigest(raw: string): ActivityDayDigest | null {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  const snapshotCount = Number(fields.get("snapshotCount") ?? "0");
-  const formatVersion = Number(fields.get("formatVersion") ?? "0");
+  const snapshotCount = parseNonNegativeInt(fields.get("snapshotCount"));
+  const formatVersion = parseNonNegativeInt(fields.get("formatVersion"));
+  if (snapshotCount === null || formatVersion === null) return null;
   return {
     meta: {
       kind: "activity-digest",
       date,
       machines,
-      snapshotCount: Number.isFinite(snapshotCount) ? snapshotCount : 0,
+      snapshotCount,
       contentHash,
-      formatVersion: Number.isFinite(formatVersion) ? formatVersion : 0,
+      formatVersion,
     },
     body,
   };
+}
+
+function parseNonNegativeInt(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
