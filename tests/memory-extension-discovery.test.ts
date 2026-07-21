@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { makeTempDirSync as managedTempDirSync } from "./helpers/tmp-dir.mjs";
 import {
   discoverMemoryExtensions,
   renderExtensionsBlock,
@@ -29,9 +30,7 @@ import { parseConfig } from "../packages/remnic-core/src/config.ts";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "remnic-ext-test-"));
-}
+const makeTempDir = (): string => managedTempDirSync("remnic-ext-test-");
 
 function createExtension(
   root: string,

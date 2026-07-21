@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { makeTempDir as managedTempDir } from "./helpers/tmp-dir.mjs";
 import { StorageManager, serializeEntityFile } from "../src/storage.js";
 import {
   buildBriefing,
@@ -69,9 +69,7 @@ async function writeEntityFixture(
   await writeFile(path.join(entitiesDir, filename), serializeEntityFile(entity, entitySchemas), "utf-8");
 }
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "remnic-briefing-builder-"));
-}
+const makeTempDir = (): Promise<string> => managedTempDir("remnic-briefing-builder-");
 
 // ──────────────────────────────────────────────────────────────────────────
 

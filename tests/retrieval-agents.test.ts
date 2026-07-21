@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import os from "node:os";
 import path from "node:path";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+import { makeTempDir as managedTempDir } from "./helpers/tmp-dir.mjs";
 import {
   runDirectAgent,
   runTemporalAgent,
@@ -62,9 +61,7 @@ test("PARALLEL_AGENT_WEIGHTS: direct >= temporal >= contextual", () => {
 
 // ─── runDirectAgent ───────────────────────────────────────────────────────────
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "engram-agent-test-"));
-}
+const makeTempDir = (): Promise<string> => managedTempDir("engram-agent-test-");
 
 test("runDirectAgent: returns empty when entities dir missing", async () => {
   const tmpDir = await makeTempDir();
