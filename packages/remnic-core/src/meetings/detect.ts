@@ -55,7 +55,7 @@ function ms(iso: string): number {
   // Reject invalid calendar rollovers (e.g. 2026-02-30 → Mar 2) in EITHER `Z`
   // or explicit-offset form, by validating the wall-clock calendar fields in the
   // string directly rather than trusting Date.parse's silent normalization.
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/);
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/);
   if (m === null) return Number.NaN;
   const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
   const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
@@ -158,7 +158,11 @@ function buildCandidates(
     }
 
     // Audio-only fallback: long enough, ≥ 2 distinct non-wearer speakers.
-    if (endMs - startMs >= audioOnlyMs && window.distinctNonWearerSpeakers >= 2) {
+    if (
+      endMs - startMs >= audioOnlyMs &&
+      Number.isInteger(window.distinctNonWearerSpeakers) &&
+      window.distinctNonWearerSpeakers >= 2
+    ) {
       candidates.push({
         startMs,
         endMs,

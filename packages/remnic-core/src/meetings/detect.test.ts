@@ -320,3 +320,27 @@ test("an offset-form rolled-over timestamp is also dropped", () => {
   assert.equal(meetings.length, 1);
   assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
 });
+
+test("a timestamp offset beyond ±14:00 is dropped", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T00:30:00.000+14:59", endUtc: "2026-03-10T01:00:00.000+14:59", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});
+
+test("a non-integer speaker count does not qualify an audio-only meeting", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:30:00.000Z", distinctNonWearerSpeakers: Number.POSITIVE_INFINITY }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 0);
+});
