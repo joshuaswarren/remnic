@@ -107,6 +107,27 @@ function canonicalizeUtc(iso: string): string {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : iso;
 }
 
+function assertRequiredSnapshotFields(s: ActivitySnapshot): void {
+  const required: ReadonlyArray<readonly [string, unknown]> = [
+    ["machine", s.machine],
+    ["app", s.app],
+    ["windowTitle", s.windowTitle],
+    ["text", s.text],
+    ["textSource", s.textSource],
+    ["contentHash", s.contentHash],
+  ];
+  for (const [field, value] of required) {
+    if (typeof value !== "string") {
+      // INSERT OR IGNORE would otherwise swallow a NOT NULL failure as if it
+      // were a dedup conflict, silently dropping a malformed capture.
+      throw new RangeError(`activity: snapshot field "${field}" is required (got ${value === null ? "null" : typeof value}).`);
+    }
+  }
+  if (s.machine.length === 0 || s.contentHash.length === 0) {
+    throw new RangeError('activity: snapshot "machine" and "contentHash" must be non-empty.');
+  }
+}
+
 /**
  * Reject an impossible capture timestamp instead of letting Date.parse silently
  * roll it over (e.g. 2026-02-30 → Mar 2, in either `Z` or explicit-offset form),
@@ -198,6 +219,7 @@ export class ActivityStore {
     // back both on any throw.
     const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
       assertValidUtcInstant(s.capturedAtUtc, "capture timestamp");
+      assertRequiredSnapshotFields(s);
       const capturedAtUtc = canonicalizeUtc(s.capturedAtUtc);
       const info = this.db
         .prepare(
@@ -241,6 +263,8 @@ export class ActivityStore {
     startUtcInclusive: string,
     endUtcExclusive: string,
   ): ActivitySnapshot[] {
+    assertValidUtcInstant(startUtcInclusive, "range start");
+    assertValidUtcInstant(endUtcExclusive, "range end");
     const start = canonicalizeUtc(startUtcInclusive);
     const end = canonicalizeUtc(endUtcExclusive);
     const rows =
