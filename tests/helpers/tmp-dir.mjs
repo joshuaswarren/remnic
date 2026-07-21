@@ -25,7 +25,10 @@ const pendingCleanup = new Set();
 after(async () => {
   const dirs = [...pendingCleanup];
   pendingCleanup.clear();
-  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
+  // Surface cleanup failures (do not swallow): a dir that cannot be removed is
+  // a real signal. `force: true` already ignores a missing dir, so a rejection
+  // here means an actual teardown problem and should fail the file loudly.
+  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 /** Create a temp dir that is removed automatically after the file's tests. */
