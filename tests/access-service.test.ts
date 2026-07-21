@@ -5019,6 +5019,14 @@ test("recall debug snapshot relativizes absolute internal paths (#2077)", async 
       },
       resultPaths: [includedAbs],
       resultNamespaces: [undefined],
+      tierExplain: {
+        tier: "direct-answer",
+        tierReason: "high-confidence single hit",
+        filteredBy: [],
+        candidatesConsidered: 1,
+        latencyMs: 3,
+        sourceAnchors: [{ path: includedAbs, lineRange: [1, 2] }],
+      },
     };
     const service = new EngramAccessService({
       config: {
@@ -5055,12 +5063,17 @@ test("recall debug snapshot relativizes absolute internal paths (#2077)", async 
       response.debug?.snapshot?.budgetsApplied?.includedMemoryPaths,
       ["facts/2026-07-19/fact-1.md"],
     );
+    // tierExplain source anchors must be relativized too (#2077 review).
+    assert.deepEqual(response.debug?.snapshot?.tierExplain?.sourceAnchors, [
+      { path: "facts/2026-07-19/fact-1.md", lineRange: [1, 2] },
+    ]);
     // Top-level budget metadata stays relative (unchanged behavior).
     assert.deepEqual(response.budgetsApplied?.includedMemoryPaths, ["facts/2026-07-19/fact-1.md"]);
     // The live cached snapshot must NOT be mutated — it keeps absolute paths
     // for tracking / x-ray; only the debug copy is relativized.
     assert.deepEqual(snapshot.resultPaths, [includedAbs]);
     assert.deepEqual(snapshot.budgetsApplied.includedMemoryPaths, [includedAbs]);
+    assert.deepEqual(snapshot.tierExplain.sourceAnchors, [{ path: includedAbs, lineRange: [1, 2] }]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -116,11 +116,12 @@ export function displaySafeBudgetsApplied<
 
 /**
  * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
- * surface (#2077). `resultPaths` and `budgetsApplied.includedMemoryPaths` are
- * rendered memoryDir-relative — the same relativization the top-level recall
- * response already applies — so the debug flag never leaks operator filesystem
- * paths even though the live snapshot keeps absolute paths for tracking/x-ray.
- * Returns a shallow copy; the input snapshot is never mutated.
+ * surface (#2077). `resultPaths`, `budgetsApplied.includedMemoryPaths`, and
+ * `tierExplain.sourceAnchors[].path` are rendered memoryDir-relative — the same
+ * relativization the top-level recall response already applies — so the debug
+ * flag never leaks operator filesystem paths even though the live snapshot
+ * keeps absolute paths for tracking/x-ray. Returns a shallow copy; the input
+ * snapshot is never mutated.
  */
 export function displaySafeRecallSnapshot<
   T extends {
@@ -130,17 +131,31 @@ export function displaySafeRecallSnapshot<
       includedMemoryPaths?: string[];
       includedMemoryNamespaces?: Array<string | undefined>;
     };
+    tierExplain?: {
+      sourceAnchors?: Array<{ path: string; lineRange?: [number, number] }>;
+    };
   },
 >(snapshot: T, memoryDir: string): T {
   const resultPaths = snapshot.resultPaths?.map((p, i) =>
     displayResultPath(p, memoryDir, snapshot.resultNamespaces?.[i]),
   );
+  const tierExplain =
+    snapshot.tierExplain?.sourceAnchors
+      ? {
+          ...snapshot.tierExplain,
+          sourceAnchors: snapshot.tierExplain.sourceAnchors.map((anchor) => ({
+            ...anchor,
+            path: displayResultPath(anchor.path, memoryDir),
+          })),
+        }
+      : undefined;
   return {
     ...snapshot,
     ...(resultPaths ? { resultPaths } : {}),
     ...(snapshot.budgetsApplied
       ? { budgetsApplied: displaySafeBudgetsApplied(snapshot.budgetsApplied, memoryDir) }
       : {}),
+    ...(tierExplain ? { tierExplain } : {}),
   };
 }
 
