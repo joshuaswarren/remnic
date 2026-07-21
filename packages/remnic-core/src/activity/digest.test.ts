@@ -6,6 +6,7 @@ import {
   activityDigestPath,
   composeActivityDigestBody,
   composeActivityDigestMeta,
+  isValidActivityDate,
   parseActivityDigest,
   serializeActivityDigest,
 } from "./digest.js";
@@ -95,4 +96,13 @@ test("a snapshot at exactly local midnight lands in exactly one day", () => {
 
 test("activityDigestPath places the file under <memoryDir>/activity/", () => {
   assert.equal(activityDigestPath("/mem", "2026-03-10"), "/mem/activity/2026-03-10.md");
+});
+
+test("isValidActivityDate rejects impossible and malformed calendar days", () => {
+  assert.equal(isValidActivityDate("2026-03-10"), true);
+  assert.equal(isValidActivityDate("2026-02-30"), false); // Feb has no 30th
+  assert.equal(isValidActivityDate("2026-13-01"), false); // no month 13
+  assert.equal(isValidActivityDate("2026-00-10"), false);
+  assert.equal(isValidActivityDate("not-a-date"), false);
+  assert.equal(isValidActivityDate("2026-3-10"), false); // wrong shape
 });

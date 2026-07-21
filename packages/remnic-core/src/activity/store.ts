@@ -103,6 +103,20 @@ function optStr(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Build a safe FTS5 MATCH expression from free text: extract alphanumeric
+ * tokens and quote each as a phrase, so punctuation common in captured
+ * activity (URLs like github.com/x/pull/412, quotes, bare boolean operators)
+ * can never be parsed as FTS5 syntax and make SQLite throw. Tokens are AND-ed
+ * (implicit). Returns null when there is nothing to match.
+ */
+function ftsMatchFor(query: string): string | null {
+  if (typeof query !== "string") return null;
+  const tokens = query.match(/[\p{L}\p{N}_]+/gu);
+  if (!tokens || tokens.length === 0) return null;
+  return tokens.map((token) => `"${token}"`).join(" ");
+}
+
 function rowToSnapshot(row: unknown): ActivitySnapshot {
   if (!isRecord(row)) {
     throw new Error("activity store: unexpected non-object row");
@@ -216,16 +230,24 @@ export class ActivityStore {
   /** Full-text search over snapshot text/app/window/url; newest first. */
   searchSnapshots(query: string, limit: number): ActivitySnapshot[] {
     const capped = Number.isInteger(limit) && limit > 0 ? limit : 20;
-    const rows = this.db
-      .prepare(
-        `SELECT s.* FROM activity_snapshots_fts f
-           JOIN activity_snapshots s ON s.id = f.rowid
-           WHERE activity_snapshots_fts MATCH ?
-           ORDER BY s.captured_at_utc DESC, s.id DESC
-           LIMIT ?`,
-      )
-      .all(query, capped);
-    return rows.map(rowToSnapshot);
+    const match = ftsMatchFor(query);
+    if (match === null) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT s.* FROM activity_snapshots_fts f
+             JOIN activity_snapshots s ON s.id = f.rowid
+             WHERE activity_snapshots_fts MATCH ?
+             ORDER BY s.captured_at_utc DESC, s.id DESC
+             LIMIT ?`,
+        )
+        .all(match, capped);
+      return rows.map(rowToSnapshot);
+    } catch {
+      // Defensive belt: any residual FTS5 syntax error reads as "no matches",
+      // never a throw (mirrors the LCM archive search path).
+      return [];
+    }
   }
 
   /** Retention: drop snapshots captured strictly before `cutoffUtc`. */

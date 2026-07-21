@@ -107,3 +107,17 @@ test("pruneOlderThan removes only rows before the cutoff, incl. their FTS rows",
     assert.equal(store.searchSnapshots("recent", 10).length, 1);
   });
 });
+
+test("searchSnapshots never throws on FTS-special input (URLs, quotes, operators)", async () => {
+  await withStore((store) => {
+    store.insertSnapshot(
+      snapshot({ contentHash: "u", app: "Chrome", windowTitle: "PR", browserUrl: "https://github.com/x/pull/412", text: "review the change" }),
+    );
+    // URL with slashes/dots would be FTS5 syntax without sanitization.
+    assert.equal(store.searchSnapshots("github.com/x/pull/412", 10).length, 1);
+    // Bare boolean operators and quotes must not throw.
+    assert.doesNotThrow(() => store.searchSnapshots('AND OR "', 10));
+    assert.deepEqual(store.searchSnapshots("   ", 10), []);
+    assert.deepEqual(store.searchSnapshots('""', 10), []);
+  });
+});

@@ -27,7 +27,11 @@ const NOTABLE_EXCERPT_CHARS = 280;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isValidActivityDate(date: string): boolean {
-  return typeof date === "string" && DATE_PATTERN.test(date);
+  if (typeof date !== "string" || !DATE_PATTERN.test(date)) return false;
+  // Reject impossible calendar days (e.g. 2026-02-30, 2026-13-01): the UTC
+  // round-trip must reproduce the same Y-M-D, else Date normalized an overflow.
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }
 
 export function activityDigestPath(memoryDir: string, date: string): string {
