@@ -55,6 +55,7 @@ import {
 import { resolveRelayAuthSourcePath, resolveRelayCreditLedgerPolicy } from "../scripts/relay/preflight-lib.js";
 import { listRelayMcpTools, startRelayRemnicHarness } from "../scripts/relay/remnic-harness.js";
 import { assertRelaySourceLocators } from "../scripts/relay/source-grounding.js";
+import { relayUserNamespacesAvailable } from "../scripts/relay/userns.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const fixtures = path.join(repoRoot, "fixtures", "remnic-relay");
@@ -267,7 +268,7 @@ test("Relay gives every Codex call a network namespace with allow-listed egress 
 
 test(
   "model shell and a directly named interpreter cannot read Codex auth, trusted output, parent mounts, or trusted environment",
-  { skip: process.platform !== "linux" },
+  { skip: !relayUserNamespacesAvailable() },
   async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "relay-credential-boundary-"));
     const directories = await prepareRelayRunDirectories(repoRoot, path.join(parent, "run"));
@@ -483,7 +484,7 @@ test("Relay run roots reject non-empty and symlinked targets and clean only mark
   }
 });
 
-test("synthetic fixture copies contain no symlinks and hidden contract flips stale to corrected behavior", async () => {
+test("synthetic fixture copies contain no symlinks and fixture manifests, locators, and schemas validate", async () => {
   await assertTreeContainsNoSymlinks(fixtures);
   await verifyRelayFixtureManifest(fixtures);
   assert.deepEqual(
@@ -511,6 +512,9 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
       }),
     /unsupported keyword uniqueItems/
   );
+});
+
+test("hidden contract flips stale to corrected behavior", { skip: !relayUserNamespacesAvailable() }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-fixture-behavior-"));
   const staleWorkspace = path.join(root, "stale");
   const correctedWorkspace = path.join(root, "corrected");
@@ -559,7 +563,7 @@ test("Builder module initialization cannot short-circuit public or hidden contra
   }
 });
 
-test("Builder contract tests cannot read host files or reach host networking", async () => {
+test("Builder contract tests cannot read host files or reach host networking", { skip: !relayUserNamespacesAvailable() }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-contract-isolation-"));
   const workspace = path.join(root, "workspace");
   const sentinel = path.join(root, "host-only-sentinel.txt");
@@ -631,7 +635,7 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
   }
 });
 
-test("the bounded mission runner produces a complete 16-event cold-start recovery receipt", async () => {
+test("the bounded mission runner produces a complete 16-event cold-start recovery receipt", { skip: !relayUserNamespacesAvailable() }, async () => {
   const directories = await prepareRelayRunDirectories(repoRoot);
   const harness = await startRelayRemnicHarness(directories.memoryDir);
   const executor = new MockRelayExecutor(harness);
@@ -665,7 +669,7 @@ test("the bounded mission runner produces a complete 16-event cold-start recover
   }
 });
 
-test("approval and executor failures stop before unauthorized or downstream Codex calls and cleanup stays bounded", async () => {
+test("approval and executor failures stop before unauthorized or downstream Codex calls and cleanup stays bounded", { skip: !relayUserNamespacesAvailable() }, async () => {
   const unapprovedDirectories = await prepareRelayRunDirectories(repoRoot);
   const unapprovedHarness = await startRelayRemnicHarness(unapprovedDirectories.memoryDir);
   const unapprovedExecutor = new MockRelayExecutor(unapprovedHarness);
