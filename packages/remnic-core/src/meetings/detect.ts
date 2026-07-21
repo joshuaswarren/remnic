@@ -86,7 +86,14 @@ function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): 
  *  renumbers an existing record — the start is the stable identity. Full start
  *  precision (NOT minute-rounded) keeps ids unique even for short provider
  *  meetings that share a start minute: post-merge meetings are non-overlapping,
- *  so their start instants are always distinct. */
+ *  so their start instants are always distinct.
+ *
+ *  A resync that moves a meeting's START earlier (a late source beginning before
+ *  the first-ingested one) does change the id — a stateless pure detector cannot
+ *  know the prior id. Preserving ids across a shifted start is cross-run identity
+ *  work that needs prior-emission state, so it belongs to the fusion/store slice
+ *  (#1900), which matches a re-detected meeting to its stored record by overlap
+ *  and keeps the original id. This function stays pure and deterministic. */
 export function meetingId(date: string, startUtc: string): string {
   const startMs = ms(startUtc);
   const anchor = Number.isNaN(startMs) ? startUtc : new Date(startMs).toISOString();
