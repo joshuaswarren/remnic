@@ -3,10 +3,11 @@
  */
 
 import assert from "node:assert/strict";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+
+import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
 
 import { appendEdge, graphFilePath, graphsDir, type GraphEdge } from "../graph.js";
 import {
@@ -85,14 +86,8 @@ async function readEdgesFile(memoryDir: string): Promise<GraphEdge[]> {
     .map((l) => JSON.parse(l) as GraphEdge);
 }
 
-async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-decay-test-"));
-  try {
-    await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = (fn: (dir: string) => Promise<void>): Promise<void> =>
+  managedWithTempDir(fn, "remnic-graph-decay-test-");
 
 test("runs end-to-end on a fixture graph with fresh, mid-decay, stale edges", async () => {
   await withTempDir(async (memoryDir) => {

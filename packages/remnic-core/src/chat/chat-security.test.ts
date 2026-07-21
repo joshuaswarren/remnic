@@ -14,10 +14,10 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm, readFile } from "node:fs/promises";
 import { test } from "node:test";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import { ChatEngine } from "./chat-engine.js";
 import { StubChatLlmAdapter } from "./chat-llm.js";
@@ -70,9 +70,7 @@ function makeEngine(
   });
 }
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "chat-sec-"));
-}
+const makeTempDir = (): Promise<string> => managedMakeTempDir("chat-sec-");
 
 // ---------------------------------------------------------------------------
 // P1 — Path traversal (chat-session.ts)

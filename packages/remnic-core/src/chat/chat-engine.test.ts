@@ -7,10 +7,10 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdir, rm, readFile, utimes, unlink, appendFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { readFile, utimes, unlink, appendFile } from "node:fs/promises";
 import { test } from "node:test";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import { ChatEngine } from "./chat-engine.js";
 import { StubChatLlmAdapter, NullChatLlmAdapter } from "./chat-llm.js";
@@ -62,11 +62,7 @@ function makeEngine(
   });
 }
 
-async function makeTempDir(): Promise<string> {
-  const dir = join(tmpdir(), `chat-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
+const makeTempDir = (): Promise<string> => managedMakeTempDir("chat-test-");
 
 // ---------------------------------------------------------------------------
 // Tests

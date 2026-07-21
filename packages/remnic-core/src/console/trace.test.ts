@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
+
+import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
 
 import {
   openTraceRecorder,
@@ -52,14 +53,8 @@ function makeSnapshot(
   };
 }
 
-async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-trace-"));
-  try {
-    return await fn(dir);
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
+  managedWithTempDir(fn, "remnic-trace-");
 
 test("openTraceRecorder writes one parseable JSON object per line", async () => {
   await withTempDir(async (dir) => {
