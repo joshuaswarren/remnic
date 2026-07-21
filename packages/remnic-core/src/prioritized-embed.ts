@@ -40,38 +40,51 @@ export function installPrioritizedEmbedding(
   };
 
   const flushNamespace = async (namespace: string, paths: string[]): Promise<void> => {
-    // Namespace backends are created lazily and asynchronously by the search
-    // router; await resolution so sync and async resolvers both work.
-    const backend = (await Promise.resolve(getBackendForNamespace(namespace))) as
-      | EmbedBackend
-      | null
-      | undefined;
+    let backend: EmbedBackend | null | undefined;
+    try {
+      backend = (await Promise.resolve(getBackendForNamespace(namespace))) as
+        | EmbedBackend
+        | null
+        | undefined;
+    } catch {
+      if (paths.length > 0) scheduleFlush();
+      return;
+    }
     if (!backend || typeof backend.embedFiles !== "function") {
       if (paths.length > 0) scheduleFlush();
       return;
     }
     const batch = paths.splice(0, EMBED_BATCH_MAX);
-    // Drain cleanup lives here (not in flushEmbedBatch) because the splice runs
-    // in a microtask after the resolver await. A failure re-queues below and
-    // re-inserts the array if it was drained.
-    if (paths.length === 0) pendingByNamespace.delete(namespace);
+    if (paths.length === 0 && pendingByNamespace.get(namespace) === paths) {
+      pendingByNamespace.delete(namespace);
+    }
     if (batch.length === 0) return;
     backend.embedFiles(batch).then((ok) => {
       if (ok === false) {
-        paths.unshift(...batch);
-        if (!disposed && !pendingByNamespace.has(namespace)) pendingByNamespace.set(namespace, paths);
-        scheduleFlush();
+        requeue(namespace, paths, batch);
         return;
       }
-      // Collection-level embed drains the entire backlog; discard any
-      // queued tail to avoid redundant full-collection embeds.
-      paths.length = 0;
-      pendingByNamespace.delete(namespace);
+      // Collection-level embed drains the entire backlog; discard the
+      // spliced tail only if the map still points at this array (a newer
+      // write may have created a fresh queue while we were in flight).
+      if (pendingByNamespace.get(namespace) === paths) {
+        paths.length = 0;
+        pendingByNamespace.delete(namespace);
+      }
     }).catch(() => {
-      paths.unshift(...batch);
-      if (!disposed && !pendingByNamespace.has(namespace)) pendingByNamespace.set(namespace, paths);
-      scheduleFlush();
+      requeue(namespace, paths, batch);
     });
+  };
+
+  const requeue = (namespace: string, paths: string[], batch: string[]): void => {
+    const live = pendingByNamespace.get(namespace);
+    if (live && live !== paths) {
+      live.unshift(...batch);
+    } else {
+      paths.unshift(...batch);
+      if (!disposed) pendingByNamespace.set(namespace, paths);
+    }
+    scheduleFlush();
   };
 
   const flushEmbedBatch = (): void => {

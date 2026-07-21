@@ -281,7 +281,10 @@ export class NamespaceSearchRouter {
       const backendStatus =
         "status" in diagnosticBackend &&
         typeof diagnosticBackend.status === "function"
-          ? await diagnosticBackend.status().catch(() => null)
+          ? await Promise.race([
+              diagnosticBackend.status().catch(() => null),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
+            ])
           : null;
       const collectionState =
         liveRecord?.collectionState === "missing"

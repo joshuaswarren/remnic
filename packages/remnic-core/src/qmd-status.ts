@@ -131,7 +131,11 @@ export async function renderQmdBacklogStatus(
   const backend = qmd as Partial<QmdStatusCapable> | null;
   if (!backend || typeof backend.status !== "function") return [];
   try {
-    const report = await backend.status();
+    const report = await Promise.race([
+      backend.status(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
+    ]);
+    if (!report) return [];
     return formatBacklogLinesFromReport(report, threshold);
   } catch {
     return [];

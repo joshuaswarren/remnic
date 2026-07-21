@@ -3162,7 +3162,6 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
-    for (const memoryPath of memoryPathById.values()) this.prioritizedEmbedding?.enqueue(memoryPath, baseNamespace);
     return { persistedIds, memoryPathById };
   }
   /**
