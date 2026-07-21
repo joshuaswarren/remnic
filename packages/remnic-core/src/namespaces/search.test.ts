@@ -3,6 +3,7 @@ import test from "node:test";
 import { NamespaceSearchRouter } from "./search.js";
 import type {
   SearchBackend,
+  SearchBackendStatus,
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "../search/port.js";
@@ -77,6 +78,13 @@ class FakeBackend implements SearchBackend {
 
   getVersionStatus(): QmdVersionStatus | null {
     return this.diagnostics.versionStatus ?? null;
+  }
+
+  statusResult: SearchBackendStatus | null = null;
+
+  async status(): Promise<SearchBackendStatus> {
+    if (!this.statusResult) throw new Error("no status available");
+    return this.statusResult;
   }
 
   async dispose(): Promise<void> {
@@ -205,6 +213,7 @@ function config(): PluginConfig {
     qmdCollection: "openclaw-engram",
     defaultNamespace: "main",
     qmdMaxResults: 10,
+    qmdEmbeddingBacklogThreshold: 5000,
   } as PluginConfig;
 }
 
@@ -655,6 +664,53 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
   assert.equal(created[0]?.disposed, 0);
   assert.equal(created[1]?.disposed, 1);
   assert.deepEqual(created[1]?.checkCollections, []);
+});
+
+test("healthForNamespace reports embedding backlog from backend status", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { ensure: "present" }, false, {
+        debugStatus: "backlog-test",
+      });
+      backend.statusResult = {
+        pendingEmbeddings: 42,
+        oldestPendingAgeMs: 120_000,
+        totalFiles: 100,
+        embeddedFiles: 58,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.pendingEmbeddings, 42);
+  assert.equal(health.oldestPendingAgeMs, 120_000);
+  assert.equal(health.embeddingBacklogThreshold, 5000);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.disposed, 1);
+});
+
+test("healthForNamespace returns null backlog when backend status fails", async () => {
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { ensure: "present" });
+      backend.statusResult = null;
+      return backend;
+    },
+  );
+
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.pendingEmbeddings, null);
+  assert.equal(health.oldestPendingAgeMs, null);
+  assert.equal(health.embeddingBacklogThreshold, 5000);
 });
 
 test("healthForNamespace preserves cached missing collection state", async () => {

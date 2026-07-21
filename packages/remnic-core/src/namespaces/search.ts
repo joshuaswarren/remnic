@@ -64,6 +64,9 @@ export interface NamespaceSearchHealth {
   upgradeAvailable: boolean | null;
   doctorAvailable: boolean | null;
   daemonMode: boolean | null;
+  pendingEmbeddings: number | null;
+  oldestPendingAgeMs: number | null;
+  embeddingBacklogThreshold: number;
 }
 
 type NamespaceScopedSearchConfig = PluginConfig & {
@@ -275,6 +278,11 @@ export class NamespaceSearchRouter {
           ? diagnosticBackend.getVersionStatus()
           : null;
       const daemonMode = daemonModeForBackend(diagnosticBackend);
+      const backendStatus =
+        "status" in diagnosticBackend &&
+        typeof diagnosticBackend.status === "function"
+          ? await diagnosticBackend.status().catch(() => null)
+          : null;
       const collectionState =
         liveRecord?.collectionState === "missing"
           ? "missing"
@@ -292,6 +300,9 @@ export class NamespaceSearchRouter {
         upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
         doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
         daemonMode,
+        pendingEmbeddings: backendStatus?.pendingEmbeddings ?? null,
+        oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
+        embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
       };
     } finally {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
