@@ -57,6 +57,9 @@ export interface DisableValueSource {
 export interface DisableValueSchemaProperty {
   type?: string | string[];
   minimum?: number;
+  exclusiveMinimum?: number;
+  enum?: unknown[];
+  const?: unknown;
   description?: string;
   properties?: Record<string, DisableValueSchemaProperty>;
   items?: { properties?: Record<string, DisableValueSchemaProperty> };
@@ -139,36 +142,50 @@ function numericSchema(prop: DisableValueSchemaProperty): boolean {
   return types.some((t) => t === "number" || t === "integer");
 }
 
+/** A numeric branch/schema that is constrained enough to express whether it admits 0. */
+function isNumericConstrained(prop: DisableValueSchemaProperty): boolean {
+  return (
+    numericSchema(prop) ||
+    Boolean(prop.anyOf) ||
+    Boolean(prop.oneOf) ||
+    Array.isArray(prop.enum) ||
+    prop.const !== undefined ||
+    typeof prop.exclusiveMinimum === "number"
+  );
+}
+
 /**
- * The positive floor a numeric schema imposes on the value, or undefined when it
- * admits 0 (or isn't numeric). ANY `minimum > 0` (including a fractional floor
- * like `0.1`) rejects the documented disable value. A schema's own `minimum`
- * applies IN ADDITION to any `anyOf`/`oneOf` (JSON Schema allOf semantics), so
- * `minimum: 1` with a `minimum: 0` branch still rejects 0. A combinator with no
- * own floor admits 0 only when some numeric branch admits it, so a lone
- * positive-floor branch rejects the documented disable value.
+ * A short reason a numeric schema rejects the value 0 (so it cannot honor a
+ * documented disable value), or undefined when it admits 0 (or isn't numeric).
+ * Considers `minimum` (ANY value > 0, fractional included), `exclusiveMinimum`,
+ * `enum`, `const`, and `anyOf`/`oneOf`. Parent constraints apply IN ADDITION to
+ * any combinator (JSON Schema allOf): the field admits 0 only when the parent
+ * admits 0 AND some branch admits 0.
  */
-function positiveNumericFloor(prop: DisableValueSchemaProperty): number | undefined {
-  const ownFloor =
-    numericSchema(prop) && typeof prop.minimum === "number" && prop.minimum > 0 ? prop.minimum : undefined;
+function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefined {
+  if (typeof prop.minimum === "number" && prop.minimum > 0) return `minimum ${prop.minimum}`;
+  if (typeof prop.exclusiveMinimum === "number" && prop.exclusiveMinimum >= 0) {
+    return `exclusiveMinimum ${prop.exclusiveMinimum}`;
+  }
+  if (prop.const !== undefined && prop.const !== 0) return `const ${JSON.stringify(prop.const)}`;
+  if (Array.isArray(prop.enum) && !prop.enum.includes(0)) return `enum ${JSON.stringify(prop.enum)}`;
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
-    // The parent floor applies regardless of which branch matches: if it rejects
-    // 0, the field rejects 0 no matter what the branches allow.
-    if (ownFloor !== undefined) return ownFloor;
-    let branchFloor: number | undefined;
+    // Parent admits 0 here (nothing rejected above); the field admits 0 iff some
+    // numeric-constrained branch admits it.
+    let rejection: string | undefined;
     let anyBranchAdmitsZero = false;
     for (const branch of branches) {
-      const bf = positiveNumericFloor(branch);
-      if (bf === undefined) {
-        if (numericSchema(branch) || branch.anyOf || branch.oneOf) anyBranchAdmitsZero = true;
+      const reason = zeroRejectionReason(branch);
+      if (reason === undefined) {
+        if (isNumericConstrained(branch)) anyBranchAdmitsZero = true;
       } else {
-        branchFloor = branchFloor === undefined ? bf : Math.min(branchFloor, bf);
+        rejection = rejection ?? reason;
       }
     }
-    return anyBranchAdmitsZero ? undefined : branchFloor;
+    return anyBranchAdmitsZero ? undefined : rejection;
   }
-  return ownFloor;
+  return undefined;
 }
 
 interface GuardFlags {
@@ -683,14 +700,15 @@ function clampIsZeroPreserved(clamp: ts.Node): boolean {
         const zeroBranch = info.branch === "whenTrue" ? parent.whenTrue : parent.whenFalse;
         const clampBranch = info.branch === "whenTrue" ? parent.whenFalse : parent.whenTrue;
         // Require a VERIFIED same-value tie: the zero branch yields 0 and the
-        // clamp branch operates on the exact value the condition tested. If the
-        // tested value can't be named (e.g. `coerceNumber(x) <= 0`), fail closed
-        // (still a coercion) rather than excuse an unrelated clamp.
+        // CLAMP NODE ITSELF operates on the exact value the condition tested
+        // (not merely somewhere in the branch — `legacy <= 0 ? 0 : Math.max(1, rawCap) + legacy`
+        // clamps rawCap, not legacy, and must still be flagged). If the tested
+        // value can't be named (e.g. `coerceNumber(x) <= 0`), fail closed.
         if (
           node === clampBranch &&
           numericLiteralValue(zeroBranch) === 0 &&
           info.valueText !== undefined &&
-          subtreeReferencesText(clampBranch, info.valueText)
+          subtreeReferencesText(clamp, info.valueText)
         ) {
           return true;
         }
@@ -878,12 +896,12 @@ export function findDisableValueViolations(input: {
       const documented =
         isZeroDisableDoc(entry.prop.description ?? "") ||
         (entry.path === entry.leaf && jsDocLeaves.has(entry.leaf));
-      const floor = positiveNumericFloor(entry.prop);
-      if (documented && floor !== undefined) {
+      const rejection = zeroRejectionReason(entry.prop);
+      if (documented && rejection !== undefined) {
         violations.push({
           kind: "disable-value-schema-min",
           key: `${entry.path}@${manifest.path}`,
-          detail: `${entry.path} is documented "0 disables" but configSchema of ${manifest.path} sets minimum ${floor} (must be 0 to honor the documented disable value)`,
+          detail: `${entry.path} is documented "0 disables" but configSchema of ${manifest.path} sets ${rejection} (must admit 0 to honor the documented disable value)`,
         });
       }
     }
