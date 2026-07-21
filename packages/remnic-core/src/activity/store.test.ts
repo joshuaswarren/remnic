@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { activityDayWindow } from "./digest.js";
 import { ActivityStore } from "./store.js";
 import type { ActivitySnapshot } from "./types.js";
 
@@ -142,5 +143,28 @@ test("insertSnapshot writes the FTS row atomically (searchable right after inser
     const hits = store.searchSnapshots("zzq", 10);
     assert.equal(hits.length, 1);
     assert.equal(hits[0]?.contentHash, "atomic-1");
+  });
+});
+
+test("dedup keeps the same content at a different time; exact re-ingest dedups", async () => {
+  await withStore((store) => {
+    const first = store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T14:00:00.000Z", contentHash: "same" }));
+    const later = store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T15:00:00.000Z", contentHash: "same" }));
+    const dup = store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T14:00:00.000Z", contentHash: "same" }));
+    assert.equal(first.inserted, true);
+    assert.equal(later.inserted, true); // same content, different time → kept
+    assert.equal(dup.inserted, false); // exact re-ingestion → deduped
+  });
+});
+
+test("captured timestamps are canonicalized so day-window filtering matches", async () => {
+  await withStore((store) => {
+    // Non-canonical inputs (explicit +00:00 offset, missing millis) must land in the day.
+    store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T14:00:00+00:00", contentHash: "c1" }));
+    store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T15:30:00Z", contentHash: "c2" }));
+    const { startUtc, endUtc } = activityDayWindow("2026-03-10", "UTC");
+    const rows = store.listSnapshotsForDay(null, startUtc, endUtc);
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.capturedAtUtc.endsWith("Z") && r.capturedAtUtc.includes(".")));
   });
 });

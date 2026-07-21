@@ -64,10 +64,34 @@ function assertValidTimezone(timezone: string): void {
 }
 
 function zonedDayStartIso(date: string, timezone: string): string {
-  let offset = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
-  const refined = timezoneOffsetIso(new Date(`${date}T00:00:00${offset}`), timezone);
-  if (refined !== offset) offset = refined;
-  return `${date}T00:00:00${offset}`;
+  // The first UTC instant whose local wall-clock is this date at 00:00. Probe
+  // several instants across the day to collect every offset in play; keep an
+  // offset only if constructing local midnight with it lands back on that same
+  // offset (so it is genuinely local midnight, not a wall-clock that never
+  // occurred), then take the EARLIEST such instant — the FIRST 00:00 across a
+  // DST fall-back that repeats local midnight.
+  const probeOffsets = new Set(
+    [`${date}T00:00:00Z`, `${date}T12:00:00Z`, `${date}T23:00:00Z`].map((iso) =>
+      timezoneOffsetIso(new Date(iso), timezone),
+    ),
+  );
+  let best: number | null = null;
+  for (const offset of probeOffsets) {
+    const candidate = Date.parse(`${date}T00:00:00${offset}`);
+    if (!Number.isFinite(candidate)) continue;
+    // Reject an offset whose local midnight does not actually occur (the wall
+    // clock skipped by a spring-forward): the offset in effect at the candidate
+    // instant must be the same offset we used to build it.
+    if (timezoneOffsetIso(new Date(candidate), timezone) !== offset) continue;
+    if (best === null || candidate < best) best = candidate;
+  }
+  if (best === null) {
+    // Local midnight itself was skipped (spring-forward at 00:00): fall back to
+    // the noon-derived offset so the day still has a deterministic start.
+    const noon = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
+    best = Date.parse(`${date}T00:00:00${noon}`);
+  }
+  return new Date(best).toISOString();
 }
 
 function nextIsoDate(date: string): string {

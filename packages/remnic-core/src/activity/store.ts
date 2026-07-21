@@ -66,7 +66,7 @@ function applySchema(db: BetterSqlite3Database): void {
       simhash         TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_snapshots_dedup
-      ON activity_snapshots(machine, content_hash);
+      ON activity_snapshots(machine, captured_at_utc, content_hash);
     CREATE INDEX IF NOT EXISTS idx_activity_snapshots_time
       ON activity_snapshots(captured_at_utc, id);
 
@@ -95,6 +95,17 @@ function applySchema(db: BetterSqlite3Database): void {
   );
 }
 
+/**
+ * Canonicalize a UTC timestamp to `YYYY-MM-DDTHH:MM:SS.sssZ` so day-window
+ * range filtering (a TEXT comparison against activityDayWindow bounds) is valid
+ * regardless of the input ISO form (trailing `Z` vs `+00:00`, missing millis).
+ * A non-parseable value is stored verbatim (an outlier the day filter skips).
+ */
+function canonicalizeUtc(iso: string): string {
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : iso;
+}
+
 /** Narrow a sqlite row object so field reads are checked, not asserted. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -120,21 +131,6 @@ function ftsMatchFor(query: string): string | null {
   const tokens = query.match(/[\p{L}\p{N}_]+/gu);
   if (!tokens || tokens.length === 0) return null;
   return tokens.map((token) => `"${token}"`).join(" ");
-}
-
-/**
- * True only for the FTS5 query-syntax error class. Since `ftsMatchFor` already
- * sanitizes the query into quoted phrases, a residual syntax error is a safe
- * "no matches"; any OTHER error (closed handle, missing/corrupt table, disk I/O)
- * is a real backend failure that must NOT masquerade as an empty result.
- */
-function isFtsSyntaxError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return (
-    message.includes("fts5") ||
-    message.includes("malformed match") ||
-    message.includes("unterminated")
-  );
 }
 
 function rowToSnapshot(row: unknown): ActivitySnapshot {
@@ -168,9 +164,11 @@ export class ActivityStore {
   }
 
   /**
-   * Insert a snapshot, idempotent on (machine, content_hash). Returns
-   * `inserted: false` for a duplicate. The FTS row is written only on a real
-   * insert, so it never drifts from the base table.
+   * Insert a snapshot, idempotent on (machine, captured_at_utc, content_hash):
+   * the same screen content recurring at a *different* time is kept; only an
+   * exact re-ingestion of the same capture dedups. Returns `inserted: false`
+   * for a duplicate. The FTS row is written only on a real insert (atomically),
+   * so it never drifts from the base table.
    */
   insertSnapshot(snapshot: ActivitySnapshot): { inserted: boolean; id: number } {
     // Base row + FTS row must be atomic. Without a transaction, a crash (or an
@@ -178,6 +176,7 @@ export class ActivityStore {
     // with no matching FTS row — silently unsearchable. The transaction rolls
     // back both on any throw.
     const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
+      const capturedAtUtc = canonicalizeUtc(s.capturedAtUtc);
       const info = this.db
         .prepare(
           `INSERT OR IGNORE INTO activity_snapshots
@@ -186,7 +185,7 @@ export class ActivityStore {
         )
         .run({
           machine: s.machine,
-          captured_at_utc: s.capturedAtUtc,
+          captured_at_utc: capturedAtUtc,
           app_name: s.app,
           window_title: s.windowTitle,
           browser_url: s.browserUrl ?? null,
@@ -197,8 +196,8 @@ export class ActivityStore {
         });
       if (info.changes === 0) {
         const existing = this.db
-          .prepare("SELECT id FROM activity_snapshots WHERE machine = ? AND content_hash = ?")
-          .get(s.machine, s.contentHash);
+          .prepare("SELECT id FROM activity_snapshots WHERE machine = ? AND captured_at_utc = ? AND content_hash = ?")
+          .get(s.machine, capturedAtUtc, s.contentHash);
         const id = isRecord(existing) && typeof existing.id === "number" ? existing.id : -1;
         return { inserted: false, id };
       }
@@ -259,24 +258,19 @@ export class ActivityStore {
     const capped = Number.isInteger(limit) && limit > 0 ? limit : 20;
     const match = ftsMatchFor(query);
     if (match === null) return [];
-    try {
-      const rows = this.db
-        .prepare(
-          `SELECT s.* FROM activity_snapshots_fts f
-             JOIN activity_snapshots s ON s.id = f.rowid
-             WHERE activity_snapshots_fts MATCH ?
-             ORDER BY s.captured_at_utc DESC, s.id DESC
-             LIMIT ?`,
-        )
-        .all(match, capped);
-      return rows.map(rowToSnapshot);
-    } catch (error) {
-      // Defensive belt for a residual FTS5 syntax error only (mirrors the LCM
-      // archive search path). A real backend failure must surface, not read as
-      // an empty result set.
-      if (isFtsSyntaxError(error)) return [];
-      throw error;
-    }
+    const rows = this.db
+      .prepare(
+        `SELECT s.* FROM activity_snapshots_fts f
+           JOIN activity_snapshots s ON s.id = f.rowid
+           WHERE activity_snapshots_fts MATCH ?
+           ORDER BY s.captured_at_utc DESC, s.id DESC
+           LIMIT ?`,
+      )
+      .all(match, capped);
+    // ftsMatchFor sanitizes the query to quoted alphanumeric phrases, so there
+    // is no path to an FTS5 syntax error; a real backend failure (closed handle,
+    // missing/corrupt table, disk I/O) propagates rather than reading as empty.
+    return rows.map(rowToSnapshot);
   }
 
   /** Retention: drop snapshots captured strictly before `cutoffUtc`. */
