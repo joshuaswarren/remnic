@@ -181,7 +181,8 @@ import {
   buildNamespacePolicyCheck,
 } from "./doctor-namespace-lint.js";
 import { WriteQuarantineStore } from "@remnic/core/write-quarantine.js";
-import { renderQuarantineList, replayQuarantine, renderReplayResult, type QuarantineFormat } from "./quarantine-cli.js";
+import { renderQuarantineList, type QuarantineFormat } from "./quarantine-cli.js";
+import { runQuarantineReplay } from "./quarantine-replay.js";
 import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
 import {
   createConfiguredOfflineStorage,
@@ -9912,60 +9913,7 @@ async function cmdQuarantine(action: string, rest: string[], json: boolean): Pro
     }
     return;
   }
-  let targetNamespace: string | undefined;
-  let principal: string | undefined;
-  try {
-    targetNamespace = resolveRequiredValueFlag(rest, "--namespace");
-    principal = resolveRequiredValueFlag(rest, "--principal");
-  } catch (err) {
-    process.stderr.write(`quarantine replay: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exitCode = 2;
-    return;
-  }
-  if (!targetNamespace || targetNamespace.trim().length === 0) {
-    process.stderr.write("quarantine replay: --namespace <ns> is required.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const valued = new Set(["--namespace", "--principal"]);
-  const bad = rest.filter((a, i) => (a.startsWith("--") ? a !== "--json" && !valued.has(a) : !valued.has(rest[i - 1])));
-  if (bad.length > 0) {
-    process.stderr.write(`quarantine replay: unexpected argument(s): ${bad.join(", ")}. Use: replay --namespace <ns> [--principal <p>] [--json].\n`);
-    process.exitCode = 2;
-    return;
-  }
-  initLogger();
-  let orchestrator: Orchestrator | undefined;
-  try {
-    const configPath = resolveConfigPath();
-    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-    orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
-    await orchestrator.initialize();
-    await orchestrator.deferredReady;
-    const service = new EngramAccessService(orchestrator);
-    const store = new WriteQuarantineStore(resolveMemoryDir());
-    const result = await replayQuarantine({
-      store,
-      targetNamespace,
-      principal,
-      submit: async (operation, request) => {
-        if (operation === "observe") {
-          await service.observe(request as unknown as Parameters<EngramAccessService["observe"]>[0]);
-        } else if (operation === "memory_store") {
-          await service.memoryStore(request as unknown as Parameters<EngramAccessService["memoryStore"]>[0]);
-        } else {
-          await service.suggestionSubmit(request as unknown as Parameters<EngramAccessService["suggestionSubmit"]>[0]);
-        }
-      },
-    });
-    console.log(renderReplayResult(result, targetNamespace, format));
-    if (result.failures.length > 0 || result.deleteFailures.length > 0) process.exitCode = 1;
-  } catch {
-    process.stderr.write("quarantine replay: unable to replay quarantine store\n");
-    process.exitCode = 2;
-  } finally {
-    if (orchestrator) await orchestrator.destroy();
-  }
+  await runQuarantineReplay(rest, format, resolveConfigPath());
 }
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
