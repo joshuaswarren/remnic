@@ -14,6 +14,7 @@ import {
   keyring,
   runSecureStoreInit,
   runSecureStoreUnlock,
+  SecureStoreLockedError,
   type ScryptParams,
 } from "../src/secure-store/index.js";
 import { StorageManager } from "../src/storage.js";
@@ -4837,4 +4838,159 @@ test("recordCitationUsage prefers the cited path before id-only lookup", async (
 
   assert.equal(findCalls, 1);
   assert.deepEqual(tracked, [{ ids: ["same-id", "same-id"], paths: [firstPath, secondPath] }]);
+});
+
+test("recordCitationUsage decodes a namespace whose name equals a category dir when storage owns the cited path (#2077)", async () => {
+  const memoryDir = "/tmp/engram-2077";
+  const factsRoot = `${memoryDir}/namespaces/facts`;
+  const ownedAbs = `${factsRoot}/facts/2026-07-19/mem-1.md`;
+  const tracked: Array<{ ids: string[]; paths: string[]; namespaces?: Array<string | undefined> }> = [];
+  const storageFor = (ns: string) => ({
+    dir: ns === "global" ? memoryDir : `${memoryDir}/namespaces/${ns}`,
+    readMemoryByPath: async (candidate: string) =>
+      ns === "facts" && candidate === ownedAbs
+        ? { path: candidate, frontmatter: { id: "mem-1", category: "fact" }, content: "owned" }
+        : null,
+    readAllMemories: async () => {
+      throw new Error("citation tracking must not parse all memories");
+    },
+    findExistingMemoryPaths: async (ids: string[]) =>
+      ns === "facts" && ids.includes("mem-1")
+        ? new Map([["mem-1", [ownedAbs]]])
+        : new Map<string, string[]>(),
+  });
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      defaultRecallNamespaces: ["self", "shared"],
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        { name: "facts", readPrincipals: ["reader"], writePrincipals: ["facts-owner"] },
+      ],
+    },
+    getStorage: async (ns: string) => storageFor(ns),
+    trackMemoryAccess: (
+      ids: string[],
+      paths: string[],
+      namespaces?: Array<string | undefined>,
+    ) => {
+      tracked.push({ ids, paths, namespaces });
+    },
+  } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+  // Cited as `facts/facts/...`: namespace `facts`, remaining `facts/2026-07-19/mem-1.md`.
+  // The old blanket category-name exclusion dropped this and fell back to the
+  // writable `global`, missing the real owner (#2077).
+  const owned = await service.recordCitationUsage({
+    namespace: "global",
+    authenticatedPrincipal: "reader",
+    entries: [{ path: "facts/facts/2026-07-19/mem-1.md", lineStart: 1, lineEnd: 1, note: "" }],
+    rolloutIds: [],
+  });
+
+  assert.deepEqual(owned, { submitted: 1, matched: 1 });
+  assert.equal(tracked.length, 1);
+  assert.deepEqual(tracked[0]?.namespaces, ["facts"]);
+  assert.deepEqual(tracked[0]?.paths, [ownedAbs]);
+
+  // A bare default `facts/orphan.md` (no category dir after the ns name) is NOT
+  // owned by the `facts` namespace and must still fall back to the writable one.
+  tracked.length = 0;
+  const bare = await service.recordCitationUsage({
+    namespace: "global",
+    authenticatedPrincipal: "reader",
+    entries: [{ path: "facts/orphan.md", lineStart: 1, lineEnd: 1, note: "" }],
+    rolloutIds: [],
+  });
+  assert.deepEqual(bare, { submitted: 1, matched: 0 });
+  assert.equal(tracked.length, 0);
+});
+
+test("recordCitationUsage falls back when a category-named namespace probe read fails (#2077)", async () => {
+  const memoryDir = "/tmp/engram-2077-probefail";
+  const tracked: Array<{ ids: string[]; paths: string[]; namespaces?: Array<string | undefined> }> = [];
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [{ name: "facts", readPrincipals: ["reader"], writePrincipals: ["facts-owner"] }],
+      defaultRecallNamespaces: ["self", "shared"],
+    },
+    getStorage: async (ns: string) => ({
+      dir: ns === "global" ? memoryDir : `${memoryDir}/namespaces/${ns}`,
+      readMemoryByPath: async () => {
+        throw new Error("disk read error");
+      },
+      readAllMemories: async () => {
+        throw new Error("citation tracking must not parse all memories");
+      },
+      findExistingMemoryPaths: async () => new Map<string, string[]>(),
+    }),
+    trackMemoryAccess: (
+      ids: string[],
+      paths: string[],
+      namespaces?: Array<string | undefined>,
+    ) => {
+      tracked.push({ ids, paths, namespaces });
+    },
+  } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+  const result = await service.recordCitationUsage({
+    namespace: "global",
+    authenticatedPrincipal: "reader",
+    entries: [{ path: "facts/facts/2026-07-19/mem-1.md", lineStart: 1, lineEnd: 1, note: "" }],
+    rolloutIds: [],
+  });
+
+  // A generic probe read failure is treated as "not owned", so decoding falls
+  // back to the writable `global` namespace, which does not contain the memory.
+  assert.deepEqual(result, { submitted: 1, matched: 0 });
+  assert.equal(tracked.length, 0);
+});
+
+test("recordCitationUsage surfaces a locked-store error during category-namespace probe (#2077)", async () => {
+  const memoryDir = "/tmp/engram-2077-locked";
+  const service = new EngramAccessService({
+    config: {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [{ name: "facts", readPrincipals: ["reader"], writePrincipals: ["facts-owner"] }],
+      defaultRecallNamespaces: ["self", "shared"],
+    },
+    getStorage: async (ns: string) => ({
+      dir: ns === "global" ? memoryDir : `${memoryDir}/namespaces/${ns}`,
+      readMemoryByPath: async () => {
+        throw new SecureStoreLockedError();
+      },
+      readAllMemories: async () => {
+        throw new Error("citation tracking must not parse all memories");
+      },
+      findExistingMemoryPaths: async () => new Map<string, string[]>(),
+    }),
+    trackMemoryAccess: () => {},
+  } as unknown as ConstructorParameters<typeof EngramAccessService>[0]);
+
+  // A locked encrypted store must NOT be silently mistaken for "not owned"
+  // (AGENTS.md §6) — the error propagates instead of falling back.
+  await assert.rejects(
+    service.recordCitationUsage({
+      namespace: "global",
+      authenticatedPrincipal: "reader",
+      entries: [{ path: "facts/facts/2026-07-19/mem-1.md", lineStart: 1, lineEnd: 1, note: "" }],
+      rolloutIds: [],
+    }),
+    (err: unknown) => err instanceof SecureStoreLockedError,
+  );
 });
