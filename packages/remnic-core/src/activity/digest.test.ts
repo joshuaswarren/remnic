@@ -136,3 +136,11 @@ test("dwell is scoped per capture machine — an interleaved machine can't steal
   // A-app dwell = A@14:00 → A@14:10 = 10m (per-machine), not 1m (global next = B@14:01).
   assert.ok(body.includes("- A-app: 10m"), body);
 });
+
+test("digest ordering is deterministic for same-time unsaved snapshots", () => {
+  const a = snap({ capturedAtUtc: "2026-03-10T14:00:00.000Z", contentHash: "h-a", app: "Alpha", text: "alpha window" });
+  const b = snap({ capturedAtUtc: "2026-03-10T14:00:00.000Z", contentHash: "h-b", app: "Beta", text: "beta window" });
+  const one = composeActivityDigestBody("2026-03-10", "UTC", [a, b]);
+  const two = composeActivityDigestBody("2026-03-10", "UTC", [b, a]);
+  assert.equal(one, two);
+});

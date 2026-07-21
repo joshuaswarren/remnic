@@ -98,6 +98,11 @@ function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {
     const bid = b.id ?? 0;
     if (aid < bid) return -1;
     if (aid > bid) return 1;
+    // Unsaved snapshots (pre-store) both default to id 0; fall back to the
+    // content hash (their dedup identity), then app/window, for a total order.
+    if (a.contentHash !== b.contentHash) return a.contentHash < b.contentHash ? -1 : 1;
+    if (a.app !== b.app) return a.app < b.app ? -1 : 1;
+    if (a.windowTitle !== b.windowTitle) return a.windowTitle < b.windowTitle ? -1 : 1;
     return 0;
   });
 }

@@ -158,38 +158,45 @@ export class ActivityStore {
    * insert, so it never drifts from the base table.
    */
   insertSnapshot(snapshot: ActivitySnapshot): { inserted: boolean; id: number } {
-    const info = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO activity_snapshots
-           (machine, captured_at_utc, app_name, window_title, browser_url, text, text_source, content_hash, simhash)
-         VALUES (@machine, @captured_at_utc, @app_name, @window_title, @browser_url, @text, @text_source, @content_hash, @simhash)`,
-      )
-      .run({
-        machine: snapshot.machine,
-        captured_at_utc: snapshot.capturedAtUtc,
-        app_name: snapshot.app,
-        window_title: snapshot.windowTitle,
-        browser_url: snapshot.browserUrl ?? null,
-        text: snapshot.text,
-        text_source: snapshot.textSource,
-        content_hash: snapshot.contentHash,
-        simhash: snapshot.simhash ?? null,
-      });
-    if (info.changes === 0) {
-      const existing = this.db
-        .prepare("SELECT id FROM activity_snapshots WHERE machine = ? AND content_hash = ?")
-        .get(snapshot.machine, snapshot.contentHash);
-      const id = isRecord(existing) && typeof existing.id === "number" ? existing.id : -1;
-      return { inserted: false, id };
-    }
-    const id = Number(info.lastInsertRowid);
-    this.db
-      .prepare(
-        `INSERT INTO activity_snapshots_fts (rowid, text, app_name, window_title, browser_url)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(id, snapshot.text, snapshot.app, snapshot.windowTitle, snapshot.browserUrl ?? "");
-    return { inserted: true, id };
+    // Base row + FTS row must be atomic. Without a transaction, a crash (or an
+    // FTS throw) between the two statements leaves a snapshot in the base table
+    // with no matching FTS row — silently unsearchable. The transaction rolls
+    // back both on any throw.
+    const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
+      const info = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO activity_snapshots
+             (machine, captured_at_utc, app_name, window_title, browser_url, text, text_source, content_hash, simhash)
+           VALUES (@machine, @captured_at_utc, @app_name, @window_title, @browser_url, @text, @text_source, @content_hash, @simhash)`,
+        )
+        .run({
+          machine: s.machine,
+          captured_at_utc: s.capturedAtUtc,
+          app_name: s.app,
+          window_title: s.windowTitle,
+          browser_url: s.browserUrl ?? null,
+          text: s.text,
+          text_source: s.textSource,
+          content_hash: s.contentHash,
+          simhash: s.simhash ?? null,
+        });
+      if (info.changes === 0) {
+        const existing = this.db
+          .prepare("SELECT id FROM activity_snapshots WHERE machine = ? AND content_hash = ?")
+          .get(s.machine, s.contentHash);
+        const id = isRecord(existing) && typeof existing.id === "number" ? existing.id : -1;
+        return { inserted: false, id };
+      }
+      const id = Number(info.lastInsertRowid);
+      this.db
+        .prepare(
+          `INSERT INTO activity_snapshots_fts (rowid, text, app_name, window_title, browser_url)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(id, s.text, s.app, s.windowTitle, s.browserUrl ?? "");
+      return { inserted: true, id };
+    });
+    return runInsert(snapshot);
   }
 
   /** Snapshots whose capture instant is in the half-open [start, end) window. */

@@ -133,3 +133,14 @@ test("ActivityStore.open works on a fresh memoryDir (creates state/ itself)", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("insertSnapshot writes the FTS row atomically (searchable right after insert)", async () => {
+  await withStore((store) => {
+    const result = store.insertSnapshot(snapshot({ text: "atomic search token zzq", contentHash: "atomic-1" }));
+    assert.equal(result.inserted, true);
+    // A committed base row without its FTS row would return zero hits here.
+    const hits = store.searchSnapshots("zzq", 10);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0]?.contentHash, "atomic-1");
+  });
+});
