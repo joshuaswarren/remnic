@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { withTempDirSync as sharedWithTempDirSync } from "./helpers/tmp-dir.mjs";
 
 import {
   loadRawConfig as loadDevRawConfig,
@@ -39,14 +40,7 @@ const loaders: Array<[string, Loader]> = [
   ],
 ];
 
-function withTempDir<T>(fn: (dir: string) => T): T {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "codex-materialize-config-"));
-  try {
-    return fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = <T>(fn: (dir: string) => T): T => sharedWithTempDirSync(fn, "codex-materialize-config-");
 
 function writeJson(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);

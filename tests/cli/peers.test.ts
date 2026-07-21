@@ -18,9 +18,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
+
+import { makeTempDir as managedTempDir } from "../helpers/tmp-dir.mjs";
 
 import {
   assertValidPeerId,
@@ -36,9 +36,7 @@ import type { Peer, PeerProfile } from "../../packages/remnic-core/src/peers/typ
 // Helpers
 // ──────────────────────────────────────────────────────────────────────
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "remnic-peers-test-"));
-}
+const makeTempDir = (): Promise<string> => managedTempDir("remnic-peers-test-");
 
 async function removeTempDir(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true });
