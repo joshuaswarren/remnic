@@ -4895,9 +4895,30 @@ async function cmdStatus(json: boolean): Promise<void> {
             : "";
       console.log(`Health: server responded with ${response.status} ${response.statusText}${hint}`);
     } else {
-      const health = (await response.json()) as { status?: unknown };
+      const health = (await response.json()) as {
+        status?: unknown;
+        qmd?: {
+          pendingEmbeddings?: number | null;
+          oldestPendingAgeMs?: number | null;
+          embeddingBacklogThreshold?: number;
+          degradedReason?: string;
+        };
+      };
       const status = typeof health.status === "string" ? health.status : "ok";
       console.log(`Health: ${status}`);
+      const qmd = health.qmd;
+      if (qmd?.pendingEmbeddings != null) {
+        console.log(`  Pending embeddings: ${qmd.pendingEmbeddings}`);
+        if (qmd.oldestPendingAgeMs != null) {
+          console.log(`  Oldest pending: ${Math.round(qmd.oldestPendingAgeMs / 60_000)}m`);
+        }
+        if (qmd.embeddingBacklogThreshold != null) {
+          console.log(`  Backlog threshold: ${qmd.embeddingBacklogThreshold}`);
+        }
+      }
+      if (qmd?.degradedReason) {
+        console.log(`  Degraded: ${qmd.degradedReason}`);
+      }
     }
   } catch {
     console.log("Health: unable to reach server");
