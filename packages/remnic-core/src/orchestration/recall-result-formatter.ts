@@ -20,8 +20,8 @@
 import { buildHandleIndexForResults } from "../recall-handles.js";
 import path from "node:path";
 import { renderEpistemicHedge } from "../trust-score.js";
-import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
-import { namespaceIdentityFromToken } from "../namespaces/identity.js";
+import { resolveIdentityContinuityCapabilities, resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
 import type { StorageManager } from "../index.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
@@ -116,20 +116,28 @@ export function displaySafeBudgetsApplied<
 }
 
 /**
- * Decode the owning namespace of an absolute anchor path under
- * `<memoryDir>/namespaces/<identity-token>/…` so `displayResultPath` renders it
- * as `<namespace>/…` rather than exposing the reversible identity token (#2077).
- * Returns undefined for default-namespace (flat-root) or non-absolute paths,
- * whose memoryDir-relative form is already display-safe.
+ * Resolve the owning namespace of an absolute anchor path under
+ * `<memoryDir>/namespaces/<segment>/…` via the canonical
+ * `resolveNamespaceFromStorageDir` resolver, so `displayResultPath` renders it
+ * as `<namespace>/…` (never the raw storage segment) while correctly preserving
+ * a namespace whose literal name is itself token-shaped (#2077). Returns
+ * undefined for a default-namespace (flat-root) or non-absolute path, whose
+ * memoryDir-relative form is already display-safe.
  */
-function namespaceForAnchorPath(anchorPath: string, memoryDir: string): string | undefined {
+function anchorNamespace(anchorPath: string, config: PluginConfig): string | undefined {
   if (!path.isAbsolute(anchorPath)) return undefined;
-  const nsRoot = path.join(path.resolve(memoryDir), "namespaces");
+  const nsRoot = path.join(path.resolve(config.memoryDir), "namespaces");
   const rel = path.relative(nsRoot, path.resolve(anchorPath));
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
-  const [token] = rel.split(path.sep);
-  if (!token) return undefined;
-  return namespaceIdentityFromToken(token) ?? undefined;
+  const [segment] = rel.split(path.sep);
+  if (!segment) return undefined;
+  const configuredNamespaces = resolveNamespaceCapabilities(config).namespaces
+    ? [config.defaultNamespace, config.sharedNamespace, ...config.namespacePolicies.map((p) => p.name)]
+    : [config.defaultNamespace];
+  return resolveNamespaceFromStorageDir(path.join(nsRoot, segment), {
+    config,
+    configuredNamespaces,
+  });
 }
 
 /**
@@ -153,7 +161,8 @@ export function displaySafeRecallSnapshot<
       sourceAnchors?: Array<{ path: string; lineRange?: [number, number] }>;
     };
   },
->(snapshot: T, memoryDir: string): T {
+>(snapshot: T, config: PluginConfig): T {
+  const memoryDir = config.memoryDir;
   const resultPaths = snapshot.resultPaths?.map((p, i) =>
     displayResultPath(p, memoryDir, snapshot.resultNamespaces?.[i]),
   );
@@ -163,7 +172,7 @@ export function displaySafeRecallSnapshot<
           ...snapshot.tierExplain,
           sourceAnchors: snapshot.tierExplain.sourceAnchors.map((anchor) => ({
             ...anchor,
-            path: displayResultPath(anchor.path, memoryDir, namespaceForAnchorPath(anchor.path, memoryDir)),
+            path: displayResultPath(anchor.path, memoryDir, anchorNamespace(anchor.path, config)),
           })),
         }
       : undefined;

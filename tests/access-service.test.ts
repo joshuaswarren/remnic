@@ -4993,6 +4993,8 @@ test("recordCitationUsage surfaces a locked-store error during category-namespac
     }),
     (err: unknown) => err instanceof SecureStoreLockedError,
   );
+});
+
 test("recall debug snapshot relativizes absolute internal paths (#2077)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-2077-debug-"));
   try {

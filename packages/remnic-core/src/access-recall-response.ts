@@ -245,7 +245,7 @@ export async function assembleRecallResponse(
   const debugSnapshot = debug?.snapshot;
   const safeDebug =
     debug && debugSnapshot
-      ? { ...debug, snapshot: displaySafeRecallSnapshot(debugSnapshot, deps.orchestrator.config.memoryDir) }
+      ? { ...debug, snapshot: displaySafeRecallSnapshot(debugSnapshot, deps.orchestrator.config) }
       : debug;
 
   // Fire-and-forget audit recording. Must never block or crash recall.
