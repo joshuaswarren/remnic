@@ -25,14 +25,13 @@ runtime. If it is not installed, `remnic wearables` reports a clean install hint
 ## API key
 
 Create a key in the Granola desktop app under **Settings → Connectors → API
-keys** (choose the note access scopes), then provide it via (checked in order):
+keys** (choose the note access scopes). The connector resolves the key in this
+order — the **config value takes precedence**, then the environment variables:
 
-| Environment variable | |
-|---|---|
-| `REMNIC_GRANOLA_API_KEY` | preferred |
-| `GRANOLA_API_KEY` | provider-conventional |
+1. `wearables.sources.granola.apiKey` (config; wins when set)
+2. `REMNIC_GRANOLA_API_KEY` (preferred env var)
+3. `GRANOLA_API_KEY` (provider-conventional env var)
 
-…or the config value `wearables.sources.granola.apiKey` (takes precedence).
 On launchd/systemd daemons the process environment is isolated — set the key in
 the unit, not just a shell.
 
@@ -73,9 +72,9 @@ remnic wearables search "roadmap"
 - Speaker keys come from `speaker.source` (`microphone` = the wearer's own audio,
   `speaker` = other meeting audio) or the iOS `diarization_label`. The wearables
   speaker registry owns final naming.
-- Notes with a summary but no transcript become a single `note` segment.
-- The Granola API only returns notes that already have an AI summary + transcript;
-  a note that 404s on detail fetch is skipped, not fatal.
+- The notes list returns summaries; a note's detail record may lack a transcript
+  (the field is nullable), so a summary-only note becomes a single `note`
+  segment. A note that 404s on the detail fetch is skipped, not fatal.
 
 ## License
 

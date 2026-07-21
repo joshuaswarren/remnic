@@ -141,6 +141,11 @@ export class GranolaClient {
     );
     const hasMore = isRecord(payload) && payload.hasMore === true;
     const cursor = isRecord(payload) && typeof payload.cursor === "string" ? payload.cursor : null;
+    if (hasMore && (cursor === null || cursor.length === 0)) {
+      // A `hasMore: true` page with no usable cursor is a malformed pagination
+      // response; fail loudly rather than silently sync a partial day (§22).
+      throw new GranolaApiError("Granola reported hasMore=true but returned no pagination cursor");
+    }
     return { notes, nextCursor: hasMore ? cursor : null };
   }
 
@@ -204,6 +209,7 @@ export class GranolaClient {
       }
 
       if (response.status === 429 || response.status >= 500) {
+        discardBody(response);
         lastError = new GranolaApiError(`Granola API responded ${response.status}`, response.status);
         if (attempt < MAX_RETRIES) {
           await this.sleep(await retryDelayMs(response, attempt));
@@ -212,6 +218,7 @@ export class GranolaClient {
         throw lastError;
       }
       if (!response.ok) {
+        discardBody(response);
         throw new GranolaApiError(
           `Granola API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
           response.status,
@@ -231,6 +238,14 @@ function defaultSleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
   return promise;
+}
+
+/**
+ * Release the socket back to the pool on error paths: an unconsumed response
+ * body pins the undici connection (stability review note).
+ */
+function discardBody(response: Response): void {
+  void response.body?.cancel().catch(() => {});
 }
 
 function describeNetworkError(err: unknown): string {

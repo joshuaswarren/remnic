@@ -120,3 +120,21 @@ test("a missing notes array fails loudly", async () => {
   const client = new GranolaClient({ apiKey: "grn_ok", fetchImpl });
   await assert.rejects(client.listNotes({ createdAfter: "a", createdBefore: "b" }), GranolaApiError);
 });
+
+test("hasMore=true with a missing cursor is a loud failure, not a silent short day", async () => {
+  const fetchImpl = (async () =>
+    jsonResponse({ notes: [{ id: "not_a" }], hasMore: true })) as typeof fetch;
+  const client = new GranolaClient({ apiKey: "grn_ok", fetchImpl });
+  await assert.rejects(client.listNotes({ createdAfter: "a", createdBefore: "b" }), (err: unknown) => {
+    assert.ok(err instanceof GranolaApiError);
+    assert.match(err.message, /no pagination cursor/);
+    return true;
+  });
+});
+
+test("hasMore=true with an empty-string cursor also fails loudly", async () => {
+  const fetchImpl = (async () =>
+    jsonResponse({ notes: [{ id: "not_a" }], hasMore: true, cursor: "" })) as typeof fetch;
+  const client = new GranolaClient({ apiKey: "grn_ok", fetchImpl });
+  await assert.rejects(client.listNotes({ createdAfter: "a", createdBefore: "b" }), GranolaApiError);
+});
