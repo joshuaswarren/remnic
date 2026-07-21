@@ -484,7 +484,7 @@ test("Relay run roots reject non-empty and symlinked targets and clean only mark
   }
 });
 
-test("synthetic fixture copies contain no symlinks and hidden contract flips stale to corrected behavior", { skip: !relayUserNamespacesAvailable() }, async () => {
+test("synthetic fixture copies contain no symlinks and fixture manifests, locators, and schemas validate", async () => {
   await assertTreeContainsNoSymlinks(fixtures);
   await verifyRelayFixtureManifest(fixtures);
   assert.deepEqual(
@@ -512,6 +512,9 @@ test("synthetic fixture copies contain no symlinks and hidden contract flips sta
       }),
     /unsupported keyword uniqueItems/
   );
+});
+
+test("hidden contract flips stale to corrected behavior", { skip: !relayUserNamespacesAvailable() }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "relay-fixture-behavior-"));
   const staleWorkspace = path.join(root, "stale");
   const correctedWorkspace = path.join(root, "corrected");
