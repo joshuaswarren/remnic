@@ -15,7 +15,7 @@ import { type BudgetDecision, toBudgetWarning } from "./cross-namespace-budget.j
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
-import { displaySafeBudgetsApplied } from "./orchestration/recall-result-formatter.js";
+import { displaySafeBudgetsApplied, displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
 
 /**
  * Build the recall response from the completed pipeline (issue #1906 review
@@ -238,6 +238,15 @@ export async function assembleRecallResponse(
     request.includeDebug === true,
     request.sessionKey,
   );
+  // Relativize the debug snapshot's absolute internal paths (#2077). The
+  // snapshot returned by buildRecallDebug is the LIVE cached object (kept
+  // absolute for tracking/x-ray), so build a display-safe COPY rather than
+  // mutating it — mirroring the top-level `budgetsApplied` relativization.
+  const debugSnapshot = debug?.snapshot;
+  const safeDebug =
+    debug && debugSnapshot
+      ? { ...debug, snapshot: displaySafeRecallSnapshot(debugSnapshot, deps.orchestrator.config.memoryDir) }
+      : debug;
 
   // Fire-and-forget audit recording. Must never block or crash recall.
   let auditAnomalies: AccessAuditResult["anomalies"] | undefined;
@@ -295,7 +304,7 @@ export async function assembleRecallResponse(
       auditAnomalies,
       budgetWarning: toBudgetWarning(budgetDecision),
       latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),
-      debug,
+      debug: safeDebug,
     },
     // Non-null when this recall reserved a cross-namespace budget event at
     // admission (#1906). Single-flight followers use it to record their OWN
