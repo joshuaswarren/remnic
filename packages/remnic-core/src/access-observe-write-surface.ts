@@ -32,9 +32,11 @@ import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
 import { wrapWorkLayerContext } from "./work/boundary.js";
 import { WorkStorage } from "./work/storage.js";
+import { WriteQuarantineStore, type QuarantineOperation } from "./write-quarantine.js";
 import {
   ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
   EngramAccessInputError,
+  NamespaceNotWritableError,
   type CodingScopedWriteInput,
   type EngramAccessBriefingRequest,
   type EngramAccessBriefingResponse,
@@ -118,7 +120,49 @@ export interface AccessObserveWriteSurfaceDeps {
 }
 
 export class AccessObserveWriteSurface {
+  private quarantineStoreInstance?: WriteQuarantineStore;
+
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
+
+  private quarantineStore(): WriteQuarantineStore {
+    if (!this.quarantineStoreInstance) {
+      this.quarantineStoreInstance = new WriteQuarantineStore(
+        this.deps.orchestrator.config.memoryDir,
+      );
+    }
+    return this.quarantineStoreInstance;
+  }
+
+  /**
+   * Dead-letter a write the namespace ACL just rejected (issue #1888). Only
+   * acts on {@link NamespaceNotWritableError}; other input errors pass through
+   * untouched. Parking is best-effort — a quarantine failure is logged and
+   * swallowed so it never masks or replaces the original loud rejection, which
+   * the caller re-throws. The ACL placement is unchanged; the payload simply
+   * stops being destroyed.
+   */
+  private async parkRejectedWrite(
+    err: unknown,
+    operation: QuarantineOperation,
+    payload: unknown,
+  ): Promise<void> {
+    if (!(err instanceof NamespaceNotWritableError)) return;
+    try {
+      await this.quarantineStore().quarantine({
+        operation,
+        principal: err.principal,
+        attemptedNamespace: err.attemptedNamespace,
+        payload,
+      });
+      log.warn(
+        `quarantine: parked rejected ${operation} write for principal=${err.principal ?? "-"} attemptedNamespace=${err.attemptedNamespace} (namespace not writable); replay after fixing config`,
+      );
+    } catch (quarantineErr) {
+      log.warn(
+        `quarantine: failed to park rejected ${operation} write: ${quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr)}`,
+      );
+    }
+  }
 
   async qmdHealth(
     searchBackend: string,
@@ -369,7 +413,16 @@ export class AccessObserveWriteSurface {
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    const namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+    let namespace: string;
+    try {
+      namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+    } catch (err) {
+      // A dry run is a no-persist validation, so never dead-letter it.
+      if (request.dryRun !== true) {
+        await this.parkRejectedWrite(err, "memory_store", request);
+      }
+      throw err;
+    }
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
@@ -445,7 +498,16 @@ export class AccessObserveWriteSurface {
     request: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    const namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+    let namespace: string;
+    try {
+      namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+    } catch (err) {
+      // A dry run is a no-persist validation, so never dead-letter it.
+      if (request.dryRun !== true) {
+        await this.parkRejectedWrite(err, "suggestion_submit", request);
+      }
+      throw err;
+    }
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
@@ -543,7 +605,13 @@ export class AccessObserveWriteSurface {
     //    self base leaves NO coding context bound to the session, matching how
     //    `memory_store` resolves its full scoped write namespace before any
     //    session mutation.
-    const scope = await this.deps.resolveMemoryScopePlan(request);
+    let scope: MemoryScopePlan;
+    try {
+      scope = await this.deps.resolveMemoryScopePlan(request);
+    } catch (err) {
+      await this.parkRejectedWrite(err, "observe", request);
+      throw err;
+    }
     const writeNamespace = scope.writeNamespace;
 
     // Backward-compatible BASE writable namespace (pre-#1495 response semantics)

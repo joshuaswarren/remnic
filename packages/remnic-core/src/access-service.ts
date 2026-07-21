@@ -272,7 +272,10 @@ import { AccessRecallSurface } from "./access-recall-surface.js";
 import { AccessIdentityContinuitySurface } from "./access-identity-continuity-surface.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 
-export class EngramAccessInputError extends Error {}
+import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
+// Re-exported so existing `import { … } from "./access-service.js"` callers keep
+// working after these classes moved to ./access-errors (issue #1888).
+export { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
 
 function qmdCollectionPathParts(resultPath: string): {
   collection: string;
@@ -1482,10 +1485,12 @@ export class EngramAccessService {
       this.orchestrator.config,
     );
     if (!result.ok) {
-      throw new EngramAccessInputError(
-        result.reason === "unsupported"
-          ? `unsupported namespace: ${result.namespace}`
-          : `namespace is not writable: ${result.namespace}`,
+      if (result.reason === "unsupported") {
+        throw new EngramAccessInputError(`unsupported namespace: ${result.namespace}`);
+      }
+      throw new NamespaceNotWritableError(
+        result.namespace,
+        this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal),
       );
     }
     return result.namespace;
@@ -1611,9 +1616,8 @@ export class EngramAccessService {
         profilePlan.writeNamespace.length > 0 &&
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
-        );
+        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
       return profilePlan.writeNamespace;
     }
@@ -1632,7 +1636,7 @@ export class EngramAccessService {
     // no separate write policy.
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
-      throw new EngramAccessInputError(`namespace is not writable: ${base}`);
+      throw new NamespaceNotWritableError(base, principal);
     }
     return combineNamespaces(base, overlay.namespace);
   }
@@ -1843,9 +1847,8 @@ export class EngramAccessService {
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
         clearSeededContext();
-        throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
-        );
+        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
       const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
         ? recallNamespacesForPrincipal(principal, this.orchestrator.config)
@@ -1919,9 +1922,7 @@ export class EngramAccessService {
         !canWriteNamespace(principal, baseNamespace, this.orchestrator.config)
       ) {
         clearSeededContext();
-        throw new EngramAccessInputError(
-          `namespace is not writable: ${baseNamespace}`,
-        );
+        throw new NamespaceNotWritableError(baseNamespace, principal);
       }
       return {
         principal,
@@ -1948,9 +1949,7 @@ export class EngramAccessService {
     // it, so it needs no separate write policy — rule 42 / 47 / 48).
     if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
       clearSeededContext();
-      throw new EngramAccessInputError(
-        `namespace is not writable: ${baseNamespace}`,
-      );
+      throw new NamespaceNotWritableError(baseNamespace, principal);
     }
     const writeNamespace = overlaidBase;
     const readNamespaces = [writeNamespace];
