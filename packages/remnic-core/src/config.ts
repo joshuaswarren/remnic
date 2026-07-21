@@ -1615,7 +1615,11 @@ export function parseConfig(
       typeof cfg.qmdMaxResults === "number" ? cfg.qmdMaxResults : 8,
     qmdEmbeddingBacklogThreshold: (() => {
       const raw = cfg.qmdEmbeddingBacklogThreshold;
-      const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+      const n = typeof raw === "number"
+        ? raw
+        : typeof raw === "string" && raw.trim() !== ""
+          ? Number(raw)
+          : NaN;
       return Number.isFinite(n) && Number.isInteger(n) && n >= 0 ? n : 1000;
     })(),
     qmdColdTierEnabled: cfg.qmdColdTierEnabled === true,
