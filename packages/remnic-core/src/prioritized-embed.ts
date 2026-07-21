@@ -64,12 +64,15 @@ export function installPrioritizedEmbedding(
         requeue(namespace, paths, batch);
         return;
       }
-      // Collection-level embed drains the entire backlog; discard the
-      // spliced tail only if the map still points at this array (a newer
-      // write may have created a fresh queue while we were in flight).
+      // Collection-level embed drains the entire backlog. If new writes
+      // were appended to the tail while the embed was in flight, reschedule
+      // so they get picked up; otherwise clear the queue.
       if (pendingByNamespace.get(namespace) === paths) {
-        paths.length = 0;
-        pendingByNamespace.delete(namespace);
+        if (paths.length > 0) {
+          scheduleFlush();
+        } else {
+          pendingByNamespace.delete(namespace);
+        }
       }
     }).catch(() => {
       requeue(namespace, paths, batch);
