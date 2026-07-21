@@ -1205,10 +1205,7 @@ export {
 // Wearable transcript subsystem (Limitless / Bee / Omi connectors).
 // Connector packages import the registry + types from here.
 // ---------------------------------------------------------------------------
-
 export * from "./wearables/index.js";
-
-// Retrospective meeting-detection subsystem (issue #1900).
 export * from "./meetings/index.js";
 
 // ---------------------------------------------------------------------------
