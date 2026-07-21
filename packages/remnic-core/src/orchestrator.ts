@@ -279,7 +279,7 @@ import {
 } from "./dedup/semantic.js";
 import { BootstrapEngine } from "./bootstrap.js";
 import { parseQmdExplain } from "./qmd.js";
-import { installPrioritizedEmbedding } from "./prioritized-embed.js";
+import { installPrioritizedEmbedding, type PrioritizedEmbeddingHandle } from "./prioritized-embed.js";
 import {
   buildQmdRecallCacheKey,
   getCachedQmdRecall,
@@ -561,7 +561,7 @@ export class Orchestrator {
    * runners (consolidation/pattern-reinforcement/governance) stay here.
    */
   readonly maintenanceScheduler: MaintenanceScheduler;
-  private enqueuePrioritizedEmbed?: (filePath: string) => void;
+  private prioritizedEmbedding?: PrioritizedEmbeddingHandle;
   private readonly conversationQmd?: ConversationQmdRuntime;
   private readonly conversationFaiss?: ReturnType<
     typeof createConversationIndexRuntime
@@ -744,7 +744,7 @@ export class Orchestrator {
         getStorageRouter: () => this.storageRouter,
         getThreading: () => this.threading,
         persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
-          this.persistExtractionWithPaths(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
+          this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
         maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
         resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
         getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
@@ -979,6 +979,7 @@ export class Orchestrator {
       // Issue #1903: flush any coalesced namespace-catalog touches before teardown
       // so a long-lived host does not drop buffered read/write timestamps.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
+      this.prioritizedEmbedding?.dispose();
       await this.namespaceSearchRouter.dispose();
       await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
       if (this.conversationQmd && this.conversationQmd !== this.qmd) {
@@ -1456,7 +1457,18 @@ export class Orchestrator {
     this.qmd = createSearchBackend(config);
     // #2019: prioritized embedding for write-path searchability.
     if (resolveQmdCapabilities(config).qmdAutoEmbed) {
-      this.enqueuePrioritizedEmbed = installPrioritizedEmbedding(() => this.qmd, (msg) => log.debug(msg));
+      this.prioritizedEmbedding = installPrioritizedEmbedding(
+        (namespace) => this.namespaceSearchRouter.backendForNamespace(namespace),
+        (msg) => log.debug(msg),
+      );
+      const defaultNs = this.config.defaultNamespace;
+      this.storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, defaultNs);
+      this.storageRouter.onStorageCreated = (storage, namespace) => {
+        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
+      };
+      this.storageRouter.forEachCachedStorage((storage, namespace) => {
+        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
+      });
     }
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
@@ -3127,7 +3139,7 @@ export class Orchestrator {
   requestQmdMaintenanceForTool(reason: string): void {
     this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
-  private async persistExtractionWithPaths(
+  async persistExtraction(
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
@@ -3150,20 +3162,8 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
-    for (const memoryPath of memoryPathById.values()) this.enqueuePrioritizedEmbed?.(memoryPath);
+    for (const memoryPath of memoryPathById.values()) this.prioritizedEmbedding?.enqueue(memoryPath, baseNamespace);
     return { persistedIds, memoryPathById };
-  }
-  async persistExtraction(
-    result: ExtractionResult,
-    storage: StorageManager,
-    threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
-    baseNamespace?: string,
-    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
-    sourceText?: string,
-  ): Promise<string[]> {
-    const { persistedIds } = await this.persistExtractionWithPaths(result, storage, threadIdForExtraction, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText);
-    return persistedIds;
   }
   /**
    * Append persisted ids to the thread episode set, excluding pending_review

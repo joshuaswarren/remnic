@@ -114,7 +114,7 @@ test("health treats qmdEmbeddingBacklogThreshold 0 as backlog degradation disabl
     probe: async () => true,
     isAvailable: () => true,
     checkCollection: async () => "present",
-    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000 }),
+    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000, totalFiles: 100, embeddedFiles: 58 }),
   });
   const service = new EngramAccessService({
     config,
@@ -137,7 +137,7 @@ test("health marks QMD degraded when pending embeddings exceed a positive thresh
     probe: async () => true,
     isAvailable: () => true,
     checkCollection: async () => "present",
-    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000 }),
+    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000, totalFiles: 100, embeddedFiles: 58 }),
   });
   const service = new EngramAccessService({
     config,

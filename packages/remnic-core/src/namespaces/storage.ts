@@ -243,6 +243,9 @@ export class NamespaceStorageRouter {
   // default name routes the default namespace to a tokenized non-default root.
   private readonly defaultNamespaceIdentity: string;
 
+  /** #2019: hook fired when a new namespace storage is created via storageFor. */
+  onStorageCreated?: (storage: StorageManager, namespace: string) => void;
+
   constructor(
     private readonly config: PluginConfig,
     private readonly hooks: NamespaceStorageRouterHooks = {},
@@ -334,6 +337,9 @@ export class NamespaceStorageRouter {
     // fall back to plaintext. Mirror the orchestrator's setup exactly.
     this.applySecureStoreConfig(sm);
     this.cache.set(ns, sm);
+    // #2019: let the orchestrator wire write-triggered prioritized embedding on
+    // every router-created namespace storage, not just the primary default store.
+    this.onStorageCreated?.(sm, ns);
     this.notifyResolved(ns, root);
     return sm;
   }
@@ -564,5 +570,13 @@ export class NamespaceStorageRouter {
     while (this.pendingResolveHooks.size > 0) {
       await Promise.allSettled([...this.pendingResolveHooks]);
     }
+  }
+
+  /**
+   * #2019: iterate the currently cached router storages with their namespace so
+   * callers can wire hooks on stores resolved before the hook was installed.
+   */
+  forEachCachedStorage(fn: (storage: StorageManager, namespace: string) => void): void {
+    for (const [namespace, storage] of this.cache) fn(storage, namespace);
   }
 }

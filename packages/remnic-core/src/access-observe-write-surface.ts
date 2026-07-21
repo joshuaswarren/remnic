@@ -259,6 +259,8 @@ export class AccessObserveWriteSurface {
           upgradeAvailable: boolean | null;
           doctorAvailable: boolean | null;
           daemonMode: boolean | null;
+          pendingEmbeddings?: number | null;
+          oldestPendingAgeMs?: number | null;
         }>;
       }
     ).searchHealthForNamespace;
@@ -272,7 +274,11 @@ export class AccessObserveWriteSurface {
         signal: controller.signal,
       });
       const active = health.available && health.collectionState !== "missing";
-      const degraded = !active || health.collectionState === "unknown";
+      const pending = health.pendingEmbeddings ?? null;
+      const oldest = health.oldestPendingAgeMs ?? null;
+      const threshold = this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold;
+      const backlogDegraded = threshold > 0 && pending !== null && pending > threshold;
+      const degraded = !active || health.collectionState === "unknown" || backlogDegraded;
       const mode = !active ? "fallback" : health.daemonMode === true ? "daemon" : "cli";
 
       return {
@@ -288,11 +294,12 @@ export class AccessObserveWriteSurface {
         upgradeAvailable: health.upgradeAvailable,
         doctorAvailable: health.doctorAvailable,
         debugStatus: health.debugStatus,
-        // Backlog metrics require a QMD client bound to the namespace collection;
-        // this path only checks collection availability, so they stay null here.
-        pendingEmbeddings: null,
-        oldestPendingAgeMs: null,
-        embeddingBacklogThreshold: this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold,
+        pendingEmbeddings: pending,
+        oldestPendingAgeMs: oldest,
+        embeddingBacklogThreshold: threshold,
+        ...(backlogDegraded && pending !== null
+          ? { degradedReason: `embedding backlog ${pending} exceeds threshold ${threshold}` }
+          : {}),
       };
     } catch (error) {
       const detail = displayErrorDetail(error) || "unknown";

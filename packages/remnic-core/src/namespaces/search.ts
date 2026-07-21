@@ -89,6 +89,18 @@ export class NamespaceSearchRouter {
     return (await this.backendRecordFor(namespace)).collection;
   }
 
+  /**
+   * Resolve the search backend for a namespace (#2019). Returns `unknown` so
+   * callers (e.g. the prioritized-embed path) duck-type for capability like
+   * `embedFiles` rather than depending on a concrete QMD shape. Reuses the
+   * cached backend record, so this never re-creates a backend. Returns `null`
+   * when the namespace backend is unavailable.
+   */
+  async backendForNamespace(namespace: string): Promise<unknown> {
+    const record = await this.backendRecordFor(namespace);
+    return record.available ? record.backend : null;
+  }
+
   async searchAcrossNamespaces(options: {
     query: string;
     namespaces: string[];

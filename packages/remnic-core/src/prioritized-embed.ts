@@ -4,53 +4,95 @@
  * support per-file embed targeting; each trigger runs `qmd embed -c <collection>`
  * which embeds all pending files. Batching avoids hammering the CLI on every write.
  *
+ * Writes are keyed by namespace so a write persisted into a non-default namespace
+ * is embedded against that namespace's own QMD collection/backend, not the default
+ * collection (review thread: namespace-aware prioritized embedding).
+ *
  * Extracted from orchestrator.ts to keep that file under the structural ratchet.
  */
 
 const EMBED_FLUSH_MS = 30_000;
 const EMBED_BATCH_MAX = 50;
 
-export function installPrioritizedEmbedding(
-  getQmd: () => unknown,
-  logDebug: (msg: string) => void,
-): (filePath: string) => void {
-  const pendingEmbedPaths: string[] = [];
-  let embedFlushTimer: ReturnType<typeof setTimeout> | null = null;
+export interface PrioritizedEmbeddingHandle {
+  enqueue: (filePath: string, namespace?: string) => void;
+  dispose: () => void;
+}
 
-  const flushEmbedBatch = (): void => {
-    embedFlushTimer = null;
-    // Check backend capability BEFORE dequeuing so an unavailable backend
-    // does not drop queued paths (fixes "Embed queue drops on skip").
-    const qmd = getQmd() as { embedFiles?: (p: string[]) => Promise<unknown> } | null | undefined;
-    if (!qmd || typeof qmd.embedFiles !== "function") {
-      // Backend unavailable — leave paths queued; reschedule if any remain.
-      if (pendingEmbedPaths.length > 0) {
-        embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
-      }
+interface EmbedBackend {
+  embedFiles?: (paths: string[]) => Promise<unknown>;
+}
+
+export function installPrioritizedEmbedding(
+  getBackendForNamespace: (namespace: string) => unknown | Promise<unknown>,
+  logDebug: (msg: string) => void,
+): PrioritizedEmbeddingHandle {
+  const pendingByNamespace = new Map<string, string[]>();
+  let embedFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const scheduleFlush = (): void => {
+    if (disposed || embedFlushTimer !== null) return;
+    embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
+    // Do not keep the process alive for the flush delay — short-lived CLI
+    // and import commands must exit promptly (review thread: timer unref).
+    embedFlushTimer.unref?.();
+  };
+
+  const flushNamespace = async (namespace: string, paths: string[]): Promise<void> => {
+    // Namespace backends are created lazily and asynchronously by the search
+    // router; await resolution so sync and async resolvers both work.
+    const backend = (await Promise.resolve(getBackendForNamespace(namespace))) as
+      | EmbedBackend
+      | null
+      | undefined;
+    if (!backend || typeof backend.embedFiles !== "function") {
+      if (paths.length > 0) scheduleFlush();
       return;
     }
-    const batch = pendingEmbedPaths.splice(0, EMBED_BATCH_MAX);
+    const batch = paths.splice(0, EMBED_BATCH_MAX);
+    // Drain cleanup lives here (not in flushEmbedBatch) because the splice runs
+    // in a microtask after the resolver await. A failure re-queues below and
+    // re-inserts the array if it was drained.
+    if (paths.length === 0) pendingByNamespace.delete(namespace);
     if (batch.length === 0) return;
-    qmd.embedFiles(batch).then(() => {
-      // Reschedule if more paths accumulated during the embed call
-      // (fixes "Partial embed batch never rescheduled").
-      if (pendingEmbedPaths.length > 0 && embedFlushTimer === null) {
-        embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
-      }
+    backend.embedFiles(batch).then(() => {
+      if (paths.length > 0) scheduleFlush();
     }).catch(() => {
-      // Requeue the failed batch at the front so nothing is lost.
-      pendingEmbedPaths.unshift(...batch);
-      if (embedFlushTimer === null) {
-        embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
-      }
+      paths.unshift(...batch);
+      if (!disposed && !pendingByNamespace.has(namespace)) pendingByNamespace.set(namespace, paths);
+      scheduleFlush();
     });
   };
 
-  return (filePath: string): void => {
-    pendingEmbedPaths.push(filePath);
-    if (embedFlushTimer === null) {
-      embedFlushTimer = setTimeout(flushEmbedBatch, EMBED_FLUSH_MS);
+  const flushEmbedBatch = (): void => {
+    embedFlushTimer = null;
+    for (const [namespace, paths] of [...pendingByNamespace]) {
+      void flushNamespace(namespace, paths);
     }
-    logDebug(`prioritized embed: queued ${filePath} (${pendingEmbedPaths.length} pending)`);
   };
+
+  const dispose = (): void => {
+    disposed = true;
+    if (embedFlushTimer) {
+      clearTimeout(embedFlushTimer);
+      embedFlushTimer = null;
+    }
+    pendingByNamespace.clear();
+  };
+
+  const enqueue = (filePath: string, namespace?: string): void => {
+    if (disposed) return;
+    const key = namespace ?? "default";
+    let paths = pendingByNamespace.get(key);
+    if (!paths) {
+      paths = [];
+      pendingByNamespace.set(key, paths);
+    }
+    paths.push(filePath);
+    scheduleFlush();
+    logDebug(`prioritized embed: queued ${filePath} in namespace ${key} (${paths.length} pending)`);
+  };
+
+  return { enqueue, dispose };
 }
