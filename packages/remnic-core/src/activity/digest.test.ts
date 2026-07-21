@@ -144,3 +144,20 @@ test("digest ordering is deterministic for same-time unsaved snapshots", () => {
   const two = composeActivityDigestBody("2026-03-10", "UTC", [b, a]);
   assert.equal(one, two);
 });
+
+test("activityDayWindow does not backdate a skipped local midnight", () => {
+  // Egypt restarts DST on the last Friday of April at 00:00 (00:00 → 01:00),
+  // so local midnight is skipped. The day-start must land on the correct local
+  // day (the first existing local time), never backdated into the prior day.
+  const w = activityDayWindow("2026-04-24", "Africa/Cairo");
+  const local = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Cairo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(w.startUtc));
+  assert.ok(local.startsWith("2026-04-24"), local);
+});

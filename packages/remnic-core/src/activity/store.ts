@@ -106,6 +106,33 @@ function canonicalizeUtc(iso: string): string {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : iso;
 }
 
+/**
+ * Reject an impossible capture timestamp instead of letting Date.parse silently
+ * roll it over (e.g. 2026-02-30 → Mar 2), which would file the snapshot under
+ * the wrong day. For the canonical UTC `Z` form the pipeline emits, the parsed
+ * instant's UTC fields must reproduce the supplied Y-M-D H:M:S.
+ */
+function assertValidCaptureTimestamp(iso: string): void {
+  const parsed = Date.parse(iso);
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (!Number.isFinite(parsed) || m === null) {
+    throw new RangeError(`activity: invalid capture timestamp "${iso}".`);
+  }
+  if (iso.endsWith("Z")) {
+    const d = new Date(parsed);
+    if (
+      d.getUTCFullYear() !== Number(m[1]) ||
+      d.getUTCMonth() + 1 !== Number(m[2]) ||
+      d.getUTCDate() !== Number(m[3]) ||
+      d.getUTCHours() !== Number(m[4]) ||
+      d.getUTCMinutes() !== Number(m[5]) ||
+      d.getUTCSeconds() !== Number(m[6])
+    ) {
+      throw new RangeError(`activity: capture timestamp "${iso}" is not a real calendar instant.`);
+    }
+  }
+}
+
 /** Narrow a sqlite row object so field reads are checked, not asserted. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -176,6 +203,7 @@ export class ActivityStore {
     // with no matching FTS row — silently unsearchable. The transaction rolls
     // back both on any throw.
     const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
+      assertValidCaptureTimestamp(s.capturedAtUtc);
       const capturedAtUtc = canonicalizeUtc(s.capturedAtUtc);
       const info = this.db
         .prepare(
@@ -219,6 +247,8 @@ export class ActivityStore {
     startUtcInclusive: string,
     endUtcExclusive: string,
   ): ActivitySnapshot[] {
+    const start = canonicalizeUtc(startUtcInclusive);
+    const end = canonicalizeUtc(endUtcExclusive);
     const rows =
       machine === null
         ? this.db
@@ -227,14 +257,14 @@ export class ActivityStore {
                  WHERE captured_at_utc >= ? AND captured_at_utc < ?
                  ORDER BY captured_at_utc ASC, id ASC`,
             )
-            .all(startUtcInclusive, endUtcExclusive)
+            .all(start, end)
         : this.db
             .prepare(
               `SELECT * FROM activity_snapshots
                  WHERE machine = ? AND captured_at_utc >= ? AND captured_at_utc < ?
                  ORDER BY captured_at_utc ASC, id ASC`,
             )
-            .all(machine, startUtcInclusive, endUtcExclusive);
+            .all(machine, start, end);
     return rows.map(rowToSnapshot);
   }
 

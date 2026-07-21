@@ -86,8 +86,22 @@ function zonedDayStartIso(date: string, timezone: string): string {
     if (best === null || candidate < best) best = candidate;
   }
   if (best === null) {
-    // Local midnight itself was skipped (spring-forward at 00:00): fall back to
-    // the noon-derived offset so the day still has a deterministic start.
+    // Local midnight was skipped by a spring-forward at 00:00. Advance to the
+    // first local wall-clock minute on this date that actually exists (never
+    // backdating to a 00:00 that never occurred), scanning forward up to 3h.
+    for (let minute = 1; minute <= 180 && best === null; minute++) {
+      const hh = String(Math.floor(minute / 60)).padStart(2, "0");
+      const mm = String(minute % 60).padStart(2, "0");
+      for (const offset of probeOffsets) {
+        const candidate = Date.parse(`${date}T${hh}:${mm}:00${offset}`);
+        if (!Number.isFinite(candidate)) continue;
+        if (timezoneOffsetIso(new Date(candidate), timezone) !== offset) continue;
+        if (best === null || candidate < best) best = candidate;
+      }
+    }
+  }
+  if (best === null) {
+    // Degenerate safety net: use the noon-derived offset for a deterministic start.
     const noon = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
     best = Date.parse(`${date}T00:00:00${noon}`);
   }

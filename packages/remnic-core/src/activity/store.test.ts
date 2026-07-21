@@ -168,3 +168,12 @@ test("captured timestamps are canonicalized so day-window filtering matches", as
     assert.ok(rows.every((r) => r.capturedAtUtc.endsWith("Z") && r.capturedAtUtc.includes(".")));
   });
 });
+
+test("insertSnapshot rejects an impossible capture timestamp", async () => {
+  await withStore((store) => {
+    assert.throws(
+      () => store.insertSnapshot(snapshot({ capturedAtUtc: "2026-02-30T10:00:00.000Z", contentHash: "bad" })),
+      RangeError,
+    );
+  });
+});
