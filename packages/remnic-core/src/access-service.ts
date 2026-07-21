@@ -408,6 +408,10 @@ export interface EngramAccessQmdHealthResponse {
   upgradeAvailable: boolean | null;
   doctorAvailable: boolean | null;
   debugStatus: string;
+  pendingEmbeddings: number | null;
+  oldestPendingAgeMs: number | null;
+  embeddingBacklogThreshold: number;
+  degradedReason?: string;
 }
 
 export interface EngramAccessRecallRequest {
@@ -3289,7 +3293,6 @@ export class EngramAccessService {
     return isCorrectionFeatureEnabled(this.orchestrator.config);
   }
 
-
   private _correctionService: CorrectionService | null = null;
 
   /** Lazily construct + cache the CorrectionService with deps wired from the orchestrator. */
@@ -4740,8 +4743,6 @@ export class EngramAccessService {
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
   }
-
-
   // ── Memory search & debug ─────────────────────────────────────────────
 
   async memorySearch(request: {

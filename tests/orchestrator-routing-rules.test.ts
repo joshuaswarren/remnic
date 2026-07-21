@@ -134,7 +134,7 @@ test("persistExtraction applies routing rule category+namespace targets", async 
     observations: [],
   };
 
-  const persisted = await orchestrator.persistExtraction(result, defaultStorage, null);
+  const { persistedIds: persisted } = await orchestrator.persistExtraction(result, defaultStorage, null);
   assert.equal(persisted.length, 2);
 
   const sharedMemories = await sharedStorage.readAllMemories();
@@ -182,7 +182,7 @@ test("persistExtraction preserves index bootstrap when no memory IDs are persist
     observations: [],
   };
 
-  const persisted = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds: persisted } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(persisted.length, 0);
 
   const timeIndexPath = path.join(memoryDir, "state", "index_time.json");

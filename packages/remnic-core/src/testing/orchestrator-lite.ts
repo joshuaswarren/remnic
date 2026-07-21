@@ -133,24 +133,26 @@ interface PersistExtractionSeam {
 }
 
 /**
- * Stub the orchestrator's `persistExtraction` method (the mutation surface the
- * extraction-run pipeline drives). Records the full {@link PersistExtractionArgs}
- * tuple of every call for assertions; returns the factory's persisted-id list,
- * or `[]` when no factory is given. The replacement is typed as the production
- * {@link PersistExtractionFn}, so a production signature change fails to compile
- * here rather than silently passing a stale mock.
+ * Stub the orchestrator's `persistExtraction` method (the mutation
+ * surface the extraction-run coordinator closure drives). Records the full
+ * {@link PersistExtractionArgs} tuple of every call for assertions; wraps the
+ * factory's persisted-id list into the rich coordinator return shape, or
+ * returns empty IDs when no factory is given. The replacement is typed as the
+ * production {@link PersistExtractionFn}, so a production signature change
+ * fails to compile here rather than silently passing a stale mock.
  */
 export function stubPersistExtraction(
   orchestrator: Orchestrator,
   factory?: (args: PersistExtractionArgs, call: number) => string[] | Promise<string[]>,
 ): PersistExtractionArgs[] {
   const calls: PersistExtractionArgs[] = [];
-  // `persistExtraction` is private and structurally unexpressible from outside
-  // the class; the recorder replaces it in place. Named cast per rule.
+  // `persistExtraction` is replaced in place; the named cast keeps the
+  // recorder typed against the production signature.
   const seam = orchestrator as unknown as PersistExtractionSeam;
   const impl: PersistExtractionFn = async (...args) => {
     calls.push(args);
-    return factory ? factory(args, calls.length) : [];
+    const persistedIds = factory ? await factory(args, calls.length) : [];
+    return { persistedIds, memoryPathById: new Map() };
   };
   seam.persistExtraction = impl;
   return calls;

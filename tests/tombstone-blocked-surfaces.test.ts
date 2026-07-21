@@ -47,7 +47,7 @@ const orchestratorSource = readFileSync(
 test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone-blocked", () => {
   assert.match(
     orchestratorSource,
-    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,?\s*\}\);\s*await this\.deps\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
+    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*category:\s*options\.category as MemoryCategory,?\s*\}\);\s*await this\.deps\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
     "profile-target promotion must gate catalog/index/behavior behind !targetPromotion.tombstoneBlocked",
   );
 });
@@ -55,7 +55,7 @@ test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone
 test("#1645 TV6: shared promotion skips indexing/tracking when tombstone-blocked", () => {
   assert.match(
     orchestratorSource,
-    /if \(\s*!sharedPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(sharedStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*\}\);\s*await this\.deps\.indexPersistedMemory\(sharedStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*sharedStorage,[\s\S]*?namespace:\s*this\.deps\.config\.sharedNamespace,[\s\S]*?\);\s*\}/m,
+    /if \(\s*!sharedPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(sharedStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*category:\s*options\.category as MemoryCategory,?\s*\}\);\s*await this\.deps\.indexPersistedMemory\(sharedStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*sharedStorage,[\s\S]*?namespace:\s*this\.deps\.config\.sharedNamespace,[\s\S]*?\);\s*\}/m,
     "shared promotion must gate catalog/index/behavior behind !sharedPromotion.tombstoneBlocked",
   );
 });

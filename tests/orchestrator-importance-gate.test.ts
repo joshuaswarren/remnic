@@ -161,7 +161,7 @@ test("persistExtraction drops trivial facts under the default 'low' gate", async
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -202,7 +202,7 @@ test("persistExtraction writes normal-importance facts under the default gate", 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -277,7 +277,7 @@ test("persistExtraction preserves correction boost so corrections pass 'normal' 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -314,7 +314,7 @@ test("persistExtraction honours a stricter 'high' gate override", async () => {
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -339,7 +339,7 @@ test("importance gate metric counter increments monotonically across a run", asy
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
 
   assert.deepEqual(persistedIds, []);
 

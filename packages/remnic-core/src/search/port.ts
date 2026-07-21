@@ -65,6 +65,17 @@ export function resolveEnsureCollectionArgs(
 }
 
 /**
+ * Optional status report for search backends that track embedding backlog.
+ * Backends without embedding pipelines return null from status().
+ */
+export interface SearchBackendStatus {
+  pendingEmbeddings: number | null;
+  oldestPendingAgeMs: number | null;
+  totalFiles: number | null;
+  embeddedFiles: number | null;
+}
+
+/**
  * Abstract search backend interface.
  *
  * Implementations:
@@ -88,6 +99,8 @@ export interface SearchBackend {
   checkAvailability?(execution?: SearchExecutionOptions): Promise<boolean>;
   isAvailable(): boolean;
   debugStatus(): string;
+  /** Optional embedding backlog status for health surfaces. */
+  status?(): Promise<SearchBackendStatus>;
 
   // ── Search ──
   search(

@@ -283,6 +283,7 @@ import {
 } from "./dedup/semantic.js";
 import { BootstrapEngine } from "./bootstrap.js";
 import { parseQmdExplain } from "./qmd.js";
+import { installPrioritizedEmbedding, type PrioritizedEmbeddingHandle } from "./prioritized-embed.js";
 import {
   buildQmdRecallCacheKey,
   getCachedQmdRecall,
@@ -541,14 +542,11 @@ import type {
 } from "./types.js";
 import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
-
 // Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
 export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 
-
 // Issue #1526 seam 15: deriveTopicsFromExtraction moved to orchestration/extraction-run.ts.
 export { deriveTopicsFromExtraction } from "./orchestration/extraction-run.js";
-
 
 export class Orchestrator {
 
@@ -566,6 +564,7 @@ export class Orchestrator {
    * runners (consolidation/pattern-reinforcement/governance) stay here.
    */
   readonly maintenanceScheduler: MaintenanceScheduler;
+  private prioritizedEmbedding?: PrioritizedEmbeddingHandle;
   private readonly conversationQmd?: ConversationQmdRuntime;
   private readonly conversationFaiss?: ReturnType<
     typeof createConversationIndexRuntime
@@ -610,7 +609,6 @@ export class Orchestrator {
   get fastGatewayLlm(): FallbackLlmClient | null {
     return this._fastGatewayLlm;
   }
-
   getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters | undefined {
     return this.recallIntrospection.getConsoleFaithfulnessDistribution(
     );
@@ -940,12 +938,10 @@ export class Orchestrator {
       this.deferredInitAbort = null;
     }
   }
-
   /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
     trackRecallWrite(this, promise, label);
   }
-
   /**
    * Stop background initialization and release runtime-owned handles.
    * Long-lived hosts should call this from their shutdown path; one-shot
@@ -992,6 +988,7 @@ export class Orchestrator {
       // Issue #1903: flush any coalesced namespace-catalog touches before teardown
       // so a long-lived host does not drop buffered read/write timestamps.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
+      this.prioritizedEmbedding?.dispose();
       await this.namespaceSearchRouter.dispose();
       await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
       if (this.conversationQmd && this.conversationQmd !== this.qmd) {
@@ -1013,12 +1010,10 @@ export class Orchestrator {
   setRecallWorkspaceOverride(sessionKey: string, dir: string): void {
     this._recallWorkspaceOverrides.set(sessionKey, dir);
   }
-
   /** Remove a per-session workspace selection (cleanup on error or early return). @internal */
   clearRecallWorkspaceOverride(sessionKey: string): void {
     this._recallWorkspaceOverrides.delete(sessionKey);
   }
-
   resolvePrincipal(sessionKey?: string): string | undefined {
     return resolvePrincipal(sessionKey, this.config);
   }
@@ -1469,6 +1464,22 @@ export class Orchestrator {
       // and writes will throw SecureStoreLockedError via resolveWriteKey().
     }
     this.qmd = createSearchBackend(config);
+    // #2019: prioritized embedding for write-path searchability.
+    const qmdCaps = resolveQmdCapabilities(config);
+    if (qmdCaps.qmd && qmdCaps.qmdAutoEmbed) {
+      this.prioritizedEmbedding = installPrioritizedEmbedding(
+        (namespace) => this.namespaceSearchRouter.backendForNamespace(namespace),
+        (msg) => log.debug(msg),
+      );
+      const defaultNs = this.config.defaultNamespace;
+      this.storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, defaultNs);
+      this.storageRouter.onStorageCreated = (storage, namespace) => {
+        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
+      };
+      this.storageRouter.forEachCachedStorage((storage, namespace) => {
+        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
+      });
+    }
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
       getQmd: () => this.qmd,
@@ -2059,7 +2070,6 @@ export class Orchestrator {
       },
     });
   }
-
 
   async applyBehaviorRuntimePolicy(
     state: BehaviorLoopPolicyState,
@@ -2708,7 +2718,6 @@ export class Orchestrator {
     );
   }
 
-
   /**
    * Clock source for the shared post-retrieval assembly/enrichment budget. The
    * deadline is set from this value and every expiry check reads it back, so a
@@ -3146,8 +3155,7 @@ export class Orchestrator {
   requestQmdMaintenanceForTool(reason: string): void {
     this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
-
-  private async persistExtraction(
+  async persistExtraction(
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
@@ -3158,8 +3166,8 @@ export class Orchestrator {
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
-  ): Promise<string[]> {
-    return this.extractionPersistCoordinator.persistExtraction(
+  ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
+    const { persistedIds, memoryPathById } = await this.extractionPersistCoordinator.persistExtraction(
       result,
       storage,
       threadIdForExtraction,
@@ -3170,6 +3178,7 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
+    return { persistedIds, memoryPathById };
   }
   /**
    * Append persisted ids to the thread episode set, excluding pending_review
@@ -3271,7 +3280,6 @@ export class Orchestrator {
   private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
-
 
   async runLifecyclePolicyNow(storage: StorageManager = this.storage): Promise<{ memoriesAssessed: number }> {
     const lifecycleCorpus = await storage.readAllMemories();
@@ -3952,7 +3960,6 @@ export class Orchestrator {
    * and inline-note writes were missing from `writtenSince`/maintenance).
    */
 
-
   // markCatalogRead removed — use storageRouter.recordRead() instead (#1522).
 
   private async readAllMemoriesForNamespaces(
@@ -3962,7 +3969,6 @@ export class Orchestrator {
       namespaces,
     );
   }
-
   private async readArchivedMemoriesForNamespaces(
     namespaces: string[],
   ): Promise<MemoryFile[]> {

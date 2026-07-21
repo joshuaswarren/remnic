@@ -99,10 +99,59 @@ test("health reports active QMD version and collection state", async () => {
       upgradeAvailable: false,
       doctorAvailable: true,
       debugStatus: "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+      pendingEmbeddings: null,
+      oldestPendingAgeMs: null,
+      embeddingBacklogThreshold: 1000,
     });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("health treats qmdEmbeddingBacklogThreshold 0 as backlog degradation disabled", async () => {
+  const config = parseConfig({ qmdEnabled: true, qmdEmbeddingBacklogThreshold: 0 });
+  const qmd = makeQmd({
+    probe: async () => true,
+    isAvailable: () => true,
+    checkCollection: async () => "present",
+    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000, totalFiles: 100, embeddedFiles: 58 }),
+  });
+  const service = new EngramAccessService({
+    config,
+    qmd,
+    async getStorage() {
+      return { dir: path.join(os.tmpdir(), "remnic-health-mock") };
+    },
+  } as unknown as Orchestrator);
+
+  const health = await service.health();
+  assert.equal(health.qmd?.degraded, false);
+  assert.equal(health.qmd?.degradedReason, undefined);
+  assert.equal(health.qmd?.pendingEmbeddings, 42);
+  assert.equal(health.qmd?.embeddingBacklogThreshold, 0);
+});
+
+test("health marks QMD degraded when pending embeddings exceed a positive threshold", async () => {
+  const config = parseConfig({ qmdEnabled: true, qmdEmbeddingBacklogThreshold: 10 });
+  const qmd = makeQmd({
+    probe: async () => true,
+    isAvailable: () => true,
+    checkCollection: async () => "present",
+    status: async () => ({ pendingEmbeddings: 42, oldestPendingAgeMs: 90_000, totalFiles: 100, embeddedFiles: 58 }),
+  });
+  const service = new EngramAccessService({
+    config,
+    qmd,
+    async getStorage() {
+      return { dir: path.join(os.tmpdir(), "remnic-health-mock") };
+    },
+  } as unknown as Orchestrator);
+
+  const health = await service.health();
+  assert.equal(health.qmd?.degraded, true);
+  assert.match(health.qmd?.degradedReason ?? "", /embedding-backlog/);
+  assert.equal(health.qmd?.pendingEmbeddings, 42);
+  assert.equal(health.qmd?.embeddingBacklogThreshold, 10);
 });
 
 test("health marks QMD as degraded when configured search falls back to noop", async () => {

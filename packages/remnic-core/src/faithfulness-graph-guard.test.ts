@@ -139,7 +139,7 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
     const sourceText =
       "The widget factory produces widgets. It launched last year. The team is small.";
 
-    const ids0 = await persist.persistExtraction(
+    const { persistedIds: ids0 } = await persist.persistExtraction(
       factResult("The widget factory produces widgets daily.", "widget-factory"),
       storage,
       null,
@@ -153,7 +153,7 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
 
     // fact1 → unsupported (pending_review). Under the bug it would originate an
     // entity edge to fact0; under the guard it must NOT.
-    const ids1 = await persist.persistExtraction(
+    const { persistedIds: ids1 } = await persist.persistExtraction(
       factResult(
         "The widget factory closed permanently.",
         "widget-factory",
@@ -193,7 +193,7 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
 
     // Control: an ACTIVE fact with the same entityRef DOES create entity edges
     // (proving the graph is wired and only pending_review is excluded).
-    const ids2 = await persist.persistExtraction(
+    const { persistedIds: ids2 } = await persist.persistExtraction(
       factResult("The widget factory reopened this quarter.", "widget-factory"),
       storage,
       null,
@@ -315,7 +315,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
       persistExtraction: PersistExtractionFn;
       appendPersistedThreadEpisodes: (
         threadId: string,
-        persistedIds: string[],
+        persistedIds: string[]
       ) => Promise<void>;
     };
 
@@ -323,7 +323,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
       "The widget factory reopened this quarter after being closed permanently last year.";
 
     // --- Flush 1: an active fact + a pending_review fact, same thread ---
-    const flush1 = await persist.persistExtraction(
+    const { persistedIds: flush1 } = await persist.persistExtraction(
       twoFactResult(
         "The widget factory reopened this quarter.", "wf-active",
         "The widget factory closed permanently last year.", "wf-pending",
@@ -366,7 +366,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     );
 
     // --- Flush 2: an active fact in the SAME thread ---
-    const flush2 = await persist.persistExtraction(
+    const { persistedIds: flush2 } = await persist.persistExtraction(
       factResult("The widget factory hired ten new engineers.", "wf-active"),
       storage,
       threadId,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QmdClient } from "./qmd.js";
+import { QmdClient, parseQmdStatusOutput } from "./qmd.js";
 import type { QmdSearchResult } from "./types.js";
 
 test("QmdClient rechecks daemon availability before returning unavailable", async () => {
@@ -259,4 +259,114 @@ test("QMD search cache key isolates results by strategy (codex review on #1422)"
   // invoke the subprocess. Both must register their own subprocess call.
   assert.equal(a.calls.length, 1, "first strategy populates its own cache entry");
   assert.equal(b.calls.length, 1, "second strategy must NOT reuse the first's cached result");
+});
+
+test("parseQmdStatusOutput parses full status output", () => {
+  const stdout = [
+    "Collection: remnic-memory",
+    "Total files: 1200",
+    "Embedded: 1150",
+    "Pending: 50",
+    "Oldest pending: 2h",
+  ].join("\n");
+  const report = parseQmdStatusOutput(stdout);
+  assert.equal(report.totalFiles, 1200);
+  assert.equal(report.embeddedFiles, 1150);
+  assert.equal(report.pendingEmbeddings, 50);
+  assert.equal(report.oldestPendingAgeMs, 2 * 60 * 60 * 1000);
+  assert.equal(report.raw, stdout);
+});
+
+test("parseQmdStatusOutput parses documented QMD status format", () => {
+  const stdout = [
+    "Collection: remnic-memory",
+    "Total: 1,200 files indexed",
+    "Vectors: 1,150 embedded",
+    "Pending: 50",
+    "Oldest pending: 2h",
+  ].join("\n");
+  const report = parseQmdStatusOutput(stdout);
+  assert.equal(report.totalFiles, 1200);
+  assert.equal(report.embeddedFiles, 1150);
+  assert.equal(report.pendingEmbeddings, 50);
+  assert.equal(report.oldestPendingAgeMs, 2 * 60 * 60 * 1000);
+});
+
+test("parseQmdStatusOutput parses time units correctly", () => {
+  assert.equal(parseQmdStatusOutput("Oldest pending: 45s").oldestPendingAgeMs, 45_000);
+  assert.equal(parseQmdStatusOutput("Oldest pending: 3m").oldestPendingAgeMs, 180_000);
+  assert.equal(parseQmdStatusOutput("Oldest pending: 500ms").oldestPendingAgeMs, 500);
+  assert.equal(parseQmdStatusOutput("no age here").oldestPendingAgeMs, null);
+});
+
+test("parseQmdStatusOutput returns nulls for unparseable output", () => {
+  const report = parseQmdStatusOutput("garbage output");
+  assert.equal(report.totalFiles, null);
+  assert.equal(report.embeddedFiles, null);
+  assert.equal(report.pendingEmbeddings, null);
+  assert.equal(report.oldestPendingAgeMs, null);
+});
+
+test("QmdClient.status() returns parsed report on success", async () => {
+  const client = new QmdClient("test-col", 3);
+  const internals = client as unknown as {
+    available: boolean;
+    qmdCapabilities: { safeStatusDeviceProbe: boolean };
+    runQmdCommand: (args: string[]) => Promise<{ stdout: string; code: number }>;
+  };
+  internals.available = true;
+  internals.qmdCapabilities = { safeStatusDeviceProbe: true };
+  let capturedArgs: string[] = [];
+  internals.runQmdCommand = async (args: string[]) => {
+    capturedArgs = args;
+    return { stdout: "Total files: 10\nEmbedded: 8\nPending: 2\nOldest pending: 5m", code: 0 };
+  };
+  const report = await client.status();
+  assert.deepEqual(capturedArgs, ["status", "-c", "test-col"]);
+  assert.equal(report.pendingEmbeddings, 2);
+  assert.equal(report.oldestPendingAgeMs, 300_000);
+});
+
+test("QmdClient.status() returns null fields when unavailable", async () => {
+  const client = new QmdClient("test-col", 3);
+  const internals = client as unknown as { available: boolean };
+  internals.available = false;
+  const report = await client.status();
+  assert.equal(report.pendingEmbeddings, null);
+  assert.equal(report.oldestPendingAgeMs, null);
+});
+
+test("QmdClient.embedFiles() runs update then embed", async () => {
+  const client = new QmdClient("test-col", 3);
+  const internals = client as unknown as {
+    available: boolean;
+    runQmdCommand: (args: string[]) => Promise<{ stdout: string; code: number }>;
+  };
+  internals.available = true;
+  const allCalls: string[][] = [];
+  internals.runQmdCommand = async (args: string[]) => {
+    allCalls.push(args);
+    return { stdout: "ok", code: 0 };
+  };
+  const result = await client.embedFiles(["/mem/a.md", "/mem/b.md"]);
+  assert.equal(result, true);
+  assert.equal(allCalls.length, 2);
+  assert.deepEqual(allCalls[0], ["update", "-c", "test-col"]);
+  assert.deepEqual(allCalls[1], ["embed", "-c", "test-col"]);
+});
+
+test("QmdClient.embedFiles() returns false for empty paths", async () => {
+  const client = new QmdClient("test-col", 3);
+  const internals = client as unknown as { available: boolean };
+  internals.available = true;
+  const result = await client.embedFiles([]);
+  assert.equal(result, false);
+});
+
+test("QmdClient.embedFiles() returns false when unavailable", async () => {
+  const client = new QmdClient("test-col", 3);
+  const internals = client as unknown as { available: boolean };
+  internals.available = false;
+  const result = await client.embedFiles(["/mem/a.md"]);
+  assert.equal(result, false);
 });

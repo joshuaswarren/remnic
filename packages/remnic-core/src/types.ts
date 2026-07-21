@@ -727,6 +727,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   qmdEnabled: boolean;
   qmdCollection: string;
   qmdMaxResults: number;
+  qmdEmbeddingBacklogThreshold: number;
   qmdColdTierEnabled?: boolean;
   qmdColdCollection?: string;
   qmdColdMaxResults?: number;

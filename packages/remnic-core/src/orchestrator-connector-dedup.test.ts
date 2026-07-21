@@ -121,7 +121,7 @@ test("connector dedup (QOjlB): same content + same connector dedupes", async () 
     "The deployment pipeline runs canary checks every fifteen minutes before promoting to production.";
 
   // First write with connector "chatgpt" — must succeed.
-  const ids1 = await orchestrator.persistExtraction(
+  const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -130,7 +130,7 @@ test("connector dedup (QOjlB): same content + same connector dedupes", async () 
   assert.equal(ids1.length, 1, "first write must succeed");
 
   // Second write: same content, same connector → must dedupe.
-  const ids2 = await orchestrator.persistExtraction(
+  const { persistedIds: ids2 } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -150,7 +150,7 @@ test("connector dedup (QOjlB): same content + different connector does NOT dedup
     "The staging environment uses isolated feature flags per tenant for safer rollouts.";
 
   // First write with connector "chatgpt".
-  const ids1 = await orchestrator.persistExtraction(
+  const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -159,7 +159,7 @@ test("connector dedup (QOjlB): same content + different connector does NOT dedup
   assert.equal(ids1.length, 1, "first write must succeed");
 
   // Second write: same content, DIFFERENT connector → must NOT dedupe.
-  const ids2 = await orchestrator.persistExtraction(
+  const { persistedIds: ids2 } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -190,7 +190,7 @@ test("connector dedup (QOjlB): stale hash with no matching memory writes through
 
   // persistExtraction must write through — the connector-aware scan finds
   // no matching memory, so exactDuplicate falls to false.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -224,7 +224,7 @@ test("connector dedup (QOjlB): readAllMemories throws → writes through (fail o
 
   // persistExtraction must write through — the scan failure is caught and
   // exactDuplicate falls to false (fail open).
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -339,7 +339,7 @@ test("promotion dedup (QOjlD): same content + same connector skips promotion", a
   });
 
   // persistExtraction writes to source (default) and promotes to target.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -370,7 +370,7 @@ test("promotion dedup (QOjlD): same content + different connector promotes", asy
   });
 
   // Extract with a DIFFERENT connector — promotion must proceed.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -412,7 +412,7 @@ test("promotion dedup (QOjlD): connector vs operator promotes", async () => {
   });
 
   // Extract WITHOUT a sourceConnector (operator write).
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -442,7 +442,7 @@ test("promotion dedup (QOjlD): operator vs operator skips promotion", async () =
   });
 
   // Extract WITHOUT a sourceConnector (operator write).
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -491,7 +491,7 @@ test("promotion dedup (QOjlD): readAllMemories throws on target → promotion pr
     throw new Error("simulated target readAllMemories failure");
   };
 
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -526,7 +526,7 @@ test("promotion dedup (QOjlD): cited fact canonicalized before connector-aware d
     "The deployment manifest pins container digests for reproducible builds.";
 
   // First persist: orchestrator appends an inline citation and writes the fact.
-  const firstIds = await orchestrator.persistExtraction(
+  const { persistedIds: firstIds } = await orchestrator.persistExtraction(
     factResult(rawBody),
     storage,
     null,
@@ -550,7 +550,7 @@ test("promotion dedup (QOjlD): cited fact canonicalized before connector-aware d
   // normalizeStoredHashSource strips the citation before comparing, so the
   // connector-aware scan finds the matching fact and dedupes at the source
   // gate — promotion never fires.
-  const secondIds = await orchestrator.persistExtraction(
+  const { persistedIds: secondIds } = await orchestrator.persistExtraction(
     factResult(firstMemory.content),
     storage,
     null,
@@ -614,7 +614,7 @@ test("connector dedup (QPDE5): same-connector procedure with steps dedupes", asy
   ];
 
   // First write with connector "chatgpt" — must succeed.
-  const ids1 = await orchestrator.persistExtraction(
+  const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
     null,
@@ -623,7 +623,7 @@ test("connector dedup (QPDE5): same-connector procedure with steps dedupes", asy
   assert.equal(ids1.length, 1, "first procedure write must succeed");
 
   // Second write: same procedure, same connector → must dedupe.
-  const ids2 = await orchestrator.persistExtraction(
+  const { persistedIds: ids2 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
     null,
@@ -647,7 +647,7 @@ test("connector dedup (QPDE5): same procedure + different connector does NOT ded
   ];
 
   // First write with connector "chatgpt".
-  const ids1 = await orchestrator.persistExtraction(
+  const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
     null,
@@ -656,7 +656,7 @@ test("connector dedup (QPDE5): same procedure + different connector does NOT ded
   assert.equal(ids1.length, 1, "first procedure write must succeed");
 
   // Second write: same procedure, DIFFERENT connector → must NOT dedupe.
-  const ids2 = await orchestrator.persistExtraction(
+  const { persistedIds: ids2 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
     null,
@@ -711,7 +711,7 @@ test("connector dedup (QO42V): same-connector fact with structuredAttributes ded
   const attrs = { dbEngine: "postgresql", version: "16" };
 
   // First write with connector "chatgpt" — must succeed.
-  const ids1 = await orchestrator.persistExtraction(
+  const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     enrichedResult(body, attrs),
     storage,
     null,
@@ -720,7 +720,7 @@ test("connector dedup (QO42V): same-connector fact with structuredAttributes ded
   assert.equal(ids1.length, 1, "first enriched fact write must succeed");
 
   // Second write: same content + attrs, same connector → must dedupe.
-  const ids2 = await orchestrator.persistExtraction(
+  const { persistedIds: ids2 } = await orchestrator.persistExtraction(
     enrichedResult(body, attrs),
     storage,
     null,
@@ -809,7 +809,7 @@ test("shared promotion (QPAn-): different-connector fact promotes when supersess
 
   // Extract with a DIFFERENT connector — shared promotion else branch
   // must NOT short-circuit; the different-connector fact gets promoted.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -848,7 +848,7 @@ test("shared promotion (QPAn-): same-connector fact skips promotion when superse
   });
 
   // Extract with the SAME connector — shared promotion must be skipped.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
     null,
@@ -902,7 +902,7 @@ test("shared backfill: different-connector shared fact is NOT temporal-patched",
 
   // Extract the SAME content with a DIFFERENT connector and an eventTime
   // expression that resolves a validUntil bound.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     {
       facts: [{
         content: body,
@@ -1044,7 +1044,7 @@ test("shared backfill: operator (no-connector) extraction must NOT patch a conne
 
   // Extract the SAME content with NO sourceConnector (operator
   // re-extraction) and an eventTime that resolves a validUntil bound.
-  const ids = await orchestrator.persistExtraction(
+  const { persistedIds: ids } = await orchestrator.persistExtraction(
     {
       facts: [{
         content: body,
@@ -1109,7 +1109,7 @@ test("#1909: with factDeduplicationEnabled=false, extraction writes flush the fa
   assert.equal(await storage.hasFactContentHash("warm"), false);
 
   const body = "The billing service retries failed charges with exponential backoff.";
-  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 1, "the fact is written");
 
   // Fresh StorageManager with .ready present trusts the on-disk fact-hash index
@@ -1150,7 +1150,7 @@ test("#2016 SD-nH: fact dedup disabled never suppresses a write via the authorit
 
     // Seed one active same-connector copy in the corpus.
     const first = await orchestrator.persistExtraction(factResult(body), storage, null, source);
-    assert.equal(first.length, 1, "first write lands");
+    assert.equal(first.persistedIds.length, 1, "first write lands");
 
     // Force the storage fact-hash index NON-authoritative so the pre-fix code
     // falls into needsCorpusConfirm and runs the corpus scan — the exact path
@@ -1166,7 +1166,7 @@ test("#2016 SD-nH: fact dedup disabled never suppresses a write via the authorit
 
     const second = await orchestrator.persistExtraction(factResult(body), storage, null, source);
     assert.equal(
-      second.length,
+      second.persistedIds.length,
       1,
       "dedup disabled must not suppress the write via the authority/corpus-confirm path",
     );
@@ -1195,7 +1195,7 @@ test("#1909 round 11: deferred persist writes no ready marker and a restart rebu
   const readyPath = path.join(memoryDir, "state", "fact-hashes.ready");
 
   const body = "The scheduler batches webhook deliveries into 250ms windows.";
-  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 1, "the fact is written");
   assert.equal(existsSync(readyPath), false, "no ready marker is ever written (round 11)");
 
@@ -1231,7 +1231,7 @@ test("#1909: a deferred fact stays durable when addContentHashDedup throws", asy
   };
 
   const body = "The queue drains oldest-first under sustained backpressure.";
-  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 1, "the fact is written despite the registration failure");
 
   // Restart trusts the marker (restored) and finds the hash on disk — no
@@ -1450,7 +1450,7 @@ test("#1909 round 12: after a crash before the batch save, the orchestrator dedu
     "orchestrator dedup sees the crashed-but-durable fact via the corpus rebuild",
   );
   // And re-persisting the same fact is deduped (no duplicate .md created).
-  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(ids.length, 0, "the fact is deduped on re-extraction — not re-created");
 });
 
@@ -1491,9 +1491,9 @@ test("#1909 round 13: startup rebuild preserves PROCEDURE hashes as well as fact
   {
     const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
     const storage = await orch.getStorage("default");
-    const factIds = await orch.persistExtraction(factResult(factBody), storage, null);
+    const { persistedIds: factIds } = await orch.persistExtraction(factResult(factBody), storage, null);
     assert.equal(factIds.length, 1, "fact persisted in phase 1");
-    const procIds = await orch.persistExtraction(
+    const { persistedIds: procIds } = await orch.persistExtraction(
       procedureResult(procTitle, procSteps),
       storage,
       null,
@@ -1518,9 +1518,9 @@ test("#1909 round 13: startup rebuild preserves PROCEDURE hashes as well as fact
   );
 
   // Re-extraction of both is deduped — neither is re-created.
-  const factReIds = await orch2.persistExtraction(factResult(factBody), storage2, null);
+  const { persistedIds: factReIds } = await orch2.persistExtraction(factResult(factBody), storage2, null);
   assert.equal(factReIds.length, 0, "fact is deduped on restart");
-  const procReIds = await orch2.persistExtraction(
+  const { persistedIds: procReIds } = await orch2.persistExtraction(
     procedureResult(procTitle, procSteps),
     storage2,
     null,
@@ -1602,17 +1602,17 @@ test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered cate
     const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
     const storage = await orch.getStorage("default");
     assert.equal(
-      (await orch.persistExtraction(categoryResult(prefContent, "preference"), storage, null)).length,
+      (await orch.persistExtraction(categoryResult(prefContent, "preference"), storage, null)).persistedIds.length,
       1,
       "preference persisted in phase 1",
     );
     assert.equal(
-      (await orch.persistExtraction(categoryResult(decisionContent, "decision"), storage, null)).length,
+      (await orch.persistExtraction(categoryResult(decisionContent, "decision"), storage, null)).persistedIds.length,
       1,
       "decision persisted in phase 1",
     );
     assert.equal(
-      (await orch.persistExtraction(categoryResult(attrContent, "preference", attrs), storage, null)).length,
+      (await orch.persistExtraction(categoryResult(attrContent, "preference", attrs), storage, null)).persistedIds.length,
       1,
       "attributed preference persisted in phase 1",
     );
@@ -1641,17 +1641,17 @@ test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered cate
 
   // Re-extraction of each is deduped — none is re-created.
   assert.equal(
-    (await orch2.persistExtraction(categoryResult(prefContent, "preference"), storage2, null)).length,
+    (await orch2.persistExtraction(categoryResult(prefContent, "preference"), storage2, null)).persistedIds.length,
     0,
     "preference is deduped on restart (would be re-created without the fix)",
   );
   assert.equal(
-    (await orch2.persistExtraction(categoryResult(decisionContent, "decision"), storage2, null)).length,
+    (await orch2.persistExtraction(categoryResult(decisionContent, "decision"), storage2, null)).persistedIds.length,
     0,
     "decision is deduped on restart (would be re-created without the fix)",
   );
   assert.equal(
-    (await orch2.persistExtraction(categoryResult(attrContent, "preference", attrs), storage2, null)).length,
+    (await orch2.persistExtraction(categoryResult(attrContent, "preference", attrs), storage2, null)).persistedIds.length,
     0,
     "attributed preference is deduped on restart (would be re-created without the fix)",
   );
@@ -1700,7 +1700,7 @@ test("#1909 (PR #2016): a fact demoted to cold is not re-created as a duplicate 
   {
     const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
     const storage = await orch.getStorage("default");
-    const ids = await orch.persistExtraction(factResult(body), storage, null, {
+    const { persistedIds: ids } = await orch.persistExtraction(factResult(body), storage, null, {
       sourceConnector: "chatgpt",
     });
     assert.equal(ids.length, 1, "fact persisted to hot in phase 1");
@@ -1737,7 +1737,7 @@ test("#1909 (PR #2016): a fact demoted to cold is not re-created as a duplicate 
 
   // Re-extraction of the same content with the same connector must be deduped
   // against the cold copy — no second hot copy is created.
-  const reIds = await orch2.persistExtraction(factResult(body), storage2, null, {
+  const { persistedIds: reIds } = await orch2.persistExtraction(factResult(body), storage2, null, {
     sourceConnector: "chatgpt",
   });
   assert.equal(
@@ -1807,7 +1807,7 @@ test("#1909 (PR #2016) review: an authoritative instance still confirms a fact a
 
   // B persists and flushes the fact through the real persist path (its
   // reconcile-save advances the durable fact-hashes.txt A rebuilt from).
-  const bIds = await orchB.persistExtraction(factResult(body), storageB, null);
+  const { persistedIds: bIds } = await orchB.persistExtraction(factResult(body), storageB, null);
   assert.equal(bIds.length, 1, "B persisted the fact");
 
   // A is still flagged authoritative, but the durable index advanced. The
@@ -1825,7 +1825,7 @@ test("#1909 (PR #2016) review: an authoritative instance still confirms a fact a
   );
 
   // Re-extracting the same fact on A is deduped — no duplicate .md is created.
-  const aIds = await orchA.persistExtraction(factResult(body), storageA, null);
+  const { persistedIds: aIds } = await orchA.persistExtraction(factResult(body), storageA, null);
   assert.equal(aIds.length, 0, "A does not re-create B's fact (would be 1 without the fix)");
   const all = await new StorageManager(memoryDir).readAllMemories();
   assert.equal(
@@ -1866,7 +1866,7 @@ test("#1909 (PR #2016): a re-extracted duplicate backfills temporal bounds onto 
   {
     const orch = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
     const storage = await orch.getStorage("default");
-    const ids = await orch.persistExtraction(factResult(body), storage, null, {
+    const { persistedIds: ids } = await orch.persistExtraction(factResult(body), storage, null, {
       sourceConnector: "chatgpt",
       validAt: anchor,
     });
@@ -1900,7 +1900,7 @@ test("#1909 (PR #2016): a re-extracted duplicate backfills temporal bounds onto 
     questions: [],
     profileUpdates: [],
   };
-  const reIds = await orch2.persistExtraction(resultWithEndBound, storage2, null, {
+  const { persistedIds: reIds } = await orch2.persistExtraction(resultWithEndBound, storage2, null, {
     sourceConnector: "chatgpt",
     validAt: anchor,
   });
@@ -1991,7 +1991,7 @@ test("#1909 (PR #2016): a promoted fact demoted to cold is not re-promoted as a 
     "the demoted promotion copy's hash survives the hot+cold rebuild",
   );
 
-  const ids = await orch2.persistExtraction(
+  const { persistedIds: ids } = await orch2.persistExtraction(
     factResult(body),
     storage2,
     null,
@@ -2034,7 +2034,7 @@ test("#2016 thread SDyCj: a peer-advanced hash visible only after the post-miss 
   const body = "The release train departs every second Thursday at 1500 UTC.";
 
   // Peer persisted the fact durably through the real path.
-  const first = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: first } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(first.length, 1, "peer's initial write persists");
 
   // Model the race: the first dedup lookup in the NEXT persist reports a stale
@@ -2049,7 +2049,7 @@ test("#2016 thread SDyCj: a peer-advanced hash visible only after the post-miss 
     return realHas(ts, content); // now-authoritative result
   };
 
-  const ids = await orchestrator.persistExtraction(factResult(body), storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(factResult(body), storage, null);
   assert.equal(
     ids.length,
     0,

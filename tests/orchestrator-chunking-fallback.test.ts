@@ -180,7 +180,7 @@ test("chunking fallback: falls back to recursive chunking when fallbackToRecursi
 
   // With fallbackToRecursive=true (default), the fact should be
   // persisted successfully via the recursive fallback path.
-  const ids = await orchestrator.persistExtraction(extraction, storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(extraction, storage, null);
   assert.ok(ids.length >= 1, "fact should be persisted via recursive fallback");
 });
 

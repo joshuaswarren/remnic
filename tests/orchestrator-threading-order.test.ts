@@ -10,7 +10,7 @@ test("runExtraction establishes thread context before persistExtraction", () => 
   );
 
   const processTurnIdx = source.indexOf("await this.deps.getThreading().processTurn(lastTurn");
-  const persistIdx = source.indexOf("const persistedIds = await this.deps.persistExtraction(");
+  const persistIdx = source.indexOf("const { persistedIds } = await this.deps.persistExtraction(");
 
   assert.notEqual(
     processTurnIdx,

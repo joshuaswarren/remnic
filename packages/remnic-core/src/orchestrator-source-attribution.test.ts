@@ -71,7 +71,7 @@ test("persistExtraction is a no-op by default — no inline citation is injected
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -512,7 +512,7 @@ test("persistExtraction injects the inline citation when the flag is enabled", a
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -555,7 +555,7 @@ test("persistExtraction honors a custom inline citation format template", async 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -597,7 +597,7 @@ test("persistExtraction does not double-inject a citation on facts that already 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const persistedIds = await orchestrator.persistExtraction(
+  const { persistedIds } = await orchestrator.persistExtraction(
     result,
     storage,
     null,
@@ -650,7 +650,7 @@ test("dedup: pre-tagged fact is not re-persisted when canonical body is already 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const firstIds = await orchestrator.persistExtraction(
+  const { persistedIds: firstIds } = await orchestrator.persistExtraction(
     firstResult,
     storage,
     null,
@@ -674,7 +674,7 @@ test("dedup: pre-tagged fact is not re-persisted when canonical body is already 
     profileUpdates: [],
   } as ExtractionResult;
 
-  const secondIds = await orchestrator.persistExtraction(
+  const { persistedIds: secondIds } = await orchestrator.persistExtraction(
     secondResult,
     storage,
     null,
@@ -719,7 +719,7 @@ test("dedup: exact matches are scoped to the target namespace storage", async ()
   await tenantStorage.ensureDirectories();
 
   const rawBody = "The Helios tenant keeps staging feature flags isolated.";
-  const firstIds = await orchestrator.persistExtraction(
+  const { persistedIds: firstIds } = await orchestrator.persistExtraction(
     {
       facts: [makeFact(rawBody)],
       entities: [],
@@ -733,7 +733,7 @@ test("dedup: exact matches are scoped to the target namespace storage", async ()
   );
   assert.equal(firstIds.length, 1, "default namespace write must succeed");
 
-  const tenantIds = await orchestrator.persistExtraction(
+  const { persistedIds: tenantIds } = await orchestrator.persistExtraction(
     {
       facts: [makeFact(rawBody)],
       entities: [],
@@ -751,7 +751,7 @@ test("dedup: exact matches are scoped to the target namespace storage", async ()
     "a duplicate in another namespace must not be suppressed by the default hash index",
   );
 
-  const tenantDuplicateIds = await orchestrator.persistExtraction(
+  const { persistedIds: tenantDuplicateIds } = await orchestrator.persistExtraction(
     {
       facts: [makeFact(rawBody)],
       entities: [],

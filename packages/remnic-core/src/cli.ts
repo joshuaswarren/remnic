@@ -28,6 +28,7 @@ import type {
 import { isRecallDisclosure, RECALL_DISCLOSURE_LEVELS } from "./types.js";
 import { chunkContent } from "./chunking.js";
 import { rescoreMemoryImportance } from "./importance.js";
+import { renderQmdBacklogStatus } from "./qmd-status.js";
 import { exportJsonBundle } from "./transfer/export-json.js";
 import { exportMarkdownBundle } from "./transfer/export-md.js";
 import { backupMemoryDir } from "./transfer/backup.js";
@@ -3662,10 +3663,9 @@ export function registerCli(
           console.log(`Profile size: ${profile.length} chars`);
           console.log(`Extractions: ${meta.extractionCount}`);
           console.log(`Last extraction: ${meta.lastExtractionAt ?? "never"}`);
-          console.log(
-            `Last consolidation: ${meta.lastConsolidationAt ?? "never"}`,
-          );
+          console.log(`Last consolidation: ${meta.lastConsolidationAt ?? "never"}`);
           console.log(`QMD: ${orchestrator.qmd.isAvailable() ? "available" : "not available"}`);
+          for (const line of await renderQmdBacklogStatus(orchestrator.qmd, orchestrator.config.qmdEmbeddingBacklogThreshold)) console.log(line);
 
           // Category breakdown
           const categories: Record<string, number> = {};
