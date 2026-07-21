@@ -339,12 +339,12 @@ test("NamespaceSearchRouter scopes backends by namespace root and keeps namespac
       const backend =
         backendCfg.qmdCollection === "openclaw-engram--ns-736861726564"
           ? backendForResultSet([
-              { docid: "shared-1", path: "/tmp/shared.md", score: 0.8, snippet: "shared" },
-              { docid: "dup", path: "/tmp/dup.md", score: 0.6, snippet: "shared dup" },
+              { docid: "shared-1", path: path.join(memoryDir, "namespaces", "shared", "facts", "shared.md"), score: 0.8, snippet: "shared" },
+              { docid: "dup", path: path.join(memoryDir, "namespaces", "shared", "facts", "dup.md"), score: 0.6, snippet: "shared dup" },
             ])
           : backendForResultSet([
-              { docid: "default-1", path: "/tmp/default.md", score: 0.9, snippet: "default" },
-              { docid: "dup", path: "/tmp/dup.md", score: 0.7, snippet: "default dup" },
+              { docid: "default-1", path: path.join(memoryDir, "facts", "default.md"), score: 0.9, snippet: "default" },
+              { docid: "dup", path: path.join(memoryDir, "facts", "dup.md"), score: 0.7, snippet: "default dup" },
             ]);
       backends.set(backendCfg.qmdCollection, backend);
       return backend;
@@ -368,11 +368,51 @@ test("NamespaceSearchRouter scopes backends by namespace root and keeps namespac
   assert.deepEqual(
     results.map((result) => [result.path, result.score, result.snippet]),
     [
-      ["/tmp/default.md", 0.9, "default"],
-      ["/tmp/shared.md", 0.8, "shared"],
-      ["/tmp/dup.md", 0.7, "default dup"],
-      ["/tmp/dup.md", 0.6, "shared dup"],
+      [path.join(memoryDir, "facts", "default.md"), 0.9, "default"],
+      [path.join(memoryDir, "namespaces", "shared", "facts", "shared.md"), 0.8, "shared"],
+      [path.join(memoryDir, "facts", "dup.md"), 0.7, "default dup"],
+      [path.join(memoryDir, "namespaces", "shared", "facts", "dup.md"), 0.6, "shared dup"],
     ],
+  );
+});
+
+test("NamespaceSearchRouter rejects QMD hits outside the queried namespace storage root", async () => {
+  const memoryDir = tmpDir("engram-ns-search-containment");
+  const cfg = baseConfig(memoryDir);
+  const sharedRoot = path.join(memoryDir, "namespaces", "shared");
+  const storageRouter = {
+    async storageFor(namespace: string) {
+      return {
+        dir: namespace === "default" ? memoryDir : path.join(memoryDir, "namespaces", namespace),
+      };
+    },
+  };
+
+  const router = new NamespaceSearchRouter(cfg, storageRouter, (backendCfg) =>
+    backendCfg.qmdCollection === "openclaw-engram--ns-736861726564"
+      ? backendForResultSet([
+          // In-root hit — kept.
+          { docid: "ok", path: path.join(sharedRoot, "facts", "ok.md"), score: 0.9, snippet: "ok" },
+          // Stale-collection hit whose absolute path belongs to another
+          // namespace's storage root (#2077) — must be rejected before the
+          // queried namespace is stamped as owner.
+          { docid: "leak", path: path.join(memoryDir, "namespaces", "other", "facts", "leak.md"), score: 0.95, snippet: "leak" },
+          // Absolute path fully outside the memory dir — must be rejected too.
+          { docid: "escape", path: "/etc/passwd", score: 0.99, snippet: "escape" },
+        ])
+      : backendForResultSet([]),
+  );
+
+  const results = await router.searchAcrossNamespaces({
+    query: "memory",
+    namespaces: ["shared"],
+    maxResults: 5,
+    mode: "search",
+  });
+
+  assert.deepEqual(
+    results.map((result) => [result.namespace, result.path]),
+    [["shared", path.join(sharedRoot, "facts", "ok.md")]],
   );
 });
 
@@ -458,7 +498,7 @@ test("NamespaceSearchRouter skips namespaces whose collection is missing", async
       ...backendForResultSet([
         {
           docid: `${backendCfg.qmdCollection}-1`,
-          path: `/tmp/${backendCfg.qmdCollection}.md`,
+          path: path.join(backendCfg.memoryDir, "facts", `${backendCfg.qmdCollection}.md`),
           score: 0.8,
           snippet: backendCfg.qmdCollection,
         },
