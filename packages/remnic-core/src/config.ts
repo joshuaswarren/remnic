@@ -3279,6 +3279,17 @@ export function parseConfig(
       typeof cfg.proactiveExtractionTimeoutMs === "number"
         ? Math.max(0, Math.floor(cfg.proactiveExtractionTimeoutMs))
         : 2500,
+    proactiveExtractionSkipWhenLocalLlmBusy: ((): boolean => {
+      const raw = cfg.proactiveExtractionSkipWhenLocalLlmBusy;
+      if (raw === undefined || raw === null) return true;
+      const value = coerceBooleanLike(raw, "proactiveExtractionSkipWhenLocalLlmBusy");
+      if (value === undefined) {
+        throw new Error(
+          `proactiveExtractionSkipWhenLocalLlmBusy must be boolean-like (true|false|1|0|yes|no|on|off); got ${JSON.stringify(raw)}`,
+        );
+      }
+      return value;
+    })(),
     proactiveExtractionMaxTokens:
       typeof cfg.proactiveExtractionMaxTokens === "number"
         ? Math.max(0, Math.floor(cfg.proactiveExtractionMaxTokens))

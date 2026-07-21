@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { log } from "./logger.js";
 import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
+import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import {
   ExtractionResultSchema,
@@ -633,9 +634,7 @@ export class ExtractionEngine {
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
-    if (maxAdditional === 0) return base;
-    if (this.config.proactiveExtractionTimeoutMs === 0) return base;
-    if (this.config.proactiveExtractionMaxTokens === 0) return base;
+    if (!shouldRunProactivePass(this.config, maxAdditional, this.shouldUseLocalLlm, this.localLlm)) return base;
 
     try {
       const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional);

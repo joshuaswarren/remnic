@@ -1948,6 +1948,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   compressionGuidelineSemanticTimeoutMs: number;
   maxProactiveQuestionsPerExtraction: number;
   proactiveExtractionTimeoutMs: number;
+  proactiveExtractionSkipWhenLocalLlmBusy: boolean;
   proactiveExtractionMaxTokens: number;
   extractionMaxOutputTokens: number;
   proactiveExtractionCategoryAllowlist?: MemoryCategory[];

@@ -3860,6 +3860,11 @@
         "default": 900,
         "description": "Token budget for each proactive extraction sub-call (0 disables the proactive second pass)."
       },
+      "proactiveExtractionSkipWhenLocalLlmBusy": {
+        "type": "boolean",
+        "default": true,
+        "description": "Skip the optional proactive extraction second pass when the local LLM background lane is already busy, instead of queueing behind an in-flight extraction and losing its shorter deadline (issue #2011). Set false to always attempt the second pass."
+      },
       "proactiveExtractionTimeoutMs": {
         "type": "number",
         "default": 2500,
@@ -7028,6 +7033,11 @@
       "label": "Proactive Extraction Timeout (ms)",
       "advanced": true,
       "placeholder": "2500"
+    },
+    "proactiveExtractionSkipWhenLocalLlmBusy": {
+      "label": "Skip Proactive When Local LLM Busy",
+      "advanced": true,
+      "help": "Skip the optional proactive extraction pass when the local LLM background lane is saturated, rather than queueing behind an in-flight extraction (issue #2011, default on)"
     },
     "proactiveExtractionMaxTokens": {
       "label": "Proactive Extraction Max Tokens",

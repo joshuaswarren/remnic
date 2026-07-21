@@ -423,6 +423,7 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 | `proactiveExtractionTimeoutMs` | `2500` | Hard timeout for proactive question generation plus bounded answer synthesis (`0` disables the second pass). |
 | `proactiveExtractionMaxTokens` | `900` | Token budget applied to each proactive extraction sub-call (`0` disables the second pass). |
 | `proactiveExtractionCategoryAllowlist` | unset | Optional category allowlist for proactive second-pass writes; when set, lower-confidence or off-category proactive facts are dropped before persistence. |
+| `proactiveExtractionSkipWhenLocalLlmBusy` | `true` | Skip the optional proactive second pass when the local LLM background lane is already busy, instead of queueing behind an in-flight extraction and losing its shorter deadline (issue #2011). `false` always attempts the second pass. |
 | `maxCompressionTokensPerHour` | `1500` | Hourly token budget for compression-learning workflows (`0` disables). |
 
 ### v8.3 Tool + State Artifacts
@@ -443,6 +444,10 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 - `proactiveExtractionCategoryAllowlist`:
   - filters proactive second-pass facts before persistence so only allowlisted categories are emitted
   - does not affect the base extraction pass
+- `proactiveExtractionSkipWhenLocalLlmBusy`:
+  - default on; skips the optional proactive pass when the local LLM background lane is already running or queueing an extraction
+  - avoids arming a short deadline the queued pass would lose on a saturated single-lane host (issue #2011); the base extraction is always kept
+  - only applies when the local LLM is the active extractor (the cloud fallback path has no single-lane saturation)
 
 ### v8.13 Action-Policy Rollout Presets
 
