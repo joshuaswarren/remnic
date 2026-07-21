@@ -161,3 +161,13 @@ test("activityDayWindow does not backdate a skipped local midnight", () => {
   }).format(new Date(w.startUtc));
   assert.ok(local.startsWith("2026-04-24"), local);
 });
+
+test("timeline keeps a second machine's span even with the same app/window", () => {
+  const a = snap({ machine: "A", capturedAtUtc: "2026-03-10T14:00:00.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "a1", text: "" });
+  const b = snap({ machine: "B", capturedAtUtc: "2026-03-10T14:00:30.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "b1", text: "" });
+  const body = composeActivityDigestBody("2026-03-10", "UTC", [a, b]);
+  // machine is part of the timeline-span key, so the same app/window on a
+  // different machine is not coalesced away.
+  const timelineLines = body.split("\n").filter((line) => line.startsWith("- ["));
+  assert.equal(timelineLines.length, 2);
+});

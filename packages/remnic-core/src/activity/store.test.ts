@@ -177,3 +177,21 @@ test("insertSnapshot rejects an impossible capture timestamp", async () => {
     );
   });
 });
+
+test("insertSnapshot rejects an offset-form impossible timestamp", async () => {
+  await withStore((store) => {
+    assert.throws(
+      () => store.insertSnapshot(snapshot({ capturedAtUtc: "2026-02-30T14:00:00.000+00:00", contentHash: "bad2" })),
+      RangeError,
+    );
+  });
+});
+
+test("pruneOlderThan canonicalizes a non-canonical cutoff", async () => {
+  await withStore((store) => {
+    store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T09:00:00.000Z", contentHash: "old" }));
+    store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T11:00:00.000Z", contentHash: "new" }));
+    // A non-canonical cutoff (no millis) must still prune the 09:00 snapshot.
+    assert.equal(store.pruneOlderThan("2026-03-10T10:00:00Z"), 1);
+  });
+});

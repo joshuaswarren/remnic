@@ -221,6 +221,7 @@ function perAppSection(ordered: ActivitySnapshot[], dwell: Map<ActivitySnapshot,
 
 interface TimelineSpan {
   startIso: string;
+  machine: string;
   app: string;
   windowTitle: string;
   browserUrl?: string;
@@ -232,6 +233,7 @@ function timelineSpans(ordered: ActivitySnapshot[]): TimelineSpan[] {
     const last = spans[spans.length - 1];
     if (
       last !== undefined &&
+      last.machine === snapshot.machine &&
       last.app === snapshot.app &&
       last.windowTitle === snapshot.windowTitle &&
       last.browserUrl === snapshot.browserUrl
@@ -240,6 +242,7 @@ function timelineSpans(ordered: ActivitySnapshot[]): TimelineSpan[] {
     }
     spans.push({
       startIso: snapshot.capturedAtUtc,
+      machine: snapshot.machine,
       app: snapshot.app,
       windowTitle: snapshot.windowTitle,
       ...(snapshot.browserUrl !== undefined ? { browserUrl: snapshot.browserUrl } : {}),

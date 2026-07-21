@@ -108,28 +108,19 @@ function canonicalizeUtc(iso: string): string {
 
 /**
  * Reject an impossible capture timestamp instead of letting Date.parse silently
- * roll it over (e.g. 2026-02-30 → Mar 2), which would file the snapshot under
- * the wrong day. For the canonical UTC `Z` form the pipeline emits, the parsed
- * instant's UTC fields must reproduce the supplied Y-M-D H:M:S.
+ * roll it over (e.g. 2026-02-30 → Mar 2, in either `Z` or explicit-offset form),
+ * which would file the snapshot under the wrong day. Validates the wall-clock
+ * calendar fields in the string directly, independent of the zone designator.
  */
 function assertValidCaptureTimestamp(iso: string): void {
-  const parsed = Date.parse(iso);
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-  if (!Number.isFinite(parsed) || m === null) {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if (m === null || !Number.isFinite(Date.parse(iso))) {
     throw new RangeError(`activity: invalid capture timestamp "${iso}".`);
   }
-  if (iso.endsWith("Z")) {
-    const d = new Date(parsed);
-    if (
-      d.getUTCFullYear() !== Number(m[1]) ||
-      d.getUTCMonth() + 1 !== Number(m[2]) ||
-      d.getUTCDate() !== Number(m[3]) ||
-      d.getUTCHours() !== Number(m[4]) ||
-      d.getUTCMinutes() !== Number(m[5]) ||
-      d.getUTCSeconds() !== Number(m[6])
-    ) {
-      throw new RangeError(`activity: capture timestamp "${iso}" is not a real calendar instant.`);
-    }
+  const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) {
+    throw new RangeError(`activity: capture timestamp "${iso}" is not a real calendar instant.`);
   }
 }
 
@@ -307,7 +298,7 @@ export class ActivityStore {
   pruneOlderThan(cutoffUtc: string): number {
     const ids = this.db
       .prepare("SELECT id FROM activity_snapshots WHERE captured_at_utc < ?")
-      .all(cutoffUtc)
+      .all(canonicalizeUtc(cutoffUtc))
       .map((row: unknown) => (isRecord(row) && typeof row.id === "number" ? row.id : -1))
       .filter((id: number) => id >= 0);
     const deleteFts = this.db.prepare("DELETE FROM activity_snapshots_fts WHERE rowid = ?");
