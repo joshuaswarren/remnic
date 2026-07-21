@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.7.15",
+  "version": "9.8.0",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4110,7 +4110,8 @@
         "description": "Enable debounced background QMD maintenance instead of immediate updates on extraction."
       },
       "qmdEmbeddingBacklogThreshold": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 0,
         "default": 1000,
         "description": "Pending-embedding count above which QMD health reports degraded. Set to 0 to disable backlog degradation."
       },
