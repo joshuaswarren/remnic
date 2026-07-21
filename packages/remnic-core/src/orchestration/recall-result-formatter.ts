@@ -116,12 +116,14 @@ export function displaySafeBudgetsApplied<
 
 /**
  * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
- * surface (#2077). `resultPaths`, `budgetsApplied.includedMemoryPaths`, and
- * `tierExplain.sourceAnchors[].path` are rendered memoryDir-relative — the same
- * relativization the top-level recall response already applies — so the debug
- * flag never leaks operator filesystem paths even though the live snapshot
- * keeps absolute paths for tracking/x-ray. Returns a shallow copy; the input
- * snapshot is never mutated.
+ * surface (#2077). `resultPaths` and `budgetsApplied.includedMemoryPaths` are
+ * rendered namespace-relative from their aligned namespace metadata; a
+ * `tierExplain.sourceAnchors[]` entry reuses that SAME authoritative metadata
+ * when its absolute path matches a result/included path, and otherwise falls
+ * back to the memoryDir-relative on-disk form. Either way the debug flag never
+ * leaks absolute operator paths, and an anchor is never attributed to a decoded
+ * (guessed) namespace — an anchor carries no owner of its own. Returns a
+ * shallow copy; the input snapshot is never mutated.
  */
 export function displaySafeRecallSnapshot<
   T extends {
@@ -139,13 +141,25 @@ export function displaySafeRecallSnapshot<
   const resultPaths = snapshot.resultPaths?.map((p, i) =>
     displayResultPath(p, memoryDir, snapshot.resultNamespaces?.[i]),
   );
+  // Authoritative absolute-path -> namespace map recorded at capture time, so a
+  // tier anchor that coincides with a returned result renders under the SAME
+  // namespace as that result instead of the raw storage segment (#2077).
+  const namespaceByPath = new Map<string, string | undefined>();
+  snapshot.resultPaths?.forEach((p, i) => {
+    if (!namespaceByPath.has(p)) namespaceByPath.set(p, snapshot.resultNamespaces?.[i]);
+  });
+  snapshot.budgetsApplied?.includedMemoryPaths?.forEach((p, i) => {
+    if (!namespaceByPath.has(p)) {
+      namespaceByPath.set(p, snapshot.budgetsApplied?.includedMemoryNamespaces?.[i]);
+    }
+  });
   const tierExplain =
     snapshot.tierExplain?.sourceAnchors
       ? {
           ...snapshot.tierExplain,
           sourceAnchors: snapshot.tierExplain.sourceAnchors.map((anchor) => ({
             ...anchor,
-            path: displayResultPath(anchor.path, memoryDir),
+            path: displayResultPath(anchor.path, memoryDir, namespaceByPath.get(anchor.path)),
           })),
         }
       : undefined;
