@@ -1198,3 +1198,84 @@ test("schema-min: a oneOf where exactly one branch admits 0 is clean", () => {
   ];
   assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
 });
+
+test("guard: a property with BOTH coercion and an unguarded threshold reports both in one finding", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  cap: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: "export function parseConfig(cfg: Record<string, unknown>) {\n  return { cap: Math.max(1, coerceNumber(cfg.cap) ?? 0) };\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: "function tick(used: number, config: { cap: number }) {\n  if (used > config.cap) act();\n}",
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+  assert.match(violations[0].detail, /coerces 0 away/);
+  assert.match(violations[0].detail, /threshold/);
+});
+
+test("guard: a coerced local returned under its own key but with a DIFFERENT value is not a false coercion", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the section. */\n  maxFollowups: number;\n}",
+    },
+    {
+      path: "helper.ts",
+      text: [
+        "function build(req: { maxFollowups: number }, safeValue: number) {",
+        "  const maxFollowups = Math.max(1, req.maxFollowups);",
+        "  return { maxFollowups: safeValue };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests: [] }).violations, []);
+});
+
+test("schema-min: a nested field documented only in source JSDoc (unique leaf) is flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Providers {\n  /** 0 disables deep sync. */\n  autoSyncDeepDays: number;\n}",
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        wearables: { type: "object", properties: { autoSyncDeepDays: { type: "integer", minimum: 1 } } },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+  assert.equal(violations[0].key, "wearables.autoSyncDeepDays@openclaw.plugin.json");
+});
+
+test("schema-min: a source-doc leaf shared by an unrelated nested entry does not flag the nested one", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** 0 disables. */\n  limit: number;\n}",
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        limit: { type: "integer", minimum: 0 },
+        block: { type: "object", properties: { limit: { type: "integer", minimum: 1 } } },
+      },
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources, manifests }).violations, []);
+});

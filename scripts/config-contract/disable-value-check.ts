@@ -348,6 +348,17 @@ function localInitializer(name: string, scope: ts.Node): ts.Expression | undefin
   return init;
 }
 
+/** True when `expr` is the local identifier `name` or a pure alias chain to it (`const b = name`). */
+function refersToLocal(expr: ts.Expression, name: string, scope: ts.Node, seen: Set<string>): boolean {
+  if (ts.isParenthesizedExpression(expr)) return refersToLocal(expr.expression, name, scope, seen);
+  if (!ts.isIdentifier(expr)) return false;
+  if (expr.text === name) return true;
+  if (seen.has(expr.text)) return false;
+  seen.add(expr.text);
+  const init = localInitializer(expr.text, scope);
+  return init ? refersToLocal(init, name, scope, seen) : false;
+}
+
 /**
  * Does `expr` emit config field `name` into a returned value UNDER THE KEY
  * `name` — via a same-named shorthand (`return { name }`), a `name: <value>`
@@ -378,9 +389,10 @@ function expressionEmitsField(expr: ts.Expression, name: string, scope: ts.Node,
       }
       if (ts.isPropertyAssignment(prop)) {
         const key = ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : undefined;
-        if (key === name) return true;
-        // Different key: only a nested container can still emit `name` deeper;
-        // a bare same-named local here is bound to `key`, not `name`.
+        // `name: <value>` emits the local only when the VALUE is that local (or a
+        // pure alias to it) — `{ name: otherValue }` binds another value to the key.
+        if (key === name && refersToLocal(prop.initializer, name, scope, new Set())) return true;
+        // Otherwise only a nested container can still emit `name` deeper.
         return expressionEmitsField(prop.initializer, name, scope, seen);
       }
       return false;
@@ -878,6 +890,8 @@ export function findDisableValueViolations(input: {
   // unrelated field's consumer scan, so such a leaf is left out (schema-min still
   // keys by full dotted path, so nested docs are still checked there).
   const schemaEntries = flattenedByManifest.flatMap(({ entries }) => entries);
+  const schemaLeafCount = new Map<string, number>();
+  for (const entry of schemaEntries) schemaLeafCount.set(entry.leaf, (schemaLeafCount.get(entry.leaf) ?? 0) + 1);
   const leafDisableStats = new Map<string, { zeroDisable: number; plainNumeric: number }>();
   for (const entry of schemaEntries) {
     const stats = leafDisableStats.get(entry.leaf) ?? { zeroDisable: 0, plainNumeric: 0 };
@@ -901,7 +915,7 @@ export function findDisableValueViolations(input: {
     for (const entry of entries) {
       const documented =
         isZeroDisableDoc(entry.prop.description ?? "") ||
-        (entry.path === entry.leaf && jsDocLeaves.has(entry.leaf));
+        (jsDocLeaves.has(entry.leaf) && (entry.path === entry.leaf || schemaLeafCount.get(entry.leaf) === 1));
       const rejection = zeroRejectionReason(entry.prop);
       if (documented && rejection !== undefined) {
         violations.push({
@@ -917,17 +931,20 @@ export function findDisableValueViolations(input: {
   for (const name of [...zeroDisable].sort()) {
     const guard = guards.get(name);
     if (!guard) continue;
-    if (guard.coercion) {
+    if (guard.coercion || guard.thresholdUnguarded) {
+      const reasons: string[] = [];
+      if (guard.coercion) {
+        reasons.push("its parser coerces 0 away (Math.max floor > 0 or falsy-default) with no zero short-circuit");
+      }
+      if (guard.thresholdUnguarded) {
+        reasons.push(
+          `it is compared as a threshold (\`obj.${name} >\`/\`< obj.${name}\`) with no \`<= 0\`/\`=== 0\` short-circuit`,
+        );
+      }
       violations.push({
         kind: "disable-value-guard",
         key: name,
-        detail: `${name} is documented "0 disables" but its parser coerces 0 away (Math.max floor >= 1 or falsy-default) with no zero short-circuit`,
-      });
-    } else if (guard.thresholdUnguarded) {
-      violations.push({
-        kind: "disable-value-guard",
-        key: name,
-        detail: `${name} is documented "0 disables" but is compared as a threshold (\`obj.${name} >\`/\`< obj.${name}\`) with no \`<= 0\`/\`=== 0\` short-circuit`,
+        detail: `${name} is documented "0 disables" but ${reasons.join("; and ")}`,
       });
     }
   }
