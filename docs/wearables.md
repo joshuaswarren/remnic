@@ -11,6 +11,7 @@ Three connectors ship as à-la-carte optional packages:
 | `limitless` | `@remnic/connector-limitless` | Limitless Pendant | — |
 | `bee` | `@remnic/connector-bee` | Bee bracelet (Amazon) | Bee "facts" |
 | `omi` | `@remnic/connector-omi` | Omi necklace | Omi "memories" |
+| `fireflies` | `@remnic/connector-fireflies` | Fireflies.ai (cloud meeting notes) | — |
 
 Installing `@remnic/core` (or `@remnic/cli`) alone never pulls a
 connector in. Install only what you wear:
@@ -220,6 +221,7 @@ Credentials prefer environment variables over config values:
 | limitless | `REMNIC_LIMITLESS_API_KEY`, `LIMITLESS_API_KEY` |
 | bee | `REMNIC_BEE_API_TOKEN`, `BEE_API_TOKEN` (not needed in proxy mode) |
 | omi | `REMNIC_OMI_API_KEY`, `OMI_API_KEY` |
+| fireflies | `REMNIC_FIREFLIES_API_KEY`, `FIREFLIES_API_KEY` |
 
 Remember the gateway runs under launchd with an isolated environment —
 API keys must be in the plist `EnvironmentVariables` (or in config).
@@ -363,6 +365,22 @@ on the next QMD update after a sync (the sync triggers one).
   person ids. Map labels via the speaker registry.
 - `importNativeMemories: "review"` imports Omi's "memories" (its
   extracted facts) into the review queue.
+
+### Fireflies (`@remnic/connector-fireflies`)
+
+- Cloud meeting-transcript source, not a wearable device. Ingests
+  transcripts Fireflies already produced; it cannot make them
+  retroactively local.
+- Auth: create a key in the Fireflies app under **Settings → Developer
+  settings** and provide it via `REMNIC_FIREFLIES_API_KEY`,
+  `FIREFLIES_API_KEY`, or `apiKey`.
+- Transcripts are fetched from the GraphQL API
+  (`transcripts(fromDate, toDate)`) for the local day; per-sentence
+  second-offsets are converted to absolute UTC using the meeting start.
+- Meetings with a summary but no transcript become a single `note`
+  segment — still day-anchored recall material.
+- No native-memory import: Fireflies exposes summaries, not a separate
+  extracted-fact surface, so `importNativeMemories` has no effect here.
 
 ## Why this design
 
