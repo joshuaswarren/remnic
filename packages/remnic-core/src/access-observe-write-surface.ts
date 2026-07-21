@@ -463,8 +463,10 @@ export class AccessObserveWriteSurface {
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
     } catch (err) {
-      // A dry run is a no-persist validation, so never dead-letter it.
-      if (request.dryRun !== true) {
+      // A dry run is a no-persist validation, and a replay re-submit sets
+      // suppressQuarantine so a still-unwritable target propagates instead of
+      // re-parking (issue #1888): never dead-letter either.
+      if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "memory_store", request);
       }
       throw err;
@@ -548,8 +550,9 @@ export class AccessObserveWriteSurface {
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
     } catch (err) {
-      // A dry run is a no-persist validation, so never dead-letter it.
-      if (request.dryRun !== true) {
+      // A dry run never persists, and a replay re-submit sets suppressQuarantine
+      // so a still-unwritable target propagates instead of re-parking (#1888).
+      if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "suggestion_submit", request);
       }
       throw err;
@@ -655,7 +658,11 @@ export class AccessObserveWriteSurface {
     try {
       scope = await this.deps.resolveMemoryScopePlan(request);
     } catch (err) {
-      await this.parkRejectedWrite(err, "observe", request);
+      // A replay re-submit sets suppressQuarantine so a still-unwritable target
+      // propagates instead of re-parking (#1888); observe has no dryRun path.
+      if (request.suppressQuarantine !== true) {
+        await this.parkRejectedWrite(err, "observe", request);
+      }
       throw err;
     }
     const writeNamespace = scope.writeNamespace;

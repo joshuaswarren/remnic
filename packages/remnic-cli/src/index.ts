@@ -182,6 +182,7 @@ import {
 } from "./doctor-namespace-lint.js";
 import { WriteQuarantineStore } from "@remnic/core/write-quarantine.js";
 import { renderQuarantineList, type QuarantineFormat } from "./quarantine-cli.js";
+import { runQuarantineReplay } from "./quarantine-replay.js";
 import { drainOfflineSyncImpressions, resolveOfflineImpressionRotation, parseConfigQuietly, pickOfflineConfigRecord } from "./offline-impression-rotation.js";
 import {
   createConfiguredOfflineStorage,
@@ -9887,39 +9888,32 @@ function snapshotConnectorTokenEntry(connectorId: string): TokenEntry | null {
 
 // ── M5 connectors command ────────────────────────────────────────────────────
 
-/**
- * `remnic quarantine list` (issue #1888): show the writes the namespace ACL
- * rejected and dead-lettered (recoverable) instead of destroying them. Read
- * only — no orchestrator boot. Recovery (`replay`) is a deliberate follow-up:
- * a correct replay must re-submit without the write surface re-quarantining the
- * replay attempt, which needs a quarantine-suppression flag through the access
- * layer.
- */
+/** `remnic quarantine list|replay` (#1888): surface ACL-rejected, dead-lettered writes; `list` is read-only, `replay` boots the access layer and re-submits each parked payload into `--namespace` with `suppressQuarantine` set (a still-unwritable target is recorded as a failure and left parked, never duplicated). */
 async function cmdQuarantine(action: string, rest: string[], json: boolean): Promise<void> {
-  if (action !== "list") {
-    process.stderr.write(`quarantine: unknown action "${action}". Use: list [--json].\n`);
-    process.exitCode = 2;
-    return;
-  }
-  const extra = rest.filter((a) => !a.startsWith("--"));
-  if (extra.length > 0) {
-    process.stderr.write(`quarantine list: unexpected argument(s): ${extra.join(", ")}. Use: list [--json].\n`);
+  if (action !== "list" && action !== "replay") {
+    process.stderr.write(`quarantine: unknown action "${action}". Use: list|replay [--namespace <ns>] [--principal <p>] [--json].\n`);
     process.exitCode = 2;
     return;
   }
   const format: QuarantineFormat = json ? "json" : "text";
-  try {
-    // resolveMemoryDir() can throw on invalid config JSON, and list() surfaces
-    // an unreadable/symlink-invalid quarantine store — fail cleanly and exit 2
-    // rather than a raw stack trace, so the remediation command degrades the
-    // same way `doctor` does. The detail stays generic: the raw error can carry
-    // absolute paths/internal context meant for logs.
-    const store = new WriteQuarantineStore(resolveMemoryDir());
-    console.log(renderQuarantineList(await store.list(), format));
-  } catch {
-    process.stderr.write("quarantine list: unable to inspect quarantine store\n");
-    process.exitCode = 2;
+  if (action === "list") {
+    const extra = rest.filter((a) => !a.startsWith("--"));
+    if (extra.length > 0) {
+      process.stderr.write(`quarantine list: unexpected argument(s): ${extra.join(", ")}. Use: list [--json].\n`);
+      process.exitCode = 2;
+      return;
+    }
+    try {
+      // resolveMemoryDir() can throw on invalid config JSON, and list() surfaces an unreadable/symlink-invalid store: fail cleanly (exit 2, generic detail) rather than leak a raw stack.
+      const store = new WriteQuarantineStore(resolveMemoryDir());
+      console.log(renderQuarantineList(await store.list(), format));
+    } catch {
+      process.stderr.write("quarantine list: unable to inspect quarantine store\n");
+      process.exitCode = 2;
+    }
+    return;
   }
+  await runQuarantineReplay(rest, format, resolveConfigPath);
 }
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
@@ -13600,7 +13594,7 @@ Usage:
     marketplace generate    Generate marketplace.json for Codex
     marketplace validate    Validate a marketplace.json file
     marketplace install     Install from a marketplace source
-  remnic quarantine list [--json]   Inspect writes the namespace ACL rejected
+  remnic quarantine <list|replay> [--namespace <ns>] [--principal <p>] [--json]  Inspect/replay ACL-rejected writes
   remnic extensions <list|show|validate|reload>  Manage memory extensions
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship

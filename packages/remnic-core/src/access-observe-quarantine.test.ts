@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { memoryStoreRequestSchema, observeRequestSchema } from "./access-schema.js";
 import { EngramAccessService, NamespaceNotWritableError } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { CodingContext, PluginConfig } from "./types.js";
@@ -117,4 +118,55 @@ test("a dry-run rejected write is NOT quarantined (#1888)", async () => {
     // A dry run is a no-persist validation, so nothing is parked.
     assert.equal(await new WriteQuarantineStore(dir).count(), 0);
   });
+});
+
+test("suppressQuarantine skips dead-lettering an ACL-rejected write; without it it is parked (#1888 replay)", async () => {
+  await withService(async (service, dir) => {
+    const store = new WriteQuarantineStore(dir);
+    // Replay re-submits with suppressQuarantine set: the ACL rejection still
+    // throws, but the attempt is NOT re-parked, so replay cannot duplicate it.
+    await assert.rejects(
+      service.memoryStore({
+        content: "replayed",
+        namespace: "victim-secret",
+        authenticatedPrincipal: "alice",
+        sessionKey: "s-5",
+        suppressQuarantine: true,
+      } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]),
+      NamespaceNotWritableError
+    );
+    assert.equal(await store.count(), 0);
+
+    // The identical write WITHOUT the flag is dead-lettered as before.
+    await assert.rejects(
+      service.memoryStore({
+        content: "replayed",
+        namespace: "victim-secret",
+        authenticatedPrincipal: "alice",
+        sessionKey: "s-5",
+      } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]),
+      NamespaceNotWritableError
+    );
+    assert.equal(await store.count(), 1);
+  });
+});
+
+test("public write schemas strip suppressQuarantine — external callers cannot skip quarantine", () => {
+  // The write surface honors suppressQuarantine (in-process replay sets it), but
+  // it is NOT a field on the public HTTP/MCP request schemas. zod strips unknown
+  // keys, so a body carrying it is scrubbed before the service — and the access
+  // boundary re-validates the cleaned envelope — keeping ACL-rejected external
+  // writes parked rather than silently discarded.
+  const stored = memoryStoreRequestSchema.parse({
+    sessionKey: "s",
+    content: "hello",
+    suppressQuarantine: true,
+  } as Record<string, unknown>);
+  assert.equal("suppressQuarantine" in stored, false);
+  const observed = observeRequestSchema.parse({
+    sessionKey: "s",
+    messages: [{ role: "user", content: "hi" }],
+    suppressQuarantine: true,
+  } as Record<string, unknown>);
+  assert.equal("suppressQuarantine" in observed, false);
 });
