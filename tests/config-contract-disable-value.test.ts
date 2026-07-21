@@ -12,6 +12,7 @@ import {
   runDisableValueCheck,
   type DisableValueGrandfatherEntry,
   type DisableValueManifest,
+  type DisableValueSchemaProperty,
   type DisableValueSource,
 } from "../scripts/config-contract/disable-value-check.js";
 
@@ -1141,6 +1142,58 @@ test("schema-min: a documented zero-disable field whose enum includes 0 is clean
     {
       path: "openclaw.plugin.json",
       properties: { gate: { type: "integer", enum: [0, 1, 2], description: "Set to 0 to disable." } },
+    },
+  ];
+  assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
+});
+
+test("guard: a fractional Math.max floor (Math.max(0.1, raw)) coerces 0 and is flagged", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable. */\n  ratio: number;\n}",
+    },
+    {
+      path: "config.ts",
+      text: [
+        "export function parseConfig(cfg: Record<string, unknown>) {",
+        "  return {",
+        "    // 0 disables the ratio.",
+        "    ratio: Math.max(0.1, coerceNumber(cfg.ratio) ?? 0),",
+        "  };",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "ratio");
+});
+
+test("schema-min: a oneOf where TWO branches admit 0 rejects 0 (flagged)", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        gate: { description: "Set to 0 to disable.", oneOf: [{ const: 0 }, { type: "integer", minimum: 0 }] },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources: [], manifests });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].kind, "disable-value-schema-min");
+});
+
+test("schema-min: a oneOf where exactly one branch admits 0 is clean", () => {
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        gate: {
+          description: "Set to 0 to disable.",
+          oneOf: [{ type: "integer", minimum: 0 }, { type: "integer", minimum: 5 }],
+        },
+      },
     },
   ];
   assert.deepEqual(findDisableValueViolations({ sources: [], manifests }).violations, []);
