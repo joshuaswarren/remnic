@@ -2714,3 +2714,87 @@ test("PR #1852: static operator token has no connector provenance under rotation
     await server.stop();
   }
 });
+
+test("HTTP namespace/writable preflight returns the structured writability result", async () => {
+  // Real config through the pure resolver: the default namespace is writable
+  // for any principal; a foreign namespace with no policy is not. A rejection
+  // is a valid 200 answer (read via `ok`), not an HTTP error.
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-test", defaultNamespace: "default" }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const okRes = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/namespace/writable?namespace=default`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(okRes.status, 200);
+    assert.deepEqual(await okRes.json(), { ok: true, namespace: "default" });
+
+    const badRes = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/namespace/writable?namespace=team-x`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(badRes.status, 200);
+    const badBody = (await badRes.json()) as { ok: boolean; namespace: string };
+    assert.equal(badBody.ok, false);
+    assert.equal(badBody.namespace, "team-x");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP namespace/writable preflight admits write-scoped tokens and rejects read-only ops", async () => {
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-ops-test", defaultNamespace: "default" }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "write-scoped", capabilities: { version: 1, ops: ["observe", "memory_store"] } },
+      { token: "store-only", capabilities: { version: 1, ops: ["memory_store"] } },
+      { token: "diagnostic-only", capabilities: { version: 1, ops: ["namespace_writable"] } },
+      { token: "read-only", capabilities: { version: 1, ops: ["recall"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, op?: string) =>
+    fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/namespace/writable?namespace=default${op ? `&op=${op}` : ""}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+  const okOf = async (r: Response) => {
+    const body = (await r.json()) as { ok?: unknown };
+    return body.ok;
+  };
+  try {
+    // A token scoped to write ops but NOT the namespace_writable op (e.g. minted
+    // before this endpoint existed) may still run the preflight.
+    const writeScoped = await request("write-scoped");
+    assert.equal(writeScoped.status, 200);
+    assert.equal(await okOf(writeScoped), true);
+    // Config-aware write op: a memory_store-only token is writable for the
+    // explicit store path (?op=memory_store) but not for the automatic observe
+    // path (default), which it cannot perform.
+    assert.equal(await okOf(await request("store-only", "memory_store")), true);
+    assert.equal(await okOf(await request("store-only")), false);
+    // A token scoped to the diagnostic op ONLY can call the endpoint but cannot
+    // write, so the answer is a definitive not-writable (never a false ok:true).
+    const diag = await request("diagnostic-only");
+    assert.equal(diag.status, 200);
+    assert.equal(await okOf(diag), false);
+    // A read-only token cannot write, so it has nothing to preflight → 403.
+    assert.equal((await request("read-only")).status, 403);
+  } finally {
+    await server.stop();
+  }
+});

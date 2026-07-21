@@ -327,20 +327,27 @@ export function resolveEffectiveNamespace(
  * behavior is unchanged. Both the HTTP transport (`resolveNamespace`) and the
  * MCP dispatch route through this ONE function so no surface is missed.
  */
+export function isNamespaceAllowed(
+  caps: TokenCapabilities | undefined | null,
+  namespace: string | undefined,
+  defaultNamespace: string | undefined,
+): boolean {
+  if (caps?.namespaces === undefined) return true; // unrestricted token
+  const effective = resolveEffectiveNamespace(namespace, defaultNamespace);
+  return effective !== undefined && caps.namespaces.includes(effective);
+}
+
 export function enforceNamespaceAllowList(
   caps: TokenCapabilities | undefined | null,
   namespace: string | undefined,
   defaultNamespace: string | undefined,
 ): void {
-  if (caps?.namespaces === undefined) return; // unrestricted token — unchanged
-  const effective = resolveEffectiveNamespace(namespace, defaultNamespace);
-  if (effective === undefined || !caps.namespaces.includes(effective)) {
-    throw new EngramAccessForbiddenError(
-      namespace === undefined
-        ? "token is scoped to specific namespaces; the server default namespace is not permitted — supply an allowed namespace"
-        : `token is not permitted to access namespace: ${namespace}`,
-    );
-  }
+  if (isNamespaceAllowed(caps, namespace, defaultNamespace)) return;
+  throw new EngramAccessForbiddenError(
+    namespace === undefined
+      ? "token is scoped to specific namespaces; the server default namespace is not permitted — supply an allowed namespace"
+      : `token is not permitted to access namespace: ${namespace}`,
+  );
 }
 
 /**

@@ -24,9 +24,11 @@ import test from "node:test";
 import {
   getConfiguredNamespaces,
   resolveNamespaceFromStorageDir,
+  resolveNamespacePreflight,
   resolveScopePlan,
   resolveWritableNamespaceValue,
 } from "./scope-plan.js";
+import type { TokenCapabilities } from "../access-token-capabilities.js";
 import {
   combineNamespaces,
   lcmSessionKeyForNamespace,
@@ -524,4 +526,44 @@ test("resolveWritableNamespaceValue: namespaces disabled, default namespace → 
   const result = resolveWritableNamespaceValue("default", "sess-1", undefined, config);
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.namespace, "default");
+});
+
+test("resolveNamespacePreflight gates on the allow-list, policy, and the requested write op", () => {
+  const config = baseConfig({ namespacesEnabled: false });
+  // Unrestricted token, observe path: default writable, foreign policy-rejected.
+  assert.deepEqual(
+    resolveNamespacePreflight(undefined, "default", undefined, undefined, config, "observe"),
+    { ok: true, namespace: "default" },
+  );
+  assert.equal(
+    resolveNamespacePreflight(undefined, "team-b", undefined, undefined, config, "observe").ok,
+    false,
+  );
+  // Namespace-scoped token: in-list writable; out-of-list definitive not_writable.
+  const scoped = { namespaces: ["default"] } as unknown as TokenCapabilities;
+  assert.deepEqual(
+    resolveNamespacePreflight(scoped, "default", undefined, undefined, config, "observe"),
+    { ok: true, namespace: "default" },
+  );
+  assert.deepEqual(
+    resolveNamespacePreflight(scoped, "team-b", undefined, undefined, config, "observe"),
+    { ok: false, reason: "not_writable", namespace: "team-b" },
+  );
+  // Write-op awareness: a memory_store-only token is not_writable for the
+  // observe path but writable for the memory_store path; a token lacking BOTH
+  // (diagnostic-only) is never writable.
+  const storeOnly = { ops: ["memory_store"] } as unknown as TokenCapabilities;
+  assert.equal(
+    resolveNamespacePreflight(storeOnly, "default", undefined, undefined, config, "observe").ok,
+    false,
+  );
+  assert.deepEqual(
+    resolveNamespacePreflight(storeOnly, "default", undefined, undefined, config, "memory_store"),
+    { ok: true, namespace: "default" },
+  );
+  const diagnosticOnly = { ops: ["namespace_writable"] } as unknown as TokenCapabilities;
+  assert.equal(
+    resolveNamespacePreflight(diagnosticOnly, "default", undefined, undefined, config, "observe").ok,
+    false,
+  );
 });

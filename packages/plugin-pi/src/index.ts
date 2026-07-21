@@ -63,8 +63,18 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
       restoreObservedState(session, state.observedHashes);
-      if (!config.statusEnabled) return;
-      await setStatus(session, client, config);
+      // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
+      // daemon is marked unreachable even when the status UI is off; otherwise
+      // the namespace preflight and every later hook each burn a full request
+      // budget on a doomed call. The status LABEL stays gated on statusEnabled.
+      const reachable = await probeDaemonHealth(client, config);
+      if (config.statusEnabled) {
+        session.setStatus(
+          "remnic",
+          reachable ? `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}` : "Remnic offline",
+        );
+      }
+      await runNamespacePreflight(pi, session, client, config);
     });
 
     pi.on("context", async (event, ctx) => {
@@ -583,23 +593,92 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
-async function setStatus(session: PiContextSnapshot, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
+/**
+ * Probe the daemon and update the shared circuit breaker. Returns whether the
+ * daemon is reachable so the caller can render a status label. This runs at
+ * session_start regardless of `statusEnabled`: the breaker update is a
+ * data-path concern (a down daemon must be marked unreachable so the namespace
+ * preflight and every later hook fast-skip instead of each burning a full
+ * request budget), independent of whether the status UI is shown.
+ */
+async function probeDaemonHealth(client: RemnicClient, config: RemnicPiConfig): Promise<boolean> {
   try {
     await client.health({ timeoutMs: config.startupRequestTimeoutMs });
-    // A successful health probe means the daemon is reachable, so clear any
-    // stale cooldown a prior recall/observe timeout left on the shared client —
-    // otherwise the next live hook fast-skips even though the daemon is up
-    // (codex review).
+    // A successful probe means the daemon is reachable, so clear any stale
+    // cooldown a prior recall/observe timeout left on the shared client.
     client.markReachable();
-    session.setStatus("remnic", `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}`);
+    return true;
   } catch (err) {
     // Startup just proved the daemon is unreachable, so trip the fast-skip
-    // breaker too — otherwise the first live context/observe hook still spends
-    // the full turn budget on a doomed request before the breaker would trip
-    // on its own (codex review).
+    // breaker — otherwise the first live hook spends the full turn budget on a
+    // doomed request before the breaker would trip on its own.
     if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-    session.setStatus("remnic", "Remnic offline");
+    return false;
   }
+}
+
+/**
+ * Startup namespace-writability preflight (issue #1888 part 3). Runs at each
+ * session_start. When the configured namespace is NOT writable for this
+ * client's principal, every memory write is rejected and — since the
+ * dead-letter quarantine landed — parked, never stored. A silent per-call
+ * rejection is invisible; this surfaces it LOUDLY and persistently (an error
+ * `remnic_state` entry + error notification, re-emitted every session while
+ * broken).
+ *
+ * `appendEntry` has no delete, so the CURRENT state is always recorded: a
+ * `NAMESPACE_OK` entry on a writable result makes the latest `remnic_state`
+ * entry authoritative even across an extension/host restart (no in-memory
+ * transition tracking that a restart would lose). Only errors notify — the OK
+ * entry is a silent heartbeat, never a success toast every healthy session. A
+ * daemon that cannot be reached (indeterminate) records nothing, leaving the
+ * last known state intact — we neither cry wolf nor falsely clear a real error.
+ */
+async function runNamespacePreflight(
+  pi: PiApi,
+  session: PiContextSnapshot,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+): Promise<void> {
+  // No token → the client cannot write anyway; known-unreachable → the answer
+  // would be indeterminate. Either way, do not touch the recorded state.
+  if (!config.authToken || !client.isReachable()) return;
+  const result = await client.preflightNamespace(session.sessionKey, {
+    timeoutMs: config.startupRequestTimeoutMs,
+  });
+  if (result.status === "not_writable") {
+    // The remediation differs by cause: `unsupported` means the daemon has
+    // namespaces disabled, so ONLY its default namespace is writable — pointing
+    // the operator at namespacePolicies would be misleading.
+    const fix =
+      result.reason === "unsupported"
+        ? "The daemon has namespaces disabled, so only its default namespace is writable — set the client's namespace to the daemon's defaultNamespace (or omit it)."
+        : "Fix the client's namespace config: it must match a namespacePolicies entry, or be the daemon's defaultNamespace/sharedNamespace.";
+    const message =
+      `Remnic: configured namespace "${result.namespace}" is NOT writable for this client's principal ` +
+      `(${result.reason}). Every memory write will be rejected and dead-lettered (recoverable via ` +
+      `\`remnic quarantine list\`), NOT stored. ${fix}`;
+    session.notify(message, "error");
+    pi.appendEntry(STATE_CUSTOM_TYPE, {
+      level: "error",
+      code: "NAMESPACE_NOT_WRITABLE",
+      namespace: result.namespace,
+      reason: result.reason,
+      message,
+      persistent: true,
+      recordedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  if (result.status === "writable") {
+    pi.appendEntry(STATE_CUSTOM_TYPE, {
+      level: "info",
+      code: "NAMESPACE_OK",
+      namespace: result.namespace,
+      recordedAt: new Date().toISOString(),
+    });
+  }
+  // indeterminate → record nothing; keep the last known state.
 }
 
 function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): PiContextSnapshot | null {
