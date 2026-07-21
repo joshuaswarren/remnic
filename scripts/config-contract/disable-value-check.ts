@@ -171,19 +171,25 @@ function zeroRejectionReason(prop: DisableValueSchemaProperty): string | undefin
   if (Array.isArray(prop.enum) && !prop.enum.includes(0)) return `enum ${JSON.stringify(prop.enum)}`;
   const branches = prop.anyOf ?? prop.oneOf;
   if (branches && branches.length > 0) {
-    // Parent admits 0 here (nothing rejected above); the field admits 0 iff some
-    // numeric-constrained branch admits it.
+    // Parent admits 0 here (nothing rejected above). Count branches that admit 0:
+    // anyOf admits 0 when >= 1 branch does; oneOf requires EXACTLY one (two
+    // matching branches make 0 invalid under oneOf).
+    const isOneOf = prop.anyOf === undefined && prop.oneOf !== undefined;
     let rejection: string | undefined;
-    let anyBranchAdmitsZero = false;
+    let zeroAdmittingCount = 0;
     for (const branch of branches) {
       const reason = zeroRejectionReason(branch);
       if (reason === undefined) {
-        if (isNumericConstrained(branch)) anyBranchAdmitsZero = true;
+        if (isNumericConstrained(branch)) zeroAdmittingCount += 1;
       } else {
         rejection = rejection ?? reason;
       }
     }
-    return anyBranchAdmitsZero ? undefined : rejection;
+    if (isOneOf ? zeroAdmittingCount === 1 : zeroAdmittingCount >= 1) return undefined;
+    if (isOneOf && zeroAdmittingCount >= 2) {
+      return `oneOf admits 0 in ${zeroAdmittingCount} branches (exactly one must match)`;
+    }
+    return rejection ?? "no branch admits 0";
   }
   return undefined;
 }
@@ -229,7 +235,7 @@ function isInequalityOperator(kind: ts.SyntaxKind): boolean {
   );
 }
 
-/** `Math.max(L, …)` / `Math.max(…, L)` with an integer floor L >= 1. */
+/** `Math.max(L, …)` / `Math.max(…, L)` with a positive floor L > 0 (a fractional floor like 0.1 coerces 0 too). */
 function isFloorAboveZero(node: ts.CallExpression): boolean {
   const callee = node.expression;
   if (
@@ -242,7 +248,7 @@ function isFloorAboveZero(node: ts.CallExpression): boolean {
   }
   return node.arguments.some((arg) => {
     const value = numericLiteralValue(arg);
-    return value !== undefined && value >= 1;
+    return value !== undefined && value > 0;
   });
 }
 
