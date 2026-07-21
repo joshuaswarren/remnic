@@ -66,12 +66,19 @@ function roundToMinuteUtc(startMs: number): string {
   return new Date(Math.floor(startMs / 60_000) * 60_000).toISOString();
 }
 
-/** Re-run-stable id: same date + rounded start + app ⇒ same id, so re-syncs
- *  with slightly more data never renumber existing records. */
-export function meetingId(date: string, startUtc: string, app: string | undefined): string {
+/** Re-run-stable id: same date + rounded start + rounded end ⇒ same id, so a
+ *  re-sync with slightly more data never renumbers existing records. The app is
+ *  deliberately NOT hashed (a merge can pick a different app across runs); the
+ *  rounded end disambiguates two meetings that start in the same UTC minute. */
+export function meetingId(date: string, startUtc: string, endUtc: string): string {
   const startMs = ms(startUtc);
-  const anchor = Number.isNaN(startMs) ? startUtc : roundToMinuteUtc(startMs);
-  const hash = createHash("sha256").update(`${date}|${anchor}|${app ?? ""}`, "utf8").digest("hex").slice(0, 8);
+  const endMs = ms(endUtc);
+  const startAnchor = Number.isNaN(startMs) ? startUtc : roundToMinuteUtc(startMs);
+  const endAnchor = Number.isNaN(endMs) ? endUtc : roundToMinuteUtc(endMs);
+  const hash = createHash("sha256")
+    .update(`${date}|${startAnchor}|${endAnchor}`, "utf8")
+    .digest("hex")
+    .slice(0, 8);
   return `mtg-${date}-${hash}`;
 }
 
@@ -117,7 +124,9 @@ function buildCandidates(
       const spanEnd = ms(span.endUtc);
       if (!isFinitePair(spanStart, spanEnd)) continue;
       const overlap = overlapMs(startMs, endMs, spanStart, spanEnd);
-      if (overlap < minOverlapMs) continue;
+      // Require genuine overlap for an app+audio pairing, even when the caller
+      // sets minOverlapMinutes to 0 — disjoint windows must not pair.
+      if (overlap <= 0 || overlap < minOverlapMs) continue;
       if (
         bestApp === undefined ||
         overlap > bestApp.overlap ||
@@ -154,13 +163,32 @@ function buildCandidates(
   return candidates;
 }
 
+/** Detection-source rank for a total, stable candidate ordering. */
+const DETECTION_RANK: Record<MeetingDetectionSource, number> = {
+  "app+audio": 0,
+  provider: 1,
+  audio: 2,
+};
+
+/** Total order over candidates so equal-time spans resolve deterministically. */
+function candidateOrder(a: Candidate, b: Candidate): number {
+  return (
+    a.startMs - b.startMs ||
+    a.endMs - b.endMs ||
+    DETECTION_RANK[a.detectionSource] - DETECTION_RANK[b.detectionSource] ||
+    (a.app ?? "").localeCompare(b.app ?? "") ||
+    (a.title ?? "").localeCompare(b.title ?? "") ||
+    (a.sources[0] ?? "").localeCompare(b.sources[0] ?? "")
+  );
+}
+
 /**
  * Merge candidates so the day's meetings never overlap. Two candidates merge
  * when they overlap, or when they are within `mergeGapMinutes` and share the
- * same app (rejoin-after-drop). Deterministic: sort by (start, end) first.
+ * same app (rejoin-after-drop). Deterministic via `candidateOrder`.
  */
 function mergeCandidates(candidates: Candidate[], mergeGapMs: number): Candidate[] {
-  const sorted = [...candidates].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const sorted = [...candidates].sort(candidateOrder);
   const merged: Candidate[] = [];
   for (const candidate of sorted) {
     const prev = merged[merged.length - 1];
@@ -183,18 +211,31 @@ function mergeCandidates(candidates: Candidate[], mergeGapMs: number): Candidate
   return merged;
 }
 
+function assertFiniteNonNegative(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`meetings config "${name}" must be a finite, non-negative number (got ${value}).`);
+  }
+}
+
+function validateConfig(config: MeetingsDetectionConfig): void {
+  assertFiniteNonNegative("minOverlapMinutes", config.minOverlapMinutes);
+  assertFiniteNonNegative("audioOnlyMinMinutes", config.audioOnlyMinMinutes);
+  assertFiniteNonNegative("mergeGapMinutes", config.mergeGapMinutes);
+}
+
 /** Detect the day's non-overlapping meetings from its audio + app-span signals. */
 export function detectMeetings(
   input: MeetingsDetectionInput,
   config: MeetingsDetectionConfig = DEFAULT_MEETINGS_DETECTION_CONFIG,
 ): DetectedMeeting[] {
+  validateConfig(config);
   const candidates = buildCandidates(input.audioWindows, input.appSpans, config);
   const merged = mergeCandidates(candidates, config.mergeGapMinutes * 60_000);
   return merged.map((candidate) => {
     const startUtc = new Date(candidate.startMs).toISOString();
     const endUtc = new Date(candidate.endMs).toISOString();
     return {
-      id: meetingId(input.date, startUtc, candidate.app),
+      id: meetingId(input.date, startUtc, endUtc),
       date: input.date,
       startUtc,
       endUtc,
