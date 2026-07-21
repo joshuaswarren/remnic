@@ -195,3 +195,13 @@ test("pruneOlderThan canonicalizes a non-canonical cutoff", async () => {
     assert.equal(store.pruneOlderThan("2026-03-10T10:00:00Z"), 1);
   });
 });
+
+test("pruneOlderThan rejects a malformed cutoff instead of deleting by a raw string compare", async () => {
+  await withStore((store) => {
+    store.insertSnapshot(snapshot({ capturedAtUtc: "2026-03-10T09:00:00.000Z", contentHash: "keep" }));
+    assert.throws(() => store.pruneOlderThan("not-a-date"), RangeError);
+    // The valid row survived the rejected prune.
+    const { startUtc, endUtc } = activityDayWindow("2026-03-10", "UTC");
+    assert.equal(store.listSnapshotsForDay(null, startUtc, endUtc).length, 1);
+  });
+});

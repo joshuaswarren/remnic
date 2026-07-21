@@ -288,9 +288,15 @@ function notableSection(ordered: ActivitySnapshot[], dwell: Map<ActivitySnapshot
     .filter((entry) => collapseWhitespace(entry.snapshot.text).length > 0)
     .sort((a, b) => {
       if (b.dwell !== a.dwell) return b.dwell - a.dwell;
-      if (a.snapshot.capturedAtUtc < b.snapshot.capturedAtUtc) return -1;
-      if (a.snapshot.capturedAtUtc > b.snapshot.capturedAtUtc) return 1;
-      return (a.snapshot.id ?? 0) - (b.snapshot.id ?? 0);
+      const at = Date.parse(a.snapshot.capturedAtUtc);
+      const bt = Date.parse(b.snapshot.capturedAtUtc);
+      if (at !== bt && Number.isFinite(at) && Number.isFinite(bt)) return at < bt ? -1 : 1;
+      const idDelta = (a.snapshot.id ?? 0) - (b.snapshot.id ?? 0);
+      if (idDelta !== 0) return idDelta;
+      if (a.snapshot.contentHash !== b.snapshot.contentHash) {
+        return a.snapshot.contentHash < b.snapshot.contentHash ? -1 : 1;
+      }
+      return 0;
     })
     .slice(0, NOTABLE_MAX_WINDOWS);
   const lines = ["## Notable", ""];

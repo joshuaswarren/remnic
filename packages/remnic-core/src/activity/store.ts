@@ -19,6 +19,7 @@ import { openBetterSqlite3, type BetterSqlite3Database } from "../runtime/better
 import type { ActivitySnapshot } from "./types.js";
 
 const ACTIVITY_SCHEMA_VERSION = 1;
+const MAX_SEARCH_RESULTS = 100;
 
 export function activityDatabasePath(memoryDir: string): string {
   return path.join(memoryDir, "state", "activity.sqlite");
@@ -112,15 +113,17 @@ function canonicalizeUtc(iso: string): string {
  * which would file the snapshot under the wrong day. Validates the wall-clock
  * calendar fields in the string directly, independent of the zone designator.
  */
-function assertValidCaptureTimestamp(iso: string): void {
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+function assertValidUtcInstant(iso: string, what: string): void {
+  const m = iso.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/,
+  );
   if (m === null || !Number.isFinite(Date.parse(iso))) {
-    throw new RangeError(`activity: invalid capture timestamp "${iso}".`);
+    throw new RangeError(`activity: invalid ${what} "${iso}".`);
   }
   const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
   const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
   if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) {
-    throw new RangeError(`activity: capture timestamp "${iso}" is not a real calendar instant.`);
+    throw new RangeError(`activity: ${what} "${iso}" is not a real calendar instant.`);
   }
 }
 
@@ -194,7 +197,7 @@ export class ActivityStore {
     // with no matching FTS row — silently unsearchable. The transaction rolls
     // back both on any throw.
     const runInsert = this.db.transaction((s: ActivitySnapshot): { inserted: boolean; id: number } => {
-      assertValidCaptureTimestamp(s.capturedAtUtc);
+      assertValidUtcInstant(s.capturedAtUtc, "capture timestamp");
       const capturedAtUtc = canonicalizeUtc(s.capturedAtUtc);
       const info = this.db
         .prepare(
@@ -276,7 +279,7 @@ export class ActivityStore {
 
   /** Full-text search over snapshot text/app/window/url; newest first. */
   searchSnapshots(query: string, limit: number): ActivitySnapshot[] {
-    const capped = Number.isInteger(limit) && limit > 0 ? limit : 20;
+    const capped = Number.isInteger(limit) && limit > 0 ? Math.min(limit, MAX_SEARCH_RESULTS) : 20;
     const match = ftsMatchFor(query);
     if (match === null) return [];
     const rows = this.db
@@ -296,6 +299,7 @@ export class ActivityStore {
 
   /** Retention: drop snapshots captured strictly before `cutoffUtc`. */
   pruneOlderThan(cutoffUtc: string): number {
+    assertValidUtcInstant(cutoffUtc, "prune cutoff");
     const ids = this.db
       .prepare("SELECT id FROM activity_snapshots WHERE captured_at_utc < ?")
       .all(canonicalizeUtc(cutoffUtc))
