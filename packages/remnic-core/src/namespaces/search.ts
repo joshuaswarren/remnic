@@ -1,5 +1,6 @@
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 import type {
   SearchBackend,
@@ -579,7 +580,10 @@ function daemonModeForBackend(backend: SearchBackend): boolean | null {
 
 function isContainedPath(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 function pathIsInsideNamespaceSubtree(
@@ -603,13 +607,26 @@ function pathIsInsideNamespaceSubtree(
  * `resolveNamespaceResultPath`; a stale/corrupt per-namespace collection can
  * yield an absolute path owned by another namespace, and stamping it with the
  * queried namespace would surface a foreign-namespace memory downstream.
+ *
+ * Lexical containment runs first — it is cheap and the only check possible when
+ * the file is not yet on disk (a stale collection may cite a since-deleted
+ * path). When both root and candidate exist, their filesystem realpaths are
+ * canonicalized and re-checked so a symlink planted inside the namespace root
+ * cannot resolve into another namespace or outside storage. An unresolved path
+ * (ENOENT) keeps the lexical result rather than rejecting the stale-collection
+ * case this guard targets.
  */
 function resolvedPathIsInsideNamespaceRoot(memoryDir: string, resolvedPath: string): boolean {
   const root = path.resolve(memoryDir);
   const candidate = path.isAbsolute(resolvedPath)
     ? path.normalize(resolvedPath)
     : path.resolve(root, resolvedPath);
-  return isContainedPath(root, candidate);
+  if (!isContainedPath(root, candidate)) return false;
+  try {
+    return isContainedPath(realpathSync.native(root), realpathSync.native(candidate));
+  } catch {
+    return true;
+  }
 }
 export function normalizeQmdResultPath(resultPath: string, collection: string): string {
   let value = resultPath.trim();

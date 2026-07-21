@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { PluginConfig } from "../src/types.js";
 import { NamespaceSearchRouter, namespaceCollectionName } from "../src/namespaces/search.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../src/search/port.js";
@@ -602,4 +603,57 @@ test("NamespaceSearchRouter ensureNamespaceCollection returns cached availabilit
 
   assert.equal(state, "unknown");
   assert.equal(ensureCalls, 0);
+});
+
+test("NamespaceSearchRouter rejects a symlinked hit that escapes the namespace root and keeps a '..'-prefixed child (#2077)", async () => {
+  const memoryDir = mkdtempSync(path.join(os.tmpdir(), "engram-ns-symlink-"));
+  try {
+    const cfg = baseConfig(memoryDir);
+    const sharedRoot = path.join(memoryDir, "namespaces", "shared");
+    const otherRoot = path.join(memoryDir, "namespaces", "other");
+    mkdirSync(path.join(sharedRoot, "facts"), { recursive: true });
+    mkdirSync(path.join(otherRoot, "facts"), { recursive: true });
+    const secret = path.join(otherRoot, "facts", "secret.md");
+    writeFileSync(secret, "secret");
+    const linkInShared = path.join(sharedRoot, "facts", "link.md");
+    symlinkSync(secret, linkInShared);
+    const inRoot = path.join(sharedRoot, "facts", "ok.md");
+    writeFileSync(inRoot, "ok");
+    // A real file whose name begins with ".." — contained, must NOT be treated
+    // as parent traversal.
+    const dotNotes = path.join(sharedRoot, "..notes.md");
+    writeFileSync(dotNotes, "notes");
+
+    const storageRouter = {
+      async storageFor(namespace: string) {
+        return {
+          dir: namespace === "default" ? memoryDir : path.join(memoryDir, "namespaces", namespace),
+        };
+      },
+    };
+    const router = new NamespaceSearchRouter(cfg, storageRouter, (backendCfg) =>
+      backendCfg.qmdCollection === "openclaw-engram--ns-736861726564"
+        ? backendForResultSet([
+            { docid: "ok", path: inRoot, score: 0.9, snippet: "ok" },
+            { docid: "dotdot", path: dotNotes, score: 0.8, snippet: "notes" },
+            // Lexically inside the shared root, but realpath escapes into `other`.
+            { docid: "leak", path: linkInShared, score: 0.95, snippet: "leak" },
+          ])
+        : backendForResultSet([]),
+    );
+
+    const results = await router.searchAcrossNamespaces({
+      query: "memory",
+      namespaces: ["shared"],
+      maxResults: 5,
+      mode: "search",
+    });
+
+    assert.deepEqual(
+      results.map((result) => result.path),
+      [inRoot, dotNotes],
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
 });
