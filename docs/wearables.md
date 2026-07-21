@@ -12,6 +12,7 @@ Three connectors ship as à-la-carte optional packages:
 | `bee` | `@remnic/connector-bee` | Bee bracelet (Amazon) | Bee "facts" |
 | `omi` | `@remnic/connector-omi` | Omi necklace | Omi "memories" |
 | `fireflies` | `@remnic/connector-fireflies` | Fireflies.ai (cloud meeting notes) | — |
+| `granola` | `@remnic/connector-granola` | Granola (cloud meeting notes) | — |
 
 Installing `@remnic/core` (or `@remnic/cli`) alone never pulls a
 connector in. Install only what you wear:
@@ -222,6 +223,7 @@ Credentials prefer environment variables over config values:
 | bee | `REMNIC_BEE_API_TOKEN`, `BEE_API_TOKEN` (not needed in proxy mode) |
 | omi | `REMNIC_OMI_API_KEY`, `OMI_API_KEY` |
 | fireflies | `REMNIC_FIREFLIES_API_KEY`, `FIREFLIES_API_KEY` |
+| granola | `REMNIC_GRANOLA_API_KEY`, `GRANOLA_API_KEY` |
 
 Remember the gateway runs under launchd with an isolated environment —
 API keys must be in the plist `EnvironmentVariables` (or in config).
@@ -381,6 +383,24 @@ on the next QMD update after a sync (the sync triggers one).
   segment — still day-anchored recall material.
 - No native-memory import: Fireflies exposes summaries, not a separate
   extracted-fact surface, so `importNativeMemories` has no effect here.
+
+### Granola (`@remnic/connector-granola`)
+
+- Cloud meeting-notes source, not a wearable device. Ingests notes and
+  transcripts Granola already produced; it cannot make them
+  retroactively local. Requires a Granola Business/Enterprise plan.
+- Auth: create a key in the Granola desktop app under **Settings →
+  Connectors → API keys** and provide it via `REMNIC_GRANOLA_API_KEY`,
+  `GRANOLA_API_KEY`, or `apiKey`.
+- Notes for the local day are listed via
+  `GET /v1/notes?created_after=&created_before=`, then each note's
+  transcript is fetched with `?include=transcript`. Meeting timing
+  prefers the linked calendar event, then transcript times, then the
+  note's creation time.
+- Speaker keys come from `speaker.source` (`microphone` = the wearer,
+  `speaker` = other audio) or the iOS `diarization_label`.
+- Notes with a summary but no transcript become a single `note` segment.
+  A note that 404s on detail fetch is skipped, not fatal.
 
 ## Why this design
 
