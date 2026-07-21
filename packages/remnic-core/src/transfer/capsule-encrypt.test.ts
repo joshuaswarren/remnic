@@ -22,10 +22,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir, stat, readdir } from "node:fs/promises";
+import { rm, writeFile, readFile, mkdir, stat, readdir } from "node:fs/promises";
 import path from "node:path";
-import { tmpdir } from "node:os";
 import { gzipSync, gunzipSync } from "node:zlib";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import { exportCapsule } from "./capsule-export.js";
 import { importCapsule } from "./capsule-import.js";
@@ -53,9 +54,7 @@ const FAST_SCRYPT: ScryptParams = {
 
 const TEST_PASSPHRASE = "hunter2-test-passphrase";
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), "capsule-enc-test-"));
-}
+const makeTempDir = (): Promise<string> => managedMakeTempDir("capsule-enc-test-");
 
 /**
  * Initialize a secure-store header in `memoryDir` and unlock the keyring.

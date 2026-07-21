@@ -6,9 +6,10 @@
 
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import { readPeer } from "./storage.js";
 import { migrateFromIdentityAnchor } from "./migrate-from-identity-anchor.js";
@@ -17,9 +18,7 @@ import { migrateFromIdentityAnchor } from "./migrate-from-identity-anchor.js";
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-async function makeTempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "peer-migrate-test-"));
-}
+const makeTempDir = (): Promise<string> => managedMakeTempDir("peer-migrate-test-");
 
 /** Write a file, creating intermediate directories as needed. */
 async function writeFixture(filePath: string, content: string): Promise<void> {

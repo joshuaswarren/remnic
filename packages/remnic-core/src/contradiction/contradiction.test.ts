@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import {
   computePairId,
@@ -35,7 +36,7 @@ async function makeTempDir(prefix = "contradiction-test-"): Promise<{
   dir: string;
   cleanup: () => Promise<void>;
 }> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const dir = await managedMakeTempDir(prefix);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
