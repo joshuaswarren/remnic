@@ -174,12 +174,42 @@ test("ids are stable across a re-run with 10% more fixture data appended", () =>
   assert.equal(sameId, firstId, "the earlier meeting keeps its id when later data is added");
 });
 
-test("meetingId is deterministic and start-anchored (rounds start to the minute)", () => {
+test("meetingId is deterministic and anchored on the exact start instant", () => {
   const a = meetingId(DATE, "2026-03-10T14:00:05.000Z");
-  const b = meetingId(DATE, "2026-03-10T14:00:59.000Z");
-  assert.equal(a, b); // same start minute → same id
+  assert.equal(a, meetingId(DATE, "2026-03-10T14:00:05.000Z")); // same start instant → same id
   assert.match(a, /^mtg-2026-03-10-[0-9a-f]{8}$/);
-  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z")); // different start minute
+  // Distinct start instants — even within the same minute — get distinct ids.
+  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:00:06.000Z"));
+  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z"));
+});
+
+test("two short provider meetings in the same minute get distinct ids", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "granola", startUtc: "2026-03-10T14:00:05.000Z", endUtc: "2026-03-10T14:00:20.000Z", providerMeeting: true, title: "A", distinctNonWearerSpeakers: 0 }),
+        audio({ source: "granola", startUtc: "2026-03-10T14:00:40.000Z", endUtc: "2026-03-10T14:00:55.000Z", providerMeeting: true, title: "B", distinctNonWearerSpeakers: 0 }),
+      ],
+    }),
+  );
+  // Provider candidates bypass the duration floors and don't merge (no shared
+  // app, disjoint), so both survive — and must not collide on id.
+  assert.equal(meetings.length, 2);
+  assert.notEqual(meetings[0]?.id, meetings[1]?.id);
+});
+
+test("a rolled-over calendar timestamp is dropped, not silently shifted", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-02-30T14:00:00.000Z", endUtc: "2026-02-30T14:30:00.000Z", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  // Feb 30 is invalid → dropped, never rolled into Mar 2.
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
 });
 
 test("meeting id is unchanged when a late source extends the end (resync stability)", () => {

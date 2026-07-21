@@ -50,8 +50,27 @@ interface Candidate {
 }
 
 function ms(iso: string): number {
+  if (typeof iso !== "string") return Number.NaN;
   const value = Date.parse(iso);
-  return Number.isFinite(value) ? value : Number.NaN;
+  if (!Number.isFinite(value)) return Number.NaN;
+  // Reject invalid calendar rollovers (e.g. 2026-02-30 → 2026-03-02) for the
+  // canonical UTC form the detector receives: the parsed instant's UTC fields
+  // must reproduce the supplied Y-M-D H:M:S rather than silently shifting.
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (m !== null && iso.endsWith("Z")) {
+    const d = new Date(value);
+    if (
+      d.getUTCFullYear() !== Number(m[1]) ||
+      d.getUTCMonth() + 1 !== Number(m[2]) ||
+      d.getUTCDate() !== Number(m[3]) ||
+      d.getUTCHours() !== Number(m[4]) ||
+      d.getUTCMinutes() !== Number(m[5]) ||
+      d.getUTCSeconds() !== Number(m[6])
+    ) {
+      return Number.NaN;
+    }
+  }
+  return value;
 }
 
 /** Overlap of two half-open [start,end) windows, in milliseconds (0 if disjoint). */
@@ -61,20 +80,16 @@ function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): 
   return end > start ? end - start : 0;
 }
 
-/** UTC ISO truncated to the minute — the stable-id anchor. */
-function roundToMinuteUtc(startMs: number): string {
-  return new Date(Math.floor(startMs / 60_000) * 60_000).toISOString();
-}
-
-/** Re-run-stable id: same date + rounded START ⇒ same id. Anchored on start
- *  ONLY so a resync that extends the meeting's end (a late source, a rejoin) or
- *  reassigns its app never renumbers an existing record — start is the stable
- *  identity. Post-merge meetings never share a start (overlapping candidates
- *  merge, and the audio-only 15-min / app-overlap 2-min floors preclude two
- *  distinct sub-minute meetings in one minute), so start alone is collision-free. */
+/** Re-run-stable id: same date + exact START instant ⇒ same id. Anchored on the
+ *  start ONLY (end + app both excluded from the hash) so a resync that extends
+ *  the meeting's end (a late source / rejoin) or reassigns its app never
+ *  renumbers an existing record — the start is the stable identity. Full start
+ *  precision (NOT minute-rounded) keeps ids unique even for short provider
+ *  meetings that share a start minute: post-merge meetings are non-overlapping,
+ *  so their start instants are always distinct. */
 export function meetingId(date: string, startUtc: string): string {
   const startMs = ms(startUtc);
-  const anchor = Number.isNaN(startMs) ? startUtc : roundToMinuteUtc(startMs);
+  const anchor = Number.isNaN(startMs) ? startUtc : new Date(startMs).toISOString();
   const hash = createHash("sha256").update(`${date}|${anchor}`, "utf8").digest("hex").slice(0, 8);
   return `mtg-${date}-${hash}`;
 }
