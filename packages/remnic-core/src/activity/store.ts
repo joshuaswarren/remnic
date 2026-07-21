@@ -122,6 +122,21 @@ function ftsMatchFor(query: string): string | null {
   return tokens.map((token) => `"${token}"`).join(" ");
 }
 
+/**
+ * True only for the FTS5 query-syntax error class. Since `ftsMatchFor` already
+ * sanitizes the query into quoted phrases, a residual syntax error is a safe
+ * "no matches"; any OTHER error (closed handle, missing/corrupt table, disk I/O)
+ * is a real backend failure that must NOT masquerade as an empty result.
+ */
+function isFtsSyntaxError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("fts5") ||
+    message.includes("malformed match") ||
+    message.includes("unterminated")
+  );
+}
+
 function rowToSnapshot(row: unknown): ActivitySnapshot {
   if (!isRecord(row)) {
     throw new Error("activity store: unexpected non-object row");
@@ -255,10 +270,12 @@ export class ActivityStore {
         )
         .all(match, capped);
       return rows.map(rowToSnapshot);
-    } catch {
-      // Defensive belt: any residual FTS5 syntax error reads as "no matches",
-      // never a throw (mirrors the LCM archive search path).
-      return [];
+    } catch (error) {
+      // Defensive belt for a residual FTS5 syntax error only (mirrors the LCM
+      // archive search path). A real backend failure must surface, not read as
+      // an empty result set.
+      if (isFtsSyntaxError(error)) return [];
+      throw error;
     }
   }
 

@@ -1208,6 +1208,9 @@ export {
 
 export * from "./wearables/index.js";
 
+// On-screen activity subsystem (issue #1900): snapshot store + day digest.
+export * from "./activity/index.js";
+
 // ---------------------------------------------------------------------------
 // Shared importer base (issue #568)
 // ---------------------------------------------------------------------------
