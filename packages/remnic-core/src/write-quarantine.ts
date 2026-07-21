@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -64,12 +65,12 @@ const QUARANTINE_DIRNAME = "quarantine";
 function validateCaps(caps: QuarantineCaps): void {
   if (!Number.isInteger(caps.maxEntriesPerPrincipal) || caps.maxEntriesPerPrincipal < 1) {
     throw new Error(
-      `WriteQuarantineStore: maxEntriesPerPrincipal must be a positive integer (got ${caps.maxEntriesPerPrincipal})`,
+      `WriteQuarantineStore: maxEntriesPerPrincipal must be a positive integer (got ${caps.maxEntriesPerPrincipal})`
     );
   }
   if (!Number.isFinite(caps.maxAgeMs) || caps.maxAgeMs <= 0) {
     throw new Error(
-      `WriteQuarantineStore: maxAgeMs must be a positive finite number of milliseconds (got ${caps.maxAgeMs})`,
+      `WriteQuarantineStore: maxAgeMs must be a positive finite number of milliseconds (got ${caps.maxAgeMs})`
     );
   }
 }
@@ -93,7 +94,7 @@ export class WriteQuarantineStore {
 
   constructor(
     memoryDir: string,
-    private readonly caps: QuarantineCaps = DEFAULT_QUARANTINE_CAPS,
+    private readonly caps: QuarantineCaps = DEFAULT_QUARANTINE_CAPS
   ) {
     validateCaps(caps);
     this.memoryDir = path.resolve(memoryDir);
@@ -182,18 +183,20 @@ export class WriteQuarantineStore {
     return info?.isDirectory() === true;
   }
 
-  private async quarantineRoot(): Promise<string | null> {
-    try {
-      return await this.safeDir();
-    } catch {
-      return null;
-    }
-  }
-
   private async principalDirs(): Promise<string[]> {
-    const root = await this.quarantineRoot();
-    if (!root || !(await this.isRealDir(root))) return [];
-    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    // safeDir() rejects a symlinked/containment-escaping root — let that
+    // propagate instead of masquerading as an empty store.
+    const root = await this.safeDir();
+    if (!(await this.isRealDir(root))) return [];
+    let entries: Dirent[];
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch (err) {
+      // Root vanished mid-scan → legitimately empty. Any other failure
+      // (permissions, IO) is a genuine inspection failure and must surface.
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+      throw err;
+    }
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.join(root, entry.name))
@@ -202,7 +205,13 @@ export class WriteQuarantineStore {
 
   private async entryFiles(dir: string): Promise<string[]> {
     if (!(await this.isRealDir(dir))) return [];
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+      throw err;
+    }
     return entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
       .map((entry) => path.join(dir, entry.name))
