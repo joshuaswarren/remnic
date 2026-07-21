@@ -469,8 +469,8 @@ tests/memory-observation-type-shape.test.ts(24,15): TS2614
 tests/migrate-observations.test.ts(188,9): TS2322
 tests/namespace-migrate.test.ts(22,3): TS2740
 tests/namespace-migrate.test.ts(223,20): TS2339
-tests/namespace-search-router.test.ts(14,10): TS2352
-tests/namespace-search-router.test.ts(251,5): TS2353
+tests/namespace-search-router.test.ts(15,10): TS2352
+tests/namespace-search-router.test.ts(252,5): TS2353
 tests/namespaces-router.test.ts(15,3): TS2740
 tests/native-knowledge-openclaw-workspace.test.ts(11,38): TS2724
 tests/native-knowledge-recall.test.ts(175,5): TS2322

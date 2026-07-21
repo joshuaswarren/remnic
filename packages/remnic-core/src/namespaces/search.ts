@@ -1,5 +1,6 @@
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 import type {
   SearchBackend,
@@ -181,15 +182,22 @@ export class NamespaceSearchRouter {
             );
             break;
         }
-        results = filterNamespaceSubtreeResults(record, results).map((result) => ({
-          ...result,
-          namespace,
-          // Resolve to an absolute path so the (namespace, path) identity is
-          // globally unique — same-relative-path hits from different namespaces
-          // stay distinct across every downstream consumer with no special
-          // handling. Display/citation surfaces relativize for portability (#2020).
-          path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
-        }));
+        results = filterNamespaceSubtreeResults(record, results)
+          .map((result) => ({
+            ...result,
+            namespace,
+            // Resolve to an absolute path so the (namespace, path) identity is
+            // globally unique — same-relative-path hits from different namespaces
+            // stay distinct across every downstream consumer with no special
+            // handling. Display/citation surfaces relativize for portability (#2020).
+            path: resolveNamespaceResultPath(record.memoryDir, record.collection, result.path),
+          }))
+          // Reject hits whose resolved path escapes the queried namespace's
+          // storage root (#2077). A stale/corrupt per-namespace collection can
+          // return a path owned by another namespace; stamping it would let
+          // downstream scope checks (which trust the stamped namespace) and
+          // absolute-path resolution surface a foreign-namespace memory.
+          .filter((result) => resolvedPathIsInsideNamespaceRoot(record.memoryDir, result.path));
         return { namespace, results };
       }),
     );
@@ -570,6 +578,14 @@ function daemonModeForBackend(backend: SearchBackend): boolean | null {
     : null;
 }
 
+function isContainedPath(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
 function pathIsInsideNamespaceSubtree(
   memoryDir: string,
   collection: string,
@@ -582,8 +598,35 @@ function pathIsInsideNamespaceSubtree(
   const candidate = path.isAbsolute(normalizedResultPath)
     ? path.normalize(normalizedResultPath)
     : path.resolve(memoryRoot, normalizedResultPath);
-  const relative = path.relative(namespacesRoot, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return isContainedPath(namespacesRoot, candidate);
+}
+
+/**
+ * Reject a QMD hit whose resolved path escapes the queried namespace's storage
+ * root (#2077). `resolvedPath` is the already-resolved value produced by
+ * `resolveNamespaceResultPath`; a stale/corrupt per-namespace collection can
+ * yield an absolute path owned by another namespace, and stamping it with the
+ * queried namespace would surface a foreign-namespace memory downstream.
+ *
+ * Lexical containment runs first — it is cheap and the only check possible when
+ * the file is not yet on disk (a stale collection may cite a since-deleted
+ * path). When both root and candidate exist, their filesystem realpaths are
+ * canonicalized and re-checked so a symlink planted inside the namespace root
+ * cannot resolve into another namespace or outside storage. An unresolved path
+ * (ENOENT) keeps the lexical result rather than rejecting the stale-collection
+ * case this guard targets.
+ */
+function resolvedPathIsInsideNamespaceRoot(memoryDir: string, resolvedPath: string): boolean {
+  const root = path.resolve(memoryDir);
+  const candidate = path.isAbsolute(resolvedPath)
+    ? path.normalize(resolvedPath)
+    : path.resolve(root, resolvedPath);
+  if (!isContainedPath(root, candidate)) return false;
+  try {
+    return isContainedPath(realpathSync.native(root), realpathSync.native(candidate));
+  } catch {
+    return true;
+  }
 }
 export function normalizeQmdResultPath(resultPath: string, collection: string): string {
   let value = resultPath.trim();
