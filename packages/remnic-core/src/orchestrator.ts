@@ -1457,7 +1457,7 @@ export class Orchestrator {
     this.qmd = createSearchBackend(config);
     // #2019: prioritized embedding for write-path searchability.
     const qmdCaps = resolveQmdCapabilities(config);
-    if (qmdCaps.qmd && qmdCaps.qmdAutoEmbed && qmdCaps.qmdMaintenance) {
+    if (qmdCaps.qmd && qmdCaps.qmdAutoEmbed) {
       this.prioritizedEmbedding = installPrioritizedEmbedding(
         (namespace) => this.namespaceSearchRouter.backendForNamespace(namespace),
         (msg) => log.debug(msg),

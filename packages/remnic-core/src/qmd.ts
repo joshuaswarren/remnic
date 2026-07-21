@@ -1723,6 +1723,9 @@ export class QmdClient implements SearchBackend {
     if (!this.isAvailable()) {
       return EMPTY_QMD_STATUS;
     }
+    if (!this.qmdCapabilities.safeStatusDeviceProbe) {
+      return EMPTY_QMD_STATUS;
+    }
     return fetchQmdStatus((args, timeoutMs) => this.runQmdCommand(args, timeoutMs), this.collection, QMD_TIMEOUT_MS);
   }
 

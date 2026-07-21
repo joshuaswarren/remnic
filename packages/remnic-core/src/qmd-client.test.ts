@@ -311,9 +311,11 @@ test("QmdClient.status() returns parsed report on success", async () => {
   const client = new QmdClient("test-col", 3);
   const internals = client as unknown as {
     available: boolean;
+    qmdCapabilities: { safeStatusDeviceProbe: boolean };
     runQmdCommand: (args: string[]) => Promise<{ stdout: string; code: number }>;
   };
   internals.available = true;
+  internals.qmdCapabilities = { safeStatusDeviceProbe: true };
   let capturedArgs: string[] = [];
   internals.runQmdCommand = async (args: string[]) => {
     capturedArgs = args;
