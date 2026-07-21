@@ -567,3 +567,76 @@ test("proactive extraction forwards timeout/token budgets to local and fallback 
   assert.equal(fallbackAnswerOptions?.timeoutMs, 1234);
   assert.equal(fallbackAnswerOptions?.maxTokens, 321);
 });
+
+test("applyProactiveQuestionPass skips the pass without any LLM call when the local lane is busy (issue #2011)", async () => {
+  const config = parseConfig({
+    memoryDir: ".tmp/memory",
+    workspaceDir: ".tmp/workspace",
+    openaiApiKey: "test-key",
+    proactiveExtractionEnabled: true,
+    maxProactiveQuestionsPerExtraction: 2,
+    localLlmEnabled: true,
+    localLlmFallback: true,
+  });
+
+  const engine = new ExtractionEngine(config);
+  let chatCalled = false;
+  let generateCalled = false;
+  let fallbackCalled = false;
+  (engine as any).localLlm = {
+    isBackgroundLaneContended: () => true,
+    chatCompletion: async () => {
+      chatCalled = true;
+      return { content: '{"questions":[]}' };
+    },
+  };
+  (engine as any).fallbackLlm = {
+    parseWithSchema: async () => {
+      fallbackCalled = true;
+      return { questions: [] };
+    },
+  };
+  (engine as any).generateProactiveQuestions = async () => {
+    generateCalled = true;
+    return [];
+  };
+
+  const base: ExtractionResult = {
+    facts: [{ category: "fact", content: "The review is active.", confidence: 0.8, tags: [], source: "base" }],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+  };
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+
+  assert.equal(result, base);
+  assert.equal(chatCalled, false);
+  assert.equal(generateCalled, false);
+  assert.equal(fallbackCalled, false);
+});
+
+test("applyProactiveQuestionPass runs the pass when the local lane is idle (issue #2011)", async () => {
+  const config = parseConfig({
+    memoryDir: ".tmp/memory",
+    workspaceDir: ".tmp/workspace",
+    openaiApiKey: "test-key",
+    proactiveExtractionEnabled: true,
+    maxProactiveQuestionsPerExtraction: 2,
+    localLlmEnabled: true,
+    localLlmFallback: true,
+  });
+
+  const engine = new ExtractionEngine(config);
+  let generateCalled = false;
+  (engine as any).localLlm = { isBackgroundLaneContended: () => false };
+  (engine as any).generateProactiveQuestions = async () => {
+    generateCalled = true;
+    return [];
+  };
+
+  const base: ExtractionResult = { facts: [], profileUpdates: [], entities: [], questions: [] };
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+
+  assert.equal(generateCalled, true);
+  assert.equal(result, base);
+});

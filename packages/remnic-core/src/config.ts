@@ -3279,6 +3279,8 @@ export function parseConfig(
       typeof cfg.proactiveExtractionTimeoutMs === "number"
         ? Math.max(0, Math.floor(cfg.proactiveExtractionTimeoutMs))
         : 2500,
+    proactiveExtractionSkipWhenLocalLlmBusy:
+      coerceBooleanLike(cfg.proactiveExtractionSkipWhenLocalLlmBusy) ?? true,
     proactiveExtractionMaxTokens:
       typeof cfg.proactiveExtractionMaxTokens === "number"
         ? Math.max(0, Math.floor(cfg.proactiveExtractionMaxTokens))

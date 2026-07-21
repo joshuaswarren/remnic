@@ -858,11 +858,9 @@ export class LocalLlmClient {
     });
   }
 
-  private hasQueuedRequests(): boolean {
-    return (
-      this.requestQueues["recall-critical"].length > 0 ||
-      this.requestQueues.background.length > 0
-    );
+  /** True when a background-priority request occupies or awaits this client's local lane (issue #2011). */
+  isBackgroundLaneContended(): boolean {
+    return this.queueProcessing.has("background") || this.requestQueues.background.length > 0;
   }
 
   private dequeueQueuedRequest(priority: LocalLlmRequestPriority): LocalLlmQueuedRequest | null {
@@ -924,7 +922,7 @@ export class LocalLlmClient {
       next.resolve(result);
     } finally {
       this.queueProcessing.delete(next.priority);
-      if (this.hasQueuedRequests()) {
+      if (this.requestQueues["recall-critical"].length > 0 || this.requestQueues.background.length > 0) {
         this.scheduleQueueDrain();
       }
     }

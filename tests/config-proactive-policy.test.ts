@@ -12,6 +12,7 @@ test("parseConfig sets proactive/policy-learning defaults", () => {
   assert.equal(cfg.maxProactiveQuestionsPerExtraction, 2);
   assert.equal(cfg.proactiveExtractionTimeoutMs, 2500);
   assert.equal(cfg.proactiveExtractionMaxTokens, 900);
+  assert.equal(cfg.proactiveExtractionSkipWhenLocalLlmBusy, true);
   assert.equal(cfg.proactiveExtractionCategoryAllowlist, undefined);
   assert.equal(cfg.maxCompressionTokensPerHour, 1500);
   assert.equal(cfg.behaviorLoopAutoTuneEnabled, false);
@@ -94,4 +95,23 @@ test("parseConfig returns a fresh default behaviorLoopProtectedParams array per 
 
   const second = parseConfig({ openaiApiKey: "sk-test" });
   assert.equal(second.behaviorLoopProtectedParams.includes("mutated-default"), false);
+});
+
+test("parseConfig coerces proactiveExtractionSkipWhenLocalLlmBusy string/bool forms (issue #2011)", () => {
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: false }).proactiveExtractionSkipWhenLocalLlmBusy,
+    false,
+  );
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: "false" }).proactiveExtractionSkipWhenLocalLlmBusy,
+    false,
+  );
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: "0" }).proactiveExtractionSkipWhenLocalLlmBusy,
+    false,
+  );
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", proactiveExtractionSkipWhenLocalLlmBusy: "true" }).proactiveExtractionSkipWhenLocalLlmBusy,
+    true,
+  );
 });
