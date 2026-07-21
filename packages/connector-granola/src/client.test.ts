@@ -138,3 +138,14 @@ test("hasMore=true with an empty-string cursor also fails loudly", async () => {
   const client = new GranolaClient({ apiKey: "grn_ok", fetchImpl });
   await assert.rejects(client.listNotes({ createdAfter: "a", createdBefore: "b" }), GranolaApiError);
 });
+
+test("a note row without a string id fails loudly, not silently dropped", async () => {
+  const fetchImpl = (async () =>
+    jsonResponse({ notes: [{ id: "not_a" }, { title: "no id" }], hasMore: false, cursor: null })) as typeof fetch;
+  const client = new GranolaClient({ apiKey: "grn_ok", fetchImpl });
+  await assert.rejects(client.listNotes({ createdAfter: "a", createdBefore: "b" }), (err: unknown) => {
+    assert.ok(err instanceof GranolaApiError);
+    assert.match(err.message, /without a string id/);
+    return true;
+  });
+});

@@ -136,9 +136,16 @@ export class GranolaClient {
     if (!Array.isArray(notesRaw)) {
       throw new GranolaApiError("Granola API returned an unexpected /v1/notes shape (missing notes array)");
     }
-    const notes = notesRaw.filter(
-      (entry): entry is GranolaNote => isRecord(entry) && typeof entry.id === "string",
-    );
+    // `id` is required by the List Notes schema; a row missing it is a
+    // backend/schema failure. Reject the page rather than silently dropping
+    // rows and advancing the cursor over an incomplete day (§22).
+    const notes: GranolaNote[] = [];
+    for (const entry of notesRaw) {
+      if (!isRecord(entry) || typeof entry.id !== "string") {
+        throw new GranolaApiError("Granola API returned a note row without a string id");
+      }
+      notes.push(entry as unknown as GranolaNote);
+    }
     const hasMore = isRecord(payload) && payload.hasMore === true;
     const cursor = isRecord(payload) && typeof payload.cursor === "string" ? payload.cursor : null;
     if (hasMore && (cursor === null || cursor.length === 0)) {
