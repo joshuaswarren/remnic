@@ -172,6 +172,7 @@ export async function embedQmdFiles(
   timeoutMs: number,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    await runQmdCommand(["update", "-c", collection], timeoutMs);
     await runQmdCommand(["embed", "-c", collection], timeoutMs);
     return { ok: true };
   } catch (error) {

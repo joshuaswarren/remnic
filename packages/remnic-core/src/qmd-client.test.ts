@@ -334,21 +334,23 @@ test("QmdClient.status() returns null fields when unavailable", async () => {
   assert.equal(report.oldestPendingAgeMs, null);
 });
 
-test("QmdClient.embedFiles() triggers collection-level embed", async () => {
+test("QmdClient.embedFiles() runs update then embed", async () => {
   const client = new QmdClient("test-col", 3);
   const internals = client as unknown as {
     available: boolean;
     runQmdCommand: (args: string[]) => Promise<{ stdout: string; code: number }>;
   };
   internals.available = true;
-  let capturedArgs: string[] = [];
+  const allCalls: string[][] = [];
   internals.runQmdCommand = async (args: string[]) => {
-    capturedArgs = args;
+    allCalls.push(args);
     return { stdout: "ok", code: 0 };
   };
   const result = await client.embedFiles(["/mem/a.md", "/mem/b.md"]);
   assert.equal(result, true);
-  assert.deepEqual(capturedArgs, ["embed", "-c", "test-col"]);
+  assert.equal(allCalls.length, 2);
+  assert.deepEqual(allCalls[0], ["update", "-c", "test-col"]);
+  assert.deepEqual(allCalls[1], ["embed", "-c", "test-col"]);
 });
 
 test("QmdClient.embedFiles() returns false for empty paths", async () => {

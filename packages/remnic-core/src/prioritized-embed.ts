@@ -56,8 +56,17 @@ export function installPrioritizedEmbedding(
     // re-inserts the array if it was drained.
     if (paths.length === 0) pendingByNamespace.delete(namespace);
     if (batch.length === 0) return;
-    backend.embedFiles(batch).then(() => {
-      if (paths.length > 0) scheduleFlush();
+    backend.embedFiles(batch).then((ok) => {
+      if (ok === false) {
+        paths.unshift(...batch);
+        if (!disposed && !pendingByNamespace.has(namespace)) pendingByNamespace.set(namespace, paths);
+        scheduleFlush();
+        return;
+      }
+      // Collection-level embed drains the entire backlog; discard any
+      // queued tail to avoid redundant full-collection embeds.
+      paths.length = 0;
+      pendingByNamespace.delete(namespace);
     }).catch(() => {
       paths.unshift(...batch);
       if (!disposed && !pendingByNamespace.has(namespace)) pendingByNamespace.set(namespace, paths);

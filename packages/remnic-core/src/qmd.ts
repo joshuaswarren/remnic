@@ -2773,7 +2773,7 @@ export class QmdClient implements SearchBackend {
       (args, timeoutMs) => this.runQmdCommand(args, timeoutMs),
       this.collection,
       filePaths,
-      QMD_TIMEOUT_MS,
+      300_000,
     );
     if (result.ok) clearQmdResultCaches();
     return result.ok;
