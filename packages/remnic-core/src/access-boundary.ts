@@ -16,8 +16,14 @@
  */
 
 import { z } from "zod";
+import { EngramAccessForbiddenError } from "./access-errors.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
-import { assertFleetWideOperationAllowed, assertOperationAllowed, tokenCapabilityStore } from "./access-token-capabilities.js";
+import {
+  assertFleetWideOperationAllowed,
+  assertOperationAllowed,
+  capabilityAllowsOp,
+  tokenCapabilityStore,
+} from "./access-token-capabilities.js";
 import { expandTildePath } from "./utils/path.js";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +69,7 @@ export const OPERATION_NAMES = [
   "set_coding_context",
   "recall_tier_explain",
   "recall_xray",
+  "namespace_writable",
   "wearables_status",
   "wearables_sync",
   "transcript_day",
@@ -235,6 +242,17 @@ export interface OperationSpec<In, Out> {
    * (cron, internal callers, no capability record) are unaffected (issue #1850).
    */
   readonly fleetWide?: boolean;
+  /**
+   * Alternate op allow-list: when set, the token may invoke this operation if
+   * its ops allow-list permits ANY of these ops (instead of the default rule
+   * that requires the op's own {@link name}). Lets a read-only diagnostic be
+   * granted by the write ops it diagnoses — e.g. `namespace_writable` is
+   * runnable by any token permitted to `observe`/`memory_store`, so a token
+   * minted before the diagnostic op existed can still call it. Unrestricted /
+   * legacy tokens (no ops axis) are unaffected. Keeps the boundary and any HTTP
+   * transport for the same op enforcing ONE policy.
+   */
+  readonly allowedByOps?: readonly OperationName[];
 }
 
 export interface BoundOperation<In = unknown, Out = unknown> {
@@ -408,7 +426,18 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
       // unrestricted. Default-deny ONLY when an ops axis is present — legacy
       // tokens (absent record) and explicit-unrestricted new tokens are
       // unaffected.
-      assertOperationAllowed(tokenCapabilityStore.getStore(), spec.name);
+      // When the op declares alternate grant ops, permit any of them (so the
+      // batch/MCP path matches an HTTP transport that relaxes the same op);
+      // otherwise the token must carry the op's own name. Unrestricted/legacy
+      // tokens pass either way (capabilityAllowsOp is true when no ops axis).
+      if (spec.allowedByOps && spec.allowedByOps.length > 0) {
+        const store = tokenCapabilityStore.getStore();
+        if (!spec.allowedByOps.some((op) => capabilityAllowsOp(store, op))) {
+          throw new EngramAccessForbiddenError(`token is not permitted to call operation: ${spec.name}`);
+        }
+      } else {
+        assertOperationAllowed(tokenCapabilityStore.getStore(), spec.name);
+      }
       // Fleet-wide / global maintenance ops (issue #1850 round 10): these run
       // across all namespaces with no `namespace` arg, so the tools/call
       // effective-namespace gate never fires. A namespace-SCOPED token must not

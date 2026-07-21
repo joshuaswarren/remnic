@@ -1724,3 +1724,394 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
   await emit("context", { messages: [{ role: "user", content: "auto2" }] }, ctx);
   assert.ok(calls > callsBeforeSecondAuto, "automatic recall ran after the manual recall cleared the breaker");
 });
+
+test("session_start preflight surfaces a loud persistent remnic_state error when the namespace is not writable", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: false, reason: "not_writable", namespace: "default" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-bad", getEntries: () => [] },
+  });
+
+  const errorEntry = entries.find((e) => e.type === "remnic_state" && e.data.level === "error");
+  assert.ok(errorEntry, "expected a persistent remnic_state error entry");
+  assert.equal(errorEntry?.data.code, "NAMESPACE_NOT_WRITABLE");
+  assert.equal(errorEntry?.data.persistent, true);
+  assert.equal(errorEntry?.data.namespace, "default");
+  assert.ok(notifications.some((n) => n.level === "error"), "expected a loud error notification");
+});
+
+test("session_start preflight stays silent when the namespace is writable", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, namespace: "team-x" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "team-x",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-ok", getEntries: () => [] },
+  });
+
+  assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
+  assert.equal(notifications.some((n) => n.level === "error"), false);
+});
+
+test("session_start preflight does not cry wolf when the daemon is unreachable", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      throw new Error("ECONNREFUSED");
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-down", getEntries: () => [] },
+  });
+
+  assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
+  assert.equal(notifications.some((n) => n.level === "error"), false);
+});
+
+test("session_start preflight is skipped without an auth token", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let hitWritable = false;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) hitWritable = true;
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "preflight-noauth", getEntries: () => [] },
+  });
+
+  assert.equal(hitWritable, false);
+  assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
+});
+
+test("session_start preflight self-heals: emits a resolved signal once the namespace becomes writable", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let writable = false;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return writable
+        ? new Response(JSON.stringify({ ok: true, namespace: "default" }), { status: 200 })
+        : new Response(JSON.stringify({ ok: false, reason: "not_writable", namespace: "default" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-heal", getEntries: () => [] },
+  };
+
+  // First session: namespace not writable → loud error entry + notification.
+  await emit("session_start", {}, ctx);
+  assert.ok(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), "expected an initial error entry");
+  assert.ok(notifications.some((n) => n.level === "error"), "expected an initial error notification");
+  const errorNotifsAfterFail = notifications.filter((n) => n.level === "error").length;
+
+  // Config fixed; next session: writable → an authoritative NAMESPACE_OK entry
+  // is recorded (so the latest state survives a restart), the loud error stops,
+  // and there is no success-notify spam.
+  writable = true;
+  await emit("session_start", {}, ctx);
+  assert.ok(entries.some((e) => e.data.code === "NAMESPACE_OK"), "expected an authoritative resolved entry once writable");
+  assert.equal(
+    notifications.filter((n) => n.level === "error").length,
+    errorNotifsAfterFail,
+    "the loud error notification must stop once the namespace is writable",
+  );
+  assert.equal(notifications.some((n) => n.level === "success"), false, "healthy sessions must not emit success-notify spam");
+});
+
+test("session_start preflight treats a malformed denial as indeterminate (no false alarm)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      // ok:false but missing the reason/namespace contract → must NOT alarm.
+      return new Response(JSON.stringify({ ok: false }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-malformed", getEntries: () => [] },
+  });
+
+  assert.equal(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), false);
+  assert.equal(notifications.some((n) => n.level === "error"), false);
+});
+
+test("session_start trips the circuit breaker on an offline daemon even when statusEnabled is false", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let nonHealthCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      throw new Error("The socket connection was closed unexpectedly.");
+    }
+    // Preflight or recall would land here; if the breaker let either through it
+    // would hang until its AbortController fires.
+    nonHealthCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "status-off-breaker" },
+  };
+  // Health fails at session_start → breaker trips despite statusEnabled=false;
+  // the preflight then fast-skips (indeterminate) instead of fetching.
+  await emit("session_start", {}, ctx);
+  // The live recall hook fast-skips because the breaker is tripped.
+  await emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx);
+  assert.equal(nonHealthCalls, 0, "an offline probe must trip the breaker even with the status UI disabled");
+});
+
+test("session_start preflight treats a malformed writable answer as indeterminate", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      // ok:true but missing the namespace → malformed, must not be trusted.
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  pi.appendEntry = (type: string, data: unknown) => entries.push({ type, data: (data ?? {}) as Record<string, unknown> });
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "default",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "preflight-malformed-ok", getEntries: () => [] },
+  });
+
+  // Indeterminate → no state entry recorded at all (neither OK nor error).
+  assert.equal(entries.some((e) => e.type === "remnic_state" && (e.data.code === "NAMESPACE_OK" || e.data.code === "NAMESPACE_NOT_WRITABLE")), false);
+});
+
+test("session_start preflight tailors the remediation text for an unsupported (namespaces-disabled) reason", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: false, reason: "unsupported", namespace: "team-x" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const notifications: Array<{ message: string; level: string }> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "team-x",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "preflight-unsupported", getEntries: () => [] },
+  });
+
+  const err = notifications.find((n) => n.level === "error");
+  assert.ok(err, "expected an error notification");
+  assert.match(err?.message ?? "", /namespaces disabled/);
+  assert.doesNotMatch(err?.message ?? "", /namespacePolicies entry/);
+});

@@ -272,3 +272,31 @@ test("fleetWide flag is inert for normal (non-fleet-wide) ops under a scoped tok
   assert.deepEqual(result, { ok: true });
   assert.equal(ran, true, "a non-fleet-wide op runs normally for a scoped token");
 });
+
+test("allowedByOps: an op is granted by any listed op, not just its own name", async () => {
+  let ran = false;
+  __resetRegistryForTest();
+  const op = defineOperation({
+    name: "namespace_writable",
+    description: "test allowedByOps",
+    allowedByOps: ["namespace_writable", "observe", "memory_store"],
+    schema: z.object({}),
+    handler: async () => {
+      ran = true;
+      return { ok: true };
+    },
+  });
+  // A token scoped to observe (but NOT namespace_writable) reaches the handler.
+  const result = await tokenCapabilityStore.run({ version: 1, ops: ["observe"] }, () =>
+    op.run({}, ctx(makeMockService())),
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.equal(ran, true, "an observe-scoped token is granted via allowedByOps");
+  // A token carrying none of the granting ops is rejected before the handler.
+  ran = false;
+  await assert.rejects(
+    () => tokenCapabilityStore.run({ version: 1, ops: ["recall"] }, () => op.run({}, ctx(makeMockService()))),
+    (err: unknown) => err instanceof EngramAccessForbiddenError,
+  );
+  assert.equal(ran, false, "a token without any granting op is rejected before the handler");
+});

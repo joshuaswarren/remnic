@@ -44,6 +44,12 @@ import {
   namespaceIdentityToken,
 } from "../namespaces/identity.js";
 import path from "node:path";
+import {
+  capabilityAllowsOp,
+  isNamespaceAllowed,
+  resolveEffectiveNamespace,
+  type TokenCapabilities,
+} from "../access-token-capabilities.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   expandScopeProfileReadNamespaces,
@@ -481,4 +487,43 @@ export function resolveWritableNamespaceValue(
     return { ok: false, reason: "not_writable", namespace: resolved };
   }
   return { ok: true, namespace: resolved };
+}
+
+/**
+ * Namespace preflight (issue #1888 part 3): would a write to `namespace` by a
+ * caller carrying `caps` succeed? Combines the token's write-op scope, its
+ * namespace allow-list, and policy writability so one call answers the real
+ * question. A token that cannot actually write (no `observe`/`memory_store` in
+ * its ops allow-list) or is asking about a namespace outside its allow-list
+ * gets a definitive `not_writable` — revealing nothing about the namespace's
+ * policy beyond what the token's own scope already implies, and never throwing
+ * a hard authorization error the caller cannot distinguish from a transport
+ * fault. (Unrestricted tokens pass both scope checks unchanged.)
+ */
+export function resolveNamespacePreflight(
+  caps: TokenCapabilities | undefined | null,
+  namespace: string | undefined,
+  sessionKey: string | undefined,
+  authenticatedPrincipal: string | undefined,
+  config: PluginConfig,
+  writeOp: string,
+): WritableNamespaceResult {
+  const notWritable = (): WritableNamespaceResult => ({
+    ok: false,
+    reason: "not_writable",
+    namespace: resolveEffectiveNamespace(namespace, config.defaultNamespace) ?? namespace ?? "",
+  });
+  // The token must be able to perform the write op the caller's ENABLED write
+  // path actually uses (`observe` for automatic turn capture — the silent
+  // #1888 data-loss path — or `memory_store` for an explicit-only install).
+  // A token that cannot perform that op would drop the write, so an otherwise
+  // policy-writable namespace is still reported not_writable rather than a
+  // false ok:true that promises a write the token cannot make.
+  if (!capabilityAllowsOp(caps, writeOp)) {
+    return notWritable();
+  }
+  if (!isNamespaceAllowed(caps, namespace, config.defaultNamespace)) {
+    return notWritable();
+  }
+  return resolveWritableNamespaceValue(namespace, sessionKey, authenticatedPrincipal, config);
 }
