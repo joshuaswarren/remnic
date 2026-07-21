@@ -85,6 +85,7 @@ const BUILT_IN_CONNECTOR_PACKAGES: Array<{ id: string; suffix: string }> = [
   { id: "bee", suffix: "connector-bee" },
   { id: "omi", suffix: "connector-omi" },
   { id: "fireflies", suffix: "connector-fireflies" },
+  { id: "granola", suffix: "connector-granola" },
 ];
 
 const loadFailuresWarned = new Set<string>();

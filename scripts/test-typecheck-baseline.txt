@@ -526,7 +526,7 @@ tests/query-aware-prefilter.test.ts(262,27): TS7006
 tests/query-aware-prefilter.test.ts(299,38): TS2339
 tests/query-aware-prefilter.test.ts(304,34): TS2339
 tests/recall-no-recall-short-circuit.test.ts(15,3): TS2740
-tests/release-workflow-public-packages.test.ts(153,41): TS7016
+tests/release-workflow-public-packages.test.ts(154,41): TS7016
 tests/remnic-cli-service-candidates.test.ts(17,82): TS7006
 tests/remnic-plugin-register-migration.test.ts(66,12): TS2352
 tests/remnic-server-cli.test.ts(9,30): TS7016
