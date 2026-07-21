@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.8.0] — 2026-07-21
+
 ### Added
 
 - Cross-reviewer review-thread deduplication for the unresolved-thread guard
