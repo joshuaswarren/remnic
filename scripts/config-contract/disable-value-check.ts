@@ -308,6 +308,34 @@ function destructuredConfigField(operand: ts.Identifier): { field: string; sourc
   return result;
 }
 
+/** In-scope destructured alias names for a property-access path (`config.cap` → `cap` when `const { cap } = config` is in scope). */
+function destructuredAliasesInScope(operand: ts.Expression, fullPath: string, leaf: string): string[] {
+  const root = fullPath.split(".")[0];
+  const scope = enclosingScope(operand);
+  const aliases: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer) {
+      const src = ts.isIdentifier(node.initializer) ? node.initializer.text : undefined;
+      if (src === root) {
+        for (const element of node.name.elements) {
+          if (ts.isBindingElement(element) && ts.isIdentifier(element.name)) {
+            const field =
+              element.propertyName && ts.isIdentifier(element.propertyName)
+                ? element.propertyName.text
+                : element.name.text;
+            if (field === leaf) aliases.push(element.name.text);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => {
+      if (!isFunctionScope(child)) visit(child);
+    });
+  };
+  visit(scope);
+  return aliases;
+}
+
 /** A function-like scope node (excludes SourceFile). */
 function isFunctionScope(node: ts.Node): boolean {
   return (
@@ -545,6 +573,9 @@ function precedingGuardClauseExits(use: ts.Node, guardedPath: string): boolean {
         }
       }
     }
+    // A guard in an outer function does not protect a use in a nested
+    // function: the inner function's parameter can still be 0.
+    if (container && container.parent && isFunctionScope(container.parent)) break;
     stmt = container ? enclosingStatement(container) : undefined;
   }
   return false;
@@ -785,7 +816,9 @@ function analyzeAllGuards(sources: DisableValueSource[], zeroDisable: Set<string
         }
       }
       const access = propertyAccess(operand);
-      return access ? { leaf: access.leaf, paths: [access.path] } : undefined;
+      if (!access) return undefined;
+      const aliases = destructuredAliasesInScope(operand, access.path, access.leaf);
+      return { leaf: access.leaf, paths: [access.path, ...aliases] };
     };
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && isInequalityOperator(node.operatorToken.kind)) {
@@ -890,8 +923,16 @@ export function findDisableValueViolations(input: {
   // unrelated field's consumer scan, so such a leaf is left out (schema-min still
   // keys by full dotted path, so nested docs are still checked there).
   const schemaEntries = flattenedByManifest.flatMap(({ entries }) => entries);
-  const schemaLeafCount = new Map<string, number>();
-  for (const entry of schemaEntries) schemaLeafCount.set(entry.leaf, (schemaLeafCount.get(entry.leaf) ?? 0) + 1);
+  // Leaf uniqueness is per-manifest: the same leaf appearing once in each of
+  // several manifests is still unambiguous within each manifest. A global
+  // count would falsely reject source-JSDoc docs when manifests duplicate
+  // a leaf (root + plugin + shim all carry `cap`).
+  const perManifestLeafCount = new Map<string, Map<string, number>>();
+  for (const { manifest, entries } of flattenedByManifest) {
+    const counts = new Map<string, number>();
+    for (const entry of entries) counts.set(entry.leaf, (counts.get(entry.leaf) ?? 0) + 1);
+    perManifestLeafCount.set(manifest.path, counts);
+  }
   const leafDisableStats = new Map<string, { zeroDisable: number; plainNumeric: number }>();
   for (const entry of schemaEntries) {
     const stats = leafDisableStats.get(entry.leaf) ?? { zeroDisable: 0, plainNumeric: 0 };
@@ -915,7 +956,7 @@ export function findDisableValueViolations(input: {
     for (const entry of entries) {
       const documented =
         isZeroDisableDoc(entry.prop.description ?? "") ||
-        (jsDocLeaves.has(entry.leaf) && (entry.path === entry.leaf || schemaLeafCount.get(entry.leaf) === 1));
+        (jsDocLeaves.has(entry.leaf) && (entry.path === entry.leaf || perManifestLeafCount.get(manifest.path)!.get(entry.leaf) === 1));
       const rejection = zeroRejectionReason(entry.prop);
       if (documented && rejection !== undefined) {
         violations.push({

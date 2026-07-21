@@ -1279,3 +1279,74 @@ test("schema-min: a source-doc leaf shared by an unrelated nested entry does not
   ];
   assert.deepEqual(findDisableValueViolations({ sources, manifests }).violations, []);
 });
+
+
+test("schema-min: a source-doc leaf unique within each manifest is flagged even when duplicated across manifests", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** 0 disables. */\n  cap: number;\n}",
+    },
+  ];
+  const manifests: DisableValueManifest[] = [
+    {
+      path: "openclaw.plugin.json",
+      properties: {
+        block: { type: "object", properties: { cap: { type: "integer", minimum: 1 } } },
+      },
+    },
+    {
+      path: "shim.plugin.json",
+      properties: {
+        block: { type: "object", properties: { cap: { type: "integer", minimum: 1 } } },
+      },
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests });
+  assert.equal(violations.length, 2);
+  assert.ok(violations.every((v) => v.kind === "disable-value-schema-min"));
+});
+
+test("guard: an outer function guard does not protect a threshold in a nested function", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "export function outer(config: Cfg) {",
+        "  if (config.cap <= 0) return;",
+        "  function inner(cfg: Cfg) {",
+        "    if (used > cfg.cap) flush();",
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].key, "cap");
+});
+
+test("guard: a destructured alias guard protects a property-access threshold", () => {
+  const sources: DisableValueSource[] = [
+    {
+      path: "types.ts",
+      text: "export interface Cfg {\n  /** Set to 0 to disable the cap. */\n  cap: number;\n}",
+    },
+    {
+      path: "consumer.ts",
+      text: [
+        "export function consume(config: Cfg) {",
+        "  const { cap } = config;",
+        "  if (cap <= 0) return;",
+        "  if (used > config.cap) flush();",
+        "}",
+      ].join("\n"),
+    },
+  ];
+  const { violations } = findDisableValueViolations({ sources, manifests: [] });
+  assert.deepEqual(violations, []);
+});
