@@ -344,3 +344,8 @@ test("a non-integer speaker count does not qualify an audio-only meeting", () =>
   );
   assert.equal(meetings.length, 0);
 });
+
+test("detectMeetings rejects a non-YYYY-MM-DD day (kept out of ids)", () => {
+  assert.throws(() => detectMeetings(input({ date: "2026/03/10" })), RangeError);
+  assert.throws(() => detectMeetings(input({ date: "2026-02-30" })), RangeError);
+});

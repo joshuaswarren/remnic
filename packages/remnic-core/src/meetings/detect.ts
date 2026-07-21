@@ -230,6 +230,14 @@ function assertFiniteNonNegative(name: string, value: number): void {
   }
 }
 
+function isValidDay(date: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (m === null) return false;
+  const [, year, month, day] = m.map(Number);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  return day >= 1 && day <= daysInMonth;
+}
+
 function validateConfig(config: MeetingsDetectionConfig): void {
   assertFiniteNonNegative("minOverlapMinutes", config.minOverlapMinutes);
   assertFiniteNonNegative("audioOnlyMinMinutes", config.audioOnlyMinMinutes);
@@ -242,6 +250,11 @@ export function detectMeetings(
   config: MeetingsDetectionConfig = DEFAULT_MEETINGS_DETECTION_CONFIG,
 ): DetectedMeeting[] {
   validateConfig(config);
+  if (!isValidDay(input.date)) {
+    // The day is embedded verbatim in every meeting id (mtg-<date>-<hash>); a
+    // non-YYYY-MM-DD value would produce malformed ids (e.g. slashes).
+    throw new RangeError(`meetings: invalid day "${input.date}"; expected a real YYYY-MM-DD.`);
+  }
   const candidates = buildCandidates(input.audioWindows, input.appSpans, config);
   const merged = mergeCandidates(candidates, config.mergeGapMinutes * 60_000);
   return merged.map((candidate) => {
