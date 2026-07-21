@@ -307,3 +307,16 @@ test("a malformed timestamp is skipped defensively without dropping valid meetin
   assert.equal(meetings.length, 1);
   assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
 });
+
+test("an offset-form rolled-over timestamp is also dropped", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-02-30T14:00:00.000+00:00", endUtc: "2026-02-30T14:30:00.000+00:00", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});

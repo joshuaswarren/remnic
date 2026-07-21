@@ -51,26 +51,16 @@ interface Candidate {
 
 function ms(iso: string): number {
   if (typeof iso !== "string") return Number.NaN;
-  const value = Date.parse(iso);
-  if (!Number.isFinite(value)) return Number.NaN;
-  // Reject invalid calendar rollovers (e.g. 2026-02-30 → 2026-03-02) for the
-  // canonical UTC form the detector receives: the parsed instant's UTC fields
-  // must reproduce the supplied Y-M-D H:M:S rather than silently shifting.
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-  if (m !== null && iso.endsWith("Z")) {
-    const d = new Date(value);
-    if (
-      d.getUTCFullYear() !== Number(m[1]) ||
-      d.getUTCMonth() + 1 !== Number(m[2]) ||
-      d.getUTCDate() !== Number(m[3]) ||
-      d.getUTCHours() !== Number(m[4]) ||
-      d.getUTCMinutes() !== Number(m[5]) ||
-      d.getUTCSeconds() !== Number(m[6])
-    ) {
-      return Number.NaN;
-    }
-  }
-  return value;
+  if (!Number.isFinite(Date.parse(iso))) return Number.NaN;
+  // Reject invalid calendar rollovers (e.g. 2026-02-30 → Mar 2) in EITHER `Z`
+  // or explicit-offset form, by validating the wall-clock calendar fields in the
+  // string directly rather than trusting Date.parse's silent normalization.
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if (m === null) return Number.NaN;
+  const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) return Number.NaN;
+  return Date.parse(iso);
 }
 
 /** Overlap of two half-open [start,end) windows, in milliseconds (0 if disjoint). */
