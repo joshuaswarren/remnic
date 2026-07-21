@@ -1205,10 +1205,7 @@ export {
 // Wearable transcript subsystem (Limitless / Bee / Omi connectors).
 // Connector packages import the registry + types from here.
 // ---------------------------------------------------------------------------
-
 export * from "./wearables/index.js";
-
-// On-screen activity subsystem (issue #1900): snapshot store + day digest.
 export * from "./activity/index.js";
 
 // ---------------------------------------------------------------------------
