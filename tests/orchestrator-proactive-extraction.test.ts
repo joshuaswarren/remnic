@@ -52,7 +52,7 @@ test("persistExtraction records proactive-pass facts with distinct extraction pr
     profileUpdates: [],
   };
 
-  const persistedIds = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(persistedIds.length, 2);
 
   const baseMemory = await storage.getMemoryById(persistedIds[0]);
@@ -100,7 +100,7 @@ test("persistExtraction preserves base chunk source metadata while tagging proac
     profileUpdates: [],
   };
 
-  const persistedIds = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
   const persistedMemories = await Promise.all(persistedIds.map((id: string) => storage.getMemoryById(id)));
   const parentMemories = persistedMemories.filter(
     (memory): memory is NonNullable<typeof memory> =>
@@ -173,7 +173,7 @@ test("persistExtraction records the catalog write under the real namespace, not 
   };
 
   // Pass the KNOWN base namespace (as runExtraction does via selfNamespace).
-  const ids = await orchestrator.persistExtraction(result, storage, null, undefined, tokenNamedNs);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null, undefined, tokenNamedNs);
   assert.equal(ids.length, 1, "the fact is persisted");
 
   // Give the best-effort async catalog write a tick to settle.
@@ -224,7 +224,7 @@ test("persistExtraction touches the catalog for an entity-only (fact-less) extra
     profileUpdates: [],
   };
 
-  const ids = await orchestrator.persistExtraction(result, storage, null, undefined, ns);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null, undefined, ns);
   assert.ok(ids.length >= 0, "entity-only extraction completes");
   await new Promise((r) => setTimeout(r, 50));
 

@@ -624,7 +624,7 @@ test("persistExtraction auto-promotes shared facts so shared-only recall still s
   const defaultStorage = await (orchestrator as any).getStorage("default");
   const sharedStorage = await (orchestrator as any).getStorage("shared");
 
-  const persistedIds = await (orchestrator as any).persistExtraction(
+  const { persistedIds } = await (orchestrator as any).persistExtraction(
     {
       facts: [
         {
@@ -674,7 +674,7 @@ test("persistExtraction keeps primary fact persistence when shared promotion wri
   }) as typeof sharedStorage.writeMemory;
 
   try {
-    const persistedIds = await (orchestrator as any).persistExtraction(
+    const { persistedIds } = await (orchestrator as any).persistExtraction(
       {
         facts: [
           {
@@ -725,7 +725,7 @@ test("persistExtraction keeps primary fact persistence when shared promotion ind
   };
 
   try {
-    const persistedIds = await (orchestrator as any).persistExtraction(
+    const { persistedIds } = await (orchestrator as any).persistExtraction(
       {
         facts: [
           {

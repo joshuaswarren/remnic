@@ -148,7 +148,7 @@ test("semantic dedup: drops near-duplicate paraphrase on write", async () => {
     questions: [],
     profileUpdates: [],
   } as ExtractionResult;
-  const firstIds = await orchestrator.persistExtraction(first, storage, null);
+  const { persistedIds: firstIds } = await orchestrator.persistExtraction(first, storage, null);
   assert.equal(firstIds.length, 1, "first fact must be persisted");
 
   const second: ExtractionResult = {
@@ -162,7 +162,7 @@ test("semantic dedup: drops near-duplicate paraphrase on write", async () => {
     questions: [],
     profileUpdates: [],
   } as ExtractionResult;
-  const secondIds = await orchestrator.persistExtraction(second, storage, null);
+  const { persistedIds: secondIds } = await orchestrator.persistExtraction(second, storage, null);
 
   assert.equal(
     secondIds.length,
@@ -195,7 +195,7 @@ test("semantic dedup: keeps facts when top score is below threshold", async () =
     profileUpdates: [],
   } as ExtractionResult;
 
-  const ids = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(ids.length, 1, "low-similarity fact must be persisted");
 });
 
@@ -233,7 +233,7 @@ test("semantic dedup: disabled flag bypasses embedding check entirely", async ()
     profileUpdates: [],
   } as ExtractionResult;
 
-  const ids = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(ids.length, 1);
   assert.equal(
     searchCalls,
@@ -266,7 +266,7 @@ test("semantic dedup: threshold config controls when to skip", async () => {
     profileUpdates: [],
   } as ExtractionResult;
 
-  const ids = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(
     ids.length,
     0,
@@ -338,6 +338,6 @@ test("semantic dedup: unavailable backend falls open (fact is persisted)", async
     profileUpdates: [],
   } as ExtractionResult;
 
-  const ids = await orchestrator.persistExtraction(result, storage, null);
+  const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(ids.length, 1, "unavailable backend must not block writes");
 });

@@ -1269,6 +1269,7 @@
     "qmdDaemonUrl.length",
     "qmdEmbedModel.trim",
     "qmdEmbedParallelism.trim",
+    "qmdEmbeddingBacklogThreshold.trim",
     "qmdForceCpu.trim",
     "qmdGenerateModel.trim",
     "qmdGpuBackend.trim",
