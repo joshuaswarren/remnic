@@ -2,56 +2,121 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { defaultActivityConfig } from "./config.js";
-import { generateActivityMemories, isEligibleActivityFact } from "./memory-gen.js";
+import {
+  generateActivityMemories,
+  isEligibleActivityFact,
+  type ActivityMemoryGenerationDeps,
+  type ActivityMemoryWriter,
+} from "./memory-gen.js";
+import type { ExtractedFact } from "../types.js";
+import type { JudgeCandidate, JudgeVerdict } from "../extraction-judge.js";
 
-const ownDecision = {
-  category: "decision" as const,
+const DATE = "2026-03-10";
+const DAY_START = "2026-03-10T00:00:00.000Z";
+
+type ActFact = Pick<ExtractedFact, "category" | "content" | "confidence" | "tags" | "entityRef">;
+
+const ownDecision: ActFact = {
+  category: "decision",
   content: "I decided to consolidate the account settings.",
   confidence: 0.95,
   tags: ["settings"],
 };
 
-function depsFor(facts: typeof ownDecision[]) {
-  const writes: Array<{ status: string; content: string }> = [];
-  return {
-    writes,
-    deps: {
-      extract: async () => ({ facts, profileUpdates: [], entities: [], questions: [] }),
-      judge: async () => new Map([[0, { durable: true, reason: "durable", kind: "accept" as const }]]),
-      writer: {
-        hasFactContentHash: async () => false,
-        writeSealedMemory: async (envelope: { content: string }, extras: { status: string }) => {
-          writes.push({ content: envelope.content, status: extras.status });
-          return {};
-        },
-      },
+function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: number } = {}) {
+  const writes: Array<{ status: string; content: string; validAt?: string }> = [];
+  let extractCalls = 0;
+  const writer: ActivityMemoryWriter = {
+    hasActivityMemoryForContent: async () => opts.hasContent ?? false,
+    countActivityMemoriesForDay: async () => opts.dayCount ?? 0,
+    writeSealedMemory: async (envelope, extras) => {
+      writes.push({ content: envelope.content, status: extras.status, validAt: envelope.validAt });
+      return {};
     },
   };
+  const deps: ActivityMemoryGenerationDeps = {
+    extract: async () => {
+      extractCalls += 1;
+      return { facts, profileUpdates: [], entities: [], questions: [] };
+    },
+    judge: async (candidates: JudgeCandidate[]) =>
+      new Map<number, JudgeVerdict>(
+        candidates.map((_c, i): [number, JudgeVerdict] => [i, { durable: true, reason: "durable", kind: "accept" }]),
+      ),
+    writer,
+  };
+  return { writes, extractCalls: () => extractCalls, deps };
 }
+
+test("isEligibleActivityFact rejects attributed third-party first-person text", () => {
+  // A first-person pronoun quoted from someone else is not the user's own claim.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice wrote: I decided to leave." }), false);
+  // The user's own team voice stays eligible.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "We decided to ship on Friday." }), true);
+});
 
 test("activity smart mode rejects visible third-party claims before judging", async () => {
   const thirdParty = { ...ownDecision, content: "Acme announced a new pricing plan." };
   assert.equal(isEligibleActivityFact(thirdParty), false);
   const { deps, writes } = depsFor([thirdParty]);
-  const result = await generateActivityMemories("## Notable activity", {
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart",
   }, deps);
   assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 1, rejectedByJudge: 0, skipped: 0 });
   assert.deepEqual(writes, []);
 });
 
-test("activity smart mode writes an accepted first-person decision", async () => {
+test("activity smart mode writes an accepted first-person decision bound to the digest day", async () => {
   const { deps, writes } = depsFor([ownDecision]);
-  const result = await generateActivityMemories("## Notable activity", {
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
   }, deps);
   assert.equal(result.created, 1);
-  assert.deepEqual(writes, [{ content: ownDecision.content, status: "active" }]);
+  // validAt is pinned to the digest's local day, not the write instant.
+  assert.deepEqual(writes, [{ content: ownDecision.content, status: "active", validAt: DAY_START }]);
 });
 
 test("activity extraction remains inactive unless smart mode is explicitly enabled", async () => {
-  const { deps, writes } = depsFor([ownDecision]);
-  const result = await generateActivityMemories("## Notable activity", defaultActivityConfig(), deps);
+  const { deps, writes, extractCalls } = depsFor([ownDecision]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", defaultActivityConfig(), deps);
   assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.equal(extractCalls(), 0);
   assert.deepEqual(writes, []);
+});
+
+test("activity day cap seeds from persisted totals and keeps the highest-trust survivor", async () => {
+  const strong: ActFact = { category: "decision", content: "I decided to migrate the database.", confidence: 0.99, tags: ["infra"] };
+  const weak: ActFact = { category: "decision", content: "I decided to rename the worker pool.", confidence: 0.72, tags: ["infra"] };
+  // Two memories already persisted today; cap 3 leaves room for exactly one more.
+  const { deps, writes } = depsFor([weak, strong], { dayCount: 2 });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(),
+    enabled: true,
+    extractionMode: "smart",
+    sourceTrust: 1,
+    autoApproveTrust: 0.8,
+    maxMemoriesPerDay: 3,
+  }, deps);
+  assert.equal(result.created, 1);
+  assert.equal(result.skipped, 1);
+  // The higher-confidence (higher-trust) fact wins the remaining slot.
+  assert.deepEqual(writes.map((w) => w.content), [strong.content]);
+});
+
+test("activity smart mode salvages a malformed optional field instead of aborting the day", async () => {
+  const overlongTag = "x".repeat(300);
+  const malformed: ActFact = {
+    category: "decision",
+    content: "I decided to archive stale branches.",
+    confidence: 0.95,
+    tags: [overlongTag],
+  };
+  const { deps, writes } = depsFor([malformed, ownDecision]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  // Strict compose would throw on the 300-char tag and abort both writes;
+  // salvage drops the bad tag so both eligible facts are still persisted.
+  assert.equal(result.created, 2);
+  assert.deepEqual(writes.map((w) => w.status), ["active", "active"]);
 });
