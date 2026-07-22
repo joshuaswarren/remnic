@@ -25,6 +25,14 @@ export function namespaceWritableRequest(
   };
 }
 
+export function parseNamespacePreflightWriteOp(
+  value: string | undefined,
+): "observe" | "memory_store" {
+  if (value === undefined || value === "observe") return "observe";
+  if (value === "memory_store") return "memory_store";
+  throw new EngramAccessInputError(`unsupported namespace preflight operation: ${value}`);
+}
+
 export function assertNamespacePreflightPermitted(
   caps: TokenCapabilities | undefined | null,
 ): void {
@@ -97,7 +105,7 @@ export function resolveQueryNamespaceWritablePreflight(
     caps,
     namespaceWritableRequest(params, authenticatedPrincipal),
     defaultNamespace,
-    params.get("op") === "memory_store" ? "memory_store" : "observe",
+    parseNamespacePreflightWriteOp(params.get("op") ?? undefined),
     resolvePreflight,
   );
 }

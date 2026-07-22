@@ -2885,6 +2885,12 @@ test("HTTP namespace/writable preflight admits write-scoped tokens and rejects r
     assert.equal(await okOf(diag), false);
     // A read-only token cannot write, so it has nothing to preflight → 403.
     assert.equal((await request("read-only")).status, 403);
+    const invalidOp = await request("write-scoped", "memory_stroe");
+    assert.equal(invalidOp.status, 400);
+    assert.match(
+      JSON.stringify(await invalidOp.json()),
+      /unsupported namespace preflight operation: memory_stroe/,
+    );
   } finally {
     await server.stop();
   }

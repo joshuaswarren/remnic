@@ -19,6 +19,7 @@ import { EngramAccessInputError, type EngramAccessService } from "./access-servi
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import {
+  parseNamespacePreflightWriteOp,
   resolveAuthorizedNamespaceWritablePreflight,
   type EngramAccessNamespaceWritableRequest,
 } from "./access-namespace-preflight.js";
@@ -118,7 +119,7 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
   },
 });
 defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
-  const writeOp = optStr(input.op) === "memory_store" ? "memory_store" : "observe";
+  const writeOp = parseNamespacePreflightWriteOp(optStr(input.op));
   const namespace = optStr(input.namespace);
   const request: EngramAccessNamespaceWritableRequest = {
     sessionKey: optStr(input.sessionKey),
