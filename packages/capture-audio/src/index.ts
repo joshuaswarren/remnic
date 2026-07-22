@@ -48,7 +48,7 @@ export type {
   SpeakerRow,
 } from "./spool.js";
 export { ingestReplayDir, ingestReplayDirResponsive, REPLAY_COMMIT_BATCH } from "./replay.js";
-export { parseWhisperJson, resolveModelPath } from "./stt.js";
+export { buildWhisperArgs, parseWhisperJson, resolveModelPath } from "./stt.js";
 export type { TranscribedSegment } from "./stt.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";
