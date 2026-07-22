@@ -47,39 +47,55 @@ function asObject(value: unknown, where: string): Record<string, unknown> {
   }
   return value as Record<string, unknown>;
 }
+function parseTimestamp(value: unknown, where: string): string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    throw new CaptureConfigError(`${where}: expected an ISO timestamp`);
+  }
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime()) || timestamp.toISOString().slice(0, 10) !== value.slice(0, 10)) {
+    throw new CaptureConfigError(`${where}: expected a valid ISO timestamp`);
+  }
+  return value;
+}
 
 function parseSegment(raw: unknown, where: string): SegmentInput {
   const obj = asObject(raw, where);
   if (typeof obj.text !== "string" || obj.text === "") {
     throw new CaptureConfigError(`${where}.text: expected a non-empty string`);
   }
-  if (typeof obj.startUtc !== "string" || typeof obj.endUtc !== "string") {
-    throw new CaptureConfigError(`${where}: startUtc and endUtc must be ISO strings`);
+  const startUtc = parseTimestamp(obj.startUtc, `${where}.startUtc`);
+  const endUtc = parseTimestamp(obj.endUtc, `${where}.endUtc`);
+  if (Date.parse(endUtc) < Date.parse(startUtc)) {
+    throw new CaptureConfigError(`${where}: endUtc must not precede startUtc`);
   }
   return {
     speakerCluster: typeof obj.speakerCluster === "string" ? obj.speakerCluster : null,
     isWearer: obj.isWearer === true,
     channel: typeof obj.channel === "string" && obj.channel !== "" ? obj.channel : "mic",
     text: obj.text,
-    startUtc: obj.startUtc,
-    endUtc: obj.endUtc,
+    startUtc,
+    endUtc,
   };
 }
 
 function parseConversation(raw: unknown, where: string): ConversationInput {
   const obj = asObject(raw, where);
-  if (typeof obj.startedAtUtc !== "string" || obj.startedAtUtc === "") {
-    throw new CaptureConfigError(`${where}.startedAtUtc: expected an ISO timestamp`);
+  const startedAtUtc = parseTimestamp(obj.startedAtUtc, `${where}.startedAtUtc`);
+  const endedAtUtc = obj.endedAtUtc === undefined ? null : parseTimestamp(obj.endedAtUtc, `${where}.endedAtUtc`);
+  if (endedAtUtc !== null && Date.parse(endedAtUtc) < Date.parse(startedAtUtc)) {
+    throw new CaptureConfigError(`${where}: endedAtUtc must not precede startedAtUtc`);
+  }
+  if (obj.state !== undefined && obj.state !== "capturing" && obj.state !== "final") {
+    throw new CaptureConfigError(`${where}.state: expected "capturing" or "final"`);
   }
   if (!Array.isArray(obj.segments)) {
     throw new CaptureConfigError(`${where}.segments: expected an array`);
   }
-  const state = obj.state === "capturing" ? "capturing" : "final";
   return {
     id: typeof obj.id === "string" && obj.id !== "" ? obj.id : undefined,
-    startedAtUtc: obj.startedAtUtc,
-    endedAtUtc: typeof obj.endedAtUtc === "string" ? obj.endedAtUtc : null,
-    state,
+    startedAtUtc,
+    endedAtUtc,
+    state: obj.state ?? "final",
     device: typeof obj.device === "string" ? obj.device : null,
     segments: obj.segments.map((seg, i) => parseSegment(seg, `${where}.segments[${i}]`)),
   };
