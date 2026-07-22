@@ -10,6 +10,7 @@ import test from "node:test";
 const expectedPublishDirs = [
   "packages/remnic-core",
   "packages/bench",
+  "packages/capture-screen",
   "packages/coding-graph",
   "packages/export-weclone",
   "packages/import-weclone",
