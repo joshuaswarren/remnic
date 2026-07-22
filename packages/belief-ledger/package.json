@@ -20,7 +20,7 @@
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "pretest": "node ../../scripts/ensure-bench-build-deps.mjs",
-    "test": "tsx --test src/*.test.ts",
+    "test": "tsx --test src/*.test.ts src/testing/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
