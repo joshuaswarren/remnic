@@ -1,0 +1,39 @@
+{
+  "name": "@remnic/capture-screen",
+  "version": "9.13.1",
+  "description": "Optional local screen-activity capture daemon for Remnic",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "remnic-capture-screen": "./bin/remnic-capture-screen.js"
+  },
+  "files": ["bin/*.js", "dist"],
+  "publishConfig": { "access": "public", "provenance": true },
+  "scripts": {
+    "build": "npm run check-types && tsup src/index.ts src/cli.ts --format esm --target es2022 --platform node --outDir dist --dts",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.13.1"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:*",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/capture-screen"
+  }
+}
