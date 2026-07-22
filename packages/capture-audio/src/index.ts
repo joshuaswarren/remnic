@@ -3,9 +3,10 @@
  * item 1 of issue #1897): strict daemon config, a SQLite spool, replay
  * ingestion, an authenticated loopback HTTP API, and the CLI.
  *
- * Native capture, VAD, STT, diarization, the wearable connector, and the
- * core registry entry land in later checklist items and are intentionally
- * absent here.
+ * The native-helper resolver and supervised process runner are present
+ * (Node side of the macOS helper slice); the daemon wiring, diarization,
+ * the wearable connector, and the core registry entry land in later
+ * checklist items and are intentionally absent here.
  */
 
 export { CAPTURE_AUDIO_VERSION, DEFAULT_HOST, DEFAULT_PORT, SPOOL_SCHEMA_VERSION } from "./constants.js";
@@ -65,3 +66,21 @@ export type { DaemonDeps, DaemonHandle } from "./daemon.js";
 export { isProcessAlive, readPidFile, removePidFile, writePidFile } from "./control.js";
 export { runCapture } from "./cli.js";
 export type { CliIo } from "./cli.js";
+export {
+  buildHelperArgs,
+  createNativeCaptureRunner,
+  helperPackageSpecifier,
+  parseChunkEvent,
+  resolveHelperBinary,
+} from "./native.js";
+export type {
+  ChunkEvent,
+  DeviceFlags,
+  HelperChild,
+  HelperResolution,
+  HelperSpawn,
+  NativeCaptureRunner,
+  NativeRunnerOptions,
+  ResolveHelperDeps,
+  RestartTimer,
+} from "./native.js";
