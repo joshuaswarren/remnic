@@ -1,4 +1,5 @@
 import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
+import type { MeetingsConfig } from "./meetings/types.js";
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
@@ -1214,6 +1215,11 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
    * Disabled by default; see docs/wearables.md.
    */
   wearables: import("./wearables/types.js").WearablesConfig;
+  /**
+   * Retrospective meeting intelligence (issue #1900): detect + fuse meetings
+   * from already-ingested audio + screen activity. Disabled by default.
+   */
+  meetings: MeetingsConfig;
   /**
    * At-rest encryption configuration (issue #690 PR 3/4).
    *
