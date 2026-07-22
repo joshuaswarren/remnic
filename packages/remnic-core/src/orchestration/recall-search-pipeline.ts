@@ -683,18 +683,21 @@ export class RecallSearchPipelineCoordinator {
     if (cappedLimit === 0) return [];
     if (queryAwarePrefilter?.candidatePaths?.size === 0) return [];
 
-    const scopedSeedResults = queryAwarePrefilter?.candidatePaths?.size
-      ? await this.deps.searchScopedMemoryCandidates(
-          queryAwarePrefilter.candidatePaths,
-          prompt,
-          cappedLimit,
-          { allowArchived: true },
-        )
-      : [];
+    const scopedSeedResults = (
+      queryAwarePrefilter?.candidatePaths?.size
+        ? await this.deps.searchScopedMemoryCandidates(
+            queryAwarePrefilter.candidatePaths,
+            prompt,
+            cappedLimit,
+            { allowArchived: true },
+          )
+        : []
+    ).filter((result) => !isNonRecallableMemoryPath(result.path));
+    // Drop non-recallable seed paths (artifacts, meeting records) BEFORE the cap
+    // so they never consume a result slot — and so EVERY early-return /
+    // direct-caller path below returns already-filtered seed results.
     if (scopedSeedResults.length >= cappedLimit) {
-      return scopedSeedResults
-        .filter((result) => !isNonRecallableMemoryPath(result.path))
-        .slice(0, cappedLimit);
+      return scopedSeedResults.slice(0, cappedLimit);
     }
 
     const tokens = Array.from(new Set(tokenizeRecallQuery(prompt)));

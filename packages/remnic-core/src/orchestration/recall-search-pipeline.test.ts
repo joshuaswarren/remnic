@@ -9,6 +9,7 @@ import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
 import type { RecallSearchPipelineDeps } from "./recall-search-pipeline.js";
 import type { MemoryFile, QmdSearchResult } from "../types.js";
 import type { StorageManager } from "../index.js";
+import type { QueryAwarePrefilter } from "../orchestrator.js";
 
 function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
@@ -67,4 +68,61 @@ test("recall safety keeps same relative path distinct across namespaces", async 
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+function fallbackCoordinator(seed: QmdSearchResult[], archived: MemoryFile[]): RecallSearchPipelineCoordinator {
+  const deps = {
+    searchScopedMemoryCandidates: async () => seed,
+    readArchivedMemoriesForNamespaces: async () => archived,
+    namespaceFromPath: () => "default",
+  } as unknown as RecallSearchPipelineDeps;
+  return new RecallSearchPipelineCoordinator(deps);
+}
+
+const SEED_WITH_NON_RECALLABLE = [
+  result("default", "meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"),
+  result("default", "facts/a.md"),
+  result("default", "artifacts/y.md"),
+];
+const PREFILTER = {
+  candidatePaths: new Set([
+    "meetings/2026-03-10/mtg-2026-03-10-abcdef01.md",
+    "facts/a.md",
+    "artifacts/y.md",
+  ]),
+} as unknown as QueryAwarePrefilter;
+
+test("archive fallback excludes non-recallable seeds on the archived-empty early return", async () => {
+  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, []);
+  // limit 10 > filtered seed count, tokens non-empty, archived empty → the
+  // `return scopedSeedResults` early path at the archived-empty guard.
+  const out = await coordinator.searchLongTermArchiveFallback("quarterly report", ["default"], 10, PREFILTER);
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"],
+    "meeting record + artifact must not leak through the direct-caller early return",
+  );
+});
+
+test("archive fallback excludes non-recallable seeds on the empty-tokens early return", async () => {
+  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, [memory("facts/z.md", "archived")]);
+  // Empty prompt → zero tokens → the `return scopedSeedResults` early path
+  // before archive scoring is even attempted.
+  const out = await coordinator.searchLongTermArchiveFallback("", ["default"], 10, PREFILTER);
+  assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
+});
+
+test("archive fallback excludes non-recallable seeds on the seed-fills-cap early return", async () => {
+  const seed = [
+    result("default", "facts/a.md"),
+    result("default", "meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"),
+    result("default", "facts/b.md"),
+  ];
+  const prefilter = {
+    candidatePaths: new Set(["facts/a.md", "meetings/2026-03-10/mtg-2026-03-10-abcdef01.md", "facts/b.md"]),
+  } as unknown as QueryAwarePrefilter;
+  const coordinator = fallbackCoordinator(seed, []);
+  // After filtering the meeting record, two recallable seeds fill the cap of 2.
+  const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 2, prefilter);
+  assert.deepEqual(out.map((r) => r.path), ["facts/a.md", "facts/b.md"]);
 });

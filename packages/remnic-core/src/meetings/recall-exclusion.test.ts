@@ -52,3 +52,30 @@ test("filterRecallCandidates drops meeting records alongside artifacts", () => {
     ["facts/a.md", "decisions/c.md"],
   );
 });
+
+test("filterRecallCandidates drops non-recallable paths BEFORE applying the limit", () => {
+  // A meeting record sits within the first `limit` positions. Filter-before-cap
+  // must still yield `limit` RECALLABLE results; a cap-before-filter bug would
+  // spend a slot on the dropped record and return fewer.
+  const candidates = [
+    result("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"),
+    result("facts/a.md"),
+    result("facts/b.md"),
+    result("facts/c.md"),
+  ];
+  const kept = filterRecallCandidates(candidates, {
+    namespacesEnabled: false,
+    recallNamespaces: [],
+    resolveNamespace: () => "",
+    limit: 2,
+  });
+  assert.equal(kept.length, 2, "the cap must be filled with recallable results, not consumed by the dropped record");
+  assert.deepEqual(
+    kept.map((r) => r.path),
+    ["facts/a.md", "facts/b.md"],
+  );
+  assert.ok(
+    kept.every((r) => !isNonRecallableMemoryPath(r.path)),
+    "no non-recallable path may survive the cap",
+  );
+});
