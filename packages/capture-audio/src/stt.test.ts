@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { CaptureConfigError } from "./errors.js";
-import { parseWhisperJson, resolveModelPath } from "./stt.js";
+import { buildWhisperArgs, parseWhisperJson, resolveModelPath } from "./stt.js";
 
 test("parseWhisperJson converts segment offsets into chunk timestamps", () => {
   const result = parseWhisperJson(
@@ -27,4 +27,14 @@ test("resolveModelPath prefers a configured readable model", () => {
 test("resolveModelPath uses the default model only when no explicit model is configured", () => {
   const exists = (file: string) => file === "/default.bin";
   assert.equal(resolveModelPath(undefined, "/default.bin", exists), "/default.bin");
+});
+
+test("buildWhisperArgs requests JSON output without shell interpolation", () => {
+  assert.deepEqual(buildWhisperArgs("/audio/chunk.wav", "/models/model.bin"), [
+    "-m",
+    "/models/model.bin",
+    "-f",
+    "/audio/chunk.wav",
+    "--output-json",
+  ]);
 });

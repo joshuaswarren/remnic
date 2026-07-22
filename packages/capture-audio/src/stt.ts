@@ -67,3 +67,7 @@ export function resolveModelPath(
   }
   return path;
 }
+
+export function buildWhisperArgs(wavPath: string, modelPath: string): string[] {
+  return ["-m", modelPath, "-f", wavPath, "--output-json"];
+}
