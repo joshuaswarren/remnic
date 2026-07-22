@@ -1615,6 +1615,7 @@ export class EngramAccessService {
       sessionKey?: string;
       authenticatedPrincipal?: string;
     },
+    enforceToken: boolean = true,
   ): Promise<string> {
     const requested = request.namespace?.trim();
     if (requested) {
@@ -1623,7 +1624,7 @@ export class EngramAccessService {
         request.sessionKey,
         request.authenticatedPrincipal,
       );
-      this.assertTokenCanWriteNamespace(namespace);
+      if (enforceToken) this.assertTokenCanWriteNamespace(namespace);
       return namespace;
     }
 
@@ -1637,7 +1638,7 @@ export class EngramAccessService {
       config: this.orchestrator.config,
     });
     if (result.ok) {
-      this.assertTokenCanWriteNamespace(result.namespace);
+      if (enforceToken) this.assertTokenCanWriteNamespace(result.namespace);
       return result.namespace;
     }
     if (profilePlan && result.namespace === profilePlan.writeNamespace) {
@@ -1659,7 +1660,7 @@ export class EngramAccessService {
   ): Promise<WritableNamespaceResult> {
     return resolveNamespaceWritablePreflight(
       request,
-      (preflightRequest) => this.resolveCodingScopedWriteNamespace(preflightRequest),
+      (preflightRequest) => this.resolveCodingScopedWriteNamespace(preflightRequest, false),
     );
   }
 

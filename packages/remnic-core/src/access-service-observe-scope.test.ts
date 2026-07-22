@@ -34,6 +34,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
+import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { StorageManager } from "./storage.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
@@ -653,6 +654,22 @@ test("#2080 preflight resolves an implicit project scope through the observe wri
       ),
     /not permitted/,
   );
+  const deniedPreflight = await tokenCapabilityStore.run(
+    { version: 1, ops: ["observe"], namespaces: ["default"] },
+    () =>
+      resolveAuthorizedNamespaceWritablePreflight(
+        tokenCapabilityStore.getStore(),
+        {
+          sessionKey: "pi-geek:abc123",
+          authenticatedPrincipal: "pi-geek",
+          projectTag: "Acme/Webshop",
+        },
+        "default",
+        "observe",
+        (request) => service.namespaceWritablePreflight(request),
+      ),
+  );
+  assert.deepEqual(deniedPreflight, { ok: false, reason: "not_writable", namespace: expected });
   await assert.rejects(
     () =>
       tokenCapabilityStore.run({ version: 1, namespaces: ["default"] }, () =>
