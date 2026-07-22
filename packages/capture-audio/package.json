@@ -1,0 +1,53 @@
+{
+  "name": "@remnic/capture-audio",
+  "version": "9.14.0",
+  "description": "Desktop audio capture daemon for Remnic — local spool, loopback HTTP API, and replay ingestion for the wearable source `desktop` (à-la-carte)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "remnic-capture-audio": "./dist/cli-bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/cli-bin.ts --format esm --dts",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test src/config.test.ts src/token.test.ts src/spool.test.ts src/replay.test.ts src/daemon.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/capture-audio"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "wearable",
+    "desktop",
+    "audio",
+    "capture",
+    "transcript"
+  ]
+}
