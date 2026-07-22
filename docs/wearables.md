@@ -1,4 +1,4 @@
-# Wearable transcripts — Limitless, Bee, and Omi connectors
+# Wearable transcripts — Limitless, Bee, Omi, and desktop audio connectors
 
 Remnic can ingest the conversations your AI wearable records, turn them
 into clean, searchable day transcripts, and — under strict, per-source
@@ -367,6 +367,23 @@ on the next QMD update after a sync (the sync triggers one).
   person ids. Map labels via the speaker registry.
 - `importNativeMemories: "review"` imports Omi's "memories" (its
   extracted facts) into the review queue.
+
+### Desktop audio (`@remnic/capture-audio`)
+
+- Local macOS capture only. Install `@remnic/capture-audio` and the matching optional
+  `@remnic/capture-native-darwin-arm64` or `@remnic/capture-native-darwin-x64` helper.
+  The core package does not install or import either companion.
+- `remnic-capture-audio init` creates the local daemon configuration. `start` runs the
+  helper, transcribes completed WAV chunks, and exposes finalized conversations through
+  the loopback daemon; the `desktop` wearable connector reads only that API.
+- The desktop source is discovered only when its optional package is installed. Enable it
+  as `wearables.sources.desktop.enabled: true`. Optional `baseUrl` and `apiKey` settings
+  target a different daemon; the local token file is read only for a loopback URL.
+- Raw WAV files are removed after a successful durable transcript write when
+  `rawRetentionHours` is `0` (the default). Failed chunks remain for diagnosis; the
+  retention janitor removes retained raw files later.
+- Until diarization lands, microphone chunks are labeled as the wearer and system-audio
+  chunks as another speaker. This is a channel heuristic, not speaker identification.
 
 ### Fireflies (`@remnic/connector-fireflies`)
 

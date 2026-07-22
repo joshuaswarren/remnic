@@ -88,8 +88,7 @@ export type { ChunkProcessor, ChunkProcessorDeps, ChunkTranscribeInput } from ".
 
 export {
   createDesktopConnector,
-  createDesktopWearableConnector,
-  defaultDesktopBaseUrl,
+  resolveDesktopBaseUrl,
   resolveDesktopToken,
   wearableConnectorRegistration,
 } from "./connector.js";

@@ -1,0 +1,9 @@
+# Theory: desktop audio capture
+
+Desktop audio is a privacy-bounded wearable source, not a core-memory subsystem. Optional macOS helpers own microphone and system-audio acquisition. `@remnic/capture-audio` owns helper supervision, local transcription, durable assembly, and a loopback read API. Core only discovers the optional desktop connector and consumes final conversations through the existing wearable pipeline.
+
+A completed WAV event becomes a transcript only through an explicit chain: validate helper JSONL, resolve a local Whisper model, transcribe, assemble ordered segments, persist them with a stable per-WAV idempotency key, then clean raw audio according to retention. A failure reports its error and preserves the WAV; it must not poison later chunks. On restart, the processor reopens the newest durable capturing conversation before accepting a new chunk. Replaying an already-persisted WAV is a no-op and an adjacent later chunk continues the same conversation when its gap permits.
+
+The adapter stays optional at every layer. The native helper has a computed package specifier and no base-install dependency. Linux and replay operation retain the HTTP daemon without hardware capture. On macOS, `start` launches the helper alongside the daemon. Raw-audio deletion stays confined to the configured raw directory. Current wearer labeling is strictly a channel heuristic (`mic` versus `system`), not diarization.
+
+The verification contract is focused: capture package types, unit tests for the native runner, processor, spool, connector and daemon, and a package build. The hardware helper has separate macOS Swift tests and a dry-run tarball receipt; live device capture remains a manual hardware check.

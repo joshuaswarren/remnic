@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync } from "node:fs";
+import { existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
 import {
@@ -16,14 +16,18 @@ import {
   serializeDaemonConfig,
   type DaemonConfig,
 } from "./config.js";
+import { ConversationAssembler } from "./assembly.js";
 import { isProcessAlive, readPidFile, removePidFile, writePidFile } from "./control.js";
 import { startDaemon } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
+import { createNativeCaptureRunner } from "./native.js";
 import { capturePaths, captureBaseDir, type CapturePaths } from "./paths.js";
+import { createChunkProcessor } from "./processor.js";
 import { ingestReplayDir } from "./replay.js";
 import { downloadWhisperModel, type ModelDownloadInput, type ModelDownloadResult } from "./model.js";
 import { pruneExpiredRawAudio } from "./janitor.js";
 import { Spool } from "./spool.js";
+import { resolveModelPath, runWhisperCli, transcribeWithWhisper } from "./stt.js";
 import { loadOrCreateToken } from "./token.js";
 import { coerceNumber } from "./coerce.js";
 import { isLoopbackHost } from "./util.js";
@@ -188,6 +192,7 @@ async function cmdStart(
 
   const token = loadOrCreateToken(paths.tokenPath);
   const spool = new Spool(paths.spoolPath);
+  const rawAudioDir = path.join(paths.baseDir, "raw");
   if (replayDir) {
     const summary = ingestReplayDir(spool, replayDir);
     stdout(
@@ -195,17 +200,60 @@ async function cmdStart(
         `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
     );
   }
-  const handle = await startDaemon({ spool, config, token, capturing: false });
+  const handle = await startDaemon({ spool, config, token, capturing: process.platform === "darwin" && !replayDir });
   writePidFile(paths.pidPath, process.pid);
   stdout(`listening on ${handle.url} (loopback=${isLoopbackHost(config.host)})`);
 
+  const processor =
+    process.platform === "darwin" && !replayDir
+      ? createChunkProcessor({
+          spool,
+          assembler: new ConversationAssembler({ gapMinutes: config.conversationGapMinutes }),
+          resolveModel: () =>
+            resolveModelPath(config.stt.modelPath ?? undefined, path.join(paths.baseDir, "models", "ggml-base.en.bin")),
+          transcribe: (input) =>
+            transcribeWithWhisper({
+              wavPath: input.wavPath,
+              modelPath: input.modelPath,
+              chunkStartedAtUtc: input.chunkStartedAtUtc,
+              run: runWhisperCli,
+            }),
+          cleanupRawAudio: async (event) => {
+            if (config.rawRetentionHours > 0) return;
+            const resolved = path.resolve(event.path);
+            const relative = path.relative(rawAudioDir, resolved);
+            if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+              throw new CaptureConfigError(`native helper emitted raw audio outside ${rawAudioDir}`);
+            }
+            if (existsSync(resolved)) unlinkSync(resolved);
+          },
+          onError: (error) => stderr(`chunk processing failed: ${error.message}`),
+        })
+      : null;
+  const nativeRunner = processor
+    ? createNativeCaptureRunner({
+        spoolDir: rawAudioDir,
+        chunkSeconds: config.chunkSeconds,
+        devices: config.devices,
+        onChunk: processor.enqueue,
+        onError: (error) => stderr(`native capture failed: ${error.message}`),
+        onStderr: (line) => stderr(`native capture: ${line}`),
+      })
+    : null;
+  nativeRunner?.start();
+
   return await new Promise<number>((resolve) => {
+    let stopping = false;
     const shutdown = () => {
-      spool.finalizeOpenConversations();
-      void handle.close().finally(() => {
-        spool.close();
-        removePidFile(paths.pidPath);
-        resolve(0);
+      if (stopping) return;
+      stopping = true;
+      nativeRunner?.stop();
+      void (processor?.finalize() ?? Promise.resolve(spool.finalizeOpenConversations())).finally(() => {
+        void handle.close().finally(() => {
+          spool.close();
+          removePidFile(paths.pidPath);
+          resolve(0);
+        });
       });
     };
     process.once("SIGINT", shutdown);
