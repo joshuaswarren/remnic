@@ -51,6 +51,7 @@ export { ingestReplayDir, ingestReplayDirResponsive, REPLAY_COMMIT_BATCH } from 
 export { buildWhisperArgs, parseWhisperJson, resolveModelPath, runWhisperCli, transcribeWithWhisper } from "./stt.js";
 export { downloadWhisperModel, whisperModelUrl } from "./model.js";
 export type { ModelDownloadInput, ModelDownloadResult } from "./model.js";
+export { pruneExpiredRawAudio } from "./janitor.js";
 export type { TranscribedSegment, WhisperRunResult, WhisperTranscriptionInput } from "./stt.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";

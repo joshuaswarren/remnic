@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -751,4 +751,18 @@ test("download-model downloads a named model beneath the capture directory", asy
 
   assert.equal(code, 0);
   assert.deepEqual(output, [`downloaded small to ${path.join(baseDir, "models", "ggml-small.bin")}`]);
+});
+
+test("janitor applies configured raw-audio retention", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const rawDirectory = path.join(baseDir, "raw");
+  await mkdir(rawDirectory);
+  await writeFile(path.join(rawDirectory, "expired.wav"), "audio");
+  const output: string[] = [];
+
+  const code = await runCapture({ argv: ["janitor", "--base-dir", baseDir], stdout: (line) => output.push(line) });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, ["janitor: removed 1 expired raw audio file(s)"]);
+  assert.equal(existsSync(path.join(rawDirectory, "expired.wav")), false);
 });

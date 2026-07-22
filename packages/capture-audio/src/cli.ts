@@ -32,6 +32,7 @@ import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
 import { ingestReplayDirResponsive } from "./replay.js";
 import { downloadWhisperModel, type ModelDownloadInput, type ModelDownloadResult } from "./model.js";
+import { pruneExpiredRawAudio } from "./janitor.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
 import { formatHostForUrl, isLoopbackHost, stripIpv6Brackets } from "./util.js";
@@ -343,6 +344,17 @@ async function cmdDownloadModel(
   return 0;
 }
 
+async function cmdJanitor(
+  paths: CapturePaths,
+  stdout: (line: string) => void,
+  stderr: (line: string) => void,
+): Promise<number> {
+  const config = loadConfigOrDefault(paths, stderr);
+  const removed = await pruneExpiredRawAudio(path.join(paths.baseDir, "raw"), config.rawRetentionHours * 60 * 60 * 1000);
+  stdout(`janitor: removed ${removed.length} expired raw audio file(s)`);
+  return 0;
+}
+
 async function cmdStart(
   paths: CapturePaths,
   flags: Record<string, string | boolean>,
@@ -624,9 +636,10 @@ function usage(stdout: (l: string) => void): number {
     [
       `remnic-capture-audio v${CAPTURE_AUDIO_VERSION}`,
       "usage: remnic-capture-audio <command> [flags]",
-      "commands: init | start | stop | status | devices | logs | download-model",
+      "commands: init | start | stop | status | devices | logs | download-model | janitor",
       "start flags: --foreground --replay <dir> --host <h> --port <n> --listen <host:port> --base-dir <dir>",
       "download-model flags: --model <base|small|large-v3-turbo-q5_0> --base-dir <dir>",
+      "janitor uses rawRetentionHours from audio.json to remove expired files under raw/",
     ].join("\n"),
   );
   return 0;
@@ -672,6 +685,8 @@ export async function runCapture(io: CliIo): Promise<number> {
         return cmdLogs(paths, parsed.flags, stdout);
       case "download-model":
         return await cmdDownloadModel(paths, parsed.flags, stdout, io.downloadModel ?? downloadWhisperModel);
+      case "janitor":
+        return await cmdJanitor(paths, stdout, stderr);
       case "help":
       case "--help":
       case "-h":
