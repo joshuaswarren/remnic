@@ -734,3 +734,21 @@ test("stop waits (bounded) for the daemon to exit before returning", async () =>
     }
   });
 });
+
+test("download-model downloads a named model beneath the capture directory", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const output: string[] = [];
+
+  const code = await runCapture({
+    argv: ["download-model", "--model", "small", "--base-dir", baseDir],
+    stdout: (line) => output.push(line),
+    downloadModel: async (input) => {
+      assert.equal(input.model, "small");
+      assert.equal(input.directory, path.join(baseDir, "models"));
+      return { path: path.join(input.directory, "ggml-small.bin"), downloaded: true };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, [`downloaded small to ${path.join(baseDir, "models", "ggml-small.bin")}`]);
+});

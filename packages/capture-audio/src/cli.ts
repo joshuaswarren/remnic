@@ -8,6 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
@@ -30,6 +31,7 @@ import { startDaemon, type DaemonHandle } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
 import { ingestReplayDirResponsive } from "./replay.js";
+import { downloadWhisperModel, type ModelDownloadInput, type ModelDownloadResult } from "./model.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
 import { formatHostForUrl, isLoopbackHost, stripIpv6Brackets } from "./util.js";
@@ -38,6 +40,7 @@ export interface CliIo {
   argv: string[];
   env?: NodeJS.ProcessEnv;
   stdout?: (line: string) => void;
+  downloadModel?: (input: ModelDownloadInput) => Promise<ModelDownloadResult>;
   stderr?: (line: string) => void;
 }
 
@@ -54,7 +57,7 @@ const VALUE_FLAGS: Record<string, true> = {
   port: true,
   listen: true,
   "base-dir": true,
-  lines: true,
+  model: true,
 };
 
 /** Standalone boolean flags. Any other `--flag` is rejected loudly. */
@@ -325,6 +328,18 @@ function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, s
   const token = loadOrCreateToken(paths.tokenPath);
   stdout(`token ready at ${paths.tokenPath} (${token.length} chars, mode 0600)`);
   stdout(`spool will be created at ${paths.spoolPath} on first start`);
+  return 0;
+}
+
+async function cmdDownloadModel(
+  paths: CapturePaths,
+  flags: Record<string, string | boolean>,
+  stdout: (line: string) => void,
+  downloadModel: (input: ModelDownloadInput) => Promise<ModelDownloadResult>,
+): Promise<number> {
+  if (typeof flags.model !== "string") throw new CaptureInputError("flag --model requires a value");
+  const result = await downloadModel({ model: flags.model, directory: path.join(paths.baseDir, "models") });
+  stdout(`${result.downloaded ? "downloaded" : "model already present"} ${flags.model} to ${result.path}`);
   return 0;
 }
 
@@ -609,8 +624,9 @@ function usage(stdout: (l: string) => void): number {
     [
       `remnic-capture-audio v${CAPTURE_AUDIO_VERSION}`,
       "usage: remnic-capture-audio <command> [flags]",
-      "commands: init | start | stop | status | devices | logs",
+      "commands: init | start | stop | status | devices | logs | download-model",
       "start flags: --foreground --replay <dir> --host <h> --port <n> --listen <host:port> --base-dir <dir>",
+      "download-model flags: --model <base|small|large-v3-turbo-q5_0> --base-dir <dir>",
     ].join("\n"),
   );
   return 0;
@@ -654,6 +670,8 @@ export async function runCapture(io: CliIo): Promise<number> {
         return cmdDevices(stdout);
       case "logs":
         return cmdLogs(paths, parsed.flags, stdout);
+      case "download-model":
+        return await cmdDownloadModel(paths, parsed.flags, stdout, io.downloadModel ?? downloadWhisperModel);
       case "help":
       case "--help":
       case "-h":
