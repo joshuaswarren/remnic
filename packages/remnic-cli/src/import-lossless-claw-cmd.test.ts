@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
@@ -9,6 +8,7 @@ import {
   cmdImportLosslessClaw,
   type ImportLosslessClawModule,
 } from "./import-lossless-claw-cmd.js";
+import { withTempDir } from "./testing/tmp-dir.js";
 
 describe("parseImportLosslessClawArgs", () => {
   it("accepts --src and a relative path", () => {
@@ -107,10 +107,7 @@ describe("parseImportLosslessClawArgs", () => {
 
 describe("cmdImportLosslessClaw", () => {
   it("does not create destination state when opening the source database fails", async () => {
-    const tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "remnic-lossless-source-first-"),
-    );
-    try {
+    await withTempDir("lossless-source-first", async (tempDir) => {
       const sourcePath = path.join(tempDir, "corrupt-source.sqlite");
       const memoryDir = path.join(tempDir, "memory");
       const stdout: string[] = [];
@@ -164,8 +161,6 @@ describe("cmdImportLosslessClaw", () => {
       assert.equal(sourceClosed, true);
       assert.equal(destinationOpened, false);
       assert.equal(fs.existsSync(memoryDir), false);
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    });
   });
 });
