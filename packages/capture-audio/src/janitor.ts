@@ -9,14 +9,18 @@ export async function pruneExpiredRawAudio(rawDirectory: string, retentionMs: nu
     throw new CaptureConfigError("raw audio retention must be a non-negative duration");
   }
   const cutoffMs = nowMs - retentionMs;
-  let entries: Dirent<string>[];
+  let root;
   try {
-    entries = await readdir(rawDirectory, { withFileTypes: true });
+    root = await lstat(rawDirectory);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
+  if (root.isSymbolicLink() || !root.isDirectory()) {
+    throw new CaptureConfigError("raw audio directory must be a non-symlink directory");
+  }
 
+  const entries = await readdir(rawDirectory, { withFileTypes: true });
   const removed: string[] = [];
   for (const entry of entries) {
     if (!entry.isFile()) continue;

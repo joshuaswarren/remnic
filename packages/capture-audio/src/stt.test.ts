@@ -41,6 +41,14 @@ test("parseWhisperJson rejects malformed output", () => {
       ),
     CaptureConfigError,
   );
+  assert.throws(
+    () =>
+      parseWhisperJson(
+        JSON.stringify({ transcription: [{ text: "Hello", offsets: { from: 8.64e15, to: 8.64e15 } }] }),
+        "2026-07-22T12:00:00.000Z",
+      ),
+    CaptureConfigError,
+  );
   assert.throws(() => parseWhisperJson(JSON.stringify({ transcription: [{}] }), "2026-07-22T12:00:00.000Z"), CaptureConfigError);
 });
 
@@ -67,6 +75,7 @@ test("buildWhisperArgs requests JSON output without shell interpolation", () => 
     "/models/model.bin",
     "-f",
     "/audio/chunk.wav",
+    "--no-prints",
     "--output-json",
     "--output-file",
     "-",
