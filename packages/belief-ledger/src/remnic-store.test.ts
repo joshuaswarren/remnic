@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "node:test";
 
@@ -12,18 +11,16 @@ import { RemnicLedgerStore } from "./remnic-store.js";
 // for published consumers that catch it via instanceof (#1645 review).
 import { RemnicLedgerTombstoneBlockedError } from "./index.js";
 import { normalizeClaimDraft } from "./schema.js";
+import { withTempDir } from "./testing/tmp-dir.js";
 
 async function withStore<T>(fn: (store: RemnicLedgerStore, storage: StorageManager) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
-  try {
+  return await withTempDir("store", async (dir) => {
     const storage = new StorageManager(dir);
     const store = new RemnicLedgerStore(storage, {
       now: () => new Date("2026-06-03T12:00:00Z"),
     });
     return await fn(store, storage);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
 }
 
 describe("RemnicLedgerStore", () => {
@@ -488,8 +485,7 @@ describe("RemnicLedgerStore", () => {
   });
 
   it("can reach public core page-versioning from an external package", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-versioning-"));
-    try {
+    await withTempDir("versioning", async (dir) => {
       const pagePath = path.join(dir, "facts", "belief-ledger.md");
       await mkdir(path.dirname(pagePath), { recursive: true });
       await writeFile(pagePath, "first version\n", "utf-8");
@@ -501,26 +497,23 @@ describe("RemnicLedgerStore", () => {
         { enabled: true, maxVersionsPerPage: 5, sidecarDir: ".versions" },
         undefined,
         "belief ledger external consumer smoke test",
-        dir
+        dir,
       );
       const versions = await listVersions(
         pagePath,
         { enabled: true, maxVersionsPerPage: 5, sidecarDir: ".versions" },
-        dir
+        dir,
       );
 
       assert.equal(version.versionId, "1");
       assert.equal(versions.versions.length, 1);
       assert.equal(versions.versions[0]?.trigger, "manual");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    });
   });
 
 
   it("#1645: createClaim throws a distinct tombstone_blocked error (not readback failure)", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
-    try {
+    await withTempDir("tombstone", async (dir) => {
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       // Wire the tombstone invariant exactly as the orchestrator does — without
@@ -569,16 +562,13 @@ describe("RemnicLedgerStore", () => {
           err.message.includes("tombstone-blocked"),
         "createClaim must throw a distinct tombstone_blocked error before the readback",
       );
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("#1645: the tombstone_blocked error is instanceof-catchable from the package root (review)", async () => {
     // Published consumers import from @remnic/belief-ledger (the package barrel);
     // the error class must be re-exported so they can catch it via instanceof.
-    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
-    try {
+    await withTempDir("tombstone-catch", async (dir) => {
       const storage = new StorageManager(dir);
       await storage.ensureDirectories();
       storage.setTombstonesConfig({
@@ -617,12 +607,12 @@ describe("RemnicLedgerStore", () => {
       } catch (err) {
         caught = err;
       }
-      assert.ok(caught instanceof RemnicLedgerTombstoneBlockedError,
-        "a tombstone-blocked createClaim must be instanceof the package-root RemnicLedgerTombstoneBlockedError");
+      assert.ok(
+        caught instanceof RemnicLedgerTombstoneBlockedError,
+        "a tombstone-blocked createClaim must be instanceof the package-root RemnicLedgerTombstoneBlockedError",
+      );
       assert.equal((caught as RemnicLedgerTombstoneBlockedError).code, "tombstone_blocked");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    });
   });
 
 });
