@@ -48,8 +48,8 @@ export type {
   SpeakerRow,
 } from "./spool.js";
 export { ingestReplayDir, ingestReplayDirResponsive, REPLAY_COMMIT_BATCH } from "./replay.js";
-export { buildWhisperArgs, parseWhisperJson, resolveModelPath } from "./stt.js";
-export type { TranscribedSegment } from "./stt.js";
+export { buildWhisperArgs, parseWhisperJson, resolveModelPath, transcribeWithWhisper } from "./stt.js";
+export type { TranscribedSegment, WhisperRunResult, WhisperTranscriptionInput } from "./stt.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";
 export type { DaemonDeps, DaemonHandle } from "./daemon.js";

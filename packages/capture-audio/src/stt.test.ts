@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { CaptureConfigError } from "./errors.js";
-import { buildWhisperArgs, parseWhisperJson, resolveModelPath } from "./stt.js";
+import { buildWhisperArgs, parseWhisperJson, resolveModelPath, transcribeWithWhisper } from "./stt.js";
 
 test("parseWhisperJson converts segment offsets into chunk timestamps", () => {
   const result = parseWhisperJson(
@@ -37,4 +37,36 @@ test("buildWhisperArgs requests JSON output without shell interpolation", () => 
     "/audio/chunk.wav",
     "--output-json",
   ]);
+});
+
+test("transcribeWithWhisper parses successful subprocess output", async () => {
+  const segments = await transcribeWithWhisper({
+    wavPath: "/audio/chunk.wav",
+    modelPath: "/models/model.bin",
+    chunkStartedAtUtc: "2026-07-22T12:00:00.000Z",
+    run: async (command, args) => {
+      assert.equal(command, "whisper-cli");
+      assert.deepEqual(args, buildWhisperArgs("/audio/chunk.wav", "/models/model.bin"));
+      return {
+        code: 0,
+        stdout: JSON.stringify({ transcription: [{ text: "Ready", offsets: { from: 0, to: 250 } }] }),
+        stderr: "",
+      };
+    },
+  });
+
+  assert.deepEqual(segments, [{ text: "Ready", startUtc: "2026-07-22T12:00:00.000Z", endUtc: "2026-07-22T12:00:00.250Z" }]);
+});
+
+test("transcribeWithWhisper makes a failed subprocess actionable", async () => {
+  await assert.rejects(
+    () =>
+      transcribeWithWhisper({
+        wavPath: "/audio/chunk.wav",
+        modelPath: "/models/model.bin",
+        chunkStartedAtUtc: "2026-07-22T12:00:00.000Z",
+        run: async () => ({ code: 1, stdout: "", stderr: "model unavailable" }),
+      }),
+    /whisper-cli failed: model unavailable/,
+  );
 });
