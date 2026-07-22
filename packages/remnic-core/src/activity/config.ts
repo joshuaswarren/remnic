@@ -1,4 +1,5 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
+import { assertValidTimezone } from "./digest.js";
 import type { ActivityConfig, ActivitySourceConfig } from "./types.js";
 
 function asRecord(value: unknown, name: string): Record<string, unknown> {
@@ -14,6 +15,25 @@ function optionalString(value: unknown, name: string): string | undefined {
   return value;
 }
 
+/**
+ * Parse and protocol-check an activity source base URL. Shared with
+ * ActivityHttpSourceClient so config-load and client construction reject the
+ * exact same shapes with the same prefixed message (a bare `new URL()` throws
+ * an opaque TypeError on malformed input).
+ */
+export function validateActivityBaseUrl(baseUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new RangeError(`activity source baseUrl must be a valid URL: ${baseUrl}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
+  }
+  return parsed;
+}
+
 function parseSource(value: unknown): ActivitySourceConfig {
   const raw = asRecord(value, "activity source");
   const machineLabel = optionalString(raw.machineLabel, "activity source machineLabel");
@@ -21,10 +41,13 @@ function parseSource(value: unknown): ActivitySourceConfig {
   if (machineLabel === undefined || baseUrl === undefined) {
     throw new TypeError("activity source requires machineLabel and baseUrl");
   }
-  const parsed = new URL(baseUrl);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
+  // Reject whitespace-only labels here so config-load fails loudly rather than
+  // parsing clean and then failing on the first sync (the client and pipeline
+  // both reject a blank label via trim()).
+  if (machineLabel.trim().length === 0) {
+    throw new RangeError("activity source machineLabel must not be blank");
   }
+  validateActivityBaseUrl(baseUrl);
   const token = optionalString(raw.token, "activity source token");
   return { machineLabel, baseUrl, ...(token === undefined ? {} : { token }) };
 }
@@ -39,6 +62,10 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
     throw new TypeError("activity.enabled must be a boolean");
   }
   const timezone = optionalString(config.timezone, "activity.timezone") ?? "UTC";
+  // Validate the IANA zone at parse so a typo fails before any daemon is
+  // contacted; otherwise activityDayWindow() throws mid-sync after snapshot
+  // pages may already be persisted, and every retry replays the same window.
+  assertValidTimezone(timezone);
   const syncDaysValue = coerceNumber(config.syncDays, "activity.syncDays");
   if (config.syncDays !== undefined && syncDaysValue === undefined) {
     throw new TypeError("activity.syncDays must be a finite number");
@@ -51,6 +78,16 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
     throw new TypeError("activity.sources must be an array");
   }
   const sources = (config.sources ?? []).map(parseSource);
+  // Cursors and row dedup are keyed on machineLabel alone; two sources sharing
+  // a label would share a cursor and dedup namespace, silently skipping or
+  // conflating snapshots. Reject the collision at parse.
+  const labels = new Set<string>();
+  for (const source of sources) {
+    if (labels.has(source.machineLabel)) {
+      throw new RangeError(`activity source machineLabel must be unique: ${source.machineLabel}`);
+    }
+    labels.add(source.machineLabel);
+  }
   const enabled = enabledValue ?? false;
   if (enabled && sources.length === 0) throw new RangeError("activity.enabled requires at least one source");
   return { enabled, timezone, syncDays, sources };

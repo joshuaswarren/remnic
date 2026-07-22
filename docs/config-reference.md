@@ -51,7 +51,7 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources` | `[]` | Trusted capture-daemon sources. Required when `activity.enabled` is true. |
 | `activity.sources.machineLabel` | `(required)` | Stable capture-machine label used to isolate rows and cursors. |
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon. |
-| `activity.sources.token` | `(unset)` | Bearer token for the capture daemon. Use a secret reference rather than a literal token. |
+| `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 
 ## Trust scoring
 

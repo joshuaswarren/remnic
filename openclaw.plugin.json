@@ -5655,7 +5655,7 @@
                 },
                 "token": {
                   "type": "string",
-                  "description": "Bearer token for the capture daemon. Prefer a secret reference."
+                  "description": "Literal bearer token sent to a trusted local capture daemon over loopback; this parser does not resolve secret references, so omit the field when the daemon needs no auth."
                 }
               }
             }

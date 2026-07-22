@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import {
@@ -20,6 +21,8 @@ export interface ActivitySyncOptions {
   memoryDir: string;
   store: ActivityStore;
   signal?: AbortSignal;
+  /** Runaway-pagination guard; defaults to MAX_SYNC_PAGES. */
+  maxPages?: number;
 }
 
 export interface ActivitySyncResult {
@@ -54,7 +57,7 @@ async function writeDigestIfChanged(memoryDir: string, date: string, serialized:
   }
 
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  const temporary = `${target}.${process.pid}.tmp`;
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, serialized, { encoding: "utf8", mode: 0o600 });
   await rename(temporary, target);
   return true;
@@ -75,6 +78,10 @@ export async function syncActivitySource(
   if (source.machineLabel.trim().length === 0) {
     throw new RangeError("activity source machine label must not be empty");
   }
+  const maxPages = options.maxPages ?? MAX_SYNC_PAGES;
+  if (!Number.isInteger(maxPages) || maxPages < 1) {
+    throw new RangeError("activity sync maxPages must be a positive integer");
+  }
 
   let cursor = options.store.getCursor(source.machineLabel);
   let pages = 0;
@@ -82,8 +89,9 @@ export async function syncActivitySource(
   let inserted = 0;
   let duplicates = 0;
   const seenCursors = new Set<string>();
+  let completed = false;
 
-  while (pages < MAX_SYNC_PAGES) {
+  while (pages < maxPages) {
     options.signal?.throwIfAborted();
     const page = await source.fetchSnapshots({
       date: options.date,
@@ -100,7 +108,10 @@ export async function syncActivitySource(
       else duplicates += 1;
     }
 
-    if (page.nextCursor === null) break;
+    if (page.nextCursor === null) {
+      completed = true;
+      break;
+    }
     if (typeof page.nextCursor !== "string" || page.nextCursor.length === 0) {
       throw new TypeError("activity source returned an invalid cursor");
     }
@@ -111,8 +122,10 @@ export async function syncActivitySource(
     cursor = page.nextCursor;
   }
 
-  if (pages === MAX_SYNC_PAGES) {
-    throw new Error(`activity source exceeded ${MAX_SYNC_PAGES} pages`);
+  // Only a loop that ran out of its page budget without seeing a terminal
+  // null cursor is a runaway; completing on the final allowed page is normal.
+  if (!completed) {
+    throw new Error(`activity source exceeded ${maxPages} pages`);
   }
 
   const { startUtc, endUtc } = activityDayWindow(options.date, options.timezone);

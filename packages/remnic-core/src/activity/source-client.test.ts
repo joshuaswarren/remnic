@@ -77,3 +77,31 @@ test("ActivityHttpSourceClient reports an unreachable health probe without treat
     );
   });
 });
+
+test("ActivityHttpSourceClient aborts a stalled request via the default timeout", async () => {
+  await withServer((request) => {
+    // Never respond: hold the request open so only the client-side timeout can
+    // end it. The socket is destroyed when fetch aborts, so teardown proceeds.
+    request.resume();
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl, timeoutMs: 50 });
+    assert.deepEqual((await client.verify()).ok, false);
+    await assert.rejects(client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" }));
+  });
+});
+
+test("ActivityHttpSourceClient honors a caller-supplied abort signal", async () => {
+  await withServer((request) => {
+    request.resume();
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
+    await assert.rejects(client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC", signal: AbortSignal.abort() }));
+  });
+});
+
+test("ActivityHttpSourceClient rejects a non-positive timeout", () => {
+  assert.throws(
+    () => new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319", timeoutMs: 0 }),
+    /timeoutMs must be a positive number/,
+  );
+});

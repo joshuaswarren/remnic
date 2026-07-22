@@ -1,9 +1,15 @@
+import { validateActivityBaseUrl } from "./config.js";
 import type { ActivitySnapshot, ActivitySnapshotPage, ActivitySourceCheck, ActivitySourceClient } from "./types.js";
+
+/** Abort a stalled capture-daemon request rather than hang the whole sync. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface ActivityHttpSourceClientOptions {
   machineLabel: string;
   baseUrl: string;
   token?: string;
+  /** Per-request timeout in ms; defaults to DEFAULT_REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,22 +78,27 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
   readonly machineLabel: string;
   private readonly baseUrl: string;
   private readonly token: string | undefined;
+  private readonly timeoutMs: number;
 
   constructor(options: ActivityHttpSourceClientOptions) {
     if (options.machineLabel.trim().length === 0) throw new RangeError("activity source machine label must not be empty");
-    const parsed = new URL(options.baseUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
+    if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
+      throw new RangeError("activity source timeoutMs must be a positive number");
     }
     this.machineLabel = options.machineLabel;
-    this.baseUrl = parsed.toString();
+    this.baseUrl = validateActivityBaseUrl(options.baseUrl).toString();
     this.token = options.token;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   private async request(url: string, signal?: AbortSignal): Promise<Response> {
+    // Bound every request so a stalled daemon aborts instead of hanging the
+    // sync forever; honor the caller's signal too when one is supplied.
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const composed = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
     const response = await fetch(url, {
       headers: this.token === undefined ? undefined : { authorization: `Bearer ${this.token}` },
-      signal,
+      signal: composed,
     });
     if (!response.ok) throw new Error(`activity source HTTP ${response.status}`);
     return response;

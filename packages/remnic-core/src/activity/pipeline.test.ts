@@ -105,3 +105,81 @@ test("syncActivitySource leaves the cursor unchanged when a later page cannot pe
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("syncActivitySource completes normally when the final page lands on the page cap", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = source(
+      "workstation-a",
+      new Map([
+        [null, [snapshot()]],
+        ["cursor-1", [snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", contentHash: "hash-2" })]],
+      ]),
+      new Map([
+        [null, "cursor-1"],
+        ["cursor-1", null],
+      ]),
+    );
+
+    // Two pages with a page budget of exactly two: the terminal null cursor
+    // arrives on the last allowed page, which must not be treated as a runaway.
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store, maxPages: 2 });
+    assert.equal(result.inserted, 2);
+    assert.equal(result.cursor, "cursor-1");
+    assert.equal(store.getCursor("workstation-a"), "cursor-1");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource rejects runaway pagination and leaves the cursor unadvanced", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    let issued = 0;
+    const runaway: ActivitySourceClient = {
+      machineLabel: "workstation-a",
+      async verify() {
+        return { ok: true };
+      },
+      async fetchSnapshots() {
+        issued += 1;
+        return { snapshots: [], nextCursor: `cursor-${issued}` };
+      },
+    };
+
+    await assert.rejects(
+      syncActivitySource(runaway, { date: "2026-07-22", timezone: "UTC", memoryDir, store, maxPages: 3 }),
+      /exceeded 3 pages/,
+    );
+    assert.equal(store.getCursor("workstation-a"), null);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent same-day syncs from two sources persist without corrupting the digest", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const clientA = source("workstation-a", new Map([[null, [snapshot({ contentHash: "a-1" })]]]), new Map([[null, null]]));
+    const clientB = source("workstation-b", new Map([[null, [snapshot({ contentHash: "b-1" })]]]), new Map([[null, null]]));
+
+    await Promise.all([
+      syncActivitySource(clientA, { date: "2026-07-22", timezone: "UTC", memoryDir, store }),
+      syncActivitySource(clientB, { date: "2026-07-22", timezone: "UTC", memoryDir, store }),
+    ]);
+
+    const digest = await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8");
+    assert.match(digest, /kind: activity-digest/);
+    assert.match(digest, /snapshotCount: [12]/);
+    assert.equal(store.getCursor("workstation-a"), null);
+    assert.equal(store.getCursor("workstation-b"), null);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
