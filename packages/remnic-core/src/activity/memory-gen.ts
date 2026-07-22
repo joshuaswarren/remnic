@@ -22,10 +22,12 @@ const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
 /**
  * A named third party reporting speech or action (`Alice wrote:`, `Bob said`).
  * A first-person pronoun inside such content describes the quoted person, not
- * the user — the speaker slot is a proper name, never a first-person pronoun.
+ * the user. The excluded pronouns are word-anchored (`\b`) so a name that merely
+ * begins with a pronoun ("Wendy", "Ian", "Helen") is still treated as a third
+ * party, while the bare pronoun ("We decided") stays eligible.
  */
 const THIRD_PARTY_ATTRIBUTION =
-  /\b(?!I|We|You|They|He|She|It|My|Our)[A-Z][a-z]+\b\s+(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)\b/;
+  /\b(?!(?:I|We|You|They|He|She|It|My|Our)\b)[A-Z][a-z]+\b\s+(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)\b/;
 
 export interface ActivityMemoryWriter {
   /**
@@ -132,13 +134,23 @@ export async function generateActivityMemories(
     }
     return true;
   });
-  const verdicts = await deps.judge(candidates.map((fact) => ({
-    text: fact.content,
-    category: fact.category,
-    confidence: fact.confidence,
-    tags: fact.tags,
-    importanceLevel: scoreImportance(fact.content, fact.category, fact.tags).level,
-  })));
+  let verdicts: Map<number, JudgeVerdict>;
+  try {
+    verdicts = await deps.judge(candidates.map((fact) => ({
+      text: fact.content,
+      category: fact.category,
+      confidence: fact.confidence,
+      tags: fact.tags,
+      importanceLevel: scoreImportance(fact.content, fact.category, fact.tags).level,
+    })));
+  } catch (err) {
+    // Degraded smart mode (wearables parity): a judge failure must not abort the
+    // day's writes. Fall back to trust scoring alone (no judge accept boost).
+    log.warn(
+      `activity extraction judge unavailable; using trust scoring only: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    verdicts = new Map();
+  }
 
   // Score every survivor first, then apply the day cap to the strongest by
   // trust — a lower-trust review write must never crowd out a higher-trust fact

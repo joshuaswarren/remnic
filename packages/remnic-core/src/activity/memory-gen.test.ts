@@ -23,7 +23,7 @@ const ownDecision: ActFact = {
   tags: ["settings"],
 };
 
-function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: number } = {}) {
+function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean } = {}) {
   const writes: Array<{ status: string; content: string; validAt?: string }> = [];
   let extractCalls = 0;
   const writer: ActivityMemoryWriter = {
@@ -39,10 +39,12 @@ function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: numb
       extractCalls += 1;
       return { facts, profileUpdates: [], entities: [], questions: [] };
     },
-    judge: async (candidates: JudgeCandidate[]) =>
-      new Map<number, JudgeVerdict>(
+    judge: async (candidates: JudgeCandidate[]) => {
+      if (opts.judgeThrows) throw new Error("judge exploded");
+      return new Map<number, JudgeVerdict>(
         candidates.map((_c, i): [number, JudgeVerdict] => [i, { durable: true, reason: "durable", kind: "accept" }]),
-      ),
+      );
+    },
     writer,
   };
   return { writes, extractCalls: () => extractCalls, deps };
@@ -51,14 +53,21 @@ function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: numb
 test("isEligibleActivityFact rejects attributed third-party first-person text", () => {
   // A first-person pronoun quoted from someone else is not the user's own claim.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice wrote: I decided to leave." }), false);
-  // The user's own team voice stays eligible.
+  // Names that merely begin with a pronoun prefix ("Wendy", "Ian") are still
+  // third parties — the excluded pronouns are word-anchored.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Wendy said: I will refactor the parser." }), false);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Ian posted: I merged the release branch." }), false);
+  // The user's own first-person voice stays eligible, including team "we/our".
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "We decided to ship on Friday." }), true);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "I updated our deploy runbook." }), true);
 });
 
-test("activity smart mode rejects visible third-party claims before judging", async () => {
-  const thirdParty = { ...ownDecision, content: "Acme announced a new pricing plan." };
-  assert.equal(isEligibleActivityFact(thirdParty), false);
-  const { deps, writes } = depsFor([thirdParty]);
+test("activity smart mode rejects attributed third-party first-person content before judging", async () => {
+  // Genuine first-person ("I decided") but attributed to a named third party,
+  // so it must be dropped at the eligibility gate rather than written.
+  const attributed = { ...ownDecision, content: "Alice wrote: I decided to leave the project." };
+  assert.equal(isEligibleActivityFact(attributed), false);
+  const { deps, writes } = depsFor([attributed]);
   const result = await generateActivityMemories(DATE, "## Notable activity", {
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart",
   }, deps);
@@ -119,4 +128,15 @@ test("activity smart mode salvages a malformed optional field instead of abortin
   // salvage drops the bad tag so both eligible facts are still persisted.
   assert.equal(result.created, 2);
   assert.deepEqual(writes.map((w) => w.status), ["active", "active"]);
+});
+
+test("activity smart mode degrades to trust scoring when the judge throws", async () => {
+  const { deps, writes } = depsFor([ownDecision], { judgeThrows: true });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  // A judge failure must not abort the day: with no verdict the fact is scored
+  // on confidence x sourceTrust alone (0.95) and still clears autoApproveTrust.
+  assert.equal(result.created, 1);
+  assert.deepEqual(writes.map((w) => w.status), ["active"]);
 });
