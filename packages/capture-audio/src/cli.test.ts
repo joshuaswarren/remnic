@@ -766,3 +766,19 @@ test("janitor applies configured raw-audio retention", async () => {
   assert.deepEqual(output, ["janitor: removed 1 expired raw audio file(s)"]);
   assert.equal(existsSync(path.join(rawDirectory, "expired.wav")), false);
 });
+
+test("logs honors a valued --lines flag", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const paths = capturePaths(baseDir);
+  await writeFile(paths.logPath, "first\nsecond\nthird\n", "utf8");
+  const output: string[] = [];
+
+  const code = await runCapture({
+    argv: ["logs", "--base-dir", baseDir, "--lines", "2"],
+    stdout: (line) => output.push(line),
+    stderr: () => undefined,
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, ["third\n"]);
+});

@@ -59,6 +59,7 @@ const VALUE_FLAGS: Record<string, true> = {
   listen: true,
   "base-dir": true,
   model: true,
+  lines: true,
 };
 
 /** Standalone boolean flags. Any other `--flag` is rejected loudly. */
