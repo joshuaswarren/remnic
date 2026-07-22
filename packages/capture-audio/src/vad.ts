@@ -1,4 +1,6 @@
 import { CaptureConfigError } from "./errors.js";
+import { expandTilde } from "./paths.js";
+
 
 export interface SileroVadInput {
   modelPath: string;
@@ -36,7 +38,7 @@ export function sileroVadConfig(input: SileroVadInput): { config: object; buffer
   return {
     config: {
       sileroVad: {
-        model: input.modelPath,
+        model: expandTilde(input.modelPath),
         threshold,
         minSpeechDuration: input.minSpeechMs / 1_000,
         minSilenceDuration: minSilenceMs / 1_000,

@@ -37,8 +37,30 @@ function isRegularFile(filePath: string): boolean {
 }
 
 function timestampAt(chunkStartedAtUtc: string, offsetMs: number): string {
-  const startMs = Date.parse(chunkStartedAtUtc);
-  if (!Number.isFinite(startMs) || new Date(startMs).toISOString() !== chunkStartedAtUtc) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(chunkStartedAtUtc);
+  if (!match) {
+    throw new CaptureConfigError("chunk start timestamp is invalid");
+  }
+  const [, year, month, day, hour, minute, second, millisecond = "0"] = match;
+  const startMs = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(millisecond.padEnd(3, "0")),
+  );
+  const start = new Date(startMs);
+  if (
+    start.getUTCFullYear() !== Number(year) ||
+    start.getUTCMonth() !== Number(month) - 1 ||
+    start.getUTCDate() !== Number(day) ||
+    start.getUTCHours() !== Number(hour) ||
+    start.getUTCMinutes() !== Number(minute) ||
+    start.getUTCSeconds() !== Number(second) ||
+    start.getUTCMilliseconds() !== Number(millisecond.padEnd(3, "0"))
+  ) {
     throw new CaptureConfigError("chunk start timestamp is invalid");
   }
   return new Date(startMs + offsetMs).toISOString();

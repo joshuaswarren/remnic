@@ -17,6 +17,13 @@ test("parseWhisperJson converts segment offsets into chunk timestamps", () => {
     "2026-07-22T12:00:00.000Z",
   );
 
+  assert.deepEqual(
+    parseWhisperJson(
+      JSON.stringify({ transcription: [{ text: "Hello", offsets: { from: 0, to: 1 } }] }),
+      "2026-07-22T1:00:00Z",
+    ),
+    [{ text: "Hello", startUtc: "2026-07-22T01:00:00.000Z", endUtc: "2026-07-22T01:00:00.001Z" }],
+  );
   assert.deepEqual(result, [{ text: "Hello", startUtc: "2026-07-22T12:00:00.500Z", endUtc: "2026-07-22T12:00:01.500Z" }]);
 });
 
