@@ -220,6 +220,7 @@ interface LocalLlmChatCompletionOptions {
   timeoutMs?: number;
   operation?: string;
   forceDisableThinking?: boolean;
+  disableThinking?: boolean;
   priority?: LocalLlmRequestPriority;
 }
 
@@ -989,7 +990,7 @@ export class LocalLlmClient {
       // backend hasn't been positively identified as thinking-capable.
       const shouldSuppressThinking =
         options.forceDisableThinking === true ||
-        (this._disableThinking &&
+        ((options.disableThinking ?? this._disableThinking) &&
           THINKING_SUPPRESSED_OPERATIONS.has(operation));
       if (
         shouldSuppressThinking &&

@@ -147,6 +147,15 @@ function normalizeProfileUpdateKey(update: string): string {
   return update.trim().toLowerCase();
 }
 
+export function shouldEnableLocalExtractionThinking(
+  config: Pick<PluginConfig, "localLlmDisableThinking" | "localLlmThinkingThresholdChars">,
+  conversationChars: number,
+): boolean {
+  return config.localLlmDisableThinking &&
+    config.localLlmThinkingThresholdChars > 0 &&
+    conversationChars < config.localLlmThinkingThresholdChars;
+}
+
 export class ExtractionEngine {
   private client: OpenAI | null;
   private localLlm: LocalLlmClient;
@@ -1523,6 +1532,9 @@ ${truncatedConversation}`;
         temperature: 0.1,
         maxTokens: contextSizes.maxOutputTokens,
         operation: "extraction",
+        disableThinking: shouldEnableLocalExtractionThinking(this.config, conversation.length)
+          ? false
+          : undefined,
         priority: "background",
       },
     );

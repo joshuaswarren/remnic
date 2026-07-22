@@ -83,7 +83,7 @@ function captureFetchBodies(): {
 async function runOneChatCompletion(
   client: LocalLlmClient,
   operation: string | null = "extraction",
-  options: { forceDisableThinking?: boolean } = {},
+  options: { forceDisableThinking?: boolean; disableThinking?: boolean } = {},
 ): Promise<void> {
   await client.chatCompletion(
     [{ role: "user", content: "hello" }],
@@ -343,4 +343,16 @@ test("disableThinking=false never injects chat_template_kwargs, regardless of ba
     restore();
   }
   assert.equal("chat_template_kwargs" in (bodies[0] ?? {}), false);
+});
+
+test("request-level thinking override leaves short extraction thinking enabled (#1997)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "ollama" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "extraction", { disableThinking: false });
+  } finally {
+    restore();
+  }
+  assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
 });
