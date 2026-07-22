@@ -2341,3 +2341,21 @@ test("parseConfig bounded-state knobs coerce valid strings, preserve 0, and reje
     assert.throws(() => parseConfig({ recallImpressionsRotateKeep: 1001 }), /between 1 and 1000/);
     assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "1000000" }), /between 1 and 1000/);
   }));
+
+test("parseConfig forwards activity source settings", () => {
+  const config = parseConfig({
+    activity: {
+      enabled: "true",
+      timezone: "America/Chicago",
+      syncDays: "2",
+      sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319" }],
+    },
+  });
+
+  assert.deepEqual(config.activity, {
+    enabled: true,
+    timezone: "America/Chicago",
+    syncDays: 2,
+    sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319" }],
+  });
+});

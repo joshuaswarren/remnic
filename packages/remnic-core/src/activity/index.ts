@@ -7,3 +7,6 @@
 export * from "./types.js";
 export * from "./store.js";
 export * from "./digest.js";
+export * from "./pipeline.js";
+export * from "./source-client.js";
+export * from "./config.js";

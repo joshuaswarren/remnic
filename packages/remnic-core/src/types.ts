@@ -1,4 +1,6 @@
 import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
+import type { ActivityConfig } from "./activity/types.js";
+import type { WearablesConfig } from "./wearables/types.js";
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
@@ -1213,7 +1215,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
    * Wearable transcript ingestion (Limitless / Bee / Omi connectors).
    * Disabled by default; see docs/wearables.md.
    */
-  wearables: import("./wearables/types.js").WearablesConfig;
+  wearables: WearablesConfig;
+  activity: ActivityConfig;
   /**
    * At-rest encryption configuration (issue #690 PR 3/4).
    *

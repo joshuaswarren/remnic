@@ -84,3 +84,18 @@ export interface ActivitySourceClient {
     signal?: AbortSignal;
   }): Promise<ActivitySnapshotPage>;
 }
+
+/** One trusted capture daemon that feeds this memory directory. */
+export interface ActivitySourceConfig {
+  machineLabel: string;
+  baseUrl: string;
+  token?: string;
+}
+
+/** Opt-in activity synchronization settings. */
+export interface ActivityConfig {
+  enabled: boolean;
+  timezone: string;
+  syncDays: number;
+  sources: ActivitySourceConfig[];
+}
