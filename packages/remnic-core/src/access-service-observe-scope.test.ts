@@ -604,6 +604,37 @@ test("#1505 (cursor hAp) scopeDebug.baseNamespace reports the principal self bas
   );
 });
 
+test("#2080 preflight resolves an implicit project scope through the observe write resolver", async () => {
+  const probe = makeObserveProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    namespacePolicies: [
+      { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+  });
+  const service = new EngramAccessService(probe.orch);
+  const expected = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
+  );
+
+  const result = await (
+    service as unknown as {
+      namespaceWritablePreflight: (request: {
+        sessionKey: string;
+        authenticatedPrincipal: string;
+        projectTag: string;
+      }) => Promise<{ ok: boolean; namespace: string }>;
+    }
+  ).namespaceWritablePreflight({
+    sessionKey: "pi-geek:abc123",
+    authenticatedPrincipal: "pi-geek",
+    projectTag: "Acme/Webshop",
+  });
+
+  assert.deepEqual(result, { ok: true, namespace: expected });
+});
+
 test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteNamespace (memory_store / suggestion_submit parity, rule 39)", async () => {
   // Regression guard: observe's effective scope MUST be identical to what the
   // explicit-write tools (memory_store / suggestion_submit) resolve via

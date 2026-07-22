@@ -130,8 +130,11 @@ import {
 import {
   type ScopePlan,
   resolveScopePlan,
+  resolveScopedWritableNamespaceValue,
   resolveWritableNamespaceValue,
+  type WritableNamespaceResult,
 } from "./scopes/scope-plan.js";
+import { resolveNamespaceWritablePreflight, type EngramAccessNamespaceWritableRequest } from "./access-namespace-preflight.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -958,7 +961,7 @@ export interface CodingScopedWriteInput {
   cwd?: string;
   projectTag?: string;
 }
-
+export type { EngramAccessNamespaceWritableRequest } from "./access-namespace-preflight.js";
 /**
  * Internal, single-resolution plan describing the effective memory scope for a
  * write-producing access request (#1495, seed for epic #1494). One plan is
@@ -1604,48 +1607,49 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
     },
   ): Promise<string> {
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" && request.namespace.trim().length > 0;
-    if (hasExplicitNamespace) {
+    const requested = request.namespace?.trim();
+    if (requested) {
       return this.writableNamespaceFor(
-        request.namespace,
+        requested,
         request.sessionKey,
         request.authenticatedPrincipal,
       );
     }
+
     const { principal, overlay, profilePlan } = await this.resolveCodingScopeInputs(request);
-    if (profilePlan) {
-      const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
-      const writeNamespaceReadable =
-        profilePlan.writeNamespace.length > 0 &&
-        profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
-      if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
-          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
-      }
-      return profilePlan.writeNamespace;
-    }
-    if (!overlay) {
-      // No coding overlay → unqualified write stays on config.defaultNamespace,
-      // exactly the pre-#1434 behavior (auth-checked, like the legacy path).
-      return this.writableNamespaceFor(
-        undefined,
-        request.sessionKey,
-        request.authenticatedPrincipal,
+    const result = resolveScopedWritableNamespaceValue({
+      sessionKey: request.sessionKey,
+      authenticatedPrincipal: request.authenticatedPrincipal,
+      principal,
+      codingOverlay: overlay,
+      scopeProfile: profilePlan,
+      config: this.orchestrator.config,
+    });
+    if (result.ok) return result.namespace;
+    if (profilePlan && result.namespace === profilePlan.writeNamespace) {
+      throw new NamespaceNotWritableError(
+        result.namespace,
+        principal,
+        `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
       );
     }
-    // Coding overlay → overlay onto the principal self base, the SAME namespace
-    // recall/observe/buffer-flush use. The result is a principal-owned
-    // `project-*` sub-namespace derived from this authorized base, so it needs
-    // no separate write policy.
-    const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-    if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
-      throw new NamespaceNotWritableError(base, principal);
+
+    if (result.reason === "unsupported") {
+      throw new EngramAccessInputError(`unsupported namespace: ${result.namespace}`);
     }
-    return combineNamespaces(base, overlay.namespace);
+    throw new NamespaceNotWritableError(result.namespace, principal);
   }
 
-  /** Read-side mirror of {@link resolveCodingScopedWriteNamespace}. Decision
+  async namespaceWritablePreflight(
+    request: EngramAccessNamespaceWritableRequest,
+  ): Promise<WritableNamespaceResult> {
+    return resolveNamespaceWritablePreflight(
+      request,
+      (preflightRequest) => this.resolveCodingScopedWriteNamespace(preflightRequest),
+    );
+  }
+
+  /**
    *  `list`/`get` use this so a record written by a project-scoped session is
    *  listable/fetchable by the SAME session without manually supplying the
    *  overlaid namespace (review P2). Derivation is IDENTICAL to the write path

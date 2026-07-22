@@ -18,7 +18,10 @@ import { EngramAccessForbiddenError } from "./access-errors.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import { resolveNamespacePreflight } from "./scopes/scope-plan.js";
+import {
+  resolveAuthorizedNamespaceWritablePreflight,
+  type EngramAccessNamespaceWritableRequest,
+} from "./access-namespace-preflight.js";
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
 import { getRecallTimingStatus, isRecallTimingsOperator } from "./recall-timings.js";
@@ -114,7 +117,26 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
     return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
   },
 });
-defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str }), handler: async (input, ctx) => { const ns = optStr(input.namespace); const sk = optStr(input.sessionKey); const writeOp = optStr(input.op) === "memory_store" ? "memory_store" : "observe"; return { result: resolveNamespacePreflight(tokenCapabilityStore.getStore(), ns && ns.length > 0 ? ns : undefined, sk && sk.length > 0 ? sk : undefined, ctx.authenticatedPrincipal, ctx.service.configRef, writeOp) }; } });
+defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
+  const writeOp = optStr(input.op) === "memory_store" ? "memory_store" : "observe";
+  const namespace = optStr(input.namespace);
+  const request: EngramAccessNamespaceWritableRequest = {
+    sessionKey: optStr(input.sessionKey),
+    authenticatedPrincipal: ctx.authenticatedPrincipal,
+    cwd: optStr(input.cwd),
+    projectTag: optStr(input.projectTag),
+    ...(namespace ? { namespace } : {}),
+  };
+  return {
+    result: await resolveAuthorizedNamespaceWritablePreflight(
+      tokenCapabilityStore.getStore(),
+      request,
+      ctx.service.configRef.defaultNamespace,
+      writeOp,
+      (preflightRequest) => ctx.service.namespaceWritablePreflight(preflightRequest),
+    ),
+  };
+} });
 
 // === WEARABLES ===
 defineOperation({ name: "wearables_status", description: "Wearables status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.wearablesStatus() }) });
