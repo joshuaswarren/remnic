@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+
 import test from "node:test";
 
 import { createSileroVad } from "./vad.js";
@@ -33,6 +36,19 @@ test("createSileroVad configures the optional Sherpa runtime with audio-safe def
     },
     bufferSeconds: 60,
   });
+});
+
+test("createSileroVad expands a tilde model path", async () => {
+  let received: { config: { sileroVad: { model: string } } } | undefined;
+  class FakeVad {
+    constructor(config: unknown, _bufferSeconds: number) {
+      received = { config: config as { sileroVad: { model: string } } };
+    }
+  }
+
+  await createSileroVad({ modelPath: "~/models/silero_vad.onnx", minSpeechMs: 500 }, async () => ({ Vad: FakeVad }));
+
+  assert.equal(received?.config.sileroVad.model, path.join(os.homedir(), "models/silero_vad.onnx"));
 });
 
 test("createSileroVad requires a positive speech threshold", async () => {
