@@ -28,6 +28,29 @@ test("valid overrides parse and boolean-like coercion applies to numbers", () =>
   assert.deepEqual(cfg.denyApps, ["Zoom", "Slack"]);
 });
 
+test("VAD options use the same valid ranges as the runtime adapter", () => {
+  const cfg = parseDaemonConfig({
+    vad: {
+      modelPath: "/models/silero_vad.onnx",
+      minSpeechMs: 500,
+      minSilenceMs: 400,
+      maxSpeechMs: 20_000,
+      threshold: 0.7,
+      threads: 2,
+    },
+  });
+  assert.deepEqual(cfg.vad, {
+    modelPath: "/models/silero_vad.onnx",
+    minSpeechMs: 500,
+    minSilenceMs: 400,
+    maxSpeechMs: 20_000,
+    threshold: 0.7,
+    threads: 2,
+  });
+  assert.throws(() => parseDaemonConfig({ vad: { minSpeechMs: 0 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ vad: { threshold: 1 } }), CaptureConfigError);
+});
+
 test("non-integer / out-of-range port is rejected loudly", () => {
   assert.throws(() => parseDaemonConfig({ port: 70000 }), CaptureConfigError);
   assert.throws(() => parseDaemonConfig({ port: 4340.5 }), CaptureConfigError);

@@ -5,9 +5,8 @@
  * CaptureConfigError (rule 39 — no silent defaulting). Ports are integers
  * in [1, 65535] (rule 17); booleans coerce boolean-like strings (rule 24).
  *
- * Only the STT engine `whisper-cpp` is accepted; capture/VAD/STT/
- * diarization are not implemented in this checklist item, but the config
- * surface is validated now so later stages read a trustworthy shape.
+ * Only `whisper-cpp` is currently accepted for STT. VAD configuration maps
+ * directly to the optional Sherpa Silero runtime adapter.
  */
 
 import { readFileSync } from "node:fs";
@@ -23,7 +22,12 @@ export interface SttConfig {
   threads: number | null;
 }
 export interface VadConfig {
+  modelPath: string | null;
   minSpeechMs: number;
+  minSilenceMs: number;
+  maxSpeechMs: number;
+  threshold: number;
+  threads: number;
 }
 export interface DiarizationConfig {
   similarityThreshold: number;
@@ -54,7 +58,14 @@ export function defaultDaemonConfig(): DaemonConfig {
     conversationGapMinutes: 10,
     rawRetentionHours: 0,
     spoolRetentionDays: 30,
-    vad: { minSpeechMs: 500 },
+    vad: {
+      modelPath: null,
+      minSpeechMs: 500,
+      minSilenceMs: 500,
+      maxSpeechMs: 30_000,
+      threshold: 0.5,
+      threads: 1,
+    },
     diarization: { similarityThreshold: 0.4 },
     stt: { engine: "whisper-cpp", modelPath: null, threads: null },
     denyApps: [],
@@ -122,9 +133,38 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
 
   if (obj.vad !== undefined) {
     const vad = asObject(obj.vad, "vad");
-    warnUnknownKeys(vad, { minSpeechMs: true }, "vad");
+    warnUnknownKeys(
+      vad,
+      {
+        modelPath: true,
+        minSpeechMs: true,
+        minSilenceMs: true,
+        maxSpeechMs: true,
+        threshold: true,
+        threads: true,
+      },
+      "vad",
+    );
+    if (vad.modelPath !== undefined) {
+      cfg.vad.modelPath = requireString(vad.modelPath, "vad.modelPath");
+    }
     if (vad.minSpeechMs !== undefined) {
-      cfg.vad.minSpeechMs = coerceNumber(vad.minSpeechMs, "vad.minSpeechMs", { integer: true, min: 0 });
+      cfg.vad.minSpeechMs = coerceNumber(vad.minSpeechMs, "vad.minSpeechMs", { integer: true, min: 1 });
+    }
+    if (vad.minSilenceMs !== undefined) {
+      cfg.vad.minSilenceMs = coerceNumber(vad.minSilenceMs, "vad.minSilenceMs", { integer: true, min: 0 });
+    }
+    if (vad.maxSpeechMs !== undefined) {
+      cfg.vad.maxSpeechMs = coerceNumber(vad.maxSpeechMs, "vad.maxSpeechMs", { integer: true, min: 1 });
+    }
+    if (vad.threshold !== undefined) {
+      cfg.vad.threshold = coerceNumber(vad.threshold, "vad.threshold", {
+        min: Number.MIN_VALUE,
+        max: 1 - Number.EPSILON,
+      });
+    }
+    if (vad.threads !== undefined) {
+      cfg.vad.threads = coerceNumber(vad.threads, "vad.threads", { integer: true, min: 1, max: 256 });
     }
   }
 
