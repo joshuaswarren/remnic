@@ -1,0 +1,8 @@
+/**
+ * Public entry for the retrospective meeting-detection subsystem (issue #1900):
+ * pure detection over a day's already-ingested audio + app-span signals.
+ * Re-exported from the package root (`src/index.ts`) so consumers import it from
+ * `@remnic/core`, matching the wearables/activity subsystems' surfacing.
+ */
+export * from "./types.js";
+export * from "./detect.js";

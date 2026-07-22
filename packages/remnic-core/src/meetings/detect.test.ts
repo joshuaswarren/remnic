@@ -1,0 +1,366 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { DEFAULT_MEETINGS_DETECTION_CONFIG, detectMeetings, meetingId } from "./detect.js";
+import type { MeetingAppSpan, MeetingAudioWindow, MeetingsDetectionInput } from "./types.js";
+
+const DATE = "2026-03-10";
+
+function span(app: string, startUtc: string, endUtc: string): MeetingAppSpan {
+  return { app, startUtc, endUtc };
+}
+
+function audio(overrides: Partial<MeetingAudioWindow> & { startUtc: string; endUtc: string }): MeetingAudioWindow {
+  return { source: "desktop", distinctNonWearerSpeakers: 2, ...overrides };
+}
+
+function input(overrides: Partial<MeetingsDetectionInput> = {}): MeetingsDetectionInput {
+  return { date: DATE, appSpans: [], audioWindows: [], ...overrides };
+}
+
+test("app+audio: an app span overlapping a conversation yields one meeting", () => {
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z")],
+      audioWindows: [audio({ source: "desktop", startUtc: "2026-03-10T14:01:00.000Z", endUtc: "2026-03-10T14:55:00.000Z" })],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.detectionSource, "app+audio");
+  assert.equal(meetings[0]?.app, "Zoom");
+  assert.deepEqual(meetings[0]?.sources, ["desktop"]);
+});
+
+test("activity only (app span, zero audio) → NO meeting (watching a recording)", () => {
+  const meetings = detectMeetings(
+    input({ appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z")] }),
+  );
+  assert.equal(meetings.length, 0);
+});
+
+test("audio only: a long multi-speaker conversation with no app span is a meeting", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "limitless", startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.detectionSource, "audio");
+  assert.equal(meetings[0]?.app, undefined);
+});
+
+test("audio only: too short OR too few speakers is NOT a meeting", () => {
+  const short = detectMeetings(
+    input({ audioWindows: [audio({ startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:05:00.000Z", distinctNonWearerSpeakers: 3 })] }),
+  );
+  assert.equal(short.length, 0);
+  const solo = detectMeetings(
+    input({ audioWindows: [audio({ startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:30:00.000Z", distinctNonWearerSpeakers: 1 })] }),
+  );
+  assert.equal(solo.length, 0);
+});
+
+test("provider meeting is detected from its own boundaries without an app span", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "granola", startUtc: "2026-03-10T16:00:00.000Z", endUtc: "2026-03-10T16:30:00.000Z", providerMeeting: true, title: "Roadmap", distinctNonWearerSpeakers: 0 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.detectionSource, "provider");
+  assert.equal(meetings[0]?.title, "Roadmap");
+});
+
+test("rejoin within the merge gap collapses into ONE meeting; a 10-min gap stays TWO", () => {
+  const rejoin = detectMeetings(
+    input({
+      appSpans: [
+        span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:20:00.000Z"),
+        span("Zoom", "2026-03-10T14:21:00.000Z", "2026-03-10T14:40:00.000Z"),
+      ],
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:19:00.000Z" }),
+        audio({ startUtc: "2026-03-10T14:20:30.000Z", endUtc: "2026-03-10T14:39:00.000Z" }),
+      ],
+    }),
+  );
+  assert.equal(rejoin.length, 1);
+
+  const twoMeetings = detectMeetings(
+    input({
+      appSpans: [
+        span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:20:00.000Z"),
+        span("Zoom", "2026-03-10T14:30:00.000Z", "2026-03-10T14:50:00.000Z"),
+      ],
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:19:00.000Z" }),
+        audio({ startUtc: "2026-03-10T14:30:00.000Z", endUtc: "2026-03-10T14:49:00.000Z" }),
+      ],
+    }),
+  );
+  assert.equal(twoMeetings.length, 2);
+});
+
+test("multiple audio sources over the same window fuse into one meeting with both sources", () => {
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z")],
+      audioWindows: [
+        audio({ source: "desktop", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:55:00.000Z" }),
+        audio({ source: "limitless", startUtc: "2026-03-10T14:02:00.000Z", endUtc: "2026-03-10T14:58:00.000Z" }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.deepEqual(meetings[0]?.sources, ["desktop", "limitless"]);
+});
+
+test("detected meetings never overlap and stay ordered after merge", () => {
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:30:00.000Z")],
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:40:00.000Z" }),
+        audio({ startUtc: "2026-03-10T14:30:00.000Z", endUtc: "2026-03-10T15:10:00.000Z" }),
+        // A second, well-separated meeting so the ordering assertion is non-vacuous.
+        audio({
+          source: "granola",
+          startUtc: "2026-03-10T18:00:00.000Z",
+          endUtc: "2026-03-10T18:30:00.000Z",
+          providerMeeting: true,
+          title: "Sync",
+        }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 2);
+  for (let i = 1; i < meetings.length; i++) {
+    assert.ok((meetings[i - 1]?.endUtc ?? "") <= (meetings[i]?.startUtc ?? ""), "meetings must not overlap");
+  }
+});
+
+test("sub-threshold overlap does not pair an app span with a conversation", () => {
+  // Only 1 minute of overlap; minOverlapMinutes default is 2 → audio-only rules apply.
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:10:00.000Z")],
+      audioWindows: [audio({ startUtc: "2026-03-10T14:09:00.000Z", endUtc: "2026-03-10T14:16:00.000Z", distinctNonWearerSpeakers: 2 })],
+    }),
+  );
+  // 7-min conversation < 15-min audio-only floor and no qualifying app overlap → no meeting.
+  assert.equal(meetings.length, 0);
+});
+
+test("ids are stable across a re-run with 10% more fixture data appended", () => {
+  const base = input({
+    appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z")],
+    audioWindows: [audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:55:00.000Z" })],
+  });
+  const first = detectMeetings(base);
+  // Re-run with an extra, later meeting appended (more data, same early meeting).
+  const more = detectMeetings(
+    input({
+      appSpans: [...base.appSpans, span("Zoom", "2026-03-10T17:00:00.000Z", "2026-03-10T17:30:00.000Z")],
+      audioWindows: [...base.audioWindows, audio({ startUtc: "2026-03-10T17:01:00.000Z", endUtc: "2026-03-10T17:28:00.000Z" })],
+    }),
+  );
+  const firstId = first[0]?.id;
+  const sameId = more.find((m) => m.startUtc === first[0]?.startUtc)?.id;
+  assert.ok(firstId);
+  assert.equal(sameId, firstId, "the earlier meeting keeps its id when later data is added");
+});
+
+test("meetingId is deterministic and anchored on the exact start instant", () => {
+  const a = meetingId(DATE, "2026-03-10T14:00:05.000Z");
+  assert.equal(a, meetingId(DATE, "2026-03-10T14:00:05.000Z")); // same start instant → same id
+  assert.match(a, /^mtg-2026-03-10-[0-9a-f]{8}$/);
+  // Distinct start instants — even within the same minute — get distinct ids.
+  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:00:06.000Z"));
+  assert.notEqual(a, meetingId(DATE, "2026-03-10T14:01:00.000Z"));
+});
+
+test("two short provider meetings in the same minute get distinct ids", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "granola", startUtc: "2026-03-10T14:00:05.000Z", endUtc: "2026-03-10T14:00:20.000Z", providerMeeting: true, title: "A", distinctNonWearerSpeakers: 0 }),
+        audio({ source: "granola", startUtc: "2026-03-10T14:00:40.000Z", endUtc: "2026-03-10T14:00:55.000Z", providerMeeting: true, title: "B", distinctNonWearerSpeakers: 0 }),
+      ],
+    }),
+  );
+  // Provider candidates bypass the duration floors and don't merge (no shared
+  // app, disjoint), so both survive — and must not collide on id.
+  assert.equal(meetings.length, 2);
+  assert.notEqual(meetings[0]?.id, meetings[1]?.id);
+});
+
+test("a rolled-over calendar timestamp is dropped, not silently shifted", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-02-30T14:00:00.000Z", endUtc: "2026-02-30T14:30:00.000Z", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  // Feb 30 is invalid → dropped, never rolled into Mar 2.
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});
+
+test("meeting id is unchanged when a late source extends the end (resync stability)", () => {
+  const first = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  const extended = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ source: "desktop", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+        audio({ source: "limitless", startUtc: "2026-03-10T14:18:00.000Z", endUtc: "2026-03-10T14:45:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(first.length, 1);
+  assert.equal(extended.length, 1);
+  assert.equal(extended[0]?.endUtc, "2026-03-10T14:45:00.000Z"); // end grew
+  assert.equal(extended[0]?.id, first[0]?.id); // …but the id is unchanged
+});
+
+test("default config matches the issue-specified thresholds", () => {
+  assert.equal(DEFAULT_MEETINGS_DETECTION_CONFIG.minOverlapMinutes, 2);
+  assert.equal(DEFAULT_MEETINGS_DETECTION_CONFIG.audioOnlyMinMinutes, 15);
+  assert.equal(DEFAULT_MEETINGS_DETECTION_CONFIG.mergeGapMinutes, 2);
+});
+
+test("audio-only exactly at the 15-min floor qualifies", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:15:00.000Z", distinctNonWearerSpeakers: 2 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.detectionSource, "audio");
+});
+
+test("app+audio exactly at the 2-min overlap threshold qualifies", () => {
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:12:00.000Z")],
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:10:00.000Z", endUtc: "2026-03-10T14:17:00.000Z", distinctNonWearerSpeakers: 2 }),
+      ],
+    }),
+  );
+  // Exactly 2 min overlap (14:10–14:12) → pairs as app+audio.
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.detectionSource, "app+audio");
+  assert.equal(meetings[0]?.app, "Zoom");
+});
+
+test("disjoint app + audio never pair even when minOverlapMinutes is 0", () => {
+  const meetings = detectMeetings(
+    input({
+      appSpans: [span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T14:05:00.000Z")],
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T14:10:00.000Z", endUtc: "2026-03-10T14:17:00.000Z", distinctNonWearerSpeakers: 2 }),
+      ],
+    }),
+    { ...DEFAULT_MEETINGS_DETECTION_CONFIG, minOverlapMinutes: 0 },
+  );
+  // Disjoint windows (overlap 0) must not pair; 7-min audio < 15-min floor → no meeting.
+  assert.equal(meetings.length, 0);
+});
+
+test("invalid detection thresholds are rejected", () => {
+  for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => detectMeetings(input(), { ...DEFAULT_MEETINGS_DETECTION_CONFIG, minOverlapMinutes: bad }),
+      RangeError,
+    );
+  }
+  assert.throws(
+    () => detectMeetings(input(), { ...DEFAULT_MEETINGS_DETECTION_CONFIG, mergeGapMinutes: Number.NaN }),
+    RangeError,
+  );
+});
+
+test("a malformed timestamp is skipped defensively without dropping valid meetings", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "not-a-date", endUtc: "2026-03-10T09:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  // The malformed window is dropped; the valid conversation is still detected.
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});
+
+test("an offset-form rolled-over timestamp is also dropped", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-02-30T14:00:00.000+00:00", endUtc: "2026-02-30T14:30:00.000+00:00", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});
+
+test("a timestamp offset beyond ±14:00 is dropped", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T00:30:00.000+14:59", endUtc: "2026-03-10T01:00:00.000+14:59", distinctNonWearerSpeakers: 3 }),
+        audio({ startUtc: "2026-03-10T10:00:00.000Z", endUtc: "2026-03-10T10:20:00.000Z", distinctNonWearerSpeakers: 3 }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 1);
+  assert.equal(meetings[0]?.startUtc, "2026-03-10T10:00:00.000Z");
+});
+
+test("a non-integer speaker count does not qualify an audio-only meeting", () => {
+  const meetings = detectMeetings(
+    input({
+      audioWindows: [
+        audio({ startUtc: "2026-03-10T09:00:00.000Z", endUtc: "2026-03-10T09:30:00.000Z", distinctNonWearerSpeakers: Number.POSITIVE_INFINITY }),
+      ],
+    }),
+  );
+  assert.equal(meetings.length, 0);
+});
+
+test("detectMeetings rejects a non-YYYY-MM-DD day (kept out of ids)", () => {
+  assert.throws(() => detectMeetings(input({ date: "2026/03/10" })), RangeError);
+  assert.throws(() => detectMeetings(input({ date: "2026-02-30" })), RangeError);
+});
+
+test("meetingId validates its inputs for direct callers", () => {
+  assert.throws(() => meetingId("2026/03/10", "2026-03-10T14:00:00.000Z"), RangeError);
+  assert.throws(() => meetingId("2026-03-10", "not-a-date"), RangeError);
+});
+
+test("equal-overlap app selection is deterministic regardless of input order", () => {
+  const win = { startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T15:00:00.000Z", distinctNonWearerSpeakers: 2 };
+  const zoom = span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z");
+  const meet = span("Meet", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z");
+  const a = detectMeetings(input({ appSpans: [zoom, meet], audioWindows: [audio(win)] }));
+  const b = detectMeetings(input({ appSpans: [meet, zoom], audioWindows: [audio(win)] }));
+  assert.equal(a[0]?.app, b[0]?.app);
+  assert.equal(a[0]?.app, "Meet"); // tie broken by app name ("Meet" < "Zoom")
+});
