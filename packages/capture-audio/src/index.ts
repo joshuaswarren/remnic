@@ -3,10 +3,7 @@
  * item 1 of issue #1897): strict daemon config, a SQLite spool, replay
  * ingestion, an authenticated loopback HTTP API, and the CLI.
  *
- * The native-helper resolver and supervised process runner are present
- * (Node side of the macOS helper slice); the daemon wiring, diarization,
- * the wearable connector, and the core registry entry land in later
- * checklist items and are intentionally absent here.
+ * Native capture and the `desktop` WearableSourceConnector ship together in this optional package.
  */
 
 export { CAPTURE_AUDIO_VERSION, DEFAULT_HOST, DEFAULT_PORT, SPOOL_SCHEMA_VERSION } from "./constants.js";
@@ -84,3 +81,19 @@ export type {
   ResolveHelperDeps,
   RestartTimer,
 } from "./native.js";
+export {
+  createDesktopConnector,
+  DesktopApiError,
+  DesktopCaptureClient,
+  DESKTOP_DEFAULT_BASE_URL,
+  DESKTOP_SOURCE_ID,
+  daemonConversationToWearable,
+  ensureDesktopConnectorRegistered,
+  resolveDesktopBaseUrl,
+  resolveDesktopToken,
+  wearableConnectorRegistration,
+} from "./connector.js";
+export type {
+  DesktopCaptureClientOptions,
+  ListConversationsParams,
+} from "./connector.js";

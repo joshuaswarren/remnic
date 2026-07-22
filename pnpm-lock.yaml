@@ -165,6 +165,9 @@ importers:
 
   packages/capture-audio:
     devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.0
