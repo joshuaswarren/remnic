@@ -111,7 +111,7 @@ activity). No store, fusion, or surfaces yet; those are later #1900 slices.
 
 ## Storage layout
 
-```
+```text
 <memoryDir>/
 ├── state/
 │   └── activity.sqlite        # ActivityStore (snapshots, FTS, sync cursors)
