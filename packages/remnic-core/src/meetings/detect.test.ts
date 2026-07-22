@@ -349,3 +349,8 @@ test("detectMeetings rejects a non-YYYY-MM-DD day (kept out of ids)", () => {
   assert.throws(() => detectMeetings(input({ date: "2026/03/10" })), RangeError);
   assert.throws(() => detectMeetings(input({ date: "2026-02-30" })), RangeError);
 });
+
+test("meetingId validates its inputs for direct callers", () => {
+  assert.throws(() => meetingId("2026/03/10", "2026-03-10T14:00:00.000Z"), RangeError);
+  assert.throws(() => meetingId("2026-03-10", "not-a-date"), RangeError);
+});

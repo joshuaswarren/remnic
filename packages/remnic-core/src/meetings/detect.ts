@@ -85,8 +85,14 @@ function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): 
  *  (#1900), which matches a re-detected meeting to its stored record by overlap
  *  and keeps the original id. This function stays pure and deterministic. */
 export function meetingId(date: string, startUtc: string): string {
+  if (!isValidDay(date)) {
+    throw new RangeError(`meetings: invalid day "${date}" for a meeting id; expected a real YYYY-MM-DD.`);
+  }
   const startMs = ms(startUtc);
-  const anchor = Number.isNaN(startMs) ? startUtc : new Date(startMs).toISOString();
+  if (Number.isNaN(startMs)) {
+    throw new RangeError(`meetings: invalid meeting start "${startUtc}" for a meeting id.`);
+  }
+  const anchor = new Date(startMs).toISOString();
   const hash = createHash("sha256").update(`${date}|${anchor}`, "utf8").digest("hex").slice(0, 8);
   return `mtg-${date}-${hash}`;
 }
