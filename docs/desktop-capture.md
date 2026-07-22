@@ -10,8 +10,10 @@ This document describes the **whole** epic and marks precisely what has shipped
 versus what is a binding-but-unbuilt design, so a reader never assumes an
 unbuilt surface exists. Remnic is a **memory system, not a DVR**: it captures
 *text* (accessibility-tree text, OCR output, transcripts) plus context (app,
-window title, URL, timestamps, speakers) and never keeps a screenshot or audio
-timeline.
+window title, URL, timestamps, speakers). It keeps **no continuous screenshot or
+audio timeline** by default: raw media is transient processing input, deleted
+after text extraction unless you set the opt-in `rawRetentionHours > 0`
+re-transcription debugging buffer (see the privacy charter below).
 
 ## Status at a glance
 
@@ -85,8 +87,11 @@ capture slice; each slice references them by name (for example
    password/secure fields (macOS `AXSecureTextField`, Windows UIA `IsPassword`)
    and the capture layer skips them.
 6. **Redaction before disk** — the wearables redaction stage (built-in SSN /
-   payment-card patterns plus your `redactionPatterns`) runs on captured text
-   before spool writes where feasible and always before `memoryDir` writes.
+   payment-card patterns plus your `redactionPatterns`) always runs before any
+   `memoryDir` write, and the capture daemons redact at spool-write time so raw
+   captured text is not persisted unredacted. Spool-time redaction is a binding
+   design contract for the (unbuilt) daemons; the `memoryDir`-write guarantee
+   holds today for every source on the shipped wearables pipeline.
 7. **Zero telemetry** — no analytics, no crash reporting, no network calls
    except the ones you configured. STT model downloads happen only on explicit
    invocation.
@@ -104,6 +109,9 @@ daemon** rather than a library call:
 - The daemon persists to a **local spool** (SQLite) under `~/.remnic/capture/`
   on the capture machine — never under `memoryDir`. The spool is
   capture-machine-local raw material; `memoryDir` holds only pipeline output.
+  Durable memory artifacts stay plain Markdown (the repo-wide guarantee in
+  [`README.md`](../README.md)); SQLite here is operational/index data only (this
+  spool and `state/activity.sqlite`), never a memory store.
 - The daemon exposes a **minimal versioned HTTP API on loopback** (`/v1/health`,
   `/v1/conversations`, `/v1/snapshots`, …). Remnic consumes it exactly the way
   `@remnic/connector-bee` consumes the local `bee proxy` — that is the in-repo
@@ -111,10 +119,15 @@ daemon** rather than a library call:
 - **Default ports: `4340` (audio), `4341` (screen)**, both configurable. Neither
   collides with the Remnic HTTP daemon default (`4318`, see
   `docs/config-reference.md`).
-- **Auth:** a bearer token is auto-generated at first start and stored at
-  `~/.remnic/capture/token` with `0600` permissions. The daemon binds loopback
-  by default; a non-loopback bind requires the token AND an explicit `--listen`
-  flag.
+- **Auth & transport:** a bearer token is auto-generated at first start and
+  stored at `~/.remnic/capture/token` with `0600` permissions. Rotate it by
+  stopping the daemon and deleting the token file — a fresh token is generated
+  on next start and clients must be re-pointed. The token authenticates but does
+  **not** encrypt, so the daemon binds **loopback only** by default. A
+  non-loopback bind requires an explicit `--listen` flag and MUST be fronted by
+  an encrypted transport you supply (a TLS-terminating reverse proxy, or an SSH
+  tunnel); plaintext capture text and the token must never cross a network
+  unprotected.
 
 The wearables side consumes desktop audio through the ordinary
 `WearableSourceConnector` contract (source id `desktop`), so the entire existing
@@ -311,11 +324,12 @@ want (`-g` for a global CLI install):
 ```bash
 # Shipped today — cloud meeting connectors
 npm install -g @remnic/connector-granola @remnic/connector-fireflies
-
-# Planned — capture daemons (not yet published; names are fixed by #1896)
-npm install -g @remnic/capture-screen      # screen activity daemon
-npm install -g @remnic/capture-audio       # desktop audio daemon
 ```
+
+The planned capture daemons — `@remnic/capture-screen` (screen activity) and
+`@remnic/capture-audio` (desktop audio) — are **not yet published**. Their names
+are fixed by #1896 as design placeholders, so no `npm install` command is given
+for them until they ship.
 
 Native helper binaries (planned) install as platform-specific optional packages
 (for example `@remnic/capture-native-darwin-arm64`); the daemon prints the exact
