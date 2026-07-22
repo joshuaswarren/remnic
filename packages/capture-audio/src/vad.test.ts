@@ -4,7 +4,7 @@ import path from "node:path";
 
 import test from "node:test";
 
-import { createSileroVad } from "./vad.js";
+import { createSileroVad, resolveSherpaExport } from "./vad.js";
 
 test("createSileroVad configures the optional Sherpa runtime with audio-safe defaults", async () => {
   let received: unknown;
@@ -53,4 +53,21 @@ test("createSileroVad expands a tilde model path", async () => {
 
 test("createSileroVad requires a positive speech threshold", async () => {
   await assert.rejects(createSileroVad({ modelPath: "/models/vad.onnx", minSpeechMs: 0 }), /positive/);
+});
+
+test("resolveSherpaExport unwraps a CommonJS default export", () => {
+  class FakeVad {}
+  const cjs = { default: { Vad: FakeVad } };
+  assert.equal(resolveSherpaExport(cjs), cjs.default);
+});
+
+test("resolveSherpaExport accepts an ES namespace that exposes Vad directly", () => {
+  class FakeVad {}
+  const esm = { Vad: FakeVad };
+  assert.equal(resolveSherpaExport(esm), esm);
+});
+
+test("resolveSherpaExport returns null when no Vad constructor is present", () => {
+  assert.equal(resolveSherpaExport({ default: { notVad: 1 } }), null);
+  assert.equal(resolveSherpaExport(null), null);
 });

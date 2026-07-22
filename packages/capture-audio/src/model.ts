@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, lstatSync } from "node:fs";
 import { link, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -39,6 +39,19 @@ function responseBodyToReadable(body: ReadableStream<Uint8Array>): Readable {
   });
 }
 
+function existingFile(destination: string): boolean {
+  try {
+    const entry = lstatSync(destination);
+    if (!entry.isFile()) {
+      throw new CaptureConfigError(`Whisper model path exists but is not a regular file: ${destination}`);
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 export function whisperModelUrl(model: string): string {
   const file = MODEL_FILES[model];
   if (!file) {
@@ -54,7 +67,7 @@ export async function downloadWhisperModel(input: ModelDownloadInput): Promise<M
 
   await mkdir(input.directory, { recursive: true });
   const destination = path.join(input.directory, filename);
-  if (existsSync(destination)) return { path: destination, downloaded: false };
+  if (existingFile(destination)) return { path: destination, downloaded: false };
 
   const response = await (input.fetch ?? ((value) => fetch(value)))(url);
   if (!response.ok || !response.body) {
@@ -69,7 +82,7 @@ export async function downloadWhisperModel(input: ModelDownloadInput): Promise<M
     return { path: destination, downloaded: true };
   } catch (error) {
     await rm(temporary, { force: true });
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" && existingFile(destination)) {
       return { path: destination, downloaded: false };
     }
     throw error;

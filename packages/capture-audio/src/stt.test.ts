@@ -60,6 +60,7 @@ test("resolveModelPath prefers a configured readable model", () => {
     resolveModelPath("~/configured.bin", "/default.bin", (file) => file === path.join(process.env.HOME!, "configured.bin")),
     path.join(process.env.HOME!, "configured.bin"),
   );
+
   assert.throws(() => resolveModelPath("/directory", "/default.bin", () => false), /not found/);
   assert.throws(() => resolveModelPath(process.cwd(), "/default.bin"), /not found/);
 });
@@ -67,6 +68,11 @@ test("resolveModelPath prefers a configured readable model", () => {
 test("resolveModelPath uses the default model only when no explicit model is configured", () => {
   const exists = (file: string) => file === "/default.bin";
   assert.equal(resolveModelPath(undefined, "/default.bin", exists), "/default.bin");
+});
+
+test("resolveModelPath uses the default model for an empty configured path", () => {
+  const exists = (file: string) => file === "/default.bin";
+  assert.equal(resolveModelPath("", "/default.bin", exists), "/default.bin");
 });
 
 test("buildWhisperArgs requests JSON output without shell interpolation", () => {

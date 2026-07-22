@@ -53,7 +53,19 @@ export function sileroVadConfig(input: SileroVadInput): { config: object; buffer
   };
 }
 
+export function resolveSherpaExport(module: unknown): SherpaOnnxModule | null {
+  const candidates = [module, (module as { default?: unknown } | null)?.default];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && typeof (candidate as SherpaOnnxModule).Vad === "function") {
+      return candidate as SherpaOnnxModule;
+    }
+  }
+  return null;
+}
+
 export async function loadSherpaOnnx(): Promise<SherpaOnnxModule> {
+  // Computed specifier keeps the optional sherpa-onnx-node peer out of the static
+  // dependency graph so the package builds and runs without it installed.
   const specifier = "sherpa-onnx-" + "node";
   let module: unknown;
   try {
@@ -61,10 +73,11 @@ export async function loadSherpaOnnx(): Promise<SherpaOnnxModule> {
   } catch {
     throw new CaptureConfigError("Silero VAD requires optional dependency sherpa-onnx-node; install it before enabling VAD");
   }
-  if (!module || typeof module !== "object" || typeof (module as SherpaOnnxModule).Vad !== "function") {
+  const resolved = resolveSherpaExport(module);
+  if (!resolved) {
     throw new CaptureConfigError("sherpa-onnx-node does not expose the Vad API required by capture-audio");
   }
-  return module as SherpaOnnxModule;
+  return resolved;
 }
 
 export async function createSileroVad(

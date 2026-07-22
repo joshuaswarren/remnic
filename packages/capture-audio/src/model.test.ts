@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -44,6 +44,16 @@ test("downloadWhisperModel rejects failed responses without writing a model", as
       CaptureConfigError,
     );
     assert.deepEqual(await readdir(directory), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("downloadWhisperModel rejects an existing non-file destination", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "capture-model-"));
+  try {
+    await mkdir(path.join(directory, "ggml-small.bin"));
+    await assert.rejects(downloadWhisperModel({ model: "small", directory }), /regular file/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

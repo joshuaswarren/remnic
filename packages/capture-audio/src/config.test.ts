@@ -28,6 +28,10 @@ test("valid overrides parse and boolean-like coercion applies to numbers", () =>
   assert.deepEqual(cfg.denyApps, ["Zoom", "Slack"]);
 });
 
+test("an empty STT model path uses the default model", () => {
+  assert.equal(parseDaemonConfig({ stt: { modelPath: "" } }).stt.modelPath, null);
+});
+
 test("VAD options use the same valid ranges as the runtime adapter", () => {
   const cfg = parseDaemonConfig({
     vad: {
@@ -49,6 +53,8 @@ test("VAD options use the same valid ranges as the runtime adapter", () => {
   });
   assert.throws(() => parseDaemonConfig({ vad: { minSpeechMs: 0 } }), CaptureConfigError);
   assert.throws(() => parseDaemonConfig({ vad: { threshold: 1 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ vad: { threshold: 0 } }), CaptureConfigError);
+  assert.equal(parseDaemonConfig({ vad: { modelPath: null } }).vad.modelPath, null);
 });
 
 test("non-integer / out-of-range port is rejected loudly", () => {

@@ -146,7 +146,7 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
       "vad",
     );
     if (vad.modelPath !== undefined) {
-      cfg.vad.modelPath = requireString(vad.modelPath, "vad.modelPath");
+      cfg.vad.modelPath = vad.modelPath === null ? null : requireString(vad.modelPath, "vad.modelPath");
     }
     if (vad.minSpeechMs !== undefined) {
       cfg.vad.minSpeechMs = coerceNumber(vad.minSpeechMs, "vad.minSpeechMs", { integer: true, min: 1 });
@@ -158,10 +158,11 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
       cfg.vad.maxSpeechMs = coerceNumber(vad.maxSpeechMs, "vad.maxSpeechMs", { integer: true, min: 1 });
     }
     if (vad.threshold !== undefined) {
-      cfg.vad.threshold = coerceNumber(vad.threshold, "vad.threshold", {
-        min: Number.MIN_VALUE,
-        max: 1 - Number.EPSILON,
-      });
+      const threshold = coerceNumber(vad.threshold, "vad.threshold", { max: 1 });
+      if (threshold <= 0 || threshold >= 1) {
+        throw new CaptureConfigError("vad.threshold must be between 0 and 1");
+      }
+      cfg.vad.threshold = threshold;
     }
     if (vad.threads !== undefined) {
       cfg.vad.threads = coerceNumber(vad.threads, "vad.threads", { integer: true, min: 1, max: 256 });
@@ -189,7 +190,7 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
       if (typeof stt.modelPath !== "string") {
         throw new CaptureConfigError(`stt.modelPath: expected a string, got ${describeValue(stt.modelPath)}`);
       }
-      cfg.stt.modelPath = stt.modelPath;
+      cfg.stt.modelPath = stt.modelPath.trim() || null;
     }
     if (stt.threads !== undefined && stt.threads !== null) {
       cfg.stt.threads = coerceNumber(stt.threads, "stt.threads", { integer: true, min: 1, max: 256 });
