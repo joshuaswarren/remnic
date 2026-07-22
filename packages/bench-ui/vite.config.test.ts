@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -9,6 +8,7 @@ import {
   createBenchResultsHandler,
   resolveResultsDir,
 } from "./vite.config";
+import { withTempDir } from "./src/testing/tmp-dir";
 
 test("resolveResultsDir expands exact home-relative bench results paths", () => {
   const home = path.join(path.sep, "tmp", "remnic-home");
@@ -42,9 +42,8 @@ test("resolveResultsDir preserves relative, absolute, and unsupported tilde-user
 });
 
 test("bench results handler serves JSON for dev and preview middleware", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-vite-"));
-  const resultsDir = path.join(tempRoot, "results");
-  try {
+  await withTempDir("vite", async (tempRoot) => {
+    const resultsDir = path.join(tempRoot, "results");
     await mkdir(resultsDir, { recursive: true });
     await writeFile(
       path.join(resultsDir, "run.json"),
@@ -92,16 +91,13 @@ test("bench results handler serves JSON for dev and preview middleware", async (
     assert.deepEqual(previewRoutes, ["/api/results"]);
     assert.equal(typeof devHandlers[0], "function");
     assert.equal(typeof previewHandlers[0], "function");
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 });
 
 test("bench results plugin emits static /api/results asset during build", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-static-"));
-  const resultsDir = path.join(tempRoot, "results");
-  const outDir = path.join(tempRoot, "dist");
-  try {
+  await withTempDir("static", async (tempRoot) => {
+    const resultsDir = path.join(tempRoot, "results");
+    const outDir = path.join(tempRoot, "dist");
     await mkdir(resultsDir, { recursive: true });
     await writeFile(
       path.join(resultsDir, "run.json"),
@@ -130,9 +126,7 @@ test("bench results plugin emits static /api/results asset during build", async 
       summaries?: Array<{ id?: string }>;
     };
     assert.equal(payload.summaries?.[0]?.id, "run-static");
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 });
 
 async function invokeHandler(
