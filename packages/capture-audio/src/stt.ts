@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 import { CaptureConfigError } from "./errors.js";
 
@@ -92,4 +93,22 @@ export async function transcribeWithWhisper(input: WhisperTranscriptionInput): P
     throw new CaptureConfigError(`whisper-cli failed: ${detail}`);
   }
   return parseWhisperJson(result.stdout, input.chunkStartedAtUtc);
+}
+
+export function runWhisperCli(command: string, args: string[]): Promise<WhisperRunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
+    });
+  });
 }

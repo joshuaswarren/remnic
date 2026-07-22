@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { CaptureConfigError } from "./errors.js";
-import { buildWhisperArgs, parseWhisperJson, resolveModelPath, transcribeWithWhisper } from "./stt.js";
+import {
+  buildWhisperArgs,
+  parseWhisperJson,
+  resolveModelPath,
+  runWhisperCli,
+  transcribeWithWhisper,
+} from "./stt.js";
 
 test("parseWhisperJson converts segment offsets into chunk timestamps", () => {
   const result = parseWhisperJson(
@@ -69,4 +75,13 @@ test("transcribeWithWhisper makes a failed subprocess actionable", async () => {
       }),
     /whisper-cli failed: model unavailable/,
   );
+});
+
+test("runWhisperCli returns stdout and stderr from an argv-only subprocess", async () => {
+  const result = await runWhisperCli(process.execPath, [
+    "-e",
+    'process.stdout.write("out"); process.stderr.write("err")',
+  ]);
+
+  assert.deepEqual(result, { code: 0, stdout: "out", stderr: "err" });
 });
