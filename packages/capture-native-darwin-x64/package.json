@@ -1,0 +1,25 @@
+{
+  "name": "@remnic/capture-native-darwin-x64",
+  "version": "9.15.1",
+  "description": "macOS Intel native audio capture helper for Remnic",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "bin": {
+    "remnic-audio-helper": "bin/remnic-audio-helper"
+  },
+  "files": ["bin/remnic-audio-helper"],
+  "scripts": {
+    "test": "test -x bin/remnic-audio-helper"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/capture-native-darwin-x64"
+  },
+  "keywords": ["remnic", "audio", "capture", "macos", "darwin", "x64"]
+}
