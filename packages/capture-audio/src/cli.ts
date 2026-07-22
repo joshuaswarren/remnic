@@ -23,6 +23,7 @@ import {
   removePidFile,
   removePidFileIfOwner,
   writePidFile,
+  type PidRecord,
 } from "./control.js";
 import { startDaemon } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
@@ -122,8 +123,20 @@ function applyBindingOverrides(
   return next;
 }
 
-function healthUrl(config: DaemonConfig): string {
-  return `http://${formatHostForUrl(config.host)}:${config.port}/v1/health`;
+function healthUrlFor(host: string, port: number): string {
+  return `http://${formatHostForUrl(host)}:${port}/v1/health`;
+}
+
+/**
+ * Health URL for the running daemon: prefer the effective binding persisted
+ * in the pid record, falling back to on-disk config. This lets status/stop
+ * reach a daemon started with --host/--port/--listen even when the config
+ * file on disk says something else.
+ */
+function recordHealthUrl(record: PidRecord, paths: CapturePaths, stderr: (l: string) => void): string {
+  if (record.host !== null && record.port !== null) return healthUrlFor(record.host, record.port);
+  const config = loadConfigOrDefault(paths, stderr);
+  return healthUrlFor(config.host, config.port);
 }
 
 function tokenHeader(paths: CapturePaths): Record<string, string> {
@@ -132,9 +145,9 @@ function tokenHeader(paths: CapturePaths): Record<string, string> {
 }
 
 /** Authenticated health probe; returns the daemon's instanceId or null. */
-async function probeInstanceId(paths: CapturePaths, config: DaemonConfig): Promise<string | null> {
+async function probeInstanceId(paths: CapturePaths, url: string): Promise<string | null> {
   try {
-    const res = await fetch(healthUrl(config), { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
+    const res = await fetch(url, { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
     if (!res.ok) return null;
     const body = (await res.json()) as { instanceId?: unknown };
     return typeof body.instanceId === "string" ? body.instanceId : null;
@@ -207,7 +220,11 @@ async function cmdStart(
     );
   }
   const handle = await startDaemon({ spool, config, token, capturing: false });
-  writePidFile(paths.pidPath, process.pid, { instanceId: spool.meta("instance_id") });
+  writePidFile(paths.pidPath, process.pid, {
+    instanceId: spool.meta("instance_id"),
+    host: handle.host,
+    port: handle.port,
+  });
   stdout(`listening on ${handle.url}`);
 
   return await new Promise<number>((resolve) => {
@@ -244,8 +261,7 @@ async function cmdStop(
   // live process really is that daemon before signalling — a reused pid
   // must not be killed by us.
   if (record.instanceId !== null) {
-    const config = loadConfigOrDefault(paths, stderr);
-    const liveInstance = await probeInstanceId(paths, config);
+    const liveInstance = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
     if (liveInstance !== null && liveInstance !== record.instanceId) {
       removePidFile(paths.pidPath);
       stdout(`pid ${record.pid} is not our daemon (instance mismatch); cleared stale pid file`);
@@ -284,9 +300,11 @@ async function cmdStatus(
     stdout("status: not running");
     return 0;
   }
-  const config = loadConfigOrDefault(paths, stderr);
   try {
-    const res = await fetch(healthUrl(config), { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
+    const res = await fetch(recordHealthUrl(record, paths, stderr), {
+      headers: tokenHeader(paths),
+      signal: AbortSignal.timeout(2000),
+    });
     const body = await res.text();
     stdout(`status: running (pid ${record.pid}) — HTTP ${res.status} ${body}`);
   } catch (err) {

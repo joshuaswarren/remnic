@@ -21,11 +21,17 @@ export interface PidRecord {
   instanceId: string | null;
   /** ISO timestamp the record was written. */
   startedAtIso: string;
+  /** Effective bound host, when known (so status/stop reach the daemon the CLI actually started). */
+  host: string | null;
+  /** Effective bound port, when known. */
+  port: number | null;
 }
 
 export interface PidWriteOptions {
   instanceId?: string | null;
   startedAtIso?: string;
+  host?: string | null;
+  port?: number | null;
 }
 
 /** Atomically write the pid record (temp file + rename) — no partial reads. */
@@ -35,6 +41,8 @@ export function writePidFile(pidPath: string, pid: number, options: PidWriteOpti
     pid,
     instanceId: options.instanceId ?? null,
     startedAtIso: options.startedAtIso ?? new Date().toISOString(),
+    host: options.host ?? null,
+    port: options.port ?? null,
   };
   const tmp = `${pidPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(record)}\n`, "utf8");
@@ -59,10 +67,14 @@ export function readPidRecord(pidPath: string): PidRecord | null {
   const record = parsed as Record<string, unknown>;
   const pid = typeof record.pid === "number" ? record.pid : Number.NaN;
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  const port =
+    typeof record.port === "number" && Number.isInteger(record.port) && record.port > 0 ? record.port : null;
   return {
     pid,
     instanceId: typeof record.instanceId === "string" ? record.instanceId : null,
     startedAtIso: typeof record.startedAtIso === "string" ? record.startedAtIso : "",
+    host: typeof record.host === "string" && record.host !== "" ? record.host : null,
+    port,
   };
 }
 
