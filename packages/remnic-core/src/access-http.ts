@@ -37,7 +37,7 @@ import {
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
-import { resolveNamespacePreflight } from "./scopes/scope-plan.js";
+import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -1467,20 +1467,19 @@ export class EngramAccessHttpServer {
       return;
     }
 
-    // Namespace-writability preflight (issue #1888 part 3): would the client's
-    // enabled write (`?op=observe|memory_store`, default observe) to the
-    // requested namespace by THIS token succeed? Out-of-allow-list → 200
-    // {ok:false}; any allowedByOps token may run it (HTTP + batch admit alike).
     if (req.method === "GET" && pathname === "/engram/v1/namespace/writable") {
-      const preflightOp = getOperation("namespace_writable"); // boundary marker (catalog parity, issue #1888)
-      const caps = tokenCapabilityStore.getStore();
-      if (!(preflightOp?.spec.allowedByOps ?? []).some((op) => capabilityAllowsOp(caps, op))) {
-        throw new EngramAccessForbiddenError("token is not permitted to run the namespace preflight");
-      }
-      const ns = parsed.searchParams.get("namespace") || undefined;
-      const sk = parsed.searchParams.get("session") || undefined;
-      const writeOp = parsed.searchParams.get("op") === "memory_store" ? "memory_store" : "observe";
-      this.respondJson(res, 200, resolveNamespacePreflight(caps, ns, sk, this.resolveRequestPrincipal(req), this.service.configRef, writeOp));
+      if (!getOperation("namespace_writable")) throw new Error("namespace_writable operation is not registered");
+      this.respondJson(
+        res,
+        200,
+        await resolveQueryNamespaceWritablePreflight(
+          tokenCapabilityStore.getStore(),
+          parsed.searchParams,
+          this.resolveRequestPrincipal(req),
+          this.service.configRef.defaultNamespace,
+          (request) => this.service.namespaceWritablePreflight(request),
+        ),
+      );
       return;
     }
 

@@ -1630,6 +1630,12 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
    *  `chat_template_kwargs`, so this is the only think-off dialect it honors.
    *  Issue #1996. */
   localLlmReasoningEffort: string;
+  /**
+   * Maximum transcript length that re-enables thinking for local extraction.
+   * Set to `0` to keep thinking suppressed for every extraction. Default:
+   * `3000`. Consolidation is unaffected.
+   */
+  localLlmThinkingThresholdChars: number;
   // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
   /** Master gate. When false, restores pre-change behavior (extractor called on every triggered observe; no gate). */
   extractionRetryEnabled: boolean;

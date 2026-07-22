@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.14.0",
+  "version": "9.15.1",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3033,7 +3033,13 @@
       "localLlmDisableThinking": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), request chain-of-thought / thinking-mode suppression on the main local LLM (issue #548). The `chat_template_kwargs: { enable_thinking: false }` field is sent only when the detected backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open to avoid the 400-cooldown path. Structured-output tasks like extraction and consolidation gain nothing from reasoning tokens and thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek) often blow the 60s timeout before emitting content. Set to false to restore thinking for narrative tasks. The fast-tier client always disables thinking and is not affected by this flag."
+        "description": "When true (default), suppress thinking on supported local backends for extraction and other terse structured operations. `localLlmThinkingThresholdChars` re-enables thinking for short extractions. Consolidation and the fast tier are unaffected."
+      },
+      "localLlmThinkingThresholdChars": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 3000,
+        "description": "Enable thinking for local extraction when the transcript is shorter than this many characters. Set to 0 to keep thinking suppressed for every extraction. Consolidation is unaffected."
       },
       "localLlmEnabled": {
         "type": "boolean",
@@ -6729,7 +6735,12 @@
     "localLlmDisableThinking": {
       "label": "Disable Local LLM Thinking Mode",
       "advanced": true,
-      "help": "Suppress chain-of-thought reasoning on the main local LLM. Default on — extraction / consolidation are structured-output tasks where thinking is pure latency tax and a common cause of 60s timeouts on Qwen 3.5 / Gemma 4 / DeepSeek. The suppression field (chat_template_kwargs) is only sent when the backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open. Turn off if you want thinking on narrative tasks. Fast-tier client always disables thinking regardless."
+      "help": "Suppress thinking for supported local extraction operations. Short extractions can opt back in with Local LLM Thinking Threshold. Consolidation and the fast tier are unaffected."
+    },
+    "localLlmThinkingThresholdChars": {
+      "label": "Local LLM Thinking Threshold (chars)",
+      "advanced": true,
+      "help": "Enable thinking only for local extraction transcripts shorter than this length. Set to 0 to suppress thinking for every extraction. Consolidation is unaffected."
     },
     "evalHarnessEnabled": {
       "label": "Evaluation Harness",

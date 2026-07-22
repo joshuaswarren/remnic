@@ -2727,6 +2727,10 @@ test("HTTP namespace/writable preflight returns the structured writability resul
   // is a valid 200 answer (read via `ok`), not an HTTP error.
   const service = {
     configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-test", defaultNamespace: "default" }),
+    namespaceWritablePreflight: async ({ namespace }: { namespace?: string }) =>
+      namespace && namespace !== "default"
+        ? { ok: false as const, reason: "not_writable" as const, namespace }
+        : { ok: true as const, namespace: "default" },
   } as unknown as EngramAccessService;
   const server = new EngramAccessHttpServer({
     service,
@@ -2757,9 +2761,90 @@ test("HTTP namespace/writable preflight returns the structured writability resul
   }
 });
 
+test("HTTP namespace/writable forwards project context to the scoped write preflight", async () => {
+  let received:
+    | {
+        namespace?: string;
+        sessionKey?: string;
+        projectTag?: string;
+        cwd?: string;
+      }
+    | undefined;
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-context", defaultNamespace: "default" }),
+    namespaceWritablePreflight: async (request: {
+      namespace?: string;
+      sessionKey?: string;
+      projectTag?: string;
+      cwd?: string;
+    }) => {
+      received = request;
+      return { ok: true as const, namespace: "derived-project-namespace" };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/namespace/writable?session=s-1&projectTag=Acme%2FWebshop&cwd=%2Ftmp%2Frepo`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.deepEqual(await response.json(), { ok: true, namespace: "derived-project-namespace" });
+    assert.deepEqual(received, {
+      namespace: undefined,
+      sessionKey: "s-1",
+      authenticatedPrincipal: undefined,
+      projectTag: "Acme/Webshop",
+      cwd: "/tmp/repo",
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP namespace/writable checks token scope against the effective scoped namespace", async () => {
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-effective", defaultNamespace: "default" }),
+    namespaceWritablePreflight: async () => ({
+      ok: true as const,
+      namespace: "principal-project-derived",
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "default-only", capabilities: { version: 1, ops: ["observe"], namespaces: ["default"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/namespace/writable?session=s-1&projectTag=Acme%2FWebshop`,
+      { headers: { authorization: "Bearer default-only" } },
+    );
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      reason: "not_writable",
+      namespace: "principal-project-derived",
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP namespace/writable preflight admits write-scoped tokens and rejects read-only ops", async () => {
   const service = {
     configRef: parseConfig({ memoryDir: "/tmp/remnic-http-preflight-ops-test", defaultNamespace: "default" }),
+    namespaceWritablePreflight: async () => ({ ok: true as const, namespace: "default" }),
   } as unknown as EngramAccessService;
   const server = new EngramAccessHttpServer({
     service,
@@ -2800,6 +2885,12 @@ test("HTTP namespace/writable preflight admits write-scoped tokens and rejects r
     assert.equal(await okOf(diag), false);
     // A read-only token cannot write, so it has nothing to preflight → 403.
     assert.equal((await request("read-only")).status, 403);
+    const invalidOp = await request("write-scoped", "memory_stroe");
+    assert.equal(invalidOp.status, 400);
+    assert.match(
+      JSON.stringify(await invalidOp.json()),
+      /unsupported namespace preflight operation: memory_stroe/,
+    );
   } finally {
     await server.stop();
   }
