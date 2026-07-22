@@ -1,13 +1,17 @@
-# Desktop capture — on-screen activity & meeting intelligence
+# Desktop capture — on-screen activity, desktop audio & meeting intelligence
 
 Desktop capture is the umbrella (issue #1896) for turning a workstation's own
-signals — on-screen text and, later, microphone audio — into searchable daily
-context and detected meetings, using the same provider-agnostic, à-la-carte,
-fixture-testable design as the wearable connectors.
+signals — on-screen text, microphone and system audio, and cloud meeting
+transcripts — into searchable daily context and detected meetings, using the
+same provider-agnostic, à-la-carte, fixture-testable design as the
+[wearable connectors](wearables.md).
 
 This document describes the **whole** epic and marks precisely what has shipped
-versus what is a planned follow-on slice, so a reader never assumes an
-unbuilt surface exists.
+versus what is a binding-but-unbuilt design, so a reader never assumes an
+unbuilt surface exists. Remnic is a **memory system, not a DVR**: it captures
+*text* (accessibility-tree text, OCR output, transcripts) plus context (app,
+window title, URL, timestamps, speakers) and never keeps a screenshot or audio
+timeline.
 
 ## Status at a glance
 
@@ -15,6 +19,8 @@ unbuilt surface exists.
 |-------|-------|-------|
 | Activity store + day-digest foundation | #1899 | **shipped** (`@remnic/core`, `src/activity/`) |
 | Meeting detector (pure functions) | #1900 | **shipped** (`@remnic/core`, `src/meetings/`) |
+| Cloud meeting connectors: Granola, Fireflies | #1898 | **shipped** (`@remnic/connector-granola`, `@remnic/connector-fireflies`) |
+| Cloud meeting connector: Otter (+ Plaud) | #1898 | planned |
 | `@remnic/capture-screen` daemon (`--replay`) | #1899 | planned |
 | Activity `extractionMode: smart` + judge hardening | #1899 | planned |
 | Screen native macOS helper (ScreenCaptureKit/Vision/AX) | #1899 | planned, hardware-gated |
@@ -25,29 +31,132 @@ unbuilt surface exists.
 | Episode memories + MCP/HTTP surfaces | #1900 | planned |
 | Audio native macOS helper | #1897 | planned, hardware-gated |
 
-"Hardware-gated" slices require a macOS/Windows build+sign+on-device-permission
-environment and cannot be built or verified on a headless Linux host.
+The capture **daemons, their config gates, CLIs, and HTTP APIs are not yet
+merged.** The architecture below is *binding* (decided on #1896; implementation
+issues may not relitigate it), but where a surface is marked planned it does not
+exist in the published packages yet. "Hardware-gated" slices additionally
+require a macOS/Windows build+sign+on-device-permission environment and cannot
+be built or verified on a headless host.
 
 ## Design principles (shared with wearables)
 
 1. **Provider-agnostic core.** `@remnic/core` owns the data model, storage,
-   digest rendering, and detection. No host SDK dependency (see the Architecture
-   Boundaries section in `AGENTS.md`).
+   digest rendering, and detection. No host SDK dependency, no native bindings,
+   no capture code (see the Architecture Boundaries section in `AGENTS.md`).
 2. **À-la-carte capture.** Capture daemons ship as separate optional packages
-   (`@remnic/capture-screen`, `@remnic/capture-audio`) loaded lazily; core works
-   without them.
+   (`@remnic/capture-screen`, `@remnic/capture-audio`) loaded lazily via
+   computed-specifier dynamic import; a base install
+   (`npm install @remnic/core` or `@remnic/cli`) works with zero capture
+   packages present and a missing package produces a clean install hint, never a
+   `MODULE_NOT_FOUND`.
 3. **Fixture-first, CI-verifiable.** Every daemon exposes a `--replay` mode that
    drives it from recorded fixtures, so the pipeline is testable without a
-   camera, microphone, or screen.
+   camera, microphone, or screen. Fixtures are synthetic (public-repo policy: no
+   real conversation data).
 4. **Day-anchored, searchable, never auto-recalled.** Rendered day artifacts
    live under the memory directory inside the QMD collection root but outside the
    memory scan roots — searchable on demand, never injected automatically.
+
+## Privacy charter (binding, every phase)
+
+These are non-negotiable design commitments from #1896. They constrain every
+capture slice; each slice references them by name (for example
+"charter: default-off").
+
+1. **Default-off, double opt-in.** Screen and audio capture are OFF by default
+   and turn on only after **two** deliberate acts: (a) installing and starting
+   the capture daemon on the machine being captured, AND (b) setting the config
+   gate (`activity.enabled: true` for screen, `wearables.sources.desktop.enabled:
+   true` for audio). Either act alone captures nothing into memory. No install,
+   upgrade, host adapter, or preset may flip these gates.
+2. **Feature independence.** Desktop audio, screen activity, each cloud connector,
+   meeting intelligence, and each memory-extraction mode are separate switches
+   with their own defaults; enabling one never implicitly enables another. A
+   disabled feature reports "disabled" on every surface (CLI/MCP/HTTP) rather
+   than half-working.
+3. **No raw-media persistence by default.** Audio chunks and any screenshots are
+   deleted after text extraction. An optional retention buffer
+   (`rawRetentionHours`, default `0`) exists only for re-transcription debugging.
+4. **Capture-time deny-lists** — app names, window-title glob patterns, and URL
+   patterns are enforced *before* anything reaches the spool. Sensible defaults
+   ship (password managers such as 1Password/Bitwarden/KeePass; private-browsing
+   windows).
+5. **Secure text fields are never captured** — the OS accessibility layer marks
+   password/secure fields (macOS `AXSecureTextField`, Windows UIA `IsPassword`)
+   and the capture layer skips them.
+6. **Redaction before disk** — the wearables redaction stage (built-in SSN /
+   payment-card patterns plus your `redactionPatterns`) runs on captured text
+   before spool writes where feasible and always before `memoryDir` writes.
+7. **Zero telemetry** — no analytics, no crash reporting, no network calls
+   except the ones you configured. STT model downloads happen only on explicit
+   invocation.
+8. **Memory creation is separately gated.** Transcript/digest storage and memory
+   extraction are independent switches. Screen-derived memory extraction
+   defaults to *off* even when capture is on, because screen text includes other
+   people's content (emails you read, docs colleagues shared).
+
+## Capture daemon & local spool model (design)
+
+The machine being captured may not be the machine running the Remnic
+daemon/gateway, so each capture package ships a **standalone long-running
+daemon** rather than a library call:
+
+- The daemon persists to a **local spool** (SQLite) under `~/.remnic/capture/`
+  on the capture machine — never under `memoryDir`. The spool is
+  capture-machine-local raw material; `memoryDir` holds only pipeline output.
+- The daemon exposes a **minimal versioned HTTP API on loopback** (`/v1/health`,
+  `/v1/conversations`, `/v1/snapshots`, …). Remnic consumes it exactly the way
+  `@remnic/connector-bee` consumes the local `bee proxy` — that is the in-repo
+  precedent for "a connector reads a local daemon".
+- **Default ports: `4340` (audio), `4341` (screen)**, both configurable. Neither
+  collides with the Remnic HTTP daemon default (`4318`, see
+  `docs/config-reference.md`).
+- **Auth:** a bearer token is auto-generated at first start and stored at
+  `~/.remnic/capture/token` with `0600` permissions. The daemon binds loopback
+  by default; a non-loopback bind requires the token AND an explicit `--listen`
+  flag.
+
+The wearables side consumes desktop audio through the ordinary
+`WearableSourceConnector` contract (source id `desktop`), so the entire existing
+pipeline — cleanup, redaction, corrections, speaker labeling, day store,
+trust-gated memory — applies with no change to pipeline semantics. A pendant
+*and* the desktop hearing the same meeting yields free cross-device
+corroboration (the existing `+0.15` trust signal; see [wearables](wearables.md)).
+
+## UTC & retention behavior
+
+- **Timestamps are UTC everywhere** — spool rows, API payloads, day-store
+  frontmatter, and memory attributes all use UTC ISO-8601
+  (`2026-07-15T14:03:22.000Z`). Day bucketing converts to the configured IANA
+  timezone exactly the way wearables already does. Time-range filters use
+  half-open `[start, end)` intervals. Remnic deliberately rejects rewriting API
+  timestamps to machine-local time in middleware — a documented footgun.
+- **Spool is a buffer, not an archive.** Raw WAV/frame files are deleted once a
+  chunk is transcribed (unless `rawRetentionHours > 0`). A janitor prunes
+  segments/conversations older than `spoolRetentionDays` (default `30`). The
+  durable copy is the Remnic day store, whose own retention is governed by
+  [retention policy](retention-policy.md).
+
+## Platform support & degradation
+
+Priority order: **macOS (Apple Silicon) first** (best accessibility APIs,
+primary user base), **Windows second**, **Linux best-effort** (OCR-only screen
+path is acceptable). Native helpers ship as platform-specific optional packages
+(`@remnic/capture-native-darwin-arm64`, …) resolved at runtime with an
+actionable install hint on miss.
+
+Every capture package must **degrade cleanly**: on an unsupported platform the
+daemon refuses to start with a clear message and everything else in Remnic is
+unaffected. A missing STT binary, model file, or native helper produces an
+install hint, never a crash or a silent no-op.
 
 ## Shipped — activity subsystem (`src/activity/`, #1899)
 
 The on-screen activity subsystem captures periodic screen snapshots (text +
 window/app context) into a durable per-machine store and renders a deterministic
-day digest.
+day digest. The library is shipped in `@remnic/core`; the capture daemon that
+*feeds* it and the `activity.enabled` config gate are planned (see the status
+table).
 
 ### Store — `ActivityStore` (`store.ts`)
 
@@ -109,20 +218,132 @@ activity). No store, fusion, or surfaces yet; those are later #1900 slices.
 - Config thresholds (`minOverlapMinutes`, `audioOnlyMinMinutes`,
   `mergeGapMinutes`) are validated as finite, non-negative numbers.
 
+## Shipped — cloud meeting connectors (#1898)
+
+Two cloud meeting sources ship today as à-la-carte wearable connectors. They
+ingest transcripts a cloud service already produced (they cannot make them
+retroactively local) and run through the standard wearables pipeline, including
+trust-gated memory:
+
+- **Granola** (`@remnic/connector-granola`) — cloud meeting notes + transcripts;
+  requires a Granola Business/Enterprise plan.
+- **Fireflies** (`@remnic/connector-fireflies`) — cloud meeting transcripts via
+  the GraphQL API.
+
+Auth, per-source config, and behavior are documented alongside the other sources
+in [wearables](wearables.md#per-source-notes). The Otter connector (and a Plaud
+investigation) is planned under #1898 and not yet published.
+
+## Pipeline boundaries
+
+Three ingestion paths feed different stores; they connect only at meeting
+detection:
+
+| Path | Produces | Store | Becomes memories? |
+|------|----------|-------|-------------------|
+| **Screen activity** (planned daemon → shipped `src/activity/`) | screen text + app/window context | `<memoryDir>/state/activity.sqlite` + `<memoryDir>/activity/<date>.md` | opt-in, default off |
+| **Desktop audio** (planned `@remnic/capture-audio`, source `desktop`) | diarized transcripts | `<memoryDir>/wearables/desktop/<date>.md` | trust-gated (wearables pipeline) |
+| **Cloud meeting connectors** (shipped) | provider transcripts | `<memoryDir>/wearables/<source>/<date>.md` | trust-gated (wearables pipeline) |
+| **Meeting intelligence** (detector shipped; fusion planned) | detected/fused meetings | `<memoryDir>/meetings/<date>/<id>.md` (fusion slice) | trust-gated summary + facts |
+
+Raw audio/frames and the capture spool (text) live only on the capture machine
+and are never indexed by QMD and never become memories. Desktop audio flows into
+the *same* wearables pipeline as pendants; screen activity is a distinct
+modality with its own FTS5 store; meeting detection reads both.
+
+## Configuration (design — synthetic placeholders)
+
+The gates below are the *binding config contract* the capture slices introduce.
+They are **not yet present in `docs/config-reference.md`** and setting them has
+no effect until the corresponding daemon slice lands. Values shown are synthetic
+examples.
+
+Screen activity (planned `activity.*` block):
+
+```jsonc
+{
+  "activity": {
+    "enabled": false,                 // charter: default-off — screen capture stays off until set true
+    "extractionMode": "off",          // screen-derived memories default off (other people's content)
+    "rawRetentionHours": 0,           // delete frames after text extraction
+    "spoolRetentionDays": 30,
+    "denyApps": ["1Password", "Bitwarden"],
+    "denyWindowTitles": ["*Private Browsing*"],
+    "denyUrlPatterns": ["https://mail.example.com/*"]
+  }
+}
+```
+
+Desktop audio (planned entry under the existing open `wearables.sources` map;
+all standard `WearableSourceSettings` fields apply):
+
+```jsonc
+{
+  "wearables": {
+    "sources": {
+      "desktop": {
+        "enabled": false,                       // charter: default-off + double opt-in
+        "baseUrl": "http://127.0.0.1:4340",     // the local capture-audio daemon
+        "token": "REPLACE_WITH_TOKEN",          // else REMNIC_CAPTURE_AUDIO_TOKEN, else the local token file
+        "memoryMode": "smart",
+        "sourceTrust": 0.85
+      }
+    }
+  }
+}
+```
+
+Meeting intelligence (planned `meetings.*` block):
+
+```jsonc
+{
+  "meetings": {
+    "enabled": false                  // fusion + record store + memories, all gated here
+  }
+}
+```
+
+## Installation hints
+
+Base installs never pull a capture or connector package. Install only what you
+want (`-g` for a global CLI install):
+
+```bash
+# Shipped today — cloud meeting connectors
+npm install -g @remnic/connector-granola @remnic/connector-fireflies
+
+# Planned — capture daemons (not yet published; names are fixed by #1896)
+npm install -g @remnic/capture-screen      # screen activity daemon
+npm install -g @remnic/capture-audio       # desktop audio daemon
+```
+
+Native helper binaries (planned) install as platform-specific optional packages
+(for example `@remnic/capture-native-darwin-arm64`); the daemon prints the exact
+`npm install` command when the matching helper is absent.
+
 ## Storage layout
 
 ```text
-<memoryDir>/
+~/.remnic/capture/                 # capture machine only (planned daemons)
+├── token                          # 0600 bearer token
+├── audio.sqlite / screen.sqlite   # local spool (text; not QMD-indexed, never memories)
+└── models/                        # STT models (explicit download only)
+
+<memoryDir>/                       # Remnic host
 ├── state/
-│   └── activity.sqlite        # ActivityStore (snapshots, FTS, sync cursors)
-└── activity/
-    └── <date>.md              # rendered day digest (QMD-searchable)
+│   └── activity.sqlite            # ActivityStore (snapshots, FTS, sync cursors) — shipped
+├── activity/
+│   └── <date>.md                  # rendered day digest (QMD-searchable) — shipped
+├── wearables/
+│   └── desktop/<date>.md          # desktop audio day transcript (planned)
+└── meetings/
+    └── <date>/<id>.md             # meeting records (fusion slice, planned)
 ```
 
-Meeting records get their own store + on-disk layout in the fusion slice (#1900);
-this is documented here when that slice lands.
+All `memoryDir` markdown follows the house style (YAML frontmatter, contentHash
+idempotency, outside the memory scan roots but inside the QMD collection root).
 
-## Both subsystems are reachable from the package root
+## Both shipped subsystems are reachable from the package root
 
 ```ts
 import { ActivityStore, composeActivityDigestBody, detectMeetings } from "@remnic/core";
@@ -130,5 +351,12 @@ import { ActivityStore, composeActivityDigestBody, detectMeetings } from "@remni
 
 ## References
 
-- Wearable transcript pipeline (the sibling design): `docs/wearables.md`
-- Architecture boundaries and the activity/ + meetings/ notes: `AGENTS.md`
+- [Wearable transcripts](wearables.md) — the sibling design and the pipeline
+  desktop audio and cloud meeting connectors reuse.
+- [Config reference](config-reference.md) — current settings (the capture gates
+  above are added as their slices land).
+- [Connectors CLI](connectors.md) and [live connectors](live-connectors.md) —
+  the operator surface for scheduled ingest.
+- [Retention policy](retention-policy.md) — how the durable day store ages out.
+- [Architecture index](architecture/README.md) and `AGENTS.md` — architecture
+  boundaries and the `activity/` + `meetings/` core-subsystem notes.
