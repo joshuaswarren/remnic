@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseActivityConfig } from "./config.js";
+import { defaultActivityConfig, parseActivityConfig } from "./config.js";
 
-test("parseActivityConfig defaults to an inert configuration", () => {
-  assert.deepEqual(parseActivityConfig(undefined), {
+test("parseActivityConfig defaults to an inert, search-only configuration", () => {
+  assert.deepEqual(defaultActivityConfig(), {
     enabled: false,
     timezone: "UTC",
     syncDays: 1,
     autoSyncIntervalMinutes: 15,
     sources: [],
+    extractionMode: "off",
+    sourceTrust: 0.6,
+    autoApproveTrust: 0.8,
+    reviewTrust: 0.5,
+    minConfidence: 0.7,
+    minImportance: "normal",
+    maxMemoriesPerDay: 0,
   });
+  assert.deepEqual(parseActivityConfig(undefined), defaultActivityConfig());
 });
 
 test("parseActivityConfig treats a string false gate as disabled", () => {
@@ -26,10 +34,10 @@ test("parseActivityConfig preserves explicit source settings", () => {
       sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319", token: "fixture-token" }],
     }),
     {
+      ...defaultActivityConfig(),
       enabled: true,
       timezone: "America/Chicago",
       syncDays: 3,
-      autoSyncIntervalMinutes: 15,
       sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319", token: "fixture-token" }],
     },
   );
@@ -110,4 +118,26 @@ test("parseActivityConfig parses and bounds autoSyncIntervalMinutes", () => {
   assert.equal(parseActivityConfig({ autoSyncIntervalMinutes: 1440 }).autoSyncIntervalMinutes, 1440);
   assert.throws(() => parseActivityConfig({ autoSyncIntervalMinutes: 0 }), /autoSyncIntervalMinutes must be an integer from 1 to 1440/);
   assert.throws(() => parseActivityConfig({ autoSyncIntervalMinutes: 1441 }), /autoSyncIntervalMinutes must be an integer from 1 to 1440/);
+});
+
+test("activity config accepts smart extraction only when explicitly selected", () => {
+  // `enabled` defaults false, so no source is required to configure extraction.
+  assert.deepEqual(parseActivityConfig({ extractionMode: "smart", maxMemoriesPerDay: 3 }), {
+    ...defaultActivityConfig(),
+    extractionMode: "smart",
+    maxMemoriesPerDay: 3,
+  });
+});
+
+test("activity config rejects invalid extraction values rather than silently defaulting", () => {
+  assert.throws(() => parseActivityConfig({ extractionMode: "automatic" }), /extractionMode/);
+  assert.throws(() => parseActivityConfig({ minConfidence: 1.1 }), /minConfidence/);
+  assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: 1.5 }), /maxMemoriesPerDay/);
+});
+
+test("activity config rejects inverted trust thresholds", () => {
+  assert.throws(
+    () => parseActivityConfig({ reviewTrust: 0.9, autoApproveTrust: 0.5 }),
+    /reviewTrust .* must be below autoApproveTrust/,
+  );
 });

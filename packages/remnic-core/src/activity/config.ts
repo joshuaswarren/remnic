@@ -1,6 +1,29 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
-import type { ActivityConfig, ActivitySourceConfig } from "./types.js";
+import type { ImportanceLevel } from "../types.js";
+import type { ActivityConfig, ActivityExtractionMode, ActivitySourceConfig } from "./types.js";
+
+const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
+const IMPORTANCE_LEVELS: readonly ImportanceLevel[] = ["critical", "high", "normal", "low", "trivial"];
+const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true };
+
+/** The inert default: disabled, search-only, no sources, no extraction. */
+export function defaultActivityConfig(): ActivityConfig {
+  return {
+    enabled: false,
+    timezone: "UTC",
+    syncDays: 1,
+    autoSyncIntervalMinutes: 15,
+    sources: [],
+    extractionMode: "off",
+    sourceTrust: 0.6,
+    autoApproveTrust: 0.8,
+    reviewTrust: 0.5,
+    minConfidence: 0.7,
+    minImportance: "normal",
+    maxMemoriesPerDay: 0,
+  };
+}
 
 function asRecord(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -15,15 +38,21 @@ function optionalString(value: unknown, name: string): string | undefined {
   return value;
 }
 
-const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true };
+function parseUnitInterval(value: unknown, key: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = coerceNumber(value);
+  if (parsed === undefined || !Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new RangeError(`activity.${key} must be a number in [0, 1]`);
+  }
+  return parsed;
+}
 
 /**
  * Parse, protocol-check, and confine an activity source base URL to a local
  * loopback host. Shared with ActivityHttpSourceClient so config-load and client
- * construction reject the exact same shapes with the same prefixed message (a
- * bare `new URL()` throws an opaque TypeError on malformed input). The bearer
- * token travels in an Authorization header, so a non-loopback baseUrl would
- * exfiltrate it; the subsystem contract is local capture daemons only.
+ * construction reject the exact same shapes with the same prefixed message. The
+ * bearer token travels in an Authorization header, so a non-loopback baseUrl
+ * would exfiltrate it; the subsystem contract is local capture daemons only.
  */
 export function validateActivityBaseUrl(baseUrl: string): URL {
   let parsed: URL;
@@ -61,9 +90,15 @@ function parseSource(value: unknown): ActivitySourceConfig {
   return { machineLabel, baseUrl, ...(token === undefined ? {} : { token }) };
 }
 
+/**
+ * Parse the unified `activity.*` block. `enabled` gates source ingestion (and
+ * requires at least one source); `extractionMode` independently gates durable
+ * trust-gated memory extraction (default `off`, i.e. search-only).
+ */
 export function parseActivityConfig(raw: unknown): ActivityConfig {
+  const defaults = defaultActivityConfig();
   if (raw === undefined || raw === null) {
-    return { enabled: false, timezone: "UTC", syncDays: 1, autoSyncIntervalMinutes: 15, sources: [] };
+    return { ...defaults };
   }
   const config = asRecord(raw, "activity");
   const enabledValue = coerceBooleanLike(config.enabled, "activity.enabled");
@@ -107,5 +142,40 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   }
   const enabled = enabledValue ?? false;
   if (enabled && sources.length === 0) throw new RangeError("activity.enabled requires at least one source");
-  return { enabled, timezone, syncDays, autoSyncIntervalMinutes, sources };
+
+  // Extraction gate (independent of `enabled` ingestion). Default `off`.
+  const extractionMode = config.extractionMode ?? defaults.extractionMode;
+  if (typeof extractionMode !== "string" || !EXTRACTION_MODES.includes(extractionMode as ActivityExtractionMode)) {
+    throw new RangeError(`activity.extractionMode must be one of: ${EXTRACTION_MODES.join(", ")}`);
+  }
+  const minImportance = config.minImportance ?? defaults.minImportance;
+  if (typeof minImportance !== "string" || !IMPORTANCE_LEVELS.includes(minImportance as ImportanceLevel)) {
+    throw new RangeError(`activity.minImportance must be one of: ${IMPORTANCE_LEVELS.join(", ")}`);
+  }
+  const rawMaxMemoriesPerDay = config.maxMemoriesPerDay ?? defaults.maxMemoriesPerDay;
+  const maxMemoriesPerDay = coerceNumber(rawMaxMemoriesPerDay);
+  if (maxMemoriesPerDay === undefined || !Number.isInteger(maxMemoriesPerDay) || maxMemoriesPerDay < 0) {
+    throw new RangeError("activity.maxMemoriesPerDay must be a non-negative integer");
+  }
+  const autoApproveTrust = parseUnitInterval(config.autoApproveTrust, "autoApproveTrust", defaults.autoApproveTrust);
+  const reviewTrust = parseUnitInterval(config.reviewTrust, "reviewTrust", defaults.reviewTrust);
+  if (reviewTrust >= autoApproveTrust) {
+    throw new RangeError(
+      `activity.reviewTrust (${reviewTrust}) must be below autoApproveTrust (${autoApproveTrust})`,
+    );
+  }
+  return {
+    enabled,
+    timezone,
+    syncDays,
+    autoSyncIntervalMinutes,
+    sources,
+    extractionMode: extractionMode as ActivityExtractionMode,
+    sourceTrust: parseUnitInterval(config.sourceTrust, "sourceTrust", defaults.sourceTrust),
+    autoApproveTrust,
+    reviewTrust,
+    minConfidence: parseUnitInterval(config.minConfidence, "minConfidence", defaults.minConfidence),
+    minImportance: minImportance as ImportanceLevel,
+    maxMemoriesPerDay,
+  };
 }
