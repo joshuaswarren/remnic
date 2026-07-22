@@ -29,6 +29,7 @@
  * so re-running a replay is a content no-op.
  */
 
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -167,6 +168,10 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
       // Parse (validate) the conversation BEFORE touching the spool, so a
       // malformed conversation never persists its speaker rows.
       const conv = parseConversation(doc, where);
+      if (conv.id === undefined) {
+        // Deterministic id so an id-less fixture stays idempotent across replays.
+        conv.id = `conv_${createHash("sha1").update(`${name}:${i}:${conv.startedAtUtc}`).digest("hex").slice(0, 24)}`;
+      }
       ingestSpeakers(spool, asObject(doc, where).speakers, where);
       const id = spool.insertConversation(conv);
       result.ids.push(id);

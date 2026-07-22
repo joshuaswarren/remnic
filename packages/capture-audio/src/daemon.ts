@@ -20,7 +20,7 @@ import { Buffer } from "node:buffer";
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { bearerFromHeader, tokensMatch } from "./token.js";
-import { isLoopbackHost } from "./util.js";
+import { formatHostForUrl, isLoopbackHost } from "./util.js";
 import { assertValidTimezone, parseLimit, parseTranscriptDate } from "./validate.js";
 import type { DaemonConfig } from "./config.js";
 import type { Spool } from "./spool.js";
@@ -88,16 +88,16 @@ export function createRequestHandler(deps: DaemonDeps): http.RequestListener {
   }
   return (req, res) => {
     try {
-      if (req.method !== "GET") {
-        sendJson(res, 405, { error: "method not allowed" });
-        return;
-      }
-      const url = new URL(req.url ?? "/", "http://localhost");
       const presented = bearerFromHeader(req.headers["authorization"]);
       if (!presented || !tokensMatch(deps.token, presented)) {
         sendJson(res, 401, { error: "unauthorized" });
         return;
       }
+      if (req.method !== "GET") {
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://localhost");
       switch (url.pathname) {
         case "/v1/health":
           handleHealth(deps, res);
@@ -142,7 +142,7 @@ export function startDaemon(deps: DaemonDeps): Promise<DaemonHandle> {
         server,
         host,
         port,
-        url: `http://${host}:${port}`,
+        url: `http://${formatHostForUrl(host)}:${port}`,
         close: () =>
           new Promise<void>((res2, rej2) => {
             server.close((closeErr) => (closeErr ? rej2(closeErr) : res2()));

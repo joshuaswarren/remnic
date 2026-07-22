@@ -77,3 +77,8 @@ export function describeValue(value: unknown): string {
   if (t === "object") return "an object";
   return `${t} (${String(value)})`;
 }
+
+/** Wrap an IPv6 host in brackets for use in a URL authority; IPv4/hostnames pass through. */
+export function formatHostForUrl(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}

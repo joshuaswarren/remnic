@@ -6,6 +6,7 @@ import { CaptureConfigError } from "./errors.js";
 import { startDaemon, type DaemonHandle } from "./daemon.js";
 import { Spool } from "./spool.js";
 import type { SegmentInput } from "./spool.js";
+import { formatHostForUrl } from "./util.js";
 
 const TOKEN = "loopback-token";
 const seg: SegmentInput = {
@@ -16,12 +17,15 @@ const seg: SegmentInput = {
 };
 
 const open: DaemonHandle[] = [];
+const spools: Spool[] = [];
 after(async () => {
   for (const h of open) await h.close();
+  for (const s of spools) s.close();
 });
 
 function seededSpool(): Spool {
   const spool = new Spool(":memory:");
+  spools.push(spool);
   spool.insertConversation({ id: "conv_1", startedAtUtc: "2026-07-20T10:00:00.000Z", segments: [seg] });
   spool.insertConversation({ id: "conv_2", startedAtUtc: "2026-07-20T11:00:00.000Z", segments: [seg] });
   spool.insertConversation({ id: "conv_live", startedAtUtc: "2026-07-20T12:00:00.000Z", state: "capturing", segments: [seg] });
@@ -30,9 +34,8 @@ function seededSpool(): Spool {
 }
 
 async function startLoopback(): Promise<DaemonHandle> {
-  const spool = seededSpool();
   const config = { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 };
-  const handle = await startDaemon({ spool, config, token: TOKEN });
+  const handle = await startDaemon({ spool: seededSpool(), config, token: TOKEN });
   open.push(handle);
   return handle;
 }
@@ -94,10 +97,11 @@ test("invalid date/timezone/limit/cursor each return 400", async () => {
   }
 });
 
-test("unknown route is 404 and non-GET is 405", async () => {
+test("unknown route is 404; authed non-GET is 405; unauth non-GET is 401 (authorize first)", async () => {
   const h = await startLoopback();
   assert.equal((await authFetch(`${h.url}/v1/nope`)).status, 404);
   assert.equal((await authFetch(`${h.url}/v1/health`, { method: "POST" })).status, 405);
+  assert.equal((await fetch(`${h.url}/v1/health`, { method: "POST" })).status, 401);
 });
 
 test("every request requires a valid bearer token (loopback included)", async () => {
@@ -112,15 +116,17 @@ test("every request requires a valid bearer token (loopback included)", async ()
 });
 
 test("startDaemon refuses to bind a non-loopback host (no TLS contract)", async () => {
-  const spool = seededSpool();
   const config = { ...defaultDaemonConfig(), host: "0.0.0.0", port: 0 };
-  await assert.rejects(startDaemon({ spool, config, token: TOKEN }), CaptureConfigError);
-  spool.close();
+  await assert.rejects(startDaemon({ spool: seededSpool(), config, token: TOKEN }), CaptureConfigError);
 });
 
 test("startDaemon requires a non-empty token", async () => {
-  const spool = seededSpool();
   const config = { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 };
-  await assert.rejects(startDaemon({ spool, config, token: "" }), CaptureConfigError);
-  spool.close();
+  await assert.rejects(startDaemon({ spool: seededSpool(), config, token: "" }), CaptureConfigError);
+});
+
+test("formatHostForUrl brackets IPv6 hosts only", () => {
+  assert.equal(formatHostForUrl("127.0.0.1"), "127.0.0.1");
+  assert.equal(formatHostForUrl("localhost"), "localhost");
+  assert.equal(formatHostForUrl("::1"), "[::1]");
 });

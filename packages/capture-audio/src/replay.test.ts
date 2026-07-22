@@ -131,3 +131,20 @@ test("a malformed conversation does not persist its speakers", () => {
   assert.deepEqual(spool.listSpeakers(), []);
   spool.close();
 });
+
+test("id-less fixtures get a deterministic id and stay idempotent across replays", () => {
+  const dir = fixtureDir({
+    "noid.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+  });
+  const spool = new Spool(":memory:");
+  const first = ingestReplayDir(spool, dir);
+  const before = spool.stats();
+  const second = ingestReplayDir(spool, dir);
+  assert.deepEqual(first.ids, second.ids);
+  assert.deepEqual(spool.stats(), before);
+  assert.equal(before.conversations, 1);
+  spool.close();
+});

@@ -8,7 +8,6 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
 import { coerceNumber } from "./coerce.js";
@@ -31,6 +30,7 @@ import { capturePaths, captureBaseDir, type CapturePaths } from "./paths.js";
 import { ingestReplayDir } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
+import { formatHostForUrl, isLoopbackHost } from "./util.js";
 
 export interface CliIo {
   argv: string[];
@@ -45,6 +45,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
+/** Flags that consume the next argv token as their value. */
 const VALUE_FLAGS: Record<string, true> = {
   replay: true,
   host: true,
@@ -52,6 +53,13 @@ const VALUE_FLAGS: Record<string, true> = {
   listen: true,
   "base-dir": true,
   lines: true,
+};
+
+/** Standalone boolean flags. Any other `--flag` is rejected loudly. */
+const BOOLEAN_FLAGS: Record<string, true> = {
+  foreground: true,
+  force: true,
+  help: true,
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -70,8 +78,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         }
         flags[key] = next;
         i += 1;
-      } else {
+      } else if (Object.hasOwn(BOOLEAN_FLAGS, key)) {
         flags[key] = true;
+      } else {
+        throw new CaptureInputError(`unknown flag --${key}`);
       }
     } else {
       positionals.push(arg);
@@ -112,6 +122,10 @@ function applyBindingOverrides(
   return next;
 }
 
+function healthUrl(config: DaemonConfig): string {
+  return `http://${formatHostForUrl(config.host)}:${config.port}/v1/health`;
+}
+
 function tokenHeader(paths: CapturePaths): Record<string, string> {
   if (!existsSync(paths.tokenPath)) return {};
   return { authorization: `Bearer ${readFileSync(paths.tokenPath, "utf8").trim()}` };
@@ -120,10 +134,7 @@ function tokenHeader(paths: CapturePaths): Record<string, string> {
 /** Authenticated health probe; returns the daemon's instanceId or null. */
 async function probeInstanceId(paths: CapturePaths, config: DaemonConfig): Promise<string | null> {
   try {
-    const res = await fetch(`http://${config.host}:${config.port}/v1/health`, {
-      headers: tokenHeader(paths),
-      signal: AbortSignal.timeout(2000),
-    });
+    const res = await fetch(healthUrl(config), { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
     if (!res.ok) return null;
     const body = (await res.json()) as { instanceId?: unknown };
     return typeof body.instanceId === "string" ? body.instanceId : null;
@@ -179,6 +190,7 @@ async function cmdStart(
       stdio: ["ignore", logFd, logFd],
       env: { ...process.env, ...env },
     });
+    child.on("error", (err) => stderr(`daemon failed to launch: ${err.message}`));
     child.unref();
     if (typeof child.pid === "number") writePidFile(paths.pidPath, child.pid);
     stdout(`started daemon (pid ${child.pid}); logs at ${paths.logPath}`);
@@ -201,11 +213,16 @@ async function cmdStart(
   return await new Promise<number>((resolve) => {
     const shutdown = () => {
       spool.finalizeOpenConversations();
-      void handle.close().finally(() => {
-        spool.close();
-        removePidFileIfOwner(paths.pidPath, process.pid);
-        resolve(0);
-      });
+      // Cleanup must run whether close resolves or rejects — a rejected
+      // close must not become an unhandled rejection.
+      handle
+        .close()
+        .catch(() => undefined)
+        .finally(() => {
+          spool.close();
+          removePidFileIfOwner(paths.pidPath, process.pid);
+          resolve(0);
+        });
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
@@ -223,9 +240,9 @@ async function cmdStop(
     stdout("daemon not running");
     return 0;
   }
-  // Identity guard: if we recorded which daemon instance owns this pid,
-  // confirm the live process really is that daemon before signalling it —
-  // a reused pid must not be killed by us.
+  // Identity guard: when we know which instance owns the pid, confirm the
+  // live process really is that daemon before signalling — a reused pid
+  // must not be killed by us.
   if (record.instanceId !== null) {
     const config = loadConfigOrDefault(paths, stderr);
     const liveInstance = await probeInstanceId(paths, config);
@@ -251,7 +268,7 @@ async function cmdStop(
     throw err;
   }
   // The daemon's own shutdown handler removes the pid file once it has
-  // finalized conversations and released the spool/socket — do not delete
+  // finalized conversations and released the spool/socket — don't delete
   // it here (valid state must survive until replacement is confirmed).
   stdout(`sent SIGTERM to daemon (pid ${record.pid}); waiting for shutdown`);
   return 0;
@@ -269,10 +286,7 @@ async function cmdStatus(
   }
   const config = loadConfigOrDefault(paths, stderr);
   try {
-    const res = await fetch(`http://${config.host}:${config.port}/v1/health`, {
-      headers: tokenHeader(paths),
-      signal: AbortSignal.timeout(2000),
-    });
+    const res = await fetch(healthUrl(config), { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
     const body = await res.text();
     stdout(`status: running (pid ${record.pid}) — HTTP ${res.status} ${body}`);
   } catch (err) {
@@ -322,15 +336,9 @@ export async function runCapture(io: CliIo): Promise<number> {
   const env = io.env ?? process.env;
   const stdout = io.stdout ?? ((line: string) => console.log(line));
   const stderr = io.stderr ?? ((line: string) => console.error(line));
-  let parsed: ParsedArgs;
   try {
-    parsed = parseArgs(io.argv);
-  } catch (err) {
-    stderr((err as Error).message);
-    return 2;
-  }
-  const paths = resolvePaths(parsed.flags, env);
-  try {
+    const parsed = parseArgs(io.argv);
+    const paths = resolvePaths(parsed.flags, env);
     switch (parsed.command) {
       case "init":
         return cmdInit(paths, parsed.flags, stdout);
@@ -356,7 +364,7 @@ export async function runCapture(io: CliIo): Promise<number> {
   } catch (err) {
     if (err instanceof CaptureConfigError || err instanceof CaptureInputError) {
       stderr(`error: ${err.message}`);
-      return 1;
+      return err instanceof CaptureInputError ? 2 : 1;
     }
     stderr(`error: ${(err as Error).message}`);
     return 1;

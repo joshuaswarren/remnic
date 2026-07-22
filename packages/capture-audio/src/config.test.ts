@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
 
-import { defaultDaemonConfig, parseDaemonConfig } from "./config.js";
+import { defaultDaemonConfig, parseDaemonConfig, serializeDaemonConfig } from "./config.js";
 import { CaptureConfigError } from "./errors.js";
 import { captureBaseDir } from "./paths.js";
 
@@ -66,4 +66,21 @@ test("absent optional field keeps its default; only present-invalid throws", () 
 test("captureBaseDir expands a tilde override", () => {
   assert.equal(captureBaseDir({ REMNIC_CAPTURE_DIR: "~" }), process.env.HOME);
   assert.equal(captureBaseDir({ REMNIC_CAPTURE_DIR: "~/capture-test" }), path.join(process.env.HOME!, "capture-test"));
+});
+
+test("the config init writes round-trips through the parser (regression)", () => {
+  const written = serializeDaemonConfig(defaultDaemonConfig());
+  const reparsed = parseDaemonConfig(JSON.parse(written));
+  assert.deepEqual(reparsed, defaultDaemonConfig());
+});
+
+test("null is accepted as absent for optional nullable fields", () => {
+  const cfg = parseDaemonConfig({
+    stt: { engine: "whisper-cpp", modelPath: null, threads: null },
+    devices: { mic: null, system: null },
+  });
+  assert.equal(cfg.stt.modelPath, null);
+  assert.equal(cfg.stt.threads, null);
+  assert.equal(cfg.devices.mic, null);
+  assert.equal(cfg.devices.system, null);
 });

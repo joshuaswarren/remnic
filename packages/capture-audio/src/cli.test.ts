@@ -92,3 +92,10 @@ test("status with a malformed pid file reports not running", async () => {
     assert.deepEqual(output, ["status: not running"]);
   });
 });
+
+test("an unknown flag is rejected with a usage error", async () => {
+  const errs: string[] = [];
+  const code = await runCapture({ argv: ["start", "--bogus"], stdout: () => undefined, stderr: (l) => errs.push(l) });
+  assert.equal(code, 2);
+  assert.ok(errs.some((l) => l.includes("unknown flag --bogus")), errs.join("|"));
+});

@@ -145,13 +145,13 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
     if (stt.engine !== undefined && stt.engine !== "whisper-cpp") {
       throw new CaptureConfigError(`stt.engine: only 'whisper-cpp' is supported, got ${describeValue(stt.engine)}`);
     }
-    if (stt.modelPath !== undefined) {
+    if (stt.modelPath !== undefined && stt.modelPath !== null) {
       if (typeof stt.modelPath !== "string") {
         throw new CaptureConfigError(`stt.modelPath: expected a string, got ${describeValue(stt.modelPath)}`);
       }
       cfg.stt.modelPath = stt.modelPath;
     }
-    if (stt.threads !== undefined) {
+    if (stt.threads !== undefined && stt.threads !== null) {
       cfg.stt.threads = coerceNumber(stt.threads, "stt.threads", { integer: true, min: 1, max: 256 });
     }
   }
@@ -166,13 +166,13 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
   if (obj.devices !== undefined) {
     const dev = asObject(obj.devices, "devices");
     warnUnknownKeys(dev, { mic: true, system: true }, "devices");
-    if (dev.mic !== undefined) {
+    if (dev.mic !== undefined && dev.mic !== null) {
       if (typeof dev.mic !== "string") {
         throw new CaptureConfigError(`devices.mic: expected a string, got ${describeValue(dev.mic)}`);
       }
       cfg.devices.mic = dev.mic;
     }
-    if (dev.system !== undefined) {
+    if (dev.system !== undefined && dev.system !== null) {
       if (typeof dev.system !== "string") {
         throw new CaptureConfigError(`devices.system: expected a string, got ${describeValue(dev.system)}`);
       }
