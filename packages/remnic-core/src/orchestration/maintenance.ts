@@ -57,6 +57,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
+import { ActivitySyncScheduler } from "../activity/scheduler.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -133,6 +134,9 @@ export class MaintenanceScheduler {
   // fixture.
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
 
+  // ── Activity (screen-capture) sync scheduler (issue #1900) ──
+  private activitySyncScheduler: ActivitySyncScheduler | null = null;
+
   constructor(private readonly deps: MaintenanceSchedulerDeps) {}
 
   // ───────────────────────────────────────────────────────────────────────
@@ -190,6 +194,20 @@ export class MaintenanceScheduler {
       } catch (err) {
         log.debug(`graph edge decay cron auto-register failed (non-fatal): ${err}`);
       }
+    }
+
+    // Activity (screen-capture) in-process sync scheduler (issue #1900).
+    // Master default-off: start() arms nothing unless config.activity.enabled.
+    // This is the parser -> scheduler -> durable-sync wire; the OpenClaw cron
+    // daemon is not involved (host-agnostic, no OpenClaw import).
+    try {
+      this.activitySyncScheduler = new ActivitySyncScheduler({
+        config: this.deps.config.activity,
+        memoryDir: this.deps.config.memoryDir,
+      });
+      this.activitySyncScheduler.start();
+    } catch (err) {
+      log.debug(`activity sync scheduler start failed (non-fatal): ${err}`);
     }
   }
 
@@ -1129,6 +1147,7 @@ export class MaintenanceScheduler {
    * destroy() so a late tick does not fire on a torn-down instance.
    */
   dispose(): void {
+    this.activitySyncScheduler?.stop();
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;
