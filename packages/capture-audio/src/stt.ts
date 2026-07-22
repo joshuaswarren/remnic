@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { spawn } from "node:child_process";
 
+import { expandTilde } from "./paths.js";
 import { CaptureConfigError } from "./errors.js";
 
 export interface TranscribedSegment {
@@ -27,9 +28,17 @@ interface WhisperSegment {
   offsets?: { from?: unknown; to?: unknown };
 }
 
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function timestampAt(chunkStartedAtUtc: string, offsetMs: number): string {
   const startMs = Date.parse(chunkStartedAtUtc);
-  if (!Number.isFinite(startMs)) {
+  if (!Number.isFinite(startMs) || new Date(startMs).toISOString() !== chunkStartedAtUtc) {
     throw new CaptureConfigError("chunk start timestamp is invalid");
   }
   return new Date(startMs + offsetMs).toISOString();
@@ -46,7 +55,11 @@ export function parseWhisperJson(output: string, chunkStartedAtUtc: string): Tra
     throw new CaptureConfigError("whisper-cli JSON must contain a transcription array");
   }
 
-  return (parsed as { transcription: WhisperSegment[] }).transcription.map((segment, index) => {
+  return (parsed as { transcription: unknown[] }).transcription.map((value, index) => {
+    if (!value || typeof value !== "object") {
+      throw new CaptureConfigError(`whisper-cli transcription[${index}] is invalid`);
+    }
+    const segment = value as WhisperSegment;
     if (
       typeof segment.text !== "string" ||
       segment.text.trim() === "" ||
@@ -71,26 +84,25 @@ export function parseWhisperJson(output: string, chunkStartedAtUtc: string): Tra
 export function resolveModelPath(
   configuredPath: string | undefined,
   defaultPath: string,
-  exists: (path: string) => boolean = existsSync,
+  exists: (path: string) => boolean = isRegularFile,
 ): string {
-  const path = configuredPath ?? defaultPath;
-  if (!exists(path)) {
+  const modelPath = expandTilde(configuredPath ?? defaultPath);
+  if (!exists(modelPath)) {
     throw new CaptureConfigError(
-      `whisper model not found at ${path}; run remnic-capture-audio download-model or set stt.modelPath`,
+      `whisper model not found at ${modelPath}; run remnic-capture-audio download-model or set stt.modelPath`,
     );
   }
-  return path;
+  return modelPath;
 }
 
 export function buildWhisperArgs(wavPath: string, modelPath: string): string[] {
-  return ["-m", modelPath, "-f", wavPath, "--output-json"];
+  return ["-m", modelPath, "-f", wavPath, "--output-json", "--output-file", "-"];
 }
 
 export async function transcribeWithWhisper(input: WhisperTranscriptionInput): Promise<TranscribedSegment[]> {
   const result = await input.run("whisper-cli", buildWhisperArgs(input.wavPath, input.modelPath));
   if (result.code !== 0) {
-    const detail = result.stderr.trim() || `exit code ${result.code}`;
-    throw new CaptureConfigError(`whisper-cli failed: ${detail}`);
+    throw new CaptureConfigError(`whisper-cli failed with exit code ${result.code}`);
   }
   return parseWhisperJson(result.stdout, input.chunkStartedAtUtc);
 }

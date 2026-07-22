@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import path from "node:path";
 
 import { CaptureConfigError } from "./errors.js";
 import {
@@ -21,6 +22,18 @@ test("parseWhisperJson converts segment offsets into chunk timestamps", () => {
 
 test("parseWhisperJson rejects malformed output", () => {
   assert.throws(() => parseWhisperJson("not JSON", "2026-07-22T12:00:00.000Z"), CaptureConfigError);
+  assert.throws(
+    () => parseWhisperJson(JSON.stringify({ transcription: [null] }), "2026-07-22T12:00:00.000Z"),
+    CaptureConfigError,
+  );
+  assert.throws(
+    () =>
+      parseWhisperJson(
+        JSON.stringify({ transcription: [{ text: "Hello", offsets: { from: 0, to: 1 } }] }),
+        "2026-02-31T00:00:00.000Z",
+      ),
+    CaptureConfigError,
+  );
   assert.throws(() => parseWhisperJson(JSON.stringify({ transcription: [{}] }), "2026-07-22T12:00:00.000Z"), CaptureConfigError);
 });
 
@@ -28,6 +41,12 @@ test("resolveModelPath prefers a configured readable model", () => {
   const exists = (file: string) => file === "/configured.bin";
   assert.equal(resolveModelPath("/configured.bin", "/default.bin", exists), "/configured.bin");
   assert.throws(() => resolveModelPath("/missing.bin", "/default.bin", exists), /not found/);
+  assert.equal(
+    resolveModelPath("~/configured.bin", "/default.bin", (file) => file === path.join(process.env.HOME!, "configured.bin")),
+    path.join(process.env.HOME!, "configured.bin"),
+  );
+  assert.throws(() => resolveModelPath("/directory", "/default.bin", () => false), /not found/);
+  assert.throws(() => resolveModelPath(process.cwd(), "/default.bin"), /not found/);
 });
 
 test("resolveModelPath uses the default model only when no explicit model is configured", () => {
@@ -42,6 +61,8 @@ test("buildWhisperArgs requests JSON output without shell interpolation", () => 
     "-f",
     "/audio/chunk.wav",
     "--output-json",
+    "--output-file",
+    "-",
   ]);
 });
 
@@ -73,7 +94,7 @@ test("transcribeWithWhisper makes a failed subprocess actionable", async () => {
         chunkStartedAtUtc: "2026-07-22T12:00:00.000Z",
         run: async () => ({ code: 1, stdout: "", stderr: "model unavailable" }),
       }),
-    /whisper-cli failed: model unavailable/,
+    /whisper-cli failed with exit code 1/,
   );
 });
 

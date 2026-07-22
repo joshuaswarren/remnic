@@ -51,6 +51,7 @@ const VALUE_FLAGS: Record<string, true> = {
   listen: true,
   "base-dir": true,
   model: true,
+  lines: true,
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
