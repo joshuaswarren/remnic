@@ -23,6 +23,7 @@ Remnic is a multi-platform memory system. Keep these boundaries intact on every 
    If OpenClaw, Hermes, or another platform already provides a runtime capability, plugin hook, command surface, or extension primitive, use that real upstream contract instead of recreating a parallel Remnic abstraction.
 5. Verify host behavior against current upstream source and docs before implementing it.
    Issue text, old local docs, or remembered APIs are not enough for host-facing work.
+6. Desktop-capture subsystems obey the same split: `packages/remnic-core/src/activity/` and `packages/remnic-core/src/meetings/` are host-agnostic **core subsystems**, while the capture packages (`@remnic/capture-audio`, `@remnic/capture-screen`) and the meeting/wearable connectors (`@remnic/connector-*`) are optional **adapters** that consume core and never the reverse (umbrella #1896).
 
 ## Upstream References
 
