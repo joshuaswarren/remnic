@@ -7,10 +7,11 @@
  * hold by construction rather than by mock.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 
 import { NamespaceCatalog } from "../namespaces/catalog.js";
 import { resolveScopeProfilePlan } from "../namespaces/scope-profiles.js";
@@ -41,9 +42,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
   });
 }
 
-async function makeTempDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "remnic-admin-test-"));
-}
+const makeTempDir = (): Promise<string> => managedMakeTempDir("remnic-admin-test-");
 
 // ---------------------------------------------------------------------------
 // redactSensitive

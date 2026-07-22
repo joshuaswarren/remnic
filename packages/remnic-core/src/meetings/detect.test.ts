@@ -354,3 +354,13 @@ test("meetingId validates its inputs for direct callers", () => {
   assert.throws(() => meetingId("2026/03/10", "2026-03-10T14:00:00.000Z"), RangeError);
   assert.throws(() => meetingId("2026-03-10", "not-a-date"), RangeError);
 });
+
+test("equal-overlap app selection is deterministic regardless of input order", () => {
+  const win = { startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T15:00:00.000Z", distinctNonWearerSpeakers: 2 };
+  const zoom = span("Zoom", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z");
+  const meet = span("Meet", "2026-03-10T14:00:00.000Z", "2026-03-10T15:00:00.000Z");
+  const a = detectMeetings(input({ appSpans: [zoom, meet], audioWindows: [audio(win)] }));
+  const b = detectMeetings(input({ appSpans: [meet, zoom], audioWindows: [audio(win)] }));
+  assert.equal(a[0]?.app, b[0]?.app);
+  assert.equal(a[0]?.app, "Meet"); // tie broken by app name ("Meet" < "Zoom")
+});

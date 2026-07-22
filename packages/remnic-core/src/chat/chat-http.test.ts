@@ -9,10 +9,9 @@
 
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
+
+import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
 
 import type { EngramAccessService } from "../access-service.js";
 import { parseConfig } from "../config.js";
@@ -66,10 +65,8 @@ function makeService(overrides: Partial<EngramAccessService> = {}): EngramAccess
   } as unknown as EngramAccessService;
 }
 
-async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "chat-http-"));
-  try { return await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
-}
+const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
+  managedWithTempDir(fn, "chat-http-");
 
 test("HTTP chat/message: 404 when chat is disabled", async () => {
   await withTempDir(async (memoryDir) => {

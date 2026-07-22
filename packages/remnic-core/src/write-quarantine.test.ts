@@ -4,16 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { withTempDir as managedWithTempDir } from "./testing/tmp-dir.js";
+
 import { WriteQuarantineStore } from "./write-quarantine.js";
 
-async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(tmpdir(), "remnic-quarantine-"));
-  try {
-    await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = (fn: (dir: string) => Promise<void>): Promise<void> =>
+  managedWithTempDir(fn, "remnic-quarantine-");
 
 function isInside(root: string, child: string): boolean {
   const rel = path.relative(path.resolve(root), path.resolve(child));

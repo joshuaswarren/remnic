@@ -8,10 +8,9 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
+
+import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
 
 import type { EngramAccessService } from "../access-service.js";
 import { parseConfig } from "../config.js";
@@ -54,10 +53,8 @@ function makeService(overrides: Partial<EngramAccessService> = {}): EngramAccess
   } as unknown as EngramAccessService;
 }
 
-async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "chat-cli-"));
-  try { return await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
-}
+const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
+  managedWithTempDir(fn, "chat-cli-");
 
 test("CLI --once mode: prints the assistant reply and session id", async () => {
   await withTempDir(async (memoryDir) => {

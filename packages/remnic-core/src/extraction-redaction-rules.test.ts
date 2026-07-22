@@ -7,10 +7,11 @@
  * correction actually blocks future extraction of matching content.
  */
 import { strict as assert } from "node:assert";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { tmpdir } from "node:os";
 import { test } from "node:test";
+
+import { withTempDir as managedWithTempDir } from "./testing/tmp-dir.js";
 import {
   REDACTION_RULES_SUBDIR,
   compileRedactionPattern,
@@ -20,14 +21,8 @@ import {
 } from "./extraction-redaction-rules.js";
 import { validateRedactionPattern } from "./correction/correction-contract.js";
 
-async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(path.join(tmpdir(), "remnic-redact-"));
-  try {
-    return await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
+  managedWithTempDir(fn, "remnic-redact-");
 
 async function writeRule(stateDir: string, pattern: string): Promise<void> {
   const dir = path.join(stateDir, REDACTION_RULES_SUBDIR);

@@ -1203,9 +1203,9 @@ export {
 
 // ---------------------------------------------------------------------------
 // Wearable transcript subsystem (Limitless / Bee / Omi connectors).
-// Connector packages import the registry + types from here.
 // ---------------------------------------------------------------------------
 export * from "./wearables/index.js";
+export * from "./activity/index.js";
 export * from "./meetings/index.js";
 
 // ---------------------------------------------------------------------------

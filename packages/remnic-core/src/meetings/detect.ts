@@ -142,12 +142,19 @@ function buildCandidates(
       // Require genuine overlap for an app+audio pairing, even when the caller
       // sets minOverlapMinutes to 0 — disjoint windows must not pair.
       if (overlap <= 0 || overlap < minOverlapMs) continue;
-      if (
-        bestApp === undefined ||
-        overlap > bestApp.overlap ||
-        (overlap === bestApp.overlap && spanStart < ms(bestApp.span.startUtc))
-      ) {
+      if (bestApp === undefined || overlap > bestApp.overlap) {
         bestApp = { span, overlap };
+      } else if (overlap === bestApp.overlap) {
+        // Fully deterministic tie-break so nested/duplicate spans covering the
+        // same window never depend on input order: earliest start, then app
+        // name, then earliest end.
+        const bestStart = ms(bestApp.span.startUtc);
+        const better =
+          spanStart < bestStart ||
+          (spanStart === bestStart &&
+            (span.app < bestApp.span.app ||
+              (span.app === bestApp.span.app && spanEnd < ms(bestApp.span.endUtc))));
+        if (better) bestApp = { span, overlap };
       }
     }
 

@@ -17,9 +17,10 @@
 
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { makeTempDir as managedTempDir } from "../helpers/tmp-dir.mjs";
 
 import {
   appendInteractionLog,
@@ -38,9 +39,7 @@ import {
 // Fixtures + helpers
 // ──────────────────────────────────────────────────────────────────────
 
-async function makeTempDir(): Promise<string> {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "peer-reasoner-test-"));
-}
+const makeTempDir = (): Promise<string> => managedTempDir("peer-reasoner-test-");
 
 function syntheticPeer(overrides: Partial<Peer> = {}): Peer {
   return {
