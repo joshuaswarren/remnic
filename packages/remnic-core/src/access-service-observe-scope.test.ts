@@ -33,6 +33,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
+import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { StorageManager } from "./storage.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
@@ -633,6 +634,38 @@ test("#2080 preflight resolves an implicit project scope through the observe wri
   });
 
   assert.deepEqual(result, { ok: true, namespace: expected });
+  await assert.rejects(
+    () =>
+      tokenCapabilityStore.run({ version: 1, namespaces: ["default"] }, () =>
+        (
+          service as unknown as {
+            resolveCodingScopedWriteNamespace: (request: {
+              sessionKey: string;
+              authenticatedPrincipal: string;
+              projectTag: string;
+            }) => Promise<string>;
+          }
+        ).resolveCodingScopedWriteNamespace({
+          sessionKey: "pi-geek:abc123",
+          authenticatedPrincipal: "pi-geek",
+          projectTag: "Acme/Webshop",
+        }),
+      ),
+    /not permitted/,
+  );
+  await assert.rejects(
+    () =>
+      tokenCapabilityStore.run({ version: 1, namespaces: ["default"] }, () =>
+        service.observe(
+          observeRequest({
+            sessionKey: "pi-geek:abc123",
+            authenticatedPrincipal: "pi-geek",
+            projectTag: "Acme/Webshop",
+          }),
+        ),
+      ),
+    /not permitted/,
+  );
 });
 
 test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteNamespace (memory_store / suggestion_submit parity, rule 39)", async () => {

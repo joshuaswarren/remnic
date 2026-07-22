@@ -6,6 +6,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
   type CitationUsageRequest,
@@ -1591,6 +1592,14 @@ export class EngramAccessService {
     return { principal, codingContext, overlay, profilePlan };
   }
 
+  private assertTokenCanWriteNamespace(namespace: string): void {
+    enforceNamespaceAllowList(
+      tokenCapabilityStore.getStore(),
+      namespace,
+      this.orchestrator.config.defaultNamespace,
+    );
+  }
+
   /**
    * Resolve the write namespace for explicit-write tools (memory_store /
    * suggestion_submit), project-scoping the write the same way recall does so a
@@ -1609,11 +1618,13 @@ export class EngramAccessService {
   ): Promise<string> {
     const requested = request.namespace?.trim();
     if (requested) {
-      return this.writableNamespaceFor(
+      const namespace = this.writableNamespaceFor(
         requested,
         request.sessionKey,
         request.authenticatedPrincipal,
       );
+      this.assertTokenCanWriteNamespace(namespace);
+      return namespace;
     }
 
     const { principal, overlay, profilePlan } = await this.resolveCodingScopeInputs(request);
@@ -1625,7 +1636,10 @@ export class EngramAccessService {
       scopeProfile: profilePlan,
       config: this.orchestrator.config,
     });
-    if (result.ok) return result.namespace;
+    if (result.ok) {
+      this.assertTokenCanWriteNamespace(result.namespace);
+      return result.namespace;
+    }
     if (profilePlan && result.namespace === profilePlan.writeNamespace) {
       throw new NamespaceNotWritableError(
         result.namespace,
@@ -1752,6 +1766,7 @@ export class EngramAccessService {
         request.sessionKey,
         request.authenticatedPrincipal,
       );
+      this.assertTokenCanWriteNamespace(writeNamespace);
       return {
         principal,
         explicitNamespace: request.namespace!.trim(),
@@ -1829,6 +1844,15 @@ export class EngramAccessService {
         this.orchestrator.setCodingContextForSession(request.sessionKey!, null);
       }
     };
+    const assertWriteNamespaceAllowed = (namespace: string): void => {
+      try {
+        this.assertTokenCanWriteNamespace(namespace);
+      } catch (error) {
+        clearSeededContext();
+        throw error;
+      }
+    };
+
 
     const overlaidBase = this.orchestrator.applyCodingNamespaceOverlay(
       request.sessionKey,
@@ -1880,6 +1904,7 @@ export class EngramAccessService {
               readNamespaces.includes(layer.namespace),
           ),
       );
+      assertWriteNamespaceAllowed(profilePlan.writeNamespace);
       return {
         principal,
         baseNamespace: profilePlan.baseNamespace,
@@ -1932,6 +1957,7 @@ export class EngramAccessService {
         clearSeededContext();
         throw new NamespaceNotWritableError(baseNamespace, principal);
       }
+      assertWriteNamespaceAllowed(writeNamespace);
       return {
         principal,
         // scopeDebug.baseNamespace must report the principal SELF base
@@ -1969,6 +1995,7 @@ export class EngramAccessService {
       const ns = combineNamespaces(baseNamespace, fallback);
       if (!readNamespaces.includes(ns)) readNamespaces.push(ns);
     }
+    assertWriteNamespaceAllowed(writeNamespace);
     return {
       principal,
       baseNamespace,
