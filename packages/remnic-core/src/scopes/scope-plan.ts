@@ -490,6 +490,72 @@ export function resolveWritableNamespaceValue(
 }
 
 /**
+ * Inputs already derived by the access-service's read-only coding-context
+ * resolver. Keeping context discovery outside this pure function lets writes
+ * and preflight checks apply identical namespace and ACL rules.
+ */
+export interface ScopedWritableNamespaceInput {
+  readonly namespace?: string;
+  readonly sessionKey?: string;
+  readonly authenticatedPrincipal?: string;
+  readonly principal: string | undefined;
+  readonly codingOverlay: CodingNamespaceOverlay | null;
+  readonly scopeProfile: ResolvedScopeProfilePlan | null;
+  readonly config: PluginConfig;
+}
+
+/**
+ * Resolve the namespace an explicit write or implicit coding-scoped write
+ * would use. The caller supplies the same derived coding inputs for the real
+ * write and the read-only preflight.
+ */
+export function resolveScopedWritableNamespaceValue(
+  input: ScopedWritableNamespaceInput,
+): WritableNamespaceResult {
+  const requested = input.namespace?.trim();
+  if (requested) {
+    return resolveWritableNamespaceValue(
+      requested,
+      input.sessionKey,
+      input.authenticatedPrincipal,
+      input.config,
+    );
+  }
+  if (input.scopeProfile) {
+    const selectedLayer = input.scopeProfile.layers.find(
+      (layer) => layer.id === input.scopeProfile?.writeLayer,
+    );
+    const writeNamespaceReadable =
+      input.scopeProfile.writeNamespace.length > 0 &&
+      input.scopeProfile.readNamespaces.includes(input.scopeProfile.writeNamespace);
+    if (!selectedLayer?.writable || !writeNamespaceReadable) {
+      return {
+        ok: false,
+        reason: "not_writable",
+        namespace: input.scopeProfile.writeNamespace,
+      };
+    }
+    return { ok: true, namespace: input.scopeProfile.writeNamespace };
+  }
+  if (!input.codingOverlay) {
+    return resolveWritableNamespaceValue(
+      undefined,
+      input.sessionKey,
+      input.authenticatedPrincipal,
+      input.config,
+    );
+  }
+  const baseNamespace = defaultNamespaceForPrincipal(input.principal, input.config);
+  if (!canWriteNamespace(input.principal, baseNamespace, input.config)) {
+    return { ok: false, reason: "not_writable", namespace: baseNamespace };
+  }
+  return {
+    ok: true,
+    namespace: combineNamespaces(baseNamespace, input.codingOverlay.namespace),
+  };
+}
+
+/**
  * Namespace preflight (issue #1888 part 3): would a write to `namespace` by a
  * caller carrying `caps` succeed? Combines the token's write-op scope, its
  * namespace allow-list, and policy writability so one call answers the real

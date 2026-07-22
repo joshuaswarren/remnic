@@ -33,6 +33,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
+import { tokenCapabilityStore } from "./access-token-capabilities.js";
+import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { StorageManager } from "./storage.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
@@ -601,6 +603,85 @@ test("#1505 (cursor hAp) scopeDebug.baseNamespace reports the principal self bas
     res.scopeDebug!.baseNamespace,
     "pi-geek",
     "scopeDebug.baseNamespace must be the principal self base on the implicit no-overlay path",
+  );
+});
+
+test("#2080 preflight resolves an implicit project scope through the observe write resolver", async () => {
+  const probe = makeObserveProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    namespacePolicies: [
+      { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+  });
+  const service = new EngramAccessService(probe.orch);
+  const expected = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
+  );
+
+  const result = await (
+    service as unknown as {
+      namespaceWritablePreflight: (request: {
+        sessionKey: string;
+        authenticatedPrincipal: string;
+        projectTag: string;
+      }) => Promise<{ ok: boolean; namespace: string }>;
+    }
+  ).namespaceWritablePreflight({
+    sessionKey: "pi-geek:abc123",
+    authenticatedPrincipal: "pi-geek",
+    projectTag: "Acme/Webshop",
+  });
+
+  assert.deepEqual(result, { ok: true, namespace: expected });
+  await assert.rejects(
+    () =>
+      tokenCapabilityStore.run({ version: 1, namespaces: ["default"] }, () =>
+        (
+          service as unknown as {
+            resolveCodingScopedWriteNamespace: (request: {
+              sessionKey: string;
+              authenticatedPrincipal: string;
+              projectTag: string;
+            }) => Promise<string>;
+          }
+        ).resolveCodingScopedWriteNamespace({
+          sessionKey: "pi-geek:abc123",
+          authenticatedPrincipal: "pi-geek",
+          projectTag: "Acme/Webshop",
+        }),
+      ),
+    /not permitted/,
+  );
+  const deniedPreflight = await tokenCapabilityStore.run(
+    { version: 1, ops: ["observe"], namespaces: ["default"] },
+    () =>
+      resolveAuthorizedNamespaceWritablePreflight(
+        tokenCapabilityStore.getStore(),
+        {
+          sessionKey: "pi-geek:abc123",
+          authenticatedPrincipal: "pi-geek",
+          projectTag: "Acme/Webshop",
+        },
+        "default",
+        "observe",
+        (request) => service.namespaceWritablePreflight(request),
+      ),
+  );
+  assert.deepEqual(deniedPreflight, { ok: false, reason: "not_writable", namespace: expected });
+  await assert.rejects(
+    () =>
+      tokenCapabilityStore.run({ version: 1, namespaces: ["default"] }, () =>
+        service.observe(
+          observeRequest({
+            sessionKey: "pi-geek:abc123",
+            authenticatedPrincipal: "pi-geek",
+            projectTag: "Acme/Webshop",
+          }),
+        ),
+      ),
+    /not permitted/,
   );
 });
 
