@@ -77,7 +77,7 @@ export class ConversationAssembler {
     epochMs(segment.endUtc, "endUtc");
     const open = this.#open();
     if (open) {
-      const lastEnd = epochMs(open.segments[open.segments.length - 1].endUtc, "endUtc");
+      const lastEnd = epochMs(open.endedAtUtc, "endedAtUtc");
       if (startMs - lastEnd >= this.#gapMs) {
         open.state = "final";
       } else {
@@ -99,6 +99,25 @@ export class ConversationAssembler {
       }
     }
     return changed;
+  }
+
+  /**
+   * Re-open a conversation recovered from durable storage so a chunk arriving
+   * after a process restart continues it (subject to the same gap rule via
+   * `add`) instead of splitting off a new one. No-op when a conversation is
+   * already open in this run. Stays pure: the caller supplies the recovered
+   * identity/bounds; the assembler performs no I/O.
+   */
+  resume(conversation: { id: string; startedAtUtc: string; endedAtUtc: string }): void {
+    if (this.#open()) return;
+    epochMs(conversation.endedAtUtc, "endedAtUtc");
+    this.#conversations.push({
+      id: conversation.id,
+      startedAtUtc: conversation.startedAtUtc,
+      endedAtUtc: conversation.endedAtUtc,
+      state: "capturing",
+      segments: [],
+    });
   }
 
   /** Ordered snapshot; segments are cloned so callers cannot mutate internal state. */

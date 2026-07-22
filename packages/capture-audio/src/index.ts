@@ -36,6 +36,7 @@ export { Spool } from "./spool.js";
 export type {
   AssemblyAppendInput,
   AssemblyAppendResult,
+  ChunkRecord,
   ChunkStatus,
   ConversationInput,
   ConversationPage,
@@ -81,15 +82,14 @@ export type {
   ResolveHelperDeps,
   RestartTimer,
 } from "./native.js";
+export { chunkStableId, createChunkProcessor } from "./processor.js";
+export type { ChunkProcessor, ChunkProcessorDeps, ChunkTranscribeInput } from "./processor.js";
+
+
 export {
   createDesktopConnector,
-  DesktopApiError,
-  DesktopCaptureClient,
-  DESKTOP_DEFAULT_BASE_URL,
-  DESKTOP_SOURCE_ID,
-  daemonConversationToWearable,
-  ensureDesktopConnectorRegistered,
-  resolveDesktopBaseUrl,
+  createDesktopWearableConnector,
+  defaultDesktopBaseUrl,
   resolveDesktopToken,
   wearableConnectorRegistration,
 } from "./connector.js";

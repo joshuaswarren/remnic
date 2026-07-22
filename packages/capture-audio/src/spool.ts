@@ -97,6 +97,8 @@ export interface AssemblyAppendInput {
   device?: string | null;
   /** Backing chunk row id; defaults to `idempotencyKey`. */
   chunkId?: string;
+  /** Backing WAV path recorded on the chunk row; retained for the janitor/audit. */
+  wavPath?: string | null;
   segments: SegmentInput[];
 }
 export interface AssemblyAppendResult {
@@ -105,6 +107,15 @@ export interface AssemblyAppendResult {
   conversationId: string;
   /** Total segments in the conversation after this call. */
   segmentCount: number;
+}
+export interface ChunkRecord {
+  id: string;
+  channel: string;
+  device: string | null;
+  startedAtUtc: string;
+  endedAtUtc: string;
+  status: ChunkStatus;
+  wavPath: string | null;
 }
 
 interface ConversationRow {
@@ -300,7 +311,7 @@ export class Spool {
 
       db.prepare(
         "INSERT OR IGNORE INTO chunks(id, channel, device, started_at_utc, ended_at_utc, status, wav_path) VALUES (?,?,?,?,?,?,?)",
-      ).run(chunkId, chunkChannel, input.device ?? null, input.startedAtUtc, lastEnd, "transcribed", null);
+      ).run(chunkId, chunkChannel, input.device ?? null, input.startedAtUtc, lastEnd, "transcribed", input.wavPath ?? null);
 
       const existing = db.prepare("SELECT id FROM conversations WHERE id = ?").get(convId) as { id: string } | undefined;
       if (!existing) {
@@ -409,6 +420,34 @@ export class Spool {
       )
       .get(id) as unknown as ConversationRow | undefined;
     return row ? this.#hydrate(row) : null;
+  }
+
+  getChunk(id: string): ChunkRecord | null {
+    const row = this.#db
+      .prepare(
+        "SELECT id, channel, device, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc, status, wav_path AS wavPath FROM chunks WHERE id = ?",
+      )
+      .get(id) as
+      | { id: string; channel: string; device: string | null; startedAtUtc: string; endedAtUtc: string; status: ChunkStatus; wavPath: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * The most recently active still-`capturing` conversation, if any. Lets the
+   * processing layer recover an open conversation after a restart so an
+   * adjacent chunk continues it rather than splitting off a new one. Ordered
+   * by end time so the freshest open conversation wins.
+   */
+  latestCapturingConversation(): { id: string; startedAtUtc: string; endedAtUtc: string } | null {
+    const row = this.#db
+      .prepare(
+        "SELECT id, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc FROM conversations " +
+          "WHERE state = 'capturing' ORDER BY ended_at_utc DESC, id DESC LIMIT 1",
+      )
+      .get() as { id: string; startedAtUtc: string; endedAtUtc: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
   }
 
   /**
