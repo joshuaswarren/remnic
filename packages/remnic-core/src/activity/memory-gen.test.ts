@@ -8,8 +8,9 @@ import {
   type ActivityMemoryGenerationDeps,
   type ActivityMemoryWriter,
 } from "./memory-gen.js";
-import type { ExtractedFact } from "../types.js";
+import type { ExtractedFact, ImportanceScore } from "../types.js";
 import type { JudgeCandidate, JudgeVerdict } from "../extraction-judge.js";
+import { scoreImportance } from "../importance.js";
 
 const DATE = "2026-03-10";
 const DAY_START = "2026-03-10T00:00:00.000Z";
@@ -23,20 +24,24 @@ const ownDecision: ActFact = {
   tags: ["settings"],
 };
 
-function depsFor(facts: ActFact[], opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean } = {}) {
-  const writes: Array<{ status: string; content: string; validAt?: string }> = [];
+function depsFor(
+  facts: ActFact[],
+  opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean; extractThrows?: boolean } = {},
+) {
+  const writes: Array<{ status: string; content: string; validAt?: string; importance?: ImportanceScore }> = [];
   let extractCalls = 0;
   const writer: ActivityMemoryWriter = {
     hasActivityMemoryForContent: async () => opts.hasContent ?? false,
     countActivityMemoriesForDay: async () => opts.dayCount ?? 0,
     writeSealedMemory: async (envelope, extras) => {
-      writes.push({ content: envelope.content, status: extras.status, validAt: envelope.validAt });
+      writes.push({ content: envelope.content, status: extras.status, validAt: envelope.validAt, importance: extras.importance });
       return {};
     },
   };
   const deps: ActivityMemoryGenerationDeps = {
     extract: async () => {
       extractCalls += 1;
+      if (opts.extractThrows) throw new Error("extract exploded");
       return { facts, profileUpdates: [], entities: [], questions: [] };
     },
     judge: async (candidates: JudgeCandidate[]) => {
@@ -60,6 +65,13 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   // The user's own first-person voice stays eligible, including team "we/our".
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "We decided to ship on Friday." }), true);
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "I updated our deploy runbook." }), true);
+  // Case-insensitive verbs and non-Titlecase names still count as attribution.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice Wrote: I decided to leave." }), false);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "ALICE wrote: I decided to leave." }), false);
+  // Colon-style chat/comment sender headers are attribution too.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Bob: I decided to refactor the parser." }), false);
+  // Common document labels are not senders — the user's own note stays eligible.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Note: I decided to refactor the parser." }), true);
 });
 
 test("activity smart mode rejects attributed third-party first-person content before judging", async () => {
@@ -82,7 +94,10 @@ test("activity smart mode writes an accepted first-person decision bound to the 
   }, deps);
   assert.equal(result.created, 1);
   // validAt is pinned to the digest's local day, not the write instant.
-  assert.deepEqual(writes, [{ content: ownDecision.content, status: "active", validAt: DAY_START }]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]?.content, ownDecision.content);
+  assert.equal(writes[0]?.status, "active");
+  assert.equal(writes[0]?.validAt, DAY_START);
 });
 
 test("activity extraction remains inactive unless smart mode is explicitly enabled", async () => {
@@ -139,4 +154,27 @@ test("activity smart mode degrades to trust scoring when the judge throws", asyn
   // on confidence x sourceTrust alone (0.95) and still clears autoApproveTrust.
   assert.equal(result.created, 1);
   assert.deepEqual(writes.map((w) => w.status), ["active"]);
+});
+
+test("activity smart mode returns a zero result when extraction throws", async () => {
+  const { deps, writes } = depsFor([ownDecision], { extractThrows: true });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  // An extraction failure must not throw out of the day's pass.
+  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(writes, []);
+});
+
+test("activity smart mode persists the scored importance on the write", async () => {
+  const { deps, writes } = depsFor([ownDecision]);
+  await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(writes.length, 1);
+  const importance = writes[0]?.importance;
+  assert.ok(importance, "write must carry the scored importance");
+  const expected = scoreImportance(ownDecision.content, ownDecision.category, ownDecision.tags);
+  assert.equal(importance.level, expected.level);
+  assert.equal(importance.score, expected.score);
 });

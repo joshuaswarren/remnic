@@ -1,7 +1,7 @@
 import { scoreImportance, isAboveImportanceThreshold } from "../importance.js";
 import { getVerdictKind, type JudgeCandidate, type JudgeVerdict } from "../extraction-judge.js";
 import { log } from "../logger.js";
-import type { ExtractedFact, ExtractionResult, MemoryStatus } from "../types.js";
+import type { ExtractedFact, ExtractionResult, ImportanceScore, MemoryStatus } from "../types.js";
 import {
   composeMemoryEnvelope,
   type MemoryWriteInput,
@@ -20,14 +20,26 @@ const ACTIVITY_ALLOWED_CATEGORIES: Record<string, true> = {
 };
 const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
 /**
- * A named third party reporting speech or action (`Alice wrote:`, `Bob said`).
- * A first-person pronoun inside such content describes the quoted person, not
- * the user. The excluded pronouns are word-anchored (`\b`) so a name that merely
- * begins with a pronoun ("Wendy", "Ian", "Helen") is still treated as a third
- * party, while the bare pronoun ("We decided") stays eligible.
+ * Attribution detection. On-screen text routinely quotes other people, so a
+ * first-person pronoun is not ownership evidence. Two shapes are rejected,
+ * case-insensitively, with the speaker slot excluding bare first-person
+ * pronouns (word-anchored) so "We decided" stays eligible while names that
+ * merely begin with a pronoun ("Wendy", "Ian") do not:
+ *   - verb attribution:  "Alice wrote: I decided ...", "ALICE Wrote ..."
+ *   - leading label:     "Alice: I decided ..." (chat/comment sender headers)
+ * Common document labels ("Note:", "TODO:") are not senders and stay eligible.
  */
-const THIRD_PARTY_ATTRIBUTION =
-  /\b(?!(?:I|We|You|They|He|She|It|My|Our)\b)[A-Z][a-z]+\b\s+(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)\b/;
+const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|you|they|he|she|it|my|our)\b)[A-Za-z][\w.'’-]*`;
+const SPEECH_VERB =
+  String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
+const VERB_ATTRIBUTION = new RegExp(String.raw`\b${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
+const LABEL_ATTRIBUTION = new RegExp(String.raw`^\s*(${ATTRIBUTION_SPEAKER})\s*:\s`, "i");
+const NON_SENDER_LABELS: Record<string, true> = {
+  note: true, notes: true, todo: true, fixme: true, reminder: true, update: true,
+  updates: true, warning: true, info: true, tip: true, tips: true, summary: true,
+  status: true, tldr: true, fyi: true, idea: true, goal: true, goals: true,
+  plan: true, plans: true, action: true, actions: true, context: true, question: true,
+};
 
 export interface ActivityMemoryWriter {
   /**
@@ -47,7 +59,7 @@ export interface ActivityMemoryWriter {
   countActivityMemoriesForDay(startUtc: string, endUtc: string): Promise<number>;
   writeSealedMemory(
     envelope: SealedMemoryEnvelope,
-    extras: { status: MemoryStatus; contentHashSource: string },
+    extras: { status: MemoryStatus; contentHashSource: string; importance?: ImportanceScore },
   ): Promise<{ tombstoneBlocked?: boolean }>;
 }
 
@@ -76,7 +88,9 @@ export interface ActivityMemoryGenerationResult {
 export function isEligibleActivityFact(fact: ExtractionResult["facts"][number]): boolean {
   if (ACTIVITY_ALLOWED_CATEGORIES[fact.category] !== true) return false;
   if (!FIRST_PERSON.test(fact.content)) return false;
-  if (THIRD_PARTY_ATTRIBUTION.test(fact.content)) return false;
+  if (VERB_ATTRIBUTION.test(fact.content)) return false;
+  const label = LABEL_ATTRIBUTION.exec(fact.content);
+  if (label !== null && NON_SENDER_LABELS[label[1].toLowerCase()] !== true) return false;
   return true;
 }
 
@@ -100,6 +114,7 @@ interface WritableCandidate {
   fact: ExtractedFact;
   status: Extract<MemoryStatus, "active" | "pending_review">;
   trust: number;
+  importance: ImportanceScore;
 }
 
 export async function generateActivityMemories(
@@ -121,7 +136,17 @@ export async function generateActivityMemories(
   // then land on the day they describe rather than at write time.
   const { startUtc, endUtc } = activityDayWindow(date, config.timezone);
 
-  const extracted = await deps.extract(digestBody);
+  let extracted: ExtractionResult;
+  try {
+    extracted = await deps.extract(digestBody);
+  } catch (err) {
+    // A provider/parse failure must not throw out of the pass; return the
+    // structured zero-result so the caller can retry on the next digest run.
+    log.warn(
+      `activity extraction failed; skipping the day's memory pass: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return result;
+  }
   const candidates = extracted.facts.filter((fact) => {
     if (!isEligibleActivityFact(fact)) {
       result.rejectedDisplayedContent += 1;
@@ -175,7 +200,12 @@ export async function generateActivityMemories(
       else result.skipped += 1;
       continue;
     }
-    writable.push({ fact, status: decision.outcome === "active" ? "active" : "pending_review", trust });
+    writable.push({
+      fact,
+      status: decision.outcome === "active" ? "active" : "pending_review",
+      trust,
+      importance: scoreImportance(fact.content, fact.category, fact.tags),
+    });
   }
   writable.sort((a, b) => {
     if (a.trust !== b.trust) return b.trust - a.trust;
@@ -216,6 +246,7 @@ export async function generateActivityMemories(
     const write = await deps.writer.writeSealedMemory(envelope, {
       status: entry.status,
       contentHashSource: entry.fact.content,
+      importance: entry.importance,
     });
     if (write.tombstoneBlocked) {
       result.skipped += 1;
