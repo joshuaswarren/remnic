@@ -180,6 +180,18 @@ test("daemon creates the spool file with owner-only (0600) permissions", { skip:
   }
 });
 
+test("daemon rejects a directory spool path without mangling its permissions", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const before = (await stat(dir)).mode & 0o777;
+  try {
+    await assert.rejects(() => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: dir }));
+    // The directory's own permissions (incl. the execute bit) must be intact.
+    assert.equal((await stat(dir)).mode & 0o777, before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI command releases the daemon when startup fails to bind", async () => {
   const occupier = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath: ":memory:" });
   try {

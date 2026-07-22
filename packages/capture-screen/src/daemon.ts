@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
+import { chmodSync, closeSync, openSync, statSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
@@ -143,8 +143,12 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
   if (options.spoolPath !== ":memory:") {
     // Screen-capture history is sensitive; keep the on-disk spool owner-only
     // (0600) rather than inheriting a world-readable umask on a shared host.
-    if (existsSync(options.spoolPath)) chmodSync(options.spoolPath, 0o600);
-    else closeSync(openSync(options.spoolPath, "a", 0o600));
+    // Only touch a regular file: a path pointing at a directory (or other
+    // non-file) is left alone so openBetterSqlite3 rejects it loudly instead
+    // of us stripping the directory's execute bit.
+    const existing = statSync(options.spoolPath, { throwIfNoEntry: false });
+    if (existing === undefined) closeSync(openSync(options.spoolPath, "a", 0o600));
+    else if (existing.isFile()) chmodSync(options.spoolPath, 0o600);
   }
   const db = openBetterSqlite3(options.spoolPath);
   try {
