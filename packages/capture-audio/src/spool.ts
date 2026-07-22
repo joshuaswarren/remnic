@@ -265,7 +265,7 @@ export class Spool {
       .prepare(
         "SELECT id, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc, state, segment_count AS segmentCount FROM conversations WHERE id = ?",
       )
-      .get(id) as ConversationRow | undefined;
+      .get(id) as unknown as ConversationRow | undefined;
     return row ? this.#hydrate(row) : null;
   }
 
@@ -286,7 +286,7 @@ export class Spool {
           "FROM conversations WHERE state = 'final' AND (started_at_utc > ? OR (started_at_utc = ? AND id > ?)) " +
           "ORDER BY started_at_utc ASC, id ASC",
       )
-      .all(afterStarted, afterStarted, afterId) as ConversationRow[];
+      .all(afterStarted, afterStarted, afterId) as unknown as ConversationRow[];
 
     const matches: ConversationRow[] = [];
     for (const row of rows) {

@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { defaultDaemonConfig, parseDaemonConfig } from "./config.js";
+import { CaptureConfigError } from "./errors.js";
+
+test("defaults are returned for an empty config object", () => {
+  const cfg = parseDaemonConfig({});
+  assert.deepEqual(cfg, defaultDaemonConfig());
+  assert.equal(cfg.host, "127.0.0.1");
+  assert.equal(cfg.port, 4340);
+});
+
+test("valid overrides parse and boolean-like coercion applies to numbers", () => {
+  const cfg = parseDaemonConfig({
+    host: "0.0.0.0",
+    port: "8080",
+    conversationGapMinutes: 5,
+    stt: { engine: "whisper-cpp", modelPath: "/models/x.bin", threads: 4 },
+    denyApps: ["Zoom", "Slack"],
+  });
+  assert.equal(cfg.host, "0.0.0.0");
+  assert.equal(cfg.port, 8080);
+  assert.equal(cfg.stt.modelPath, "/models/x.bin");
+  assert.equal(cfg.stt.threads, 4);
+  assert.deepEqual(cfg.denyApps, ["Zoom", "Slack"]);
+});
+
+test("non-integer / out-of-range port is rejected loudly", () => {
+  assert.throws(() => parseDaemonConfig({ port: 70000 }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ port: 4340.5 }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ port: 0 }), CaptureConfigError);
+});
+
+test("the string \"false\" is not a valid number and is rejected (no silent default)", () => {
+  assert.throws(() => parseDaemonConfig({ port: "false" }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ chunkSeconds: "false" }), CaptureConfigError);
+});
+
+test("unknown stt engine is rejected", () => {
+  assert.throws(
+    () => parseDaemonConfig({ stt: { engine: "deepgram" } }),
+    /only 'whisper-cpp' is supported/,
+  );
+});
+
+test("similarityThreshold out of [0,1] is rejected", () => {
+  assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 1.5 } }), CaptureConfigError);
+});
+
+test("wrong types for structured fields are rejected", () => {
+  assert.throws(() => parseDaemonConfig({ denyApps: "Zoom" }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ vad: [] }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig(null), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig("nope"), CaptureConfigError);
+});
+
+test("absent optional field keeps its default; only present-invalid throws", () => {
+  const cfg = parseDaemonConfig({ port: 4341 });
+  assert.equal(cfg.spoolRetentionDays, 30);
+  assert.equal(cfg.rawRetentionHours, 0);
+});
