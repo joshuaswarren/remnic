@@ -167,6 +167,19 @@ test("replay validation failure releases the spool and leaves it reusable", asyn
   }
 });
 
+test("daemon creates the spool file with owner-only (0600) permissions", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const spoolPath = path.join(dir, "capture.sqlite");
+  const daemon = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath, replay: [snapshot()] });
+  try {
+    const mode = (await stat(spoolPath)).mode & 0o777;
+    assert.equal(mode, 0o600);
+  } finally {
+    await daemon.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI command releases the daemon when startup fails to bind", async () => {
   const occupier = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath: ":memory:" });
   try {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
@@ -139,6 +140,12 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
   if (options.authToken.length === 0) throw new TypeError("authToken must be non-empty");
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new RangeError("capture daemon may bind only to a loopback host");
+  if (options.spoolPath !== ":memory:") {
+    // Screen-capture history is sensitive; keep the on-disk spool owner-only
+    // (0600) rather than inheriting a world-readable umask on a shared host.
+    if (existsSync(options.spoolPath)) chmodSync(options.spoolPath, 0o600);
+    else closeSync(openSync(options.spoolPath, "a", 0o600));
+  }
   const db = openBetterSqlite3(options.spoolPath);
   try {
     applySchema(db);
