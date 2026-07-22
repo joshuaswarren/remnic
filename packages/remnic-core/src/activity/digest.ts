@@ -113,6 +113,9 @@ function zonedDayStartIso(date: string, timezone: string): string {
     const noon = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
     best = Date.parse(`${date}T00:00:00${noon}`);
   }
+  if (best === null || !Number.isFinite(best)) {
+    throw new RangeError(`activity: could not resolve a local day start for "${date}" in "${timezone}".`);
+  }
   return new Date(best).toISOString();
 }
 

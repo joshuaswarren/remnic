@@ -126,6 +126,11 @@ function assertRequiredSnapshotFields(s: ActivitySnapshot): void {
   if (s.machine.length === 0 || s.contentHash.length === 0) {
     throw new RangeError('activity: snapshot "machine" and "contentHash" must be non-empty.');
   }
+  if (s.textSource !== "ax" && s.textSource !== "ocr") {
+    // rowToSnapshot maps any non-"ocr" value to "ax"; reject unknown sources at
+    // the boundary instead of silently coercing them on read.
+    throw new RangeError(`activity: snapshot "textSource" must be "ax" or "ocr" (got "${s.textSource}").`);
+  }
 }
 
 /**

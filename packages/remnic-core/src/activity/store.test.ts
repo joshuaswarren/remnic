@@ -218,3 +218,9 @@ test("listSnapshotsForDay rejects a malformed range bound", async () => {
     assert.throws(() => store.listSnapshotsForDay(null, "not-a-date", "2026-03-11T00:00:00.000Z"), RangeError);
   });
 });
+
+test("insertSnapshot rejects an unknown textSource", async () => {
+  await withStore((store) => {
+    assert.throws(() => store.insertSnapshot(snapshot({ textSource: "screen" as unknown as "ax" })), RangeError);
+  });
+});
