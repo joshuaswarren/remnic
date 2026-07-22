@@ -86,6 +86,10 @@ const BUILT_IN_CONNECTOR_PACKAGES: Array<{ id: string; suffix: string }> = [
   { id: "omi", suffix: "connector-omi" },
   { id: "fireflies", suffix: "connector-fireflies" },
   { id: "granola", suffix: "connector-granola" },
+  // The desktop connector ships from @remnic/capture-audio (the daemon
+  // package) so there is one optional install for the whole `desktop`
+  // source, not a separate connector package.
+  { id: "desktop", suffix: "capture-audio" },
 ];
 
 const loadFailuresWarned = new Set<string>();

@@ -3,9 +3,9 @@
  * item 1 of issue #1897): strict daemon config, a SQLite spool, replay
  * ingestion, an authenticated loopback HTTP API, and the CLI.
  *
- * Native capture, VAD, STT, diarization, the wearable connector, and the
- * core registry entry land in later checklist items and are intentionally
- * absent here.
+ * The `desktop` wearable connector (WearableSourceConnector + HTTP client
+ * + registration) ships from this same package to keep one optional
+ * install; native capture, VAD, STT, and diarization live alongside it.
  */
 
 export { CAPTURE_AUDIO_VERSION, DEFAULT_HOST, DEFAULT_PORT, SPOOL_SCHEMA_VERSION } from "./constants.js";
@@ -61,3 +61,22 @@ export type { DaemonDeps, DaemonHandle } from "./daemon.js";
 export { isProcessAlive, readPidFile, removePidFile, writePidFile } from "./control.js";
 export { runCapture } from "./cli.js";
 export type { CliIo } from "./cli.js";
+
+// Desktop wearable connector (à-la-carte companion of @remnic/core). The
+// registration is what core's computed-specifier discovery reads.
+export {
+  createDesktopConnector,
+  DesktopApiError,
+  DesktopCaptureClient,
+  DESKTOP_DEFAULT_BASE_URL,
+  DESKTOP_SOURCE_ID,
+  daemonConversationToWearable,
+  ensureDesktopConnectorRegistered,
+  resolveDesktopBaseUrl,
+  resolveDesktopToken,
+  wearableConnectorRegistration,
+} from "./connector.js";
+export type {
+  DesktopCaptureClientOptions,
+  ListConversationsParams,
+} from "./connector.js";
