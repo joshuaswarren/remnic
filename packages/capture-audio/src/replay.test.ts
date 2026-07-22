@@ -86,3 +86,24 @@ test("malformed fixtures are rejected loudly", () => {
   assert.throws(() => ingestReplayDir(spool, path.join(tmpdir(), "definitely-missing-xyz")), CaptureConfigError);
   spool.close();
 });
+
+test("replay rejects unknown states and malformed timestamps before persistence", () => {
+  const spool = new Spool(":memory:");
+  for (const fixture of [
+    { startedAtUtc: "2026-07-20T10:00:00.000Z", state: "finished", segments: [] },
+    { startedAtUtc: "not-a-timestamp", segments: [] },
+    {
+      startedAtUtc: "2026-07-20T10:00:00.000Z",
+      endedAtUtc: "2026-07-20T09:00:00.000Z",
+      segments: [],
+    },
+    {
+      startedAtUtc: "2026-07-20T10:00:00.000Z",
+      segments: [{ channel: "mic", text: "bad", startUtc: "2026-07-20T10:00:01.000Z", endUtc: "not-a-timestamp" }],
+    },
+  ]) {
+    assert.throws(() => ingestReplayDir(spool, fixtureDir({ "bad.json": fixture })), CaptureConfigError);
+  }
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});

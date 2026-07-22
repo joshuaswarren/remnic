@@ -125,6 +125,16 @@ test("speakers upsert, update, and list ordered by id", () => {
   spool.close();
 });
 
+test("speaker updates preserve omitted state while honoring explicit changes", () => {
+  const spool = new Spool(":memory:");
+  spool.upsertSpeaker({ id: "self", label: "Me", isSelf: true, embeddingCount: 4 });
+  spool.upsertSpeaker({ id: "self", label: "Updated" });
+  assert.deepEqual(spool.listSpeakers(), [{ id: "self", label: "Updated", isSelf: true, embeddingCount: 4 }]);
+  spool.upsertSpeaker({ id: "self", isSelf: false, embeddingCount: 0 });
+  assert.deepEqual(spool.listSpeakers(), [{ id: "self", label: "Updated", isSelf: false, embeddingCount: 0 }]);
+  spool.close();
+});
+
 test("finalizeOpenConversations flips capturing to final", () => {
   const spool = new Spool(":memory:");
   spool.insertConversation({ id: "conv_live", startedAtUtc: "2026-07-20T10:00:00.000Z", state: "capturing", segments: [seg("a")] });

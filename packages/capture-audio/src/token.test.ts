@@ -46,3 +46,8 @@ test("bearerFromHeader extracts the token or returns null", () => {
   assert.equal(bearerFromHeader(undefined), null);
   assert.equal(bearerFromHeader(["Bearer first", "Bearer second"]), "first");
 });
+
+test("bearerFromHeader rejects a scheme without a separator", () => {
+  assert.equal(bearerFromHeader("Bearerxyz"), null);
+  assert.equal(bearerFromHeader("Bearer"), null);
+});

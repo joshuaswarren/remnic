@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import path from "node:path";
 
 import { defaultDaemonConfig, parseDaemonConfig } from "./config.js";
 import { CaptureConfigError } from "./errors.js";
+import { captureBaseDir } from "./paths.js";
 
 test("defaults are returned for an empty config object", () => {
   const cfg = parseDaemonConfig({});
@@ -59,4 +61,9 @@ test("absent optional field keeps its default; only present-invalid throws", () 
   const cfg = parseDaemonConfig({ port: 4341 });
   assert.equal(cfg.spoolRetentionDays, 30);
   assert.equal(cfg.rawRetentionHours, 0);
+});
+
+test("captureBaseDir expands a tilde override", () => {
+  assert.equal(captureBaseDir({ REMNIC_CAPTURE_DIR: "~" }), process.env.HOME);
+  assert.equal(captureBaseDir({ REMNIC_CAPTURE_DIR: "~/capture-test" }), path.join(process.env.HOME!, "capture-test"));
 });

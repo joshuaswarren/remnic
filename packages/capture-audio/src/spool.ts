@@ -234,12 +234,20 @@ export class Spool {
   }
 
   upsertSpeaker(input: SpeakerInput): void {
+    const current = this.#db
+      .prepare("SELECT label, embedding_count AS embeddingCount, is_self AS isSelf FROM speaker_clusters WHERE id = ?")
+      .get(input.id) as { label: string | null; embeddingCount: number; isSelf: number } | undefined;
+    const label = Object.hasOwn(input, "label") ? (input.label ?? null) : (current?.label ?? null);
+    const embeddingCount = Object.hasOwn(input, "embeddingCount")
+      ? (input.embeddingCount ?? 0)
+      : (current?.embeddingCount ?? 0);
+    const isSelf = Object.hasOwn(input, "isSelf") ? (input.isSelf ? 1 : 0) : (current?.isSelf ?? 0);
     this.#db
       .prepare(
         "INSERT INTO speaker_clusters(id, label, embedding_count, is_self) VALUES (?,?,?,?) " +
           "ON CONFLICT(id) DO UPDATE SET label = excluded.label, is_self = excluded.is_self, embedding_count = excluded.embedding_count",
       )
-      .run(input.id, input.label ?? null, input.embeddingCount ?? 0, input.isSelf ? 1 : 0);
+      .run(input.id, label, embeddingCount, isSelf);
   }
 
   listSpeakers(): SpeakerRow[] {

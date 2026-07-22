@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsup src/index.ts src/cli-bin.ts --format esm --dts",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test src/config.test.ts src/token.test.ts src/spool.test.ts src/replay.test.ts src/daemon.test.ts",
+    "test": "tsx --test src/config.test.ts src/token.test.ts src/spool.test.ts src/replay.test.ts src/daemon.test.ts src/cli.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -28,7 +28,7 @@
     "provenance": true
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

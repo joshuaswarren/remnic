@@ -77,7 +77,10 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function resolvePaths(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): CapturePaths {
-  const baseDir = typeof flags["base-dir"] === "string" ? flags["base-dir"] : captureBaseDir(env);
+  const baseDir =
+    typeof flags["base-dir"] === "string"
+      ? captureBaseDir({ ...env, REMNIC_CAPTURE_DIR: flags["base-dir"] })
+      : captureBaseDir(env);
   return capturePaths(baseDir);
 }
 
@@ -127,6 +130,14 @@ async function cmdStart(
 ): Promise<number> {
   const config = applyBindingOverrides(loadConfigOrDefault(paths, stderr), flags);
   const replayDir = typeof flags.replay === "string" ? flags.replay : null;
+  const previousPid = readPidFile(paths.pidPath);
+  if (previousPid !== null) {
+    if (isProcessAlive(previousPid)) {
+      stdout(`daemon already running (pid ${previousPid})`);
+      return 0;
+    }
+    removePidFile(paths.pidPath);
+  }
 
   if (flags.foreground !== true) {
     const entry = process.argv[1];
@@ -183,8 +194,7 @@ function cmdStop(paths: CapturePaths, stdout: (l: string) => void): number {
     return 0;
   }
   process.kill(pid, "SIGTERM");
-  removePidFile(paths.pidPath);
-  stdout(`sent SIGTERM to daemon (pid ${pid})`);
+  stdout(`sent SIGTERM to daemon (pid ${pid}); waiting for shutdown`);
   return 0;
 }
 

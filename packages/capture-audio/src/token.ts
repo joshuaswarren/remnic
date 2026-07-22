@@ -40,6 +40,10 @@ export function tokensMatch(expected: string, presented: string): boolean {
 export function bearerFromHeader(header: string | string[] | undefined): string | null {
   const value = Array.isArray(header) ? header[0] : header;
   if (!value) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(value.trim());
-  return match ? match[1].trim() : null;
+  const trimmed = value.trim();
+  if (trimmed.slice(0, 6).toLowerCase() !== "bearer") return null;
+  const separator = trimmed.charCodeAt(6);
+  if (separator !== 32 && separator !== 9) return null;
+  const token = trimmed.slice(6).trim();
+  return token || null;
 }
