@@ -6,18 +6,19 @@
  * for tests.
  *
  * Each `*.json` fixture is either a single conversation object or an array
- * of them. Shape (validated loudly; malformed → CaptureConfigError naming
- * the file):
+ * of them. Every field is validated loudly: an absent optional field takes
+ * its default, but a present-but-wrong-typed/invalid field throws
+ * CaptureConfigError naming the file and path (no silent coercion). A
+ * conversation is fully parsed BEFORE its speakers are upserted, so a
+ * malformed conversation never persists speaker rows.
  *
  *   {
- *     "id": "conv_demo1",                       // optional; generated if absent
+ *     "id": "conv_demo1",                        // optional; generated if absent
  *     "startedAtUtc": "2026-07-20T15:00:00.000Z",
  *     "endedAtUtc":  "2026-07-20T15:05:00.000Z", // optional
- *     "state": "final",                          // optional; default "final"
+ *     "state": "final",                          // optional; "final" | "capturing"
  *     "device": "MacBook mic",                   // optional
- *     "speakers": [                               // optional cluster labels
- *       { "id": "spk_1", "label": "Alice", "isSelf": false }
- *     ],
+ *     "speakers": [ { "id": "spk_1", "label": "Alice", "isSelf": false } ],
  *     "segments": [
  *       { "speakerCluster": "spk_1", "isWearer": false, "channel": "mic",
  *         "text": "hello there", "startUtc": "...", "endUtc": "..." }
@@ -47,6 +48,7 @@ function asObject(value: unknown, where: string): Record<string, unknown> {
   }
   return value as Record<string, unknown>;
 }
+
 function parseTimestamp(value: unknown, where: string): string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
     throw new CaptureConfigError(`${where}: expected an ISO timestamp`);
@@ -55,6 +57,13 @@ function parseTimestamp(value: unknown, where: string): string {
   if (!Number.isFinite(timestamp.getTime()) || timestamp.toISOString().slice(0, 10) !== value.slice(0, 10)) {
     throw new CaptureConfigError(`${where}: expected a valid ISO timestamp`);
   }
+  return value;
+}
+
+/** Optional string: absent → fallback; present-non-string → throw. */
+function optionalString(value: unknown, where: string, fallback: string | null): string | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new CaptureConfigError(`${where}: expected a string`);
   return value;
 }
 
@@ -68,10 +77,17 @@ function parseSegment(raw: unknown, where: string): SegmentInput {
   if (Date.parse(endUtc) < Date.parse(startUtc)) {
     throw new CaptureConfigError(`${where}: endUtc must not precede startUtc`);
   }
+  if (obj.isWearer !== undefined && typeof obj.isWearer !== "boolean") {
+    throw new CaptureConfigError(`${where}.isWearer: expected a boolean`);
+  }
+  const channel = obj.channel === undefined ? "mic" : obj.channel;
+  if (typeof channel !== "string" || channel === "") {
+    throw new CaptureConfigError(`${where}.channel: expected a non-empty string`);
+  }
   return {
-    speakerCluster: typeof obj.speakerCluster === "string" ? obj.speakerCluster : null,
+    speakerCluster: optionalString(obj.speakerCluster, `${where}.speakerCluster`, null),
     isWearer: obj.isWearer === true,
-    channel: typeof obj.channel === "string" && obj.channel !== "" ? obj.channel : "mic",
+    channel,
     text: obj.text,
     startUtc,
     endUtc,
@@ -88,15 +104,18 @@ function parseConversation(raw: unknown, where: string): ConversationInput {
   if (obj.state !== undefined && obj.state !== "capturing" && obj.state !== "final") {
     throw new CaptureConfigError(`${where}.state: expected "capturing" or "final"`);
   }
+  if (obj.id !== undefined && (typeof obj.id !== "string" || obj.id === "")) {
+    throw new CaptureConfigError(`${where}.id: expected a non-empty string`);
+  }
   if (!Array.isArray(obj.segments)) {
     throw new CaptureConfigError(`${where}.segments: expected an array`);
   }
   return {
-    id: typeof obj.id === "string" && obj.id !== "" ? obj.id : undefined,
+    id: obj.id === undefined ? undefined : (obj.id as string),
     startedAtUtc,
     endedAtUtc,
     state: obj.state ?? "final",
-    device: typeof obj.device === "string" ? obj.device : null,
+    device: optionalString(obj.device, `${where}.device`, null),
     segments: obj.segments.map((seg, i) => parseSegment(seg, `${where}.segments[${i}]`)),
   };
 }
@@ -111,9 +130,12 @@ function ingestSpeakers(spool: Spool, raw: unknown, where: string): void {
     if (typeof obj.id !== "string" || obj.id === "") {
       throw new CaptureConfigError(`${where}.speakers[${i}].id: expected a non-empty string`);
     }
+    if (obj.isSelf !== undefined && typeof obj.isSelf !== "boolean") {
+      throw new CaptureConfigError(`${where}.speakers[${i}].isSelf: expected a boolean`);
+    }
     spool.upsertSpeaker({
       id: obj.id,
-      label: typeof obj.label === "string" ? obj.label : null,
+      label: optionalString(obj.label, `${where}.speakers[${i}].label`, null),
       isSelf: obj.isSelf === true,
     });
   });
@@ -142,8 +164,10 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
     const docs = Array.isArray(parsed) ? parsed : [parsed];
     docs.forEach((doc, i) => {
       const where = `${name}[${i}]`;
-      ingestSpeakers(spool, asObject(doc, where).speakers, where);
+      // Parse (validate) the conversation BEFORE touching the spool, so a
+      // malformed conversation never persists its speaker rows.
       const conv = parseConversation(doc, where);
+      ingestSpeakers(spool, asObject(doc, where).speakers, where);
       const id = spool.insertConversation(conv);
       result.ids.push(id);
       result.conversationsIngested += 1;

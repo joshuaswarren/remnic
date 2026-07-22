@@ -51,6 +51,14 @@ export { ingestReplayDir } from "./replay.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";
 export type { DaemonDeps, DaemonHandle } from "./daemon.js";
-export { isProcessAlive, readPidFile, removePidFile, writePidFile } from "./control.js";
+export {
+  isProcessAlive,
+  readPidFile,
+  readPidRecord,
+  removePidFile,
+  removePidFileIfOwner,
+  writePidFile,
+} from "./control.js";
+export type { PidRecord } from "./control.js";
 export { runCapture } from "./cli.js";
 export type { CliIo } from "./cli.js";

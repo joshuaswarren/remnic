@@ -7,26 +7,30 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
+import { coerceNumber } from "./coerce.js";
 import {
   defaultDaemonConfig,
   loadDaemonConfig,
   serializeDaemonConfig,
   type DaemonConfig,
 } from "./config.js";
-import { isProcessAlive, readPidFile, removePidFile, writePidFile } from "./control.js";
+import {
+  isProcessAlive,
+  readPidRecord,
+  removePidFile,
+  removePidFileIfOwner,
+  writePidFile,
+} from "./control.js";
 import { startDaemon } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { capturePaths, captureBaseDir, type CapturePaths } from "./paths.js";
 import { ingestReplayDir } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
-import { coerceNumber } from "./coerce.js";
-import { isLoopbackHost } from "./util.js";
-import { writeFileSync, mkdirSync } from "node:fs";
-import path from "node:path";
 
 export interface CliIo {
   argv: string[];
@@ -108,6 +112,26 @@ function applyBindingOverrides(
   return next;
 }
 
+function tokenHeader(paths: CapturePaths): Record<string, string> {
+  if (!existsSync(paths.tokenPath)) return {};
+  return { authorization: `Bearer ${readFileSync(paths.tokenPath, "utf8").trim()}` };
+}
+
+/** Authenticated health probe; returns the daemon's instanceId or null. */
+async function probeInstanceId(paths: CapturePaths, config: DaemonConfig): Promise<string | null> {
+  try {
+    const res = await fetch(`http://${config.host}:${config.port}/v1/health`, {
+      headers: tokenHeader(paths),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { instanceId?: unknown };
+    return typeof body.instanceId === "string" ? body.instanceId : null;
+  } catch {
+    return null;
+  }
+}
+
 function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, stdout: (l: string) => void): number {
   mkdirSync(paths.baseDir, { recursive: true });
   if (existsSync(paths.configPath) && flags.force !== true) {
@@ -125,12 +149,13 @@ function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, s
 async function cmdStart(
   paths: CapturePaths,
   flags: Record<string, string | boolean>,
+  env: NodeJS.ProcessEnv,
   stdout: (l: string) => void,
   stderr: (l: string) => void,
 ): Promise<number> {
   const config = applyBindingOverrides(loadConfigOrDefault(paths, stderr), flags);
   const replayDir = typeof flags.replay === "string" ? flags.replay : null;
-  const previousPid = readPidFile(paths.pidPath);
+  const previousPid = readPidRecord(paths.pidPath)?.pid ?? null;
   if (previousPid !== null) {
     if (isProcessAlive(previousPid)) {
       stdout(`daemon already running (pid ${previousPid})`);
@@ -152,6 +177,7 @@ async function cmdStart(
     const child = spawn(process.execPath, [entry, ...forwarded], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, ...env },
     });
     child.unref();
     if (typeof child.pid === "number") writePidFile(paths.pidPath, child.pid);
@@ -169,15 +195,15 @@ async function cmdStart(
     );
   }
   const handle = await startDaemon({ spool, config, token, capturing: false });
-  writePidFile(paths.pidPath, process.pid);
-  stdout(`listening on ${handle.url} (loopback=${isLoopbackHost(config.host)})`);
+  writePidFile(paths.pidPath, process.pid, { instanceId: spool.meta("instance_id") });
+  stdout(`listening on ${handle.url}`);
 
   return await new Promise<number>((resolve) => {
     const shutdown = () => {
       spool.finalizeOpenConversations();
       void handle.close().finally(() => {
         spool.close();
-        removePidFile(paths.pidPath);
+        removePidFileIfOwner(paths.pidPath, process.pid);
         resolve(0);
       });
     };
@@ -186,15 +212,48 @@ async function cmdStart(
   });
 }
 
-function cmdStop(paths: CapturePaths, stdout: (l: string) => void): number {
-  const pid = readPidFile(paths.pidPath);
-  if (pid === null || !isProcessAlive(pid)) {
+async function cmdStop(
+  paths: CapturePaths,
+  stdout: (l: string) => void,
+  stderr: (l: string) => void,
+): Promise<number> {
+  const record = readPidRecord(paths.pidPath);
+  if (record === null || !isProcessAlive(record.pid)) {
     removePidFile(paths.pidPath);
     stdout("daemon not running");
     return 0;
   }
-  process.kill(pid, "SIGTERM");
-  stdout(`sent SIGTERM to daemon (pid ${pid}); waiting for shutdown`);
+  // Identity guard: if we recorded which daemon instance owns this pid,
+  // confirm the live process really is that daemon before signalling it —
+  // a reused pid must not be killed by us.
+  if (record.instanceId !== null) {
+    const config = loadConfigOrDefault(paths, stderr);
+    const liveInstance = await probeInstanceId(paths, config);
+    if (liveInstance !== null && liveInstance !== record.instanceId) {
+      removePidFile(paths.pidPath);
+      stdout(`pid ${record.pid} is not our daemon (instance mismatch); cleared stale pid file`);
+      return 0;
+    }
+  }
+  try {
+    process.kill(record.pid, "SIGTERM");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      removePidFile(paths.pidPath);
+      stdout("daemon not running");
+      return 0;
+    }
+    if (code === "EPERM") {
+      stderr(`daemon (pid ${record.pid}) is running but not controllable from this user`);
+      return 1;
+    }
+    throw err;
+  }
+  // The daemon's own shutdown handler removes the pid file once it has
+  // finalized conversations and released the spool/socket — do not delete
+  // it here (valid state must survive until replacement is confirmed).
+  stdout(`sent SIGTERM to daemon (pid ${record.pid}); waiting for shutdown`);
   return 0;
 }
 
@@ -203,25 +262,21 @@ async function cmdStatus(
   stdout: (l: string) => void,
   stderr: (l: string) => void,
 ): Promise<number> {
-  const pid = readPidFile(paths.pidPath);
-  if (pid === null || !isProcessAlive(pid)) {
+  const record = readPidRecord(paths.pidPath);
+  if (record === null || !isProcessAlive(record.pid)) {
     stdout("status: not running");
     return 0;
   }
   const config = loadConfigOrDefault(paths, stderr);
-  const headers: Record<string, string> = {};
-  if (!isLoopbackHost(config.host) && existsSync(paths.tokenPath)) {
-    headers.authorization = `Bearer ${readFileSync(paths.tokenPath, "utf8").trim()}`;
-  }
   try {
     const res = await fetch(`http://${config.host}:${config.port}/v1/health`, {
-      headers,
+      headers: tokenHeader(paths),
       signal: AbortSignal.timeout(2000),
     });
     const body = await res.text();
-    stdout(`status: running (pid ${pid}) — HTTP ${res.status} ${body}`);
+    stdout(`status: running (pid ${record.pid}) — HTTP ${res.status} ${body}`);
   } catch (err) {
-    stdout(`status: process alive (pid ${pid}) but health check failed: ${(err as Error).message}`);
+    stdout(`status: process alive (pid ${record.pid}) but health check failed: ${(err as Error).message}`);
   }
   return 0;
 }
@@ -280,9 +335,9 @@ export async function runCapture(io: CliIo): Promise<number> {
       case "init":
         return cmdInit(paths, parsed.flags, stdout);
       case "start":
-        return await cmdStart(paths, parsed.flags, stdout, stderr);
+        return await cmdStart(paths, parsed.flags, env, stdout, stderr);
       case "stop":
-        return cmdStop(paths, stdout);
+        return await cmdStop(paths, stdout, stderr);
       case "status":
         return await cmdStatus(paths, stdout, stderr);
       case "devices":

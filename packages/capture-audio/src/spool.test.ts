@@ -143,3 +143,15 @@ test("finalizeOpenConversations flips capturing to final", () => {
   assert.equal(spool.queryFinalConversations({ date: "2026-07-20", timezone: "UTC", limit: 10 }).conversations.length, 1);
   spool.close();
 });
+
+test("upsertSpeaker preserves fields omitted from a later update", () => {
+  const spool = new Spool(":memory:");
+  spool.upsertSpeaker({ id: "self", label: "Me", isSelf: true, embeddingCount: 5 });
+  // label-only update must not clear isSelf or reset embeddingCount
+  spool.upsertSpeaker({ id: "self", label: "Myself" });
+  const row = spool.listSpeakers().find((s) => s.id === "self");
+  assert.equal(row?.label, "Myself");
+  assert.equal(row?.isSelf, true);
+  assert.equal(row?.embeddingCount, 5);
+  spool.close();
+});

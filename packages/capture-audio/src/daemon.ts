@@ -1,15 +1,17 @@
 /**
- * Loopback HTTP daemon. Serves the spool over three read-only routes:
+ * Loopback-only HTTP daemon. Serves the spool over three read-only routes:
  *
- *   GET /v1/health         → liveness + capture status
+ *   GET /v1/health         → liveness + capture status + instanceId
  *   GET /v1/conversations  → final conversations for a local day (keyset paged)
  *   GET /v1/speakers        → speaker clusters (curation aid)
  *
- * Auth: when the daemon binds a NON-loopback host, every request MUST
- * carry `Authorization: Bearer <token>` matching the daemon token; a
- * missing/invalid token is 401. On loopback the token still exists but
- * localhost is trusted (Bee-proxy precedent). Input errors are 400;
- * anything unexpected is 500 with no foreign error text.
+ * Security: capture-audio serves PLAIN HTTP and has no TLS contract, so it
+ * refuses to bind a non-loopback host — transcript data must never cross
+ * the network in cleartext (a remote reader must front it with their own
+ * TLS/tunnel, out of scope here). Every request MUST carry
+ * `Authorization: Bearer <token>` matching the daemon token, even on
+ * loopback, so another local user cannot read transcripts off 127.0.0.1.
+ * Input errors are 400; anything unexpected is 500 with no foreign text.
  */
 
 import http from "node:http";
@@ -56,6 +58,7 @@ function handleHealth(deps: DaemonDeps, res: http.ServerResponse): void {
     capturing: deps.capturing ?? false,
     sttModel: deps.config.stt.modelPath,
     pendingChunks: deps.spool.pendingChunkCount(),
+    instanceId: deps.spool.meta("instance_id"),
   });
 }
 
@@ -74,9 +77,14 @@ function handleSpeakers(deps: DaemonDeps, res: http.ServerResponse): void {
 }
 
 export function createRequestHandler(deps: DaemonDeps): http.RequestListener {
-  const requireToken = !isLoopbackHost(deps.config.host);
-  if (requireToken && !deps.token) {
-    throw new CaptureConfigError("binding a non-loopback host requires a bearer token");
+  if (!isLoopbackHost(deps.config.host)) {
+    throw new CaptureConfigError(
+      `refusing to bind non-loopback host '${deps.config.host}': capture-audio serves plain HTTP with no TLS contract; ` +
+        "bind a loopback address (127.0.0.1 or ::1) only",
+    );
+  }
+  if (!deps.token) {
+    throw new CaptureConfigError("daemon requires a bearer token");
   }
   return (req, res) => {
     try {
@@ -85,12 +93,10 @@ export function createRequestHandler(deps: DaemonDeps): http.RequestListener {
         return;
       }
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (requireToken) {
-        const presented = bearerFromHeader(req.headers["authorization"]);
-        if (!presented || !tokensMatch(deps.token, presented)) {
-          sendJson(res, 401, { error: "unauthorized" });
-          return;
-        }
+      const presented = bearerFromHeader(req.headers["authorization"]);
+      if (!presented || !tokensMatch(deps.token, presented)) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
       }
       switch (url.pathname) {
         case "/v1/health":
@@ -116,9 +122,15 @@ export function createRequestHandler(deps: DaemonDeps): http.RequestListener {
 }
 
 export function startDaemon(deps: DaemonDeps): Promise<DaemonHandle> {
-  const handler = createRequestHandler(deps);
-  const server = http.createServer(handler);
   return new Promise((resolve, reject) => {
+    let handler: http.RequestListener;
+    try {
+      handler = createRequestHandler(deps);
+    } catch (err) {
+      reject(err as Error);
+      return;
+    }
+    const server = http.createServer(handler);
     const onError = (err: Error) => reject(err);
     server.once("error", onError);
     server.listen(deps.config.port, deps.config.host, () => {

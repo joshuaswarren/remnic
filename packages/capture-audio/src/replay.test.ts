@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { CaptureConfigError } from "./errors.js";
 import { ingestReplayDir } from "./replay.js";
 import { Spool } from "./spool.js";
 
+const createdDirs: string[] = [];
+after(() => {
+  for (const dir of createdDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function fixtureDir(files: Record<string, unknown>): string {
   const dir = mkdtempSync(path.join(tmpdir(), "cap-replay-"));
+  createdDirs.push(dir);
   for (const [name, body] of Object.entries(files)) {
     writeFileSync(path.join(dir, name), JSON.stringify(body), "utf8");
   }
@@ -74,36 +80,54 @@ test("replay is idempotent: re-ingesting the same fixtures changes nothing", () 
 
 test("malformed fixtures are rejected loudly", () => {
   const spool = new Spool(":memory:");
-  const noSegs = fixtureDir({ "bad.json": { startedAtUtc: "2026-07-20T15:00:00.000Z" } });
-  assert.throws(() => ingestReplayDir(spool, noSegs), CaptureConfigError);
-
-  const noStart = fixtureDir({ "bad.json": { segments: [] } });
-  assert.throws(() => ingestReplayDir(spool, noStart), CaptureConfigError);
+  assert.throws(() => ingestReplayDir(spool, fixtureDir({ "bad.json": { startedAtUtc: "2026-07-20T15:00:00.000Z" } })), CaptureConfigError);
+  assert.throws(() => ingestReplayDir(spool, fixtureDir({ "bad.json": { segments: [] } })), CaptureConfigError);
 
   const empty = mkdtempSync(path.join(tmpdir(), "cap-empty-"));
+  createdDirs.push(empty);
   assert.throws(() => ingestReplayDir(spool, empty), /no \*\.json fixtures/);
-
   assert.throws(() => ingestReplayDir(spool, path.join(tmpdir(), "definitely-missing-xyz")), CaptureConfigError);
   spool.close();
 });
 
-test("replay rejects unknown states and malformed timestamps before persistence", () => {
+test("replay rejects unknown states, bad timestamps, and present-but-invalid fields", () => {
   const spool = new Spool(":memory:");
   for (const fixture of [
     { startedAtUtc: "2026-07-20T10:00:00.000Z", state: "finished", segments: [] },
     { startedAtUtc: "not-a-timestamp", segments: [] },
-    {
-      startedAtUtc: "2026-07-20T10:00:00.000Z",
-      endedAtUtc: "2026-07-20T09:00:00.000Z",
-      segments: [],
-    },
+    { startedAtUtc: "2026-07-20T10:00:00.000Z", endedAtUtc: "2026-07-20T09:00:00.000Z", segments: [] },
+    { startedAtUtc: "2026-07-20T10:00:00.000Z", id: 7, segments: [] },
+    { startedAtUtc: "2026-07-20T10:00:00.000Z", device: 7, segments: [] },
     {
       startedAtUtc: "2026-07-20T10:00:00.000Z",
       segments: [{ channel: "mic", text: "bad", startUtc: "2026-07-20T10:00:01.000Z", endUtc: "not-a-timestamp" }],
+    },
+    {
+      startedAtUtc: "2026-07-20T10:00:00.000Z",
+      segments: [{ channel: 7, text: "bad", startUtc: "2026-07-20T10:00:00.000Z", endUtc: "2026-07-20T10:00:01.000Z" }],
+    },
+    {
+      startedAtUtc: "2026-07-20T10:00:00.000Z",
+      segments: [{ speakerCluster: 7, channel: "mic", text: "bad", startUtc: "2026-07-20T10:00:00.000Z", endUtc: "2026-07-20T10:00:01.000Z" }],
     },
   ]) {
     assert.throws(() => ingestReplayDir(spool, fixtureDir({ "bad.json": fixture })), CaptureConfigError);
   }
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});
+
+test("a malformed conversation does not persist its speakers", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "bad.json": {
+      startedAtUtc: "2026-07-20T10:00:00.000Z",
+      state: "finished", // invalid → conversation rejected before speakers upsert
+      speakers: [{ id: "spk_ghost", label: "Ghost" }],
+      segments: [],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, dir), CaptureConfigError);
+  assert.deepEqual(spool.listSpeakers(), []);
   spool.close();
 });
