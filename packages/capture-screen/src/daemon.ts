@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 
-import { openBetterSqlite3, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
+import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
 
 export interface CaptureSnapshot {
   capturedAtUtc: string;
   app: string;
   windowTitle: string;
   text: string;
+  textSource: "ax" | "ocr";
 }
 
 export interface CaptureScreenDaemonOptions {
@@ -28,17 +29,44 @@ export interface CaptureScreenDaemon {
   close(): Promise<void>;
 }
 
-type SnapshotRow = CaptureSnapshot & { id: number };
+type SnapshotRow = CaptureSnapshot & { id: number; contentHash: string };
 
 function isLoopback(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost";
 }
 
-function validSnapshot(snapshot: CaptureSnapshot): void {
-  if (!Number.isFinite(Date.parse(snapshot.capturedAtUtc))) throw new RangeError("capturedAtUtc must be a valid ISO timestamp");
+/** Bracket an IPv6 literal so it is a valid URL host (`::1` -> `[::1]`). */
+function hostForUrl(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
+ * Validate a capture instant and return its canonical `YYYY-MM-DDTHH:MM:SS.sssZ`
+ * form. `Date.parse` alone rolls impossible dates over (2026-02-30 -> Mar 2), so
+ * the wall-clock calendar fields are checked directly before canonicalizing,
+ * independent of the zone designator. Malformed timestamps must fail here rather
+ * than be persisted and mis-bucketed downstream by the activity pipeline.
+ */
+function canonicalTimestamp(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/.exec(iso);
+  const parsed = Date.parse(iso);
+  if (match === null || !Number.isFinite(parsed)) throw new RangeError("capturedAtUtc must be a valid ISO-8601 UTC timestamp");
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) {
+    throw new RangeError("capturedAtUtc is not a real calendar instant");
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizeSnapshot(snapshot: CaptureSnapshot): CaptureSnapshot {
   for (const value of [snapshot.app, snapshot.windowTitle, snapshot.text]) {
     if (typeof value !== "string" || value.length === 0) throw new TypeError("snapshot text fields must be non-empty strings");
   }
+  if (snapshot.textSource !== "ax" && snapshot.textSource !== "ocr") {
+    throw new TypeError('snapshot textSource must be "ax" or "ocr"');
+  }
+  return { ...snapshot, capturedAtUtc: canonicalTimestamp(snapshot.capturedAtUtc) };
 }
 
 function contentHash(snapshot: CaptureSnapshot): string {
@@ -50,6 +78,8 @@ function contentHash(snapshot: CaptureSnapshot): string {
     .update(snapshot.windowTitle)
     .update("\0")
     .update(snapshot.text)
+    .update("\0")
+    .update(snapshot.textSource)
     .digest("hex");
 }
 
@@ -61,6 +91,7 @@ function applySchema(db: BetterSqlite3Database): void {
       app TEXT NOT NULL,
       window_title TEXT NOT NULL,
       text TEXT NOT NULL,
+      text_source TEXT NOT NULL,
       content_hash TEXT NOT NULL UNIQUE
     );
     CREATE INDEX IF NOT EXISTS capture_snapshots_capture_at ON capture_snapshots(captured_at_utc, id);
@@ -69,13 +100,13 @@ function applySchema(db: BetterSqlite3Database): void {
 
 function insertReplay(db: BetterSqlite3Database, replay: readonly CaptureSnapshot[]): void {
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO capture_snapshots (captured_at_utc, app, window_title, text, content_hash)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO capture_snapshots (captured_at_utc, app, window_title, text, text_source, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const transaction = db.transaction((snapshots: readonly CaptureSnapshot[]) => {
-    for (const snapshot of snapshots) {
-      validSnapshot(snapshot);
-      insert.run(snapshot.capturedAtUtc, snapshot.app, snapshot.windowTitle, snapshot.text, contentHash(snapshot));
+    for (const raw of snapshots) {
+      const snapshot = normalizeSnapshot(raw);
+      insert.run(snapshot.capturedAtUtc, snapshot.app, snapshot.windowTitle, snapshot.text, snapshot.textSource, contentHash(snapshot));
     }
   });
   transaction(replay);
@@ -99,7 +130,7 @@ function authorized(header: string | undefined, authToken: string): boolean {
   return header === `Bearer ${authToken}`;
 }
 
-function json(server: import("node:http").ServerResponse, status: number, body: unknown): void {
+function json(server: ServerResponse, status: number, body: unknown): void {
   server.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   server.end(JSON.stringify(body));
 }
@@ -109,29 +140,41 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new RangeError("capture daemon may bind only to a loopback host");
   const db = openBetterSqlite3(options.spoolPath);
-  applySchema(db);
-  if (options.replay !== undefined) insertReplay(db, options.replay);
+  try {
+    applySchema(db);
+    if (options.replay !== undefined) insertReplay(db, options.replay);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   let server: Server | undefined;
+  let closed = false;
   const close = async (): Promise<void> => {
-    if (server !== undefined) {
-      const closing = server;
-      server = undefined;
-      await new Promise<void>((resolve, reject) => closing.close((error) => error === undefined ? resolve() : reject(error)));
+    if (closed) return;
+    closed = true;
+    try {
+      if (server !== undefined) {
+        const closing = server;
+        server = undefined;
+        await new Promise<void>((resolve, reject) => closing.close((error) => (error == null ? resolve() : reject(error))));
+      }
+    } finally {
+      db.close();
     }
-    db.close();
   };
 
   return {
     async start(): Promise<RunningCaptureScreenDaemon> {
+      if (closed) throw new Error("capture daemon is closed");
       if (server !== undefined) throw new Error("capture daemon is already running");
-      server = createServer((request, response) => {
+      const created = createServer((request, response) => {
         if (!authorized(request.headers.authorization, options.authToken)) {
           response.setHeader("www-authenticate", "Bearer");
           json(response, 401, { error: "unauthorized" });
           return;
         }
-        const url = new URL(request.url ?? "/", `http://${host}`);
+        const url = new URL(request.url ?? "/", `http://${hostForUrl(host)}`);
         if (request.method !== "GET") {
           json(response, 405, { error: "method_not_allowed" });
           return;
@@ -149,7 +192,7 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
           const cursor = parseCursor(url.searchParams.get("cursor"));
           const limit = parseLimit(url.searchParams.get("limit"));
           const rows = db.prepare(`
-            SELECT id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text
+            SELECT id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text, text_source AS textSource, content_hash AS contentHash
             FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
           `).all(cursor, limit + 1) as SnapshotRow[];
           const hasNext = rows.length > limit;
@@ -159,16 +202,22 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
             nextCursor: hasNext ? String(snapshots.at(-1)?.id) : null,
           });
         } catch (error) {
-          json(response, 400, { error: error instanceof Error ? error.message : "invalid_request" });
+          json(response, 400, { error: displayErrorDetail(error) || "invalid_request" });
         }
       });
-      await new Promise<void>((resolve, reject) => {
-        server?.once("error", reject);
-        server?.listen(options.port ?? 0, host, () => resolve());
-      });
-      const address = server.address();
+      server = created;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          created.once("error", reject);
+          created.listen(options.port ?? 0, host, () => resolve());
+        });
+      } catch (error) {
+        server = undefined;
+        throw error;
+      }
+      const address = created.address();
       if (address === null || typeof address === "string") throw new Error("capture daemon has no TCP address");
-      return { url: `http://${host}:${address.port}`, close };
+      return { url: `http://${hostForUrl(host)}:${address.port}`, close };
     },
     close,
   };

@@ -18,6 +18,6 @@ remnic-capture-screen \
   --replay ./snapshots.json
 ```
 
-`snapshots.json` contains an array of objects with `capturedAtUtc`, `app`, `windowTitle`, and `text` fields. Exact replays deduplicate by the complete snapshot payload.
+`snapshots.json` contains an array of objects with `capturedAtUtc` (ISO-8601 UTC), `app`, `windowTitle`, `text`, and `textSource` (`"ax"` or `"ocr"`) fields. Each served snapshot also carries the stored `contentHash`, so the core activity client can ingest it. Exact replays deduplicate by the complete snapshot payload.
 
 The daemon does not acquire native screenshots. Native platform helpers send redacted text snapshots to this daemon over its loopback API.

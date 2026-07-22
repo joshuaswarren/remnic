@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+import { expandTildePath } from "@remnic/core";
+
 import { startCaptureScreenDaemon, type CaptureSnapshot, type RunningCaptureScreenDaemon } from "./daemon.js";
 
 export interface CaptureScreenCommandOptions {
@@ -11,7 +13,7 @@ export interface CaptureScreenCommandOptions {
 
 function requireValue(args: readonly string[], index: number, flag: string): string {
   const value = args[index + 1];
-  if (value === undefined || value.startsWith("--")) throw new TypeError(`${flag} requires a value`);
+  if (value === undefined || value.length === 0 || value.startsWith("--")) throw new TypeError(`${flag} requires a value`);
   return value;
 }
 
@@ -38,7 +40,7 @@ export function parseCaptureScreenArgs(args: readonly string[]): CaptureScreenCo
 
 async function readReplay(path: string | undefined): Promise<CaptureSnapshot[] | undefined> {
   if (path === undefined) return undefined;
-  const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+  const parsed: unknown = JSON.parse(await readFile(expandTildePath(path), "utf8"));
   if (!Array.isArray(parsed)) throw new TypeError("--replay JSON must be an array of snapshots");
   return parsed as CaptureSnapshot[];
 }
@@ -47,9 +49,14 @@ export async function runCaptureScreenCommand(args: readonly string[]): Promise<
   const options = parseCaptureScreenArgs(args);
   const daemon = await startCaptureScreenDaemon({
     authToken: options.authToken,
-    spoolPath: options.spoolPath,
+    spoolPath: expandTildePath(options.spoolPath),
     replay: await readReplay(options.replayPath),
     ...(options.port === undefined ? {} : { port: options.port }),
   });
-  return daemon.start();
+  try {
+    return await daemon.start();
+  } catch (error) {
+    await daemon.close();
+    throw error;
+  }
 }
