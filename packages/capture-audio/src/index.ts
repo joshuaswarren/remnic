@@ -36,6 +36,8 @@ export {
 export type { Cursor } from "./validate.js";
 export { Spool } from "./spool.js";
 export type {
+  AssemblyAppendInput,
+  AssemblyAppendResult,
   ChunkStatus,
   ConversationInput,
   ConversationPage,
@@ -47,6 +49,8 @@ export type {
   SpeakerInput,
   SpeakerRow,
 } from "./spool.js";
+export { ConversationAssembler, DEFAULT_CONVERSATION_GAP_MINUTES } from "./assembly.js";
+export type { AssembledConversation, AssemblerOptions, AssemblySegment } from "./assembly.js";
 export { ingestReplayDir } from "./replay.js";
 export { buildWhisperArgs, parseWhisperJson, resolveModelPath, runWhisperCli, transcribeWithWhisper } from "./stt.js";
 export { downloadWhisperModel, whisperModelUrl } from "./model.js";
