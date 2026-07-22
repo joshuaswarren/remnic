@@ -8,6 +8,12 @@
  * timestamps are UTC ISO-8601; windows are half-open [startUtc, endUtc).
  */
 
+import type {
+  FusedSegment,
+  FusedSpeaker,
+  FusionConversationInput,
+} from "../wearables/fusion/types.js";
+
 /** A contiguous meeting-app foreground span (derived from activity in a later slice). */
 export interface MeetingAppSpan {
   /** Meeting app label (e.g. "Zoom", "Google Meet"). */
@@ -73,4 +79,97 @@ export interface MeetingsDetectionConfig {
   audioOnlyMinMinutes: number;
   /** Merge candidates within this gap of each other (minutes). */
   mergeGapMinutes: number;
+}
+
+/**
+ * One screen-activity snapshot fed into meeting fusion (assembled from the
+ * activity store by a later wiring slice; injected directly in tests). Text is
+ * already post-redaction — meeting fusion never sees raw capture.
+ */
+export interface MeetingActivitySnapshot {
+  /** ISO 8601 UTC instant the snapshot was captured. */
+  tsUtc: string;
+  /** Foreground application label (e.g. "Preview", "Chrome", "Zoom"). */
+  app: string;
+  /** Window title, when known. */
+  title?: string;
+  /** Browser URL, when known. */
+  url?: string;
+  /** Extracted on-screen text excerpt, when known. */
+  text?: string;
+}
+
+/** One entry in a meeting's screen-context timeline (an other-app dwell). */
+export interface MeetingScreenContextEvent {
+  /** ISO 8601 UTC instant the dwell began (clamped to the meeting window). */
+  tsUtc: string;
+  /** `HH:MM` (UTC) render used on the timeline line. */
+  clock: string;
+  /** App label. */
+  app: string;
+  /** Compact label, e.g. `Preview: Q3-roadmap.pdf` or `Chrome: github.com/x`. */
+  label: string;
+  /** Foreground dwell within the meeting window, in whole seconds. */
+  dwellSeconds: number;
+}
+
+/** Detection-plus-fusion configuration for meeting building. */
+export interface MeetingsConfig extends MeetingsDetectionConfig {
+  /** Master gate for the meetings subsystem. */
+  enabled: boolean;
+  /** Min foreground dwell (seconds) for an other-app span to enter context. */
+  contextDwellSeconds: number;
+  /** Cap on total deduped screen-context excerpt characters. */
+  maxContextChars: number;
+}
+
+/** Per-meeting build input (day conversations + activity are clipped here). */
+export interface MeetingBuildInput {
+  meeting: DetectedMeeting;
+  /**
+   * Fusion conversation inputs across ALL wearable sources for the day. Only
+   * segments overlapping the meeting window are used; passing whole-day inputs
+   * is fine (they are clipped in `fuseMeeting`).
+   */
+  conversations: FusionConversationInput[];
+  /** Day screen-activity snapshots (filtered to the window in `fuseMeeting`). */
+  activity?: MeetingActivitySnapshot[];
+}
+
+/** The fused, screen-aware view of a meeting produced by `fuseMeeting`. */
+export interface FusedMeeting {
+  /** Distinct resolved non-wearer attendee labels, sorted. */
+  attendees: string[];
+  /** Contributing transcript sources, sorted + de-duplicated. */
+  sources: string[];
+  /** Sources that corroborated a higher-trust pick (alternatives), sorted. */
+  corroboratedBy: string[];
+  /** Screen-context timeline (other-app dwell >= contextDwellSeconds). */
+  screenContext: MeetingScreenContextEvent[];
+  /** Deduped notable on-screen text excerpts (capped by maxContextChars). */
+  contextExcerpts: string[];
+  /** Fused, reconciled transcript segments in chronological order. */
+  transcript: FusedSegment[];
+  /** Reconciled speakers (deduped across sources). */
+  speakers: FusedSpeaker[];
+  /** Count of activity snapshots inside the meeting window. */
+  snapshotCount: number;
+}
+
+/**
+ * A persisted meeting record. Frontmatter + fused body serialize to
+ * `<memoryDir>/meetings/<date>/<id>.md`; rebuilt idempotently on contentHash.
+ */
+export interface MeetingRecord extends FusedMeeting {
+  id: string;
+  date: string;
+  startUtc: string;
+  endUtc: string;
+  app?: string;
+  detectionSource: MeetingDetectionSource;
+  title?: string;
+  /** SHA-256 over the record's canonical semantic content (idempotency key). */
+  contentHash: string;
+  /** Serializer format version (bump invalidates older files). */
+  formatVersion: number;
 }

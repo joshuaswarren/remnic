@@ -6,3 +6,9 @@
  */
 export * from "./types.js";
 export * from "./detect.js";
+export * from "./config.js";
+export * from "./errors.js";
+export * from "./fuse.js";
+export * from "./store.js";
+export * from "./build.js";
+export * from "./cli.js";
