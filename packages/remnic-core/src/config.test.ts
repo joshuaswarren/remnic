@@ -1179,6 +1179,13 @@ test('parseConfig localLlmDisableThinking "0"/"no"/"off" all coerce to false', (
   assert.equal(parseConfig({ localLlmDisableThinking: "off" }).localLlmDisableThinking, false);
 });
 
+test("parseConfig localLlmThinkingThresholdChars defaults conservatively and accepts zero to disable (#1997)", () => {
+  assert.equal(parseConfig({}).localLlmThinkingThresholdChars, 3_000);
+  assert.equal(parseConfig({ localLlmThinkingThresholdChars: 0 }).localLlmThinkingThresholdChars, 0);
+  assert.equal(parseConfig({ localLlmThinkingThresholdChars: "3000" }).localLlmThinkingThresholdChars, 3_000);
+  assert.equal(parseConfig({ localLlmThinkingThresholdChars: 3_000 }).localLlmThinkingThresholdChars, 3_000);
+});
+
 test("parseConfig procedural numeric fields coerce from CLI-style strings (issue #519)", () => {
   const result = parseConfig({
     openaiApiKey: "sk-test",

@@ -2856,6 +2856,12 @@ export function parseConfig(
       ["", "none", "low", "medium", "high", "max"].includes(cfg.localLlmReasoningEffort)
         ? cfg.localLlmReasoningEffort
         : "none",
+    localLlmThinkingThresholdChars: (() => {
+      const threshold = coerceNumber(cfg.localLlmThinkingThresholdChars);
+      return threshold !== undefined && Number.isInteger(threshold) && threshold >= 0
+        ? threshold
+        : 3_000;
+    })(),
     // Extraction retry/backoff + circuit breaker (extraction hot-loop hardening)
     extractionRetryEnabled: coerceBooleanLike(cfg.extractionRetryEnabled) ?? true,
     extractionRetryScheduleMs:
