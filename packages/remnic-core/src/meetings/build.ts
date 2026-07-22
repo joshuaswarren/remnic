@@ -95,6 +95,8 @@ export interface MeetingsDayBuildSummary {
   built: number;
   /** Records skipped (unchanged contentHash). */
   skipped: number;
+  /** Ids of stale same-day records deleted because they no longer detect. */
+  removed: string[];
 }
 
 /** Orchestrates a store-backed build of a day's meetings. */
@@ -110,17 +112,19 @@ export class MeetingsBuilder {
 
   async buildDay(date: string): Promise<MeetingsDayBuildSummary> {
     if (!this.opts.config.enabled) {
-      return { date, enabled: false, meetings: [], built: 0, skipped: 0 };
+      return { date, enabled: false, meetings: [], built: 0, skipped: 0, removed: [] };
     }
     const data = await this.opts.source.loadDayData(date);
     const records = buildMeetingRecordsForDay(data, this.opts.config, this.opts.fusionOptions ?? {});
     const meetings: MeetingBuildOutcome[] = [];
     let built = 0;
     let skipped = 0;
+    const builtIds = new Set<string>();
     for (const record of records) {
       const save = await this.opts.store.saveMeetingRecord(record);
       if (save.written) built++;
       else skipped++;
+      builtIds.add(record.id);
       meetings.push({
         id: record.id,
         startUtc: record.startUtc,
@@ -132,6 +136,16 @@ export class MeetingsBuilder {
         written: save.written,
       });
     }
-    return { date, enabled: true, meetings, built, skipped };
+    // Reconcile stale same-day records: a prior build's meeting whose id is no
+    // longer detected (window shifted, source removed, or it split/merged) must
+    // not linger and orphan its provenance. Delete only within THIS day's dir,
+    // only ids the current rebuild did not produce.
+    const removed: string[] = [];
+    for (const existingId of await this.opts.store.listMeetingIds(date)) {
+      if (builtIds.has(existingId)) continue;
+      await this.opts.store.deleteMeetingRecord(date, existingId);
+      removed.push(existingId);
+    }
+    return { date, enabled: true, meetings, built, skipped, removed };
   }
 }

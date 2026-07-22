@@ -601,6 +601,26 @@ export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
 
+/**
+ * Meeting records (issue #1900) live under `<memoryDir>/meetings/<date>/` —
+ * inside the QMD collection root (full-text searchable) but NEVER surfaced
+ * through generic recall, exactly like `artifacts/`. Matches a `meetings`
+ * path segment so a namespaced `.../meetings/...` record is excluded too.
+ */
+export function isMeetingRecordPath(filePath: string): boolean {
+  return /(?:^|[\\/])meetings(?:[\\/]|$)/i.test(filePath);
+}
+
+/**
+ * A derived on-disk markdown path that generic recall must never surface
+ * (artifacts + meeting records). One predicate shared by every recall filter
+ * site so the exclusion cannot drift between paths (extends the artifact
+ * isolation contract rather than adding a parallel filter).
+ */
+export function isNonRecallableMemoryPath(filePath: string): boolean {
+  return isArtifactMemoryPath(filePath) || isMeetingRecordPath(filePath);
+}
+
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),
@@ -623,7 +643,7 @@ export function filterRecallCandidates(
       )
     : candidates;
   return scopedByNamespace
-    .filter((r) => !isArtifactMemoryPath(r.path))
+    .filter((r) => !isNonRecallableMemoryPath(r.path))
     .slice(0, Math.max(0, options.limit));
 }
 

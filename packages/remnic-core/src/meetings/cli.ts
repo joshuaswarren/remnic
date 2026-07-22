@@ -176,6 +176,12 @@ export async function runMeetingsCliCommand(
         if (date === null) {
           throw new MeetingsInputError(`invalid meeting id '${id}' — expected mtg-YYYY-MM-DD-<hash>`);
         }
+        // meetingIdDate matches the id's SHAPE; a syntactically valid but
+        // impossible calendar date (e.g. mtg-2026-13-40-...) must surface as a
+        // clean input error, not a 500 from the store's path validator.
+        if (!isValidTranscriptDate(date)) {
+          throw new MeetingsInputError(`invalid meeting id '${id}' — '${date}' is not a real calendar date`);
+        }
         const raw = await deps.store.readMeetingRecord(date, id);
         if (raw === null) {
           throw new MeetingsInputError(`meeting '${id}' not found`);

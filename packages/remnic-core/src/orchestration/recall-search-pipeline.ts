@@ -54,12 +54,12 @@ import {
   shouldFilterLifecycleRecallCandidate,
   computeQmdHybridFetchLimit,
   filterRecallCandidates,
-  isArtifactMemoryPath,
   throwIfRecallAborted,
   tokenizeRecallQuery,
   type QmdRecallSnapshot,
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
+import { isNonRecallableMemoryPath } from "./orchestrator-helpers.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -693,7 +693,7 @@ export class RecallSearchPipelineCoordinator {
       : [];
     if (scopedSeedResults.length >= cappedLimit) {
       return scopedSeedResults
-        .filter((result) => !isArtifactMemoryPath(result.path))
+        .filter((result) => !isNonRecallableMemoryPath(result.path))
         .slice(0, cappedLimit);
     }
 
@@ -726,7 +726,7 @@ export class RecallSearchPipelineCoordinator {
       [...scopedSeedResults, ...scored],
       this.deps.namespaceFromPath,
       cappedLimit,
-      { filter: (result) => !isArtifactMemoryPath(result.path) },
+      { filter: (result) => !isNonRecallableMemoryPath(result.path) },
     );
   }
 
@@ -974,8 +974,8 @@ export class RecallSearchPipelineCoordinator {
       }
       results = scopedResults;
     }
-    // Artifact isolation contract: generic recall paths must exclude artifacts.
-    results = results.filter((r) => !isArtifactMemoryPath(r.path));
+    // Isolation contract: generic recall paths must exclude artifacts + meeting records.
+    results = results.filter((r) => !isNonRecallableMemoryPath(r.path));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =

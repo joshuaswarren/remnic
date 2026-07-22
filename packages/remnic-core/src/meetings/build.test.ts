@@ -202,3 +202,38 @@ test("degradation — provider transcript detects without an app span", async ()
   assert.equal(summary.meetings.length, 1);
   assert.equal(summary.meetings[0]?.detectionSource, "provider");
 });
+
+test("rebuild reconciles stale same-day records whose meeting no longer detects", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const cfg = config();
+  const START2 = "2026-03-10T16:00:00.000Z";
+  const END2 = "2026-03-10T17:00:00.000Z";
+
+  // First build: a single meeting in the 14:00 window.
+  const firstData: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const firstSummary = await new MeetingsBuilder({ source: fixedSource(firstData), store, config: cfg }).buildDay(DATE);
+  assert.equal(firstSummary.meetings.length, 1);
+  const staleId = firstSummary.meetings[0]!.id;
+  assert.deepEqual(await store.listMeetingIds(DATE), [staleId]);
+
+  // Second build of the SAME day: the meeting moved to a different window, so a
+  // different stable id is produced. The old record must be reconciled away.
+  const secondData: MeetingDayData = {
+    detection: {
+      date: DATE,
+      appSpans: [appSpan("Zoom", START2, END2)],
+      audioWindows: [audioWin("desktop", START2, END2)],
+    },
+    conversations: [conv("desktop", "d2", [seg("later meeting", "2026-03-10T16:05:00.000Z")])],
+  };
+  const secondSummary = await new MeetingsBuilder({ source: fixedSource(secondData), store, config: cfg }).buildDay(DATE);
+  assert.equal(secondSummary.meetings.length, 1);
+  const freshId = secondSummary.meetings[0]!.id;
+  assert.notEqual(freshId, staleId);
+  assert.deepEqual(secondSummary.removed, [staleId], "the stale record must be deleted");
+  assert.deepEqual(await store.listMeetingIds(DATE), [freshId]);
+  assert.equal(await store.readMeetingRecord(DATE, staleId), null);
+});

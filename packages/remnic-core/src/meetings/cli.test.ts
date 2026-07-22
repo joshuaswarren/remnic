@@ -171,3 +171,12 @@ test("build reports the disabled state when the subsystem is off", async () => {
   assert.equal(result.code, 0);
   assert.match(result.out, /meetings disabled/);
 });
+
+test("show rejects a syntactically valid but impossible calendar id via MeetingsInputError", async () => {
+  const deps = makeDeps();
+  // mtg-2026-13-40-... matches the id SHAPE but 2026-13-40 is not a real date;
+  // this must be a clean input error (exit 1), never a 500 from the path validator.
+  const result = await run(deps, ["show", "mtg-2026-13-40-abcdef01"]);
+  assert.equal(result.code, 1);
+  assert.match(result.err, /not a real calendar date/);
+});

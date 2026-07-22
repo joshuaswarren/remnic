@@ -320,8 +320,12 @@ export class MeetingRecordStore {
     return this.readRaw(filePath);
   }
 
-  /** List meeting ids stored for a day, sorted by start time (ascending). */
-  async listMeetingIds(date: string): Promise<string[]> {
+  /**
+   * Read + parse every stored record for a day exactly ONCE, sorted by start
+   * time (ascending, id tiebreak). The single day-read path both `listMeetingIds`
+   * and `listMeetingSummaries` derive from — no record is read twice.
+   */
+  private async readDaySummaries(date: string): Promise<MeetingRecordSummary[]> {
     if (!isValidTranscriptDate(date)) {
       throw new Error(`invalid meeting date '${String(date)}' — expected YYYY-MM-DD`);
     }
@@ -334,21 +338,11 @@ export class MeetingRecordStore {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
-    const ids: string[] = [];
+    const summaries: MeetingRecordSummary[] = [];
     for (const entry of entries) {
       if (!entry.endsWith(".md")) continue;
       const id = entry.slice(0, -3);
       if (meetingIdDate(id) !== date) continue;
-      ids.push(id);
-    }
-    return this.sortIdsByStart(date, ids);
-  }
-
-  /** Read parsed summaries for a day, sorted by start time. */
-  async listMeetingSummaries(date: string): Promise<MeetingRecordSummary[]> {
-    const ids = await this.listMeetingIds(date);
-    const summaries: MeetingRecordSummary[] = [];
-    for (const id of ids) {
       const raw = await this.readMeetingRecord(date, id);
       if (raw === null) continue;
       const summary = parseMeetingRecordSummary(raw);
@@ -356,6 +350,16 @@ export class MeetingRecordStore {
     }
     summaries.sort((a, b) => (a.startUtc < b.startUtc ? -1 : a.startUtc > b.startUtc ? 1 : SORT_STR(a.id, b.id)));
     return summaries;
+  }
+
+  /** List meeting ids stored for a day, sorted by start time (ascending). */
+  async listMeetingIds(date: string): Promise<string[]> {
+    return (await this.readDaySummaries(date)).map((summary) => summary.id);
+  }
+
+  /** Read parsed summaries for a day, sorted by start time. */
+  async listMeetingSummaries(date: string): Promise<MeetingRecordSummary[]> {
+    return this.readDaySummaries(date);
   }
 
   /** List dates that have at least one stored meeting record, newest first. */
@@ -385,17 +389,6 @@ export class MeetingRecordStore {
     }
   }
 
-  private async sortIdsByStart(date: string, ids: string[]): Promise<string[]> {
-    const withStart: Array<{ id: string; startUtc: string }> = [];
-    for (const id of ids) {
-      const raw = await this.readMeetingRecord(date, id);
-      const summary = raw !== null ? parseMeetingRecordSummary(raw) : null;
-      withStart.push({ id, startUtc: summary?.startUtc ?? "" });
-    }
-    withStart.sort((a, b) => (a.startUtc < b.startUtc ? -1 : a.startUtc > b.startUtc ? 1 : SORT_STR(a.id, b.id)));
-    return withStart.map((entry) => entry.id);
-  }
-
   private async readRaw(filePath: string): Promise<string | null> {
     try {
       return await this.io.readFile(filePath);
@@ -415,20 +408,36 @@ export class MeetingRecordStore {
     await this.assertNoEscape(rootReal, this.meetingsDir);
     await this.assertNoEscape(rootReal, path.dirname(targetPath));
     await this.assertNoEscape(rootReal, targetPath);
-    await this.assertMeetingsDirNotSymlinked();
+    // Reject a symlinked meetings root OR a symlinked intermediate day directory
+    // outright — even when the link resolves inside the memory dir (aliasing /
+    // tampering) — before any read/write (AGENTS.md pattern #3).
+    await this.assertDirNotSymlinked(this.meetingsDir);
+    const dayDir = this.dayDirWithin(targetPath);
+    if (dayDir !== null) await this.assertDirNotSymlinked(dayDir);
   }
 
-  private async assertMeetingsDirNotSymlinked(): Promise<void> {
+  /** The `<meetings>/<date>` directory on the path to `targetPath`, or null when
+   *  `targetPath` is the meetings root itself. */
+  private dayDirWithin(targetPath: string): string | null {
+    const rel = path.relative(this.meetingsDir, targetPath);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    const first = rel.split(path.sep)[0];
+    if (first === undefined || first.length === 0) return null;
+    return path.join(this.meetingsDir, first);
+  }
+
+  private async assertDirNotSymlinked(dir: string): Promise<void> {
     let stat: { isSymbolicLink: boolean };
     try {
-      stat = await this.io.lstat(this.meetingsDir);
+      stat = await this.io.lstat(dir);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       throw err;
     }
     if (stat.isSymbolicLink) {
+      const label = path.relative(this.memoryDir, dir) || MEETINGS_DIR_NAME;
       throw new Error(
-        "meetings dir is a symbolic link — refusing to follow it even when it resolves inside the memory dir (AGENTS.md pattern #3)",
+        `meetings directory '${label}' is a symbolic link — refusing to follow it even when it resolves inside the memory dir (AGENTS.md pattern #3)`,
       );
     }
   }

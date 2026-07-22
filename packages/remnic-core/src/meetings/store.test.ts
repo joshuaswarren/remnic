@@ -198,3 +198,18 @@ test("a symlinked meetings dir is refused before any IO", async () => {
     /symbolic link/,
   );
 });
+
+test("a symlinked intermediate day directory is refused for reads and writes", async () => {
+  const io = new InMemoryIo();
+  io.symlinkedDirs.add("/mem/meetings/2026-03-10");
+  const store = new MeetingRecordStore(MEMORY_DIR, io);
+  await assert.rejects(
+    () => store.saveMeetingRecord(composeMeetingRecord(base(), fused())),
+    /symbolic link/,
+  );
+  await assert.rejects(() => store.listMeetingIds(DATE), /symbolic link/);
+  await assert.rejects(
+    () => store.readMeetingRecord(DATE, "mtg-2026-03-10-abcdef01"),
+    /symbolic link/,
+  );
+});
