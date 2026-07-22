@@ -8,6 +8,19 @@ export interface TranscribedSegment {
   endUtc: string;
 }
 
+export interface WhisperRunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface WhisperTranscriptionInput {
+  wavPath: string;
+  modelPath: string;
+  chunkStartedAtUtc: string;
+  run: (command: string, args: string[]) => Promise<WhisperRunResult>;
+}
+
 interface WhisperSegment {
   text?: unknown;
   offsets?: { from?: unknown; to?: unknown };
@@ -70,4 +83,13 @@ export function resolveModelPath(
 
 export function buildWhisperArgs(wavPath: string, modelPath: string): string[] {
   return ["-m", modelPath, "-f", wavPath, "--output-json"];
+}
+
+export async function transcribeWithWhisper(input: WhisperTranscriptionInput): Promise<TranscribedSegment[]> {
+  const result = await input.run("whisper-cli", buildWhisperArgs(input.wavPath, input.modelPath));
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || `exit code ${result.code}`;
+    throw new CaptureConfigError(`whisper-cli failed: ${detail}`);
+  }
+  return parseWhisperJson(result.stdout, input.chunkStartedAtUtc);
 }
