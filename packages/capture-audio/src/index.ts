@@ -52,6 +52,8 @@ export { buildWhisperArgs, parseWhisperJson, resolveModelPath, runWhisperCli, tr
 export { downloadWhisperModel, whisperModelUrl } from "./model.js";
 export type { ModelDownloadInput, ModelDownloadResult } from "./model.js";
 export { pruneExpiredRawAudio } from "./janitor.js";
+export { createSileroVad, loadSherpaOnnx, sileroVadConfig } from "./vad.js";
+export type { SherpaOnnxModule, SileroVadInput } from "./vad.js";
 export type { TranscribedSegment, WhisperRunResult, WhisperTranscriptionInput } from "./stt.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";
