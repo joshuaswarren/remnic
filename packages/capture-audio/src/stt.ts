@@ -63,7 +63,11 @@ function timestampAt(chunkStartedAtUtc: string, offsetMs: number): string {
   ) {
     throw new CaptureConfigError("chunk start timestamp is invalid");
   }
-  return new Date(startMs + offsetMs).toISOString();
+  const timestampMs = startMs + offsetMs;
+  if (!Number.isFinite(timestampMs) || Math.abs(timestampMs) > 8.64e15) {
+    throw new CaptureConfigError("whisper-cli segment offset produces an invalid timestamp");
+  }
+  return new Date(timestampMs).toISOString();
 }
 
 export function parseWhisperJson(output: string, chunkStartedAtUtc: string): TranscribedSegment[] {
@@ -118,7 +122,7 @@ export function resolveModelPath(
 }
 
 export function buildWhisperArgs(wavPath: string, modelPath: string): string[] {
-  return ["-m", modelPath, "-f", wavPath, "--output-json", "--output-file", "-"];
+  return ["-m", modelPath, "-f", wavPath, "--no-prints", "--output-json", "--output-file", "-"];
 }
 
 export async function transcribeWithWhisper(input: WhisperTranscriptionInput): Promise<TranscribedSegment[]> {
