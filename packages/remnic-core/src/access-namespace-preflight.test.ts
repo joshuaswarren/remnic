@@ -98,4 +98,14 @@ test("namespace_writable rejects unavailable preflight and denied write scope", 
     ),
     { ok: false, reason: "not_writable", namespace: "default" },
   );
+  assert.deepEqual(
+    await resolveAuthorizedNamespaceWritablePreflight(
+      { version: 1, ops: ["observe"], namespaces: ["team-a"] },
+      { namespace: "outside-scope" },
+      "default",
+      "observe",
+      async () => ({ ok: false, reason: "unsupported", namespace: "outside-scope" }),
+    ),
+    { ok: false, reason: "not_writable", namespace: "outside-scope" },
+  );
 });

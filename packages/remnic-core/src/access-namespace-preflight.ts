@@ -86,7 +86,7 @@ export async function resolveAuthorizedNamespaceWritablePreflight(
   }
 
   const result = await resolvePreflight(request);
-  if (result.ok && !isNamespaceAllowed(caps, result.namespace, defaultNamespace)) {
+  if (!isNamespaceAllowed(caps, result.namespace, defaultNamespace)) {
 
     return { ok: false, reason: "not_writable", namespace: result.namespace };
   }
