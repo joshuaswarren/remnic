@@ -29,11 +29,14 @@ const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
  *   - leading label:     "Alice: I decided ..." (chat/comment sender headers)
  * Common document labels ("Note:", "TODO:") are not senders and stay eligible.
  */
-const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|you|they|he|she|it|my|our)\b)[A-Za-z][\w.'’-]*`;
+const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|my|our)\b)[A-Za-z][\w.'’-]*`;
 const SPEECH_VERB =
   String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
 const VERB_ATTRIBUTION = new RegExp(String.raw`\b${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
-const LABEL_ATTRIBUTION = new RegExp(String.raw`^\s*(${ATTRIBUTION_SPEAKER})\s*:\s`, "i");
+const LABEL_ATTRIBUTION = new RegExp(
+  String.raw`^\s*(${ATTRIBUTION_SPEAKER}(?:\s+[A-Za-z][\w.'’-]*){0,3})\s*:\s`,
+  "i",
+);
 const NON_SENDER_LABELS: Record<string, true> = {
   note: true, notes: true, todo: true, fixme: true, reminder: true, update: true,
   updates: true, warning: true, info: true, tip: true, tips: true, summary: true,
@@ -90,7 +93,7 @@ export function isEligibleActivityFact(fact: ExtractionResult["facts"][number]):
   if (!FIRST_PERSON.test(fact.content)) return false;
   if (VERB_ATTRIBUTION.test(fact.content)) return false;
   const label = LABEL_ATTRIBUTION.exec(fact.content);
-  if (label !== null && NON_SENDER_LABELS[label[1].toLowerCase()] !== true) return false;
+  if (label !== null && NON_SENDER_LABELS[label[1].trim().split(/\s+/)[0].toLowerCase()] !== true) return false;
   return true;
 }
 
@@ -144,6 +147,14 @@ export async function generateActivityMemories(
     // structured zero-result so the caller can retry on the next digest run.
     log.warn(
       `activity extraction failed; skipping the day's memory pass: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return result;
+  }
+  if (extracted.extractionFailure !== undefined) {
+    // In-band failure marker (partial/failed provider result): treat like a
+    // thrown extraction — warn and return the structured zero-result.
+    log.warn(
+      `activity extraction reported a failure; skipping the day's memory pass: ${extracted.extractionFailure}`,
     );
     return result;
   }

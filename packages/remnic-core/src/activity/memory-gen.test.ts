@@ -26,7 +26,7 @@ const ownDecision: ActFact = {
 
 function depsFor(
   facts: ActFact[],
-  opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean; extractThrows?: boolean } = {},
+  opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean; extractThrows?: boolean; extractionFailure?: string } = {},
 ) {
   const writes: Array<{ status: string; content: string; validAt?: string; importance?: ImportanceScore }> = [];
   let extractCalls = 0;
@@ -42,7 +42,7 @@ function depsFor(
     extract: async () => {
       extractCalls += 1;
       if (opts.extractThrows) throw new Error("extract exploded");
-      return { facts, profileUpdates: [], entities: [], questions: [] };
+      return { facts, profileUpdates: [], entities: [], questions: [], extractionFailure: opts.extractionFailure };
     },
     judge: async (candidates: JudgeCandidate[]) => {
       if (opts.judgeThrows) throw new Error("judge exploded");
@@ -72,6 +72,14 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Bob: I decided to refactor the parser." }), false);
   // Common document labels are not senders — the user's own note stays eligible.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Note: I decided to refactor the parser." }), true);
+  // Third-person speakers are attribution, not the user — must be rejected.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "They wrote: I decided to leave." }), false);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "He said: I will handle the migration." }), false);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "She posted: I closed the incident." }), false);
+  // Multi-token sender labels ("Alice Smith:") are attribution.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice Smith: I decided to leave." }), false);
+  // Multi-word document labels stay eligible via the first-token check.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Action items: I will refactor the parser." }), true);
 });
 
 test("activity smart mode rejects attributed third-party first-person content before judging", async () => {
@@ -177,4 +185,13 @@ test("activity smart mode persists the scored importance on the write", async ()
   const expected = scoreImportance(ownDecision.content, ownDecision.category, ownDecision.tags);
   assert.equal(importance.level, expected.level);
   assert.equal(importance.score, expected.score);
+});
+
+test("activity smart mode returns a zero result on an in-band extraction failure", async () => {
+  const { deps, writes } = depsFor([ownDecision], { extractionFailure: "provider timeout" });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(writes, []);
 });
