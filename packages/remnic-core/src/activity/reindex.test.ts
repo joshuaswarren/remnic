@@ -82,3 +82,16 @@ test("refreshActivityIndex propagates a strict-refresh failure (no fake success)
   );
   await assert.rejects(refreshActivityIndex(qmd, "openclaw-engram"), /failure backoff/);
 });
+
+test("refreshActivityIndex forwards the abort signal to the backend refresh", async () => {
+  const controller = new AbortController();
+  let seenSignal: AbortSignal | undefined;
+  const qmd: ActivityIndexRefresher = {
+    async update() {},
+    async updateCollectionStrict(_collection, execution) {
+      seenSignal = execution?.signal;
+    },
+  };
+  await refreshActivityIndex(qmd, "openclaw-engram", controller.signal);
+  assert.equal(seenSignal, controller.signal, "the tick's abort signal reaches the QMD refresh");
+});

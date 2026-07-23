@@ -22,14 +22,19 @@ export interface ActivityIndexRefresher {
   updateCollectionStrict?(collection: string, execution?: SearchExecutionOptions): Promise<void>;
 }
 
-export async function refreshActivityIndex(qmd: ActivityIndexRefresher, collection: string): Promise<void> {
+export async function refreshActivityIndex(
+  qmd: ActivityIndexRefresher,
+  collection: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const execution = signal === undefined ? undefined : { signal };
   if (typeof qmd.updateCollectionStrict === "function" && collection.trim().length > 0) {
-    await qmd.updateCollectionStrict(collection);
+    await qmd.updateCollectionStrict(collection, execution);
     return;
   }
   if (typeof qmd.updateStrict === "function") {
-    await qmd.updateStrict();
+    await qmd.updateStrict(execution);
     return;
   }
-  await qmd.update();
+  await qmd.update(execution);
 }

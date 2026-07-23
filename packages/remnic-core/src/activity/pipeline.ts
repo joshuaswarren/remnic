@@ -62,7 +62,7 @@ export interface ActivitySyncOptions {
    * Best-effort — a failure never fails the sync (rows/digest are durable and
    * index on the next update); it surfaces as `reindexError`.
    */
-  afterWrites?: () => Promise<void>;
+  afterWrites?: (signal?: AbortSignal) => Promise<void>;
 }
 
 export interface ActivitySyncResult {
@@ -196,7 +196,7 @@ export async function syncActivitySource(
   let reindexError: string | undefined;
   if (digestWritten && options.afterWrites !== undefined) {
     try {
-      await options.afterWrites();
+      await options.afterWrites(options.signal);
     } catch (error: unknown) {
       // reindexError is part of the exported ActivitySyncResult. Keep our
       // controlled QMD strict messages, but reduce opaque backend errors (which

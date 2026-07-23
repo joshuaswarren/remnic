@@ -78,7 +78,7 @@ export interface ActivitySyncRunOptions {
    * after a digest is (re)written so it becomes discoverable (rule 31).
    * Host wires the core index seam (SearchBackend.update); best-effort.
    */
-  reindexSearch?: () => Promise<void>;
+  reindexSearch?: (signal?: AbortSignal) => Promise<void>;
 }
 
 /** Format a Date as YYYY-MM-DD in an IANA timezone (local calendar day). */

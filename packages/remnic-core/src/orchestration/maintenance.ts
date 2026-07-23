@@ -218,7 +218,7 @@ export class MaintenanceScheduler {
         // throws on a genuine failure rather than reporting a fake success, so a
         // freshly written digest is actually searchable. Reuses the core search
         // seam wearables use; no OpenClaw/host adapter.
-        reindexSearch: () => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection),
+        reindexSearch: (signal) => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection, signal),
       });
       this.activitySyncScheduler.start();
       // Close the race where abort fires between the guard above and start().

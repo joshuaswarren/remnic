@@ -38,7 +38,7 @@ export interface ActivitySyncSchedulerOptions {
   /** The sync pass to run each tick; defaults to the durable runner. */
   invoke?: (signal?: AbortSignal) => Promise<ActivitySyncRunSummary>;
   /** Search-index refresh forwarded to the default runner as `reindexSearch`. */
-  reindexSearch?: () => Promise<void>;
+  reindexSearch?: (signal?: AbortSignal) => Promise<void>;
   /** Timer factory (injectable for tests); defaults to an unref'd setInterval. */
   setTimer?: (fn: () => void, ms: number) => TimerHandle;
   /** Timer canceller matching setTimer; defaults to clearInterval. */
