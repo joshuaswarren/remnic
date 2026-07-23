@@ -125,19 +125,23 @@ function sessionKeyFrom(
 }
 
 function recallQueryFrom(event: Record<string, unknown>): string {
-  if (typeof event.prompt === "string" && event.prompt.trim().length > 0) {
-    return event.prompt;
-  }
-  if (Array.isArray(event.messages)) {
-    const turn = extractLastTurn(event.messages as Array<Record<string, unknown>>);
-    for (const message of turn) {
-      if (message.role === "user") {
-        const text = extractTextContent(message);
-        if (text.trim().length > 0) return text;
+  // Mirrors the embedded recall hook: prefer event.prompt, but when it is
+  // missing or shorter than 5 chars, scan event.messages backward for the most
+  // recent user utterance >= 5 chars (before_prompt_build may only ship messages).
+  let prompt = typeof event.prompt === "string" ? event.prompt : undefined;
+  if ((!prompt || prompt.length < 5) && Array.isArray(event.messages)) {
+    const msgs = event.messages as Array<Record<string, unknown>>;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.role === "user") {
+        const text = extractTextContent(msgs[i] as Record<string, unknown>);
+        if (text.length >= 5) {
+          prompt = text;
+          break;
+        }
       }
     }
   }
-  return "";
+  return prompt ?? "";
 }
 
 function withNamespace(
