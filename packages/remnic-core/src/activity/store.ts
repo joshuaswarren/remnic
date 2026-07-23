@@ -139,19 +139,17 @@ function assertRequiredSnapshotFields(s: ActivitySnapshot): void {
  * which would file the snapshot under the wrong day. Validates the wall-clock
  * calendar fields in the string directly, independent of the zone designator.
  */
-export function isValidUtcInstant(iso: string): boolean {
+function assertValidUtcInstant(iso: string, what: string): void {
   const m = iso.match(
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/,
   );
-  if (m === null || !Number.isFinite(Date.parse(iso))) return false;
+  if (m === null || !Number.isFinite(Date.parse(iso))) {
+    throw new RangeError(`activity: invalid ${what} "${iso}".`);
+  }
   const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
   const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
-  return !(day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59);
-}
-
-function assertValidUtcInstant(iso: string, what: string): void {
-  if (!isValidUtcInstant(iso)) {
-    throw new RangeError(`activity: invalid ${what} "${iso}".`);
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) {
+    throw new RangeError(`activity: ${what} "${iso}" is not a real calendar instant.`);
   }
 }
 

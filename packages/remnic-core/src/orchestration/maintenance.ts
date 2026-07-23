@@ -57,7 +57,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
-import { ActivitySyncRegistrar } from "./activity-sync-registration.js";
+import { ActivitySyncRegistrar } from "../activity/sync-registration.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ActivitySyncRunSummary } from "../activity/runner.js";
-import type { ActivitySyncSchedulerOptions } from "../activity/scheduler.js";
+import type { ActivitySyncRunSummary } from "./runner.js";
+import type { ActivitySyncSchedulerOptions } from "./scheduler.js";
 import {
   ActivitySyncRegistrar,
   type ActivitySyncRegistrarDeps,
   type ActivitySyncSchedulerLike,
-} from "./activity-sync-registration.js";
+} from "./sync-registration.js";
 
 class FakeScheduler implements ActivitySyncSchedulerLike {
   starts = 0;

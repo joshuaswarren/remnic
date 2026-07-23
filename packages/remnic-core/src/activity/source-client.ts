@@ -25,6 +25,21 @@ function stringField(value: Record<string, unknown>, field: string): string {
   return result;
 }
 
+/**
+ * Content fields (app/windowTitle/text) may be legitimately empty: a foreground
+ * window can be untitled or have no extractable text. Require the string TYPE
+ * (a missing/non-string field still fails loudly) but tolerate "", matching the
+ * durable store's contract — else a blank window poisons the day cursor by
+ * failing every replay of the same page.
+ */
+function contentStringField(value: Record<string, unknown>, field: string): string {
+  const result = value[field];
+  if (typeof result !== "string") {
+    throw new TypeError(`activity source response has invalid ${field}`);
+  }
+  return result;
+}
+
 function optionalStringField(value: Record<string, unknown>, field: string): string | undefined {
   const result = value[field];
   if (result === undefined || result === null) return undefined;
@@ -43,10 +58,10 @@ function snapshotFromWire(value: unknown, machine: string): ActivitySnapshot {
   return {
     machine,
     capturedAtUtc: stringField(value, "capturedAtUtc"),
-    app: stringField(value, "app"),
-    windowTitle: stringField(value, "windowTitle"),
+    app: contentStringField(value, "app"),
+    windowTitle: contentStringField(value, "windowTitle"),
     ...(browserUrl === undefined ? {} : { browserUrl }),
-    text: stringField(value, "text"),
+    text: contentStringField(value, "text"),
     textSource,
     contentHash: stringField(value, "contentHash"),
     ...(simhash === undefined ? {} : { simhash }),

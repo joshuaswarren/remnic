@@ -158,3 +158,51 @@ test("ActivityHttpSourceClient.verify returns a sanitized detail for network err
   assert.ok(!check.detail?.includes("127.0.0.1"), "detail does not echo the host");
   assert.ok(!check.detail?.includes(port), "detail does not echo the port");
 });
+
+test("ActivityHttpSourceClient accepts an empty window title and text (untitled/blank window)", async () => {
+  await withServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        snapshots: [
+          {
+            capturedAtUtc: "2026-07-22T14:00:00.000Z",
+            app: "",
+            windowTitle: "",
+            text: "",
+            textSource: "ocr",
+            contentHash: "abc123",
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
+    const page = await client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" });
+    // A legitimate no-text/untitled foreground window must parse, not throw —
+    // else the runner errors the day and the cursor never advances past it.
+    assert.equal(page.snapshots.length, 1);
+    assert.equal(page.snapshots[0]?.windowTitle, "");
+    assert.equal(page.snapshots[0]?.text, "");
+    assert.equal(page.snapshots[0]?.app, "");
+  });
+});
+
+test("ActivityHttpSourceClient still rejects a missing contentHash identifier", async () => {
+  await withServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        snapshots: [
+          { capturedAtUtc: "2026-07-22T14:00:00.000Z", app: "Browser", windowTitle: "T", text: "x", textSource: "ax" },
+        ],
+        nextCursor: null,
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
+    // Identity/dedup fields are still required and non-empty.
+    await assert.rejects(client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" }), /contentHash/);
+  });
+});

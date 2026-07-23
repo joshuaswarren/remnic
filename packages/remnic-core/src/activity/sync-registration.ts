@@ -22,10 +22,10 @@
  * lifecycle against a fake scheduler without real timers.
  */
 
-import { refreshActivityIndex, type ActivityIndexRefresher } from "../activity/reindex.js";
-import type { ActivitySyncRunSummary } from "../activity/runner.js";
-import { ActivitySyncScheduler, type ActivitySyncSchedulerOptions } from "../activity/scheduler.js";
-import type { ActivityConfig } from "../activity/types.js";
+import { refreshActivityIndex, type ActivityIndexRefresher } from "./reindex.js";
+import type { ActivitySyncRunSummary } from "./runner.js";
+import { ActivitySyncScheduler, type ActivitySyncSchedulerOptions } from "./scheduler.js";
+import type { ActivityConfig } from "./types.js";
 import { log } from "../logger.js";
 
 /** The scheduler surface the registrar drives (injectable for tests). */

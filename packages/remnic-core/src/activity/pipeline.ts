@@ -12,7 +12,6 @@ import {
   isValidActivityDate,
   serializeActivityDigest,
 } from "./digest.js";
-import { isValidUtcInstant } from "./store.js";
 import type { ActivityStore } from "./store.js";
 import type { ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
@@ -134,14 +133,6 @@ export async function syncActivitySource(
   let duplicates = 0;
   const seenCursors = new Set<string>();
   let completed = false;
-  // The digest and cursor that follow are for options.date only. Compute the
-  // day window up front so a snapshot the daemon misplaced outside it (replay
-  // file, timezone-boundary bug) is not committed under this date — it will be
-  // ingested when its own day syncs. Invalid timestamps still fall through to
-  // insertSnapshot, which rejects them.
-  const { startUtc: windowStartUtc, endUtc: windowEndUtc } = activityDayWindow(options.date, options.timezone);
-  const windowStartMs = Date.parse(windowStartUtc);
-  const windowEndMs = Date.parse(windowEndUtc);
 
   while (pages < maxPages) {
     options.signal?.throwIfAborted();
@@ -155,19 +146,14 @@ export async function syncActivitySource(
     fetched += page.snapshots.length;
 
     for (const snapshot of page.snapshots) {
-      // Skip only VALID instants that fall outside the requested day. A malformed
-      // timestamp (e.g. 2026-02-30, which Date.parse silently rolls over) must not
-      // be treated as merely out-of-window — let it reach insertSnapshot, which
-      // rejects it loudly so a bad page fails rather than silently advancing.
-      if (isValidUtcInstant(snapshot.capturedAtUtc)) {
-        const capturedMs = Date.parse(snapshot.capturedAtUtc);
-        if (capturedMs < windowStartMs || capturedMs >= windowEndMs) continue;
-      }
+      // Persist every row keyed by its own timestamp: an out-of-window snapshot
+      // (replay file, timezone-boundary bug) is durable under its own day and
+      // never lost, while the day digest below is a window query so it never
+      // pollutes options.date. A malformed instant is rejected loudly here.
       const result = options.store.insertSnapshot(snapshotForMachine(snapshot, source.machineLabel));
       if (result.inserted) inserted += 1;
       else duplicates += 1;
     }
-
     if (page.nextCursor === null) {
       completed = true;
       break;

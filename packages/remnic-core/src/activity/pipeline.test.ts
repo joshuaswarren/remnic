@@ -316,7 +316,7 @@ test("syncActivitySource honors an abort before committing the digest and cursor
   }
 });
 
-test("syncActivitySource skips snapshots the daemon returns outside the requested day", async () => {
+test("syncActivitySource persists out-of-window snapshots under their own day, never the requested day's digest", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
   const store = ActivityStore.open(memoryDir);
   try {
@@ -327,7 +327,8 @@ test("syncActivitySource skips snapshots the daemon returns outside the requeste
           null,
           [
             snapshot({ capturedAtUtc: "2026-07-22T14:00:00.000Z", contentHash: "in-window" }),
-            // A misplaced snapshot for a different day (replay / timezone bug).
+            // A snapshot the daemon misplaced onto a different day (replay /
+            // timezone bug). It must be retained under its own day, not lost.
             snapshot({ capturedAtUtc: "2026-07-20T10:00:00.000Z", contentHash: "out-of-window" }),
           ],
         ],
@@ -338,10 +339,16 @@ test("syncActivitySource skips snapshots the daemon returns outside the requeste
     const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
 
     assert.equal(result.fetched, 2, "both snapshots were fetched");
-    assert.equal(result.inserted, 1, "only the in-window snapshot is committed under this date");
+    assert.equal(result.inserted, 2, "both snapshots are durably persisted (no data loss)");
+    // The requested day's digest is a window query: only its in-window row.
     const day = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
-    assert.deepEqual(day.map((s) => s.contentHash), ["in-window"]);
+    assert.deepEqual(day.map((s) => s.contentHash), ["in-window"], "the requested day contains only its in-window row");
     assert.match(await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8"), /snapshotCount: 1/);
+    // The misplaced row is durable under ITS OWN day, surfacing when that day syncs.
+    const ownDay = store.listSnapshotsForDay(null, "2026-07-20T00:00:00.000Z", "2026-07-21T00:00:00.000Z");
+    assert.deepEqual(ownDay.map((s) => s.contentHash), ["out-of-window"], "the misplaced row is retained under its own day, not dropped");
+    // Nothing was skipped, so the cursor advancing past the page is correct.
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null, "cursor advances after a fully-persisted page");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
