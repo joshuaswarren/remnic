@@ -2397,11 +2397,10 @@ test("parseConfig forwards activity source settings", () => {
   });
 });
 
-test("parseConfig bridgeMode: accepts embedded/delegate, rejects anything else", () => {
+test("parseConfig forwards bridgeMode as a raw passthrough (validation is in resolveBridgeMode)", () => {
   assert.equal(parseConfig({}).bridgeMode, "embedded");
-  assert.equal(parseConfig({ bridgeMode: "embedded" }).bridgeMode, "embedded");
   assert.equal(parseConfig({ bridgeMode: "delegate" }).bridgeMode, "delegate");
-  assert.throws(() => parseConfig({ bridgeMode: "daemon" }), /Invalid bridgeMode/);
-  assert.throws(() => parseConfig({ bridgeMode: "DELEGATE" }), /Invalid bridgeMode/);
-  assert.throws(() => parseConfig({ bridgeMode: true }), /Invalid bridgeMode/);
+  assert.equal(parseConfig({ bridgeMode: "embedded" }).bridgeMode, "embedded");
+  // Invalid values pass through unchanged — resolveBridgeMode rejects them.
+  assert.equal(parseConfig({ bridgeMode: "daemon" }).bridgeMode, "daemon");
 });

@@ -1418,9 +1418,10 @@ const pluginDefinition = {
     // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
     // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
     const delegateApi = api as unknown as DelegateHookApi;
+    const rawBridgeMode = String((api.pluginConfig as Record<string, unknown> | undefined)?.bridgeMode ?? "embedded");
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
-      configBridgeMode: cfg.bridgeMode,
+      configBridgeMode: rawBridgeMode,
       passive: passiveMode,
       allowPromptInjection:
         coerceRawConfigBoolean(

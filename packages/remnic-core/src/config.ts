@@ -837,10 +837,6 @@ export function parseConfig(
         ? (rawSlotBehavior.onSlotMismatch as SlotMismatchMode)
         : "error",
   };
-  const bridgeMode: "embedded" | "delegate" =
-    cfg.bridgeMode === undefined || cfg.bridgeMode === "" || cfg.bridgeMode === "embedded" ? "embedded"
-      : cfg.bridgeMode === "delegate" ? "delegate"
-      : (() => { throw new Error(`Invalid bridgeMode: ${String(cfg.bridgeMode)} (expected "embedded" or "delegate")`); })();
   const rawDreaming =
     cfg.dreaming && typeof cfg.dreaming === "object" && !Array.isArray(cfg.dreaming)
       ? (cfg.dreaming as Record<string, unknown>)
@@ -2343,15 +2339,13 @@ export function parseConfig(
     wearables,
     activity,
     provenance,
-    // At-rest encryption (issue #690 PR 3/4)
-    // coerceBool handles CLI string inputs: `--config secureStoreEnabled=true`
-    // arrives as the string "true" which `=== true` would reject (CLAUDE.md #36).
+    // At-rest encryption (#690): coerceBool handles CLI string "true" (#36).
     secureStoreEnabled: coerceBool(cfg.secureStoreEnabled) === true,
     secureStoreEncryptOnWrite: coerceBool(cfg.secureStoreEncryptOnWrite) !== false, // default: true
     codingMode,
     heartbeat,
     slotBehavior,
-    bridgeMode,
+    bridgeMode: typeof cfg.bridgeMode === "string" ? cfg.bridgeMode : "embedded",
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),

@@ -271,12 +271,22 @@ export function detectBridgeMode(): BridgeConfig {
  */
 export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
   const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
-  const mode: BridgeMode =
-    envMode === "delegate" || envMode === "embedded"
-      ? envMode
-      : configBridgeMode === "delegate"
-        ? "delegate"
-        : "embedded";
+  let mode: BridgeMode;
+  if (envMode === "delegate" || envMode === "embedded") {
+    mode = envMode;
+  } else if (
+    configBridgeMode === undefined ||
+    configBridgeMode === "" ||
+    configBridgeMode === "embedded"
+  ) {
+    mode = "embedded";
+  } else if (configBridgeMode === "delegate") {
+    mode = "delegate";
+  } else {
+    throw new Error(
+      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`,
+    );
+  }
   return {
     mode,
     daemonHost: readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST,

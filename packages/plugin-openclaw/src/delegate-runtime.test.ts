@@ -257,6 +257,11 @@ test("resolveBridgeMode is explicit-only: config delegate activates, absence sta
       "embedded",
       "env override outranks config",
     );
+    Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    assert.equal(resolveBridgeMode("embedded").mode, "embedded");
+    assert.equal(resolveBridgeMode("").mode, "embedded");
+    assert.throws(() => resolveBridgeMode("daemon"), /Invalid bridgeMode/);
+    assert.throws(() => resolveBridgeMode("DELEGATE"), /Invalid bridgeMode/);
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
