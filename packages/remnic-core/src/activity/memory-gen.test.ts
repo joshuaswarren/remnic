@@ -324,3 +324,16 @@ test("activity smart mode suppresses intra-run duplicate content", async () => {
   assert.equal(result.skipped, 1);
   assert.equal(writes.length, 1);
 });
+
+test("activity smart mode rejects a non-finite confidence before the floor", async () => {
+  // A NaN/absent confidence must fail the gate rather than slipping through to
+  // computeTrustScore's 0.7 default.
+  const fact: ActFact = { ...ownDecision, confidence: Number.NaN };
+  const { deps, writes } = depsFor([fact]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 0);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(writes, []);
+});

@@ -200,7 +200,11 @@ export async function generateActivityMemories(
       return false;
     }
     const importance = scoreImportance(fact.content, fact.category, fact.tags);
-    if (fact.confidence < config.minConfidence || !isAboveImportanceThreshold(importance.level, config.minImportance)) {
+    if (
+      !Number.isFinite(fact.confidence) ||
+      fact.confidence < config.minConfidence ||
+      !isAboveImportanceThreshold(importance.level, config.minImportance)
+    ) {
       result.skipped += 1;
       return false;
     }
