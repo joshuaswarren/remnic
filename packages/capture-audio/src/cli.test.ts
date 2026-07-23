@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -757,14 +757,18 @@ test("janitor applies configured raw-audio retention", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
   const rawDirectory = path.join(baseDir, "raw");
   await mkdir(rawDirectory);
-  await writeFile(path.join(rawDirectory, "expired.wav"), "audio");
+  const expired = path.join(rawDirectory, "expired.wav");
+  await writeFile(expired, "audio");
+  // Pin the mtime firmly in the past so zero-hour retention deletes it
+  // deterministically, without racing the janitor's wall-clock cutoff.
+  await utimes(expired, new Date(0), new Date(0));
   const output: string[] = [];
 
   const code = await runCapture({ argv: ["janitor", "--base-dir", baseDir], stdout: (line) => output.push(line) });
 
   assert.equal(code, 0);
   assert.deepEqual(output, ["janitor: removed 1 expired raw audio file(s)"]);
-  assert.equal(existsSync(path.join(rawDirectory, "expired.wav")), false);
+  assert.equal(existsSync(expired), false);
 });
 
 test("logs honors a valued --lines flag", async () => {
