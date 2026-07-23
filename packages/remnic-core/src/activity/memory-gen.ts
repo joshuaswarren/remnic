@@ -364,15 +364,17 @@ export async function generateActivityMemories(
       result.skipped += 1;
       continue;
     }
-    const structuredAttributes: Record<string, string> = {};
+    // Trust fields FIRST so the salvage-mode 64-entry cap can never trim these
+    // load-bearing keys; extractor attributes ride along after and never override
+    // them (collisions are compared against the canonical lowercase form).
+    const structuredAttributes: Record<string, string> = {
+      trustScore: entry.trust.toFixed(3),
+      trustDecision: entry.trustDecision,
+      ...(entry.judgeVerdict !== undefined ? { judgeVerdict: entry.judgeVerdict } : {}),
+    };
     for (const [key, value] of Object.entries(entry.fact.structuredAttributes ?? {})) {
-      // Extractor-provided attributes are preserved but never override the trust
-      // keys this path owns (compared against the canonical lowercase form).
       if (TRUST_ATTRIBUTE_KEYS[key.trim().toLowerCase()] !== true) structuredAttributes[key] = value;
     }
-    structuredAttributes.trustScore = entry.trust.toFixed(3);
-    structuredAttributes.trustDecision = entry.trustDecision;
-    if (entry.judgeVerdict !== undefined) structuredAttributes.judgeVerdict = entry.judgeVerdict;
     const envelope = composeSalvagedActivityEnvelope(
       {
         content: entry.fact.content,

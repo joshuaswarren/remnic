@@ -418,3 +418,19 @@ test("activity smart extraction runs on extractionMode alone, not the enabled in
   assert.equal(result.created, 1);
   assert.equal(writes.length, 1);
 });
+
+test("activity smart mode retains trust fields even when the extractor floods structured attributes", async () => {
+  const many: Record<string, string> = {};
+  for (let i = 0; i < 64; i += 1) many[`k${i}`] = `v${i}`;
+  const fact: ActFact = { ...ownDecision, structuredAttributes: many };
+  const { deps, writes } = depsFor([fact]);
+  await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(writes.length, 1);
+  // Trust fields are inserted first, so the salvage 64-entry cap never trims them.
+  const sa = writes[0]?.structuredAttributes;
+  assert.equal(sa?.trustscore, "1.000");
+  assert.equal(sa?.trustdecision, "auto-approved");
+  assert.equal(sa?.judgeverdict, "accept");
+});
