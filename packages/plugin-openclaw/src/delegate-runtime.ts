@@ -149,6 +149,21 @@ function recallQueryFrom(event: Record<string, unknown>): string {
   return prompt ?? "";
 }
 
+/** Embedded parity: the workspace dir can arrive per hook (ctx/event), not
+ * just at registration. Prefer the hook-scoped value; fall back to the
+ * registration-time cwd. */
+function cwdFrom(
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  fallback: string | undefined,
+): string | undefined {
+  const runtime = ctx?.runtime as Record<string, unknown> | undefined;
+  for (const candidate of [ctx?.workspaceDir, event?.workspaceDir, runtime?.workspaceDir]) {
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return fallback;
+}
+
 function withNamespace(
   namespace: string,
   body: Record<string, unknown>,
@@ -208,6 +223,7 @@ export function registerDelegateRuntime(
           log.debug(`delegate recall skipped: session toggle disables memory for ${sessionKey}`);
           return undefined;
         }
+        const cwd = cwdFrom(event, ctx, options.cwd);
         const response = await postJson(
           target,
           "/engram/v1/recall",
@@ -215,7 +231,7 @@ export function registerDelegateRuntime(
             query,
             sessionKey,
             mode: "auto",
-            ...(options.cwd ? { cwd: options.cwd } : {}),
+            ...(cwd ? { cwd } : {}),
             ...(options.projectTag ? { projectTag: options.projectTag } : {}),
           }),
           options.recallTimeoutMs,
@@ -305,13 +321,14 @@ export function registerDelegateRuntime(
       );
     if (turn.length === 0) return;
     try {
+      const cwd = cwdFrom(event, ctx, options.cwd);
       await postJson(
         target,
         "/engram/v1/observe",
         withNamespace(namespace, {
           sessionKey,
           messages: turn,
-          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(cwd ? { cwd } : {}),
           ...(options.projectTag ? { projectTag: options.projectTag } : {}),
         }),
         options.observeTimeoutMs,
@@ -408,7 +425,17 @@ export function maybeRegisterDelegateRuntime(
   options: MaybeRegisterDelegateOptions,
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
-  const bridge = resolveBridgeMode(options.configBridgeMode);
+  let bridge: ReturnType<typeof resolveBridgeMode>;
+  try {
+    bridge = resolveBridgeMode(options.configBridgeMode);
+  } catch (err) {
+    // An invalid bridgeMode (config typo or bad env override) must not abort
+    // the whole plugin registration — reject LOUDLY, then run embedded so the
+    // deployment keeps its memory loop (AGENTS.md §4: side effects must not
+    // crash the main flow).
+    log.error(`${String(err)} — falling back to the embedded runtime`);
+    return false;
+  }
   if (delegateEmbeddedFallbackApis.has(api)) {
     log.debug(
       `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
@@ -435,9 +462,13 @@ export function maybeRegisterDelegateRuntime(
     );
     return false;
   }
-  (boundServices ?? delegateHookApiServices.set(api, new Set()).get(api))?.add(
-    options.serviceId,
-  );
+  // Passive mode attaches no hooks — recording it as bound would make a later
+  // ACTIVE register() on the same api skip both delegate and embedded paths.
+  if (!options.passive) {
+    (boundServices ?? delegateHookApiServices.set(api, new Set()).get(api))?.add(
+      options.serviceId,
+    );
+  }
   // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.
   const toggleStore = options.sessionTogglesEnabled

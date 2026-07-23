@@ -603,3 +603,93 @@ test("delegate recall degrades to no injection on a daemon HTTP error response",
     await closed.promise;
   }
 });
+
+test("delegate recall prefers the hook-scoped workspace dir over registration cwd", async () => {
+  const stub = await startDaemonStub(() => ({ context: "scoped context" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { cwd: "/registration/base" }));
+    await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "project scoped query" },
+      { sessionKey: "scoped", workspaceDir: "/hook/project" },
+    );
+    const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
+    assert.ok(recall, "recall sent");
+    assert.equal(recall.body.cwd, "/hook/project", "hook ctx workspaceDir wins");
+    await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "another scoped query" },
+      { sessionKey: "fallback" },
+    );
+    const second = stub.calls.filter((call) => call.pathname === "/engram/v1/recall")[1];
+    assert.equal(second?.body.cwd, "/registration/base", "falls back to registration cwd");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("maybeRegister: invalid bridgeMode logs and falls back to embedded (no throw)", () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+  try {
+    const api = recordingApi();
+    const opts = {
+      serviceId: "openclaw-remnic",
+      configBridgeMode: "daemon",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir: "/tmp/remnic-delegate-test-memory",
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (t: string) => t,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    let handled = true;
+    assert.doesNotThrow(() => {
+      handled = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => true });
+    }, "invalid bridgeMode must not abort plugin registration");
+    assert.equal(handled, false, "falls back to embedded");
+    assert.equal(api.handlers.size, 0, "no delegate hooks bound");
+  } finally {
+    if (priorEnv !== undefined) process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
+
+test("maybeRegister: passive registration does not poison a later active one", () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  try {
+    const api = recordingApi();
+    const opts = {
+      serviceId: "openclaw-remnic",
+      configBridgeMode: "delegate",
+      passive: true,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir: "/tmp/remnic-delegate-test-memory",
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (t: string) => t,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    const healthDeps = { checkHealth: () => true };
+    assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), true, "passive handled");
+    assert.equal(api.handlers.size, 0, "passive binds no hooks");
+    const active = maybeRegisterDelegateRuntime(api, { ...opts, passive: false }, healthDeps);
+    assert.equal(active, true, "later active registration is not deduped away");
+    assert.ok((api.handlers.get("agent_end")?.length ?? 0) >= 1, "active registration binds hooks");
+  } finally {
+    if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
