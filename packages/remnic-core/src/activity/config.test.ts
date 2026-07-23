@@ -8,6 +8,7 @@ test("parseActivityConfig defaults to an inert configuration", () => {
     enabled: false,
     timezone: "UTC",
     syncDays: 1,
+    autoSyncIntervalMinutes: 15,
     sources: [],
   });
 });
@@ -28,6 +29,7 @@ test("parseActivityConfig preserves explicit source settings", () => {
       enabled: true,
       timezone: "America/Chicago",
       syncDays: 3,
+      autoSyncIntervalMinutes: 15,
       sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319", token: "fixture-token" }],
     },
   );
@@ -40,4 +42,72 @@ test("parseActivityConfig rejects enabled configurations without valid source de
     /HTTP or HTTPS/,
   );
   assert.throws(() => parseActivityConfig({ syncDays: 0 }), /syncDays/);
+});
+
+test("parseActivityConfig enforces both ends of the syncDays range", () => {
+  assert.equal(parseActivityConfig({ syncDays: 90 }).syncDays, 90);
+  assert.equal(parseActivityConfig({ syncDays: 1 }).syncDays, 1);
+  assert.throws(() => parseActivityConfig({ syncDays: 91 }), /syncDays must be an integer from 1 to 90/);
+  assert.throws(() => parseActivityConfig({ syncDays: 0 }), /syncDays must be an integer from 1 to 90/);
+});
+
+test("parseActivityConfig rejects an invalid IANA timezone at parse time", () => {
+  assert.throws(() => parseActivityConfig({ timezone: "Not/AZone" }), /Invalid IANA timezone/);
+});
+
+test("parseActivityConfig rejects a whitespace-only machineLabel before any sync", () => {
+  assert.throws(
+    () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "   ", baseUrl: "http://127.0.0.1:4319" }] }),
+    /machineLabel must not be blank/,
+  );
+});
+
+test("parseActivityConfig rejects duplicate machine labels that would share a cursor", () => {
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        enabled: true,
+        sources: [
+          { machineLabel: "dup", baseUrl: "http://127.0.0.1:4319" },
+          { machineLabel: "dup", baseUrl: "http://127.0.0.1:4320" },
+        ],
+      }),
+    /machineLabel must be unique/,
+  );
+});
+
+test("parseActivityConfig reports a malformed baseUrl with a prefixed validation error", () => {
+  assert.throws(
+    () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "fixture", baseUrl: "not a url" }] }),
+    /activity source baseUrl must be a valid URL/,
+  );
+});
+
+test("parseActivityConfig rejects a non-loopback baseUrl that could exfiltrate the token", () => {
+  assert.throws(
+    () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "fixture", baseUrl: "https://example.test" }] }),
+    /must target a loopback host/,
+  );
+});
+
+test("parseActivityConfig accepts localhost and 127.x loopback hosts", () => {
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "a", baseUrl: "http://localhost:4319" }] }).sources
+      .length,
+    1,
+  );
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "b", baseUrl: "http://127.0.0.5:4319" }] }).sources
+      .length,
+    1,
+  );
+});
+
+test("parseActivityConfig parses and bounds autoSyncIntervalMinutes", () => {
+  assert.equal(parseActivityConfig(undefined).autoSyncIntervalMinutes, 15);
+  assert.equal(parseActivityConfig({ autoSyncIntervalMinutes: "30" }).autoSyncIntervalMinutes, 30);
+  assert.equal(parseActivityConfig({ autoSyncIntervalMinutes: 1 }).autoSyncIntervalMinutes, 1);
+  assert.equal(parseActivityConfig({ autoSyncIntervalMinutes: 1440 }).autoSyncIntervalMinutes, 1440);
+  assert.throws(() => parseActivityConfig({ autoSyncIntervalMinutes: 0 }), /autoSyncIntervalMinutes must be an integer from 1 to 1440/);
+  assert.throws(() => parseActivityConfig({ autoSyncIntervalMinutes: 1441 }), /autoSyncIntervalMinutes must be an integer from 1 to 1440/);
 });

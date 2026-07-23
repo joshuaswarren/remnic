@@ -9,4 +9,7 @@ export * from "./store.js";
 export * from "./digest.js";
 export * from "./pipeline.js";
 export * from "./source-client.js";
+export * from "./runner.js";
+export * from "./scheduler.js";
 export * from "./config.js";
+export * from "./reindex.js";

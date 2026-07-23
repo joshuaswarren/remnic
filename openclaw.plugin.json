@@ -5633,6 +5633,13 @@
             "default": 1,
             "description": "Number of local days to synchronize per run."
           },
+          "autoSyncIntervalMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "default": 15,
+            "description": "Periodic auto-sync cadence in minutes (default 15)."
+          },
           "sources": {
             "type": "array",
             "default": [],
@@ -5655,7 +5662,7 @@
                 },
                 "token": {
                   "type": "string",
-                  "description": "Bearer token for the capture daemon. Prefer a secret reference."
+                  "description": "Literal bearer token sent to a trusted local capture daemon over loopback; this parser does not resolve secret references, so omit the field when the daemon needs no auth."
                 }
               }
             }

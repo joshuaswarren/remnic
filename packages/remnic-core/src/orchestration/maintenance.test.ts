@@ -162,7 +162,7 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
     assert.equal(embedCalls.length, 1, "QMD embed must batch all selected namespaces into one router call");
     assert.deepEqual(new Set(embedCalls[0]), new Set(["default", "shared", dynamicNamespace]));
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -218,7 +218,7 @@ test("runQmdMaintenance tracks namespace embed cadence across budget rotation", 
       "a global embed timestamp must not suppress embeddings for newly budgeted namespaces",
     );
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -285,7 +285,7 @@ test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is un
       "cataloged dynamic namespaces are skipped when the live router root differs from the catalog-sanitized root",
     );
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
   }
@@ -337,7 +337,7 @@ test("runQmdMaintenance treats zero namespace updates as failed maintenance", as
     assert.equal(markMaintenanceCalls, 0);
     assert.equal(embedCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -393,7 +393,7 @@ test("runQmdMaintenance treats partial namespace update eligibility as failed ma
     assert.equal(markMaintenanceCalls, 0);
     assert.equal(embedCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -442,7 +442,7 @@ test("runQmdMaintenance treats namespace embed errors as failed maintenance", as
     );
     assert.equal(markMaintenanceCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -515,7 +515,7 @@ test("runQmdMaintenance records QMD min-interval throttles as skipped maintenanc
     assert.equal(markMaintenanceCalls, 0);
     assert.equal(embedCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -578,7 +578,7 @@ test("runQmdMaintenance still embeds when due update is throttled", async () => 
     );
     assert.equal(markMaintenanceCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -637,7 +637,7 @@ test("runQmdMaintenance treats strict namespace update errors as failed maintena
     assert.equal(markMaintenanceCalls, 0);
     assert.equal(embedCalls, 0);
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -682,7 +682,7 @@ test("runQmdMaintenance falls back to configured namespaces when the catalog is 
       "a disabled catalog covers exactly the configured set",
     );
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -747,7 +747,7 @@ test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regre
       "after the swap to NoopSearchBackend, requestQmdMaintenance must short-circuit (isAvailable===false) and never touch the disposed backend",
     );
   } finally {
-    scheduler.dispose();
+    await scheduler.dispose();
   }
 });
 
@@ -825,7 +825,7 @@ test("auto-compaction shrinks an oversized ledger and writes a verbatim backup",
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const afterSize = (await stat(ledgerPath)).size;
@@ -897,7 +897,7 @@ alpha
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const rebuilt = (await readFile(ledgerPath, "utf-8"))
@@ -934,7 +934,7 @@ test("auto-compaction is disabled when memoryLifecycleLedgerCompactBytes is 0", 
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     assert.equal(await readFile(ledgerPath, "utf-8"), before, "disabled: ledger untouched");
     await assert.rejects(() => readdir(path.join(memoryDir, "archive", "memory-lifecycle-ledger")));
@@ -967,7 +967,7 @@ test("auto-compaction min-interval throttle prevents a second run within the win
       assert.equal((await stat(ledgerPath)).size, regrownSize, "throttled: ledger not recompacted");
       assert.ok(regrownSize > compactedSize);
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -988,7 +988,7 @@ test("auto-compaction is a no-op when the ledger is below the threshold", async 
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     assert.equal(await readFile(ledgerPath, "utf-8"), before, "under threshold: ledger untouched");
   } finally {
@@ -1064,7 +1064,7 @@ test("auto-compaction singleflight: two requests racing through the over-cap pro
       assert.equal(stamps.length, 1, "only one compaction backup exists");
       assert.ok((await stat(ledgerPath)).size < 4096, "ledger was compacted once");
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -1120,7 +1120,7 @@ test("auto-compaction leaves the throttle un-advanced after a failed run so it r
         "still-eligible retry compacts once the failure clears",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -1147,7 +1147,7 @@ test("auto-compaction rewrites the ledger encrypted at rest under a secure store
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     // The rewritten ledger is encrypted at rest and smaller than the plaintext
     // original, and decrypts back to the rebuilt events via the same key.
@@ -1215,7 +1215,7 @@ test("auto-compaction re-encrypts an ENCRYPTED ledger's backup for the archive p
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     assert.ok(isEncryptedFile(await readFile(ledgerPath)), "compacted ledger stays encrypted at rest");
@@ -1314,7 +1314,7 @@ test("mixed pass: a deferred encrypted target keeps the throttle un-armed so unt
         "deferred target left the throttle un-armed: the second in-window pass recompacts",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1351,7 +1351,7 @@ test("maintenance drains a pending lifecycle-append spill even when compaction i
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const ids = (await storage.readAllMemoryLifecycleEvents()).map((e) => e.eventId);
@@ -1433,7 +1433,7 @@ test("maintenance drains a namespace pending spill created after the throttle ar
       );
       await assert.rejects(() => stat(spillPath), /ENOENT/, "namespace spill file removed after drain");
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1487,7 +1487,7 @@ test("auto-compaction bounds per-namespace ledgers, not just the root state path
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     assert.ok((await stat(nsLedger)).size < beforeSize, "namespace ledger must be compacted");
     const rebuilt = (await readFile(nsLedger, "utf-8")).trim().split("\n").map((l) => JSON.parse(l));
@@ -1529,7 +1529,7 @@ test("catalog-disabled fallback never downgrades an encrypted namespace ledger t
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     // Skipped, not rewritten: the encrypted ledger must be byte-for-byte intact.
     assert.deepEqual(
@@ -1635,7 +1635,7 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
         "encrypted fallback ledger compacts through the keyed store, never deferred forever",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     // On disk: rewritten, still encrypted at rest (no plaintext downgrade), and
@@ -1755,7 +1755,7 @@ test("catalog-disabled fallback decodes a long tokenized namespace dir so an enc
         "encrypted over-cap ledger for a long namespace compacts through the keyed store, never deferred forever",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     assert.notDeepEqual(
@@ -1867,7 +1867,7 @@ test("catalog-disabled fallback resolves a LEGACY RAW namespace dir (not a ns- t
         "encrypted over-cap ledger under a legacy raw namespace dir compacts through the keyed store, never deferred forever",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     assert.notDeepEqual(await readFile(nsLedger), encrypted, "ledger was rewritten (not deferred)");
@@ -1996,7 +1996,7 @@ test("catalog-disabled fallback routes a LEGACY RAW namespace dir through the PR
         "encrypted over-cap ledger under a legacy raw namespace dir compacts through the production-resolved keyed store, never deferred forever",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     assert.notDeepEqual(await readFile(nsLedger), encrypted, "ledger was rewritten (not deferred)");
@@ -2128,7 +2128,7 @@ test("catalog-disabled fallback refuses a symlinked namespaces scan root (#2033)
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     assert.equal(
       await readFile(nsLedger, "utf-8"),
@@ -2175,7 +2175,7 @@ test("maintenance request triggers lifecycle compaction even when QMD is unavail
         "lifecycle compaction must be triggered from the maintenance request when QMD is unavailable",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -2215,7 +2215,7 @@ test("auto-compaction bounds per-namespace ledgers via filesystem fallback when 
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     assert.ok(
       (await stat(nsLedger)).size < beforeSize,
@@ -2286,7 +2286,7 @@ test("auto-compaction bounds a large append-only history under the read/decrypt 
         "throttle armed after an effective bounded compaction: second in-window pass is a no-op",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -2328,7 +2328,7 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const ledger = await readFile(nsLedger, "utf-8");
@@ -2388,7 +2388,7 @@ test("filesystem-fallback compaction recovers a crash-orphaned *.claimed spill w
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const ledger = await readFile(nsLedger, "utf-8");
@@ -2454,7 +2454,7 @@ test("catalog-disabled fallback drain re-probes encryption UNDER the lock and de
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     // nsA: encrypted spill deferred — byte-for-byte intact, the ledger never got
@@ -2514,7 +2514,7 @@ test("auto-compaction triggers on an encrypted ledger at/above the decrypt cap e
     try {
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     const afterSize = (await stat(ledgerPath)).size;
     assert.ok(afterSize < beforeSize, "over-cap encrypted ledger must compact despite the larger threshold");
@@ -2572,7 +2572,7 @@ test("auto-compaction bypasses the min-interval throttle for an over-cap encrypt
     try {
       await bypassScheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      bypassScheduler.dispose();
+      await bypassScheduler.dispose();
     }
     const bypassAfter = (await stat(bypassLedger)).size;
     assert.ok(
@@ -2598,7 +2598,7 @@ test("auto-compaction bypasses the min-interval throttle for an over-cap encrypt
     try {
       await throttledScheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      throttledScheduler.dispose();
+      await throttledScheduler.dispose();
     }
     assert.equal(
       (await stat(throttledLedger)).size,
@@ -2684,7 +2684,7 @@ test("auto-compaction reserves the secure-store envelope so an encrypted rewrite
         "throttle armed after an effective encrypted compaction: second in-window pass is a no-op",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -2762,7 +2762,7 @@ test("auto-compaction reserves the envelope when a PLAINTEXT ledger will be rewr
         "throttle armed after an effective compaction: second in-window pass is a no-op",
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -2819,7 +2819,7 @@ test("catalog-disabled fallback pending drain skips unsafe spill entries (symlin
       // (caught by the test timeout) and following the symlink would escape.
       await scheduler.maybeCompactMemoryLifecycleLedger();
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
 
     const ledger = await readFile(nsLedger, "utf-8");

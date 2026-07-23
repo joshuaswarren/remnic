@@ -1,9 +1,16 @@
+import { validateActivityBaseUrl } from "./config.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { ActivitySnapshot, ActivitySnapshotPage, ActivitySourceCheck, ActivitySourceClient } from "./types.js";
+
+/** Abort a stalled capture-daemon request rather than hang the whole sync. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface ActivityHttpSourceClientOptions {
   machineLabel: string;
   baseUrl: string;
   token?: string;
+  /** Per-request timeout in ms; defaults to DEFAULT_REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -14,6 +21,21 @@ function stringField(value: Record<string, unknown>, field: string): string {
   const result = value[field];
   if (typeof result !== "string" || result.length === 0) {
     throw new TypeError(`activity source response has no valid ${field}`);
+  }
+  return result;
+}
+
+/**
+ * Content fields (app/windowTitle/text) may be legitimately empty: a foreground
+ * window can be untitled or have no extractable text. Require the string TYPE
+ * (a missing/non-string field still fails loudly) but tolerate "", matching the
+ * durable store's contract — else a blank window poisons the day cursor by
+ * failing every replay of the same page.
+ */
+function contentStringField(value: Record<string, unknown>, field: string): string {
+  const result = value[field];
+  if (typeof result !== "string") {
+    throw new TypeError(`activity source response has invalid ${field}`);
   }
   return result;
 }
@@ -36,10 +58,10 @@ function snapshotFromWire(value: unknown, machine: string): ActivitySnapshot {
   return {
     machine,
     capturedAtUtc: stringField(value, "capturedAtUtc"),
-    app: stringField(value, "app"),
-    windowTitle: stringField(value, "windowTitle"),
+    app: contentStringField(value, "app"),
+    windowTitle: contentStringField(value, "windowTitle"),
     ...(browserUrl === undefined ? {} : { browserUrl }),
-    text: stringField(value, "text"),
+    text: contentStringField(value, "text"),
     textSource,
     contentHash: stringField(value, "contentHash"),
     ...(simhash === undefined ? {} : { simhash }),
@@ -50,12 +72,15 @@ function responsePage(value: unknown, machine: string): ActivitySnapshotPage {
   if (!isRecord(value) || !Array.isArray(value.snapshots)) {
     throw new TypeError("activity source response has no snapshots array");
   }
-  if (value.nextCursor !== null && typeof value.nextCursor !== "string") {
+  // A missing/undefined nextCursor (field omitted, not JSON null) is normal
+  // end-of-pagination — only a present non-string value is invalid.
+  const nextCursor = value.nextCursor === undefined ? null : value.nextCursor;
+  if (nextCursor !== null && typeof nextCursor !== "string") {
     throw new TypeError("activity source response has invalid nextCursor");
   }
   return {
     snapshots: value.snapshots.map((snapshot) => snapshotFromWire(snapshot, machine)),
-    nextCursor: value.nextCursor,
+    nextCursor,
   };
 }
 
@@ -72,22 +97,27 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
   readonly machineLabel: string;
   private readonly baseUrl: string;
   private readonly token: string | undefined;
+  private readonly timeoutMs: number;
 
   constructor(options: ActivityHttpSourceClientOptions) {
     if (options.machineLabel.trim().length === 0) throw new RangeError("activity source machine label must not be empty");
-    const parsed = new URL(options.baseUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
+    if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
+      throw new RangeError("activity source timeoutMs must be a positive number");
     }
     this.machineLabel = options.machineLabel;
-    this.baseUrl = parsed.toString();
+    this.baseUrl = validateActivityBaseUrl(options.baseUrl).toString();
     this.token = options.token;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   private async request(url: string, signal?: AbortSignal): Promise<Response> {
+    // Bound every request so a stalled daemon aborts instead of hanging the
+    // sync forever; honor the caller's signal too when one is supplied.
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const composed = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
     const response = await fetch(url, {
       headers: this.token === undefined ? undefined : { authorization: `Bearer ${this.token}` },
-      signal,
+      signal: composed,
     });
     if (!response.ok) throw new Error(`activity source HTTP ${response.status}`);
     return response;
@@ -98,7 +128,15 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
       await this.request(requestUrl(this.baseUrl, "/v1/health", {}), signal);
       return { ok: true };
     } catch (error: unknown) {
-      return { ok: false, detail: error instanceof Error ? error.message.replace("activity source ", "") : "request failed" };
+      // The controlled `HTTP <status>` message is safe to surface verbatim;
+      // anything else (network/runtime fetch errors that can embed hostnames or
+      // absolute paths) is reduced to a sanitized name+code via
+      // displayErrorDetail, matching the wearables operator-facing path.
+      const detail =
+        error instanceof Error && error.message.startsWith("activity source HTTP ")
+          ? error.message.slice("activity source ".length)
+          : displayErrorDetail(error) || "request failed";
+      return { ok: false, detail };
     }
   }
 

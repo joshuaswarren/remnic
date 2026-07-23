@@ -288,7 +288,7 @@ type OrchestratorTeardownView = {
    * scheduler here clears the live timer so no maintenance pass fires after
    * the QMD sandbox is torn down.
    */
-  maintenanceScheduler?: { dispose(): void };
+  maintenanceScheduler?: { dispose(): Promise<void> };
 };
 
 type OrchestratorDrainDiagnosticsView = {
@@ -1804,7 +1804,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       // qmdMaintenanceTimer/Pending/InFlight). Dispose the scheduler so the
       // live timer is cleared and no maintenance pass runs against the QMD
       // sandbox once it is torn down below.
-      orchestrator.maintenanceScheduler?.dispose();
+      await orchestrator.maintenanceScheduler?.dispose();
       await Promise.race([
         orchestrator.deferredReady.catch(() => undefined),
         new Promise((resolve) =>

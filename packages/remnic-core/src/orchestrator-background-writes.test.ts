@@ -21,13 +21,13 @@ test("destroy cancels maintenance and waits for tracked writes before disposing 
       compoundingEnabled: false,
     })
   );
-  const maintenanceScheduler = (orchestrator as unknown as { maintenanceScheduler: { dispose(): void } })
+  const maintenanceScheduler = (orchestrator as unknown as { maintenanceScheduler: { dispose(): Promise<void> } })
     .maintenanceScheduler;
   const originalMaintenanceDispose = maintenanceScheduler.dispose.bind(maintenanceScheduler);
   let maintenanceDisposed = false;
   maintenanceScheduler.dispose = () => {
     maintenanceDisposed = true;
-    originalMaintenanceDispose();
+    return originalMaintenanceDispose();
   };
   const writeGate = Promise.withResolvers<void>();
   let destroySettled = false;
