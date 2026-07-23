@@ -44,11 +44,22 @@ function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...init, headers: { authorization: `Bearer ${TOKEN}`, ...(init.headers ?? {}) } });
 }
 
+interface ConvPage {
+  conversations: Array<{ id: string }>;
+  nextCursor: string | null;
+}
+
 test("GET /v1/health returns the health shape incl. instanceId", async () => {
   const h = await startLoopback();
   const res = await authFetch(`${h.url}/v1/health`);
   assert.equal(res.status, 200);
-  const body = await res.json();
+  const body = (await res.json()) as {
+    ok: boolean;
+    capturing: boolean;
+    version: string;
+    pendingChunks: number;
+    instanceId: string;
+  };
   assert.equal(body.ok, true);
   assert.equal(body.capturing, false);
   assert.equal(typeof body.version, "string");
@@ -60,15 +71,15 @@ test("GET /v1/conversations serves final-only records with a keyset cursor", asy
   const h = await startLoopback();
   const res = await authFetch(`${h.url}/v1/conversations?date=2026-07-20&timezone=UTC&limit=1`);
   assert.equal(res.status, 200);
-  const page = await res.json();
-  assert.deepEqual(page.conversations.map((c: { id: string }) => c.id), ["conv_1"]);
+  const page = (await res.json()) as ConvPage;
+  assert.deepEqual(page.conversations.map((c) => c.id), ["conv_1"]);
   assert.ok(page.nextCursor);
 
   const res2 = await authFetch(
     `${h.url}/v1/conversations?date=2026-07-20&timezone=UTC&limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,
   );
-  const page2 = await res2.json();
-  assert.deepEqual(page2.conversations.map((c: { id: string }) => c.id), ["conv_2"]);
+  const page2 = (await res2.json()) as ConvPage;
+  assert.deepEqual(page2.conversations.map((c) => c.id), ["conv_2"]);
   assert.equal(page2.nextCursor, null);
 });
 
@@ -76,7 +87,7 @@ test("GET /v1/speakers lists clusters", async () => {
   const h = await startLoopback();
   const res = await authFetch(`${h.url}/v1/speakers`);
   assert.equal(res.status, 200);
-  const body = await res.json();
+  const body = (await res.json()) as { speakers: Array<{ id: string; label: string | null; isSelf: boolean }> };
   assert.deepEqual(body.speakers, [{ id: "self", label: "Me", isSelf: true }]);
 });
 

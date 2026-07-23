@@ -156,6 +156,25 @@ async function probeInstanceId(paths: CapturePaths, url: string): Promise<string
   }
 }
 
+/**
+ * True when the recorded pid is (as far as we can tell) our daemon.
+ * Without a recorded instanceId we cannot verify, so we conservatively
+ * assume yes and refuse to double-start. With an instanceId we treat the
+ * pid as a reused stranger only on a CONFIRMED mismatch from its health
+ * endpoint; an unreachable probe stays conservative so we never race a new
+ * daemon onto a port a live one may still hold.
+ */
+async function isOwnRunningDaemon(
+  record: PidRecord,
+  paths: CapturePaths,
+  stderr: (l: string) => void,
+): Promise<boolean> {
+  if (record.instanceId === null) return true;
+  const live = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
+  if (live === null) return true;
+  return live === record.instanceId;
+}
+
 function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, stdout: (l: string) => void): number {
   mkdirSync(paths.baseDir, { recursive: true });
   if (existsSync(paths.configPath) && flags.force !== true) {
@@ -178,13 +197,21 @@ async function cmdStart(
   stderr: (l: string) => void,
 ): Promise<number> {
   const config = applyBindingOverrides(loadConfigOrDefault(paths, stderr), flags);
+  if (!isLoopbackHost(config.host)) {
+    stderr(
+      `refusing to bind non-loopback host '${config.host}': capture-audio serves plain HTTP with no TLS contract; ` +
+        "use a loopback address (127.0.0.1 or ::1)",
+    );
+    return 1;
+  }
   const replayDir = typeof flags.replay === "string" ? flags.replay : null;
-  const previousPid = readPidRecord(paths.pidPath)?.pid ?? null;
-  if (previousPid !== null) {
-    if (isProcessAlive(previousPid)) {
-      stdout(`daemon already running (pid ${previousPid})`);
+  const previousRecord = readPidRecord(paths.pidPath);
+  if (previousRecord !== null) {
+    if (isProcessAlive(previousRecord.pid) && (await isOwnRunningDaemon(previousRecord, paths, stderr))) {
+      stdout(`daemon already running (pid ${previousRecord.pid})`);
       return 0;
     }
+    // pid is gone, or a different process reused it -> reclaim the stale file.
     removePidFile(paths.pidPath);
   }
 
@@ -228,7 +255,10 @@ async function cmdStart(
   stdout(`listening on ${handle.url}`);
 
   return await new Promise<number>((resolve) => {
+    let closing = false;
     const shutdown = () => {
+      if (closing) return;
+      closing = true;
       spool.finalizeOpenConversations();
       // Cleanup must run whether close resolves or rejects — a rejected
       // close must not become an unhandled rejection.

@@ -169,8 +169,16 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
       // malformed conversation never persists its speaker rows.
       const conv = parseConversation(doc, where);
       if (conv.id === undefined) {
-        // Deterministic id so an id-less fixture stays idempotent across replays.
-        conv.id = `conv_${createHash("sha1").update(`${name}:${i}:${conv.startedAtUtc}`).digest("hex").slice(0, 24)}`;
+        // Derive the id from conversation CONTENT so identical fixtures stay
+        // idempotent across replays while distinct conversations that happen to
+        // share a filename/index/start time cannot collide.
+        const material = JSON.stringify({
+          startedAtUtc: conv.startedAtUtc,
+          endedAtUtc: conv.endedAtUtc,
+          state: conv.state,
+          segments: conv.segments,
+        });
+        conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
       }
       ingestSpeakers(spool, asObject(doc, where).speakers, where);
       const id = spool.insertConversation(conv);

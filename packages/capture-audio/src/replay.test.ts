@@ -148,3 +148,23 @@ test("id-less fixtures get a deterministic id and stay idempotent across replays
   assert.equal(before.conversations, 1);
   spool.close();
 });
+
+test("id-less fixtures derive ids from content: same content collapses, distinct content does not collide", () => {
+  const spool = new Spool(":memory:");
+  // Same start time + same filename/index across two dirs, but DIFFERENT segment content.
+  const mk = (text: string) => ({
+    "01.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      segments: [{ channel: "mic", text, startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+  });
+  const a = ingestReplayDir(spool, fixtureDir(mk("first meeting")));
+  const b = ingestReplayDir(spool, fixtureDir(mk("second meeting")));
+  assert.notEqual(a.ids[0], b.ids[0]); // distinct content -> no collision
+  assert.equal(spool.stats().conversations, 2);
+  // identical content re-ingested collapses to the same id
+  const c = ingestReplayDir(spool, fixtureDir(mk("first meeting")));
+  assert.equal(c.ids[0], a.ids[0]);
+  assert.equal(spool.stats().conversations, 2);
+  spool.close();
+});

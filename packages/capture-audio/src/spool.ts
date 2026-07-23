@@ -141,6 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
 
 export class Spool {
   #db: DatabaseSync;
+  #closed = false;
 
   constructor(location: string) {
     this.#db = new DatabaseSync(location);
@@ -155,6 +156,8 @@ export class Spool {
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
     this.#db.close();
   }
 

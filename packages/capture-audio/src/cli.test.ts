@@ -151,3 +151,36 @@ test("stop probes the persisted binding (detects instance mismatch, does not kil
     }
   });
 });
+
+test("start refuses a non-loopback bind host before forking a daemon", async () => {
+  await withBaseDir(async (baseDir) => {
+    const errs: string[] = [];
+    const code = await runCapture({
+      argv: ["start", "--host", "0.0.0.0", "--base-dir", baseDir],
+      stdout: () => undefined,
+      stderr: (l) => errs.push(l),
+    });
+    assert.equal(code, 1);
+    assert.ok(errs.some((l) => l.includes("refusing to bind non-loopback")), errs.join("|"));
+  });
+});
+
+test("start refuses to double-start only after confirming pid identity", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const spool = new Spool(":memory:");
+    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    try {
+      writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+      // Alive pid whose recorded instanceId matches the live daemon at the recorded port.
+      writePidFile(paths.pidPath, process.pid, { instanceId: spool.meta("instance_id"), host: handle.host, port: handle.port });
+      const out: string[] = [];
+      const code = await runCapture({ argv: ["start", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+      assert.equal(code, 0);
+      assert.deepEqual(out, [`daemon already running (pid ${process.pid})`]);
+    } finally {
+      await handle.close();
+      spool.close();
+    }
+  });
+});

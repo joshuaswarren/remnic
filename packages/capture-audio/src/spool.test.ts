@@ -155,3 +155,9 @@ test("upsertSpeaker preserves fields omitted from a later update", () => {
   assert.equal(row?.embeddingCount, 5);
   spool.close();
 });
+
+test("close() is idempotent (double signal / double shutdown safe)", () => {
+  const spool = new Spool(":memory:");
+  spool.close();
+  assert.doesNotThrow(() => spool.close());
+});
