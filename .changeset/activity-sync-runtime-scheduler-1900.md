@@ -1,5 +1,7 @@
 ---
 "@remnic/core": minor
+"@remnic/plugin-openclaw": patch
+"@joshuaswarren/openclaw-engram": patch
 ---
 
 Wire parsed `config.activity` through to a real periodic runtime sync
@@ -17,3 +19,8 @@ disabled config builds no client, opens no store, makes no HTTP call,
 and arms no timer. Effective cadence defaults to 15 minutes per the
 `activity.autoSyncIntervalMinutes` contract in #1899. No OpenClaw import
 reaches core.
+
+The two packaged plugin manifests (`@remnic/plugin-openclaw` and
+`@joshuaswarren/openclaw-engram`) gain the `activity.*` schema (including
+`activity.autoSyncIntervalMinutes`), so they get a patch bump to republish
+the updated manifests alongside core.

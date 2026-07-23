@@ -12,6 +12,7 @@ import {
   isValidActivityDate,
   serializeActivityDigest,
 } from "./digest.js";
+import { isValidUtcInstant } from "./store.js";
 import type { ActivityStore } from "./store.js";
 import type { ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
@@ -154,9 +155,13 @@ export async function syncActivitySource(
     fetched += page.snapshots.length;
 
     for (const snapshot of page.snapshots) {
-      const capturedMs = Date.parse(snapshot.capturedAtUtc);
-      if (Number.isFinite(capturedMs) && (capturedMs < windowStartMs || capturedMs >= windowEndMs)) {
-        continue;
+      // Skip only VALID instants that fall outside the requested day. A malformed
+      // timestamp (e.g. 2026-02-30, which Date.parse silently rolls over) must not
+      // be treated as merely out-of-window — let it reach insertSnapshot, which
+      // rejects it loudly so a bad page fails rather than silently advancing.
+      if (isValidUtcInstant(snapshot.capturedAtUtc)) {
+        const capturedMs = Date.parse(snapshot.capturedAtUtc);
+        if (capturedMs < windowStartMs || capturedMs >= windowEndMs) continue;
       }
       const result = options.store.insertSnapshot(snapshotForMachine(snapshot, source.machineLabel));
       if (result.inserted) inserted += 1;

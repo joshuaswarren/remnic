@@ -347,3 +347,26 @@ test("syncActivitySource skips snapshots the daemon returns outside the requeste
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("syncActivitySource rejects a calendar-overflow timestamp instead of skipping it", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = source(
+      "workstation-a",
+      // 2026-02-30 is impossible; Date.parse rolls it to Mar 2, which would fall
+      // outside a Feb 28 sync window. It must fail loudly, not be silently skipped.
+      new Map([[null, [snapshot({ capturedAtUtc: "2026-02-30T12:00:00.000Z", contentHash: "overflow" })]]]),
+      new Map([[null, null]]),
+    );
+
+    await assert.rejects(
+      syncActivitySource(client, { date: "2026-02-28", timezone: "UTC", memoryDir, store }),
+      /capture timestamp/,
+    );
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-02-28")), null, "cursor never advances on a rejected page");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
