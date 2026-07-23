@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
+
 import {
   activityDayWindow,
   activityDigestPath,
@@ -196,7 +198,13 @@ export async function syncActivitySource(
     try {
       await options.afterWrites();
     } catch (error: unknown) {
-      reindexError = error instanceof Error ? error.message : String(error);
+      // reindexError is part of the exported ActivitySyncResult. Keep our
+      // controlled QMD strict messages, but reduce opaque backend errors (which
+      // can embed absolute paths / loader stacks) to a sanitized name+code.
+      reindexError =
+        error instanceof Error && error.message.startsWith("QMD ")
+          ? error.message
+          : displayErrorDetail(error) || "reindex failed";
     }
   }
 

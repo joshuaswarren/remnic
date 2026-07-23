@@ -828,7 +828,7 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
       new Set(["default", "shared", dynamicNamespace]),
     );
   } finally {
-    scheduler?.dispose();
+    await scheduler?.dispose();
     await cleanupDir(memoryDir);
   }
 });

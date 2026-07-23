@@ -602,13 +602,16 @@ export function isArtifactMemoryPath(filePath: string): boolean {
 }
 
 /**
- * Activity day-digests live at `<memoryDir>/activity/<date>.md` — a dedicated
- * searchable surface (explicit activity search), never generic recall. Captured
- * screen text must not auto-inject into ordinary prompts (issue #1899). Keyed on
- * the path, not frontmatter: parseFrontmatter drops the digest's `kind` marker.
+ * Activity day-digests live at `<memoryDir>/activity/<YYYY-MM-DD>.md` — a
+ * dedicated searchable surface (explicit activity search), never generic recall.
+ * Captured screen text must not auto-inject into ordinary prompts (issue #1899).
+ * Keyed on the path (parseFrontmatter drops the digest's `kind` marker), and
+ * matched to the exact digest FILE shape so an `activity` segment elsewhere in a
+ * memoryDir/workspace path (e.g. `/data/activity/remnic/...`) never disables
+ * recall for ordinary memories.
  */
 export function isActivityDigestPath(filePath: string): boolean {
-  return /(?:^|[\\/])activity(?:[\\/]|$)/i.test(filePath);
+  return /(?:^|[\\/])activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i.test(filePath);
 }
 
 /**

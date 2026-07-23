@@ -8,6 +8,10 @@ import {
   mergeArtifactRecallCandidates,
   shouldFilterLifecycleRecallCandidate,
 } from "../src/orchestrator.ts";
+import {
+  isActivityDigestPath,
+  isGenericRecallExcludedPath,
+} from "../packages/remnic-core/src/orchestration/orchestrator-helpers.ts";
 
 test("isArtifactMemoryPath matches artifact directory paths", () => {
   assert.equal(isArtifactMemoryPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
@@ -17,6 +21,23 @@ test("isArtifactMemoryPath matches artifact directory paths", () => {
 test("isArtifactMemoryPath does not match non-artifact paths", () => {
   assert.equal(isArtifactMemoryPath("/tmp/memory/facts/2026-02-21/a.md"), false);
   assert.equal(isArtifactMemoryPath("/tmp/memory/my-artifacts-note.md"), false);
+});
+
+test("isActivityDigestPath matches only the digest file shape", () => {
+  assert.equal(isActivityDigestPath("/tmp/memory/activity/2026-07-22.md"), true);
+  assert.equal(isActivityDigestPath("C:\\memory\\activity\\2026-07-22.md"), true);
+  // A memoryDir that merely contains an `activity` segment must NOT be excluded,
+  // or recall would be disabled for every ordinary memory under it.
+  assert.equal(isActivityDigestPath("/data/activity/remnic/facts/2026-07-22/a.md"), false);
+  assert.equal(isActivityDigestPath("/tmp/memory/activity/notes.md"), false);
+  assert.equal(isActivityDigestPath("/tmp/memory/my-activity-note.md"), false);
+});
+
+test("isGenericRecallExcludedPath covers artifacts and activity digests only", () => {
+  assert.equal(isGenericRecallExcludedPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
+  assert.equal(isGenericRecallExcludedPath("/tmp/memory/activity/2026-07-22.md"), true);
+  assert.equal(isGenericRecallExcludedPath("/data/activity/remnic/facts/a.md"), false);
+  assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
 });
 
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {

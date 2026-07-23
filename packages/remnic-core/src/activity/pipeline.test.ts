@@ -252,12 +252,15 @@ test("syncActivitySource isolates a reindex failure: rows, digest, and cursor st
       memoryDir,
       store,
       afterWrites: async () => {
-        throw new Error("qmd offline");
+        // A backend error whose message embeds an absolute path must be
+        // sanitized to a name+code in the exported reindexError, not echoed.
+        throw Object.assign(new Error("ENOENT: /abs/qmd/index.sqlite missing"), { code: "ENOENT" });
       },
     });
 
     assert.equal(result.digestWritten, true, "the digest is durable despite the reindex failure");
-    assert.match(result.reindexError ?? "", /qmd offline/);
+    assert.match(result.reindexError ?? "", /ENOENT/);
+    assert.ok(!result.reindexError?.includes("/abs/qmd"), "reindexError does not leak the absolute path");
     assert.equal(result.inserted, 1);
     await access(activityDigestPath(memoryDir, "2026-07-22"));
     assert.equal(
