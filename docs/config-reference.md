@@ -48,9 +48,10 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.enabled` | `false` | Master gate. When false, Remnic neither contacts activity sources nor writes activity rows or digests. |
 | `activity.timezone` | `UTC` | IANA timezone for local-day synchronization and digest grouping. |
 | `activity.syncDays` | `1` | Number of local days to synchronize per run; integer from 1 through 90. |
+| `activity.autoSyncIntervalMinutes` | `15` | Periodic in-process auto-sync cadence in minutes; integer from 1 through 1440. |
 | `activity.sources` | `[]` | Trusted capture-daemon sources. Required when `activity.enabled` is true. |
 | `activity.sources.machineLabel` | `(required)` | Stable capture-machine label used to isolate rows and cursors. |
-| `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon. |
+| `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 
 ## Trust scoring

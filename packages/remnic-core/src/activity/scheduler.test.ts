@@ -55,6 +55,7 @@ function enabledConfig(): ActivityConfig {
     enabled: true,
     timezone: "UTC",
     syncDays: 1,
+    autoSyncIntervalMinutes: 15,
     sources: [{ machineLabel: "workstation-a", baseUrl: "http://127.0.0.1:8760" }],
   };
 }
@@ -64,6 +65,7 @@ function disabledConfig(): ActivityConfig {
     enabled: false,
     timezone: "UTC",
     syncDays: 1,
+    autoSyncIntervalMinutes: 15,
     sources: [{ machineLabel: "workstation-a", baseUrl: "http://127.0.0.1:8760" }],
   };
 }

@@ -2356,6 +2356,7 @@ test("parseConfig forwards activity source settings", () => {
     enabled: true,
     timezone: "America/Chicago",
     syncDays: 2,
+    autoSyncIntervalMinutes: 15,
     sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319" }],
   });
 });

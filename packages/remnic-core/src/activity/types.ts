@@ -97,5 +97,7 @@ export interface ActivityConfig {
   enabled: boolean;
   timezone: string;
   syncDays: number;
+  /** Periodic auto-sync cadence in minutes (default 15). */
+  autoSyncIntervalMinutes: number;
   sources: ActivitySourceConfig[];
 }

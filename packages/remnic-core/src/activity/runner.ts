@@ -112,6 +112,18 @@ export function resolveActivitySyncDates(syncDays: number, timezone: string, now
 }
 
 /**
+ * Operator-facing detail for a per-source/per-day sync fault. Our own
+ * controlled messages (activity.../Invalid activity...) are informative and
+ * safe to surface; opaque network/runtime errors can embed hostnames or paths,
+ * so they are reduced to a sanitized name+code (matches ActivityHttpSourceClient.verify).
+ */
+function sanitizedSyncError(error: unknown): string {
+  return error instanceof Error && /^(activity|Invalid activity)/.test(error.message)
+    ? error.message
+    : displayErrorDetail(error) || "activity sync failed";
+}
+
+/**
  * Run one activity sync pass across every configured source. Disabled config
  * short-circuits before any store/client/HTTP work; an enabled config syncs
  * each source across the `syncDays` window and isolates per-source faults.
@@ -159,32 +171,36 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
       try {
         const client = createSourceClient(sourceConfig);
         for (const date of dates) {
-          const result = await syncActivitySource(client, {
-            date,
-            timezone: options.config.timezone,
-            memoryDir: options.memoryDir,
-            store,
-            signal: options.signal,
-            ...(options.reindexSearch === undefined ? {} : { afterWrites: options.reindexSearch }),
-          });
-          item.fetched += result.fetched;
-          item.inserted += result.inserted;
-          item.duplicates += result.duplicates;
-          if (result.digestWritten) item.digestsWritten += 1;
-          item.cursor = result.cursor;
-          // A day that synced durably counts as ran, even if a later day in the
-          // window fails (ran = at least one durable day).
-          item.ran = true;
+          try {
+            const result = await syncActivitySource(client, {
+              date,
+              timezone: options.config.timezone,
+              memoryDir: options.memoryDir,
+              store,
+              signal: options.signal,
+              ...(options.reindexSearch === undefined ? {} : { afterWrites: options.reindexSearch }),
+            });
+            item.fetched += result.fetched;
+            item.inserted += result.inserted;
+            item.duplicates += result.duplicates;
+            if (result.digestWritten) item.digestsWritten += 1;
+            item.cursor = result.cursor;
+            // A day that synced durably counts as ran, even if a later day in
+            // the window fails (ran = at least one durable day).
+            item.ran = true;
+          } catch (dateError) {
+            // One bad day (a malformed historical snapshot, a per-day daemon
+            // error) must not starve the remaining dates — record it and move
+            // on. Dates are processed oldest-first, so continuing keeps today's
+            // sync alive when an old backfill day is broken. An abort, though,
+            // halts the whole run.
+            item.error = sanitizedSyncError(dateError);
+            if (options.signal?.aborted) break;
+          }
         }
       } catch (error) {
-        // Keep item.cursor/item.ran from the days that advanced before the fault.
-        // Sanitize operator-facing detail: keep our controlled activity messages,
-        // but reduce opaque network/runtime errors (which can embed hosts/paths)
-        // to a name+code via displayErrorDetail (matches verify()).
-        item.error =
-          error instanceof Error && /^(activity|Invalid activity)/.test(error.message)
-            ? error.message
-            : displayErrorDetail(error) || "activity sync failed";
+        // Client construction failed: no date could run for this source.
+        item.error = sanitizedSyncError(error);
       }
       results.push(item);
     }

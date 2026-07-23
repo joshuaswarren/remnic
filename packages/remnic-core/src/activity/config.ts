@@ -63,7 +63,7 @@ function parseSource(value: unknown): ActivitySourceConfig {
 
 export function parseActivityConfig(raw: unknown): ActivityConfig {
   if (raw === undefined || raw === null) {
-    return { enabled: false, timezone: "UTC", syncDays: 1, sources: [] };
+    return { enabled: false, timezone: "UTC", syncDays: 1, autoSyncIntervalMinutes: 15, sources: [] };
   }
   const config = asRecord(raw, "activity");
   const enabledValue = coerceBooleanLike(config.enabled, "activity.enabled");
@@ -83,6 +83,14 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   if (!Number.isInteger(syncDays) || syncDays < 1 || syncDays > 90) {
     throw new RangeError("activity.syncDays must be an integer from 1 to 90");
   }
+  const intervalValue = coerceNumber(config.autoSyncIntervalMinutes, "activity.autoSyncIntervalMinutes");
+  if (config.autoSyncIntervalMinutes !== undefined && intervalValue === undefined) {
+    throw new TypeError("activity.autoSyncIntervalMinutes must be a finite number");
+  }
+  const autoSyncIntervalMinutes = intervalValue ?? 15;
+  if (!Number.isInteger(autoSyncIntervalMinutes) || autoSyncIntervalMinutes < 1 || autoSyncIntervalMinutes > 1440) {
+    throw new RangeError("activity.autoSyncIntervalMinutes must be an integer from 1 to 1440");
+  }
   if (config.sources !== undefined && !Array.isArray(config.sources)) {
     throw new TypeError("activity.sources must be an array");
   }
@@ -99,5 +107,5 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   }
   const enabled = enabledValue ?? false;
   if (enabled && sources.length === 0) throw new RangeError("activity.enabled requires at least one source");
-  return { enabled, timezone, syncDays, sources };
+  return { enabled, timezone, syncDays, autoSyncIntervalMinutes, sources };
 }

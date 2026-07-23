@@ -58,6 +58,7 @@ function enabledConfig(overrides: Partial<ActivityConfig> = {}): ActivityConfig 
     enabled: true,
     timezone: "UTC",
     syncDays: 1,
+    autoSyncIntervalMinutes: 15,
     sources: [{ machineLabel: "workstation-a", baseUrl: "http://127.0.0.1:8760" }],
     ...overrides,
   };
@@ -72,6 +73,7 @@ test("disabled config makes no client, no HTTP call, and no store write", async 
         enabled: false,
         timezone: "UTC",
         syncDays: 1,
+        autoSyncIntervalMinutes: 15,
         sources: [{ machineLabel: "workstation-a", baseUrl: "http://127.0.0.1:8760" }],
       },
       memoryDir,
@@ -366,6 +368,43 @@ test("partial multi-day sync reports ran=true for days that synced before a late
     assert.equal(item?.inserted, 1);
     assert.match(item?.error ?? "", /HTTP 503/);
     assert.equal(summary.ranCount, 1, "a partially-synced source still counts as ran");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an older-day failure does not starve newer dates in a multi-day window", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    let calls = 0;
+    const client: ActivitySourceClient = {
+      machineLabel: "workstation-a",
+      async verify() {
+        return { ok: true };
+      },
+      async fetchSnapshots() {
+        calls += 1;
+        // Dates are oldest-first: the first call is the OLDER day and fails;
+        // the newer day (today) must still sync.
+        if (calls === 1) throw new Error("activity source HTTP 500");
+        return { snapshots: [snapshot()], nextCursor: null };
+      },
+    };
+
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({ syncDays: 2 }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+    });
+
+    const item = summary.results[0];
+    assert.equal(item?.ran, true, "the newer day synced despite the older day's failure");
+    assert.equal(item?.inserted, 1, "the newer day's snapshot was persisted");
+    assert.match(item?.error ?? "", /HTTP 500/, "the failed older day is still reported");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });

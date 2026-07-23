@@ -58,6 +58,7 @@ import {
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import { ActivitySyncScheduler } from "../activity/scheduler.js";
+import { refreshActivityIndex } from "../activity/reindex.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -208,10 +209,13 @@ export class MaintenanceScheduler {
       this.activitySyncScheduler = new ActivitySyncScheduler({
         config: this.deps.config.activity,
         memoryDir: this.deps.config.memoryDir,
-        // Refresh the search index after each digest write so it is
-        // discoverable (rule 31). Reuses the live core QMD seam wearables
-        // uses (SearchBackend.update is fail-open); no OpenClaw/host adapter.
-        reindexSearch: () => this.deps.getQmd().update(),
+        intervalMs: this.deps.config.activity.autoSyncIntervalMinutes * 60_000,
+        // Force a real, strict index refresh after each digest write (rule 31):
+        // updateCollectionStrict bypasses the fail-open min-interval gate and
+        // throws on a genuine failure rather than reporting a fake success, so a
+        // freshly written digest is actually searchable. Reuses the core search
+        // seam wearables use; no OpenClaw/host adapter.
+        reindexSearch: () => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection),
       });
       this.activitySyncScheduler.start();
       // Close the race where abort fires between the guard above and start().
