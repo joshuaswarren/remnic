@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { before } from "node:test";
@@ -50,6 +52,25 @@ test("bin sanitizes startup errors on stderr instead of leaking raw messages", (
   // The raw error text ("--spool is required") could embed absolute paths on
   // filesystem/native failures; displayErrorDetail() must strip it.
   assert.doesNotMatch(result.stderr, /--spool is required/);
+});
+
+test("bin sanitizes a module-load failure (missing dist) without leaking a stack", async () => {
+  // Copy the bin into a scratch dir with no sibling dist/, so its relative
+  // import("../dist/cli.js") fails at load time — the path the top-level catch
+  // must still sanitize.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-bin-"));
+  try {
+    const stubDir = path.join(dir, "bin");
+    await mkdir(stubDir, { recursive: true });
+    const stubBin = path.join(stubDir, "remnic-capture-screen.js");
+    await copyFile(binPath, stubBin);
+    const result = spawnSync(process.execPath, [stubBin], { encoding: "utf8", env: envWithoutToken() });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), "Error (ERR_MODULE_NOT_FOUND)");
+    assert.doesNotMatch(result.stderr, /at |node:internal|\/dist\/cli\.js/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("bin terminates the process on SIGTERM after a clean shutdown", { timeout: 20000 }, async () => {
