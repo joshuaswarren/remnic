@@ -14,6 +14,9 @@ import { readFileSync } from "node:fs";
 
 import { coerceNumber, coerceStringArray } from "./coerce.js";
 import {
+  DEFAULT_IDLE_FALLBACK_SECONDS,
+  DEFAULT_POLL_INTERVAL_MS,
+  DEFAULT_SETTLE_MS,
   DEFAULT_DEDUP_TTL_SECONDS,
   DEFAULT_HOST,
   DEFAULT_MAX_DWELL_SECONDS,
@@ -35,6 +38,12 @@ export interface DaemonConfig {
   sessionGapSeconds: number;
   maxNodes: number;
   maxDwellSeconds: number;
+  /** Live capture loop: poll interval (ms) for foreground-change detection. */
+  pollIntervalMs: number;
+  /** Live capture loop: settle window (ms) after a foreground change. */
+  settleMs: number;
+  /** Live capture loop: idle re-sample cadence (seconds). */
+  idleFallbackSeconds: number;
   /** Additive deny-list globs (checked in addition to the built-in defaults). */
   denyApps: string[];
   denyTitles: string[];
@@ -55,6 +64,9 @@ export function defaultDaemonConfig(): DaemonConfig {
     sessionGapSeconds: DEFAULT_SESSION_GAP_SECONDS,
     maxNodes: DEFAULT_MAX_NODES,
     maxDwellSeconds: DEFAULT_MAX_DWELL_SECONDS,
+    pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+    settleMs: DEFAULT_SETTLE_MS,
+    idleFallbackSeconds: DEFAULT_IDLE_FALLBACK_SECONDS,
     denyApps: [],
     denyTitles: [],
     denyUrls: [],
@@ -72,6 +84,9 @@ const KNOWN_TOP_KEYS: Record<string, true> = {
   sessionGapSeconds: true,
   maxNodes: true,
   maxDwellSeconds: true,
+  pollIntervalMs: true,
+  settleMs: true,
+  idleFallbackSeconds: true,
   denyApps: true,
   denyTitles: true,
   denyUrls: true,
@@ -121,6 +136,15 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
   }
   if (obj.maxDwellSeconds !== undefined) {
     cfg.maxDwellSeconds = coerceNumber(obj.maxDwellSeconds, "maxDwellSeconds", { min: 1 });
+  }
+  if (obj.pollIntervalMs !== undefined) {
+    cfg.pollIntervalMs = coerceNumber(obj.pollIntervalMs, "pollIntervalMs", { integer: true, min: 100 });
+  }
+  if (obj.settleMs !== undefined) {
+    cfg.settleMs = coerceNumber(obj.settleMs, "settleMs", { integer: true, min: 0 });
+  }
+  if (obj.idleFallbackSeconds !== undefined) {
+    cfg.idleFallbackSeconds = coerceNumber(obj.idleFallbackSeconds, "idleFallbackSeconds", { min: 1 });
   }
   if (obj.denyApps !== undefined) cfg.denyApps = coerceStringArray(obj.denyApps, "denyApps");
   if (obj.denyTitles !== undefined) cfg.denyTitles = coerceStringArray(obj.denyTitles, "denyTitles");

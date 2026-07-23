@@ -32,7 +32,11 @@ final class ChunkWriter {
             throw ChunkWriterError.unavailableFormat
         }
         destinationFormat = format
-        try FileManager.default.createDirectory(at: outDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: outDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
     }
 
     func append(_ buffer: AVAudioPCMBuffer, at timestamp: Date) -> ChunkEvent? {
@@ -80,6 +84,9 @@ final class ChunkWriter {
             commonFormat: .pcmFormatInt16,
             interleaved: true
         )
+        // Captured audio is sensitive — restrict the WAV to owner-only before any
+        // path is emitted (parity with the 0600 spool DB).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: chunkURL.path)
         self.chunkURL = chunkURL
         startedAtUtc = timestamp
     }

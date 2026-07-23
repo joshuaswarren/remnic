@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ensurePrivateDir, resolveToken, runCapture } from "./cli.js";
+import { ensurePrivateDir, ensureSpoolParentDir, resolveToken, runCapture } from "./cli.js";
 import { CaptureInputError } from "./errors.js";
 import { capturePaths } from "./paths.js";
 
@@ -174,4 +174,29 @@ test("ensurePrivateDir refuses a symlinked private directory and creates a real 
   const fresh = path.join(base, "fresh");
   ensurePrivateDir(fresh);
   assert.equal(existsSync(fresh), true);
+});
+
+test("ensureSpoolParentDir creates absent 0700, rejects symlink/non-private, never chmods existing", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "csr-spoolp-"));
+  // Absent parent → created 0700.
+  ensureSpoolParentDir(path.join(base, "fresh", "spool.sqlite"));
+  assert.equal(existsSync(path.join(base, "fresh")), true);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(path.join(base, "fresh")).mode & 0o777, 0o700);
+  }
+  // Existing private parent → accepted (idempotent, no throw).
+  ensureSpoolParentDir(path.join(base, "fresh", "spool.sqlite"));
+  // Symlinked parent → rejected.
+  const realDir = path.join(base, "real");
+  mkdirSync(realDir, { mode: 0o700 });
+  symlinkSync(realDir, path.join(base, "link"));
+  assert.throws(() => ensureSpoolParentDir(path.join(base, "link", "spool.sqlite")), CaptureInputError);
+  // Existing group/other-accessible parent → rejected AND left untouched (not chmod'd).
+  if (process.platform !== "win32") {
+    const shared = path.join(base, "shared");
+    mkdirSync(shared);
+    chmodSync(shared, 0o755);
+    assert.throws(() => ensureSpoolParentDir(path.join(shared, "spool.sqlite")), CaptureInputError);
+    assert.equal(statSync(shared).mode & 0o777, 0o755, "must not chmod an existing shared dir");
+  }
 });

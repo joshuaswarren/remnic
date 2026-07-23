@@ -29,3 +29,10 @@ export const DEFAULT_SESSION_GAP_SECONDS = 300;
 export const DEFAULT_MAX_NODES = 4000;
 /** Per-snapshot dwell cap for /v1/stats time attribution. */
 export const DEFAULT_MAX_DWELL_SECONDS = 300;
+/** Live capture loop cadence (#1899 Part 1; all overridable in config). */
+/** How often the loop polls the frontmost AX snapshot for a change. */
+export const DEFAULT_POLL_INTERVAL_MS = 1000;
+/** Foreground must be stable this long after a change before a snapshot is stored. */
+export const DEFAULT_SETTLE_MS = 500;
+/** Re-sample an unchanging foreground at least this often (dedup drops repeats). */
+export const DEFAULT_IDLE_FALLBACK_SECONDS = 30;

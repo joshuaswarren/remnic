@@ -41,6 +41,7 @@ import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { NativeHelper, resolveHelperBinaryPath } from "./helper.js";
 import { captureViaHelper } from "./live.js";
 import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
+import { CaptureScheduler } from "./scheduler.js";
 import { ingestReplayDirResponsive } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
@@ -198,6 +199,35 @@ export function ensurePrivateDir(dir: string): void {
     chmodSync(dir, 0o700);
   } catch {
     // filesystem without POSIX perms
+  }
+}
+
+/**
+ * Prepare a custom --spool parent WITHOUT clobbering an existing directory's
+ * mode. Absent → create a dedicated 0700 dir. Present → refuse a symlink or a
+ * non-owner-only dir, but never chmod it, so `--spool ./x.sqlite` can't tighten
+ * the caller's cwd. The daemon's own base-dir is handled by ensurePrivateDir.
+ */
+export function ensureSpoolParentDir(spoolPath: string): void {
+  const dir = dirname(spoolPath);
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(dir);
+  } catch {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new CaptureInputError(`refusing to open the capture spool under symlinked directory '${dir}'`);
+  }
+  if (!stat.isDirectory()) {
+    throw new CaptureInputError(`capture spool parent '${dir}' exists but is not a directory`);
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new CaptureInputError(
+      `capture spool directory '${dir}' is not owner-only (mode ${(stat.mode & 0o777).toString(8)}); ` +
+        "point --spool at a private 0700 directory (the daemon creates one when absent)",
+    );
   }
 }
 
@@ -383,10 +413,10 @@ async function cmdStart(
   const token = resolveToken(paths, env, true);
   const helperRes = await resolveHelperBinaryPath(env);
   const axAvailable = helperRes.binaryPath !== null;
-  // A custom --spool may live outside base-dir; ensure its parent exists and is
-  // owner-only (0700, non-symlink) before opening, matching the README spool
-  // safety contract. Idempotent when the spool is the default in-base path.
-  ensurePrivateDir(dirname(paths.spoolPath));
+  // A custom --spool may live outside base-dir; prepare its parent (create 0700
+  // if absent; refuse a symlinked or non-owner-only existing dir) without ever
+  // chmod-ing an existing directory.
+  ensureSpoolParentDir(paths.spoolPath);
   const spool = new Spool(paths.spoolPath);
   // Retention janitor: prune expired rows once on start so a long-idle spool is
   // trimmed even if the (native) capture loop never runs on this platform.
@@ -397,7 +427,7 @@ async function cmdStart(
       spool,
       config,
       token,
-      capturing: false,
+      capturing: axAvailable,
       axAvailable,
       ocrAvailable: axAvailable,
       helperHint: helperRes.hint,
@@ -424,11 +454,27 @@ async function cmdStart(
     ? superviseReplay(spool, replayDir, config, { stdout, stderr }, replayAbort.signal)
     : Promise.resolve();
 
+  // Live capture loop (#1899 Part 1): when the native helper is available, poll
+  // the frontmost window and store on change/settle/idle through the same
+  // pipeline as replay. On Linux (no helper) the daemon serves + replays only.
+  let scheduler: CaptureScheduler | null = null;
+  if (helperRes.binaryPath !== null) {
+    const processor = new CaptureProcessor(config);
+    for (const fp of spool.latestFingerprints()) {
+      processor.seed(fp.app, fp.windowTitle, fp.simhash, fp.capturedAtUtc);
+    }
+    scheduler = new CaptureScheduler(new NativeHelper(helperRes.binaryPath), processor, spool, config, {
+      onError: (err) => stderr(`capture loop error: ${sanitizeError(err)}`),
+    });
+    scheduler.start();
+  }
+
   return await new Promise<number>((resolve) => {
     let closing = false;
     const shutdown = () => {
       if (closing) return;
       closing = true;
+      scheduler?.stop();
       // Cancel any in-flight replay and drain it before closing the spool so no
       // ingestion write can ever hit a closed database.
       replayAbort.abort();

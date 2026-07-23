@@ -17,3 +17,9 @@ test("stripIpv6Brackets and isLoopbackHost accept bracketed and bare loopback", 
   assert.equal(isLoopbackHost("::1"), true);
   assert.equal(isLoopbackHost("10.0.0.5"), false);
 });
+
+test("formatHostForUrl passes non-loopback hosts through, brackets non-loopback IPv6", () => {
+  assert.equal(formatHostForUrl("10.0.0.5"), "10.0.0.5");
+  assert.equal(formatHostForUrl("example.internal"), "example.internal");
+  assert.equal(formatHostForUrl("2001:db8::1"), "[2001:db8::1]");
+});

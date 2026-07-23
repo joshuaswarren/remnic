@@ -59,14 +59,25 @@ struct RemnicCaptureHelper {
     }
 
     private static func waitForTermination(controller: AudioCaptureController) async {
-        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        Darwin.signal(SIGTERM, SIG_IGN)
+        // Honor both SIGTERM (supervisors) and SIGINT (Ctrl-C) so a foreground
+        // stop still runs controller.stop()/finish() and flushes the open chunk.
+        let handled: [Int32] = [SIGTERM, SIGINT]
+        let sources = handled.map { sig -> DispatchSourceSignal in
+            Darwin.signal(sig, SIG_IGN)
+            return DispatchSource.makeSignalSource(signal: sig, queue: .main)
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            source.setEventHandler {
-                source.cancel()
-                continuation.resume()
+            var resumed = false
+            for source in sources {
+                source.setEventHandler {
+                    for other in sources { other.cancel() }
+                    if !resumed {
+                        resumed = true
+                        continuation.resume()
+                    }
+                }
+                source.resume()
             }
-            source.resume()
         }
         await controller.stop()
     }

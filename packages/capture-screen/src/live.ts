@@ -14,7 +14,7 @@ import { extractAxText } from "./axtree.js";
 import { isTerminalApp } from "./capture.js";
 import type { CaptureCandidate, CaptureDecision, CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
-import type { NativeHelper } from "./helper.js";
+import type { AxSnapshot, NativeHelper } from "./helper.js";
 
 export async function captureViaHelper(
   helper: NativeHelper,
@@ -23,6 +23,21 @@ export async function captureViaHelper(
   capturedAtUtc: string,
 ): Promise<CaptureDecision> {
   const snap = await helper.axSnapshot({ frontmost: true, maxNodes: config.maxNodes });
+  return captureFromSnapshot(snap, helper, processor, config, capturedAtUtc);
+}
+
+/**
+ * Run an already-fetched AX snapshot through the pipeline. The live scheduler
+ * uses this so a single ax-snapshot poll drives both change detection and the
+ * capture, avoiding a redundant fetch.
+ */
+export async function captureFromSnapshot(
+  snap: AxSnapshot,
+  helper: NativeHelper,
+  processor: CaptureProcessor,
+  config: DaemonConfig,
+  capturedAtUtc: string,
+): Promise<CaptureDecision> {
   const axText = extractAxText(snap.tree, config.maxNodes).text;
   const candidate: CaptureCandidate = {
     capturedAtUtc,
@@ -37,8 +52,8 @@ export async function captureViaHelper(
         candidate.text = ocrText;
         candidate.textSource = "ocr";
       }
-      // Blank OCR (helper returned no recognizable text): leave text-less so the
-      // processor reports ocr-unavailable instead of persisting an empty snapshot.
+      // Blank OCR: leave text-less so the processor reports ocr-unavailable
+      // instead of persisting an empty snapshot.
     } catch {
       // OCR unavailable/failed: leave text-less so the processor reports
       // ocr-unavailable instead of persisting an empty snapshot.
