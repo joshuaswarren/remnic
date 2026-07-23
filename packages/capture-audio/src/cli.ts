@@ -275,6 +275,7 @@ async function cmdStart(
     return 0;
   }
 
+  ensurePrivateDir(paths.baseDir);
   const token = loadOrCreateToken(paths.tokenPath);
   const spool = new Spool(paths.spoolPath);
   let handle: DaemonHandle;
@@ -478,7 +479,7 @@ export async function runCapture(io: CliIo): Promise<number> {
       stderr(`error: ${err.message}`);
       return err instanceof CaptureInputError ? 2 : 1;
     }
-    stderr(`error: ${(err as Error).message}`);
+    stderr(`error: ${describeError(err)}`);
     return 1;
   }
 }
