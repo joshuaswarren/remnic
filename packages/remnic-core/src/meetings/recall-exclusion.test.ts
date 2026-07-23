@@ -18,20 +18,27 @@ function result(path: string): QmdSearchResult {
   return { docid: path, path, snippet: "", score: 1 };
 }
 
-test("isMeetingRecordPath matches meeting-record paths (including namespaced) only", () => {
+test("isMeetingRecordPath matches only the full meeting-record shape", () => {
   assert.equal(isMeetingRecordPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
   assert.equal(isMeetingRecordPath("/mem/meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
-  assert.equal(isMeetingRecordPath("namespaces/team/meetings/2026-03-10/mtg-x.md"), true);
+  assert.equal(isMeetingRecordPath("namespaces/team/meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
+  // A namespace literally named "meetings" must NOT lose its ordinary memories.
+  assert.equal(isMeetingRecordPath("namespaces/meetings/facts/a.md"), false);
+  assert.equal(isMeetingRecordPath("namespaces/meetings/preferences/p.md"), false);
+  // A non-record file under a meetings day dir is not a record.
+  assert.equal(isMeetingRecordPath("meetings/2026-03-10/notes.md"), false);
   assert.equal(isMeetingRecordPath("facts/a.md"), false);
   assert.equal(isMeetingRecordPath("facts/team-meetings-notes.md"), false);
 });
 
 test("isNonRecallableMemoryPath unifies artifacts + meeting records", () => {
   assert.equal(isNonRecallableMemoryPath("artifacts/x.md"), true);
-  assert.equal(isNonRecallableMemoryPath("meetings/2026-03-10/mtg-x.md"), true);
+  assert.equal(isNonRecallableMemoryPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
   assert.equal(isNonRecallableMemoryPath("facts/a.md"), false);
+  // A namespace named "meetings" is not a record dir → its memories stay recallable.
+  assert.equal(isNonRecallableMemoryPath("namespaces/meetings/facts/a.md"), false);
   // The artifact predicate itself is unchanged.
-  assert.equal(isArtifactMemoryPath("meetings/2026-03-10/mtg-x.md"), false);
+  assert.equal(isArtifactMemoryPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), false);
 });
 
 test("filterRecallCandidates drops meeting records alongside artifacts", () => {

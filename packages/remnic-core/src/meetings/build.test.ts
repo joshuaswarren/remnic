@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MeetingsBuilder, type MeetingDayData, type MeetingsDaySource } from "./build.js";
+import { MeetingsBuilder, type MeetingDayData, type MeetingsDayBuildSummary, type MeetingsDaySource } from "./build.js";
 import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import { MeetingRecordStore, type MeetingRecordFileIo } from "./store.js";
 import type { MeetingActivitySnapshot, MeetingsConfig, MeetingAppSpan, MeetingAudioWindow } from "./types.js";
@@ -236,4 +236,55 @@ test("rebuild reconciles stale same-day records whose meeting no longer detects"
   assert.deepEqual(secondSummary.removed, [staleId], "the stale record must be deleted");
   assert.deepEqual(await store.listMeetingIds(DATE), [freshId]);
   assert.equal(await store.readMeetingRecord(DATE, staleId), null);
+});
+
+test("rebuild preserves the id of an overlapping shifted-start meeting", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const cfg = config();
+  const first: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
+  const originalId = firstSummary.meetings[0]!.id;
+
+  // A resync shifts the start by 5 min (richer audio boundary) → the detector
+  // mints a NEW start-anchored id, but the window still overlaps the stored
+  // record, so the builder must ADOPT the original id, not delete + recreate.
+  const shiftedStart = "2026-03-10T14:05:00.000Z";
+  const second: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", shiftedStart, END)], audioWindows: [audioWin("desktop", shiftedStart, END)] },
+    conversations: [conv("desktop", "d2", [seg("hello again", "2026-03-10T14:10:00.000Z")])],
+  };
+  const secondSummary = await new MeetingsBuilder({ source: fixedSource(second), store, config: cfg }).buildDay(DATE);
+  assert.equal(secondSummary.meetings.length, 1);
+  assert.equal(secondSummary.meetings[0]?.id, originalId, "overlapping shifted-start resync must keep the original id");
+  assert.deepEqual(secondSummary.removed, [], "the meeting was adopted, not deleted");
+  assert.deepEqual(await store.listMeetingIds(DATE), [originalId]);
+  const raw = await store.readMeetingRecord(DATE, originalId);
+  assert.match(raw!, /startUtc: "2026-03-10T14:05:00.000Z"/, "the adopted record's window is updated to the shifted start");
+});
+
+test("reindex hook fires only when records change", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const data: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const calls: MeetingsDayBuildSummary[] = [];
+  const builder = new MeetingsBuilder({
+    source: fixedSource(data),
+    store,
+    config: config(),
+    hooks: { reindex: (summary) => { calls.push(summary); } },
+  });
+  const first = await builder.buildDay(DATE);
+  assert.equal(first.built, 1);
+  assert.equal(calls.length, 1, "reindex fires after new records are written");
+  assert.equal(calls[0]?.built, 1);
+  // Idempotent rebuild: nothing changed → hook must NOT fire again.
+  const second = await builder.buildDay(DATE);
+  assert.equal(second.built, 0);
+  assert.equal(second.removed.length, 0);
+  assert.equal(calls.length, 1, "reindex does not fire when nothing changed");
 });

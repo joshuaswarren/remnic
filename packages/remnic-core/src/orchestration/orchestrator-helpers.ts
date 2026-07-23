@@ -602,13 +602,17 @@ export function isArtifactMemoryPath(filePath: string): boolean {
 }
 
 /**
- * Meeting records (issue #1900) live under `<memoryDir>/meetings/<date>/` —
- * inside the QMD collection root (full-text searchable) but NEVER surfaced
- * through generic recall, exactly like `artifacts/`. Matches a `meetings`
- * path segment so a namespaced `.../meetings/...` record is excluded too.
+ * Meeting records (issue #1900) live at
+ * `<root>/meetings/<YYYY-MM-DD>/mtg-<YYYY-MM-DD>-<hash>.md` — inside the QMD
+ * collection root (full-text searchable) but NEVER surfaced through generic
+ * recall, exactly like `artifacts/`. The predicate matches the FULL record
+ * shape (anchored at the filename) rather than any `meetings` path segment, so
+ * a namespaced deployment whose non-default namespace is literally named
+ * `meetings` (`.../namespaces/meetings/facts/…`) keeps its ordinary memories in
+ * recall — only true meeting records are excluded.
  */
 export function isMeetingRecordPath(filePath: string): boolean {
-  return /(?:^|[\\/])meetings(?:[\\/]|$)/i.test(filePath);
+  return /(?:^|[\\/])meetings[\\/]\d{4}-\d{2}-\d{2}[\\/]mtg-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.md$/i.test(filePath);
 }
 
 /**
