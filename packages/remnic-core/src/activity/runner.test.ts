@@ -355,7 +355,7 @@ test("partial multi-day sync reports ran=true for days that synced before a late
       async fetchSnapshots() {
         calls += 1;
         // First local day (oldest) syncs; the second day's daemon call fails.
-        if (calls === 1) return { snapshots: [snapshot()], nextCursor: null };
+        if (calls === 1) return { snapshots: [snapshot({ capturedAtUtc: "2026-07-21T14:00:00.000Z" })], nextCursor: null };
         throw new Error("activity source HTTP 503");
       },
     };

@@ -315,3 +315,35 @@ test("syncActivitySource honors an abort before committing the digest and cursor
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("syncActivitySource skips snapshots the daemon returns outside the requested day", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = source(
+      "workstation-a",
+      new Map([
+        [
+          null,
+          [
+            snapshot({ capturedAtUtc: "2026-07-22T14:00:00.000Z", contentHash: "in-window" }),
+            // A misplaced snapshot for a different day (replay / timezone bug).
+            snapshot({ capturedAtUtc: "2026-07-20T10:00:00.000Z", contentHash: "out-of-window" }),
+          ],
+        ],
+      ]),
+      new Map([[null, null]]),
+    );
+
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+
+    assert.equal(result.fetched, 2, "both snapshots were fetched");
+    assert.equal(result.inserted, 1, "only the in-window snapshot is committed under this date");
+    const day = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
+    assert.deepEqual(day.map((s) => s.contentHash), ["in-window"]);
+    assert.match(await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8"), /snapshotCount: 1/);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

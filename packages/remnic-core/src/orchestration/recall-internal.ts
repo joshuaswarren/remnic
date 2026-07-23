@@ -4163,7 +4163,7 @@ export class RecallInternalCoordinator {
       }
       // Artifacts are injected through dedicated verbatim recall flow only.
       memoryResults = memoryResults.filter(
-        (r) => !isGenericRecallExcludedPath(r.path),
+        (r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir),
       );
 
       const isFullModeGraphAssist =
@@ -4552,6 +4552,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
+                memoryRoot: this.deps.config.memoryDir,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4749,6 +4750,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
+                memoryRoot: this.deps.config.memoryDir,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4871,7 +4873,7 @@ export class RecallInternalCoordinator {
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
           const activeMemories = memories.filter(
             (m) => {
-              if (isGenericRecallExcludedPath(m.path)) return false;
+              if (isGenericRecallExcludedPath(m.path, this.deps.config.memoryDir)) return false;
               const status = m.frontmatter.status;
               if (!status || status === "active") return true;
               if (status === "superseded") {

@@ -601,17 +601,28 @@ export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
 
+/** Exactly `activity/<YYYY-MM-DD>.md`, at the top level of a memory root. */
+const ACTIVITY_DIGEST_TOPLEVEL = /^activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
+/** The digest FILE shape anywhere in a path (root-unaware best-effort). */
+const ACTIVITY_DIGEST_ANYWHERE = /(?:^|[\\/])activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
+
 /**
- * Activity day-digests live at `<memoryDir>/activity/<YYYY-MM-DD>.md` — a
+ * Activity day-digests live at `<memoryRoot>/activity/<YYYY-MM-DD>.md` — a
  * dedicated searchable surface (explicit activity search), never generic recall.
  * Captured screen text must not auto-inject into ordinary prompts (issue #1899).
- * Keyed on the path (parseFrontmatter drops the digest's `kind` marker), and
- * matched to the exact digest FILE shape so an `activity` segment elsewhere in a
- * memoryDir/workspace path (e.g. `/data/activity/remnic/...`) never disables
- * recall for ordinary memories.
+ * Keyed on the path (parseFrontmatter drops the digest's `kind` marker).
+ *
+ * Root-aware: when `memoryRoot` is given, the path is resolved relative to it and
+ * must be the TOP-LEVEL `activity/<date>.md`, so an ordinary memory nested under
+ * a category (e.g. `facts/proj/activity/<date>.md`) stays recallable. Without a
+ * root, falls back to the digest file shape anywhere (best-effort).
  */
-export function isActivityDigestPath(filePath: string): boolean {
-  return /(?:^|[\\/])activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i.test(filePath);
+export function isActivityDigestPath(filePath: string, memoryRoot?: string): boolean {
+  if (memoryRoot !== undefined && memoryRoot.length > 0) {
+    const relative = path.relative(memoryRoot, path.resolve(memoryRoot, filePath));
+    return ACTIVITY_DIGEST_TOPLEVEL.test(relative);
+  }
+  return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
 /**
@@ -619,8 +630,8 @@ export function isActivityDigestPath(filePath: string): boolean {
  * artifacts and activity digests. Explicit search paths (memory_search,
  * activity search) do not apply this filter, so those surfaces still read them.
  */
-export function isGenericRecallExcludedPath(filePath: string): boolean {
-  return isArtifactMemoryPath(filePath) || isActivityDigestPath(filePath);
+export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: string): boolean {
+  return isArtifactMemoryPath(filePath) || isActivityDigestPath(filePath, memoryRoot);
 }
 
 export function buildCompressionGuidelinesMarkdown(
@@ -637,6 +648,8 @@ export function filterRecallCandidates(
     recallNamespaces: string[];
     resolveNamespace: (path: string) => string;
     limit: number;
+    /** Memory root for top-level activity-digest detection. */
+    memoryRoot?: string;
   },
 ): QmdSearchResult[] {
   const scopedByNamespace = options.namespacesEnabled
@@ -645,7 +658,7 @@ export function filterRecallCandidates(
       )
     : candidates;
   return scopedByNamespace
-    .filter((r) => !isGenericRecallExcludedPath(r.path))
+    .filter((r) => !isGenericRecallExcludedPath(r.path, options.memoryRoot))
     .slice(0, Math.max(0, options.limit));
 }
 

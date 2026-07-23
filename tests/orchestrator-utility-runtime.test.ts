@@ -65,7 +65,7 @@ test("boostSearchResults applies bounded utility runtime multipliers to heuristi
   }
 });
 
-test("boostSearchResults excludes dream, procedural, and activity-digest memories from generic recall scoring", async () => {
+test("boostSearchResults excludes top-level activity digests but keeps nested activity-named facts recallable", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dedicated-surface-filter-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-dedicated-surface-filter-workspace-"));
   try {
@@ -142,9 +142,9 @@ test("boostSearchResults excludes dream, procedural, and activity-digest memorie
         },
       ],
       [
-        "/tmp/memory/activity/2026-07-22.md",
+        path.join(memoryDir, "activity", "2026-07-22.md"),
         {
-          path: "/tmp/memory/activity/2026-07-22.md",
+          path: path.join(memoryDir, "activity", "2026-07-22.md"),
           content: "Captured screen text digest",
           frontmatter: {
             id: "activity-2026-07-22",
@@ -156,8 +156,26 @@ test("boostSearchResults excludes dream, procedural, and activity-digest memorie
             confidenceTier: "explicit",
             tags: [],
             status: "active",
-            // No `kind` marker: exclusion is by PATH (activity/), since the
-            // digest's kind frontmatter does not survive parseFrontmatter.
+            // No `kind` marker: exclusion is by top-level PATH (activity/<date>.md
+            // relative to memoryDir); parseFrontmatter drops the kind marker.
+          },
+        },
+      ],
+      [
+        path.join(memoryDir, "facts", "nested-activity", "2026-07-22.md"),
+        {
+          path: path.join(memoryDir, "facts", "nested-activity", "2026-07-22.md"),
+          content: "An ordinary fact nested under an activity-named subdir",
+          frontmatter: {
+            id: "nested-activity-fact",
+            category: "fact",
+            created: "2026-07-22T00:00:00.000Z",
+            updated: "2026-07-22T00:00:00.000Z",
+            source: "test",
+            confidence: 0.9,
+            confidenceTier: "explicit",
+            tags: [],
+            status: "active",
           },
         },
       ],
@@ -170,10 +188,18 @@ test("boostSearchResults excludes dream, procedural, and activity-digest memorie
       { path: "/tmp/memory/facts/dream.md", score: 0.8, docid: "dream", snippet: "dream" },
       { path: "/tmp/memory/facts/procedural.md", score: 0.7, docid: "procedural", snippet: "procedural" },
       { path: "/tmp/memory/facts/normal.md", score: 0.6, docid: "normal", snippet: "normal" },
-      { path: "/tmp/memory/activity/2026-07-22.md", score: 0.5, docid: "activity", snippet: "screen text" },
+      { path: path.join(memoryDir, "activity", "2026-07-22.md"), score: 0.5, docid: "activity", snippet: "screen text" },
+      {
+        path: path.join(memoryDir, "facts", "nested-activity", "2026-07-22.md"),
+        score: 0.4,
+        docid: "nested-activity",
+        snippet: "nested fact",
+      },
     ], [], undefined);
 
-    assert.deepEqual(output.map((entry: { docid: string }) => entry.docid), ["normal"]);
+    // Top-level activity digest is excluded; the nested activity-named fact and
+    // the ordinary memory stay recallable. dream/procedural excluded by kind.
+    assert.deepEqual(output.map((entry: { docid: string }) => entry.docid), ["normal", "nested-activity"]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });

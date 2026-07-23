@@ -466,6 +466,7 @@ export class RecallSearchPipelineCoordinator {
       recallNamespaces: options.recallNamespaces,
       resolveNamespace: options.resolveNamespace,
       limit: qmdFetchLimit,
+      memoryRoot: this.deps.config.memoryDir,
     });
     const emitDebugSnapshot = async (
       results: QmdSearchResult[],
@@ -610,6 +611,7 @@ export class RecallSearchPipelineCoordinator {
         recallNamespaces: options.recallNamespaces,
         resolveNamespace: options.resolveNamespace,
         limit: fetchLimit,
+        memoryRoot: this.deps.config.memoryDir,
       });
 
       if (filteredResults.length >= qmdFetchLimit) {
@@ -693,7 +695,7 @@ export class RecallSearchPipelineCoordinator {
       : [];
     if (scopedSeedResults.length >= cappedLimit) {
       return scopedSeedResults
-        .filter((result) => !isGenericRecallExcludedPath(result.path))
+        .filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir))
         .slice(0, cappedLimit);
     }
 
@@ -726,7 +728,7 @@ export class RecallSearchPipelineCoordinator {
       [...scopedSeedResults, ...scored],
       this.deps.namespaceFromPath,
       cappedLimit,
-      { filter: (result) => !isGenericRecallExcludedPath(result.path) },
+      { filter: (result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir) },
     );
   }
 
@@ -976,7 +978,7 @@ export class RecallSearchPipelineCoordinator {
     }
     // Dedicated-surface isolation: generic recall must exclude artifacts and
     // activity digests (both remain readable via explicit search).
-    results = results.filter((r) => !isGenericRecallExcludedPath(r.path));
+    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =
@@ -1360,7 +1362,7 @@ export class RecallSearchPipelineCoordinator {
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
             memory.frontmatter.memoryKind === "procedural" ||
-            isActivityDigestPath(r.path))
+            isActivityDigestPath(r.path, this.deps.config.memoryDir))
         ) {
           dedicatedSurfaceFilteredCount += 1;
           continue;

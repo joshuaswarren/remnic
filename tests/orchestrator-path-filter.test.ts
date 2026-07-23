@@ -40,6 +40,27 @@ test("isGenericRecallExcludedPath covers artifacts and activity digests only", (
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
 });
 
+test("isActivityDigestPath is root-aware: only the top-level digest is excluded", () => {
+  const root = "/mem";
+  // Top-level digest (absolute + relative) is excluded.
+  assert.equal(isActivityDigestPath("/mem/activity/2026-07-22.md", root), true);
+  assert.equal(isActivityDigestPath("activity/2026-07-22.md", root), true);
+  // A valid fact nested under a category `activity` subdir stays recallable.
+  assert.equal(isActivityDigestPath("/mem/facts/proj/activity/2026-07-22.md", root), false);
+  assert.equal(isActivityDigestPath("facts/proj/activity/2026-07-22.md", root), false);
+  // A memory root whose own path contains an `activity` segment never disables recall.
+  assert.equal(isActivityDigestPath("/data/activity/remnic/facts/a.md", "/data/activity/remnic"), false);
+  assert.equal(isActivityDigestPath("/data/activity/remnic/activity/2026-07-22.md", "/data/activity/remnic"), true);
+});
+
+test("isGenericRecallExcludedPath root-aware keeps nested activity-named facts recallable", () => {
+  const root = "/mem";
+  assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", root), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", root), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", root), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", root), false);
+});
+
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
   const candidates = [
     { path: "/tmp/memory/artifacts/2026-02-21/a.md", score: 0.99 },

@@ -133,6 +133,14 @@ export async function syncActivitySource(
   let duplicates = 0;
   const seenCursors = new Set<string>();
   let completed = false;
+  // The digest and cursor that follow are for options.date only. Compute the
+  // day window up front so a snapshot the daemon misplaced outside it (replay
+  // file, timezone-boundary bug) is not committed under this date — it will be
+  // ingested when its own day syncs. Invalid timestamps still fall through to
+  // insertSnapshot, which rejects them.
+  const { startUtc: windowStartUtc, endUtc: windowEndUtc } = activityDayWindow(options.date, options.timezone);
+  const windowStartMs = Date.parse(windowStartUtc);
+  const windowEndMs = Date.parse(windowEndUtc);
 
   while (pages < maxPages) {
     options.signal?.throwIfAborted();
@@ -146,6 +154,10 @@ export async function syncActivitySource(
     fetched += page.snapshots.length;
 
     for (const snapshot of page.snapshots) {
+      const capturedMs = Date.parse(snapshot.capturedAtUtc);
+      if (Number.isFinite(capturedMs) && (capturedMs < windowStartMs || capturedMs >= windowEndMs)) {
+        continue;
+      }
       const result = options.store.insertSnapshot(snapshotForMachine(snapshot, source.machineLabel));
       if (result.inserted) inserted += 1;
       else duplicates += 1;
