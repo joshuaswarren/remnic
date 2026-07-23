@@ -84,16 +84,31 @@ test("loadSherpaOnnx reports the install hint only when the package itself is mi
   );
 });
 
-test("loadSherpaOnnx surfaces a broken installed native addon instead of an install hint", async () => {
-  const dlopenFailure = Object.assign(new Error("dlopen failed: libonnxruntime.so: cannot open shared object file"), {
+test("loadSherpaOnnx surfaces a broken installed native addon without leaking paths or an install hint", async () => {
+  const dlopenFailure = Object.assign(new Error("dlopen failed: /home/user/node_modules/sherpa-onnx-node/build/Release/x.node"), {
     code: "ERR_DLOPEN_FAILED",
   });
   await assert.rejects(loadSherpaOnnx(async () => {
     throw dlopenFailure;
   }), (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /failed to load sherpa-onnx-node/);
-    assert.match(error.message, /dlopen failed/);
+    assert.match(error.message, /could not load the installed sherpa-onnx-node native runtime/);
+    assert.doesNotMatch(error.message, /install it before enabling VAD/);
+    assert.doesNotMatch(error.message, /dlopen|\.node|node_modules/);
+    return true;
+  });
+});
+
+test("loadSherpaOnnx treats an installed package with a missing native module (require stack) as broken, not absent", async () => {
+  const nativeMissing = Object.assign(
+    new Error("Cannot find module '/app/node_modules/sherpa-onnx-node/build/Release/sherpa-onnx-node.node'"),
+    { code: "MODULE_NOT_FOUND", requireStack: ["/app/node_modules/sherpa-onnx-node/index.js"] },
+  );
+  await assert.rejects(loadSherpaOnnx(async () => {
+    throw nativeMissing;
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /could not load the installed sherpa-onnx-node native runtime/);
     assert.doesNotMatch(error.message, /install it before enabling VAD/);
     return true;
   });

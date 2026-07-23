@@ -27,7 +27,7 @@ export async function pruneExpiredRawAudio(rawDirectory: string, retentionMs: nu
     const location = path.join(rawDirectory, entry.name);
     const stat = await lstat(location);
     if (!stat.isFile()) continue;
-    if (stat.mtimeMs < cutoffMs) {
+    if (stat.mtimeMs <= cutoffMs) {
       await rm(location);
       removed.push(location);
     }

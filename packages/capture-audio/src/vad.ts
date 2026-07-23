@@ -73,18 +73,27 @@ export async function loadSherpaOnnx(
   try {
     module = await importModule(specifier);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    const missing =
-      (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") &&
-      error instanceof Error &&
-      error.message.includes(specifier);
-    if (missing) {
+    // A genuinely absent package surfaces as ERR_MODULE_NOT_FOUND naming the
+    // specifier as a package, with no require stack. An installed-but-broken
+    // package (missing native .node, dlopen failure) has a different code
+    // and/or a require stack, so it must NOT be reported as "not installed".
+    const err = error as NodeJS.ErrnoException & { requireStack?: unknown };
+    const message = error instanceof Error ? error.message : "";
+    const packageMissing =
+      err.code === "ERR_MODULE_NOT_FOUND" &&
+      err.requireStack === undefined &&
+      message.includes(`package '${specifier}'`);
+    if (packageMissing) {
       throw new CaptureConfigError(
         "Silero VAD requires optional dependency sherpa-onnx-node; install it before enabling VAD",
       );
     }
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new CaptureConfigError(`Silero VAD failed to load sherpa-onnx-node: ${detail}`);
+    // Installed but unusable. Report that distinctly, but keep the message
+    // operator-safe: never echo the raw error (it can leak absolute native
+    // library paths), per the CaptureConfigError contract.
+    throw new CaptureConfigError(
+      "Silero VAD could not load the installed sherpa-onnx-node native runtime; verify its native build and shared-library dependencies",
+    );
   }
   const resolved = resolveSherpaExport(module);
   if (!resolved) {

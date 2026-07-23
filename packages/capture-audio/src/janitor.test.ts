@@ -24,6 +24,20 @@ test("pruneExpiredRawAudio removes only expired regular files", async () => {
   assert.equal(await readFile(outside, "utf8"), "outside");
 });
 
+test("pruneExpiredRawAudio removes a file whose age exactly equals the retention boundary", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "capture-janitor-"));
+  const raw = path.join(root, "raw");
+  const boundaryFile = path.join(raw, "boundary.wav");
+  await mkdir(raw);
+  await writeFile(boundaryFile, "boundary");
+  // now=2000, retention=1000 -> cutoff=1000; set mtime exactly at the cutoff.
+  await utimes(boundaryFile, new Date(1_000), new Date(1_000));
+
+  const removed = await pruneExpiredRawAudio(raw, 1_000, 2_000);
+
+  assert.deepEqual(removed, [boundaryFile]);
+});
+
 test("pruneExpiredRawAudio rejects a symlinked raw root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "capture-janitor-"));
   const target = path.join(root, "target");
