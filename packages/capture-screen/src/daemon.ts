@@ -59,6 +59,7 @@ function ensureSecureSpoolParent(spoolPath: string): void {
   // On Windows fs mode bits and process.getuid don't carry them, so gate those
   // there while keeping symlink/type validation and secure creation everywhere.
   const posix = process.platform !== "win32";
+  const uid = posix && typeof process.getuid === "function" ? process.getuid() : undefined;
 
   let previous = parent;
   let current = dirname(parent);
@@ -71,6 +72,11 @@ function ensureSecureSpoolParent(spoolPath: string): void {
         const groupOtherWritable = (ancestor.mode & 0o022) !== 0;
         const sticky = (ancestor.mode & 0o1000) !== 0;
         if (groupOtherWritable && !sticky) throw new RangeError("a spool ancestor directory is writable by other users");
+        // A non-root, non-self owner can chmod/replace the dir (or its sticky
+        // children) and swap the spool target, so require root or this user.
+        if (uid !== undefined && ancestor.uid !== 0 && ancestor.uid !== uid) {
+          throw new RangeError("a spool ancestor directory is owned by another user");
+        }
       }
     }
     previous = current;
@@ -86,7 +92,6 @@ function ensureSecureSpoolParent(spoolPath: string): void {
   if (!info.isDirectory()) throw new RangeError("spool parent must be a directory");
   if (posix) {
     if ((info.mode & 0o077) !== 0) throw new RangeError("spool parent directory must be owner-only (0700)");
-    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
     if (uid !== undefined && info.uid !== uid) throw new RangeError("spool parent directory must be owned by the current user");
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -499,5 +499,24 @@ test("snapshots response carries a spool generation that is stable across reopen
     assert.notEqual(await generationOf([snapshot()]), first);
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("daemon rejects a spool under an ancestor owned by another user", {
+  skip: process.platform === "win32" || (process.getuid?.() ?? 0) !== 0 ? "requires root to create an other-owned ancestor" : false,
+}, async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const ancestor = path.join(base, "other-owned");
+  await mkdir(ancestor, { mode: 0o700 });
+  await chown(ancestor, 65534, 65534); // nobody: a non-root, non-self owner
+  const parent = path.join(ancestor, "parent");
+  await mkdir(parent, { mode: 0o700 });
+  try {
+    await assert.rejects(
+      () => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: path.join(parent, "capture.sqlite") }),
+      /owned by another user/,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });

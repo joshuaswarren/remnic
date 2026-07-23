@@ -145,21 +145,20 @@ export async function syncActivitySource(
       cursor,
       signal: options.signal,
     });
-    // Deterministic reset on a source spool rebuild: a page whose generation
-    // differs from the persisted one means the spool was replaced (ids reset),
-    // so the persisted cursor belongs to a prior generation and would skip or
-    // mis-page the new rows. Restart this day once from the beginning under the
-    // new generation. Sources that omit generation keep the legacy behavior.
-    if (page.generation !== undefined && page.generation !== generation) {
-      if (!resetForGeneration && priorGeneration !== null && cursor !== null && page.generation !== priorGeneration) {
-        cursor = null;
-        generation = page.generation;
-        resetForGeneration = true;
-        seenCursors.clear();
-        continue;
-      }
+    // Deterministic reset on a source spool rebuild (or the first upgrade to a
+    // generation-aware source): a page whose generation differs from the one the
+    // persisted cursor was recorded under — the legacy null state included —
+    // means the cursor belongs to a prior/unknown spool and would skip or
+    // mis-page rows. Restart this day once from the beginning under the new
+    // generation. Sources that omit generation keep the legacy behavior.
+    if (!resetForGeneration && page.generation !== undefined && cursor !== null && page.generation !== priorGeneration) {
+      cursor = null;
       generation = page.generation;
+      resetForGeneration = true;
+      seenCursors.clear();
+      continue;
     }
+    if (page.generation !== undefined) generation = page.generation;
     pages += 1;
     fetched += page.snapshots.length;
 

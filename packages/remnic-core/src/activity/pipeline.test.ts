@@ -491,3 +491,32 @@ test("syncActivitySource keeps legacy behavior when the source omits generation"
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("syncActivitySource resets a legacy generation-less cursor when the source becomes generation-aware", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-gen-"));
+  const store = ActivityStore.open(memoryDir);
+  const key = activityCursorKey("workstation-a", "2026-07-22");
+  try {
+    // Legacy sync state: a persisted cursor with no generation recorded.
+    store.setCursor(key, "5");
+    assert.equal(store.getCursorGeneration(key), null);
+
+    const state: GenerationSourceState = { generation: "gen-new", pages: new Map(), cursors: new Map() };
+    const client = generationSource("workstation-a", state);
+    // Following the stale legacy cursor "5" would skip everything; only the
+    // from-start path carries the rebuilt spool's rows.
+    state.pages.set("5", []);
+    state.cursors.set("5", null);
+    state.pages.set(null, [snapshot({ contentHash: "n1" }), snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", contentHash: "n2" })]);
+    state.cursors.set(null, "2");
+    state.pages.set("2", []);
+    state.cursors.set("2", null);
+
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(result.inserted, 2, "the reset ingests the rows the legacy cursor would have skipped");
+    assert.equal(store.getCursorGeneration(key), "gen-new");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
