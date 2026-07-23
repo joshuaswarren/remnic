@@ -34,7 +34,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { CaptureConfigError } from "./errors.js";
-import type { ConversationInput, SegmentInput, Spool } from "./spool.js";
+import type { ConversationInput, SegmentInput, SpeakerInput, Spool } from "./spool.js";
 
 export interface ReplayResult {
   files: number;
@@ -121,12 +121,13 @@ function parseConversation(raw: unknown, where: string): ConversationInput {
   };
 }
 
-function ingestSpeakers(spool: Spool, raw: unknown, where: string): void {
-  if (raw === undefined) return;
+/** Parse + validate a fixture's speakers WITHOUT touching the spool. */
+function parseSpeakers(raw: unknown, where: string): SpeakerInput[] {
+  if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
     throw new CaptureConfigError(`${where}.speakers: expected an array`);
   }
-  raw.forEach((entry, i) => {
+  return raw.map((entry, i) => {
     const obj = asObject(entry, `${where}.speakers[${i}]`);
     if (typeof obj.id !== "string" || obj.id === "") {
       throw new CaptureConfigError(`${where}.speakers[${i}].id: expected a non-empty string`);
@@ -134,14 +135,26 @@ function ingestSpeakers(spool: Spool, raw: unknown, where: string): void {
     if (obj.isSelf !== undefined && typeof obj.isSelf !== "boolean") {
       throw new CaptureConfigError(`${where}.speakers[${i}].isSelf: expected a boolean`);
     }
-    spool.upsertSpeaker({
+    return {
       id: obj.id,
       label: optionalString(obj.label, `${where}.speakers[${i}].label`, null),
       isSelf: obj.isSelf === true,
-    });
+    };
   });
 }
 
+interface ParsedFixture {
+  speakers: SpeakerInput[];
+  conv: ConversationInput;
+}
+
+/**
+ * Ingest a directory of synthetic replay fixtures atomically: EVERY record
+ * (conversation + speakers) is parsed and validated in a first pass, and
+ * nothing is written to the spool until the whole set is known valid. A
+ * later invalid record therefore leaves no earlier mutation (no stray
+ * speaker rows, no half-committed batch).
+ */
 export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
   let entries: string[];
   try {
@@ -152,21 +165,22 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
   if (entries.length === 0) {
     throw new CaptureConfigError(`replay dir ${dir} contains no *.json fixtures`);
   }
-  const result: ReplayResult = { files: 0, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
+
+  // Phase 1 — parse + validate everything; no spool writes.
+  const parsedFixtures: ParsedFixture[] = [];
+  let files = 0;
   for (const name of entries) {
     const filePath = path.join(dir, name);
-    let parsed: unknown;
+    let raw: unknown;
     try {
-      parsed = JSON.parse(readFileSync(filePath, "utf8"));
+      raw = JSON.parse(readFileSync(filePath, "utf8"));
     } catch (err) {
       throw new CaptureConfigError(`replay fixture ${name} is not valid JSON: ${(err as Error).message}`);
     }
-    result.files += 1;
-    const docs = Array.isArray(parsed) ? parsed : [parsed];
+    files += 1;
+    const docs = Array.isArray(raw) ? raw : [raw];
     docs.forEach((doc, i) => {
       const where = `${name}[${i}]`;
-      // Parse (validate) the conversation BEFORE touching the spool, so a
-      // malformed conversation never persists its speaker rows.
       const conv = parseConversation(doc, where);
       if (conv.id === undefined) {
         // Derive the id from conversation CONTENT so identical fixtures stay
@@ -180,12 +194,19 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
         });
         conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
       }
-      ingestSpeakers(spool, asObject(doc, where).speakers, where);
-      const id = spool.insertConversation(conv);
-      result.ids.push(id);
-      result.conversationsIngested += 1;
-      result.segmentsIngested += conv.segments.length;
+      const speakers = parseSpeakers(asObject(doc, where).speakers, where);
+      parsedFixtures.push({ speakers, conv });
     });
+  }
+
+  // Phase 2 — commit; every record above is already validated.
+  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
+  for (const { speakers, conv } of parsedFixtures) {
+    for (const speaker of speakers) spool.upsertSpeaker(speaker);
+    const id = spool.insertConversation(conv);
+    result.ids.push(id);
+    result.conversationsIngested += 1;
+    result.segmentsIngested += conv.segments.length;
   }
   return result;
 }

@@ -168,3 +168,42 @@ test("id-less fixtures derive ids from content: same content collapses, distinct
   assert.equal(spool.stats().conversations, 2);
   spool.close();
 });
+
+test("a late-failing fixture batch leaves zero writes (validate-all-then-commit)", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    // 01 is fully valid, with speakers and a conversation.
+    "01.json": {
+      id: "conv_ok",
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      speakers: [{ id: "spk_1", label: "Alice" }],
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+    // 02 sorts after 01 and is invalid (bad state) -> must abort before ANY write.
+    "02.json": {
+      startedAtUtc: "2026-07-20T16:00:00.000Z",
+      state: "finished",
+      speakers: [{ id: "spk_2" }],
+      segments: [],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, dir), CaptureConfigError);
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  assert.deepEqual(spool.listSpeakers(), []); // earlier file's valid speakers were not persisted
+  spool.close();
+});
+
+test("an invalid speaker later in the list persists no speakers", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "x.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      speakers: [{ id: "spk_1", label: "Alice" }, { id: "" }], // second is invalid
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, dir), CaptureConfigError);
+  assert.deepEqual(spool.listSpeakers(), []);
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});
