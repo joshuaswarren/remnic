@@ -219,10 +219,19 @@ export class MaintenanceScheduler {
         // freshly written digest is actually searchable. Reuses the core search
         // seam wearables use; no OpenClaw/host adapter.
         reindexSearch: (signal) => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection, signal),
+        // A forced reindex can still fail (QMD down/backoff); a later tick skips
+        // afterWrites once the digest is unchanged, so queue a QMD maintenance
+        // pass (debounced/singleflighted) to retry indexing the stale digest.
+        onRun: (summary) => {
+          if (summary.reindexErrorCount > 0) {
+            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing QMD maintenance retry`);
+            this.requestQmdMaintenanceForTool("activity-reindex-retry");
+          }
+        },
       });
       this.activitySyncScheduler.start();
       // Close the race where abort fires between the guard above and start().
-      if (signal.aborted) void this.activitySyncScheduler.stop();
+      if (signal.aborted) await this.activitySyncScheduler.stop();
     } catch (err) {
       log.debug(`activity sync scheduler start failed (non-fatal): ${err}`);
     }
