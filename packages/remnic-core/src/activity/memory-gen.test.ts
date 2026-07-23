@@ -80,6 +80,11 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice Smith: I decided to leave." }), false);
   // Multi-word document labels stay eligible via the first-token check.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Action items: I will refactor the parser." }), true);
+  // Verb attribution only fires at the leading position: a first-person decision
+  // that mentions a named person's past action in passing stays eligible, while a
+  // leading "Name wrote/said" header still rejects.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "I approved the plan Bob wrote last week." }), true);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Bob wrote: I decided to leave." }), false);
 });
 
 test("activity smart mode rejects attributed third-party first-person content before judging", async () => {

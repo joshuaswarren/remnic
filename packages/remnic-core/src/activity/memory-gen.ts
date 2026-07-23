@@ -25,14 +25,14 @@ const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
  * case-insensitively, with the speaker slot excluding bare first-person
  * pronouns (word-anchored) so "We decided" stays eligible while names that
  * merely begin with a pronoun ("Wendy", "Ian") do not:
- *   - verb attribution:  "Alice wrote: I decided ...", "ALICE Wrote ..."
+ *   - verb attribution:  "Alice wrote: I decided ..." (leading speaker + verb)
  *   - leading label:     "Alice: I decided ..." (chat/comment sender headers)
  * Common document labels ("Note:", "TODO:") are not senders and stay eligible.
  */
 const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|my|our)\b)[A-Za-z][\w.'’-]*`;
 const SPEECH_VERB =
   String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
-const VERB_ATTRIBUTION = new RegExp(String.raw`\b${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
+const VERB_ATTRIBUTION = new RegExp(String.raw`^\s*${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
 const LABEL_ATTRIBUTION = new RegExp(
   String.raw`^\s*(${ATTRIBUTION_SPEAKER}(?:\s+[A-Za-z][\w.'’-]*){0,3})\s*:\s`,
   "i",
