@@ -1,5 +1,5 @@
-import { createWriteStream, statSync } from "node:fs";
-import { link, mkdir, rm } from "node:fs/promises";
+import { createWriteStream, lstatSync, statSync } from "node:fs";
+import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -40,16 +40,27 @@ function responseBodyToReadable(body: ReadableStream<Uint8Array>): Readable {
 }
 
 function existingFile(destination: string): boolean {
+  let entry;
   try {
-    const entry = statSync(destination);
-    if (!entry.isFile()) {
-      throw new CaptureConfigError(`Whisper model path exists but is not a regular file: ${destination}`);
-    }
-    return true;
+    entry = statSync(destination);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // statSync follows symlinks, so ENOENT is either no directory entry at
+    // all or a dangling symlink. lstatSync tells them apart: if it succeeds,
+    // a broken symlink occupies the path and must be cleared, not silently
+    // treated as absent (a later rename/link would fail on it).
+    try {
+      lstatSync(destination);
+    } catch (linkError) {
+      if ((linkError as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw linkError;
+    }
+    throw new CaptureConfigError(`Whisper model path is a broken symlink: ${destination}; remove it and retry`);
   }
+  if (!entry.isFile()) {
+    throw new CaptureConfigError(`Whisper model path exists but is not a regular file: ${destination}`);
+  }
+  return true;
 }
 
 export function whisperModelUrl(model: string): string {
@@ -69,7 +80,14 @@ export async function downloadWhisperModel(input: ModelDownloadInput): Promise<M
   const destination = path.join(input.directory, filename);
   if (existingFile(destination)) return { path: destination, downloaded: false };
 
-  const response = await (input.fetch ?? ((value) => fetch(value)))(url);
+  let response;
+  try {
+    response = await (input.fetch ?? ((value) => fetch(value)))(url);
+  } catch {
+    throw new CaptureConfigError(
+      `failed to download ${input.model}: the network request to Hugging Face failed (check connectivity/proxy/DNS)`,
+    );
+  }
   if (!response.ok || !response.body) {
     throw new CaptureConfigError(`failed to download ${input.model}: HTTP ${response.status}`);
   }
@@ -77,14 +95,12 @@ export async function downloadWhisperModel(input: ModelDownloadInput): Promise<M
   const temporary = path.join(input.directory, `.${filename}.${process.pid}.${crypto.randomUUID()}.tmp`);
   try {
     await pipeline(responseBodyToReadable(response.body), createWriteStream(temporary, { flags: "wx", mode: 0o600 }));
-    await link(temporary, destination);
-    await rm(temporary);
+    // Atomic same-directory rename: works on filesystems without hard-link
+    // support (FAT32/exFAT, some network mounts), unlike link()+rm().
+    await rename(temporary, destination);
     return { path: destination, downloaded: true };
   } catch (error) {
     await rm(temporary, { force: true });
-    if ((error as NodeJS.ErrnoException).code === "EEXIST" && existingFile(destination)) {
-      return { path: destination, downloaded: false };
-    }
     throw error;
   }
 }

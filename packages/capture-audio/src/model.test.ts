@@ -52,6 +52,51 @@ test("downloadWhisperModel rejects failed responses without writing a model", as
   }
 });
 
+test("downloadWhisperModel wraps a fetch rejection in a config error", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "capture-model-"));
+  try {
+    await assert.rejects(
+      downloadWhisperModel({
+        model: "base",
+        directory,
+        fetch: async () => {
+          throw new TypeError("fetch failed");
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof CaptureConfigError);
+        assert.match(error.message, /network request to Hugging Face failed/);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("downloadWhisperModel rejects a dangling symlink destination before fetching", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "capture-model-"));
+  try {
+    await symlink(path.join(directory, "missing-target.bin"), path.join(directory, "ggml-small.bin"));
+    let fetched = false;
+    await assert.rejects(
+      downloadWhisperModel({
+        model: "small",
+        directory,
+        fetch: async () => {
+          fetched = true;
+          return new Response("bytes");
+        },
+      }),
+      /broken symlink/,
+    );
+    assert.equal(fetched, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("downloadWhisperModel rejects an existing non-file destination", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "capture-model-"));
   try {
