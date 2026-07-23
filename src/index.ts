@@ -74,6 +74,16 @@ import {
   REMNIC_OPENCLAW_PLUGIN_ID,
   resolveRemnicOpenClawPluginEntry,
 } from "../packages/plugin-openclaw/src/plugin-id.js";
+import {
+  checkDaemonHealthSync,
+  loadDaemonAuthToken,
+  resolveBridgeMode,
+} from "../packages/plugin-openclaw/src/bridge.js";
+import { registerDelegateRuntime } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import {
+  extractLastTurn,
+  extractTextContent,
+} from "../packages/plugin-openclaw/src/transcript-turns.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import { appendRecallAuditEntry, pruneRecallAuditEntries } from "@remnic/core/recall-audit";
 import { createActiveRecallEngine } from "@remnic/core/active-recall";
@@ -1396,6 +1406,45 @@ const pluginDefinition = {
     if (passiveMode) {
       log.info(
         `[remnic] memory slot not assigned to ${serviceId}; running passively`,
+      );
+    }
+
+    // Bridge mode (issue #2120): in delegate mode a running standalone daemon
+    // owns memory; back the core loop with its HTTP API and skip the embedded
+    // orchestrator entirely. Explicit-only (env REMNIC_BRIDGE_MODE or config
+    // bridgeMode) — never auto-detected, so existing co-located deployments
+    // keep their embedded behavior until the operator opts in.
+    const bridge = resolveBridgeMode(cfg.bridgeMode);
+    if (bridge.mode === "delegate") {
+      // register() is synchronous, so the preflight uses the bridge's
+      // worker-backed sync health check (the same probe detectBridgeMode uses).
+      const daemonHealthy = checkDaemonHealthSync(
+        bridge.daemonHost,
+        bridge.daemonPort,
+      );
+      if (daemonHealthy) {
+        registerDelegateRuntime(api, {
+          serviceId,
+          target: {
+            host: bridge.daemonHost,
+            port: bridge.daemonPort,
+            authToken: loadDaemonAuthToken(),
+          },
+          namespace: "",
+          allowPromptInjection:
+            coerceRawConfigBoolean(
+              readPluginHooksPolicy(api.config, serviceId)?.allowPromptInjection,
+            ) !== false,
+          passive: passiveMode,
+          recallTimeoutMs: 25_000,
+          observeTimeoutMs: 120_000,
+          flushTimeoutMs: 55_000,
+        });
+        return;
+      }
+      log.error(
+        `bridge mode delegate requested but no healthy daemon at ` +
+          `${bridge.daemonHost}:${bridge.daemonPort} — falling back to the embedded runtime`,
       );
     }
     const channelEnvelopeCleaning = resolveChannelEnvelopePrefixes(cfg);
@@ -5972,36 +6021,6 @@ function resolveOpenClawFlushPlanProcessingEnabledFromConfig(
   // persisted file-level `false`.
   if (runtimeValue === false || fileValue === false) return false;
   return fileValue ?? runtimeValue ?? true;
-}
-
-function extractLastTurn(
-  messages: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  let lastUserIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "user") {
-      lastUserIdx = i;
-      break;
-    }
-  }
-  return lastUserIdx >= 0 ? messages.slice(lastUserIdx) : messages.slice(-2);
-}
-
-function extractTextContent(msg: Record<string, unknown>): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (Array.isArray(msg.content)) {
-    return (msg.content as Array<Record<string, unknown>>)
-      .filter(
-        (block) =>
-          typeof block === "object" &&
-          block !== null &&
-          block.type === "text" &&
-          typeof block.text === "string",
-      )
-      .map((block) => block.text as string)
-      .join("\n");
-  }
-  return "";
 }
 
 type OpenClawTranscriptMetadata = NonNullable<

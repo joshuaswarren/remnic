@@ -6105,6 +6105,15 @@
           7200000
         ],
         "description": "Per-fingerprint exponential extraction backoff schedule (ms), indexed by attempt."
+      },
+      "bridgeMode": {
+        "type": "string",
+        "enum": [
+          "embedded",
+          "delegate"
+        ],
+        "default": "embedded",
+        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator. Explicit-only; REMNIC_BRIDGE_MODE env overrides."
       }
     }
   },

@@ -837,6 +837,8 @@ export function parseConfig(
         ? (rawSlotBehavior.onSlotMismatch as SlotMismatchMode)
         : "error",
   };
+  const bridgeMode: "embedded" | "delegate" =
+    cfg.bridgeMode === "delegate" ? "delegate" : "embedded";
   const rawDreaming =
     cfg.dreaming && typeof cfg.dreaming === "object" && !Array.isArray(cfg.dreaming)
       ? (cfg.dreaming as Record<string, unknown>)
@@ -2347,6 +2349,7 @@ export function parseConfig(
     codingMode,
     heartbeat,
     slotBehavior,
+    bridgeMode,
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),

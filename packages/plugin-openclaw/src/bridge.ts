@@ -147,7 +147,7 @@ function coerceDaemonPort(value: unknown): number | undefined {
     : undefined;
 }
 
-function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
+export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
 
   let worker: Worker | undefined;
@@ -161,7 +161,7 @@ function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEAL
         host,
         port,
         path: LEGACY_HEALTH_PATH,
-        token: loadAnyToken(),
+        token: loadDaemonAuthToken(),
         timeoutMs,
         state,
       },
@@ -258,11 +258,38 @@ export function detectBridgeMode(): BridgeConfig {
     daemonPort,
   };
 }
+/**
+ * Resolve the bridge mode for the plugin runtime (issue #2120).
+ *
+ * Unlike `detectBridgeMode`, this resolver is EXPLICIT-ONLY: delegate mode
+ * activates solely via `REMNIC_BRIDGE_MODE=delegate` (or the legacy env) or
+ * the plugin config's `bridgeMode: "delegate"`. The auto-detection branch of
+ * `detectBridgeMode` is intentionally not consulted — auto-flipping existing
+ * co-located deployments (embedded plugin beside a same-host daemon) to
+ * delegate on a restart would be a silent behavior change. Revisit once
+ * delegate mode has production mileage.
+ */
+export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
+  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
+  const mode: BridgeMode =
+    envMode === "delegate" || envMode === "embedded"
+      ? envMode
+      : configBridgeMode === "delegate"
+        ? "delegate"
+        : "embedded";
+  return {
+    mode,
+    daemonHost: readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST,
+    daemonPort: readDaemonPort(),
+  };
+}
 
 /**
- * Load the first valid auth token for health check.
+ * Load the first valid daemon auth token from the standard token stores,
+ * daemon config, or environment. Shared by the health preflight and the
+ * delegate runtime (issue #2120).
  */
-function loadAnyToken(): string {
+export function loadDaemonAuthToken(): string {
   const tokenPaths = [
     path.join(resolveHomeDir(), ".remnic", "tokens.json"),
     path.join(resolveHomeDir(), ".engram", "tokens.json"),
@@ -313,7 +340,7 @@ function loadAnyToken(): string {
 export async function checkDaemonHealth(host: string, port: number): Promise<boolean> {
   try {
     const { request } = await import("node:http");
-    const token = loadAnyToken();
+    const token = loadDaemonAuthToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 

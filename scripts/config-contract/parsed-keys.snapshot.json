@@ -78,6 +78,7 @@
     "boxRecallDays",
     "boxTimeGapMs",
     "boxTopicShiftThreshold",
+    "bridgeMode",
     "briefing",
     "briefing.calendarSource",
     "briefing.defaultFormat",
