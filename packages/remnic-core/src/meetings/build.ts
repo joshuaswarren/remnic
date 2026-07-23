@@ -101,6 +101,12 @@ export interface MeetingsDayBuildSummary {
   skipped: number;
   /** Ids of stale same-day records deleted because they no longer detect. */
   removed: string[];
+  /**
+   * Set when the optional reindex hook rejected AFTER records were already
+   * persisted. The store mutation still succeeded — the build is reported as
+   * successful with this warning, and the next scheduled index catches up.
+   */
+  reindexWarning?: string;
 }
 
 /** Optional side effects the builder fires after a day build. */
@@ -132,6 +138,15 @@ export class MeetingsBuilder {
       return { date, enabled: false, meetings: [], built: 0, skipped: 0, removed: [] };
     }
     const data = await this.opts.source.loadDayData(date);
+    // The source contract is loadDayData(date) → THAT day's signals. If the
+    // returned detection day disagrees, records would be written under
+    // data.detection.date while listing/adoption/reconciliation run on `date`,
+    // orphaning records and mis-keying the summary — reject the desync loudly.
+    if (data.detection.date !== date) {
+      throw new RangeError(
+        `meetings: day source returned detection.date "${data.detection.date}" for requested day "${date}".`,
+      );
+    }
     // Existing records for the day, so an overlapping shifted-start resync keeps
     // its original id instead of being deleted + re-created under a new one.
     const existing = await this.opts.store.listMeetingSummaries(date);
@@ -175,7 +190,16 @@ export class MeetingsBuilder {
     }
     const summary: MeetingsDayBuildSummary = { date, enabled: true, meetings, built, skipped, removed };
     if (built > 0 || removed.length > 0) {
-      await this.opts.hooks?.reindex?.(summary);
+      // The store mutation already succeeded; a reindex-hook rejection must not
+      // fail the whole build. Surface it as a warning so the caller can log it,
+      // and let the next scheduled index update catch up.
+      try {
+        await this.opts.hooks?.reindex?.(summary);
+      } catch (err) {
+        summary.reindexWarning = `reindex hook failed after records were persisted: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
     }
     return summary;
   }

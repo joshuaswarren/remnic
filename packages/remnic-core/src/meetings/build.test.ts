@@ -288,3 +288,32 @@ test("reindex hook fires only when records change", async () => {
   assert.equal(second.removed.length, 0);
   assert.equal(calls.length, 1, "reindex does not fire when nothing changed");
 });
+
+test("a rejecting reindex hook is isolated — the build still succeeds with a warning", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const data: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const builder = new MeetingsBuilder({
+    source: fixedSource(data),
+    store,
+    config: config(),
+    hooks: { reindex: () => { throw new Error("index unavailable"); } },
+  });
+  const summary = await builder.buildDay(DATE);
+  assert.equal(summary.built, 1, "records persist even though reindex threw");
+  assert.match(summary.reindexWarning ?? "", /index unavailable/);
+  // The record was still written to the store.
+  assert.equal((await store.listMeetingIds(DATE)).length, 1);
+});
+
+test("buildDay rejects a day source whose detection.date disagrees with the requested day", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const wrongDay: MeetingDayData = {
+    detection: { date: "2026-03-11", appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [],
+  };
+  const builder = new MeetingsBuilder({ source: fixedSource(wrongDay), store, config: config() });
+  await assert.rejects(() => builder.buildDay(DATE), /detection\.date "2026-03-11" for requested day "2026-03-10"/);
+});
