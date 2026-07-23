@@ -310,7 +310,7 @@ lands; the block below is the shape it will take:
         "enabled": false,                       // charter: default-off + double opt-in
         "baseUrl": "http://127.0.0.1:4340",     // the local capture-audio daemon
         "apiKey": "REPLACE_WITH_TOKEN",         // parsed credential slot; else REMNIC_CAPTURE_AUDIO_TOKEN or the local token file
-        "memoryMode": "smart",
+        "memoryMode": "off",                    // transcripts only; smart memory is a separate opt-in (charter: independent switches)
         "sourceTrust": 0.85
       }
     }
