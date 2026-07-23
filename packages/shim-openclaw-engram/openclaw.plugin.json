@@ -5987,6 +5987,93 @@
           }
         }
       },
+      "meetings": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Retrospective meeting intelligence (issue #1900): detect + fuse meetings from ingested audio + screen activity. Disabled by default. See docs/config-reference.md.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate for the meetings subsystem."
+          },
+          "appPatterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Additional meeting-app match patterns, additive over the shipped defaults (Zoom, Teams, Google Meet, Webex, Slack huddles, FaceTime)."
+          },
+          "minOverlapMinutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1440,
+            "default": 2,
+            "description": "Minimum app-span/audio-window overlap (minutes) to pair them into a meeting."
+          },
+          "audioOnlyMinMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "default": 15,
+            "description": "Audio-only fallback: minimum conversation length (minutes) with >= 2 non-wearer speakers to detect a meeting without an app span."
+          },
+          "mergeGapMinutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1440,
+            "default": 2,
+            "description": "Merge adjacent same-app candidates within this gap (minutes) — rejoin-after-drop."
+          },
+          "contextDwellSeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400,
+            "default": 20,
+            "description": "Minimum other-app foreground dwell (seconds) to include a span in the meeting's screen-context timeline."
+          },
+          "maxContextChars": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000,
+            "default": 4000,
+            "description": "Cap on total deduped screen-context excerpt characters."
+          },
+          "summaryMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "review",
+              "smart"
+            ],
+            "default": "smart",
+            "description": "LLM meeting-summary mode: off (episode only), review (queue all candidates), smart (trust-gated)."
+          },
+          "sourceTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.85,
+            "description": "Provenance trust prior for meeting-derived facts (0..1)."
+          },
+          "autoApproveTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.7,
+            "description": "Trust at/above which a smart-mode meeting fact is auto-approved to active."
+          },
+          "reviewTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.45,
+            "description": "Trust at/above which a smart-mode meeting fact is queued for review."
+          }
+        }
+      },
       "workIndexAutoRebuildDebounceMs": {
         "type": "number",
         "default": 1000,
