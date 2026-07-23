@@ -13,6 +13,9 @@ test("whisperModelUrl maps supported model identifiers to official model files",
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
   );
   assert.throws(() => whisperModelUrl("unknown"), CaptureConfigError);
+  for (const key of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+    assert.throws(() => whisperModelUrl(key), CaptureConfigError, `prototype key ${key} must be rejected`);
+  }
 });
 
 test("downloadWhisperModel streams to an atomic destination", async () => {

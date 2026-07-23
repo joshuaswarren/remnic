@@ -53,10 +53,10 @@ function existingFile(destination: string): boolean {
 }
 
 export function whisperModelUrl(model: string): string {
-  const file = MODEL_FILES[model];
-  if (!file) {
+  if (!Object.hasOwn(MODEL_FILES, model)) {
     throw new CaptureConfigError(`unknown Whisper model '${model}'; expected one of ${Object.keys(MODEL_FILES).join(", ")}`);
   }
+  const file = MODEL_FILES[model];
   return `${MODEL_REPOSITORY}/${file}`;
 }
 
