@@ -685,19 +685,28 @@ export class RecallSearchPipelineCoordinator {
     if (cappedLimit === 0) return [];
     if (queryAwarePrefilter?.candidatePaths?.size === 0) return [];
 
+    const candidatePaths = queryAwarePrefilter?.candidatePaths;
     const scopedSeedResults = (
-      queryAwarePrefilter?.candidatePaths?.size
+      candidatePaths?.size
         ? await this.deps.searchScopedMemoryCandidates(
-            queryAwarePrefilter.candidatePaths,
+            candidatePaths,
             prompt,
-            cappedLimit,
+            // Overfetch the FULL scoped candidate set BEFORE the generic-recall
+            // exclusion below. Capping to `cappedLimit` first lets excluded paths
+            // (artifacts, activity digests, meeting records) consume the caller's
+            // budget and drop legitimate hits with no refill — e.g. a prefilter of
+            // [meetingRecord, facts/a.md] at limit 1 would return nothing. The
+            // candidate set is an already-bounded prefilter, so its size is the
+            // natural ceiling; the post-exclusion cap is applied below.
+            candidatePaths.size,
             { allowArchived: true },
           )
         : []
     ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir));
-    // Drop non-recallable seed paths (artifacts, activity digests, meeting records)
-    // BEFORE the cap so they never consume a result slot — and so EVERY
-    // early-return / direct-caller path below returns already-filtered seeds.
+    // Non-recallable seed paths (artifacts, activity digests, meeting records) are
+    // excluded above AFTER an unconstrained candidate fetch, so the cap here counts
+    // only recallable seeds — and EVERY early-return / direct-caller path below
+    // returns already-filtered, budget-honoring seeds.
     if (scopedSeedResults.length >= cappedLimit) {
       return scopedSeedResults.slice(0, cappedLimit);
     }

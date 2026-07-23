@@ -90,13 +90,27 @@ export interface MeetingMemoryOutcome {
 
 /**
  * Seam the deterministic builder depends on. Invoked once per day build after
- * the record-store writes, with the day's built records and the ids of stale
- * records the rebuild removed. The implementation writes/retires memories and
- * reports the counts + reindex signal the builder folds into its day summary.
+ * the record-store writes with, for the day:
+ *   - `built`       — every record composed this build (new, updated, unchanged).
+ *   - `removedIds`  — stale ids the rebuild reconciled away (retract memories).
+ *   - `unchangedIds`— built ids whose stored `contentHash` was IDENTICAL this
+ *                     build (nothing rewritten). The generator SKIPS all
+ *                     episode/summary/fact work for these: an idempotent rebuild
+ *                     must not re-invoke the LLM or duplicate memories.
+ *   - `updatedIds`  — built ids that existed before AND were rewritten this build
+ *                     (same id, changed `contentHash`). The generator REFRESHES
+ *                     them: retract the stale episode/summary memories for that
+ *                     source, then regenerate from the new record.
+ * Ids not in `unchangedIds` or `updatedIds` are newly built — generated fresh
+ * with no retract. The three id sets are disjoint subsets of `built`. The
+ * implementation reports the counts + reindex signal the builder folds into its
+ * day summary.
  */
 export interface MeetingMemoryGenerator {
   onRecordsBuilt(input: {
     built: readonly MeetingRecord[];
     removedIds: readonly string[];
+    unchangedIds: readonly string[];
+    updatedIds: readonly string[];
   }): Promise<MeetingMemoryOutcome>;
 }

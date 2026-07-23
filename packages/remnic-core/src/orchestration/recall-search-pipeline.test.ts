@@ -135,3 +135,26 @@ test("archive fallback applies the cap to FILTERED seeds, not raw non-recallable
   const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 1, prefilter([MEETING_RECORD]));
   assert.deepEqual(out.map((r) => r.path), []);
 });
+
+test("finding 1 — overfetches scoped seeds before exclusion so a capped fetch still yields recallable hits", async () => {
+  // The scoped candidate order puts the NON-recallable meeting record FIRST;
+  // capping the scoped fetch to the caller's limit (1) BEFORE the generic-recall
+  // exclusion would return only the meeting record, which is then filtered out —
+  // dropping facts/a.md with no refill. Overfetching the full candidate set first
+  // and excluding afterward must still surface the recallable hit at the cap.
+  const coordinator = fallbackCoordinator(
+    [result("default", MEETING_RECORD), result("default", "facts/a.md")],
+    [],
+  );
+  const out = await coordinator.searchLongTermArchiveFallback(
+    "quarterly",
+    ["default"],
+    1,
+    prefilter([MEETING_RECORD, "facts/a.md"]),
+  );
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"],
+    "an excluded-first seed must not starve the result of a recallable hit at the cap",
+  );
+});

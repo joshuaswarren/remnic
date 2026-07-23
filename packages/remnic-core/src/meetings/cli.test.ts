@@ -181,7 +181,7 @@ test("show rejects a syntactically valid but impossible calendar id via Meetings
   assert.match(result.err, /not a real calendar date/);
 });
 
-test("build text output surfaces a reindex-hook warning", async () => {
+test("build text output surfaces a SANITIZED reindex-hook warning (no raw error text)", async () => {
   const source: MeetingsDaySource = { loadDayData: () => dayData() };
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const deps: MeetingsCliDeps = {
@@ -190,24 +190,38 @@ test("build text output surfaces a reindex-hook warning", async () => {
       source,
       store,
       config: config(),
-      hooks: { reindex: () => { throw new Error("index offline"); } },
+      hooks: { reindex: () => { throw new Error("index offline at 10.0.0.5:9200"); } },
     }),
     config: config(),
   };
   const result = await run(deps, ["build", "--date", DATE]);
   assert.equal(result.code, 0, "reindex failure must not fail the build");
-  assert.match(result.out, /warning:.*index offline/);
+  assert.match(result.out, /warning: reindex hook failed after records were persisted/);
+  assert.doesNotMatch(result.out, /index offline|10\.0\.0\.5|9200/, "raw internal reindex error must not leak to CLI stdout");
 });
 
-test("finding 10 — list/show expose nothing when meetings.enabled is false", async () => {
-  // Build a real record with the subsystem enabled, then flip config off and
-  // route list/show through the disabled config: records must not be exposed.
+test("findings 7+8 — list/show expose a record when enabled, nothing when meetings.enabled is false", async () => {
+  // Build a real record with the subsystem enabled, then prove EACH read surface
+  // surfaces that record when enabled (so the disabled negatives below are not
+  // vacuous), then flip config off and confirm the same surfaces expose nothing.
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const source: MeetingsDaySource = { loadDayData: () => dayData() };
   const enabled: MeetingsCliDeps = { store, builder: new MeetingsBuilder({ source, store, config: config() }), config: config() };
   await run(enabled, ["build", "--date", DATE]);
   const id = (await store.listMeetingIds(DATE))[0]!;
 
+  // Positive baseline: enabled reads DO surface the record on every path.
+  const listAllEnabled = await run(enabled, ["list"]);
+  assert.match(listAllEnabled.out, new RegExp(id), "enabled list surfaces the stored record");
+  const listDayEnabled = await run(enabled, ["list", "--date", DATE]);
+  assert.match(listDayEnabled.out, new RegExp(id), "enabled date-scoped list surfaces the stored record");
+  const listJsonEnabled = await run(enabled, ["list", "--date", DATE, "--json"]);
+  assert.match(listJsonEnabled.out, new RegExp(id), "enabled date-scoped json list surfaces the stored record");
+  const shownEnabled = await run(enabled, ["show", id]);
+  assert.match(shownEnabled.out, /kind: meeting/, "enabled show prints the record");
+  assert.match(shownEnabled.out, new RegExp(id), "enabled show prints the requested record's id");
+
+  // Now the same surfaces with the subsystem OFF must expose nothing.
   const disabled: MeetingsCliDeps = {
     store,
     builder: new MeetingsBuilder({ source, store, config: config({ enabled: false }) }),
@@ -219,13 +233,15 @@ test("finding 10 — list/show expose nothing when meetings.enabled is false", a
   assert.match(listAll.out, /meetings disabled/);
 
   const listDay = await run(disabled, ["list", "--date", DATE]);
-  assert.doesNotMatch(listDay.out, new RegExp(id));
+  assert.equal(listDay.code, 0);
+  assert.doesNotMatch(listDay.out, new RegExp(id), "disabled date-scoped list must not expose the record it surfaces when enabled");
 
   const listJson = await run(disabled, ["list", "--date", DATE, "--json"]);
   assert.equal(listJson.out.trim(), "[]", "disabled json list exposes nothing");
 
   const shown = await run(disabled, ["show", id]);
   assert.equal(shown.code, 0);
-  assert.doesNotMatch(shown.out, /kind: meeting/, "disabled show must not print the record");
+  assert.doesNotMatch(shown.out, /kind: meeting/, "disabled show must not print the record it prints when enabled");
+  assert.doesNotMatch(shown.out, new RegExp(id), "disabled show must not echo the record id");
   assert.match(shown.out, /meetings disabled/);
 });
