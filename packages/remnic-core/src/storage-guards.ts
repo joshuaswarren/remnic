@@ -18,13 +18,30 @@ export function assertMemoryFrontmatterId(
   }
 }
 
-export function warnProjectionFallback(memoryDir: string, consumer: string): null {
+export function warnProjectionFallback(
+  memoryDir: string,
+  consumer: string,
+  // Lazy so the (potentially I/O-bound) lag computation runs only when this
+  // call actually logs, not on every rate-limited-suppressed fallback (#2119).
+  detail?: () => string | undefined,
+): null {
   const key = `${memoryDir}\0${consumer}`;
   const now = Date.now();
   const warnedAt = projectionFallbackWarnedAt.get(key) ?? 0;
   if (now - warnedAt >= PROJECTION_FALLBACK_WARN_INTERVAL_MS) {
     projectionFallbackWarnedAt.set(key, now);
-    log.warn(`storage.${consumer}: memory projection absent or empty; falling back to full corpus`);
+    const suffix = detail?.();
+    log.warn(
+      `storage.${consumer}: memory projection absent or empty; falling back to full corpus`
+      + (suffix ? ` (${suffix})` : ""),
+    );
   }
   return null;
+}
+
+/** @internal Test seam (#2119): clear the fallback-warn rate-limit dedup map so
+ *  a focused test can prove the once-per-interval spam suppression from a clean
+ *  slate regardless of prior tests in the same process. */
+export function __resetProjectionFallbackWarnSuppressionForTest(): void {
+  projectionFallbackWarnedAt.clear();
 }

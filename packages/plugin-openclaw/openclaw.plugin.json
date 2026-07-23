@@ -3948,6 +3948,17 @@
         "default": "",
         "description": "Directory path for storing profiling trace files. Defaults to <memoryDir>/profiling if empty."
       },
+      "projectionRebuildEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the maintenance-scheduled rebuild of state/memory-projection.sqlite (issue #2119). The projection is otherwise rebuild-only (manual CLI / tests), so it goes stale as the lifecycle ledger grows and timeline/browse consumers silently fall back to full-corpus scans. Default true; set false to disable (operators can still cron the CLI rebuild)."
+      },
+      "projectionRebuildIntervalMs": {
+        "type": "number",
+        "minimum": 60000,
+        "default": 21600000,
+        "description": "Minimum interval between scheduled memory-projection rebuilds (issue #2119). A rebuild is skipped when the projection's rebuiltAt meta is younger than this. Floored at 60s. Default 6h."
+      },
       "promotionByOutcomeEnabled": {
         "type": "boolean",
         "default": false,

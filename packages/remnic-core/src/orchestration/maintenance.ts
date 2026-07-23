@@ -51,6 +51,8 @@ import {
   graphEdgeDecayCadenceToCronExpr,
 } from "../maintenance/memory-governance-cron.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
+import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
+import { readProjectionRebuiltAt } from "../memory-projection-store.js";
 import {
   drainPendingLifecycleLedgerIfAny,
   pendingLifecycleLedgerDir,
@@ -133,6 +135,10 @@ export class MaintenanceScheduler {
   // the bounding + post-write verification deterministically without a 400MB
   // fixture.
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
+
+  // ── Memory-projection scheduled-rebuild state (issue #2119) ──
+  private projectionRebuildInFlight = false;
+  private lastProjectionRebuildAtMs = 0;
 
   // ── Activity (screen-capture) sync scheduler (issue #1900) ──
   // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
@@ -499,6 +505,15 @@ export class MaintenanceScheduler {
     // still bounds the lifecycle ledger.
     void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
       log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
+    );
+    // Memory-projection scheduled rebuild (#2119): the projection is otherwise
+    // rebuild-only (manual CLI / tests), so it goes stale as the lifecycle
+    // ledger grows and timeline/browse consumers silently fall back to
+    // full-corpus scans. Fire it here alongside compaction — on every
+    // maintenance request, QMD or not — interval-throttled, single-flighted,
+    // never awaited, never throws.
+    void this.maybeRebuildMemoryProjection().catch((err) =>
+      log.debug(`memory projection scheduled rebuild check failed (non-fatal): ${err}`),
     );
   }
 
@@ -1126,6 +1141,70 @@ export class MaintenanceScheduler {
         `lifecycle ledger auto-compaction failed (non-fatal) for ${target.memoryDir}: ${err}`,
       );
       return "failed";
+    }
+  }
+
+  /**
+   * Interval-throttled, single-flighted rebuild of the root memory projection
+   * (`state/memory-projection.sqlite`) — issue #2119. `projectionRebuildEnabled`
+   * gates it (default true); `projectionRebuildIntervalMs` is the cadence.
+   *
+   * Skipped when the projection was rebuilt within the interval. The freshness
+   * check reads the on-disk `rebuiltAt` meta (not just an in-process timestamp)
+   * so a daemon restart or an operator's cron `remnic rebuild-memory-projection`
+   * both suppress a redundant rebuild. On a real rebuild it logs the lag it just
+   * cured (age of the projection before the rebuild) plus the fresh row counts,
+   * so operators can see the projection was drifting. Never awaited by callers;
+   * failures are non-fatal and leave the throttle un-advanced to retry.
+   *
+   * Scope: the root memoryDir projection — the one `getMemoryTimeline` /
+   * browse / current-state serve from `baseDir`. Per-namespace projections are
+   * not yet scheduled here (they are still served by their own rebuild paths);
+   * the fallback WARN surfaces staleness for any namespace that lags.
+   */
+  private async maybeRebuildMemoryProjection(): Promise<void> {
+    if (!this.deps.config.projectionRebuildEnabled) return;
+    if (this.projectionRebuildInFlight) return;
+    const intervalMs = this.deps.config.projectionRebuildIntervalMs;
+    const now = Date.now();
+    if (now - this.lastProjectionRebuildAtMs < intervalMs) return;
+
+    const rootStorage = this.deps.getStorage?.();
+    const memoryDir = rootStorage ? rootStorage.dir : this.deps.config.memoryDir;
+
+    // On-disk freshness check: survives restarts and cross-process CLI rebuilds.
+    const rebuiltAt = readProjectionRebuiltAt(memoryDir);
+    const rebuiltAtMs = rebuiltAt ? Date.parse(rebuiltAt) : NaN;
+    if (Number.isFinite(rebuiltAtMs) && now - rebuiltAtMs < intervalMs) {
+      // Fresh already — adopt its timestamp so the next pass short-circuits on
+      // the cheap in-process guard without re-opening the projection each time.
+      this.lastProjectionRebuildAtMs = rebuiltAtMs;
+      return;
+    }
+
+    this.projectionRebuildInFlight = true;
+    try {
+      const result = await rebuildMemoryProjection({
+        memoryDir,
+        defaultNamespace: this.deps.config.defaultNamespace,
+        dryRun: false,
+        now: new Date(now),
+      });
+      this.lastProjectionRebuildAtMs = Date.now();
+      const lag = Number.isFinite(rebuiltAtMs)
+        ? `${Math.max(0, Math.round((now - rebuiltAtMs) / 60_000))}m stale`
+        : "never previously built";
+      log.info(
+        `memory projection rebuilt (scheduled) for ${memoryDir}: was ${lag}; `
+        + `${result.currentRows} current, ${result.timelineRows} timeline, `
+        + `${result.entityMentionRows} entity-mention rows`,
+      );
+    } catch (err) {
+      // Non-fatal: leave the throttle un-advanced so the next maintenance pass
+      // retries rather than declaring a stale projection cured.
+      log.warn(`memory projection scheduled rebuild failed (non-fatal) for ${memoryDir}: ${err}`);
+    } finally {
+      this.projectionRebuildInFlight = false;
     }
   }
 
