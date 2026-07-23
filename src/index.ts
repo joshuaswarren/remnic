@@ -1,3 +1,4 @@
+/// <reference path="./openclaw-plugin-sdk.d.ts" />
 export { loadDaySummaryPrompt } from "./day-summary.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import OpenAI from "openai";
