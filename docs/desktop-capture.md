@@ -293,6 +293,7 @@ all standard `WearableSourceSettings` fields apply):
 ```jsonc
 {
   "wearables": {
+    "enabled": true,                            // master wearables gate (default false); sync refuses without it
     "sources": {
       "desktop": {
         "enabled": false,                       // charter: default-off + double opt-in
