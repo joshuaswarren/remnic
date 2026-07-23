@@ -1432,22 +1432,31 @@ test("runPublishedHarness does not replay a baseline answer after a later trial 
       model: "shared-responder",
     };
   };
-  let hookCalls = 0;
+  let shouldFail = true;
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{
-      taskId: "paired",
-      question: "What happened?",
-      expected: "baseline answer",
-      recallSessionIds: ["session"],
-      postAnswerHook: async () => {
-        if (hookCalls++ === 0) {
-          throw new Error("late trial failure");
-        }
-        return {};
+    trials: [
+      {
+        taskId: "accepted",
+        question: "What happened?",
+        expected: "baseline answer",
+        recallSessionIds: ["session"],
       },
-    }],
+      {
+        taskId: "failed",
+        question: "What failed?",
+        expected: "baseline answer",
+        recallSessionIds: ["session"],
+        postAnswerHook: async () => {
+          if (shouldFail) {
+            shouldFail = false;
+            throw new Error("late trial failure");
+          }
+          return {};
+        },
+      },
+    ],
   };
   const run = (
     system: typeof baseline.system,
@@ -1465,7 +1474,7 @@ test("runPublishedHarness does not replay a baseline answer after a later trial 
   const baselineResult = await run(baseline.system, "baseline");
   const realResult = await run(real.system, "real");
 
-  assert.match(baselineResult.results.tasks[0]?.actual ?? "", /late trial failure/);
+  assert.match(baselineResult.results.tasks[1]?.actual ?? "", /late trial failure/);
   assert.equal(realResult.results.tasks[0]?.actual, "real answer");
-  assert.equal(realResponds, 1);
+  assert.equal(realResponds, 2);
 });

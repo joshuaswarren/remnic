@@ -276,7 +276,14 @@ export async function runPublishedHarness(
     });
   }
 
-  return buildBenchmarkResult(ctx, tasks, executionProvenance);
+  const result = await buildBenchmarkResult(ctx, tasks, executionProvenance);
+  if (
+    ctx.options.runtimeProfile === "baseline"
+    && result.meta.status === "partial"
+  ) {
+    ctx.options.pairedAnswerReplayCache?.clear();
+  }
+  return result;
 }
 
 async function executePlanTrials(
@@ -542,8 +549,16 @@ function pairedAnswerReplayKey(
     .update(
       JSON.stringify({
         responder: {
+          baseUrl: systemProvider?.baseUrl ?? null,
+          disableThinking: systemProvider?.disableThinking ?? null,
           model: systemProvider?.model ?? null,
           provider: systemProvider?.provider ?? null,
+          providerRequestTimeoutMs: systemProvider?.providerRequestTimeoutMs ?? null,
+          reasoningEffort: systemProvider?.reasoningEffort ?? null,
+          responderContextBudgetChars: systemProvider?.responderContextBudgetChars ?? null,
+          responderPromptBudgetChars: systemProvider?.responderPromptBudgetChars ?? null,
+          seed: systemProvider?.seed ?? null,
+          temperature: systemProvider?.temperature ?? null,
         },
         responderPrompt: buildStrictBenchmarkQuestion(
           trial.question,
