@@ -38,10 +38,20 @@ type InjectedStorage = NonNullable<RebuildMemoryProjectionOptions["storage"]>;
 export interface ProjectionRebuildScheduleState {
   inFlight: boolean;
   lastRebuildAtMs: number;
+  /** Timestamp of the most recent FAILURE; gates a short retry backoff that is
+   * separate from the success interval so a transient cause (e.g. a locked
+   * secure store) retries promptly once cleared instead of waiting a full
+   * interval. */
+  lastFailureAtMs: number;
 }
 
+/** Bounded retry cadence after a failure — short enough to self-heal promptly
+ * once a transient cause clears, long enough to keep a persistently-failing
+ * rebuild off every maintenance tick. */
+const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+
 export function createProjectionRebuildScheduleState(): ProjectionRebuildScheduleState {
-  return { inFlight: false, lastRebuildAtMs: 0 };
+  return { inFlight: false, lastRebuildAtMs: 0, lastFailureAtMs: 0 };
 }
 
 export async function maybeRebuildMemoryProjectionScheduled(opts: {
@@ -56,6 +66,7 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
   const intervalMs = config.projectionRebuildIntervalMs;
   const now = Date.now();
   if (now - state.lastRebuildAtMs < intervalMs) return;
+  if (now - state.lastFailureAtMs < FAILURE_RETRY_BACKOFF_MS) return;
 
   const rootStorage = opts.getStorage?.();
   const memoryDir = rootStorage ? rootStorage.dir : config.memoryDir;
@@ -91,11 +102,12 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
       + `${result.entityMentionRows} entity-mention rows`,
     );
   } catch (err) {
-    // Non-fatal. Advance the throttle to now so a persistently-failing
-    // rebuild retries once per interval (not every maintenance tick, which
-    // would spam) while still self-healing on the next interval — the
-    // projection is already stale, so delaying one interval is safe.
-    state.lastRebuildAtMs = Date.now();
+    // Non-fatal. Arm a SHORT backoff (not the full success interval) so a
+    // transient cause (locked secure store, momentarily-unavailable storage)
+    // retries promptly once it clears, while a persistently-failing rebuild
+    // still stays off every maintenance tick. lastRebuildAtMs is left as-is so
+    // the success interval is not falsely advanced.
+    state.lastFailureAtMs = Date.now();
     log.warn(`memory projection scheduled rebuild failed (non-fatal) for ${memoryDir}: ${err}`);
   } finally {
     state.inFlight = false;
