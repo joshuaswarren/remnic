@@ -36,6 +36,8 @@ export type {
   BenchmarkDefinition,
   RunBenchmarkOptions,
   ResolvedRunBenchmarkOptions,
+  PairedAnswerReplayCache,
+  PairedAnswerReplayEntry,
 } from "./types.js";
 export {
   BUILD_WEEK_EVIDENCE_RECEIPT_SCHEMA_VERSION,

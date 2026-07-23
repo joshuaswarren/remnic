@@ -24,7 +24,7 @@
  * permissible values rather than silently defaulting.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type {
   BenchRecallSupportAssessment,
@@ -59,6 +59,7 @@ import { computeCategoryAggregates } from "./category-aggregates.js";
 import type {
   BenchmarkMode,
   BenchmarkResult,
+  PairedAnswerReplayEntry,
   ResolvedRunBenchmarkOptions,
   TaskResult,
 } from "../../types.js";
@@ -500,6 +501,45 @@ function resolveAnswerSupportGate(
   );
 }
 
+function pairedAnswerReplayKey(
+  trial: HarnessTrial,
+  recalledText: string,
+  recallSupport: BenchRecallSupportAssessment | undefined,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        answerFormat: trial.answerFormat ?? null,
+        answerMode: "strict",
+        question: trial.question,
+        recalledText,
+        recallSupport: recallSupport
+          ? {
+              evidenceCount: recallSupport.evidenceCount ?? null,
+              maxScore: recallSupport.maxScore ?? null,
+              reason: recallSupport.reason ?? null,
+              status: recallSupport.status,
+              supportThreshold: recallSupport.supportThreshold ?? null,
+            }
+          : null,
+        taskId: trial.taskId,
+      }),
+    )
+    .digest("hex");
+}
+
+function pairedAnswerReplayEntry(
+  sourceRuntimeProfile: PairedAnswerReplayEntry["sourceRuntimeProfile"],
+  answer: HarnessAnswerResult,
+): PairedAnswerReplayEntry {
+  return {
+    sourceRuntimeProfile,
+    finalAnswer: answer.finalAnswer,
+    answeredText: answer.answeredText,
+    ...(answer.model === undefined ? {} : { model: answer.model }),
+  };
+}
+
 async function executeTrial(
   ctx: HarnessContext,
   trial: HarnessTrial,
@@ -527,8 +567,25 @@ async function executeTrial(
     return { recalledText, recallSupport };
   });
   const { recalledText, recallSupport } = recallResult;
-  let answered: HarnessAnswerResult =
-    await answerBenchmarkQuestion({
+  const answerReplayKey = ctx.options.pairedAnswerReplayCache
+    ? pairedAnswerReplayKey(trial, recalledText, recallSupport)
+    : undefined;
+  const cachedAnswer = answerReplayKey
+    ? ctx.options.pairedAnswerReplayCache?.get(answerReplayKey)
+    : undefined;
+  const currentProfile = ctx.options.runtimeProfile ?? null;
+  let answered: HarnessAnswerResult;
+  if (cachedAnswer && cachedAnswer.sourceRuntimeProfile !== currentProfile) {
+    answered = {
+      finalAnswer: cachedAnswer.finalAnswer,
+      recalledText,
+      answeredText: cachedAnswer.answeredText,
+      latencyMs: 0,
+      tokens: { input: 0, output: 0 },
+      model: cachedAnswer.model,
+    };
+  } else {
+    answered = await answerBenchmarkQuestion({
       question: trial.question,
       recalledText,
       responder: ctx.options.system.responder,
@@ -538,7 +595,14 @@ async function executeTrial(
     }).catch((error: unknown) =>
       answerWithTrialFallback(trial, recalledText, error),
     );
-  answered = refineTrialAnswer(trial, recalledText, answered);
+    answered = refineTrialAnswer(trial, recalledText, answered);
+    if (answerReplayKey) {
+      ctx.options.pairedAnswerReplayCache?.set(
+        answerReplayKey,
+        pairedAnswerReplayEntry(currentProfile, answered),
+      );
+    }
+  }
 
   // Post-answer hook runs before the judge so dataset-specific signals
   // (e.g. LongMemEval `search_hits`) are observed from the same
@@ -625,6 +689,9 @@ async function executeTrial(
     ...(trial.answerFormat ? { answerFormat: trial.answerFormat } : {}),
     ...(answerSupportGate
       ? { answerSupportGate: true, recallSupport }
+      : {}),
+    ...(cachedAnswer && cachedAnswer.sourceRuntimeProfile !== currentProfile
+      ? { pairedAnswerReusedFrom: cachedAnswer.sourceRuntimeProfile }
       : {}),
     responderModel: answered.model,
     judgeModel: judgeResult.model,

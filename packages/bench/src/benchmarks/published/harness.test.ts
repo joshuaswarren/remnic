@@ -184,6 +184,52 @@ test("runPublishedHarness resets once per plan and stores every non-empty sessio
   assert.equal(result.config.adapterMode, "direct");
 });
 
+test("runPublishedHarness reuses an answer only for an identical paired input", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  let baselineResponds = 0;
+  baseline.system.responder.respond = async () => {
+    baselineResponds++;
+    return {
+      text: "baseline answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  real.system.responder.respond = async () => ({
+    text: "real answer",
+    tokens: { input: 1, output: 1 },
+    latencyMs: 1,
+    model: "shared-responder",
+  });
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  const baselineResult = await run(baseline.system, "baseline");
+  const realResult = await run(real.system, "real");
+
+  assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(realResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(baselineResponds, 1);
+  assert.equal(real.calls.filter((call) => call.kind === "respond").length, 0);
+});
+
 test("runPublishedHarness rejects drain failure before scoring trials", async () => {
   const { system, calls } = makeFakeSystem();
   system.drain = async () => {
