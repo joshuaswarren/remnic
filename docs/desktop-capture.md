@@ -75,7 +75,12 @@ capture slice; each slice references them by name (for example
    meeting intelligence, and each memory-extraction mode are separate switches
    with their own defaults; enabling one never implicitly enables another. A
    disabled feature reports "disabled" on every surface (CLI/MCP/HTTP) rather
-   than half-working.
+   than half-working. Caveat on *memory* defaults: this initiative's new capture
+   features default memory creation off (screen `extractionMode: off`; the
+   desktop audio example uses `memoryMode: off`), but the existing shipped
+   wearable/cloud sources (Limitless/Bee/Omi/Granola/Fireflies) default
+   `memoryMode: "smart"`, so enabling one of those does create trust-gated
+   memories unless you set its `memoryMode` to `off`.
 3. **No raw-media persistence by default.** Audio chunks and any screenshots are
    deleted after text extraction. An optional retention buffer
    (`rawRetentionHours`, default `0`) exists only for re-transcription debugging.
