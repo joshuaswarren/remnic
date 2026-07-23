@@ -39,7 +39,7 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
 
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
-import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
+import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
 type JsonRpcId = string | number | null;
 
@@ -78,7 +78,7 @@ type McpRequestOptions = {
   abortSignal?: AbortSignal;
 };
 
-type McpTool = {
+export type McpTool = {
   name: string;
   title?: string;
   description: string;
@@ -184,7 +184,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.wearables_sync": "wearables_sync",
   "engram.transcript_day": "transcript_day",
   "engram.transcript_search": "transcript_search",
-  "engram.transcript_memories": "transcript_memories",
+  "engram.transcript_memories": "transcript_memories", "engram.meetings_list": "meetings_list", "engram.meetings_get": "meetings_get", "engram.meetings_build": "meetings_build",
   "engram.action_confidence": "action_confidence",
   "engram.chatgpt_memory_inspector": "chatgpt_memory_inspector",
   "engram.day_summary": "day_summary",
@@ -804,7 +804,7 @@ export class EngramMcpServer {
           },
           additionalProperties: false,
         },
-      },
+      }, ...MEETINGS_MCP_TOOLS,
       {
         name: "engram.action_confidence",
         description:

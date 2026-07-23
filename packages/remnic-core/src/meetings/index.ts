@@ -13,3 +13,6 @@ export * from "./store.js";
 export * from "./build.js";
 export * from "./memory-gen.js";
 export * from "./cli.js";
+export * from "./day-source.js";
+export * from "./build-scheduler.js";
+export * from "./service.js";
