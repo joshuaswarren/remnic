@@ -1,7 +1,7 @@
 {
   "name": "@remnic/capture-audio",
-  "version": "9.14.0",
-  "description": "Desktop audio capture daemon for Remnic \u2014 local spool, loopback HTTP API, and replay ingestion for the wearable source `desktop` (\u00e0-la-carte)",
+  "version": "9.21.0",
+  "description": "Desktop audio capture daemon for Remnic — local spool, loopback HTTP API, and replay ingestion for the wearable source `desktop` (à-la-carte)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
