@@ -192,6 +192,25 @@ test("replay accepts empty content fields (untitled window / no extractable text
   }
 });
 
+test("content hash is unambiguous across NUL-shifted field boundaries", async () => {
+  // With bare NUL separators these two would hash identically and the UNIQUE
+  // content_hash + INSERT OR IGNORE would silently drop the second capture.
+  const daemon = await startCaptureScreenDaemon({
+    authToken: "test-token",
+    spoolPath: ":memory:",
+    replay: [
+      snapshot({ app: "A\u0000B", windowTitle: "C" }),
+      snapshot({ app: "A", windowTitle: "B\u0000C" }),
+    ],
+  });
+  try {
+    const { url } = await daemon.start();
+    assert.deepEqual(await (await fetch(`${url}/v1/health`, { headers: AUTH })).json(), { ok: true, snapshots: 2 });
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("snapshots are scoped to the requested local day via date + timezone", async () => {
   const daemon = await startCaptureScreenDaemon({
     authToken: "test-token",

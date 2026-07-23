@@ -72,17 +72,14 @@ function normalizeSnapshot(snapshot: CaptureSnapshot): CaptureSnapshot {
 }
 
 function contentHash(snapshot: CaptureSnapshot): string {
-  return createHash("sha256")
-    .update(snapshot.capturedAtUtc)
-    .update("\0")
-    .update(snapshot.app)
-    .update("\0")
-    .update(snapshot.windowTitle)
-    .update("\0")
-    .update(snapshot.text)
-    .update("\0")
-    .update(snapshot.textSource)
-    .digest("hex");
+  const hash = createHash("sha256");
+  // Length-prefix each field so control characters (incl. NUL) in captured text
+  // cannot make distinct snapshots collide — a collision would silently drop a
+  // valid capture via the UNIQUE content_hash + INSERT OR IGNORE.
+  for (const field of [snapshot.capturedAtUtc, snapshot.app, snapshot.windowTitle, snapshot.text, snapshot.textSource]) {
+    hash.update(`${Buffer.byteLength(field)}:`).update(field);
+  }
+  return hash.digest("hex");
 }
 
 function applySchema(db: BetterSqlite3Database): void {
@@ -153,12 +150,12 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
       throw new RangeError("spool path must not be a symlink");
     }
     if (existing === undefined) {
-      // Atomic no-follow create closes the lstat->open TOCTOU: if a symlink is
-      // planted in the race window, O_NOFOLLOW fails the open instead of
-      // following it to an attacker-chosen target. O_NOFOLLOW is POSIX-only and
-      // a no-op flag elsewhere.
       const noFollow = constants.O_NOFOLLOW ?? 0;
-      closeSync(openSync(options.spoolPath, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | noFollow, 0o600));
+      // Exclusive, no-follow create closes the lstat->open race for BOTH a
+      // planted symlink (O_NOFOLLOW) and a planted regular file (O_EXCL): the
+      // open fails rather than adopting an attacker-created target whose mode we
+      // do not control. O_NOFOLLOW is POSIX-only and a no-op flag elsewhere.
+      closeSync(openSync(options.spoolPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600));
     } else if (existing.isFile()) chmodSync(options.spoolPath, 0o600);
   }
   const db = openBetterSqlite3(options.spoolPath);
