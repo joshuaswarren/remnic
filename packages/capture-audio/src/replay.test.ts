@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -205,5 +205,35 @@ test("an invalid speaker later in the list persists no speakers", () => {
   assert.throws(() => ingestReplayDir(spool, dir), CaptureConfigError);
   assert.deepEqual(spool.listSpeakers(), []);
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});
+
+test("offset timestamps are canonicalized to UTC on ingest", () => {
+  const spool = new Spool(":memory:");
+  // 2026-07-20T23:30:00-05:00 == 2026-07-21T04:30:00Z
+  const dir = fixtureDir({
+    "o.json": {
+      id: "conv_off",
+      startedAtUtc: "2026-07-20T23:30:00-05:00",
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T23:30:00-05:00", endUtc: "2026-07-20T23:30:01-05:00" }],
+    },
+  });
+  ingestReplayDir(spool, dir);
+  const page = spool.queryFinalConversations({ date: "2026-07-21", timezone: "UTC", limit: 10 });
+  assert.deepEqual(page.conversations.map((c) => c.id), ["conv_off"]);
+  assert.match(page.conversations[0].startedAtUtc, /Z$/);
+  spool.close();
+});
+
+test("symlinked replay fixtures are rejected", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "real.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+  });
+  symlinkSync(path.join(dir, "real.json"), path.join(dir, "link.json"));
+  assert.throws(() => ingestReplayDir(spool, dir), /symlink/);
   spool.close();
 });

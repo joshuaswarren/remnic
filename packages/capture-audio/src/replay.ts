@@ -30,7 +30,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { CaptureConfigError } from "./errors.js";
@@ -54,11 +54,13 @@ function parseTimestamp(value: unknown, where: string): string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
     throw new CaptureConfigError(`${where}: expected an ISO timestamp`);
   }
-  const timestamp = new Date(value);
-  if (!Number.isFinite(timestamp.getTime()) || timestamp.toISOString().slice(0, 10) !== value.slice(0, 10)) {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
     throw new CaptureConfigError(`${where}: expected a valid ISO timestamp`);
   }
-  return value;
+  // Canonicalize to UTC (Z) so an offset timestamp sorts correctly under the
+  // keyset that orders by the stored *_utc value.
+  return new Date(ms).toISOString();
 }
 
 /** Optional string: absent → fallback; present-non-string → throw. */
@@ -171,6 +173,9 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
   let files = 0;
   for (const name of entries) {
     const filePath = path.join(dir, name);
+    if (lstatSync(filePath).isSymbolicLink()) {
+      throw new CaptureConfigError(`replay fixture ${name} is a symlink; refusing to follow it`);
+    }
     let raw: unknown;
     try {
       raw = JSON.parse(readFileSync(filePath, "utf8"));

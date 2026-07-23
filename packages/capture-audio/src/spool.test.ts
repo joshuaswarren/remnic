@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import nodePath from "node:path";
 import { test } from "node:test";
 
 import { CaptureInputError } from "./errors.js";
@@ -160,4 +163,13 @@ test("close() is idempotent (double signal / double shutdown safe)", () => {
   const spool = new Spool(":memory:");
   spool.close();
   assert.doesNotThrow(() => spool.close());
+});
+
+test("an on-disk spool file is created owner-only (0600)", () => {
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "cap-spool-"));
+  const file = nodePath.join(dir, "audio.sqlite");
+  const spool = new Spool(file);
+  spool.close();
+  const mode = statSync(file).mode & 0o777;
+  assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
 });

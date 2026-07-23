@@ -20,6 +20,8 @@ export function parseTranscriptDate(value: string | null | undefined): string {
   }
   const [year, month, day] = value.split("-").map(Number);
   const dt = new Date(Date.UTC(year, month - 1, day));
+  // Date.UTC maps a 2-digit year (0-99) into 1900-1999; force the real year.
+  dt.setUTCFullYear(year);
   if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) {
     throw new CaptureInputError(`invalid date '${value}' — not a real calendar date`);
   }
@@ -73,7 +75,10 @@ export function decodeCursor(value: string | null | undefined): Cursor | null {
     Array.isArray(parsed) &&
     parsed.length === 2 &&
     typeof parsed[0] === "string" &&
-    typeof parsed[1] === "string"
+    typeof parsed[1] === "string" &&
+    parsed[1] !== "" &&
+    /^\d{4}-\d{2}-\d{2}T/.test(parsed[0]) &&
+    Number.isFinite(Date.parse(parsed[0]))
   ) {
     return { startedAtUtc: parsed[0], id: parsed[1] };
   }

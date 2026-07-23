@@ -7,7 +7,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
 import { coerceNumber } from "./coerce.js";
@@ -144,6 +145,23 @@ function tokenHeader(paths: CapturePaths): Record<string, string> {
   return { authorization: `Bearer ${readFileSync(paths.tokenPath, "utf8").trim()}` };
 }
 
+/** Create the capture dir owner-only (transcript spool + token live here). */
+function ensurePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    // filesystem without POSIX perms
+  }
+}
+
+/** Operator-safe error description — never echoes foreign message text/paths. */
+function describeError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (typeof code === "string" && code) return code;
+  return err instanceof Error ? err.name : "unknown error";
+}
+
 /** Authenticated health probe; returns the daemon's instanceId or null. */
 async function probeInstanceId(paths: CapturePaths, url: string): Promise<string | null> {
   try {
@@ -176,7 +194,7 @@ async function isOwnRunningDaemon(
 }
 
 function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, stdout: (l: string) => void): number {
-  mkdirSync(paths.baseDir, { recursive: true });
+  ensurePrivateDir(paths.baseDir);
   if (existsSync(paths.configPath) && flags.force !== true) {
     stdout(`config already exists at ${paths.configPath} (use --force to overwrite)`);
   } else {
@@ -223,17 +241,37 @@ async function cmdStart(
     if (typeof flags.host === "string") forwarded.push("--host", flags.host);
     if (typeof flags.port === "string") forwarded.push("--port", flags.port);
     if (typeof flags.listen === "string") forwarded.push("--listen", flags.listen);
-    mkdirSync(paths.baseDir, { recursive: true });
+    ensurePrivateDir(paths.baseDir);
     const logFd = openSync(paths.logPath, "a");
     const child = spawn(process.execPath, [entry, ...forwarded], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: { ...process.env, ...env },
     });
-    child.on("error", (err) => stderr(`daemon failed to launch: ${err.message}`));
+    child.on("error", (err) => stderr(`daemon failed to launch: ${describeError(err)}`));
     child.unref();
-    if (typeof child.pid === "number") writePidFile(paths.pidPath, child.pid);
-    stdout(`started daemon (pid ${child.pid}); logs at ${paths.logPath}`);
+    if (typeof child.pid !== "number") {
+      stderr("failed to spawn daemon process");
+      return 1;
+    }
+    // Record pid + effective binding now; the child adds instanceId once bound.
+    writePidFile(paths.pidPath, child.pid, { host: config.host, port: config.port });
+    // Do not report success until the child actually binds: it writes an
+    // instanceId into the pid record only after the HTTP server is listening.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (!isProcessAlive(child.pid)) {
+        removePidFileIfOwner(paths.pidPath, child.pid);
+        stderr(`daemon exited during startup; see ${paths.logPath}`);
+        return 1;
+      }
+      if (readPidRecord(paths.pidPath)?.instanceId) {
+        stdout(`started daemon (pid ${child.pid}); listening; logs at ${paths.logPath}`);
+        return 0;
+      }
+      await delay(100);
+    }
+    stdout(`started daemon (pid ${child.pid}); still starting — see ${paths.logPath}`);
     return 0;
   }
 
@@ -278,6 +316,7 @@ async function cmdStart(
 
 async function cmdStop(
   paths: CapturePaths,
+  flags: Record<string, string | boolean>,
   stdout: (l: string) => void,
   stderr: (l: string) => void,
 ): Promise<number> {
@@ -288,14 +327,23 @@ async function cmdStop(
     return 0;
   }
   // Identity guard: when we know which instance owns the pid, confirm the
-  // live process really is that daemon before signalling — a reused pid
-  // must not be killed by us.
+  // live process really is that daemon before signalling.
   if (record.instanceId !== null) {
     const liveInstance = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
     if (liveInstance !== null && liveInstance !== record.instanceId) {
+      // Confirmed: a different process reused the pid -> never signal it.
       removePidFile(paths.pidPath);
       stdout(`pid ${record.pid} is not our daemon (instance mismatch); cleared stale pid file`);
       return 0;
+    }
+    if (liveInstance === null && flags.force !== true) {
+      // Cannot confirm identity (health unreachable): refuse to signal a pid we
+      // can't prove is ours, unless the operator forces it.
+      stderr(
+        `cannot confirm daemon identity for pid ${record.pid} (health unreachable); not signalling. ` +
+          `Re-run \`stop --force\` to stop it anyway, or remove ${paths.pidPath}.`,
+      );
+      return 1;
     }
   }
   try {
@@ -338,7 +386,7 @@ async function cmdStatus(
     const body = await res.text();
     stdout(`status: running (pid ${record.pid}) — HTTP ${res.status} ${body}`);
   } catch (err) {
-    stdout(`status: process alive (pid ${record.pid}) but health check failed: ${(err as Error).message}`);
+    stdout(`status: process alive (pid ${record.pid}) but health check failed (${describeError(err)})`);
   }
   return 0;
 }
@@ -387,13 +435,14 @@ export async function runCapture(io: CliIo): Promise<number> {
   try {
     const parsed = parseArgs(io.argv);
     const paths = resolvePaths(parsed.flags, env);
+    if (parsed.flags.help === true) return usage(stdout);
     switch (parsed.command) {
       case "init":
         return cmdInit(paths, parsed.flags, stdout);
       case "start":
         return await cmdStart(paths, parsed.flags, env, stdout, stderr);
       case "stop":
-        return await cmdStop(paths, stdout, stderr);
+        return await cmdStop(paths, parsed.flags, stdout, stderr);
       case "status":
         return await cmdStatus(paths, stdout, stderr);
       case "devices":

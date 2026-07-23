@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { test } from "node:test";
 
 import { runCapture } from "./cli.js";
@@ -29,6 +30,15 @@ async function deadPid(): Promise<number> {
   assert.ok(child.pid);
   await once(child, "exit");
   return child.pid;
+}
+
+/** Reserve then release a loopback port so a fetch to it is refused. */
+async function closedPort(): Promise<number> {
+  const srv = net.createServer();
+  await new Promise<void>((res) => srv.listen(0, "127.0.0.1", () => res()));
+  const port = (srv.address() as net.AddressInfo).port;
+  await new Promise<void>((res) => srv.close(() => res()));
+  return port;
 }
 
 test("start preserves an alive daemon pid without spawning another daemon", async () => {
@@ -182,5 +192,46 @@ test("start refuses to double-start only after confirming pid identity", async (
       await handle.close();
       spool.close();
     }
+  });
+});
+
+test("--help after a subcommand shows usage without side effects", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const out: string[] = [];
+    const code = await runCapture({ argv: ["start", "--help", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+    assert.equal(code, 0);
+    assert.ok(out.join("\n").includes("usage: remnic-capture-audio"));
+    assert.equal(existsSync(paths.pidPath), false); // no daemon started
+  });
+});
+
+test("stop refuses to signal when identity is unconfirmable (health unreachable) without --force", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const port = await closedPort();
+    // Alive pid (this test process), recorded instanceId, but health is unreachable.
+    writePidFile(paths.pidPath, process.pid, { instanceId: "ghost-instance", host: "127.0.0.1", port });
+    const errs: string[] = [];
+    const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+    assert.equal(code, 1);
+    assert.ok(errs.some((l) => l.includes("cannot confirm daemon identity")), errs.join("|"));
+    assert.equal(existsSync(paths.pidPath), true); // not removed, not signalled
+  });
+});
+
+test("status reports a sanitized health-check failure (no raw error text)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const port = await closedPort();
+    writePidFile(paths.pidPath, process.pid, { instanceId: "x", host: "127.0.0.1", port });
+    const out: string[] = [];
+    const code = await runCapture({ argv: ["status", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+    assert.equal(code, 0);
+    const line = out.join("\n");
+    assert.match(line, /health check failed \(/);
+    assert.doesNotMatch(line, /https?:\/\//); // no URL / foreign text leaked
   });
 });

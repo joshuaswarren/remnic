@@ -19,6 +19,7 @@
  * even when two conversations share a start timestamp.
  */
 
+import { chmodSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { SPOOL_SCHEMA_VERSION } from "./constants.js";
@@ -149,6 +150,15 @@ export class Spool {
     this.#db.exec("PRAGMA foreign_keys = ON;");
     this.#db.exec("PRAGMA busy_timeout = 5000;");
     this.#db.exec(SCHEMA_SQL);
+    if (location !== ":memory:") {
+      // Transcript spool holds conversation text; keep it owner-only on
+      // multi-user desktops (best-effort; ignored where chmod is a no-op).
+      try {
+        chmodSync(location, 0o600);
+      } catch {
+        // filesystem without POSIX perms (e.g. some Windows mounts)
+      }
+    }
     this.#db
       .prepare("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)")
       .run("schema_version", String(SPOOL_SCHEMA_VERSION));
