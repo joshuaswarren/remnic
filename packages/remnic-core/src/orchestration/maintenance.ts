@@ -207,6 +207,9 @@ export class MaintenanceScheduler {
     // A repeated autoRegisterCrons must not orphan a prior interval: stop the
     // existing scheduler (abort + drain) before arming a replacement.
     await this.activitySyncScheduler?.stop();
+    // Re-arming on a reused orchestrator (service restart): clear the teardown
+    // latch so retry signals work again for the new scheduler's lifetime.
+    this.disposed = false;
     try {
       this.activitySyncScheduler = new ActivitySyncScheduler({
         config: this.deps.config.activity,
@@ -215,14 +218,13 @@ export class MaintenanceScheduler {
         // Force a strict index refresh after each digest write (rule 31):
         // updateCollectionStrict bypasses the min-interval gate, throws on real failure.
         reindexSearch: (signal) => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection, signal),
-        // Reindex can fail (QMD down); a later unchanged-digest tick skips afterWrites,
-        // so retry a forced strict refresh here, disposed-guarded. Durable queue = follow-up.
+        // Reindex can fail (QMD down); a later unchanged-digest tick skips
+        // afterWrites, so route the retry through the debounced + singleflighted
+        // QMD maintenance path (durable, throttled), disposed-guarded.
         onRun: (summary) => {
           if (summary.reindexErrorCount > 0 && !this.disposed) {
-            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; retrying a strict refresh`);
-            void refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection).catch((err) =>
-              log.debug(`activity reindex retry failed (non-fatal): ${err}`),
-            );
+            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing a maintenance retry`);
+            this.requestQmdMaintenanceForTool("activity-reindex-retry");
           }
         },
       });
