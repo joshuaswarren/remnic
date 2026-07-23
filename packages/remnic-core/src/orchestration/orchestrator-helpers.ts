@@ -601,6 +601,20 @@ export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
 
+/**
+ * Meeting records (issue #1900) live at
+ * `<root>/meetings/<YYYY-MM-DD>/mtg-<YYYY-MM-DD>-<hash>.md` — inside the QMD
+ * collection root (full-text searchable) but NEVER surfaced through generic
+ * recall, exactly like `artifacts/`. The predicate matches the FULL record
+ * shape (anchored at the filename) rather than any `meetings` path segment, so
+ * a namespaced deployment whose non-default namespace is literally named
+ * `meetings` (`.../namespaces/meetings/facts/…`) keeps its ordinary memories in
+ * recall — only true meeting records are excluded.
+ */
+export function isMeetingRecordPath(filePath: string): boolean {
+  return /(?:^|[\\/])meetings[\\/]\d{4}-\d{2}-\d{2}[\\/]mtg-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.md$/i.test(filePath);
+}
+
 /** Exactly `activity/<YYYY-MM-DD>.md`, at the top level of a memory root. */
 const ACTIVITY_DIGEST_TOPLEVEL = /^activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
 /** The digest FILE shape anywhere in a path (root-unaware best-effort). */
@@ -627,11 +641,17 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
 
 /**
  * Paths that dedicated surfaces own and generic recall must never inject:
- * artifacts and activity digests. Explicit search paths (memory_search,
- * activity search) do not apply this filter, so those surfaces still read them.
+ * artifacts, activity digests (issue #1899), and meeting records (issue #1900).
+ * One predicate shared by every recall filter site so the exclusion cannot drift.
+ * Explicit search paths (memory_search, activity search) do not apply this
+ * filter, so those surfaces still read them.
  */
 export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: string): boolean {
-  return isArtifactMemoryPath(filePath) || isActivityDigestPath(filePath, memoryRoot);
+  return (
+    isArtifactMemoryPath(filePath) ||
+    isActivityDigestPath(filePath, memoryRoot) ||
+    isMeetingRecordPath(filePath)
+  );
 }
 
 export function buildCompressionGuidelinesMarkdown(

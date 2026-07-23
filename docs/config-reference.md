@@ -1767,3 +1767,25 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.minConfidence` | `0.7` | `0.7` |
 | `activity.minImportance` | `"normal"` | `"normal"` |
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
+
+## Meetings (issue #1900)
+
+Retrospective meeting intelligence: detect meetings from already-ingested audio
+conversations + screen activity, fuse the transcript with concurrent screen
+context, and store a markdown record per meeting under
+`<memoryDir>/meetings/<date>/<meeting-id>.md`. Disabled by default; base
+installs see zero behavior change.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `meetings.enabled` | `false` | Master gate for the meetings subsystem. |
+| `meetings.appPatterns` | shipped defaults | Extra meeting-app match patterns, additive over the shipped set (Zoom, Teams, Google Meet, Webex, Slack huddles, FaceTime). |
+| `meetings.minOverlapMinutes` | `2` | Minimum app-span/audio-window overlap (minutes) to pair them into a meeting. |
+| `meetings.audioOnlyMinMinutes` | `15` | Audio-only fallback: minimum conversation length (minutes) with at least 2 non-wearer speakers to detect a meeting with no app span. |
+| `meetings.mergeGapMinutes` | `2` | Merge adjacent same-app candidates within this gap (minutes) for rejoin-after-drop. |
+| `meetings.contextDwellSeconds` | `20` | Minimum other-app foreground dwell (seconds) to include a span in the screen-context timeline. |
+| `meetings.maxContextChars` | `4000` | Cap on total deduped screen-context excerpt characters. |
+| `meetings.summaryMode` | `smart` | LLM summary/facts mode: `off` (deterministic episode only, no LLM), `review` (queue every candidate), `smart` (trust-gated). |
+| `meetings.sourceTrust` | `0.85` | Provenance trust prior for meeting-derived facts (0..1). |
+| `meetings.autoApproveTrust` | `0.7` | Trust at/above which a smart-mode meeting fact is auto-approved to active. |
+| `meetings.reviewTrust` | `0.45` | Trust at/above which a smart-mode meeting fact is queued for review (below is dropped). |

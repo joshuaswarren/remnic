@@ -422,10 +422,19 @@ export class RecallSearchPipelineCoordinator {
       ? await this.deps.searchScopedMemoryCandidates(
           queryAwarePrefilter.candidatePaths,
           prompt,
-          qmdFetchLimit,
+          // Overfetch the FULL scoped candidate set BEFORE the generic-recall
+          // exclusion `filterRecallCandidates` applies below (L464). Capping to
+          // `qmdFetchLimit` here lets excluded paths (artifacts, activity digests,
+          // meeting records) consume the caller's budget and drop legitimate hits
+          // with no refill — the hot-path mirror of the archive-fallback fix. The
+          // candidate set is an already-bounded prefilter, so its size is the
+          // natural ceiling; the post-exclusion cap is applied by filterRecallCandidates.
+          queryAwarePrefilter.candidatePaths.size,
           { allowArchived: options.collection !== undefined },
         )
       : [];
+    // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
+    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir);
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
     const maxFetchLimit = Math.min(
@@ -586,13 +595,12 @@ export class RecallSearchPipelineCoordinator {
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
-            // Dedup by composite (namespace, path) so a fanout hit and a
-            // seed/hybrid hit for the same memory never inject twice (#2020).
+            // Dedup by composite (namespace, path) so a hit never injects twice (#2020).
             mergedResults = dedupeResultsByNamespace(
               [...primaryResults, ...hybridResults],
               this.deps.namespaceFromPath,
               fetchLimit,
-              { transportFallback: "hybrid" },
+              { transportFallback: "hybrid", filter: recallable },
             );
           }
         }
@@ -603,6 +611,7 @@ export class RecallSearchPipelineCoordinator {
           [...scopedSeedResults, ...mergedResults],
           this.deps.namespaceFromPath,
           fetchLimit,
+          { filter: recallable },
         );
       }
 
@@ -685,18 +694,30 @@ export class RecallSearchPipelineCoordinator {
     if (cappedLimit === 0) return [];
     if (queryAwarePrefilter?.candidatePaths?.size === 0) return [];
 
-    const scopedSeedResults = queryAwarePrefilter?.candidatePaths?.size
-      ? await this.deps.searchScopedMemoryCandidates(
-          queryAwarePrefilter.candidatePaths,
-          prompt,
-          cappedLimit,
-          { allowArchived: true },
-        )
-      : [];
+    const candidatePaths = queryAwarePrefilter?.candidatePaths;
+    const scopedSeedResults = (
+      candidatePaths?.size
+        ? await this.deps.searchScopedMemoryCandidates(
+            candidatePaths,
+            prompt,
+            // Overfetch the FULL scoped candidate set BEFORE the generic-recall
+            // exclusion below. Capping to `cappedLimit` first lets excluded paths
+            // (artifacts, activity digests, meeting records) consume the caller's
+            // budget and drop legitimate hits with no refill — e.g. a prefilter of
+            // [meetingRecord, facts/a.md] at limit 1 would return nothing. The
+            // candidate set is an already-bounded prefilter, so its size is the
+            // natural ceiling; the post-exclusion cap is applied below.
+            candidatePaths.size,
+            { allowArchived: true },
+          )
+        : []
+    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir));
+    // Non-recallable seed paths (artifacts, activity digests, meeting records) are
+    // excluded above AFTER an unconstrained candidate fetch, so the cap here counts
+    // only recallable seeds — and EVERY early-return / direct-caller path below
+    // returns already-filtered, budget-honoring seeds.
     if (scopedSeedResults.length >= cappedLimit) {
-      return scopedSeedResults
-        .filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir))
-        .slice(0, cappedLimit);
+      return scopedSeedResults.slice(0, cappedLimit);
     }
 
     const tokens = Array.from(new Set(tokenizeRecallQuery(prompt)));

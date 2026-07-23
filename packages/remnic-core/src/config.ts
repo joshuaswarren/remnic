@@ -51,6 +51,7 @@ import {
   resolveNamespaceCatalogEnabled,
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
+import { parseMeetingsConfig } from "./meetings/config.js";
 import { parseActivityConfig } from "./activity/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
@@ -1170,11 +1171,9 @@ export function parseConfig(
     proceduralMiningCronAutoRegister: coerceBool(rawProcedural.proceduralMiningCronAutoRegister) === true,
     recallMaxProcedures,
   };
-
-  // Wearable transcript ingestion (Limitless / Bee / Omi) — delegated to the wearables module.
   const wearables = parseWearablesConfig(cfg.wearables);
   const activity = parseActivityConfig(cfg.activity);
-
+  const meetings = parseMeetingsConfig(cfg.meetings);
   const provenance = parseProvenanceConfig(cfg.provenance);
   // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
@@ -2337,6 +2336,7 @@ export function parseConfig(
     dreamsPhases,
     procedural,
     wearables,
+    meetings,
     activity,
     provenance,
     // At-rest encryption (#690): coerceBool handles CLI string "true" (#36).
