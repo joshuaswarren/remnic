@@ -60,6 +60,7 @@ function handleHealth(deps: DaemonDeps, res: http.ServerResponse): void {
     pendingChunks: deps.spool.pendingChunkCount(),
     instanceId: deps.spool.meta("instance_id"),
     replayStatus: deps.spool.meta("replay_status"),
+    pid: process.pid,
   });
 }
 

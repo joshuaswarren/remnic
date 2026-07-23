@@ -165,15 +165,48 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.name : "unknown error";
 }
 
-/** Authenticated health probe; returns the daemon's instanceId or null. */
-async function probeInstanceId(paths: CapturePaths, url: string): Promise<string | null> {
+interface DaemonIdentity {
+  instanceId: string;
+  pid: number;
+}
+
+/** Authenticated health probe; returns the serving daemon's identity or null. */
+async function probeIdentity(paths: CapturePaths, url: string): Promise<DaemonIdentity | null> {
   try {
     const res = await fetch(url, { headers: tokenHeader(paths), signal: AbortSignal.timeout(2000) });
     if (!res.ok) return null;
-    const body = (await res.json()) as { instanceId?: unknown };
-    return typeof body.instanceId === "string" ? body.instanceId : null;
+    const body = (await res.json()) as { instanceId?: unknown; pid?: unknown };
+    if (typeof body.instanceId === "string" && typeof body.pid === "number") {
+      return { instanceId: body.instanceId, pid: body.pid };
+    }
+    return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Persist the background child's pid record; if that write fails, terminate the
+ * child so a spawned-but-unrecorded daemon is never orphaned. Returns false
+ * (child killed) on failure.
+ */
+export function recordChildPidOrTerminate(
+  pid: number,
+  paths: CapturePaths,
+  binding: { host: string; port: number },
+  stderr: (l: string) => void,
+): boolean {
+  try {
+    writePidFile(paths.pidPath, pid, binding);
+    return true;
+  } catch (err) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+    stderr(`failed to record daemon pid: ${describeError(err)}; terminated child pid ${pid}`);
+    return false;
   }
 }
 
@@ -191,9 +224,9 @@ async function isOwnRunningDaemon(
   stderr: (l: string) => void,
 ): Promise<boolean> {
   if (record.instanceId === null) return true;
-  const live = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
+  const live = await probeIdentity(paths, recordHealthUrl(record, paths, stderr));
   if (live === null) return true;
-  return live === record.instanceId;
+  return live.instanceId === record.instanceId && live.pid === record.pid;
 }
 
 /**
@@ -288,7 +321,10 @@ async function cmdStart(
       return 1;
     }
     // Record pid + effective binding now; the child adds instanceId once bound.
-    writePidFile(paths.pidPath, child.pid, { host: config.host, port: config.port });
+    // If persistence fails, kill the child so it isn't orphaned unrecorded.
+    if (!recordChildPidOrTerminate(child.pid, paths, { host: config.host, port: config.port }, stderr)) {
+      return 1;
+    }
     // Do not report success until the child actually binds: it writes an
     // instanceId into the pid record only after the HTTP server is listening.
     const deadline = Date.now() + READINESS_TIMEOUT_MS;
@@ -380,21 +416,21 @@ async function cmdStop(
   // Identity guard: when we know which instance owns the pid, confirm the
   // live process really is that daemon before signalling.
   if (record.instanceId !== null) {
-    const liveInstance = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
-    if (liveInstance !== null && liveInstance !== record.instanceId) {
-      // Verified NOT ours: the daemon answering this endpoint has a different
-      // instance id than the record. Never signal an unverified pid, and never
-      // reclaim the record before a safe stop succeeds — doing either could kill
+    const live = await probeIdentity(paths, recordHealthUrl(record, paths, stderr));
+    if (live !== null && (live.instanceId !== record.instanceId || live.pid !== record.pid)) {
+      // Verified NOT the recorded process: the daemon answering this endpoint
+      // reports a different instance id or pid than the record. Never signal an
+      // unverified pid, and never reclaim before a safe stop — either could kill
       // an unrelated process or orphan the serving daemon. --force does not
-      // override a verified mismatch (we know this pid is not our daemon).
+      // override a verified mismatch.
       stderr(
-        `recorded pid ${record.pid} does not match the daemon serving this endpoint (instance mismatch); ` +
+        `recorded pid ${record.pid} does not match the daemon serving this endpoint (identity/pid mismatch); ` +
           `not signalling and preserving ${paths.pidPath}. Stop the serving daemon via its own controls, ` +
           `or remove the pid file after verifying it is stale.`,
       );
       return 1;
     }
-    if (liveInstance === null && flags.force !== true) {
+    if (live === null && flags.force !== true) {
       // Cannot confirm identity (health unreachable): refuse to signal a pid we
       // can't prove is ours, unless the operator forces it.
       stderr(
@@ -501,7 +537,14 @@ export async function runCapture(io: CliIo): Promise<number> {
   try {
     const parsed = parseArgs(io.argv);
     const paths = resolvePaths(parsed.flags, env);
-    if (parsed.flags.help === true) return usage(stdout);
+    if (parsed.flags.help === true || parsed.positionals.includes("-h") || parsed.positionals.includes("--help")) {
+      return usage(stdout);
+    }
+    if (parsed.positionals.length > 0) {
+      stderr(`unexpected argument(s): ${parsed.positionals.join(" ")}`);
+      usage(stderr);
+      return 2;
+    }
     switch (parsed.command) {
       case "init":
         return cmdInit(paths, parsed.flags, stdout);

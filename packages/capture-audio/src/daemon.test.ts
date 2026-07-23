@@ -59,6 +59,7 @@ test("GET /v1/health returns the health shape incl. instanceId", async () => {
     version: string;
     pendingChunks: number;
     instanceId: string;
+    pid: number;
   };
   assert.equal(body.ok, true);
   assert.equal(body.capturing, false);

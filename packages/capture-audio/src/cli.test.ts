@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,11 +8,11 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 import { test } from "node:test";
 
-import { runCapture, superviseReplay } from "./cli.js";
+import { recordChildPidOrTerminate, runCapture, superviseReplay } from "./cli.js";
 import { defaultDaemonConfig } from "./config.js";
 import { startDaemon } from "./daemon.js";
 import { Spool } from "./spool.js";
-import { readPidRecord, writePidFile } from "./control.js";
+import { isProcessAlive, readPidRecord, writePidFile } from "./control.js";
 import { capturePaths, expandTilde } from "./paths.js";
 
 async function withBaseDir(fn: (baseDir: string) => Promise<void>): Promise<void> {
@@ -281,30 +281,6 @@ test("stop refuses a verified instance mismatch: never signals, preserves the pi
   });
 });
 
-test("stop signals a verified same-instance daemon (record matches the live endpoint)", async () => {
-  await withBaseDir(async (baseDir) => {
-    const paths = capturePaths(baseDir);
-    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
-    const spool = new Spool(":memory:");
-    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
-    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
-    assert.ok(child.pid);
-    try {
-      writePidFile(paths.pidPath, child.pid, { instanceId: spool.meta("instance_id")!, host: handle.host, port: handle.port });
-      const out: string[] = [];
-      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: (l) => out.push(l) });
-      assert.equal(code, 0);
-      assert.match(out.join("\n"), /sent SIGTERM/);
-      await once(child, "exit"); // the recorded pid was signalled
-      assert.equal(existsSync(paths.pidPath), true); // stop does not reclaim; the daemon self-removes
-    } finally {
-      child.kill("SIGKILL");
-      await handle.close();
-      spool.close();
-    }
-  });
-});
-
 test("stop --force signals an unverifiable (health-unreachable) recorded pid", async () => {
   await withBaseDir(async (baseDir) => {
     const paths = capturePaths(baseDir);
@@ -397,5 +373,95 @@ test("readiness is established before replay and a slow replay still reaches ok"
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/** Spawn a minimal fake daemon that serves /v1/health with a fixed instanceId + its own pid. */
+async function spawnFakeDaemon(instanceId: string): Promise<{ child: ReturnType<typeof spawn>; port: number }> {
+  const src =
+    'const http=require("node:http");' +
+    'const s=http.createServer((q,r)=>{r.writeHead(200,{"content-type":"application/json"});' +
+    'r.end(JSON.stringify({ok:true,instanceId:process.env.IID,pid:process.pid}))});' +
+    's.listen(0,"127.0.0.1",()=>console.log(s.address().port));process.stdin.resume();';
+  const child = spawn(process.execPath, ["-e", src], { env: { ...process.env, IID: instanceId } });
+  const port = await new Promise<number>((resolve, reject) => {
+    child.stdout?.on("data", (d) => {
+      const n = Number(String(d).trim());
+      if (Number.isInteger(n)) resolve(n);
+    });
+    child.on("exit", () => reject(new Error("fake daemon exited before listening")));
+  });
+  return { child, port };
+}
+
+test("stop signals only when both instanceId and health pid match the record", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const { child, port } = await spawnFakeDaemon("inst-1");
+    try {
+      writePidFile(paths.pidPath, child.pid!, { instanceId: "inst-1", host: "127.0.0.1", port });
+      const out: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+      assert.equal(code, 0);
+      assert.match(out.join("\n"), /sent SIGTERM/);
+      await once(child, "exit"); // the verified pid was signalled
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+});
+
+test("stop refuses when the health pid differs from the record (reused pid), never signalling", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const { child: daemon, port } = await spawnFakeDaemon("inst-1");
+    const other = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(other.pid);
+    try {
+      // Record points at OTHER's pid, but the endpoint is served by a daemon
+      // with the matching instanceId under a DIFFERENT pid -> must refuse.
+      writePidFile(paths.pidPath, other.pid, { instanceId: "inst-1", host: "127.0.0.1", port });
+      const errs: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+      assert.equal(code, 1);
+      assert.ok(errs.some((l) => l.includes("identity/pid mismatch")), errs.join("|"));
+      assert.equal(existsSync(paths.pidPath), true); // preserved
+      assert.equal(isProcessAlive(other.pid), true); // NOT signalled
+    } finally {
+      daemon.kill("SIGKILL");
+      other.kill("SIGKILL");
+    }
+  });
+});
+
+test("recordChildPidOrTerminate kills the child when the pid write fails", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    // pidPath as a directory makes writePidFile's rename fail.
+    mkdirSync(paths.pidPath, { recursive: true });
+    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(child.pid);
+    try {
+      const errs: string[] = [];
+      const ok = recordChildPidOrTerminate(child.pid, paths, { host: "127.0.0.1", port: 4340 }, (l) => errs.push(l));
+      assert.equal(ok, false);
+      assert.ok(errs.some((l) => l.includes("failed to record daemon pid")), errs.join("|"));
+      await once(child, "exit"); // child was terminated
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+});
+
+test("unexpected positional arguments are rejected before side effects", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const errs: string[] = [];
+    const code = await runCapture({ argv: ["init", "extra", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+    assert.equal(code, 2);
+    assert.ok(errs.some((l) => l.includes("unexpected argument(s): extra")), errs.join("|"));
+    assert.equal(existsSync(paths.configPath), false); // init did not run
   });
 });
