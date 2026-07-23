@@ -2923,7 +2923,8 @@ test("HTTP meetings build enforces the per-principal write rate limit (issue #19
     assert.equal(first.status, 200, "the first build is within the write quota");
     const second = await build();
     assert.equal(second.status, 429, "the second build exceeds the per-principal write quota");
-    assert.equal((await second.json()).code, "write_rate_limited");
+    const rateLimited = await second.json() as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
     assert.equal(builds, 1, "the rate-limited build never reached the service (no persist/reindex)");
   } finally {
     await server.stop();
@@ -2950,7 +2951,8 @@ test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id
       headers: { authorization: "Bearer test-token" },
     });
     assert.equal(response.status, 400, "a malformed id is a client error, not an internal 500");
-    assert.equal((await response.json()).code, "invalid_request");
+    const errorBody = await response.json() as { code?: string };
+    assert.equal(errorBody.code, "invalid_request");
     assert.equal(called, 0, "the malformed id never reached the service");
   } finally {
     await server.stop();

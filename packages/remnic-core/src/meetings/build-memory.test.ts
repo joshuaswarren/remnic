@@ -169,39 +169,98 @@ test("builder writes a deterministic episode memory per built record when a writ
   assert.equal(first.meetings.length, 1);
   assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
   assert.equal(memoryWriter.writes.length, 1);
-  // Rebuild: the episode already exists → skipped, no second write.
+  // Rebuild with an unchanged record: the memory layer skips it entirely
+  // (round 2) — no episode probe, no second write, no episode aggregate.
   const second = await builder.buildDay(DATE);
-  assert.deepEqual(second.episodes, { written: 0, skipped: 1 });
+  assert.equal(second.episodes, undefined, "an unchanged rebuild generates nothing");
   assert.equal(memoryWriter.writes.length, 1);
 });
 
-test("finding 8 — reindex fires when only episodes are newly written (records unchanged)", async () => {
+test("finding 2 — an unchanged-record rebuild fires zero LLM calls and writes nothing", async () => {
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
-  const data: MeetingDayData = {
-    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
-    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
-  };
-  // First build with NO memory writer: the record persists, but no episode is
-  // written (models a prior run whose episode write had not happened / failed).
-  await new MeetingsBuilder({ source: fixedSource(data), store, config: config() }).buildDay(DATE);
-
-  // Second build with a writer + reindex hook: the record is unchanged
-  // (built == 0 && removed == 0) but a new episode is created → reindex MUST
-  // still fire so the new active memory is discoverable now.
   const memoryWriter = new FakeMeetingWriter();
+  const extractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const cfg = config({ summaryMode: "smart" });
   const calls: MeetingsDayBuildSummary[] = [];
-  const cfg = config();
-  const summary = await new MeetingsBuilder({
-    source: fixedSource(data),
+  const build = (): Promise<MeetingsDayBuildSummary> =>
+    new MeetingsBuilder({
+      source: fixedSource(summaryData()),
+      store,
+      config: cfg,
+      memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg, { extractor }),
+      hooks: { reindex: (s) => { calls.push(s); } },
+    }).buildDay(DATE);
+
+  const first = await build();
+  assert.equal(first.built, 1, "the first build persists the record");
+  assert.equal(extractor.calls, 1, "the extractor runs once on the first build");
+  const writesAfterFirst = memoryWriter.writes.length;
+  assert.ok(writesAfterFirst > 0, "the first build writes memories");
+  assert.equal(calls.length, 1, "reindex fires on the first build");
+
+  // Rebuild with byte-identical data: the record is unchanged, so the memory
+  // layer must skip it entirely — no extractor call, no rewrite, no reindex
+  // (round 2 — the LLM must never re-run on an idempotent rebuild).
+  const second = await build();
+  assert.equal(second.built, 0, "the record was unchanged");
+  assert.equal(extractor.calls, 1, "no extractor call on an unchanged rebuild");
+  assert.equal(memoryWriter.writes.length, writesAfterFirst, "no memory was written on the rebuild");
+  assert.equal(second.episodes, undefined, "no episode generation on an unchanged rebuild");
+  assert.equal(second.facts, undefined, "no fact generation on an unchanged rebuild");
+  assert.equal(calls.length, 1, "no reindex on a no-op rebuild");
+});
+
+test("finding 3 — a changed record under a kept id refreshes its memories, not duplicates", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const memoryWriter = new FakeMeetingWriter();
+  const cfg = config({ summaryMode: "smart" });
+  const firstData: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("we shipped v2", "2026-03-10T14:05:00.000Z")])],
+  };
+  const first = await new MeetingsBuilder({
+    source: fixedSource(firstData),
     store,
     config: cfg,
-    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg),
-    hooks: { reindex: (s) => { calls.push(s); } },
+    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg, { extractor: spyExtractor("v2 summary", SUMMARY_CANDIDATES) }),
   }).buildDay(DATE);
-  assert.equal(summary.built, 0, "the record was unchanged");
-  assert.equal(summary.removed.length, 0);
-  assert.deepEqual(summary.episodes, { written: 1, skipped: 0 });
-  assert.equal(calls.length, 1, "reindex fires because a new episode was written");
+  const keptId = first.meetings[0]!.id;
+  const staleEpisode = memoryWriter.writes.find(
+    (w) => w.source === meetingSourceLabel(keptId) && w.category === "moment",
+  )?.content;
+  assert.ok(staleEpisode !== undefined, "the first build wrote an episode");
+
+  // Rebuild: identical window (full overlap → same id) but the record changed
+  // (app + transcript) → updatedIds. The memory layer must RETRACT the prior
+  // memories and regenerate, so recall is refreshed and never duplicated/stale.
+  const secondData: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Meet", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("we shipped v3", "2026-03-10T14:05:00.000Z")])],
+  };
+  const extractor2 = spyExtractor("v3 summary", SUMMARY_CANDIDATES);
+  const second = await new MeetingsBuilder({
+    source: fixedSource(secondData),
+    store,
+    config: cfg,
+    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg, { extractor: extractor2 }),
+  }).buildDay(DATE);
+  assert.equal(second.meetings[0]?.id, keptId, "the record keeps its id across the change");
+  assert.equal(second.built, 1, "the changed record was rewritten");
+  assert.equal(second.removed.length, 0, "the meeting was updated in place, not removed");
+  assert.ok(
+    memoryWriter.retired.includes(meetingSourceLabel(keptId)),
+    "the kept meeting's prior memories were retracted before regenerating",
+  );
+  assert.equal(extractor2.calls, 1, "the updated record is re-extracted to refresh its facts");
+  assert.equal(
+    await memoryWriter.hasMemoryFromSource(meetingSourceLabel(keptId), staleEpisode!),
+    false,
+    "the stale episode no longer resolves for the source",
+  );
+  const episodes = memoryWriter.writes.filter(
+    (w) => w.source === meetingSourceLabel(keptId) && w.category === "moment",
+  );
+  assert.notEqual(episodes.at(-1)?.content, staleEpisode, "the refreshed episode reflects the changed record");
 });
 
 test("finding 9 — removing a meeting retires its episode/summary memories", async () => {

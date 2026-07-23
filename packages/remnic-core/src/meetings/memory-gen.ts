@@ -18,6 +18,7 @@ import { scoreImportance } from "../importance.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import type { MemoryWriteResult } from "../index.js";
 import type { MemoryCategory, MemoryStatus } from "../types.js";
 import {
   type MeetingEpisodeGenResult,
@@ -27,6 +28,7 @@ import {
   type MeetingsDayFactGenResult,
 } from "./memory-generator.js";
 import { computeTrustScore, decideSmart, type TrustEvidence } from "../wearables/trust.js";
+import { describeErrorForOperator } from "../wearables/errors.js";
 import type { MeetingRecord, MeetingsConfig } from "./types.js";
 
 /** Frontmatter `source` prefix for meeting-derived memories. */
@@ -162,6 +164,13 @@ export interface MeetingSummaryResult {
   skipped: number;
   /** True when a non-empty summary memory was written. */
   summaryWritten: boolean;
+  /** Facts the #1579 tombstone chokepoint downgraded to pending_review (no
+   *  active copy). Counted here, NOT in `active`/`review`, so callers never
+   *  report a blocked write as a successfully written fact (#1645). */
+  tombstoneBlocked: number;
+  /** Non-fatal degradation notes (e.g. the durability judge threw and the
+   *  pass continued on trust bands alone). */
+  warnings: readonly string[];
 }
 
 /** Render the fused transcript as `**Speaker** [HH:MM]: text` for the prompt. */
@@ -187,7 +196,7 @@ async function writeMeetingFact(
   candidate: MeetingFactCandidate,
   status: Extract<MemoryStatus, "active" | "pending_review">,
   writer: MeetingMemoryWriter,
-): Promise<void> {
+): Promise<MemoryWriteResult> {
   const structuredAttributes: Record<string, string> = {
     meetingId: record.id,
     meetingDate: record.date,
@@ -209,7 +218,7 @@ async function writeMeetingFact(
   if (envelope.salvageNotes.length > 0) {
     log.warn(`meeting fact write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
   }
-  await writer.writeSealedMemory(envelope, {
+  return writer.writeSealedMemory(envelope, {
     importance: scoreImportance(candidate.content, candidate.category, [MEETING_SOURCE_PREFIX]),
     contentHashSource: candidate.content,
     status,
@@ -264,6 +273,8 @@ export async function generateMeetingSummaryFacts(
     dropped: 0,
     skipped: 0,
     summaryWritten: false,
+    tombstoneBlocked: 0,
+    warnings: [],
   };
   if (config.summaryMode === "off") return empty;
   if (record.transcript.length === 0) return empty; // nothing to summarize (no audio)
@@ -273,9 +284,23 @@ export async function generateMeetingSummaryFacts(
     transcriptText: renderTranscriptText(record),
     screenContextText: renderScreenContextText(record),
   });
-  const result: MeetingSummaryResult = { ...empty, llmInvoked: true };
+  const warnings: string[] = [];
+  const result: MeetingSummaryResult = { ...empty, llmInvoked: true, warnings };
 
-  const verdicts = deps.judge ? await deps.judge.judge(candidates) : undefined;
+  // The durability judge is optional and external — a throw (provider outage,
+  // timeout, malformed response) must DEGRADE this pass, not abort the whole day
+  // build. Fall back to no verdicts so the trust bands still route each candidate
+  // (review mode → review; smart mode → trust-band decision) (#1900 round 2).
+  let verdicts: Array<"accept" | "reject" | "defer"> | undefined;
+  if (deps.judge) {
+    try {
+      verdicts = await deps.judge.judge(candidates);
+    } catch (err) {
+      warnings.push(
+        `meeting summary judge unavailable: ${describeErrorForOperator(err)} — trust scoring continued without judge verdicts`,
+      );
+    }
+  }
   // Corroboration: a meeting covered by >= 2 transcript sources corroborates its
   // claims (record.corroboratedBy already lists the out-voted sources).
   const evidence: TrustEvidence = { corroboratedBySources: [...record.corroboratedBy] };
@@ -302,9 +327,17 @@ export async function generateMeetingSummaryFacts(
       continue;
     }
     const status = outcome === "active" ? "active" : "pending_review";
-    await writeMeetingFact(record, candidate, status, deps.writer);
-    if (status === "active") result.active++;
-    else result.review++;
+    const write = await writeMeetingFact(record, candidate, status, deps.writer);
+    if (write.tombstoneBlocked) {
+      // #1645: the tombstone chokepoint downgraded this fact to pending_review
+      // (no active copy). Count it as blocked, NEVER as the active/review write
+      // we requested, so the day summary never overstates persisted facts.
+      result.tombstoneBlocked++;
+    } else if (status === "active") {
+      result.active++;
+    } else {
+      result.review++;
+    }
   }
 
   // The synthesized summary is a meeting claim too: gate it through the SAME
@@ -324,13 +357,17 @@ export async function generateMeetingSummaryFacts(
       if (outcome === "drop") {
         result.dropped++;
       } else {
-        await writeMeetingFact(
+        const write = await writeMeetingFact(
           record,
           { content: summaryText, category: "fact", confidence: SUMMARY_FACT_CONFIDENCE },
           outcome === "active" ? "active" : "pending_review",
           deps.writer,
         );
-        result.summaryWritten = true;
+        // #1645: a tombstone-blocked summary landed pending_review (no active
+        // copy) — record it as blocked, not as a written summary, so the day
+        // aggregate never reports a summary that was actually gated out.
+        if (write.tombstoneBlocked) result.tombstoneBlocked++;
+        else result.summaryWritten = true;
       }
     }
   }
@@ -399,6 +436,7 @@ async function generateMeetingDayFacts(
   config: MeetingsConfig,
   writer: MeetingMemoryWriter,
   summaryDeps: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
+  warnings: string[],
 ): Promise<MeetingsDayFactGenResult> {
   const agg: MeetingsDayFactGenResult = {
     llmInvoked: false,
@@ -420,6 +458,10 @@ async function generateMeetingDayFacts(
     agg.dropped += result.dropped;
     agg.skipped += result.skipped;
     if (result.summaryWritten) agg.summariesWritten++;
+    if (result.tombstoneBlocked > 0) {
+      agg.tombstoneBlocked = (agg.tombstoneBlocked ?? 0) + result.tombstoneBlocked;
+    }
+    if (result.warnings.length > 0) warnings.push(...result.warnings);
   }
   return agg;
 }
@@ -427,22 +469,27 @@ async function generateMeetingDayFacts(
 /**
  * Concrete `MeetingMemoryGenerator` for the builder's memory seam (issue #1900
  * decouple). Implements `onRecordsBuilt` by driving the EXISTING episode/fact/
- * retract logic, so behavior is unchanged — only the call site moves behind the
- * interface the deterministic engine depends on:
+ * retract logic behind the interface the deterministic engine depends on, and
+ * routes each built id by the partition the engine computed from the store's
+ * per-record write result (round 2):
  *
- * - retire the removed meetings' memories (so recall never surfaces a meeting
- *   `show <id>` can no longer load);
- * - write one deterministic recall-anchor episode per built record (idempotent),
- *   running on ALL records so an unchanged rebuild whose earlier episode write
- *   failed still lands it now;
- * - when `summaryDeps` is present and `config.summaryMode !== "off"`, run the
- *   trust-gated summary/facts layer per record;
- * - report `reindexNeeded` when new episodes/facts were written, folding the
- *   builder's old "reindex even if built == 0" rule.
+ * - `removedIds` — retire the deleted meetings' memories so recall never
+ *   surfaces a meeting `show <id>` can no longer load;
+ * - `updatedIds` — the record changed under a kept id: retract the prior
+ *   episode/summary for `meeting:<id>` FIRST, then regenerate from the new
+ *   record, so recall is refreshed (not duplicated, not left stale);
+ * - `unchangedIds` — the stored record was byte-identical this rebuild: SKIP
+ *   all generation for it (no episode probe, no extractor call, no rewrite) so
+ *   an idempotent rebuild fires zero LLM calls and writes nothing;
+ * - new ids (built minus unchanged minus updated) — generate fresh.
+ *
+ * `reindexNeeded` fires when the regenerated records wrote new episodes/facts;
+ * the builder additionally reindexes on removed/built counts, so a retract-only
+ * rebuild still reindexes.
  *
  * `config` is captured here (not passed through `onRecordsBuilt`) because the
- * seam input carries only built records + removed ids, while the summary/facts
- * layer needs `summaryMode` and the trust bands.
+ * seam input carries record partitions, while the summary/facts layer needs
+ * `summaryMode` and the trust bands.
  */
 export function createMeetingMemoryGenerator(
   writer: MeetingMemoryWriter,
@@ -450,15 +497,27 @@ export function createMeetingMemoryGenerator(
   summaryDeps?: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
 ): MeetingMemoryGenerator {
   return {
-    async onRecordsBuilt({ built, removedIds }): Promise<MeetingMemoryOutcome> {
+    async onRecordsBuilt({ built, removedIds, unchangedIds, updatedIds }): Promise<MeetingMemoryOutcome> {
+      // Retract deleted meetings' memories (stale removals).
       for (const removedId of removedIds) {
         await writer.retireMemoriesFromSource(meetingSourceLabel(removedId));
       }
-      const outcome: MeetingMemoryOutcome = { reindexNeeded: false, warnings: [] };
-      if (built.length > 0) {
-        outcome.episodes = await generateMeetingEpisodes(built, writer);
+      // Retract the prior memories of records that changed under a kept id, so the
+      // regeneration below REFRESHES the meeting (never leaves stale episodes/facts
+      // beside the new ones). The updated records are still in `built` and regenerate.
+      for (const updatedId of updatedIds) {
+        await writer.retireMemoriesFromSource(meetingSourceLabel(updatedId));
+      }
+      // Skip unchanged records entirely: an idempotent rebuild must fire no LLM and
+      // rewrite nothing. Generation runs only on changed (updated) + new records.
+      const unchanged = new Set(unchangedIds);
+      const toGenerate = built.filter((record) => !unchanged.has(record.id));
+      const warnings: string[] = [];
+      const outcome: MeetingMemoryOutcome = { reindexNeeded: false, warnings };
+      if (toGenerate.length > 0) {
+        outcome.episodes = await generateMeetingEpisodes(toGenerate, writer);
         if (summaryDeps !== undefined && config.summaryMode !== "off") {
-          outcome.facts = await generateMeetingDayFacts(built, config, writer, summaryDeps);
+          outcome.facts = await generateMeetingDayFacts(toGenerate, config, writer, summaryDeps, warnings);
         }
       }
       const episodesWrote = (outcome.episodes?.written ?? 0) > 0;
