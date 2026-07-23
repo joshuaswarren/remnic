@@ -98,7 +98,12 @@ async function postJson(
 ): Promise<Record<string, unknown> | null> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (target.authToken) headers.Authorization = `Bearer ${target.authToken}`;
-  const res = await fetch(`http://${target.host}:${target.port}${pathname}`, {
+  // Bracket bare IPv6 hosts (e.g. ::1, fd00::1) — a raw colon-containing
+  // host in a URL literal is ambiguous with the port separator.
+  const host = target.host.includes(":") && !target.host.startsWith("[")
+    ? `[${target.host}]`
+    : target.host;
+  const res = await fetch(`http://${host}:${target.port}${pathname}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -368,6 +373,11 @@ export interface MaybeRegisterDelegateOptions {
 // service must get its own binding exactly once (double-register of one
 // service would double-fire every handler).
 const delegateHookApiServices = new WeakMap<object, Set<string>>();
+// Apis that previously fell back to embedded because the daemon was down. A
+// later register() on the SAME api must NOT switch to delegate — the embedded
+// hooks from the fallback are still bound (OpenClaw exposes no unregister), so
+// switching would stack both memory paths (double recall/observe/flush).
+const delegateEmbeddedFallbackApis = new WeakSet<object>();
 
 /**
  * Resolve bridge mode, preflight the daemon, and register the delegate
@@ -387,6 +397,12 @@ export function maybeRegisterDelegateRuntime(
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
   const bridge = resolveBridgeMode(options.configBridgeMode);
+  if (delegateEmbeddedFallbackApis.has(api)) {
+    log.debug(
+      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
+    );
+    return false;
+  }
   if (bridge.mode !== "delegate") return false;
   const boundServices = delegateHookApiServices.get(api);
   if (boundServices?.has(options.serviceId)) {
@@ -398,6 +414,9 @@ export function maybeRegisterDelegateRuntime(
   // register() is synchronous, so the preflight uses the bridge's
   // worker-backed sync health check (the same probe detectBridgeMode uses).
   if (!deps.checkHealth(bridge.daemonHost, bridge.daemonPort)) {
+    // Record the fallback so a later register() on the same api does not switch
+    // to delegate and stack memory paths on top of the embedded hooks just bound.
+    delegateEmbeddedFallbackApis.add(api);
     log.error(
       `bridge mode delegate requested but no healthy daemon at ` +
         `${bridge.daemonHost}:${bridge.daemonPort} — falling back to the embedded runtime`,

@@ -518,3 +518,41 @@ test("delegate flushOnResetEnabled=false skips reset and session_end flush", () 
   assert.equal(api.handlers.has("before_reset"), false, "reset flush gated off");
   assert.equal(api.handlers.has("session_end"), false, "session_end flush gated off");
 });
+
+test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", async () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  try {
+    const api = recordingApi();
+    const opts = {
+      serviceId: "openclaw-remnic",
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir: "/tmp/remnic-delegate-test-memory",
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (t: string) => t,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    // First call: daemon down -> falls back to embedded.
+    let first = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => false });
+    assert.equal(first, false, "daemon down falls back to embedded");
+    // Second call on the SAME api: daemon now up, but must NOT switch to delegate
+    // (embedded hooks from the fallback are still bound — switching would stack).
+    let second = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => true });
+    assert.equal(second, false, "stays embedded to avoid stacking memory paths");
+    assert.equal(
+      api.handlers.size,
+      0,
+      "no delegate hooks bound after a prior embedded fallback",
+    );
+  } finally {
+    if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
