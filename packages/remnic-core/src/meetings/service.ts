@@ -58,7 +58,7 @@ export interface MeetingsServiceDeps {
 export class MeetingsService {
   readonly store: MeetingRecordStore;
   readonly builder: MeetingsBuilder;
-  private readonly config: MeetingsConfig;
+  readonly config: MeetingsConfig;
   private readonly scheduler: MeetingsBuildScheduler;
 
   constructor(deps: MeetingsServiceDeps) {

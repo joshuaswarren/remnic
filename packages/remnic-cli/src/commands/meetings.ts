@@ -45,7 +45,7 @@ export async function runMeetingsBinaryCommand(rest: string[]): Promise<void> {
       return;
     }
     const code = await runMeetingsCliCommand(
-      { store: meetingsService.store, builder: meetingsService.builder },
+      { store: meetingsService.store, builder: meetingsService.builder, config: meetingsService.config },
       meetingsArgs,
       { stdout: process.stdout, stderr: process.stderr },
     );

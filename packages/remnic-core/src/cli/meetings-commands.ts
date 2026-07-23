@@ -24,7 +24,7 @@ export function registerMeetingsCommands(cmd: CliCommand, orchestrator: Orchestr
   const forwardMeetings = async (argv: string[]): Promise<void> => {
     const service = await orchestrator.getMeetingsService();
     const code = await runMeetingsCliCommand(
-      { store: service.store, builder: service.builder },
+      { store: service.store, builder: service.builder, config: service.config },
       argv,
       { stdout: process.stdout, stderr: process.stderr },
     );

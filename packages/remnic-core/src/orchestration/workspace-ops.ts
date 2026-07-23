@@ -39,6 +39,8 @@ import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { WearablesService } from "../wearables/service.js";
 import { ActivityStore } from "../activity/store.js";
 import { MeetingsBuilder } from "../meetings/build.js";
+import { createMeetingMemoryWriter } from "../meetings/memory-gen.js";
+import { createMeetingSummaryDeps } from "../meetings/summary-extractor.js";
 import {
   ActivityWearablesMeetingsDaySource,
   storageWearableDayReader,
@@ -747,6 +749,28 @@ export class WorkspaceOpsCoordinator {
         config,
         timezone: this.deps.config.activity.timezone,
       });
+      // Production trust-gated summary/fact deps (issue #1900). Built from the
+      // shared LLM clients + the SAME durability-judge closure the wearables
+      // service passes (verdict cache + defer counters included), so meeting
+      // facts inherit identical judge gating — no forked trust/judge/LLM path.
+      // Pure construction (no disk/network); the builder gates on summaryMode.
+      const fallbackLlm = new FallbackLlmClient(
+        this.deps.config.gatewayConfig,
+        fallbackLlmRuntimeContextFromConfig(this.deps.config),
+      );
+      const summary = createMeetingSummaryDeps({
+        localLlm: this.deps.localLlm,
+        fallbackLlm,
+        judgeFacts: (candidates) =>
+          judgeFactDurability(
+            candidates,
+            this.deps.config,
+            this.deps.localLlm,
+            fallbackLlm,
+            this.deps.judgeVerdictCache,
+            this.deps.judgeDeferCounts,
+          ),
+      });
       const builder = new MeetingsBuilder({
         source,
         store,
@@ -760,9 +784,16 @@ export class WorkspaceOpsCoordinator {
             await this.deps.qmd.update();
           },
         },
-        // The same sealed write path the wearables generator uses, so meeting
-        // episode memories inherit encrypted-at-rest + atomic write + dedup.
-        memoryWriter: storage,
+        // The same sealed write path the wearables generator uses, adapted so
+        // meeting episodes/facts (categories the fact-hash index does not cover)
+        // dedup by a source-scoped content scan — createMeetingMemoryWriter adds
+        // the hasMemoryFromSource/retireMemoriesFromSource the builder calls at
+        // runtime, which raw StorageManager does not provide (issue #1900).
+        memoryWriter: createMeetingMemoryWriter(storage),
+        // Trust-gated summary/facts on the production build path: with a
+        // memoryWriter present and summaryMode !== "off", buildDay runs
+        // generateMeetingSummaryFacts per record (issue #1900).
+        summary,
       });
       this.deps.meetingsServiceInstance = new MeetingsService({
         config,
