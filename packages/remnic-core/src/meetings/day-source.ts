@@ -319,7 +319,13 @@ export function buildAudioWindows(
 export class ActivityWearablesMeetingsDaySource implements MeetingsDaySource {
   constructor(
     private readonly deps: {
-      activity: MeetingsActivityReader;
+      /**
+       * Screen-activity reader. Optional (issue #2123): only the machine-owner
+       * (default) namespace consumes machine-scoped activity; every other caller
+       * namespace runs audio-only, so it is constructed with no activity reader
+       * and the load degrades to zero screen snapshots.
+       */
+      activity?: MeetingsActivityReader;
       wearables: MeetingsWearableReader;
       config: MeetingsConfig;
       /** IANA timezone resolving the local day → UTC window (activity's zone). */
@@ -332,7 +338,9 @@ export class ActivityWearablesMeetingsDaySource implements MeetingsDaySource {
       throw new MeetingsInputError(`invalid day '${date}' — expected a real YYYY-MM-DD`);
     }
     const { startUtc, endUtc } = activityDayWindow(date, this.deps.timezone);
-    const snapshots = await this.deps.activity.listSnapshotsForDay(null, startUtc, endUtc);
+    const snapshots = this.deps.activity
+      ? await this.deps.activity.listSnapshotsForDay(null, startUtc, endUtc)
+      : [];
     const activity = snapshots.map(toMeetingActivitySnapshot);
     const appSpans = deriveAppSpans(snapshots, this.deps.config.appPatterns);
     const bodies = await this.deps.wearables.readDayBodies(date);

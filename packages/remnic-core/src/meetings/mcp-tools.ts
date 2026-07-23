@@ -16,6 +16,8 @@ export const MEETINGS_MCP_TOOLS: McpTool[] = [
     inputSchema: {
       type: "object",
       properties: {
+        namespace: { type: "string", description: "Caller namespace to scope this operation to (issue #2123)." },
+        sessionKey: { type: "string", description: "Session key for principal/namespace resolution." },
         date: {
           type: "string",
           description: "Optional day to list (YYYY-MM-DD). Omit for all days.",
@@ -31,6 +33,8 @@ export const MEETINGS_MCP_TOOLS: McpTool[] = [
     inputSchema: {
       type: "object",
       properties: {
+        namespace: { type: "string", description: "Caller namespace to scope this operation to (issue #2123)." },
+        sessionKey: { type: "string", description: "Session key for principal/namespace resolution." },
         id: {
           type: "string",
           description: "Meeting id (mtg-YYYY-MM-DD-<hash>). Required.",
@@ -47,6 +51,8 @@ export const MEETINGS_MCP_TOOLS: McpTool[] = [
     inputSchema: {
       type: "object",
       properties: {
+        namespace: { type: "string", description: "Caller namespace to scope this operation to (issue #2123)." },
+        sessionKey: { type: "string", description: "Session key for principal/namespace resolution." },
         date: {
           type: "string",
           description: "Day to build (YYYY-MM-DD). Required.",

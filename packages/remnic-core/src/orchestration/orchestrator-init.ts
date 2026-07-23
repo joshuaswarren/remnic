@@ -65,8 +65,8 @@ export interface OrchestratorInitDeps {
   deferredSyncSucceeded: boolean;
   disposeSearchBackendIfNeeded(): Promise<void>;
   readonly embeddingFallback: EmbeddingFallback;
-  getWearablesService(): WearablesService;
-  getMeetingsService(): Promise<MeetingsService>;
+  getWearablesService(namespace?: string): WearablesService;
+  getMeetingsService(namespace?: string): Promise<MeetingsService>;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly lastRecall: LastRecallStore;
   maintenanceNamespaces(

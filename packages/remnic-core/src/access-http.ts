@@ -13,6 +13,7 @@ import { EngramAccessForbiddenError } from "./access-errors.js";
 import {
   EngramAccessInputError,
   type EngramAccessService,
+  type WearablesMeetingsScope,
   type EngramAccessMemoryResponse,
   type EngramAccessWriteResponse,
 } from "./access-service.js";
@@ -709,6 +710,13 @@ export class EngramAccessHttpServer {
 
   private resolveRequestPrincipal(req: IncomingMessage): string | undefined {
     return this.resolveRequestIdentity(req).principal;
+  }
+
+  /** Caller scope for wearables/meetings ops (issue #2123): request principal +
+   *  gated namespace + optional sessionKey, so reads/writes resolve to the caller
+   *  namespace instead of the machine default. */
+  private wearablesScope(req: IncomingMessage, namespace?: string, sessionKey?: string): WearablesMeetingsScope {
+    return { authenticatedPrincipal: this.resolveRequestPrincipal(req), namespace: this.resolveNamespace(req, namespace), ...(sessionKey ? { sessionKey } : {}) };
   }
 
   /** Resolve namespace: only use the explicit body value. Adapter-inferred namespace
@@ -1483,7 +1491,7 @@ export class EngramAccessHttpServer {
       (pathname === "/engram/v1/wearables/status" || pathname === "/remnic/v1/wearables/status")
     ) {
       this.enforceTokenOp("wearables_status"); // boundary dispatch (issue #1525)
-      this.respondJson(res, 200, await this.service.wearablesStatus());
+      this.respondJson(res, 200, await this.service.wearablesStatus(this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)));
       return;
     }
 
@@ -1514,12 +1522,7 @@ export class EngramAccessHttpServer {
         );
       }
       try {
-        const summaries = await this.service.wearablesSync({
-          source,
-          date,
-          days,
-          forceMemories: body.forceMemories === true,
-        });
+        const summaries = await this.service.wearablesSync({ source, date, days, forceMemories: body.forceMemories === true, ...this.wearablesScope(req, optionalQueryString(body.namespace, "namespace"), optionalQueryString(body.sessionKey, "sessionKey")) });
         this.respondJson(res, 200, { summaries });
       } catch (err) {
         if (this.respondWearablesError(res, err)) return;
@@ -1541,10 +1544,7 @@ export class EngramAccessHttpServer {
       }
       const sourceParam = parsed.searchParams.get("source");
       try {
-        const transcripts = await this.service.wearablesTranscriptDay({
-          date,
-          source: sourceParam && sourceParam.length > 0 ? sourceParam : undefined,
-        });
+        const transcripts = await this.service.wearablesTranscriptDay({ date, source: sourceParam && sourceParam.length > 0 ? sourceParam : undefined, ...this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined) });
         this.respondJson(res, 200, { transcripts });
       } catch (err) {
         if (this.respondWearablesError(res, err)) return;
@@ -1566,13 +1566,7 @@ export class EngramAccessHttpServer {
         );
       }
       try {
-        const results = await this.service.wearablesTranscriptSearch({
-          query: queryParam,
-          source: nonEmptyQueryParam(parsed.searchParams.get("source")),
-          from: nonEmptyQueryParam(parsed.searchParams.get("from")),
-          to: nonEmptyQueryParam(parsed.searchParams.get("to")),
-          limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"),
-        });
+        const results = await this.service.wearablesTranscriptSearch({ query: queryParam, source: nonEmptyQueryParam(parsed.searchParams.get("source")), from: nonEmptyQueryParam(parsed.searchParams.get("from")), to: nonEmptyQueryParam(parsed.searchParams.get("to")), limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"), ...this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined) });
         this.respondJson(res, 200, { results });
       } catch (err) {
         if (this.respondWearablesError(res, err)) return;
@@ -1587,11 +1581,7 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("transcript_memories"); // boundary dispatch (issue #1525)
       try {
-        const memories = await this.service.wearablesTranscriptMemories({
-          source: nonEmptyQueryParam(parsed.searchParams.get("source")),
-          date: nonEmptyQueryParam(parsed.searchParams.get("date")),
-          limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"),
-        });
+        const memories = await this.service.wearablesTranscriptMemories({ source: nonEmptyQueryParam(parsed.searchParams.get("source")), date: nonEmptyQueryParam(parsed.searchParams.get("date")), limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"), ...this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined) });
         this.respondJson(res, 200, { memories });
       } catch (err) {
         if (this.respondWearablesError(res, err)) return;
@@ -1601,13 +1591,13 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && (pathname === "/engram/v1/meetings" || pathname === "/remnic/v1/meetings")) {
-      this.enforceTokenOp("meetings_list"); await respondMeetingsList(res, this.respondJson.bind(this), this.service, nonEmptyQueryParam(parsed.searchParams.get("date"))); return; }
+      this.enforceTokenOp("meetings_list"); await respondMeetingsList(res, this.respondJson.bind(this), this.service, nonEmptyQueryParam(parsed.searchParams.get("date")), this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     if (req.method === "POST" && (pathname === "/engram/v1/meetings/build" || pathname === "/remnic/v1/meetings/build")) {
-      this.enforceTokenOp("meetings_build"); await respondMeetingsBuild(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, { enforceQuota: () => this.ensureWriteRateLimitAvailable(req), recordHit: () => this.recordWriteRateLimitHit(req) }); return; }
+      this.enforceTokenOp("meetings_build"); await respondMeetingsBuild(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, { enforceQuota: () => this.ensureWriteRateLimitAvailable(req), recordHit: () => this.recordWriteRateLimitHit(req) }, (ns, sk) => this.wearablesScope(req, ns, sk)); return; }
     const meetingGetEngram = /^\/engram\/v1\/meetings\/([^/]+)$/.exec(pathname);
-    if (req.method === "GET" && meetingGetEngram) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetEngram[1] ?? ""); return; }
+    if (req.method === "GET" && meetingGetEngram) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetEngram[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname);
-    if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? ""); return; }
+    if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
 
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)

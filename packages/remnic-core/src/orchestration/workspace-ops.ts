@@ -112,8 +112,8 @@ export interface WorkspaceOpsDeps {
   }>;
   readonly storage: StorageManager;
   readonly storageRouter: NamespaceStorageRouter;
-  wearablesServiceInstance: WearablesService | null;
-  meetingsServiceInstance: MeetingsService | null;
+  readonly wearablesServiceByNamespace: Map<string, WearablesService>;
+  readonly meetingsServiceByNamespace: Map<string, MeetingsService>;
 }
 
 function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
@@ -653,12 +653,12 @@ export class WorkspaceOpsCoordinator {
    * memory writes stay consistent. Writes are pinned to the same
    * deterministic namespace bulk-import uses.
    */
-  getWearablesService(): WearablesService {
-    if (!this.deps.wearablesServiceInstance) {
-      this.deps.wearablesServiceInstance = new WearablesService({
+  getWearablesService(namespace: string): WearablesService {
+    let service = this.deps.wearablesServiceByNamespace.get(namespace);
+    if (!service) {
+      service = new WearablesService({
         config: this.deps.config.wearables,
-        getStorage: async () =>
-          await this.deps.getStorageForNamespace(this.deps.bulkImportWriteNamespace()),
+        getStorage: async () => await this.deps.getStorageForNamespace(namespace),
         extract: (turns) => this.deps.extraction.extract(turns),
         // Smart memoryMode runs candidates through the SAME extraction
         // judge (cache + defer counters included) the live extraction
@@ -711,7 +711,7 @@ export class WorkspaceOpsCoordinator {
         onDaysSynced: async (days) => {
           if (!this.deps.config.meetings.enabled) return;
           try {
-            const meetings = await this.getMeetingsService();
+            const meetings = await this.getMeetingsService(namespace);
             for (const day of days) meetings.requestBuild(day);
           } catch (err) {
             log.warn(
@@ -722,8 +722,9 @@ export class WorkspaceOpsCoordinator {
           }
         },
       });
+      this.deps.wearablesServiceByNamespace.set(namespace, service);
     }
-    return this.deps.wearablesServiceInstance;
+    return service;
   }
 
   /**
@@ -735,17 +736,21 @@ export class WorkspaceOpsCoordinator {
    * episode memories land beside wearable/activity artifacts. Constructing it
    * touches no disk while `meetings.enabled` is off — every entrypoint gates.
    */
-  async getMeetingsService(): Promise<MeetingsService> {
-    if (!this.deps.meetingsServiceInstance) {
+  async getMeetingsService(namespace: string): Promise<MeetingsService> {
+    let service = this.deps.meetingsServiceByNamespace.get(namespace);
+    if (!service) {
       const config = this.deps.config.meetings;
       const memoryDir = this.deps.config.memoryDir;
-      const storage = await this.deps.getStorageForNamespace(this.deps.bulkImportWriteNamespace());
+      const storage = await this.deps.getStorageForNamespace(namespace);
       const store = storage.meetingRecordStore();
-      // Activity snapshots live in a SQLite store opened per read so no long-lived
-      // handle is held; a missing/unavailable activity store degrades to no
-      // screen context rather than failing the whole build (audio-only meetings
-      // still detect).
-      const activity: MeetingsActivityReader = {
+      // Activity is machine-scoped (<memoryDir>/state/activity.sqlite) and is
+      // consumed ONLY by the machine-owner (default) namespace; every other
+      // caller namespace runs audio-only with no activity reader (issue #2123).
+      // A missing/unavailable store degrades to no screen context, never a fail.
+      const activity: MeetingsActivityReader | undefined =
+        namespace !== this.deps.config.defaultNamespace
+          ? undefined
+          : {
         listSnapshotsForDay: (machine, startUtc, endUtc) => {
           let activityStore: ActivityStore | undefined;
           try {
@@ -762,7 +767,7 @@ export class WorkspaceOpsCoordinator {
             activityStore?.close();
           }
         },
-      };
+          };
       const source = new ActivityWearablesMeetingsDaySource({
         activity,
         wearables: storageWearableDayReader(storage),
@@ -813,7 +818,7 @@ export class WorkspaceOpsCoordinator {
         // summaryMode internally, so `off` never invokes the extractor.
         memoryGenerator: createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config, summary),
       });
-      this.deps.meetingsServiceInstance = new MeetingsService({
+      service = new MeetingsService({
         config,
         store,
         builder,
@@ -825,8 +830,9 @@ export class WorkspaceOpsCoordinator {
             }`,
           ),
       });
+      this.deps.meetingsServiceByNamespace.set(namespace, service);
     }
-    return this.deps.meetingsServiceInstance;
+    return service;
   }
 
   async autoConsolidateIdentity(): Promise<void> {

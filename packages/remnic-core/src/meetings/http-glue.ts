@@ -12,7 +12,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { EngramAccessInputError } from "../access-service.js";
+import { EngramAccessInputError, type WearablesMeetingsScope } from "../access-service.js";
 import { MeetingsInputError } from "./errors.js";
 
 type RespondJson = (res: ServerResponse, status: number, payload: unknown) => void;
@@ -20,9 +20,9 @@ type ReadJsonBody = (req: IncomingMessage) => Promise<unknown>;
 
 /** Minimal meetings surface the HTTP glue drives (satisfied by EngramAccessService). */
 export interface MeetingsHttpService {
-  meetingsList(date?: string): Promise<unknown>;
-  meetingsGet(id: string): Promise<unknown>;
-  meetingsBuild(date: string): Promise<unknown>;
+  meetingsList(date?: string, scope?: WearablesMeetingsScope): Promise<unknown>;
+  meetingsGet(id: string, scope?: WearablesMeetingsScope): Promise<unknown>;
+  meetingsBuild(date: string, scope?: WearablesMeetingsScope): Promise<unknown>;
 }
 
 function respondMeetingsError(respondJson: RespondJson, res: ServerResponse, err: unknown): boolean {
@@ -63,9 +63,10 @@ export async function respondMeetingsList(
   respondJson: RespondJson,
   service: MeetingsHttpService,
   date: string | undefined,
+  scope?: WearablesMeetingsScope,
 ): Promise<void> {
   try {
-    respondJson(res, 200, await service.meetingsList(date));
+    respondJson(res, 200, await service.meetingsList(date, scope));
   } catch (err) {
     if (respondMeetingsError(respondJson, res, err)) return;
     throw err;
@@ -77,9 +78,10 @@ export async function respondMeetingsGet(
   respondJson: RespondJson,
   service: MeetingsHttpService,
   rawId: string,
+  scope?: WearablesMeetingsScope,
 ): Promise<void> {
   try {
-    respondJson(res, 200, await service.meetingsGet(decodeMeetingIdSegment(rawId)));
+    respondJson(res, 200, await service.meetingsGet(decodeMeetingIdSegment(rawId), scope));
   } catch (err) {
     if (respondMeetingsError(respondJson, res, err)) return;
     throw err;
@@ -93,6 +95,7 @@ export async function respondMeetingsBuild(
   readJsonBody: ReadJsonBody,
   service: MeetingsHttpService,
   quota: MeetingsWriteQuotaHooks,
+  scopeFor?: (bodyNamespace?: string, bodySessionKey?: string) => WearablesMeetingsScope,
 ): Promise<void> {
   const body = (await readJsonBody(req)) as Record<string, unknown>;
   const raw = body.date;
@@ -108,8 +111,12 @@ export async function respondMeetingsBuild(
   // write (capsule import/export, admin promote). Enforce before the write,
   // account the hit after it succeeds (issue #1937).
   quota.enforceQuota();
+  const scope = scopeFor?.(
+    typeof body.namespace === "string" ? body.namespace : undefined,
+    typeof body.sessionKey === "string" ? body.sessionKey : undefined,
+  );
   try {
-    const result = await service.meetingsBuild(date);
+    const result = await service.meetingsBuild(date, scope);
     quota.recordHit();
     respondJson(res, 200, result);
   } catch (err) {

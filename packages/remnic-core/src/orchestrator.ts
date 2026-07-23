@@ -876,8 +876,8 @@ export class Orchestrator {
   private readonly consolidationObservers = new Set<
     (observation: ConsolidationObservation) => Promise<void> | void
   >();
-  private wearablesServiceInstance: WearablesService | null = null;
-  private meetingsServiceInstance: MeetingsService | null = null;
+  private readonly wearablesServiceByNamespace = new Map<string, WearablesService>();
+  private readonly meetingsServiceByNamespace = new Map<string, MeetingsService>();
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
   private lastFileHygieneRunAtMs = 0;
@@ -957,7 +957,7 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
-    this.meetingsServiceInstance?.dispose();
+    for (const svc of this.meetingsServiceByNamespace.values()) svc.dispose();
     await this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
     // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
@@ -2998,9 +2998,9 @@ export class Orchestrator {
     return this.config.defaultNamespace;
   }
 
-  getWearablesService(): WearablesService { return this.workspaceOpsCoordinator.getWearablesService(); }
+  getWearablesService(namespace: string = this.config.defaultNamespace): WearablesService { return this.workspaceOpsCoordinator.getWearablesService(namespace); }
 
-  getMeetingsService(): Promise<MeetingsService> { return this.workspaceOpsCoordinator.getMeetingsService(); }
+  getMeetingsService(namespace: string = this.config.defaultNamespace): Promise<MeetingsService> { return this.workspaceOpsCoordinator.getMeetingsService(namespace); }
 
   async ingestBulkImportBatch(
     turns: ImportTurn[],

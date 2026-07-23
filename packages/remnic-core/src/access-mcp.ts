@@ -39,7 +39,7 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
 
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
-import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
+import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
 type JsonRpcId = string | number | null;
 
@@ -687,124 +687,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      {
-        name: "engram.wearables_status",
-        description:
-          "Status of wearable transcript sources (Limitless / Bee / Omi): configured sources, connector availability, last sync, stored transcript days.",
-        inputSchema: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.wearables_sync",
-        description:
-          "Pull, clean, and store wearable transcripts for one source or all enabled sources; optionally creates trust-gated memories per the source's memoryMode.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            source: {
-              type: "string",
-              description: "Source id (e.g. limitless, bee, omi). Omit to sync every enabled source.",
-            },
-            date: {
-              type: "string",
-              description: "Sync exactly this day (YYYY-MM-DD). Overrides days.",
-            },
-            days: {
-              type: "integer",
-              minimum: 1,
-              maximum: 90,
-              description: "Lookback window in days ending today (default 2).",
-            },
-            forceMemories: {
-              type: "boolean",
-              description: "Re-run memory extraction even for unchanged days.",
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.transcript_day",
-        description:
-          "Return the full stored wearable transcript(s) for a day, across all sources or one source, with cross-source overlap hints.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            date: {
-              type: "string",
-              description: "Day to read (YYYY-MM-DD). Required.",
-            },
-            source: {
-              type: "string",
-              description: "Optional source id to scope to (e.g. limitless).",
-            },
-          },
-          required: ["date"],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.transcript_search",
-        description:
-          "Search stored wearable transcripts. Results carry source + date so callers can pull the full day via engram.transcript_day.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Search query. Required; non-empty.",
-            },
-            source: {
-              type: "string",
-              description: "Optional source id filter.",
-            },
-            from: {
-              type: "string",
-              description: "Optional inclusive start date (YYYY-MM-DD).",
-            },
-            to: {
-              type: "string",
-              description: "Optional inclusive end date (YYYY-MM-DD).",
-            },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              maximum: 50,
-              description: "Maximum results (default 10).",
-            },
-          },
-          required: ["query"],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.transcript_memories",
-        description:
-          "List memories created from wearable transcripts, filterable by source and/or day. Includes pending_review candidates awaiting approval.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            source: {
-              type: "string",
-              description: "Optional source id filter (e.g. limitless).",
-            },
-            date: {
-              type: "string",
-              description: "Optional transcript day filter (YYYY-MM-DD).",
-            },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              maximum: 200,
-              description: "Maximum results (default 50).",
-            },
-          },
-          additionalProperties: false,
-        },
-      }, ...MEETINGS_MCP_TOOLS,
+      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS,
       {
         name: "engram.action_confidence",
         description:
