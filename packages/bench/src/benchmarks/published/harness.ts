@@ -575,7 +575,11 @@ async function executeTrial(
     : undefined;
   const currentProfile = ctx.options.runtimeProfile ?? null;
   let answered: HarnessAnswerResult;
-  if (cachedAnswer && cachedAnswer.sourceRuntimeProfile !== currentProfile) {
+  if (
+    cachedAnswer
+    && cachedAnswer.sourceRuntimeProfile === "baseline"
+    && currentProfile === "real"
+  ) {
     answered = {
       finalAnswer: cachedAnswer.finalAnswer,
       recalledText,

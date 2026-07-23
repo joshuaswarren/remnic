@@ -1964,6 +1964,7 @@ export const __benchDatasetTestHooks = {
   isDatasetDownloaded,
   resolveBenchDatasetDir,
   resolveDownloadedBenchDatasetDir,
+  pairedAnswerReplayCacheForBenchmark,
   buildPublishedBenchmarkOptionsForTest(
     benchmarkId: string,
     args: {
@@ -3492,6 +3493,13 @@ async function preflightLocalLabEndpointsIfNeeded(
   }
 }
 
+function pairedAnswerReplayCacheForBenchmark(
+  benchmarkId: string,
+  pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
+): import("@remnic/bench").PairedAnswerReplayCache | undefined {
+  return benchmarkId === "locomo" ? pairedAnswerReplayCache : undefined;
+}
+
 async function runBenchViaPackage(
   parsed: ParsedBenchArgs,
   benchmarkId: string,
@@ -3595,6 +3603,10 @@ async function runBenchViaPackage(
     if (benchmarkId === "memcorrect-v1" && parsed.adapter === "mcp") {
       benchmarkOptions = { ...(benchmarkOptions ?? {}), adapter: system };
     }
+    const locomoPairedAnswerReplayCache = pairedAnswerReplayCacheForBenchmark(
+      benchmarkId,
+      pairedAnswerReplayCache,
+    );
     const result = await benchModule.runBenchmark(benchmarkId, {
       mode: parsed.quick ? "quick" : "full",
       datasetDir,
@@ -3611,7 +3623,7 @@ async function runBenchViaPackage(
       // Issue #1573 PR1: judge-result cache controls from the CLI flags.
       ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
       ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
-      ...(pairedAnswerReplayCache ? { pairedAnswerReplayCache } : {}),
+      ...(locomoPairedAnswerReplayCache ? { pairedAnswerReplayCache: locomoPairedAnswerReplayCache } : {}),
       ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }

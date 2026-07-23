@@ -6,7 +6,21 @@ import test from "node:test";
 
 import { __benchDatasetTestHooks } from "./index.js";
 
+test("paired answer replay cache is exclusive to LoCoMo", () => {
+  const cache = new Map();
+
+  assert.equal(
+    __benchDatasetTestHooks.pairedAnswerReplayCacheForBenchmark("locomo", cache),
+    cache,
+  );
+  assert.equal(
+    __benchDatasetTestHooks.pairedAnswerReplayCacheForBenchmark("longmemeval", cache),
+    undefined,
+  );
+});
+
 test("resolveDownloadedBenchDatasetDir rejects explicit dataset paths without benchmark markers", async () => {
+
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-datasets-"));
   const invalidDataset = path.join(root, "not-downloaded");
 
