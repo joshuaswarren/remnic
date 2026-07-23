@@ -84,7 +84,6 @@ import {
   computeArtifactRecallLimit,
   computeQmdHybridFetchLimit,
   defaultWorkspaceDir,
-  isArtifactMemoryPath,
   raceRecallAbort,
   resolveRecallModeDecision,
   resolveRecallModeDecisionAsync,
@@ -97,6 +96,7 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "../orchestrator.js";
+import { isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
 
 import type {
   RecallSectionAppendOptions,
@@ -4161,10 +4161,8 @@ export class RecallInternalCoordinator {
         memoryResults = memoryResults.filter((r) =>
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
-      // Artifacts are injected through dedicated verbatim recall flow only.
-      memoryResults = memoryResults.filter(
-        (r) => !isArtifactMemoryPath(r.path),
-      );
+      // Artifacts + activity digests are dedicated surfaces, never generic recall.
+      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&
@@ -4552,6 +4550,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
+                memoryRoot: this.deps.config.memoryDir,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4749,6 +4748,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
+                memoryRoot: this.deps.config.memoryDir,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4871,7 +4871,7 @@ export class RecallInternalCoordinator {
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
           const activeMemories = memories.filter(
             (m) => {
-              if (isArtifactMemoryPath(m.path)) return false;
+              if (isGenericRecallExcludedPath(m.path, this.deps.config.memoryDir)) return false;
               const status = m.frontmatter.status;
               if (!status || status === "active") return true;
               if (status === "superseded") {
