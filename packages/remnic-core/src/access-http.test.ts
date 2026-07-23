@@ -2895,3 +2895,64 @@ test("HTTP namespace/writable preflight admits write-scoped tokens and rejects r
     await server.stop();
   }
 });
+
+test("HTTP meetings build enforces the per-principal write rate limit (issue #1937)", async () => {
+  let builds = 0;
+  const service = {
+    meetingsBuild: async (date: string) => {
+      builds += 1;
+      return { enabled: true, date, meetings: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  try {
+    const build = () =>
+      fetch(`http://127.0.0.1:${status.port}/engram/v1/meetings/build`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify({ date: "2026-03-10" }),
+      });
+    const first = await build();
+    assert.equal(first.status, 200, "the first build is within the write quota");
+    const second = await build();
+    assert.equal(second.status, 429, "the second build exceeds the per-principal write quota");
+    assert.equal((await second.json()).code, "write_rate_limited");
+    assert.equal(builds, 1, "the rate-limited build never reached the service (no persist/reindex)");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id (issue #1900)", async () => {
+  let called = 0;
+  const service = {
+    meetingsGet: async () => {
+      called += 1;
+      return { enabled: true, found: false, id: "x", record: null };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/meetings/%E0%A4%A`, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(response.status, 400, "a malformed id is a client error, not an internal 500");
+    assert.equal((await response.json()).code, "invalid_request");
+    assert.equal(called, 0, "the malformed id never reached the service");
+  } finally {
+    await server.stop();
+  }
+});

@@ -11,6 +11,7 @@ import {
   type MeetingsWearableReader,
 } from "./day-source.js";
 import { MeetingsInputError } from "./errors.js";
+import { detectMeetings } from "./detect.js";
 import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import type { MeetingsConfig } from "./types.js";
 
@@ -59,7 +60,7 @@ test("deriveAppSpans groups consecutive matching snapshots and breaks on a non-m
     config().appPatterns,
   );
   assert.equal(spans.length, 2, "the non-matching snapshot splits the run into two spans");
-  assert.deepEqual(spans[0], { app: "Zoom", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:01:00.000Z" });
+  assert.deepEqual(spans[0], { app: "Zoom", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:02:00.000Z" }, "the run ends at the next (non-matching) snapshot that bounds it");
   assert.deepEqual(spans[1], { app: "Zoom", startUtc: "2026-03-10T14:03:00.000Z", endUtc: "2026-03-10T14:03:00.000Z" });
 });
 
@@ -138,4 +139,85 @@ test("loadDayData rejects a malformed day with a clean input error", async () =>
     timezone: "UTC",
   });
   await assert.rejects(() => Promise.resolve(source.loadDayData("2026-13-40")), MeetingsInputError);
+});
+
+test("deriveAppSpans gives a lone matching snapshot a non-zero span so app+audio detection is not missed (issue #1900)", () => {
+  const spans = deriveAppSpans(
+    [
+      snap({ app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" }), // single match
+      snap({ app: "Notes", capturedAtUtc: "2026-03-10T14:30:00.000Z" }), // ends + bounds it
+    ],
+    config().appPatterns,
+  );
+  assert.equal(spans.length, 1);
+  assert.deepEqual(spans[0], { app: "Zoom", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:30:00.000Z" });
+  assert.ok(
+    Date.parse(spans[0]!.endUtc) > Date.parse(spans[0]!.startUtc),
+    "the span is non-zero-length, so detect's isFinitePair keeps it",
+  );
+  // With a real span the overlapping audio window now classifies as app+audio;
+  // the old zero-length span was dropped and this returned nothing.
+  const detected = detectMeetings({
+    date: DATE,
+    appSpans: spans,
+    audioWindows: [
+      { source: "desktop", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:30:00.000Z", distinctNonWearerSpeakers: 1 },
+    ],
+  });
+  assert.equal(detected.length, 1);
+  assert.equal(detected[0]?.detectionSource, "app+audio");
+});
+
+test("deriveAppSpans derives runs per capture machine so another machine cannot split a call (issue #1900)", () => {
+  // Laptop is in Zoom continuously; a desktop ticks Chrome (non-match) in between.
+  const spans = deriveAppSpans(
+    [
+      snap({ machine: "laptop", app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" }),
+      snap({ machine: "desktop", app: "Chrome", capturedAtUtc: "2026-03-10T14:01:00.000Z" }),
+      snap({ machine: "laptop", app: "Zoom", capturedAtUtc: "2026-03-10T14:02:00.000Z" }),
+      snap({ machine: "desktop", app: "Chrome", capturedAtUtc: "2026-03-10T14:03:00.000Z" }),
+      snap({ machine: "laptop", app: "Zoom", capturedAtUtc: "2026-03-10T14:04:00.000Z" }),
+    ],
+    config().appPatterns,
+  );
+  assert.equal(spans.length, 1, "the desktop's Chrome ticks must not fragment the laptop's Zoom run");
+  assert.deepEqual(spans[0], { app: "Zoom", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:04:00.000Z" });
+});
+
+test("loadDayData converts the transcript timezone so audio lines up with UTC screen snapshots (issue #1900)", async () => {
+  const body = [
+    "# desktop transcript — 2026-03-10",
+    "",
+    "## 09:00–09:30 · Standup (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: morning",
+    "**Jane** [09:05]: hi",
+    "**Bob** [09:10]: hey",
+    "",
+  ].join("\n");
+  const activity: MeetingsActivityReader = {
+    listSnapshotsForDay: () => [
+      snap({ app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" }),
+      snap({ app: "Notes", capturedAtUtc: "2026-03-10T14:35:00.000Z" }),
+    ],
+  };
+  const wearables: MeetingsWearableReader = {
+    readDayBodies: async () => [{ source: "desktop", body, timezone: "America/Chicago" }],
+  };
+  const source = new ActivityWearablesMeetingsDaySource({
+    activity,
+    wearables,
+    config: config(),
+    timezone: "America/Chicago",
+  });
+  const data = await source.loadDayData(DATE);
+  // 09:00 America/Chicago (CDT) is 14:00Z, not 09:00Z: the window now overlaps
+  // the 14:00Z Zoom snapshot; before the fix it drifted to 09:00Z and missed it.
+  assert.equal(data.detection.audioWindows.length, 1);
+  assert.equal(data.detection.audioWindows[0]?.startUtc, "2026-03-10T14:00:00.000Z");
+  assert.equal(data.detection.audioWindows[0]?.endUtc, "2026-03-10T14:30:00.000Z");
+  assert.equal(data.conversations[0]?.startIso, "2026-03-10T14:00:00.000Z");
+  const detected = detectMeetings(data.detection);
+  assert.equal(detected.length, 1);
+  assert.equal(detected[0]?.detectionSource, "app+audio");
 });

@@ -1603,7 +1603,7 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && (pathname === "/engram/v1/meetings" || pathname === "/remnic/v1/meetings")) {
       this.enforceTokenOp("meetings_list"); await respondMeetingsList(res, this.respondJson.bind(this), this.service, nonEmptyQueryParam(parsed.searchParams.get("date"))); return; }
     if (req.method === "POST" && (pathname === "/engram/v1/meetings/build" || pathname === "/remnic/v1/meetings/build")) {
-      this.enforceTokenOp("meetings_build"); await respondMeetingsBuild(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service); return; }
+      this.enforceTokenOp("meetings_build"); await respondMeetingsBuild(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, { enforceQuota: () => this.ensureWriteRateLimitAvailable(req), recordHit: () => this.recordWriteRateLimitHit(req) }); return; }
     const meetingGetEngram = /^\/engram\/v1\/meetings\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && meetingGetEngram) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetEngram[1] ?? ""); return; }
     const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname);

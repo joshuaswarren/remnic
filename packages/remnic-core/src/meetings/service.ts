@@ -125,13 +125,24 @@ export class MeetingsService {
   }
 
   /**
-   * Activity tail-step (issue #1900): derive the sync tick's local day (in the
-   * activity timezone) and schedule a debounced (re)build. No-op when disabled,
+   * Activity tail-step (issue #1900): schedule a debounced (re)build for every
+   * local day the sync touched. The tick's own local day (from `ranAtIso`, in
+   * the activity timezone) is always eligible; `touchedDates` adds any OTHER
+   * days a rolling/backfill sync changed, so a change to yesterday's activity
+   * rebuilds yesterday's meetings rather than only today's. No-op when disabled,
    * so a sync of other signals never spins up meeting building behind the gate.
    */
-  requestBuildForActivitySync(ranAtIso: string, timezone: string): void {
+  requestBuildForActivitySync(
+    ranAtIso: string,
+    timezone: string,
+    touchedDates: readonly string[] = [],
+  ): void {
     if (!this.config.enabled) return;
-    this.scheduler.requestBuild(formatDateInTimeZone(new Date(ranAtIso), timezone));
+    const days = new Set<string>([formatDateInTimeZone(new Date(ranAtIso), timezone)]);
+    for (const date of touchedDates) {
+      if (isValidTranscriptDate(date)) days.add(date);
+    }
+    for (const date of days) this.scheduler.requestBuild(date);
   }
 
   /** Force any pending debounced builds to run now (teardown/tests). */

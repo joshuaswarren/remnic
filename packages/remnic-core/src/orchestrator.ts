@@ -1489,7 +1489,7 @@ export class Orchestrator {
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
       getStorage: () => this.storage, storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
-      onActivitySynced: (summary) => { if (!this.config.meetings.enabled) return; void this.getMeetingsService().then((s) => s.requestBuildForActivitySync(summary.ranAt, this.config.activity.timezone)).catch((err) => log.warn(`meetings: activity tail-step build failed to schedule: ${err instanceof Error ? err.message : String(err)}`)); },
+      onActivitySynced: (summary) => { if (!this.config.meetings.enabled) return; void this.getMeetingsService().then((s) => s.requestBuildForActivitySync(summary.ranAt, this.config.activity.timezone, summary.touchedDates)).catch((err) => log.warn(`meetings: activity tail-step build failed to schedule: ${err instanceof Error ? err.message : String(err)}`)); },
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();

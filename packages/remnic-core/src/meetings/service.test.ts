@@ -160,3 +160,36 @@ test("requestBuild + flush runs the debounced tail-step build when enabled", asy
   const summaries = await store.listMeetingSummaries(DATE);
   assert.equal(summaries.length, 1);
 });
+
+test("requestBuildForActivitySync rebuilds every touched date, not just the sync tick's day (issue #1900)", async () => {
+  const source: MeetingsDaySource = {
+    loadDayData: (date) => ({
+      detection: {
+        date,
+        appSpans: [{ app: "Zoom", startUtc: `${date}T14:00:00.000Z`, endUtc: `${date}T15:00:00.000Z` }],
+        audioWindows: [
+          { source: "desktop", startUtc: `${date}T14:00:00.000Z`, endUtc: `${date}T15:00:00.000Z`, distinctNonWearerSpeakers: 2 },
+        ],
+      },
+      conversations: [
+        {
+          source: "desktop",
+          conversationId: "c1",
+          startIso: `${date}T14:00:00.000Z`,
+          endIso: `${date}T15:00:00.000Z`,
+          segments: [{ speaker: "Jane", isSelf: false, text: "hi", startIso: `${date}T14:05:00.000Z` }],
+        },
+      ],
+    }),
+  };
+  const { service, store } = makeService(config(), source);
+  // The sync tick ran today (2026-03-10); a rolling/backfill window also changed
+  // yesterday's activity. Both days must rebuild — not just the tick's local day.
+  service.requestBuildForActivitySync("2026-03-10T14:30:00.000Z", "UTC", ["2026-03-09", "2026-03-10"]);
+  await service.flushBuilds();
+  assert.deepEqual(
+    (await store.listMeetingDates()).sort(),
+    ["2026-03-09", "2026-03-10"],
+    "the backfilled older day is rebuilt too, not only the tick's local day",
+  );
+});

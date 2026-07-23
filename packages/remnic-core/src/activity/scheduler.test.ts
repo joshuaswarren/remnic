@@ -50,6 +50,7 @@ const SUMMARY: ActivitySyncRunSummary = {
   reindexErrorCount: 0,
   totalInserted: 0,
   results: [],
+  touchedDates: [],
 };
 
 function enabledConfig(): ActivityConfig {

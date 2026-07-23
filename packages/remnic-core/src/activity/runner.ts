@@ -60,6 +60,12 @@ export interface ActivitySyncRunSummary {
   reindexErrorCount: number;
   totalInserted: number;
   results: ActivitySourceRunItem[];
+  /**
+   * Local dates (YYYY-MM-DD, in the sync timezone) that gained new snapshots
+   * this run — a backfill/rolling window can touch several. Meetings rebuild
+   * uses this so a change to an OLDER day rebuilds that day, not just today.
+   */
+  touchedDates: string[];
 }
 
 export interface ActivitySyncRunOptions {
@@ -148,6 +154,7 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
       reindexErrorCount: 0,
       totalInserted: 0,
       results: [],
+      touchedDates: [],
     };
   }
 
@@ -163,6 +170,9 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
   const ownStore = options.store === undefined;
   const store = options.store ?? ActivityStore.open(options.memoryDir);
   const results: ActivitySourceRunItem[] = [];
+  // Local dates that gained new snapshots this run (any source). Drives the
+  // meetings rebuild fan-out so a backfilled OLDER day is rebuilt too.
+  const touchedDates = new Set<string>();
 
   try {
     for (const sourceConfig of options.config.sources) {
@@ -191,6 +201,7 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
             });
             item.fetched += result.fetched;
             item.inserted += result.inserted;
+            if (result.inserted > 0) touchedDates.add(date);
             item.duplicates += result.duplicates;
             if (result.digestWritten) item.digestsWritten += 1;
             item.cursor = result.cursor;
@@ -233,5 +244,6 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
     reindexErrorCount: results.filter((item) => item.reindexError !== undefined).length,
     totalInserted: results.reduce((sum, item) => sum + item.inserted, 0),
     results,
+    touchedDates: [...touchedDates].sort(),
   };
 }

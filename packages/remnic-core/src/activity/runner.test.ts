@@ -453,3 +453,40 @@ test("an older-day failure does not starve newer dates in a multi-day window", a
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("runActivitySyncOnce reports every local date that gained snapshots (issue #1900 backfill)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    let calls = 0;
+    const client: ActivitySourceClient = {
+      machineLabel: "workstation-a",
+      async verify() {
+        return { ok: true };
+      },
+      async fetchSnapshots() {
+        calls += 1;
+        // Dates are processed oldest-first: day 1 = 2026-07-21, day 2 = 2026-07-22.
+        const capturedAtUtc = calls === 1 ? "2026-07-21T14:00:00.000Z" : "2026-07-22T14:00:00.000Z";
+        return { snapshots: [snapshot({ capturedAtUtc, contentHash: `hash-${calls}` })], nextCursor: null };
+      },
+    };
+
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({ syncDays: 2 }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+    });
+
+    assert.deepEqual(
+      summary.touchedDates,
+      ["2026-07-21", "2026-07-22"],
+      "both days that inserted snapshots are reported so meetings rebuild the older day too",
+    );
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
