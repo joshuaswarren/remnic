@@ -561,16 +561,6 @@ jobs:
               echo "::notice::Skipping private package: $pkg_dir"
               continue
             fi
-            # Platform-specific native packages (declaring an `os` allow-list,
-            # e.g. the darwin capture-helper binaries whose prebuilt binary only
-            # exists on its own platform) cannot be packed intact on this Ubuntu
-            # runner; each carries a prepack guard that fails loudly without it.
-            # They publish from their dedicated platform CI job — skip here.
-            pkg_os="$(node -p "JSON.stringify(require('./$pkg_json').os || [])")"
-            if [ "$pkg_os" != "[]" ] && ! node -e "process.exit((require('./$pkg_json').os||[]).includes(process.platform)?0:1)"; then
-              echo "::notice::Skipping platform-specific package on $(node -p 'process.platform'): $pkg_dir (published from its platform CI job)"
-              continue
-            fi
             pkg_name="$(node -p "require('./$pkg_json').name")"
             pkg_version="$(node -p "require('./$pkg_json').version")"
             pkg_exists="false"

@@ -4,6 +4,12 @@ macOS Apple Silicon (arm64) platform package for the unified Remnic native
 capture helper, `remnic-capture-helper`. One binary serves both the audio
 capture pipeline (#1897) and the screen-activity pipeline (#1899).
 
+> **Not yet published.** This package is currently `private` and not on npm.
+> Runtime distribution via npm is tracked in
+> https://github.com/joshuaswarren/remnic/issues/2139. Until then, build the
+> helper from source (`packages/capture-native-darwin-helper`) and point
+> `REMNIC_CAPTURE_HELPER_BIN` at the binary.
+
 ## What this package provides
 
 - `helperBinaryPath` — an absolute path to the packaged `bin/remnic-capture-helper`

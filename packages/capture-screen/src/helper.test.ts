@@ -48,7 +48,9 @@ test("a missing helper package degrades honestly with an install hint (never MOD
   const res = await resolveHelperBinaryPath({});
   assert.equal(res.binaryPath, null);
   assert.ok(res.hint, "an unavailable helper must carry a hint");
-  assert.match(res.hint ?? "", /npm install @remnic\/capture-native-/);
+  assert.match(res.hint ?? "", /issues\/2139/);
+  assert.match(res.hint ?? "", /REMNIC_CAPTURE_HELPER_BIN/);
+  assert.doesNotMatch(res.hint ?? "", /npm install/);
   assert.doesNotMatch(res.hint ?? "", /MODULE_NOT_FOUND/);
 });
 

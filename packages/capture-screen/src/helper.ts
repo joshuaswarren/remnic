@@ -39,7 +39,11 @@ export function helperPackageName(platform: string = process.platform, arch: str
 }
 
 function installHint(pkg: string): string {
-  return `native capture helper not installed — run \`npm install ${pkg}\` to enable live screen capture`;
+  return (
+    `native capture helper (${pkg}) is not available on this install — it ships via a tracked follow-up ` +
+    `(https://github.com/joshuaswarren/remnic/issues/2139). To enable live screen capture now, build the Swift ` +
+    `helper from source (packages/capture-native-darwin-helper) and set REMNIC_CAPTURE_HELPER_BIN to the binary`
+  );
 }
 
 function isModuleNotFound(err: unknown): boolean {

@@ -13,8 +13,6 @@ const expectedPublishDirs = [
   "packages/coding-graph",
   "packages/capture-audio",
   "packages/capture-screen",
-  "packages/capture-native-darwin-arm64",
-  "packages/capture-native-darwin-x64",
   "packages/export-weclone",
   "packages/import-weclone",
   "packages/import-chatgpt",
