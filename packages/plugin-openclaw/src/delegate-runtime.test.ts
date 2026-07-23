@@ -105,6 +105,8 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
     resolveSessionDisabled: async () => false,
     cleanUserMessage: (text: string) => text,
     hookTimeoutMs: 5_000,
+    shouldSkipRecall: () => false,
+    flushOnResetEnabled: true,
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
@@ -363,6 +365,8 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
         respectBundledActiveMemoryToggle: false,
         cleanUserMessage: (text: string) => text,
         hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
       };
       const healthDeps = { checkHealth: () => true };
       const first = maybeRegisterDelegateRuntime(api, opts, healthDeps);
@@ -478,4 +482,39 @@ test("delegate observe cleans user envelopes but not assistant text", async () =
   } finally {
     await stub.close();
   }
+});
+
+test("delegate recall honors the cron-skip policy", async () => {
+  const stub = await startDaemonStub(() => ({ context: "cron recall leaked" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        shouldSkipRecall: (sessionKey: string) => sessionKey.includes(":cron:"),
+      }),
+    );
+    const cron = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "cron background query" },
+      { sessionKey: "agent:cron:nighly" },
+    );
+    assert.equal(cron, undefined, "cron session gets no recall");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
+      0,
+      "daemon recall never attempted for a cron session",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate flushOnResetEnabled=false skips reset and session_end flush", () => {
+  const api = recordingApi();
+  registerDelegateRuntime(api, optionsFor(1, { flushOnResetEnabled: false }));
+  assert.ok(api.handlers.has("before_compaction"), "compaction flush always registers");
+  assert.equal(api.handlers.has("before_reset"), false, "reset flush gated off");
+  assert.equal(api.handlers.has("session_end"), false, "session_end flush gated off");
 });

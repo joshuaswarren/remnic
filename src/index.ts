@@ -1434,18 +1434,16 @@ const pluginDefinition = {
       respectBundledActiveMemoryToggle: cfg.respectBundledActiveMemoryToggle,
       cleanUserMessage: cleanOpenClawUserMessage,
       hookTimeoutMs: cfg.initGateTimeoutMs,
+      shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
+      cwd: getOpenClawRuntimeWorkspaceDir(api),
+      flushOnResetEnabled: cfg.flushOnResetEnabled,
     });
     if (delegateHandled) return;
 
-    // Singleton guard: the gateway calls register() once per agent (each with a
-    // different plugin registry). Reuse the orchestrator (heavy object) but always
-    // re-register hooks — each api.on() call binds to the caller's registry, so
-    // skipping registration leaves later registries with zero hooks.
-    //
-    // The orchestrator slot is keyed by serviceId, so a same-process migration
-    // install with both `openclaw-remnic` and `openclaw-engram` plugin ids loaded
-    // gives each plugin its own orchestrator with its own `memoryDir`/policy
-    // instead of forcing the second plugin to reuse the first's (#403 P2).
+    // Singleton guard: register() fires once per agent registry. Reuse the
+    // orchestrator (heavy) but always re-register hooks — each api.on() binds to
+    // the caller's registry. Keyed by serviceId so a migration install with both
+    // plugin ids gives each its own orchestrator/memoryDir (#403 P2).
     const existing = (globalThis as any)[keys.ORCHESTRATOR] as
       | Orchestrator
       | undefined;

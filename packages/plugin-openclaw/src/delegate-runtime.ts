@@ -64,6 +64,14 @@ export interface DelegateRuntimeOptions {
   cleanUserMessage: (text: string) => string;
   /** Passed as the hook registration timeout (embedded initGateTimeoutMs). */
   hookTimeoutMs: number;
+  /** Embedded parity: `shouldSkipRecallForSession` (cron recall policy). */
+  shouldSkipRecall: (sessionKey: string) => boolean;
+  /** Embedded parity (issue #569): working dir for daemon git-context scoping. */
+  cwd?: string;
+  /** Embedded parity (issue #569): non-git project tag scoping. */
+  projectTag?: string;
+  /** Embedded parity: gate buffer flush on reset/session_end. */
+  flushOnResetEnabled: boolean;
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
@@ -176,7 +184,16 @@ export function registerDelegateRuntime(
       const sessionKey = sessionKeyFrom(event, ctx);
       if (useSectionBuilder) promptLinesBySession.delete(sessionKey);
       try {
-        const agentId = typeof ctx?.agentId === "string" ? ctx.agentId : "";
+        if (options.shouldSkipRecall(sessionKey)) {
+          log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
+          return undefined;
+        }
+        const runtimeAgent = (ctx?.runtime as Record<string, unknown> | undefined)
+          ?.agent as Record<string, unknown> | undefined;
+        const agentId =
+          (typeof ctx?.agentId === "string" ? ctx.agentId : undefined) ??
+          (typeof runtimeAgent?.id === "string" ? runtimeAgent.id : undefined) ??
+          "";
         if (await options.resolveSessionDisabled(sessionKey, agentId)) {
           log.debug(`delegate recall skipped: session toggle disables memory for ${sessionKey}`);
           return undefined;
@@ -184,7 +201,13 @@ export function registerDelegateRuntime(
         const response = await postJson(
           target,
           "/engram/v1/recall",
-          withNamespace(namespace, { query, sessionKey, mode: "auto" }),
+          withNamespace(namespace, {
+            query,
+            sessionKey,
+            mode: "auto",
+            ...(options.cwd ? { cwd: options.cwd } : {}),
+            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+          }),
           options.recallTimeoutMs,
         );
         const rawContext = response?.context;
@@ -264,7 +287,12 @@ export function registerDelegateRuntime(
       await postJson(
         target,
         "/engram/v1/observe",
-        withNamespace(namespace, { sessionKey, messages: turn }),
+        withNamespace(namespace, {
+          sessionKey,
+          messages: turn,
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+        }),
         options.observeTimeoutMs,
       );
     } catch (err) {
@@ -289,8 +317,10 @@ export function registerDelegateRuntime(
     }
   };
   api.on("before_compaction", flushHandler);
-  api.on("before_reset", flushHandler);
-  api.on("session_end", flushHandler);
+  if (options.flushOnResetEnabled) {
+    api.on("before_reset", flushHandler);
+    api.on("session_end", flushHandler);
+  }
 
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
@@ -318,6 +348,14 @@ export interface MaybeRegisterDelegateOptions {
   cleanUserMessage: (text: string) => string;
   /** Embedded parity: hook registration timeout (initGateTimeoutMs). */
   hookTimeoutMs: number;
+  /** Embedded parity: cron recall policy predicate. */
+  shouldSkipRecall: (sessionKey: string) => boolean;
+  /** Embedded parity (#569): daemon git-context working dir. */
+  cwd?: string;
+  /** Embedded parity (#569): non-git project tag. */
+  projectTag?: string;
+  /** Embedded parity: gate buffer flush on reset/session_end. */
+  flushOnResetEnabled: boolean;
 }
 
 // Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
@@ -393,6 +431,10 @@ export function maybeRegisterDelegateRuntime(
       toggleStore ? (await toggleStore.resolve(sessionKey, agentId)).disabled === true : false,
     cleanUserMessage: options.cleanUserMessage,
     hookTimeoutMs: options.hookTimeoutMs,
+    shouldSkipRecall: options.shouldSkipRecall,
+    cwd: options.cwd,
+    projectTag: options.projectTag,
+    flushOnResetEnabled: options.flushOnResetEnabled,
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,
