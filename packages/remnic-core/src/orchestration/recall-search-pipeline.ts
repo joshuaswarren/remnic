@@ -1351,10 +1351,18 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
+        // Activity day-digests live in the QMD collection root but are a
+        // dedicated searchable surface (explicit activity search), never
+        // generic recall — captured screen text must not auto-inject into
+        // ordinary prompts (issue #1899; codex P2). The digest sets no
+        // memoryKind, so key on its own `kind` frontmatter.
+        const isActivityDigest =
+          "kind" in memory.frontmatter && memory.frontmatter.kind === "activity-digest";
         if (
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
-            memory.frontmatter.memoryKind === "procedural")
+            memory.frontmatter.memoryKind === "procedural" ||
+            isActivityDigest)
         ) {
           dedicatedSurfaceFilteredCount += 1;
           continue;
@@ -1379,7 +1387,7 @@ export class RecallSearchPipelineCoordinator {
     }
     if (dedicatedSurfaceFilteredCount > 0) {
       log.debug(
-        `dedicated surface filter removed ${dedicatedSurfaceFilteredCount} dream/procedural candidates from generic recall`,
+        `dedicated surface filter removed ${dedicatedSurfaceFilteredCount} dream/procedural/activity-digest candidates from generic recall`,
       );
     }
     if (forgottenFilteredCount > 0) {

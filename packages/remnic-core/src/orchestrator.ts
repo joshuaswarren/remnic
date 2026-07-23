@@ -955,7 +955,7 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
-    this.maintenanceScheduler.dispose();
+    await this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
     // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
     // short-lived writer's durable fact hash reaches disk before the process

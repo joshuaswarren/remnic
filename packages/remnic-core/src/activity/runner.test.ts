@@ -150,7 +150,9 @@ test("multi-source: one source's fault is isolated and never advances the other"
         return { ok: true };
       },
       async fetchSnapshots() {
-        throw new Error("daemon connection refused");
+        // A network-shaped error whose message embeds a host: it must be
+        // sanitized to a name+code, not echoed verbatim, on ActivitySourceRunItem.
+        throw Object.assign(new Error("daemon connection refused at 10.0.0.5:8761"), { code: "ECONNREFUSED" });
       },
     };
 
@@ -174,7 +176,8 @@ test("multi-source: one source's fault is isolated and never advances the other"
     assert.equal(byLabel.get("workstation-a")?.inserted, 1);
     assert.equal(byLabel.get("workstation-a")?.error, undefined);
     assert.equal(byLabel.get("workstation-b")?.ran, false);
-    assert.match(byLabel.get("workstation-b")?.error ?? "", /connection refused/);
+    assert.match(byLabel.get("workstation-b")?.error ?? "", /ECONNREFUSED/);
+    assert.ok(!byLabel.get("workstation-b")?.error?.includes("10.0.0.5"), "raw host is sanitized out of the error");
     // The healthy source still committed; the faulty one never wrote a cursor.
     assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
   } finally {
@@ -326,6 +329,43 @@ test("reindexSearch is forwarded per source and a failure never fails the run", 
     assert.equal(summary.errorCount, 0);
     assert.equal(summary.results[0]?.ran, true);
     assert.equal(summary.results[0]?.inserted, 1);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("partial multi-day sync reports ran=true for days that synced before a later failure", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    let calls = 0;
+    const client: ActivitySourceClient = {
+      machineLabel: "workstation-a",
+      async verify() {
+        return { ok: true };
+      },
+      async fetchSnapshots() {
+        calls += 1;
+        // First local day (oldest) syncs; the second day's daemon call fails.
+        if (calls === 1) return { snapshots: [snapshot()], nextCursor: null };
+        throw new Error("activity source HTTP 503");
+      },
+    };
+
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({ syncDays: 2 }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+    });
+
+    const item = summary.results[0];
+    assert.equal(item?.ran, true, "the earlier day synced durably, so ran is true despite the later failure");
+    assert.equal(item?.inserted, 1);
+    assert.match(item?.error ?? "", /HTTP 503/);
+    assert.equal(summary.ranCount, 1, "a partially-synced source still counts as ran");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });

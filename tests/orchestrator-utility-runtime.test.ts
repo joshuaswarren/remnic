@@ -65,7 +65,7 @@ test("boostSearchResults applies bounded utility runtime multipliers to heuristi
   }
 });
 
-test("boostSearchResults excludes dream and procedural memories from generic recall scoring", async () => {
+test("boostSearchResults excludes dream, procedural, and activity-digest memories from generic recall scoring", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dedicated-surface-filter-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-dedicated-surface-filter-workspace-"));
   try {
@@ -141,6 +141,25 @@ test("boostSearchResults excludes dream and procedural memories from generic rec
           },
         },
       ],
+      [
+        "/tmp/memory/activity/2026-07-22.md",
+        {
+          path: "/tmp/memory/activity/2026-07-22.md",
+          content: "Captured screen text digest",
+          frontmatter: {
+            id: "activity-2026-07-22",
+            category: "moment",
+            created: "2026-07-22T00:00:00.000Z",
+            updated: "2026-07-22T00:00:00.000Z",
+            source: "activity",
+            confidence: 0.9,
+            confidenceTier: "explicit",
+            tags: [],
+            status: "active",
+            kind: "activity-digest",
+          },
+        },
+      ],
     ]);
     orchestrator.storage = {
       readMemoryByPath: async (path: string) => memories.get(path) ?? null,
@@ -150,6 +169,7 @@ test("boostSearchResults excludes dream and procedural memories from generic rec
       { path: "/tmp/memory/facts/dream.md", score: 0.8, docid: "dream", snippet: "dream" },
       { path: "/tmp/memory/facts/procedural.md", score: 0.7, docid: "procedural", snippet: "procedural" },
       { path: "/tmp/memory/facts/normal.md", score: 0.6, docid: "normal", snippet: "normal" },
+      { path: "/tmp/memory/activity/2026-07-22.md", score: 0.5, docid: "activity", snippet: "screen text" },
     ], [], undefined);
 
     assert.deepEqual(output.map((entry: { docid: string }) => entry.docid), ["normal"]);

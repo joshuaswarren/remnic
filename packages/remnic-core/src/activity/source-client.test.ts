@@ -106,13 +106,29 @@ test("ActivityHttpSourceClient rejects a non-positive timeout", () => {
   );
 });
 
+async function closedLoopbackBaseUrl(): Promise<string> {
+  // Reserve an ephemeral loopback port, then close it so the connection is
+  // deterministically refused (no reliance on a fixed low port being free).
+  const server = createServer();
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  const closed = Promise.withResolvers<void>();
+  server.close((error) => (error ? closed.reject(error) : closed.resolve()));
+  await closed.promise;
+  return `http://127.0.0.1:${port}`;
+}
+
 test("ActivityHttpSourceClient.verify returns a sanitized detail for network errors", async () => {
-  // Port 1 refuses immediately; the fetch TypeError must not leak host/port
-  // into the operator-facing detail (sanitized to a name/code by displayErrorDetail).
-  const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:1" });
+  const baseUrl = await closedLoopbackBaseUrl();
+  const port = new URL(baseUrl).port;
+  const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
   const check = await client.verify();
   assert.equal(check.ok, false);
   assert.ok(check.detail && check.detail.length > 0, "a failure carries some detail");
   assert.ok(!check.detail?.includes("127.0.0.1"), "detail does not echo the host");
-  assert.ok(!check.detail?.includes(":1"), "detail does not echo the port");
+  assert.ok(!check.detail?.includes(port), "detail does not echo the port");
 });

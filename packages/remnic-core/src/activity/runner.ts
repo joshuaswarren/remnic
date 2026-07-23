@@ -24,6 +24,7 @@
 import { ActivityStore } from "./store.js";
 import { syncActivitySource } from "./pipeline.js";
 import { ActivityHttpSourceClient } from "./source-client.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { ActivityConfig, ActivitySourceClient, ActivitySourceConfig } from "./types.js";
 
 type ActivityNow = Date | (() => Date);
@@ -171,13 +172,19 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
           item.duplicates += result.duplicates;
           if (result.digestWritten) item.digestsWritten += 1;
           item.cursor = result.cursor;
+          // A day that synced durably counts as ran, even if a later day in the
+          // window fails (ran = at least one durable day).
+          item.ran = true;
         }
-        item.ran = true;
       } catch (error) {
-        // A runtime fault stays distinguishable from an empty page. item.cursor
-        // already reflects the last day that advanced durably before the failure
-        // (syncActivitySource advances a per-day cursor only on full success).
-        item.error = error instanceof Error ? error.message : String(error);
+        // Keep item.cursor/item.ran from the days that advanced before the fault.
+        // Sanitize operator-facing detail: keep our controlled activity messages,
+        // but reduce opaque network/runtime errors (which can embed hosts/paths)
+        // to a name+code via displayErrorDetail (matches verify()).
+        item.error =
+          error instanceof Error && /^(activity|Invalid activity)/.test(error.message)
+            ? error.message
+            : displayErrorDetail(error) || "activity sync failed";
       }
       results.push(item);
     }

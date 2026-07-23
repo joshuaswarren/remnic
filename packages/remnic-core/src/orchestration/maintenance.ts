@@ -1153,18 +1153,21 @@ export class MaintenanceScheduler {
   // ───────────────────────────────────────────────────────────────────────
 
   /**
-   * Clear any pending debounce timer. Called from the orchestrator's
-   * destroy() so a late tick does not fire on a torn-down instance.
+   * Clear any pending debounce timer and drain the activity sync scheduler.
+   * Called from the orchestrator's destroy() so a late tick does not fire on a
+   * torn-down instance and no in-flight activity tick keeps writing after
+   * teardown. Async: awaits the scheduler's abort+drain before resolving.
    */
-  dispose(): void {
-    // stop() aborts the in-flight sync synchronously and clears the timer; the
-    // returned drain is best-effort in this sync teardown (the unref'd timer
-    // never holds the process open).
-    void this.activitySyncScheduler?.stop();
+  async dispose(): Promise<void> {
+    // stop() aborts the in-flight sync and clears its timer synchronously;
+    // capture the drain and await it at the end so the rest of teardown runs
+    // concurrently while the aborted tick unwinds.
+    const activityDrain = this.activitySyncScheduler?.stop();
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;
     }
     this.qmdMaintenancePending = false;
+    await activityDrain;
   }
 }
