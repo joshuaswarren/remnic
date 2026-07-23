@@ -222,10 +222,16 @@ export class Spool {
     assertIsoInstant(input.startedAtUtc, "conversation.startedAtUtc");
     if (input.endedAtUtc !== undefined && input.endedAtUtc !== null) {
       assertIsoInstant(input.endedAtUtc, "conversation.endedAtUtc");
+      if (Date.parse(input.endedAtUtc) < Date.parse(input.startedAtUtc)) {
+        throw new CaptureConfigError("conversation.endedAtUtc: must not precede startedAtUtc");
+      }
     }
     input.segments.forEach((seg, i) => {
       assertIsoInstant(seg.startUtc, `conversation.segments[${i}].startUtc`);
       assertIsoInstant(seg.endUtc, `conversation.segments[${i}].endUtc`);
+      if (Date.parse(seg.endUtc) < Date.parse(seg.startUtc)) {
+        throw new CaptureConfigError(`conversation.segments[${i}]: endUtc must not precede startUtc`);
+      }
     });
     const convId = input.id ?? `conv_${ulid()}`;
     const chunkId = `chk_${convId}`;

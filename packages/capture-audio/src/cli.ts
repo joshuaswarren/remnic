@@ -391,11 +391,19 @@ async function cmdStart(
     spool.close();
     throw err;
   }
-  writePidFile(paths.pidPath, process.pid, {
-    instanceId: spool.meta("instance_id"),
-    host: handle.host,
-    port: handle.port,
-  });
+  try {
+    writePidFile(paths.pidPath, process.pid, {
+      instanceId: spool.meta("instance_id"),
+      host: handle.host,
+      port: handle.port,
+    });
+  } catch (err) {
+    // Bound but couldn't persist the record: release the socket and spool
+    // before surfacing the error so nothing is left half-started.
+    await handle.close();
+    spool.close();
+    throw err;
+  }
   stdout(`listening on ${handle.url}`);
   if (replayDir) {
     // Supervised AFTER readiness: replay volume/failure never delays or fails

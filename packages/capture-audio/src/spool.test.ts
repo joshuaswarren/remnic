@@ -202,3 +202,28 @@ test("insertConversation rejects invalid calendar dates at the Spool boundary", 
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
   spool.close();
 });
+
+test("insertConversation enforces conversation and segment chronology", () => {
+  const spool = new Spool(":memory:");
+  assert.throws(
+    () =>
+      spool.insertConversation({
+        id: "c1",
+        startedAtUtc: "2026-07-20T10:00:00.000Z",
+        endedAtUtc: "2026-07-20T09:00:00.000Z",
+        segments: [seg("a")],
+      }),
+    /must not precede startedAtUtc/,
+  );
+  assert.throws(
+    () =>
+      spool.insertConversation({
+        id: "c2",
+        startedAtUtc: "2026-07-20T10:00:00.000Z",
+        segments: [{ channel: "mic", text: "x", startUtc: "2026-07-20T10:00:02.000Z", endUtc: "2026-07-20T10:00:01.000Z" }],
+      }),
+    /endUtc must not precede startUtc/,
+  );
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});

@@ -541,3 +541,26 @@ test("recordedDaemonIsRunning refuses a real prior daemon at the endpoint", asyn
     }
   });
 });
+
+test("foreground start closes the server and spool if pid persistence fails after bind", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const port = await closedPort();
+    mkdirSync(paths.pidPath, { recursive: true }); // makes writePidFile fail
+    const errs: string[] = [];
+    const code = await runCapture({
+      argv: ["start", "--foreground", "--host", "127.0.0.1", "--port", String(port), "--base-dir", baseDir],
+      stdout: () => undefined,
+      stderr: (l) => errs.push(l),
+    });
+    assert.equal(code, 1);
+    assert.ok(errs.some((l) => l.startsWith("error:")), errs.join("|"));
+    // The bound port must have been released (handle.close ran) — a fresh
+    // listener can bind it.
+    await new Promise<void>((resolve, reject) => {
+      const s = net.createServer();
+      s.once("error", reject);
+      s.listen(port, "127.0.0.1", () => s.close(() => resolve()));
+    });
+  });
+});
