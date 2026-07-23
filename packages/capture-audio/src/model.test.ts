@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,6 +54,28 @@ test("downloadWhisperModel rejects an existing non-file destination", async () =
   try {
     await mkdir(path.join(directory, "ggml-small.bin"));
     await assert.rejects(downloadWhisperModel({ model: "small", directory }), /regular file/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("downloadWhisperModel treats a symlink to an existing model file as already present", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "capture-model-"));
+  try {
+    const realModel = path.join(directory, "real-model.bin");
+    await writeFile(realModel, "model-bytes");
+    await symlink(realModel, path.join(directory, "ggml-small.bin"));
+    let fetched = false;
+    const result = await downloadWhisperModel({
+      model: "small",
+      directory,
+      fetch: async () => {
+        fetched = true;
+        return new Response("should-not-download");
+      },
+    });
+    assert.equal(result.downloaded, false);
+    assert.equal(fetched, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

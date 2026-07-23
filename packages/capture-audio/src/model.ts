@@ -1,4 +1,4 @@
-import { createWriteStream, lstatSync } from "node:fs";
+import { createWriteStream, statSync } from "node:fs";
 import { link, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -41,7 +41,7 @@ function responseBodyToReadable(body: ReadableStream<Uint8Array>): Readable {
 
 function existingFile(destination: string): boolean {
   try {
-    const entry = lstatSync(destination);
+    const entry = statSync(destination);
     if (!entry.isFile()) {
       throw new CaptureConfigError(`Whisper model path exists but is not a regular file: ${destination}`);
     }
