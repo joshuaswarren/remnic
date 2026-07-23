@@ -309,7 +309,7 @@ lands; the block below is the shape it will take:
       "desktop": {
         "enabled": false,                       // charter: default-off + double opt-in
         "baseUrl": "http://127.0.0.1:4340",     // the local capture-audio daemon
-        "token": "REPLACE_WITH_TOKEN",          // else REMNIC_CAPTURE_AUDIO_TOKEN, else the local token file
+        "apiKey": "REPLACE_WITH_TOKEN",         // parsed credential slot; else REMNIC_CAPTURE_AUDIO_TOKEN or the local token file
         "memoryMode": "smart",
         "sourceTrust": 0.85
       }
