@@ -143,9 +143,11 @@ class DesktopClient {
     let res: Response;
     try {
       res = await fetch(`${this.#baseUrl}/v1/health`, { headers: this.#headers(), signal: withTimeout(signal) });
-    } catch {
-      // Connection refused / DNS / offline: the daemon isn't running.
-      // This is NOT an auth failure and must never throw (AC2).
+    } catch (err) {
+      // Honor caller cancellation; do not mislabel a deliberate abort.
+      if (signal?.aborted) throw err;
+      // Timeout / connection refused / DNS / offline: the daemon isn't
+      // reachable. This is NOT an auth failure and must never throw (AC2).
       return { ok: false, detail: "unreachable" };
     }
     if (res.status === 401) return { ok: false, detail: "unauthorized" };
@@ -158,14 +160,18 @@ class DesktopClient {
   }
 
   async fetchConversations(opts: WearableFetchOptions): Promise<WearableFetchPage> {
-    const url = new URL(`${this.#baseUrl}/v1/conversations`);
-    url.searchParams.set("date", opts.date);
-    url.searchParams.set("timezone", opts.timezone);
-    if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
     let res: Response;
     try {
+      const url = new URL(`${this.#baseUrl}/v1/conversations`);
+      url.searchParams.set("date", opts.date);
+      url.searchParams.set("timezone", opts.timezone);
+      if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
       res = await fetch(url, { headers: this.#headers(), signal: withTimeout(opts.signal) });
-    } catch {
+    } catch (err) {
+      // Honor caller cancellation instead of reporting a daemon fault.
+      if (opts.signal?.aborted) throw err;
+      // Timeout, offline daemon, or a malformed configured baseUrl all
+      // surface consistently as unreachable (never a raw TypeError).
       throw new DesktopDaemonError(
         `desktop capture daemon unreachable at ${this.#baseUrl} (is remnic-capture-audio running?)`,
       );

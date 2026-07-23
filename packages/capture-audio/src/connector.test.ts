@@ -81,10 +81,10 @@ test("daemonConversationToWearable maps daemon shape to the wearable contract", 
 });
 
 test("resolveCaptureAudioToken prefers config, then env; skips the local file for non-loopback", () => {
-  assert.equal(resolveCaptureAudioToken("cfg", "http://192.168.1.9:4340", { REMNIC_CAPTURE_AUDIO_TOKEN: "env" }), "cfg");
-  assert.equal(resolveCaptureAudioToken(undefined, "http://192.168.1.9:4340", { REMNIC_CAPTURE_AUDIO_TOKEN: "env" }), "env");
+  assert.equal(resolveCaptureAudioToken("cfg", "http://192.0.2.9:4340", { REMNIC_CAPTURE_AUDIO_TOKEN: "env" }), "cfg");
+  assert.equal(resolveCaptureAudioToken(undefined, "http://192.0.2.9:4340", { REMNIC_CAPTURE_AUDIO_TOKEN: "env" }), "env");
   // Non-loopback + no config/env -> never reads the local token file.
-  assert.equal(resolveCaptureAudioToken(undefined, "http://192.168.1.9:4340", {}), undefined);
+  assert.equal(resolveCaptureAudioToken(undefined, "http://192.0.2.9:4340", {}), undefined);
 });
 
 test("verifyAuth: ok on 200, unauthorized on 401, unreachable never throws", async () => {
@@ -196,6 +196,7 @@ test("the bearer token is resolved per request, so env rotation applies without 
     res.writeHead(url.pathname === "/v1/health" ? 200 : 404, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, version: "9.14.0" }));
   });
+  const previousToken = process.env.REMNIC_CAPTURE_AUDIO_TOKEN;
   try {
     // No config apiKey + non-loopback would skip the token file; use a
     // loopback daemon but resolve the token from env, rotating between calls.
@@ -220,10 +221,35 @@ test("the bearer token is resolved per request, so env rotation applies without 
     await connector.verifyAuth();
     process.env.REMNIC_CAPTURE_AUDIO_TOKEN = "second";
     await connector.verifyAuth();
-    delete process.env.REMNIC_CAPTURE_AUDIO_TOKEN;
     const auths = daemon.requests.filter((r) => r.path === "/v1/health").map((r) => r.auth);
     assert.deepEqual(auths, ["Bearer first", "Bearer second"]);
   } finally {
+    if (previousToken === undefined) delete process.env.REMNIC_CAPTURE_AUDIO_TOKEN;
+    else process.env.REMNIC_CAPTURE_AUDIO_TOKEN = previousToken;
     await daemon.close();
   }
+});
+
+test("fetchConversations honors caller cancellation instead of reporting unreachable", async () => {
+  const daemon = await startMockDaemon((_url, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ conversations: [], nextCursor: null }));
+  });
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      connectorFor(daemon.url).fetchConversations({ date: "2026-07-20", timezone: "UTC", signal: controller.signal }),
+      (err: Error) => err.name === "AbortError",
+    );
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("fetchConversations rejects a malformed baseUrl as a daemon error, not a raw TypeError", async () => {
+  await assert.rejects(
+    connectorFor("notaurl").fetchConversations({ date: "2026-07-20", timezone: "UTC" }),
+    DesktopDaemonError,
+  );
 });
