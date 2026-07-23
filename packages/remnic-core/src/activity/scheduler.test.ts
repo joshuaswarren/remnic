@@ -46,6 +46,7 @@ const SUMMARY: ActivitySyncRunSummary = {
   enabled: true,
   ranCount: 1,
   errorCount: 0,
+  reindexErrorCount: 0,
   totalInserted: 0,
   results: [],
 };

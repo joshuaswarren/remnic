@@ -42,6 +42,12 @@ export interface ActivitySourceRunItem {
   cursor: string | null;
   /** Set when the source failed; distinguishes a fault from an empty page. */
   error?: string;
+  /**
+   * Set when a durable day synced but its post-digest search reindex failed.
+   * The rows/digest/cursor are committed; the index is stale until the next
+   * refresh, so this is a signal (not a sync failure) for the scheduler.
+   */
+  reindexError?: string;
 }
 
 export interface ActivitySyncRunSummary {
@@ -50,6 +56,8 @@ export interface ActivitySyncRunSummary {
   enabled: boolean;
   ranCount: number;
   errorCount: number;
+  /** Sources whose durable sync succeeded but whose search reindex failed. */
+  reindexErrorCount: number;
   totalInserted: number;
   results: ActivitySourceRunItem[];
 }
@@ -137,6 +145,7 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
       enabled: false,
       ranCount: 0,
       errorCount: 0,
+      reindexErrorCount: 0,
       totalInserted: 0,
       results: [],
     };
@@ -188,6 +197,10 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
             // A day that synced durably counts as ran, even if a later day in
             // the window fails (ran = at least one durable day).
             item.ran = true;
+            // The day's rows/digest/cursor are durable; a failed post-digest
+            // reindex is a separate, already-sanitized signal (not a sync
+            // failure) so the scheduler can observe a stale index.
+            if (result.reindexError !== undefined) item.reindexError = result.reindexError;
           } catch (dateError) {
             // One bad day (a malformed historical snapshot, a per-day daemon
             // error) must not starve the remaining dates — record it and move
@@ -213,6 +226,7 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
     enabled: true,
     ranCount: results.filter((item) => item.ran).length,
     errorCount: results.filter((item) => item.error !== undefined).length,
+    reindexErrorCount: results.filter((item) => item.reindexError !== undefined).length,
     totalInserted: results.reduce((sum, item) => sum + item.inserted, 0),
     results,
   };

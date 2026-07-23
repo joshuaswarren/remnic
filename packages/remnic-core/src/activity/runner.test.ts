@@ -322,15 +322,20 @@ test("reindexSearch is forwarded per source and a failure never fails the run", 
       createSourceClient: () => client,
       reindexSearch: async () => {
         reindexCalls += 1;
-        throw new Error("qmd offline");
+        // Realistic forced-strict failure surfaced by updateCollectionStrict.
+        throw new Error("QMD update skipped by per-collection failure backoff");
       },
     });
 
     assert.equal(reindexCalls, 1, "the runner forwards reindexSearch to the source sync");
+    // Durable write still committed despite the reindex failure:
     assert.equal(summary.ranCount, 1, "a reindex failure does not fail the source");
-    assert.equal(summary.errorCount, 0);
+    assert.equal(summary.errorCount, 0, "a reindex failure is not a sync error");
     assert.equal(summary.results[0]?.ran, true);
     assert.equal(summary.results[0]?.inserted, 1);
+    // ...but the failed refresh is surfaced as a signal, not a silent clean run:
+    assert.equal(summary.reindexErrorCount, 1, "the failed refresh is counted");
+    assert.match(summary.results[0]?.reindexError ?? "", /failure backoff/);
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
