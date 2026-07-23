@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import test from "node:test";
 
 import {
@@ -256,11 +256,13 @@ test("fetchConversations rejects a malformed baseUrl as a daemon error, not a ra
 
 test("fetchConversations honors a caller abort during the request, never mislabeling it", async () => {
   // The server flushes headers 200 OK but withholds the body, so the caller's
-  // abort lands while the request/body read is still pending.
-  const { promise: requestReceived, resolve: onRequest } = Promise.withResolvers<void>();
+  // abort lands while the request/body read is still pending. The listener is
+  // attached before the request is sent, so there is no race and no timer.
+  const arrival = new EventEmitter();
+  const requestReceived = once(arrival, "request");
   const daemon = await startMockDaemon((_url, res) => {
     res.writeHead(200, { "content-type": "application/json" });
-    onRequest();
+    arrival.emit("request");
   });
   try {
     const controller = new AbortController();
