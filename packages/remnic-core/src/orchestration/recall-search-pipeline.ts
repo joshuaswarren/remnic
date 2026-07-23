@@ -1362,7 +1362,7 @@ export class RecallSearchPipelineCoordinator {
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
             memory.frontmatter.memoryKind === "procedural" ||
-            isActivityDigestPath(r.path, this.deps.config.memoryDir))
+            isActivityDigestPath(memory.path, this.deps.config.memoryDir))
         ) {
           dedicatedSurfaceFilteredCount += 1;
           continue;

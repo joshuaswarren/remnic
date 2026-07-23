@@ -199,13 +199,10 @@ export class MaintenanceScheduler {
       }
     }
 
-    // Activity (screen-capture) in-process sync scheduler (issue #1900).
-    // Master default-off: start() arms nothing unless config.activity.enabled.
-    // This is the parser -> scheduler -> durable-sync wire; the OpenClaw cron
-    // daemon is not involved (host-agnostic, no OpenClaw import).
-    // If teardown aborted deferred init while an earlier registration awaited,
-    // dispose() has already run (with activitySyncScheduler still null), so
-    // arming a timer now would leave an interval that never gets stopped.
+    // Activity (screen-capture) in-process sync scheduler (issue #1900),
+    // master default-off. Host-agnostic parser -> scheduler -> durable-sync wire
+    // (no OpenClaw cron). Bail if teardown aborted deferred init: dispose() has
+    // already run (scheduler still null), so arming now would orphan the timer.
     if (signal.aborted) return;
     // A repeated autoRegisterCrons must not orphan a prior interval: stop the
     // existing scheduler (abort + drain) before arming a replacement.
@@ -215,19 +212,17 @@ export class MaintenanceScheduler {
         config: this.deps.config.activity,
         memoryDir: this.deps.config.memoryDir,
         intervalMs: this.deps.config.activity.autoSyncIntervalMinutes * 60_000,
-        // Force a real, strict index refresh after each digest write (rule 31):
-        // updateCollectionStrict bypasses the fail-open min-interval gate and
-        // throws on a genuine failure rather than reporting a fake success, so a
-        // freshly written digest is actually searchable. Reuses the core search
-        // seam wearables use; no OpenClaw/host adapter.
+        // Force a strict index refresh after each digest write (rule 31):
+        // updateCollectionStrict bypasses the min-interval gate, throws on real failure.
         reindexSearch: (signal) => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection, signal),
-        // A forced reindex can still fail (QMD down/backoff); a later tick skips
-        // afterWrites once the digest is unchanged, so queue a QMD maintenance
-        // pass (debounced/singleflighted) to retry indexing the stale digest.
+        // Reindex can fail (QMD down); a later unchanged-digest tick skips afterWrites,
+        // so retry a forced strict refresh here, disposed-guarded. Durable queue = follow-up.
         onRun: (summary) => {
           if (summary.reindexErrorCount > 0 && !this.disposed) {
-            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing QMD maintenance retry`);
-            this.requestQmdMaintenanceForTool("activity-reindex-retry");
+            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; retrying a strict refresh`);
+            void refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection).catch((err) =>
+              log.debug(`activity reindex retry failed (non-fatal): ${err}`),
+            );
           }
         },
       });

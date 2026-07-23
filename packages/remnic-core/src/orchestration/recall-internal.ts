@@ -4161,10 +4161,8 @@ export class RecallInternalCoordinator {
         memoryResults = memoryResults.filter((r) =>
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
-      // Artifacts are injected through dedicated verbatim recall flow only.
-      memoryResults = memoryResults.filter(
-        (r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir),
-      );
+      // Artifacts + activity digests are dedicated surfaces, never generic recall.
+      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&
