@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "../src/config.js";
 import { CompoundingEngine } from "../src/compounding/engine.js";
 import { registerTools } from "../src/tools.ts";
 
@@ -12,7 +13,7 @@ function tmpDir(prefix: string): string {
 }
 
 function minimalConfig(memoryDir: string, sharedContextDir: string): PluginConfig {
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     model: "gpt-5.5",
     reasoningEffort: "low",
@@ -143,7 +144,7 @@ function minimalConfig(memoryDir: string, sharedContextDir: string): PluginConfi
     compoundingSemanticEnabled: false,
     compoundingSynthesisTimeoutMs: 1000,
     compoundingInjectEnabled: true,
-  };
+  });
 }
 
 test("continuity audit generator writes deterministic weekly audit", async () => {

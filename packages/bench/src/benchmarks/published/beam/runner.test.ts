@@ -145,7 +145,7 @@ test("BEAM quick mode uses answer formats for concise facts and remembered instr
         ].join("\n");
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -238,7 +238,7 @@ test("BEAM task filter runs only matching diagnostic tasks", async () => {
         ].join("\n");
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -360,7 +360,7 @@ test("BEAM refines unknown and hedged answers from source-chat evidence", async 
         ].join("\n");
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -418,7 +418,7 @@ test("BEAM refines unknown and hedged answers from source-chat evidence", async 
     "Always format implementation help with syntax-highlighted code blocks.",
   );
   assert.equal(
-    instructionTask?.details.answerRefinementReason,
+    instructionTask?.details?.answerRefinementReason,
     "benchmark recalled-evidence refinement",
   );
 });
@@ -473,7 +473,7 @@ test("BEAM source-chat refinement matches exact anchor ids", async () => {
         ].join("\n");
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -546,7 +546,7 @@ test("BEAM does not refine unrelated unknown answers to incidental latency", asy
         return "The dashboard API now averages around 250ms.";
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -810,7 +810,7 @@ test("BEAM rubric coverage requires extra syntax target details", async () => {
         return "Implementation help should use syntax-highlighted code blocks with line numbers.";
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -878,7 +878,7 @@ test("BEAM rubric coverage matches hyphenated extra syntax target details", asyn
         return "Implementation help should use syntax-highlighted code blocks with well-formatted output.";
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -942,7 +942,7 @@ test("BEAM rubric coverage requires punctuated extra syntax target details", asy
       return "Implementation help should use syntax-highlighted code blocks with C++ examples.";
     },
     async search() {
-      return [{ id: "hit", text: "hit" }];
+      return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
     },
     async destroy() {},
     async getStats() {
@@ -1067,7 +1067,7 @@ async function runBeamWithCustomRubricAnswer(
         return "Implementation help should use syntax-highlighted code blocks.";
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {
@@ -1124,7 +1124,7 @@ async function runBeamWithInstructionAnswer(instructionAnswer: string) {
         ].join("\n");
       },
       async search() {
-        return [{ id: "hit", text: "hit" }];
+        return [{ turnIndex: 0, role: "user", snippet: "hit", sessionId: "session" }];
       },
       async destroy() {},
       async getStats() {

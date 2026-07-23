@@ -4,6 +4,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
 import { CompoundingEngine } from "@remnic/core/compounding/engine";
 import { StorageManager } from "@remnic/core/storage";
 import { isEncryptedFile, SecureStoreDecryptError } from "@remnic/core/secure-store";
@@ -13,7 +14,7 @@ function tmpDir(prefix: string): string {
 }
 
 function minimalConfig(memoryDir: string, sharedContextDir?: string): PluginConfig {
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     model: "gpt-5.5",
     reasoningEffort: "low",
@@ -144,7 +145,7 @@ function minimalConfig(memoryDir: string, sharedContextDir?: string): PluginConf
     compoundingSemanticEnabled: false,
     compoundingSynthesisTimeoutMs: 1000,
     compoundingInjectEnabled: true,
-  };
+  });
 }
 
 const isSecureStoreDecryptError = (error: unknown): boolean =>

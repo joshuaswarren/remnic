@@ -15,6 +15,7 @@ import {
   createResponderFromProvider,
   createStructuredJudgeFromProvider,
 } from "./responders.ts";
+import type { FallbackLlmOptions, FallbackLlmResponse } from "@remnic/core";
 
 function createFakeProvider(resultText: string, onPrompt?: (prompt: string) => void): LlmProvider {
   let inputTokens = 0;
@@ -440,7 +441,10 @@ test("gateway responder forwards benchmark abort signals to the fallback client"
     },
     llmFactory() {
       return {
-        async chatCompletion(_messages, options) {
+        async chatCompletion(
+          _messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+          options: FallbackLlmOptions = {},
+        ): Promise<FallbackLlmResponse | null> {
           assert.ok(options.signal, "expected gateway responder to pass the benchmark signal");
           await new Promise<never>((_, reject) => {
             options.signal!.addEventListener(
@@ -452,6 +456,7 @@ test("gateway responder forwards benchmark abort signals to the fallback client"
               { once: true }
             );
           });
+          return null;
         },
       };
     },

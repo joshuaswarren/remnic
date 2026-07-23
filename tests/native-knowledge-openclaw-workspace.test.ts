@@ -7,8 +7,9 @@ import {
   collectNativeKnowledgeChunks,
   resolveOpenClawWorkspaceStatePath,
   searchNativeKnowledge,
+  type NativeKnowledgeChunk,
 } from "../src/native-knowledge.js";
-import type { NativeKnowledgeConfig, NativeKnowledgeChunk } from "../src/types.js";
+import type { NativeKnowledgeConfig } from "../src/types.js";
 
 function baseConfig(): NativeKnowledgeConfig {
   return {

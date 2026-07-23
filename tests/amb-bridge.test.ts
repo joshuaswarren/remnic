@@ -19,6 +19,13 @@ import {
   resolveAmbReplaySourceValidAtMode,
 } from "../integrations/amb/remnic-bridge.mjs";
 
+import type {
+  AmbBenchModule,
+  AmbInternalProviderOptions,
+  AmbMessage,
+  AmbRecallOptions,
+} from "../integrations/amb/remnic-bridge.mjs";
+
 test("AMB bridge builds stable sanitized session ids", () => {
   const sessionId = buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3);
 
@@ -474,7 +481,7 @@ test("AMB bridge JSONL request parser rejects non-object JSON", () => {
 });
 
 test("AMB bridge forwards query timestamps as recall asOf metadata", async () => {
-  const calls = [];
+  const calls: Array<{ sessionId: string; query: string; budgetChars: number; options: AmbRecallOptions | undefined }> = [];
   const bridge = new RemnicAmbBridge(
     {
       async reset() {},
@@ -517,7 +524,7 @@ test("AMB bridge forwards query timestamps as recall asOf metadata", async () =>
 });
 
 test("AMB bridge batches documents that resolve to the same grouped session", async () => {
-  const storeCalls = [];
+  const storeCalls: Array<{ sessionId: string; messages: AmbMessage[] }> = [];
   const bridge = new RemnicAmbBridge(
     {
       async reset() {},
@@ -562,7 +569,7 @@ test("AMB bridge batches documents that resolve to the same grouped session", as
 });
 
 test("AMB bridge keeps document-specific stores when grouping is disabled", async () => {
-  const storeCalls = [];
+  const storeCalls: Array<{ sessionId: string; messages: AmbMessage[] }> = [];
   const bridge = new RemnicAmbBridge(
     {
       async reset() {},
@@ -642,8 +649,8 @@ test("AMB bridge returns empty recall for unknown scoped users", async () => {
 test("AMB bridge reloads persisted session index for skipped-ingestion recall", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-"));
   const sessionIndexPath = path.join(dir, "amb-session-index.json");
-  const storedSessions = [];
-  const recallCalls = [];
+  const storedSessions: string[] = [];
+  const recallCalls: Array<{ sessionId: string; query: string }> = [];
 
   try {
     const writer = new RemnicAmbBridge(
@@ -724,7 +731,7 @@ test("AMB bridge reloads persisted session index for skipped-ingestion recall", 
 test("AMB bridge appends to a persisted session index on resumed ingest", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-append-"));
   const sessionIndexPath = path.join(dir, "amb-session-index.json");
-  const storedSessions = [];
+  const storedSessions: string[] = [];
 
   const createWriter = () =>
     new RemnicAmbBridge(
@@ -778,7 +785,7 @@ test("AMB bridge appends to a persisted session index on resumed ingest", async 
 });
 
 test("AMB bridge can derive grouped session id for legacy skipped-ingestion stores", async () => {
-  const recallCalls = [];
+  const recallCalls: string[] = [];
   const currentSession = buildAmbStorageSessionId({ user_id: "conv/1" }, 0, "beam");
   const legacyPreHashSession = "beam-conv-1";
   assert.notEqual(currentSession, legacyPreHashSession);
@@ -817,7 +824,7 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
 test("AMB bridge treats a loaded session index as authoritative for missing users", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-authoritative-"));
   const sessionIndexPath = path.join(dir, "amb-session-index.json");
-  const recallCalls = [];
+  const recallCalls: string[] = [];
 
   try {
     await writeFile(
@@ -940,8 +947,8 @@ test("AMB bridge parses inline JSON config", async () => {
 });
 
 test("AMB bridge builds Codex CLI internal LLM adapter options", async () => {
-  const calls = [];
-  const benchModule = {
+  const calls: AmbInternalProviderOptions[] = [];
+  const benchModule: AmbBenchModule = {
     async resolveBenchRuntimeProfile(options) {
       calls.push(options);
       return {

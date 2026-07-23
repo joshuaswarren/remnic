@@ -7,7 +7,7 @@ import type { EngramAccessService } from "../src/access-service.js";
 
 function createFakeService(): EngramAccessService {
   return {
-    recall: async ({ query }) => ({
+    recall: async ({ query }: Parameters<EngramAccessService["recall"]>[0]) => ({
       query,
       namespace: "global",
       context: "ctx",
@@ -29,7 +29,7 @@ function createFakeService(): EngramAccessService {
       intent: null,
       graph: null,
     }),
-    recallXray: async ({ query }) => ({
+    recallXray: async ({ query }: Parameters<EngramAccessService["recallXray"]>[0]) => ({
       snapshotFound: true,
       snapshot: {
         schemaVersion: "1" as const,
@@ -42,7 +42,7 @@ function createFakeService(): EngramAccessService {
         budget: { chars: 4096, used: 0 },
       },
     }),
-    memoryGet: async (memoryId) => ({
+    memoryGet: async (memoryId: Parameters<EngramAccessService["memoryGet"]>[0]) => ({
       found: true,
       namespace: "global",
       memory: {
@@ -62,7 +62,7 @@ function createFakeService(): EngramAccessService {
         },
       },
     }),
-    memoryTimeline: async (memoryId) => ({
+    memoryTimeline: async (memoryId: Parameters<EngramAccessService["memoryTimeline"]>[0]) => ({
       found: true,
       namespace: "global",
       count: 1,
@@ -78,7 +78,7 @@ function createFakeService(): EngramAccessService {
         },
       ],
     }),
-    memoryStore: async ({ dryRun }) => ({
+    memoryStore: async ({ dryRun }: Parameters<EngramAccessService["memoryStore"]>[0]) => ({
       schemaVersion: 1,
       operation: "memory_store",
       namespace: "global",
@@ -88,7 +88,7 @@ function createFakeService(): EngramAccessService {
       status: dryRun === true ? "validated" : "stored",
       memoryId: "fact-new",
     }),
-    memoryActionApply: async (request) => ({
+    memoryActionApply: async (request: Parameters<EngramAccessService["memoryActionApply"]>[0]) => ({
       recorded: true,
       event: {
         action: request.action,
@@ -101,7 +101,7 @@ function createFakeService(): EngramAccessService {
           .join(" | "),
       },
     }),
-    suggestionSubmit: async ({ dryRun }) => ({
+    suggestionSubmit: async ({ dryRun }: Parameters<EngramAccessService["suggestionSubmit"]>[0]) => ({
       schemaVersion: 1,
       operation: "suggestion_submit",
       namespace: "global",
@@ -111,7 +111,7 @@ function createFakeService(): EngramAccessService {
       status: dryRun === true ? "validated" : "queued_for_review",
       memoryId: "fact-review",
     }),
-    entityGet: async (name) => ({
+    entityGet: async (name: Parameters<EngramAccessService["entityGet"]>[0]) => ({
       found: true,
       namespace: "global",
       entity: {
@@ -125,7 +125,7 @@ function createFakeService(): EngramAccessService {
         aliases: ["Alex Ops"],
       },
     }),
-    governanceRun: async ({ mode }) => ({
+    governanceRun: async ({ mode }: Parameters<EngramAccessService["governanceRun"]>[0]) => ({
       namespace: "global",
       runId: "gov-1",
       traceId: "trace-1",
@@ -136,7 +136,7 @@ function createFakeService(): EngramAccessService {
       summaryPath: "/tmp/summary.json",
       reportPath: "/tmp/report.md",
     }),
-    liveConnectorsRun: async ({ force }) => ({
+    liveConnectorsRun: async ({ force }: NonNullable<Parameters<EngramAccessService["liveConnectorsRun"]>[0]>) => ({
       ranAt: "2026-04-28T00:00:00.000Z",
       force: force === true,
       totalDocsImported: 2,
@@ -160,7 +160,7 @@ function createFakeService(): EngramAccessService {
       runId: "gov-1",
       reviewQueue: [{ memoryId: "fact-1", reasonCode: "disputed_memory" }],
     }),
-    capsuleExport: async ({ name, namespace, includeKinds, peerIds, includeTranscripts, encrypt }) => ({
+    capsuleExport: async ({ name, namespace, includeKinds, peerIds, includeTranscripts, encrypt }: Parameters<EngramAccessService["capsuleExport"]>[0]) => ({
       archivePath: `/tmp/remnic/.capsules/${name}.capsule.json.gz${encrypt === true ? ".enc" : ""}`,
       manifestPath: `/tmp/remnic/.capsules/${name}.manifest.json`,
       encryptedArchivePath: encrypt === true ? `/tmp/remnic/.capsules/${name}.capsule.json.gz.enc` : null,
@@ -188,7 +188,7 @@ function createFakeService(): EngramAccessService {
         },
       },
     }),
-    capsuleImport: async ({ archivePath, mode }) => ({
+    capsuleImport: async ({ archivePath, mode }: Parameters<EngramAccessService["capsuleImport"]>[0]) => ({
       imported: [
         {
           sourcePath: "facts/2026-04-28/fact-a.md",

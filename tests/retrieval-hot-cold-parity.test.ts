@@ -38,7 +38,6 @@ test("cold fallback excludes artifact paths from generic relevant memory recall"
     const artifactId = await coldStorage.writeArtifact("artifact quote should never enter generic recall", {
       sourceMemoryId: factId,
       artifactType: "fact",
-      source: "test",
     });
     const day = new Date().toISOString().slice(0, 10);
     const artifactPath = path.join(memoryDir, "cold", "artifacts", day, `${artifactId}.md`);

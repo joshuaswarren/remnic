@@ -413,7 +413,7 @@ test("runPublishedHarness forwards per-trial answer format to strict answering",
     | undefined;
   assert.ok(respond);
   assert.match(respond.question, /shortest complete answer/);
-  assert.equal(result.results.tasks[0]?.details.answerFormat, "short");
+  assert.equal(result.results.tasks[0]?.details?.answerFormat, "short");
 });
 
 import {

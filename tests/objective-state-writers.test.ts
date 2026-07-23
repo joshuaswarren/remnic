@@ -11,6 +11,13 @@ import {
   recordObjectiveStateSnapshotsFromObservedMessages,
 } from "../src/objective-state-writers.js";
 import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
+import type { LcmMessagePartInput } from "@remnic/core";
+
+type ObservedMessagesInput = {
+  sessionKey: string;
+  recordedAt?: string;
+  messages: { role: string; content?: string; parts?: LcmMessagePartInput[] }[];
+};
 
 test("deriveObjectiveStateSnapshotsFromAgentMessages normalizes process and file tool results", () => {
   const snapshots = deriveObjectiveStateSnapshotsFromAgentMessages({
@@ -666,7 +673,7 @@ test("deriveObjectiveStateSnapshotsFromObservedMessages uses adjacent idless fil
 });
 
 test("deriveObjectiveStateSnapshotsFromObservedMessages uses stable ids for observed parts", () => {
-  const input = {
+  const input: ObservedMessagesInput = {
     sessionKey: "agent:main",
     messages: [
       {
@@ -685,7 +692,7 @@ test("deriveObjectiveStateSnapshotsFromObservedMessages uses stable ids for obse
         ],
       },
     ],
-  } as const;
+  };
 
   const first = deriveObjectiveStateSnapshotsFromObservedMessages({
     ...input,
@@ -702,7 +709,7 @@ test("deriveObjectiveStateSnapshotsFromObservedMessages uses stable ids for obse
 });
 
 test("deriveObjectiveStateSnapshotsFromObservedMessages does not reuse stable ids across times", () => {
-  const input = {
+  const input: ObservedMessagesInput = {
     sessionKey: "agent:main",
     messages: [
       {
@@ -721,7 +728,7 @@ test("deriveObjectiveStateSnapshotsFromObservedMessages does not reuse stable id
         ],
       },
     ],
-  } as const;
+  };
 
   const first = deriveObjectiveStateSnapshotsFromObservedMessages({
     ...input,
@@ -1699,7 +1706,7 @@ test("recordObjectiveStateSnapshotsFromAgentMessages respects flags and persists
 
 test("recordObjectiveStateSnapshotsFromObservedMessages respects flags and persists structured parts", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-objective-state-observed-"));
-  const input = {
+  const input: ObservedMessagesInput & { recordedAt: string } = {
     sessionKey: "agent:main",
     recordedAt: "2026-03-07T12:02:30.000Z",
     messages: [
@@ -1719,7 +1726,7 @@ test("recordObjectiveStateSnapshotsFromObservedMessages respects flags and persi
         ],
       },
     ],
-  } as const;
+  };
 
   const skipped = await recordObjectiveStateSnapshotsFromObservedMessages({
     memoryDir,

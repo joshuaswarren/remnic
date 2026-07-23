@@ -6,6 +6,7 @@ import {
   SYNTHETIC_MEMORIES,
   runExtractionAttack,
   createSeededRng,
+  type SeededMemory,
 } from "./index.js";
 import { createMitigatedTarget } from "./mitigated-target.js";
 import { runMitigatedBaseline } from "./baseline.js";
@@ -15,7 +16,7 @@ test("createMitigatedTarget returns empty hits when budget is exceeded", async (
   // hits. Same-namespace queries (namespace "default") return empty from the
   // synthetic target's namespace filter, which is fine — the test only needs
   // to verify budget accounting, not recall result content.
-  const testMemories = [
+  const testMemories: SeededMemory[] = [
     { id: "tm-1", content: "alpha beta gamma", category: "fact", tokens: ["alpha", "beta", "gamma"], namespace: "other" },
     { id: "tm-2", content: "delta epsilon zeta", category: "fact", tokens: ["delta", "epsilon", "zeta"], namespace: "other" },
   ];

@@ -716,7 +716,7 @@ test("redirect stage sets error status when a markdown write fails", async () =>
     // and make the markdown file read-only so writeFile fails.
     const manifest = await readManifest(dir);
     manifest.assets[0].status = "mirrored";
-    delete (manifest.assets[0] as Record<string, unknown>).redirectedAt;
+    delete manifest.assets[0].redirectedAt;
     await writeManifest(dir, manifest);
 
     // Restore original content and make the file unwritable.

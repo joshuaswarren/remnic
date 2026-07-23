@@ -100,7 +100,7 @@ test("aged-dataset bench applies options.limit to fixture queries", async () => 
 });
 
 test("aged-dataset bench reports task completion callbacks", async () => {
-  const calls: Array<{ taskId: string; completed: number; total: number }> = [];
+  const calls: Array<{ taskId: string; completed: number; total?: number }> = [];
   const result = await runRetentionAgedDatasetBenchmark(options({
     limit: 2,
     onTaskComplete(task, completedCount, totalCount) {

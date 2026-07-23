@@ -714,7 +714,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.ok(fakeCodexArgs.includes("--ephemeral"));
   assert.ok(fakeCodexArgs.includes("--ignore-rules"));
 
-  const missingRepoEnv = {
+  const missingRepoEnv: NodeJS.ProcessEnv = {
     ...process.env,
     PYTHONPATH: path.join(ambRoot, "src"),
   };

@@ -63,11 +63,17 @@ test("letta: ingestTurn creates agent then sends message", async () => {
 
   ff.assertRequest("POST", "/v1/agents/", (req) => {
     assert.equal(req.headers["Authorization"], "Bearer letta-key");
-    assert.equal(req.body.name, "memcorrect-s1");
-    assert.equal(req.body.model, "openai/gpt-4o");
-    assert.equal(req.body.agent_type, "memgpt_agent");
-    assert.ok(req.body.memory_blocks);
-    assert.ok(req.body.memory_blocks.length >= 2);
+    const body = req.body as {
+      name: string;
+      model: string;
+      agent_type: string;
+      memory_blocks: unknown[];
+    };
+    assert.equal(body.name, "memcorrect-s1");
+    assert.equal(body.model, "openai/gpt-4o");
+    assert.equal(body.agent_type, "memgpt_agent");
+    assert.ok(body.memory_blocks);
+    assert.ok(body.memory_blocks.length >= 2);
   });
   ff.assertRequest("POST", "/messages", (req) => {
     assert.ok(req.url.includes("agent-abc-123"));

@@ -100,7 +100,7 @@ function getCapsuleExportAction(): (...args: unknown[]) => Promise<void> | void 
     ?.children.get("capsule")
     ?.children.get("export")
     ?.actionHandler;
-  assert.equal(typeof action, "function");
+  assert.ok(typeof action === "function" && action);
   return action;
 }
 

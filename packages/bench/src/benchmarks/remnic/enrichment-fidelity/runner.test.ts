@@ -22,7 +22,7 @@ function buildOptions(
 }
 
 test("runEnrichmentFidelityBenchmark emits per-task completion callbacks", async () => {
-  const progress: Array<{ taskId: string; completedCount: number; totalCount: number }> = [];
+  const progress: Array<{ taskId: string; completedCount: number; totalCount?: number }> = [];
   const result = await runEnrichmentFidelityBenchmark(
     buildOptions({
       onTaskComplete(task, completedCount, totalCount) {

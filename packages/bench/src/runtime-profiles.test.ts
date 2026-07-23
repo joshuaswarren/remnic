@@ -61,6 +61,9 @@ test("runtime assistant hook applies assistant prompt contract and neutralizes u
       "I have 45 minutes free. What's the single highest-leverage thing I should do?",
     memoryView:
       "Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.",
+    seed: 0,
+    runIndex: 0,
+    runCount: 1,
   });
 
   assert.match(received.question ?? "", /^I have 45 minutes free\./);

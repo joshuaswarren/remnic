@@ -62,7 +62,7 @@ test("MemoryAgentBench refines EventQA destinations from recalled event evidence
   assert.equal(task.actual, "the riverside market");
   assert.equal(task.scores.official_exact_match, 1);
   assert.equal(task.scores.official_f1, 1);
-  assert.equal(task.details.originalAnsweredText, "She walked to the riverside market.");
+  assert.equal(task.details?.originalAnsweredText, "She walked to the riverside market.");
 });
 
 test("MemoryAgentBench ReDial scoring can rank mapped movies from recalled evidence", async () => {
@@ -680,8 +680,8 @@ test("MemoryAgentBench does not score a sample after drain fails", async () => {
   assert.equal(task.taskId, "mab-smoke-ar-q1");
   assert.match(task.actual, /drain failed before scoring/);
   assert.equal(task.scores.f1, -1);
-  assert.equal(task.details.drainFailed, true);
-  assert.equal(task.details.error, "memoryagentbench drain failed before scoring: drain backend unavailable");
+  assert.equal(task.details?.drainFailed, true);
+  assert.equal(task.details?.error, "memoryagentbench drain failed before scoring: drain backend unavailable");
 });
 
 test("MemoryAgentBench trialLimit null is treated as unlimited", async () => {

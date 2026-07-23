@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import type * as childProcess from "node:child_process";
 import {
   FaissAdapterError,
   FaissConversationIndexAdapter,
@@ -19,6 +18,8 @@ import {
 } from "../src/conversation-index/indexer.js";
 import { searchConversationIndexFaissFailOpen } from "../src/conversation-index/search.js";
 import type { ConversationChunk } from "../src/conversation-index/chunker.js";
+
+type SpawnFn = NonNullable<FaissAdapterConfig["spawnFn"]>;
 
 class FakeStdin extends EventEmitter {
   readonly writes: string[] = [];
@@ -44,7 +45,7 @@ class FakeProcess extends EventEmitter {
   }
 }
 
-function baseConfig(spawnFn?: typeof childProcess.spawn): FaissAdapterConfig {
+function baseConfig(spawnFn?: SpawnFn): FaissAdapterConfig {
   return {
     memoryDir: "/tmp/memory",
     scriptPath: "/tmp/faiss_index.py",
@@ -216,12 +217,12 @@ test("FAISS sidecar rejects malformed chunk records instead of dropping them", {
 
 test("faiss adapter upsertChunks success path parses JSON output", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdout.emit("data", JSON.stringify({ ok: true, upserted: 1 }));
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -235,9 +236,9 @@ test("faiss adapter upsertChunks success path parses JSON output", async () => {
 
 test("faiss adapter rejects non-positive maxBatchSize instead of reporting no-op success", async () => {
   let spawnCalls = 0;
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     spawnCalls += 1;
-    return new FakeProcess() as unknown as childProcess.ChildProcess;
+    return new FakeProcess() as unknown as ReturnType<SpawnFn>;
   };
 
   assert.throws(
@@ -262,7 +263,7 @@ test("faiss adapter rejects non-positive maxBatchSize instead of reporting no-op
 test("faiss adapter upserts all chunks by batching across maxBatchSize", async () => {
   const stdinWrites: string[] = [];
   let spawnCalls = 0;
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     spawnCalls += 1;
     const proc = new FakeProcess();
     const originalWrite = proc.stdin.write.bind(proc.stdin);
@@ -276,7 +277,7 @@ test("faiss adapter upserts all chunks by batching across maxBatchSize", async (
       proc.emit("close", 0);
     });
 
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter({
@@ -295,7 +296,7 @@ test("faiss adapter upserts all chunks by batching across maxBatchSize", async (
 
 test("faiss adapter searchChunks returns typed results", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdout.emit(
         "data",
@@ -306,7 +307,7 @@ test("faiss adapter searchChunks returns typed results", async () => {
       );
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -318,9 +319,9 @@ test("faiss adapter searchChunks returns typed results", async () => {
 
 test("faiss adapter searchChunks short-circuits NaN topK", async () => {
   let spawnCalls = 0;
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     spawnCalls += 1;
-    return new FakeProcess() as unknown as childProcess.ChildProcess;
+    return new FakeProcess() as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -331,7 +332,7 @@ test("faiss adapter searchChunks short-circuits NaN topK", async () => {
 
 test("faiss adapter throws timeout error and kills process", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => proc as unknown as childProcess.ChildProcess;
+  const spawnFn: SpawnFn = () => proc as unknown as ReturnType<SpawnFn>;
 
   const adapter = new FaissConversationIndexAdapter({
     ...baseConfig(spawnFn),
@@ -350,12 +351,12 @@ test("faiss adapter throws timeout error and kills process", async () => {
 
 test("faiss adapter honors zero timeout as no timeout", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     setTimeout(() => {
       proc.stdout.emit("data", JSON.stringify({ ok: true, status: "ok" }));
       proc.emit("close", 0);
     }, 20);
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter({
@@ -369,7 +370,7 @@ test("faiss adapter honors zero timeout as no timeout", async () => {
 
 test("faiss adapter health preserves manifest metadata for diagnostics", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdout.emit(
         "data",
@@ -389,7 +390,7 @@ test("faiss adapter health preserves manifest metadata for diagnostics", async (
       );
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -402,7 +403,7 @@ test("faiss adapter health preserves manifest metadata for diagnostics", async (
 
 test("faiss adapter inspect reports artifact metadata", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdout.emit(
         "data",
@@ -429,7 +430,7 @@ test("faiss adapter inspect reports artifact metadata", async () => {
       );
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -443,12 +444,12 @@ test("faiss adapter inspect reports artifact metadata", async () => {
 
 test("faiss adapter rebuildChunks parses rebuild count", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdout.emit("data", JSON.stringify({ ok: true, rebuilt: 3 }));
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -459,7 +460,7 @@ test("faiss adapter rebuildChunks parses rebuild count", async () => {
 test("faiss adapter rebuildChunks sends the complete replacement in one rebuild", async () => {
   const stdinWrites: string[] = [];
   const commands: string[] = [];
-  const spawnFn: typeof childProcess.spawn = (_bin, args) => {
+  const spawnFn: SpawnFn = (_bin, args) => {
     commands.push(String(args?.[1] ?? ""));
     const proc = new FakeProcess();
     const originalWrite = proc.stdin.write.bind(proc.stdin);
@@ -473,7 +474,7 @@ test("faiss adapter rebuildChunks sends the complete replacement in one rebuild"
       proc.emit("close", 0);
     });
 
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter({
@@ -490,13 +491,13 @@ test("faiss adapter rebuildChunks sends the complete replacement in one rebuild"
 });
 
 test("faiss adapter rejects partial rebuild counts", async () => {
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     const proc = new FakeProcess();
     process.nextTick(() => {
       proc.stdout.emit("data", JSON.stringify({ ok: true, rebuilt: 1 }));
       proc.emit("close", 0);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter({
@@ -518,7 +519,7 @@ test("faiss adapter rejects partial rebuild counts", async () => {
 test("faiss adapter rebuildChunks still calls rebuild for empty chunk sets", async () => {
   const stdinWrites: string[] = [];
   const commands: string[] = [];
-  const spawnFn: typeof childProcess.spawn = (_bin, args) => {
+  const spawnFn: SpawnFn = (_bin, args) => {
     commands.push(String(args?.[1] ?? ""));
     const proc = new FakeProcess();
     const originalWrite = proc.stdin.write.bind(proc.stdin);
@@ -532,7 +533,7 @@ test("faiss adapter rebuildChunks still calls rebuild for empty chunk sets", asy
       proc.emit("close", 0);
     });
 
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter({
@@ -550,12 +551,12 @@ test("faiss adapter rebuildChunks still calls rebuild for empty chunk sets", asy
 
 test("faiss adapter throws non-zero exit with stderr context", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stderr.emit("data", "boom");
       proc.emit("close", 7);
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   const adapter = new FaissConversationIndexAdapter(baseConfig(spawnFn));
@@ -571,29 +572,29 @@ test("faiss adapter throws non-zero exit with stderr context", async () => {
 
 test("faiss adapter throws malformed output for invalid or empty payloads", async () => {
   const invalid = new FakeProcess();
-  const invalidSpawn: typeof childProcess.spawn = () => {
+  const invalidSpawn: SpawnFn = () => {
     process.nextTick(() => {
       invalid.stdout.emit("data", "not-json");
       invalid.emit("close", 0);
     });
-    return invalid as unknown as childProcess.ChildProcess;
+    return invalid as unknown as ReturnType<SpawnFn>;
   };
 
   const empty = new FakeProcess();
-  const emptySpawn: typeof childProcess.spawn = () => {
+  const emptySpawn: SpawnFn = () => {
     process.nextTick(() => {
       empty.emit("close", 0);
     });
-    return empty as unknown as childProcess.ChildProcess;
+    return empty as unknown as ReturnType<SpawnFn>;
   };
 
   const malformedSuccess = new FakeProcess();
-  const malformedSuccessSpawn: typeof childProcess.spawn = () => {
+  const malformedSuccessSpawn: SpawnFn = () => {
     process.nextTick(() => {
       malformedSuccess.stdout.emit("data", JSON.stringify({}));
       malformedSuccess.emit("close", 0);
     });
-    return malformedSuccess as unknown as childProcess.ChildProcess;
+    return malformedSuccess as unknown as ReturnType<SpawnFn>;
   };
 
   await assert.rejects(
@@ -614,11 +615,11 @@ test("faiss adapter throws malformed output for invalid or empty payloads", asyn
 
 test("faiss adapter converts stdin stream errors into adapter failures", async () => {
   const proc = new FakeProcess();
-  const spawnFn: typeof childProcess.spawn = () => {
+  const spawnFn: SpawnFn = () => {
     process.nextTick(() => {
       proc.stdin.emit("error", new Error("EPIPE"));
     });
-    return proc as unknown as childProcess.ChildProcess;
+    return proc as unknown as ReturnType<SpawnFn>;
   };
 
   await assert.rejects(

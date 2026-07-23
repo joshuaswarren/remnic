@@ -385,7 +385,7 @@ test("dreamsRun delegates deepSleep governance through the resolved namespace st
   const storage = {
     dir: namespaceDir,
   };
-  let capturedOptions: { storage?: unknown; dryRun?: boolean } | null = null;
+  let capturedOptions!: { storage?: unknown; dryRun?: boolean } | null;
   const service = new EngramAccessService({
     config: {
       memoryDir,
@@ -2023,7 +2023,7 @@ test("access service acquires a shared idempotency key lock before executing wri
     };
     const serviceA = new EngramAccessService(orchestrator as any);
     const serviceB = new EngramAccessService(orchestrator as any);
-    let releaseFirstExecute: (() => void) | null = null;
+    let releaseFirstExecute!: (() => void) | null;
     const firstExecutePaused = new Promise<void>((resolve) => {
       releaseFirstExecute = resolve;
     });

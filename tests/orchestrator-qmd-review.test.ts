@@ -29,7 +29,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp forwards QMD search options and ski
 
   let searchArgs: unknown[] | null = null;
   let hybridCalls = 0;
-  let snapshot: Record<string, unknown> | null = null;
+  const snapshotBox: { value: Record<string, unknown> | null } = { value: null };
   orchestrator.qmd = {
     resolveSupportedSearchOptions: (options: Record<string, unknown>) => options,
     search: async (...args: unknown[]) => {
@@ -72,7 +72,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp forwards QMD search options and ski
         explain: true,
       },
       onDebugSnapshot: async (payload: Record<string, unknown>) => {
-        snapshot = payload;
+        snapshotBox.value = payload;
       },
     },
   );
@@ -90,6 +90,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp forwards QMD search options and ski
     { onDegradation: undefined },
   ]);
   assert.equal(results.length, 1);
+  const snapshot = snapshotBox.value;
   assert.ok(snapshot);
   assert.equal(snapshot?.hybridTopUpSkippedReason, "intent_hint_active");
   assert.equal(snapshot?.intentHint, "goal:review action:review entities:repo");
@@ -160,7 +161,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when QMD
 
   let searchArgs: unknown[] | null = null;
   let hybridCalls = 0;
-  let snapshot: Record<string, unknown> | null = null;
+  const snapshotBox: { value: Record<string, unknown> | null } = { value: null };
   orchestrator.qmd = {
     resolveSupportedSearchOptions: () => ({ explain: true }),
     search: async (...args: unknown[]) => {
@@ -203,7 +204,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when QMD
         explain: true,
       },
       onDebugSnapshot: async (payload: Record<string, unknown>) => {
-        snapshot = payload;
+        snapshotBox.value = payload;
       },
     },
   );
@@ -220,6 +221,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when QMD
   ]);
   assert.equal(hybridCalls, 1);
   assert.equal(results.length, 2);
+  const snapshot = snapshotBox.value;
   assert.ok(snapshot);
   assert.equal(snapshot?.intentHint, undefined);
   assert.equal(snapshot?.explainEnabled, true);
@@ -240,7 +242,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when the
 
   let searchArgs: unknown[] | null = null;
   let hybridCalls = 0;
-  let snapshot: Record<string, unknown> | null = null;
+  const snapshotBox: { value: Record<string, unknown> | null } = { value: null };
   orchestrator.qmd = {
     search: async (...args: unknown[]) => {
       searchArgs = args;
@@ -282,7 +284,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when the
         explain: true,
       },
       onDebugSnapshot: async (payload: Record<string, unknown>) => {
-        snapshot = payload;
+        snapshotBox.value = payload;
       },
     },
   );
@@ -300,6 +302,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when the
   ]);
   assert.equal(hybridCalls, 1);
   assert.equal(results.length, 2);
+  const snapshot = snapshotBox.value;
   assert.ok(snapshot);
   assert.equal(snapshot?.intentHint, undefined);
   assert.equal(snapshot?.explainEnabled, false);

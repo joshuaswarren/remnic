@@ -14,7 +14,7 @@ test("cli service candidate helper falls through to legacy service labels after 
     path.join(ROOT, "packages/remnic-cli/src/service-candidates.ts")
   );
   const calls: string[] = [];
-  const result = firstSuccessfulCandidate(["remnic.service", "engram.service"], (candidate) => {
+  const result = firstSuccessfulCandidate(["remnic.service", "engram.service"], (candidate: string) => {
     calls.push(candidate);
     if (candidate === "remnic.service") {
       throw new Error("canonical service missing");

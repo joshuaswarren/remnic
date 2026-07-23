@@ -280,7 +280,7 @@ test("dashboard server start recovers after listen failure", async () => {
   await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", () => resolve()));
   const blockerAddr = blocker.address();
   assert.equal(typeof blockerAddr, "object");
-  assert.ok(blockerAddr && typeof blockerAddr.port === "number");
+  assert.ok(blockerAddr && typeof blockerAddr !== "string" && typeof blockerAddr.port === "number");
 
   const server = new GraphDashboardServer({
     memoryDir,

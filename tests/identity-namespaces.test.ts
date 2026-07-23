@@ -6,13 +6,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "../src/config.js";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
 function baseConfig(memoryDir: string): PluginConfig {
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     openaiBaseUrl: undefined,
     model: "gpt-5.5",
@@ -203,7 +204,7 @@ function baseConfig(memoryDir: string): PluginConfig {
     oramaEmbeddingDimension: 1536,
     slowLogEnabled: false,
     slowLogThresholdMs: 30_000,
-  } as PluginConfig;
+  });
 }
 
 test("StorageManager stores namespace-local identity reflections under identity/reflections.md", async () => {

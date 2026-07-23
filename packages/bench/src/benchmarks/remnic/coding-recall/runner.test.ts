@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runCodingRecallBenchmark, codingRecallDefinition } from "./runner.js";
+import type { TaskResult } from "../../../types.js";
 
 test("coding-recall: cross-project case yields perfect isolation + precision", async () => {
   const result = await runCodingRecallBenchmark({
@@ -130,7 +131,7 @@ test("coding-recall emits task completion callbacks in full mode", async () => {
     benchmark: codingRecallDefinition,
     mode: "full",
     seed: 0,
-    onTaskComplete(task, completedCount, totalCount) {
+    onTaskComplete(task: TaskResult, completedCount: number, totalCount?: number) {
       completed.push({ taskId: task.taskId, completedCount, totalCount });
     },
   } as unknown as Parameters<typeof runCodingRecallBenchmark>[0]);

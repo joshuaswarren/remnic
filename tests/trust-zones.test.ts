@@ -276,7 +276,7 @@ test("trust-zone-status CLI command returns the store summary", async () => {
     memoryPoisoningDefenseEnabled: false,
   });
   assert.equal(summary.records.valid, 1);
-  assert.equal(summary.latestRecord.recordId, "tz-cli-1");
+  assert.equal(summary.latestRecord?.recordId, "tz-cli-1");
 });
 
 test("scoreTrustZoneProvenance is deterministic and rewards anchored provenance", () => {
@@ -471,12 +471,13 @@ test("promoteTrustZoneRecord writes a lineage-aware promoted record", async () =
   assert.equal(result.record.promotedFromZone, "working");
   assert.equal(result.record.metadata?.sourceRecordId, "tz-promote-source");
   assert.equal(result.record.metadata?.promotionReason?.includes("Manual review approved"), true);
-  assert.equal(result.filePath.endsWith(".json"), true);
+  assert.equal(result.filePath?.endsWith(".json"), true);
 
   const status = await getTrustZoneStoreStatus({
     memoryDir,
     enabled: true,
     promotionEnabled: true,
+    poisoningDefenseEnabled: true,
   });
   assert.equal(status.records.valid, 2);
   assert.equal(status.records.byZone.working, 1);
@@ -676,6 +677,7 @@ test("trust-zone-promote CLI dry-run returns the promotion plan without writing"
     memoryDir,
     enabled: true,
     promotionEnabled: true,
+    poisoningDefenseEnabled: true,
   });
   assert.equal(status.records.valid, 1);
   assert.equal(status.records.byZone.quarantine, 1);

@@ -26,7 +26,7 @@ function makeCapsuleBlock() {
     id: "research-2026",
     version: "1.0.0",
     schemaVersion: "taxonomy-v1",
-    parentCapsule: null,
+    parentCapsule: null as string | null,
     description: "Research capsule for 2026 planning",
     retrievalPolicy: {
       tierWeights: { bm25: 1.0, vector: 0.8, graph: 0.5 },

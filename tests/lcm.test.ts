@@ -425,6 +425,7 @@ test("LcmSummarizer creates leaf nodes from unsummarized messages", async () => 
       rollupFanIn: 4,
       maxDepth: 5,
       deterministicMaxTokens: 512,
+      telemetryPrefilterEnabled: false,
     });
 
     const created = await summarizer.summarizeIncremental("session-1");
@@ -463,6 +464,7 @@ test("LcmSummarizer performs rollup when enough leaf nodes exist", async () => {
       rollupFanIn: 2,  // Roll up after 2 leaves
       maxDepth: 3,
       deterministicMaxTokens: 512,
+      telemetryPrefilterEnabled: false,
     });
 
     const created = await summarizer.summarizeIncremental("session-1");
@@ -500,6 +502,7 @@ test("LcmSummarizer does not create incomplete batches", async () => {
       rollupFanIn: 4,
       maxDepth: 5,
       deterministicMaxTokens: 512,
+      telemetryPrefilterEnabled: false,
     });
 
     const created = await summarizer.summarizeIncremental("session-1");

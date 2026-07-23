@@ -65,7 +65,7 @@ test("filterComparableCandidateRuns excludes the selected baseline", () => {
   );
 
   assert.deepEqual(
-    filtered.map((run) => run.id),
+    filtered.map((run: BenchResultSummary) => run.id),
     ["candidate"],
   );
 });

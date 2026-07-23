@@ -503,7 +503,7 @@ test("applyProactiveQuestionPass enforces a single total addition budget across 
     + (result.relationships?.length ?? 0);
   assert.equal(totalAdditions, 2);
   assert.deepEqual(
-    result.facts.map((fact) => fact.content),
+    result.facts.map((fact: { content: string }) => fact.content),
     [
       "Alex committed to ship on Friday.",
       "The team chose the safer rollout.",

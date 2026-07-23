@@ -61,7 +61,7 @@ test("LongMemEval runner wires the shared harness with per-item postAnswerHook",
         },
         async search(_query, _limit) {
           searchCalls += 1;
-          return [{ id: "r", text: "Paris" }];
+          return [{ turnIndex: 0, role: "user", snippet: "Paris", sessionId: "session" }];
         },
         async reset() {},
         async destroy() {},
@@ -190,8 +190,10 @@ test("LongMemEval runner preserves temporal source metadata without narrowing re
         async search(_query, _limit) {
           return [
             {
-              id: "latest",
-              text: storedSessions.get("latest-session")?.join("\n") ?? "",
+              turnIndex: 0,
+              role: "user",
+              snippet: storedSessions.get("latest-session")?.join("\n") ?? "",
+              sessionId: "session",
             },
           ];
         },
@@ -574,8 +576,8 @@ test("LongMemEval search_hits falls back to session-scoped search", async () => 
 
     assert.deepEqual(searchSessionIds, [undefined, "city-session"]);
     assert.equal(result.results.tasks[0]?.scores.search_hits, 1);
-    assert.equal(result.results.tasks[0]?.details.directSearchHits, 1);
-    assert.equal(result.results.tasks[0]?.details.recallEvidenceHits, 0);
+    assert.equal(result.results.tasks[0]?.details?.directSearchHits, 1);
+    assert.equal(result.results.tasks[0]?.details?.recallEvidenceHits, 0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -674,8 +676,8 @@ test("LongMemEval search_hits survives rejecting unscoped search", async () => {
     assert.equal(task.scores.f1, 1);
     assert.equal(task.scores.judge_accuracy, 1);
     assert.equal(task.scores.search_hits, 1);
-    assert.equal(task.details.directSearchHits, 1);
-    assert.equal(task.details.recallEvidenceHits, 0);
+    assert.equal(task.details?.directSearchHits, 1);
+    assert.equal(task.details?.recallEvidenceHits, 0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -757,8 +759,8 @@ test("LongMemEval search_hits counts recalled evidence when direct search is emp
 
     const task = result.results.tasks[0]!;
     assert.equal(task.scores.search_hits, 1);
-    assert.equal(task.details.directSearchHits, 0);
-    assert.equal(task.details.recallEvidenceHits, 1);
+    assert.equal(task.details?.directSearchHits, 0);
+    assert.equal(task.details?.recallEvidenceHits, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

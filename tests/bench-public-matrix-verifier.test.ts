@@ -64,7 +64,11 @@ function codexProvider(): ProviderConfig {
 
 function benchmarkResult(
   benchmark: string,
-  overrides: Partial<BenchmarkResult> = {},
+  overrides: Partial<Omit<BenchmarkResult, "meta" | "config" | "results">> & {
+    meta?: Partial<BenchmarkResult["meta"]>;
+    config?: Partial<BenchmarkResult["config"]>;
+    results?: Partial<BenchmarkResult["results"]>;
+  } = {},
 ): BenchmarkResult {
   const base: BenchmarkResult = {
     meta: {

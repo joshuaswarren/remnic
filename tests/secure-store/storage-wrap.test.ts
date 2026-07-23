@@ -524,7 +524,7 @@ test("migrateMemoryDirToEncrypted — partial failure leaves other files intact"
 // ---------------------------------------------------------------------------
 
 test("StorageManager.setSecureStoreKey — isSecureStoreUnlocked reflects key state", () => {
-  const storage = new StorageManager("/tmp/test-memory", []);
+  const storage = new StorageManager("/tmp/test-memory", {});
   assert.strictEqual(storage.isSecureStoreUnlocked(), false, "locked by default");
   const key = makeKey();
   storage.setSecureStoreKey(key);
@@ -536,7 +536,7 @@ test("StorageManager.setSecureStoreKey — isSecureStoreUnlocked reflects key st
 test("StorageManager — writeMemory encrypts and readAllMemories decrypts", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -593,7 +593,7 @@ test("StorageManager — locked store throws SecureStoreLockedError on readAllMe
       dir,
     );
     // Create a storage manager WITHOUT the key (locked)
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     // readAllMemories silently skips unreadable files — the test confirms the
     // locked file is not returned (it throws internally but is caught)
     // More importantly, readMemoryByPath should propagate the locked error.
@@ -610,7 +610,7 @@ test("StorageManager — locked store throws SecureStoreLockedError on readProfi
     const profilePath = path.join(dir, "profile.md");
     await writeMaybeEncryptedFile(profilePath, "# Profile\n\nprivate", key, {}, dir);
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
 
     await assert.rejects(
       () => storage.readProfile(),
@@ -622,7 +622,7 @@ test("StorageManager — locked store throws SecureStoreLockedError on readProfi
 test("StorageManager — identity support files encrypt, decrypt, and fail clearly while locked", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -646,7 +646,7 @@ test("StorageManager — identity support files encrypt, decrypt, and fail clear
     assert.equal(await storage.readIdentityAudit("weekly", "2026-W18"), "private audit");
     assert.equal(await storage.readIdentityAudit("weekly", "../escape"), null);
 
-    const lockedStorage = new StorageManager(dir, []);
+    const lockedStorage = new StorageManager(dir, {});
     await assert.rejects(
       () => lockedStorage.readIdentityAnchor(),
       (err) => err instanceof SecureStoreLockedError,
@@ -675,7 +675,7 @@ test("StorageManager — plaintext identity support files remain readable withou
     await writeFile(path.join(identityDir, "improvement-loops.md"), "plain loop", "utf8");
     await writeFile(path.join(identityDir, "audits", "weekly", "2026-W18.md"), "plain audit", "utf8");
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
 
     assert.equal(await storage.readIdentityAnchor(), "plain anchor");
     assert.equal(await storage.readIdentityReflections(), "plain reflection");
@@ -687,7 +687,7 @@ test("StorageManager — plaintext identity support files remain readable withou
 test("StorageManager — state and index sidecars encrypt, decrypt, and fail clearly while locked", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -770,7 +770,7 @@ test("StorageManager — state and index sidecars encrypt, decrypt, and fail cle
     assert.equal((await storage.readCompressionGuidelineOptimizerState())?.guidelineVersion, 1);
     assert.equal(await storage.hasFactContentHash("private fact hash sidecar content"), true);
 
-    const lockedStorage = new StorageManager(dir, []);
+    const lockedStorage = new StorageManager(dir, {});
     await assert.rejects(() => lockedStorage.loadBuffer(), (err) => err instanceof SecureStoreLockedError);
     await assert.rejects(() => lockedStorage.loadMeta(), (err) => err instanceof SecureStoreLockedError);
     await assert.rejects(() => lockedStorage.loadTopics(), (err) => err instanceof SecureStoreLockedError);
@@ -820,7 +820,7 @@ test("StorageManager — plaintext state sidecars remain readable without secure
       "utf8",
     );
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
 
     assert.equal((await storage.loadBuffer()).turns[0]?.content, "plain buffered turn");
     assert.equal((await storage.loadMeta()).totalMemories, 1);
@@ -891,7 +891,7 @@ test("StorageManager — encrypted state sidecars fail loudly with the wrong key
     );
     await writeFile(path.join(stateDir, "fact-hashes.ready"), "v1\n", "utf8");
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(wrongKey, true);
 
     await assert.rejects(
@@ -925,7 +925,7 @@ test("StorageManager — encrypted state sidecars fail loudly with the wrong key
 test("StorageManager — encrypted ledger appends are serialized", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -956,7 +956,7 @@ test("StorageManager — encrypted ledger appends are serialized", async () => {
 test("StorageManager — memory-action row reader preserves source lines and skips invalid outcomes", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -990,7 +990,7 @@ test("StorageManager — memory-action row reader preserves source lines and ski
 test("StorageManager — continuity incidents encrypt, decrypt, and fail clearly while locked", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -1013,7 +1013,7 @@ test("StorageManager — continuity incidents encrypt, decrypt, and fail clearly
     assert.equal(closed?.state, "closed");
     assert.ok(isEncryptedFile(await readFile(incident.filePath!)), "closed incident should remain encrypted");
 
-    const lockedStorage = new StorageManager(dir, []);
+    const lockedStorage = new StorageManager(dir, {});
     await assert.rejects(
       () => lockedStorage.readContinuityIncidents(10, "all"),
       (err) => err instanceof SecureStoreLockedError,
@@ -1031,7 +1031,7 @@ test("StorageManager — continuity incidents encrypt, decrypt, and fail clearly
 test("StorageManager — continuity incident list skips corrupted encrypted files", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -1076,7 +1076,7 @@ test("StorageManager — plaintext continuity incidents remain readable without 
       "utf8",
     );
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     const incidents = await storage.readContinuityIncidents(10, "all");
 
     assert.equal(incidents.length, 1);
@@ -1088,7 +1088,7 @@ test("StorageManager — plaintext continuity incidents remain readable without 
 test("StorageManager — writeEntity encrypts and entity reads decrypt", async () => {
   await withTempDir(async (dir) => {
     const key = makeKey();
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
@@ -1111,7 +1111,7 @@ test("StorageManager — writeEntity encrypts and entity reads decrypt", async (
     assert.equal(entities[0]?.name, "Alice Example");
     assert.deepEqual(entities[0]?.facts, ["Alice Example owns the launch checklist."]);
 
-    const lockedStorage = new StorageManager(dir, []);
+    const lockedStorage = new StorageManager(dir, {});
     await assert.rejects(
       () => lockedStorage.readAllEntityFiles(),
       (err) => err instanceof SecureStoreLockedError,
@@ -1149,7 +1149,7 @@ test("StorageManager — locked store throws SecureStoreLockedError on encrypted
       dir,
     );
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
 
     await assert.rejects(
       () => storage.readEntity("person-alice-example"),
@@ -1195,7 +1195,7 @@ test("StorageManager — entity writes reject decrypt failures instead of overwr
       dir,
     );
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     storage.setSecureStoreKey(wrongKey, true);
 
     await assert.rejects(
@@ -1238,7 +1238,7 @@ test("StorageManager — plaintext entity files remain readable without secure-s
       "utf8",
     );
 
-    const storage = new StorageManager(dir, []);
+    const storage = new StorageManager(dir, {});
     const content = await storage.readEntity("person-bob-example");
     assert.match(content, /Bob Example owns the support queue\./);
 

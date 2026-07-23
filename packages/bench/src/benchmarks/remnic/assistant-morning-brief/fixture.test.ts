@@ -13,7 +13,7 @@ test("stale-content guard fixture includes stale control and changed-since-Frida
   assert.ok(
     facts.some(
       (fact) =>
-        fact.tags.includes("stale") &&
+        (fact.tags?.includes("stale") ?? false) &&
         /last edited three months ago/i.test(fact.summary),
     ),
     "expected stale negative-control fact",

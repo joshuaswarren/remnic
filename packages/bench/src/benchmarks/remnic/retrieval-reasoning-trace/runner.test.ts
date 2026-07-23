@@ -104,7 +104,6 @@ test("runner: full-mode run produces boost_recall_at_1 > 0 and boost_noop_preser
   const result = await runRetrievalReasoningTraceBenchmark({
     benchmark: retrievalReasoningTraceDefinition,
     mode: "full",
-    runCount: 1,
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalReasoningTraceBenchmark>[0]);
 
@@ -159,7 +158,6 @@ test("runner: quick mode exercises at least one positive AND one negative case",
   const result = await runRetrievalReasoningTraceBenchmark({
     benchmark: retrievalReasoningTraceDefinition,
     mode: "quick",
-    runCount: 1,
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalReasoningTraceBenchmark>[0]);
 
@@ -177,11 +175,10 @@ test("runner: quick mode exercises at least one positive AND one negative case",
 });
 
 test("runner: quick mode emits per-task completion callbacks", async () => {
-  const progress: Array<{ taskId: string; completedCount: number; totalCount: number }> = [];
+  const progress: Array<{ taskId: string; completedCount: number; totalCount?: number }> = [];
   const result = await runRetrievalReasoningTraceBenchmark({
     benchmark: retrievalReasoningTraceDefinition,
     mode: "quick",
-    runCount: 1,
     adapterMode: "direct",
     onTaskComplete(task, completedCount, totalCount) {
       progress.push({ taskId: task.taskId, completedCount, totalCount });
@@ -206,7 +203,6 @@ test("runner: latency p95 stays well under 5ms (pure helper)", async () => {
   const result = await runRetrievalReasoningTraceBenchmark({
     benchmark: retrievalReasoningTraceDefinition,
     mode: "full",
-    runCount: 1,
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalReasoningTraceBenchmark>[0]);
 

@@ -216,7 +216,7 @@ test("recall ignores malformed Retry-After numeric prefixes", async () => {
     );
   }) as typeof fetch;
 
-  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+  globalThis.setTimeout = ((handler: (...cbArgs: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
     const delay = Number(timeout ?? 0);
     observedTimeouts.push(delay);
     if (delay === 1000) {

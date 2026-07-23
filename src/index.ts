@@ -1,12 +1,11 @@
-/// <reference path="./openclaw-plugin-sdk.d.ts" />
 export { loadDaySummaryPrompt } from "./day-summary.js";
+export type { MemoryObservation } from "@remnic/core/types";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import OpenAI from "openai";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { parseConfig } from "./config.js";
-import { initLogger } from "./logger.js";
-import { log } from "./logger.js";
+import { initLogger, log } from "./logger.js";
 import {
   detectSdkCapabilities,
   type OpenClawRegistrationMode,

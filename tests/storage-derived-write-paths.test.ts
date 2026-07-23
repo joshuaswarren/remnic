@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
-import type { VersioningConfig } from "../src/page-versioning.ts";
+import type { VersioningConfig } from "@remnic/core";
 
 function versioningConfig(): VersioningConfig {
   return { enabled: true, maxVersionsPerPage: 10, sidecarDir: ".versions" };

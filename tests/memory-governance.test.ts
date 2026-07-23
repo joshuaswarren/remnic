@@ -5,6 +5,12 @@ import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { RULE_VERSION, runMemoryGovernance, restoreMemoryGovernanceRun } from "../src/maintenance/memory-governance.ts";
 import { StorageManager } from "../src/storage.ts";
+import type { MemoryFile } from "../src/types.ts";
+
+interface SpyableStorage {
+  readMemoriesWindow: StorageManager["readMemoriesWindow"];
+  readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
+}
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -676,9 +682,7 @@ test("readMemoriesWindow skips stale corrections during recent-only scans", asyn
     await setTimestamp(memoryDir, "corrections/correction-stale.md", "2026-03-01T00:00:00.000Z");
     await setTimestamp(memoryDir, "facts/2026-03-10/fact-recent.md", "2026-03-10T00:00:00.000Z");
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -730,9 +734,7 @@ test("readMemoriesWindow falls back to file mtime for undated legacy memories", 
     await setTimestamp(memoryDir, "facts/2026-02-20/fact-undated.md", "2026-02-20T00:00:00.000Z");
     await setTimestamp(memoryDir, "facts/2026-03-10/fact-recent.md", "2026-03-10T00:00:00.000Z");
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -789,9 +791,7 @@ test("readMemoriesWindow limits parsed candidates to the remaining maxMemories b
       }),
     );
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -847,9 +847,7 @@ test("readMemoriesWindow gives corrections a bounded slot before consuming the f
       }),
     );
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -902,9 +900,7 @@ test("readMemoriesWindow counts malformed candidates against the maxMemories win
       }),
     );
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -963,9 +959,7 @@ test("readMemoriesWindow caps malformed-heavy scans inside a large batch", async
       }),
     );
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -1006,9 +1000,7 @@ test("readMemoriesWindow bounds malformed-heavy batches to a finite inspection b
       );
     }
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {
@@ -1109,9 +1101,7 @@ test("readMemoriesWindow uses a small parallel window when the bounded budget is
       );
     }
 
-    const storage = new StorageManager(memoryDir) as StorageManager & {
-      readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number) => Promise<MemoryFile[]>;
-    };
+    const storage = new StorageManager(memoryDir) as unknown as SpyableStorage;
     const originalReadParsed = storage.readParsedMemoriesFromPaths.bind(storage);
     const parsedBatches: string[][] = [];
     storage.readParsedMemoriesFromPaths = async (filePaths, batchSize) => {

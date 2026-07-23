@@ -11,6 +11,7 @@ import {
   type Message,
   type SearchResult,
   type StructuredJudge,
+  type ConfidenceInterval,
 } from "../packages/bench/src/index.js";
 
 class NoopMemoryAdapter implements BenchMemoryAdapter {
@@ -144,7 +145,7 @@ for (const benchmarkId of assistantBenchmarks) {
       "calibration",
       "overall",
     ]) {
-      const ci = stats?.confidenceIntervals[dimension];
+      const ci: ConfidenceInterval | undefined = stats?.confidenceIntervals[dimension];
       assert.ok(ci, `expected CI for dimension ${dimension}`);
       assert.ok(ci.lower <= ci.upper);
       assert.equal(ci.level, 0.95);

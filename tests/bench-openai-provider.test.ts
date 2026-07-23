@@ -83,6 +83,7 @@ test("OpenAI-compatible provider discovers models from /v1/models", async () => 
       baseUrl: "https://example.test/v1",
     });
 
+    assert.ok(provider.discover, "provider exposes discover()");
     const discovered = await provider.discover();
 
     assert.deepEqual(discovered, [

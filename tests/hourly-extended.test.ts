@@ -6,6 +6,7 @@ import os from "node:os";
 import { HourlySummarizer } from "../src/summarizer.js";
 import { ModelRegistry } from "../src/model-registry.js";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "../src/config.js";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -15,7 +16,7 @@ test("v2.4 extended hourly summary parser uses Topics bullets for recall", async
   const memoryDir = tmpDir("engram-hourly-ext");
   await mkdir(memoryDir, { recursive: true });
 
-  const cfg: PluginConfig = {
+  const cfg: PluginConfig = parseConfig({
     // minimal required fields
     openaiApiKey: undefined,
     model: "gpt-5.5",
@@ -148,7 +149,7 @@ test("v2.4 extended hourly summary parser uses Topics bullets for recall", async
     compoundingSemanticEnabled: false,
     compoundingSynthesisTimeoutMs: 1000,
     compoundingInjectEnabled: false,
-  };
+  });
 
   const modelRegistry = new ModelRegistry(memoryDir);
   const summarizer = new HourlySummarizer(cfg, undefined, modelRegistry, undefined);

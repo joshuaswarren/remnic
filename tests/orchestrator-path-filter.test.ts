@@ -12,6 +12,7 @@ import {
   isActivityDigestPath,
   isGenericRecallExcludedPath,
 } from "../packages/remnic-core/src/orchestration/orchestrator-helpers.ts";
+import type { MemoryFile } from "@remnic/core";
 
 test("isArtifactMemoryPath matches artifact directory paths", () => {
   assert.equal(isArtifactMemoryPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
@@ -63,10 +64,10 @@ test("isGenericRecallExcludedPath root-aware keeps nested activity-named facts r
 
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
   const candidates = [
-    { path: "/tmp/memory/artifacts/2026-02-21/a.md", score: 0.99 },
-    { path: "/tmp/memory/ns-other/facts/1.md", score: 0.98 },
-    { path: "/tmp/memory/ns-main/facts/2.md", score: 0.97 },
-    { path: "/tmp/memory/ns-main/facts/3.md", score: 0.96 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },
+    { docid: "/tmp/memory/ns-other/facts/1.md", path: "/tmp/memory/ns-other/facts/1.md", snippet: "", score: 0.98 },
+    { docid: "/tmp/memory/ns-main/facts/2.md", path: "/tmp/memory/ns-main/facts/2.md", snippet: "", score: 0.97 },
+    { docid: "/tmp/memory/ns-main/facts/3.md", path: "/tmp/memory/ns-main/facts/3.md", snippet: "", score: 0.96 },
   ];
 
   const filtered = filterRecallCandidates(candidates, {
@@ -88,10 +89,10 @@ test("computeQmdHybridFetchLimit overscans only when artifacts are enabled", () 
 
 test("artifact filtering is applied before QMD cap", () => {
   const qmdCandidates = [
-    { path: "/tmp/memory/artifacts/2026-02-21/a.md", score: 1.0 },
-    { path: "/tmp/memory/artifacts/2026-02-21/b.md", score: 0.99 },
-    { path: "/tmp/memory/facts/3.md", score: 0.98 },
-    { path: "/tmp/memory/facts/4.md", score: 0.97 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 1.0 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.99 },
+    { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.98 },
+    { docid: "/tmp/memory/facts/4.md", path: "/tmp/memory/facts/4.md", snippet: "", score: 0.97 },
   ];
 
   const filtered = filterRecallCandidates(qmdCandidates, {
@@ -108,7 +109,7 @@ test("artifact filtering is applied before QMD cap", () => {
 });
 
 test("mergeArtifactRecallCandidates round-robins namespace lists", () => {
-  const mk = (id: string, content: string) => ({
+  const mk = (id: string, content: string): MemoryFile => ({
     path: `/tmp/memory/artifacts/${id}.md`,
     content,
     frontmatter: {
@@ -138,7 +139,7 @@ test("mergeArtifactRecallCandidates round-robins namespace lists", () => {
 });
 
 test("mergeArtifactRecallCandidates continues past duplicate-only offsets", () => {
-  const mk = (id: string, content: string) => ({
+  const mk = (id: string, content: string): MemoryFile => ({
     path: `/tmp/memory/artifacts/${id}.md`,
     content,
     frontmatter: {

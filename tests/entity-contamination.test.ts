@@ -603,10 +603,9 @@ test("R-9 (attribution surface): multi-entity chunk attributes via primary entit
   });
   // Add `entityRefs` to frontmatter directly (simulating extraction-time
   // tagging of secondary entities).
-  (multiEntityMemory.frontmatter as Record<string, unknown>).entityRefs = [
-    "person-person-b1",
-    "project-project-a1",
-  ];
+  Object.assign(multiEntityMemory.frontmatter, {
+    entityRefs: ["person-person-b1", "project-project-a1"],
+  });
 
   const focusOnA1 = parseBriefingFocus("person:Person-A1");
   const focusOnB1 = parseBriefingFocus("person:Person-B1");
@@ -624,10 +623,9 @@ test("R-9 (attribution surface): multi-entity chunk attributes via primary entit
     entityRef: "person-person-a1",
     content: "internal: redacted",
   });
-  (noContentMemory.frontmatter as Record<string, unknown>).entityRefs = [
-    "person-person-b1",
-    "project-project-a1",
-  ];
+  Object.assign(noContentMemory.frontmatter, {
+    entityRefs: ["person-person-b1", "project-project-a1"],
+  });
   assert.equal(
     focusMatchesMemory(noContentMemory, focusOnB1!),
     false,

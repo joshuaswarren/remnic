@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "@remnic/core";
 import { SharedContextManager } from "../src/shared-context/manager.js";
 
 function tmpDir(prefix: string): string {
@@ -12,7 +13,7 @@ function tmpDir(prefix: string): string {
 
 function minimalConfig(memoryDir: string, sharedContextDir: string): PluginConfig {
   // Tests only rely on a few config fields; fill required PluginConfig shape.
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     model: "gpt-5.5",
     reasoningEffort: "low",
@@ -143,7 +144,7 @@ function minimalConfig(memoryDir: string, sharedContextDir: string): PluginConfi
     compoundingSemanticEnabled: false,
     compoundingSynthesisTimeoutMs: 1000,
     compoundingInjectEnabled: false,
-  };
+  });
 }
 
 test("v4 shared context manager bootstraps structure and writes outputs", async () => {

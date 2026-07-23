@@ -16,7 +16,6 @@ import * as path from "node:path";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 
 import { EngramAccessHttpServer } from "../src/access-http.js";
-import type { EngramAccessService } from "../src/access-service.js";
 import {
   buildGraphSnapshot,
   GRAPH_SNAPSHOT_DEFAULT_LIMIT,

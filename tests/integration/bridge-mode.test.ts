@@ -251,7 +251,7 @@ test("detectBridgeMode delegates when daemon service is installed and healthy wi
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { type: "module", workerData: { state } },
+    { workerData: { state } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -294,7 +294,7 @@ test("detectBridgeMode delegates when legacy ai.remnic.server launchd service is
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { type: "module", workerData: { state } },
+    { workerData: { state } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -333,7 +333,7 @@ test("detectBridgeMode delegates to a reachable local daemon without service met
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { type: "module", workerData: { state } },
+    { workerData: { state } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -378,7 +378,7 @@ test("detectBridgeMode coerces string config port before service health probing"
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { type: "module", workerData: { state } },
+    { workerData: { state } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);

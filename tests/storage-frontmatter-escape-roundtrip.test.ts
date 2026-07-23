@@ -40,7 +40,7 @@ test("StorageManager round-trips escaped backslashes and quotes for importance r
     const added = await storage.addLinksToMemory(id, [
       {
         targetId: "fact-target-2",
-        linkType: "elaborates",
+        linkType: "related",
         strength: 0.5,
         reason: linkReasonWithEscapes,
       },

@@ -129,7 +129,7 @@ test("runBenchmark executes locomo in quick mode through the phase-1 package API
   assert.equal(typeof result.results.aggregates.rouge_l?.mean, "number");
   assert.equal(result.results.tasks[0]?.expected, "Seattle");
   assert.equal(result.results.tasks[0]?.actual.includes("Seattle"), true);
-  assert.equal(result.results.tasks[0]?.details.categoryName, "single_hop");
+  assert.equal(result.results.tasks[0]?.details?.categoryName, "single_hop");
 });
 
 test("runBenchmark executes locomo in full mode from an explicit dataset file", async () => {

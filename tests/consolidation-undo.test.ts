@@ -27,7 +27,7 @@ import {
   formatConsolidationUndoResult,
 } from "../src/consolidation-undo.ts";
 import { symlink } from "node:fs/promises";
-import type { VersioningConfig } from "../src/page-versioning.ts";
+import type { VersioningConfig } from "@remnic/core";
 
 const versioning: VersioningConfig = {
   enabled: true,
@@ -61,7 +61,7 @@ test("runConsolidationUndo restores sources and archives the target on the happy
     // the operational case (sources have been archived).
     await unlink(srcA.path);
     await unlink(srcB.path);
-    storage.invalidateAllMemoriesCache();
+    storage.invalidateAllMemoriesCacheForDir();
 
     // Write the canonical memory with provenance fields.
     const { id: canonicalId } = await storage.writeMemory("fact", "canonical body", {
@@ -108,7 +108,7 @@ test("runConsolidationUndo dry-run produces a plan without writing", async () =>
     const entry = await storage.snapshotForProvenance(src.path);
     assert.ok(entry);
     await unlink(src.path);
-    storage.invalidateAllMemoriesCache();
+    storage.invalidateAllMemoriesCacheForDir();
 
     const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
@@ -519,7 +519,7 @@ test("runConsolidationUndo does NOT archive the target when no sources could be 
     const entry = await storage.snapshotForProvenance(src.path);
     assert.ok(entry);
     await unlink(src.path);
-    storage.invalidateAllMemoriesCache();
+    storage.invalidateAllMemoriesCacheForDir();
 
     const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
@@ -625,7 +625,7 @@ test("runConsolidationUndo does NOT archive the target on partial recovery (all-
     assert.ok(entryA && entryB);
     await unlink(srcA.path);
     await unlink(srcB.path);
-    storage.invalidateAllMemoriesCache();
+    storage.invalidateAllMemoriesCacheForDir();
 
     const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",

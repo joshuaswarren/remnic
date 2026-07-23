@@ -10,6 +10,34 @@ const pythonBin = process.env.PYTHON_BIN || "python3";
 
 type FaissSidecarCommand = "upsert" | "rebuild" | "search" | "health" | "inspect";
 
+interface SidecarManifest {
+  version?: number;
+  modelId?: string;
+  normalizedModelId?: string;
+  dimension?: number;
+  chunkCount?: number;
+  updatedAt?: string;
+  lastSuccessfulRebuildAt?: string;
+}
+
+interface SidecarMetadata {
+  chunkCount?: number;
+  hasIndex?: boolean;
+  hasMetadata?: boolean;
+  hasManifest?: boolean;
+}
+
+interface SidecarResponse {
+  ok?: boolean;
+  status?: string;
+  error?: string;
+  upserted?: number;
+  rebuilt?: number;
+  results?: unknown;
+  manifest?: SidecarManifest;
+  metadata?: SidecarMetadata;
+}
+
 function runSidecar(command: FaissSidecarCommand, payload: object, cwd?: string) {
   const proc = spawnSync(pythonBin, [scriptPath, command], {
     input: JSON.stringify(payload),
@@ -28,7 +56,7 @@ function runSidecar(command: FaissSidecarCommand, payload: object, cwd?: string)
     assert.fail(`sidecar returned non-JSON stdout: ${proc.stdout}`);
   }
 
-  return parsed as Record<string, unknown>;
+  return parsed as SidecarResponse;
 }
 
 function invalidIndexPathPayload(command: FaissSidecarCommand, indexPath: unknown): object {

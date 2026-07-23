@@ -25,7 +25,7 @@ function loadRecording(name: string): RecordedPage[] {
 function makeReplayFetch(pages: RecordedPage[]): typeof fetch {
   const byUrl = new Map<string, RecordedPage>();
   for (const p of pages) byUrl.set(p.request.url, p);
-  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const match = byUrl.get(url);
     if (!match) {
@@ -67,7 +67,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
 
   it("uses hosted POST contract with filters by default", async () => {
     let sawRequest = false;
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       sawRequest = true;
       assert.equal(String(input), "https://api.mem0.test/v3/memories/?page=1&page_size=50");
       assert.equal(init?.method, "POST");
@@ -95,7 +95,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
 
   it("keeps legacy GET contract behind explicit compatibility option", async () => {
     let sawRequest = false;
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       sawRequest = true;
       assert.equal(String(input), "https://api.mem0.test/v1/memories/");
       assert.equal(init?.method, "GET");
@@ -187,7 +187,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     const controller = new AbortController();
     let fetchCalls = 0;
     let sleepCalled = false;
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       fetchCalls += 1;
       return makeReplayFetch(pages)(input, init);
     }) as typeof fetch;
@@ -216,7 +216,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
   // server returns numeric page metadata without a `next` cursor.
   it("falls back to page-number pagination when next cursor is absent", async () => {
     let called = 0;
-    const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       called += 1;
       if (!url.includes("page=2")) {
@@ -309,7 +309,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
   // because the loop would forward the mem0 API key to that host.
   it("rejects cross-origin pagination cursors without leaking the API key", async () => {
     const seenRequests: string[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       seenRequests.push(url);
       if (seenRequests.length === 1) {
@@ -337,7 +337,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
 
   it("follows relative pagination cursors by resolving them against the base URL", async () => {
     let called = 0;
-    const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       called += 1;
       if (called === 1) {
@@ -370,7 +370,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
   // without the `/v1` prefix. Let operators override via listPath.
   it("honors a custom listPath for self-hosted deployments", async () => {
     let firstRequestUrl = "";
-    const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       if (!firstRequestUrl) firstRequestUrl = url;
       return new Response(JSON.stringify({ results: [], next: null }), {

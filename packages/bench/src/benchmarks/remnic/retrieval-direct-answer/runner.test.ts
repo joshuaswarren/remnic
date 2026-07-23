@@ -10,7 +10,6 @@ test("runner: full-mode aggregates include advertised precision and deferral met
   const result = await runRetrievalDirectAnswerBenchmark({
     benchmark: retrievalDirectAnswerDefinition,
     mode: "full",
-    runCount: 1,
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalDirectAnswerBenchmark>[0]);
 
@@ -30,7 +29,6 @@ test("runner: split metrics are emitted only for the matching case class", async
   const result = await runRetrievalDirectAnswerBenchmark({
     benchmark: retrievalDirectAnswerDefinition,
     mode: "full",
-    runCount: 1,
     adapterMode: "direct",
   } as Parameters<typeof runRetrievalDirectAnswerBenchmark>[0]);
 
