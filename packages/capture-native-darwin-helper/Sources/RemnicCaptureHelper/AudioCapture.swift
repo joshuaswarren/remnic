@@ -41,8 +41,13 @@ private final class MicrophoneCapture {
 
     init(configuration: CaptureConfiguration) throws {
         let deviceName: String
-        if let deviceId = configuration.deviceId,
-           let audioDeviceID = CoreAudioDevices.deviceID(forUID: deviceId) {
+        if let deviceId = configuration.deviceId {
+            guard let audioDeviceID = CoreAudioDevices.deviceID(forUID: deviceId) else {
+                throw HelperError(
+                    message: "requested --device '\(deviceId)' is not a known CoreAudio input; run device-enumerate to list valid UIDs",
+                    exitCode: 2
+                )
+            }
             try Self.selectInputDevice(audioDeviceID, on: engine)
             deviceName = CoreAudioDevices.name(audioDeviceID) ?? deviceId
         } else {

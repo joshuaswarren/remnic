@@ -32,8 +32,13 @@ export async function captureViaHelper(
   };
   if (isTerminalApp(snap.app, config.terminalApps) || axText.trim() === "") {
     try {
-      candidate.text = await helper.ocrWindow({ frontmost: true });
-      candidate.textSource = "ocr";
+      const ocrText = await helper.ocrWindow({ frontmost: true });
+      if (ocrText.trim() !== "") {
+        candidate.text = ocrText;
+        candidate.textSource = "ocr";
+      }
+      // Blank OCR (helper returned no recognizable text): leave text-less so the
+      // processor reports ocr-unavailable instead of persisting an empty snapshot.
     } catch {
       // OCR unavailable/failed: leave text-less so the processor reports
       // ocr-unavailable instead of persisting an empty snapshot.

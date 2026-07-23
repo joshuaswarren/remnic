@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { runCapture } from "./cli.js";
+import { ensurePrivateDir, resolveToken, runCapture } from "./cli.js";
+import { CaptureInputError } from "./errors.js";
+import { capturePaths } from "./paths.js";
 
 const helperDir = mkdtempSync(path.join(tmpdir(), "csr-cli-helper-"));
 function fakeHelper(name: string, body: string): string {
@@ -135,4 +137,41 @@ test("test-snapshot names the deny rule that fires", async () => {
   const body = JSON.parse(r.out.join("\n")) as { action: string; rule: string };
   assert.equal(body.action, "denied");
   assert.equal(body.rule, "app:1Password*");
+});
+
+const AX_EMPTY_BLANK_OCR = fakeHelper(
+  "blankocr.js",
+  `const cmd = process.argv[2];
+if (cmd === "ax-snapshot") process.stdout.write(JSON.stringify({ app: "Notes", windowTitle: "Untitled", tree: { role: "AXWindow" } }));
+else if (cmd === "ocr-window") process.stdout.write(JSON.stringify({ text: "   " }));
+else process.exit(2);`,
+);
+
+test("test-snapshot skips (ocr-unavailable) instead of storing blank OCR text", async () => {
+  const r = await run(["test-snapshot"], { REMNIC_CAPTURE_HELPER_BIN: AX_EMPTY_BLANK_OCR });
+  assert.equal(r.code, 0);
+  const body = JSON.parse(r.out.join("\n")) as { action: string; reason?: string };
+  assert.equal(body.action, "skipped");
+  assert.equal(body.reason, "ocr-unavailable");
+});
+
+test("resolveToken honors the legacy ENGRAM_CAPTURE_TOKEN alias; REMNIC takes precedence", () => {
+  const paths = capturePaths(mkdtempSync(path.join(tmpdir(), "csr-tok-")));
+  assert.equal(resolveToken(paths, { ENGRAM_CAPTURE_TOKEN: "legacy" }, false), "legacy");
+  assert.equal(
+    resolveToken(paths, { REMNIC_CAPTURE_TOKEN: "primary", ENGRAM_CAPTURE_TOKEN: "legacy" }, false),
+    "primary",
+  );
+});
+
+test("ensurePrivateDir refuses a symlinked private directory and creates a real one 0700", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "csr-priv-"));
+  const realTarget = path.join(base, "real");
+  mkdirSync(realTarget);
+  const link = path.join(base, "link");
+  symlinkSync(realTarget, link);
+  assert.throws(() => ensurePrivateDir(link), CaptureInputError);
+  const fresh = path.join(base, "fresh");
+  ensurePrivateDir(fresh);
+  assert.equal(existsSync(fresh), true);
 });

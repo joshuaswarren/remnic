@@ -15,8 +15,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
+import { dirname } from "node:path";
 
 import { CaptureProcessor } from "./capture.js";
 import { coerceNumber } from "./coerce.js";
@@ -59,6 +60,8 @@ interface ParsedArgs {
 }
 
 const CAPTURE_TOKEN_ENV = "REMNIC_CAPTURE_TOKEN";
+/** Legacy alias honored across Remnic (formerly Engram); see README auth note. */
+const LEGACY_CAPTURE_TOKEN_ENV = "ENGRAM_CAPTURE_TOKEN";
 
 /** Flags that consume the next argv token as their value. */
 const VALUE_FLAGS: Record<string, true> = {
@@ -167,8 +170,8 @@ function recordHealthUrl(record: PidRecord, paths: CapturePaths, stderr: (l: str
 }
 
 /** Token for probes/serving: env override first, then the on-disk token file. */
-function resolveToken(paths: CapturePaths, env: NodeJS.ProcessEnv, create: boolean): string {
-  const fromEnv = env[CAPTURE_TOKEN_ENV]?.trim();
+export function resolveToken(paths: CapturePaths, env: NodeJS.ProcessEnv, create: boolean): string {
+  const fromEnv = (env[CAPTURE_TOKEN_ENV] ?? env[LEGACY_CAPTURE_TOKEN_ENV])?.trim();
   if (fromEnv) return fromEnv;
   if (create) return loadOrCreateToken(paths.tokenPath);
   if (existsSync(paths.tokenPath)) return readFileSync(paths.tokenPath, "utf8").trim();
@@ -180,7 +183,16 @@ function tokenHeader(paths: CapturePaths, env: NodeJS.ProcessEnv): Record<string
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
-function ensurePrivateDir(dir: string): void {
+export function ensurePrivateDir(dir: string): void {
+  let isLink = false;
+  try {
+    isLink = lstatSync(dir).isSymbolicLink();
+  } catch {
+    // not present yet — mkdir below creates it
+  }
+  if (isLink) {
+    throw new CaptureInputError(`refusing to use symlinked private directory '${dir}'`);
+  }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
     chmodSync(dir, 0o700);
@@ -371,6 +383,10 @@ async function cmdStart(
   const token = resolveToken(paths, env, true);
   const helperRes = await resolveHelperBinaryPath(env);
   const axAvailable = helperRes.binaryPath !== null;
+  // A custom --spool may live outside base-dir; ensure its parent exists and is
+  // owner-only (0700, non-symlink) before opening, matching the README spool
+  // safety contract. Idempotent when the spool is the default in-base path.
+  ensurePrivateDir(dirname(paths.spoolPath));
   const spool = new Spool(paths.spoolPath);
   // Retention janitor: prune expired rows once on start so a long-idle spool is
   // trimmed even if the (native) capture loop never runs on this platform.
