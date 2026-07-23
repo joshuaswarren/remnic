@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -263,14 +263,75 @@ test("daemon creates the spool file with owner-only (0600) permissions", { skip:
 });
 
 test("daemon rejects a directory spool path without mangling its permissions", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
-  const before = (await stat(dir)).mode & 0o777;
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const subdir = path.join(parent, "capture.sqlite");
+  await mkdir(subdir, { mode: 0o700 });
+  const before = (await stat(subdir)).mode & 0o777;
   try {
-    await assert.rejects(() => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: dir }));
+    await assert.rejects(() => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: subdir }));
     // The directory's own permissions (incl. the execute bit) must be intact.
-    assert.equal((await stat(dir)).mode & 0o777, before);
+    assert.equal((await stat(subdir)).mode & 0o777, before);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("daemon runs in the supported owner-only (0700) spool directory", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const spoolPath = path.join(parent, "capture.sqlite");
+  const daemon = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath, replay: [snapshot()] });
+  try {
+    const { url } = await daemon.start();
+    assert.deepEqual(await (await fetch(`${url}/v1/health`, { headers: AUTH })).json(), { ok: true, snapshots: 1 });
+    assert.equal((await stat(parent)).mode & 0o777, 0o700);
+    assert.equal((await stat(spoolPath)).mode & 0o777, 0o600);
+  } finally {
+    await daemon.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("daemon rejects a world-accessible spool parent directory", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  await chmod(parent, 0o755);
+  try {
+    await assert.rejects(
+      () => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: path.join(parent, "capture.sqlite") }),
+      /owner-only/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("daemon rejects a symlinked spool parent directory", { skip: process.platform === "win32" ? "POSIX symlink semantics only" : false }, async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const realParent = path.join(base, "real");
+  await mkdir(realParent, { mode: 0o700 });
+  const linkParent = path.join(base, "link");
+  await symlink(realParent, linkParent);
+  try {
+    await assert.rejects(
+      () => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: path.join(linkParent, "capture.sqlite") }),
+      /parent directory must not be a symlink/,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("daemon creates an absent spool parent directory as owner-only 0700", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const parent = path.join(base, "nested", "spool");
+  const spoolPath = path.join(parent, "capture.sqlite");
+  const daemon = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath });
+  try {
+    await daemon.start();
+    assert.equal((await stat(parent)).mode & 0o777, 0o700);
+    assert.equal((await stat(spoolPath)).mode & 0o777, 0o600);
+  } finally {
+    await daemon.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 

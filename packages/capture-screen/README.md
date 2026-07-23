@@ -23,3 +23,5 @@ The bearer token is read from the `REMNIC_CAPTURE_TOKEN` environment variable (l
 `snapshots.json` contains an array of objects with `capturedAtUtc` (ISO-8601 UTC), `app`, `windowTitle`, `text`, and `textSource` (`"ax"` or `"ocr"`) fields. Each served snapshot also carries the stored `contentHash`, so the core activity client can ingest it. Exact replays deduplicate by the complete snapshot payload.
 
 The daemon does not acquire native screenshots. Native platform helpers send redacted text snapshots to this daemon over its loopback API.
+
+The `--spool` file must live in an owner-only directory: the daemon requires its parent to be a non-symlink directory you own with mode `0700` (no group/other access) and creates it `0700` when absent, so no other local user can plant a symlink at the spool path. The SQLite file itself is created `0600`. Point `--spool` at a dedicated directory such as `~/.local/state/remnic/capture/`.

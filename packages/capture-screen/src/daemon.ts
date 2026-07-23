@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, lstatSync, openSync } from "node:fs";
+import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
+import { dirname } from "node:path";
 
 import { activityDayWindow } from "@remnic/core";
 import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
@@ -40,6 +41,27 @@ function isLoopback(host: string): boolean {
 /** Bracket an IPv6 literal so it is a valid URL host (`::1` -> `[::1]`). */
 function hostForUrl(host: string): string {
   return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
+ * Confine the spool to an owner-only directory so no other local user can plant
+ * or swap a symlink at the path between our exclusive create and SQLite's own
+ * reopen-by-path. The parent must be a real (non-symlink) directory, owner-only
+ * (no group/other permission bits) and — on POSIX — owned by this user; an
+ * absent parent is created 0700.
+ */
+function ensureSecureSpoolParent(spoolPath: string): void {
+  const parent = dirname(spoolPath);
+  const info = lstatSync(parent, { throwIfNoEntry: false });
+  if (info === undefined) {
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    return;
+  }
+  if (info.isSymbolicLink()) throw new RangeError("spool parent directory must not be a symlink");
+  if (!info.isDirectory()) throw new RangeError("spool parent must be a directory");
+  if ((info.mode & 0o077) !== 0) throw new RangeError("spool parent directory must be owner-only (0700)");
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid !== undefined && info.uid !== uid) throw new RangeError("spool parent directory must be owned by the current user");
 }
 
 /**
@@ -139,6 +161,10 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new RangeError("capture daemon may bind only to a loopback host");
   if (options.spoolPath !== ":memory:") {
+    // Confine the spool to an owner-only parent directory: with no other user
+    // able to write there, no symlink can be planted at the path in the window
+    // between our exclusive create and SQLite's reopen-by-path.
+    ensureSecureSpoolParent(options.spoolPath);
     // Screen-capture history is sensitive; keep the on-disk spool owner-only
     // (0600) rather than inheriting a world-readable umask on a shared host.
     // lstat (not stat) so a symlinked spool is rejected instead of silently
