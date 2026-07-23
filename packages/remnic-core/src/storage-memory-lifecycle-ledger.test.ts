@@ -6,6 +6,8 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 
 import { StorageManager } from "./storage.js";
+import { initLogger, resetLogger } from "./logger.js";
+import { __resetProjectionFallbackWarnSuppressionForTest } from "./storage-guards.js";
 import { encryptFileBody, filePathAad, isEncryptedFile, readMaybeEncryptedFile, readMaybeEncryptedFileBuffer } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
 import {
@@ -1270,4 +1272,34 @@ test("compaction buffer reader skips an oversized unterminated row instead of th
     ["evt-a", "evt-b"],
     "valid rows returned; the oversized row is skipped without throwing",
   );
+});
+
+test("getMemoryTimeline fallback WARN is loud with lag and rate-limited when the projection is missing (#2119)", async () => {
+  const warns: string[] = [];
+  initLogger({ info() {}, warn: (m) => warns.push(m), error() {}, debug() {} }, false);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const rows = [
+      JSON.stringify(lifecycleEvent("t1", "memory-target", "2026-01-01T00:01:00.000Z")),
+      JSON.stringify(lifecycleEvent("t2", "memory-target", "2026-01-01T00:02:00.000Z")),
+    ];
+    await withLifecycleLedger(rows, async (storage) => {
+      // No projection sqlite exists in this temp dir, so both calls take the
+      // ledger fallback — the exact issue-#2119 regression path.
+      const first = await storage.getMemoryTimeline("memory-target", 5);
+      const second = await storage.getMemoryTimeline("memory-target", 5);
+      assert.equal(first.length, 2);
+      assert.equal(second.length, 2);
+
+      const timelineWarns = warns.filter((w) => w.includes("storage.getMemoryTimeline"));
+      // Rate-limited: two fallbacks, but only ONE WARN in the interval (no spam).
+      assert.equal(timelineWarns.length, 1, "fallback WARN must fire once, not per call");
+      // Loud: the single WARN names the fallback AND the projection lag.
+      assert.match(timelineWarns[0]!, /falling back to full corpus/);
+      assert.match(timelineWarns[0]!, /projection never rebuilt/);
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
 });

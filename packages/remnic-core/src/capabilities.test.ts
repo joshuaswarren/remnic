@@ -370,6 +370,7 @@ const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string
   extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
   extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
   embeddingFallback: "embeddingFallbackEnabled",
+  projectionRebuild: "projectionRebuildEnabled",
 };
 
 const LIFECYCLE_FIELDS = Object.keys(LIFECYCLE_FIELD_TO_FLAG) as Array<

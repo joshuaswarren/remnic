@@ -52,6 +52,10 @@ import {
 } from "../maintenance/memory-governance-cron.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 import {
+  createProjectionRebuildScheduleState,
+  maybeRebuildMemoryProjectionScheduled,
+} from "./projection-rebuild-schedule.js";
+import {
   drainPendingLifecycleLedgerIfAny,
   pendingLifecycleLedgerDir,
   type LifecyclePendingIo,
@@ -133,6 +137,9 @@ export class MaintenanceScheduler {
   // the bounding + post-write verification deterministically without a 400MB
   // fixture.
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
+
+  // ── Memory-projection scheduled-rebuild state (issue #2119) ──
+  private readonly projectionRebuild = createProjectionRebuildScheduleState();
 
   // ── Activity (screen-capture) sync scheduler (issue #1900) ──
   // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
@@ -499,6 +506,15 @@ export class MaintenanceScheduler {
     // still bounds the lifecycle ledger.
     void this.maybeCompactMemoryLifecycleLedger().catch((err) =>
       log.debug(`lifecycle ledger auto-compaction check failed (non-fatal): ${err}`),
+    );
+    // Memory-projection scheduled rebuild (#2119): interval-throttled,
+    // single-flighted, never awaited, never throws — see the module docblock.
+    void maybeRebuildMemoryProjectionScheduled({
+      config: this.deps.config,
+      getStorage: this.deps.getStorage,
+      state: this.projectionRebuild,
+    }).catch((err) =>
+      log.debug(`memory projection scheduled rebuild check failed (non-fatal): ${err}`),
     );
   }
 

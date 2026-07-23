@@ -3566,6 +3566,11 @@ export function parseConfig(
       Number.isFinite(cfg.graphEdgeDecayVisibilityThreshold)
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
+    // Issue #2119 — maintenance-scheduled memory-projection rebuild.
+    // Enabled-by-default (gotcha #36 coercion); interval via the strict shared parser (strings coerced, non-integer/sub-60s rejected — pattern #39).
+    projectionRebuildEnabled: coerceBooleanLike(cfg.projectionRebuildEnabled) ?? true,
+    projectionRebuildIntervalMs: parseIntegerAtLeast(
+      cfg.projectionRebuildIntervalMs, 6 * 60 * 60 * 1000, 60_000, "projectionRebuildIntervalMs"),
     ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
     // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
     // documented 0 iterations disables PageRank refinement (BFS scores pass through).

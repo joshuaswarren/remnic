@@ -1,3 +1,4 @@
+import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
   access,
   lstat,
@@ -6584,7 +6585,20 @@ export class StorageManager {
 
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
-    warnProjectionFallback(this.baseDir, "getMemoryTimeline");
+    // Loud, rate-limited staleness telemetry (#2119): a fallback here means the
+    // projection is missing/empty/stale, so surface HOW stale it is. The lag is
+    // computed lazily — only when warnProjectionFallback actually logs (once per
+    // interval) — so a hot fallback path pays for a projection meta read at most
+    // once per suppression window, not per call.
+    warnProjectionFallback(this.baseDir, "getMemoryTimeline", () => {
+      const rebuiltAt = readProjectionRebuiltAt(this.baseDir);
+      if (!rebuiltAt) return "projection never rebuilt";
+      const ageMs = Date.now() - Date.parse(rebuiltAt);
+      if (!Number.isFinite(ageMs)) return `projection rebuiltAt=${rebuiltAt}`;
+      const ageMin = Math.max(0, Math.round(ageMs / 60_000));
+      const age = ageMin >= 120 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
+      return `projection ${age} stale, last rebuilt ${rebuiltAt}`;
+    });
     return readBoundedLifecycleEventsFromLedger(
       this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), cappedLimit, memoryId);
   }

@@ -46,6 +46,8 @@ import { commitPreparedFileAtomically } from "./atomic-file.js";
 
 export interface RebuildMemoryProjectionOptions {
   memoryDir: string;
+  /** Reuse the caller's live StorageManager (must be rooted at memoryDir). */
+  storage?: StorageManager;
   defaultNamespace?: string;
   dryRun?: boolean;
   now?: Date;
@@ -53,15 +55,9 @@ export interface RebuildMemoryProjectionOptions {
   updatedBefore?: string;
 }
 
-export interface SkippedDuplicateMemory {
-  memoryId: string;
-  keptPath: string;
-  skippedPath: string;
-}
-
-export interface SkippedBlankIdMemory {
-  path: string;
-}
+export type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
+import { assertInjectedStorageRooted } from "./projection-support.js";
+import type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
 
 export interface SkippedDuplicateTimelineEvent {
   eventId: string;
@@ -550,6 +546,7 @@ function deduplicateTimelineEvents(
 async function loadAuthoritativeProjectionSnapshot(options: {
   memoryDir: string;
   defaultNamespace?: string;
+  storage?: StorageManager;
   updatedAfter?: string;
   updatedBefore?: string;
 }): Promise<{
@@ -581,7 +578,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   skippedDuplicateTimelineEvents: SkippedDuplicateTimelineEvent[];
   skippedBlankIdTimelineEvents: SkippedBlankIdTimelineEvent[];
 }> {
-  const storage = new StorageManager(options.memoryDir);
+  const storage = assertInjectedStorageRooted("rebuildMemoryProjection", options.memoryDir, options.storage) ?? new StorageManager(options.memoryDir);
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir();

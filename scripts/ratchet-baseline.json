@@ -32,7 +32,7 @@
       "packages/remnic-core/src/access-recall-surface.ts": 1551,
       "packages/remnic-core/src/access-service.ts": 5911,
       "packages/remnic-core/src/briefing.ts": 1494,
-      "packages/remnic-core/src/capabilities.ts": 1290,
+      "packages/remnic-core/src/capabilities.ts": 1292,
       "packages/remnic-core/src/cli.ts": 9428,
       "packages/remnic-core/src/coding/codegraph-runtime.ts": 1311,
       "packages/remnic-core/src/compounding/engine.ts": 1722,

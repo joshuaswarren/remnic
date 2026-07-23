@@ -2121,6 +2121,24 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   /** Confidence threshold for the "below visibility" telemetry counter. Default 0.2. */
   graphEdgeDecayVisibilityThreshold: number;
 
+  // Issue #2119 — maintenance-scheduled memory-projection rebuild.
+  /**
+   * Enable the maintenance-scheduled rebuild of `state/memory-projection.sqlite`.
+   * The projection is otherwise rebuild-only (manual CLI / tests), so it rots as
+   * the lifecycle ledger grows and timeline/browse consumers silently regress to
+   * full-corpus fallback scans. Default true — mirrors lifecycle-ledger
+   * auto-compaction, which is likewise enabled-by-default to keep a state file
+   * healthy. Set false to disable (operators can still cron the CLI rebuild).
+   */
+  projectionRebuildEnabled: boolean;
+  /**
+   * Minimum interval between scheduled projection rebuilds. A rebuild is skipped
+   * when the projection's `rebuiltAt` meta is younger than this, so a burst of
+   * maintenance requests cannot fan into back-to-back rebuilds. Floored at 60s.
+   * Default 6h (matches memoryLifecycleLedgerCompactMinIntervalMs).
+   */
+  projectionRebuildIntervalMs: number;
+
   /**
    * Issue #681 PR 3/3 — minimum edge confidence to traverse during spreading
    * activation. Edges below are pruned (no activation, no downstream neighbors);

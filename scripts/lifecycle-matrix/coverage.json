@@ -1,5 +1,5 @@
 {
-  "$comment": "Lifecycle scenario-matrix coverage manifest (issue #1993, umbrella #1988 phase 5, decisions A + C). `lifecycleManifest` is the set of lifecycle-critical path globs that trigger the `lifecycle-matrix` CI gate (gitignore-subset syntax, repo-root-relative, forward slashes). Each glob is one of three states: `coverage` (mapped to a registered LifecycleSubject in packages/remnic-core/src/testing/subjects — a touched covered path PASSES); `grandfathered` (warn-only, shrink-only ratchet: entries may be removed but the CI gate FAILS if the list grows); or unmapped (permitted in the manifest at load time, but a touched unmapped path FAILS the gate — this is the mechanism that forces a newly-added lifecycle path to gain a subject rather than silently escaping coverage). loadCoverageManifest() validates structure (coverage/grandfathered keys must exist in lifecycleManifest, no glob is both) but does not reject unmapped globs; the gate enforces coverage only for paths a PR actually touches. See packages/remnic-core/src/testing/lifecycle-matrix.ts.",
+  "$comment": "Lifecycle scenario-matrix coverage manifest (issue #1993, umbrella #1988 phase 5, decisions A + C). `lifecycleManifest` is the set of lifecycle-critical path globs that trigger the `lifecycle-matrix` CI gate (gitignore-subset syntax, repo-root-relative, forward slashes). Each glob is one of three states: `coverage` (mapped to a registered LifecycleSubject in packages/remnic-core/src/testing/subjects \u2014 a touched covered path PASSES); `grandfathered` (warn-only, shrink-only ratchet: entries may be removed but the CI gate FAILS if the list grows); or unmapped (permitted in the manifest at load time, but a touched unmapped path FAILS the gate \u2014 this is the mechanism that forces a newly-added lifecycle path to gain a subject rather than silently escaping coverage). loadCoverageManifest() validates structure (coverage/grandfathered keys must exist in lifecycleManifest, no glob is both) but does not reject unmapped globs; the gate enforces coverage only for paths a PR actually touches. See packages/remnic-core/src/testing/lifecycle-matrix.ts.",
   "lifecycleManifest": [
     "src/orchestration/**",
     "src/orchestrator.ts",
@@ -117,7 +117,10 @@
     "packages/remnic-core/src/storage/memory-lifecycle-ledger-access.ts",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger-cli.ts",
-    "packages/remnic-core/src/maintenance/dreams-ledger.ts"
+    "packages/remnic-core/src/maintenance/dreams-ledger.ts",
+    "packages/remnic-core/src/maintenance/projection-support.ts",
+    "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts",
+    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
@@ -139,7 +142,10 @@
     "packages/remnic-core/src/orchestration/recall-section-coordinator.ts": "recall-budget",
     "packages/remnic-core/src/retrieval.ts": "recall-budget",
     "packages/remnic-core/src/recall-mmr.ts": "recall-budget",
-    "packages/remnic-core/src/recall-qos.ts": "recall-budget"
+    "packages/remnic-core/src/recall-qos.ts": "recall-budget",
+    "packages/remnic-core/src/maintenance/projection-support.ts": "memory-projection",
+    "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": "memory-projection",
+    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts": "memory-projection"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",

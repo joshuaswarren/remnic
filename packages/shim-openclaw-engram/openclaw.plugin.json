@@ -177,7 +177,7 @@
       "activeRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Compat-only (issue #1550): enables the Remnic-native active-recall pre-reply summary block. NOT required for OpenClaw prompt injection — when Remnic is the memory slot, prompt injection runs through registerMemoryPromptSection / memory capability promptBuilder. Enable only to layer a second blocking pre-reply retrieval; a startup warning is logged when both this and memory-slot prompt injection are on."
+        "description": "Compat-only (issue #1550): enables the Remnic-native active-recall pre-reply summary block. NOT required for OpenClaw prompt injection \u2014 when Remnic is the memory slot, prompt injection runs through registerMemoryPromptSection / memory capability promptBuilder. Enable only to layer a second blocking pre-reply retrieval; a startup warning is logged when both this and memory-slot prompt injection are on."
       },
       "activeRecallEntityGraphDepth": {
         "type": "integer",
@@ -520,7 +520,7 @@
       "boxTopicShiftThreshold": {
         "type": "number",
         "default": 0.35,
-        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0–1)."
+        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0\u20131)."
       },
       "briefing": {
         "type": "object",
@@ -610,7 +610,7 @@
         "type": "number",
         "default": 2000,
         "minimum": 1,
-        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers — a slow or hung embedder cannot stall the turn-append path."
+        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers \u2014 a slow or hung embedder cannot stall the turn-append path."
       },
       "bufferSurpriseRecentMemoryCount": {
         "type": "number",
@@ -628,7 +628,7 @@
       "bufferSurpriseTriggerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #563 (D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only — never suppresses existing flushes. Off by default."
+        "description": "Issue #563 (D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only \u2014 never suppresses existing flushes. Off by default."
       },
       "calibrationEnabled": {
         "type": "boolean",
@@ -682,7 +682,7 @@
       "chat": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Conversational memory inspection and correction (issue #1583). A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default — spawns LLM calls so explicit opt-in (rule 48).",
+        "description": "Conversational memory inspection and correction (issue #1583). A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default \u2014 spawns LLM calls so explicit opt-in (rule 48).",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -699,7 +699,7 @@
             "minimum": 1,
             "maximum": 64,
             "default": 8,
-            "description": "Max tool calls per user turn before partial-reply fallback (rule 34 — never a silent stall)."
+            "description": "Max tool calls per user turn before partial-reply fallback (rule 34 \u2014 never a silent stall)."
           },
           "sessionTtlHours": {
             "type": "integer",
@@ -923,7 +923,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Durable coding-knowledge surface — Track A of issue #1548. Master gate + per-feature switches for decision records, architecture card, session delta, and structural-context provider. Off by default so pre-feature byte-identical behaviour is preserved when disabled.",
+        "description": "Durable coding-knowledge surface \u2014 Track A of issue #1548. Master gate + per-feature switches for decision records, architecture card, session delta, and structural-context provider. Off by default so pre-feature byte-identical behaviour is preserved when disabled.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -968,7 +968,7 @@
           "codegraphTools": {
             "type": "boolean",
             "default": false,
-            "description": "Gate for the 14 codegraph parity tools (issue #1554). Off by default — tools/list, HTTP routes, and CLI help are byte-identical to pre-feature until this is true. Also requires @remnic/coding-graph to be installed."
+            "description": "Gate for the 14 codegraph parity tools (issue #1554). Off by default \u2014 tools/list, HTTP routes, and CLI help are byte-identical to pre-feature until this is true. Also requires @remnic/coding-graph to be installed."
           },
           "codegraphDbDir": {
             "type": "string",
@@ -1037,7 +1037,7 @@
           "branchScope": {
             "type": "boolean",
             "default": false,
-            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in — most development wants cross-branch recall. Wired in PR 3 of #569."
+            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in \u2014 most development wants cross-branch recall. Wired in PR 3 of #569."
           },
           "globalFallback": {
             "type": "boolean",
@@ -1141,7 +1141,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1184,7 +1184,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -1217,7 +1217,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1262,7 +1262,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -1492,7 +1492,7 @@
         "type": "integer",
         "minimum": 1,
         "default": 2,
-        "description": "Maximum number of memories a passively-detected correction may affect in \"auto\" mode (#1581). Plans touching more memories than this are queued even when mode is \"auto\" — a blast-radius cap. Default 2."
+        "description": "Maximum number of memories a passively-detected correction may affect in \"auto\" mode (#1581). Plans touching more memories than this are queued even when mode is \"auto\" \u2014 a blast-radius cap. Default 2."
       },
       "correctionCaptureConfidenceFloor": {
         "type": "number",
@@ -1509,11 +1509,11 @@
           "auto"
         ],
         "default": "off",
-        "description": "Passive correction capture (#1581) — detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
+        "description": "Passive correction capture (#1581) \u2014 detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
       },
       "correction": {
         "type": "object",
-        "description": "Memory-correction contract (issue #1580) — nested form; nested keys win over the flat legacy correction* keys.",
+        "description": "Memory-correction contract (issue #1580) \u2014 nested form; nested keys win over the flat legacy correction* keys.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1576,7 +1576,7 @@
       "correctionEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the Correction Contract (#1580) — the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
+        "description": "Master gate for the Correction Contract (#1580) \u2014 the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
       },
       "correctionMaxAffected": {
         "type": "integer",
@@ -1733,7 +1733,7 @@
           "narrativeModel": {
             "type": "string",
             "default": "",
-            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers — no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
+            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers \u2014 no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
           },
           "narrativePromptStyle": {
             "type": "string",
@@ -2985,7 +2985,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 PR 3/6 — flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot\u2194cold tier migration, value scoring, decay). Default true since #686 PR 3/6 \u2014 flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecyclePromoteHeatThreshold": {
         "type": "number",
@@ -3806,7 +3806,7 @@
       "peerProfileReasonerModel": {
         "type": "string",
         "default": "auto",
-        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only — actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
+        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only \u2014 actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
       },
       "peerProfileRecallEnabled": {
         "type": "boolean",
@@ -3947,6 +3947,17 @@
         "type": "string",
         "default": "",
         "description": "Directory path for storing profiling trace files. Defaults to <memoryDir>/profiling if empty."
+      },
+      "projectionRebuildEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the maintenance-scheduled rebuild of state/memory-projection.sqlite (issue #2119). The projection is otherwise rebuild-only (manual CLI / tests), so it goes stale as the lifecycle ledger grows and timeline/browse consumers silently fall back to full-corpus scans. Default true; set false to disable (operators can still cron the CLI rebuild)."
+      },
+      "projectionRebuildIntervalMs": {
+        "type": "integer",
+        "minimum": 60000,
+        "default": 21600000,
+        "description": "Cadence (ms) for the scheduled memory-projection rebuild. Finite integer, minimum 60000; string forms are coerced and invalid or sub-minimum values are rejected at parse time."
       },
       "promotionByOutcomeEnabled": {
         "type": "boolean",
@@ -4267,7 +4278,7 @@
       "recallAuditAnomalyDetectionEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled — enable explicitly."
+        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled \u2014 enable explicitly."
       },
       "recallAuditAnomalyHighCardinalityLimit": {
         "type": "number",
@@ -4386,7 +4397,7 @@
         "minimum": 0,
         "maximum": 1,
         "default": 0.55,
-        "description": "Minimum query↔memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
+        "description": "Minimum query\u2194memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
       },
       "recallDisclosureEscalation": {
         "type": "string",
@@ -4419,7 +4430,7 @@
       "recallGraphEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR (issue #559 PR 4). Default false — ships off pending the retrieval-graph bench in PR 5."
+        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR (issue #559 PR 4). Default false \u2014 ships off pending the retrieval-graph bench in PR 5."
       },
       "recallGraphIterations": {
         "type": "integer",
@@ -4440,7 +4451,7 @@
         "minimum": 1,
         "maximum": 50,
         "default": 5,
-        "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
+        "description": "Issue #1582 \u2014 number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
       },
       "recallImpressionsRotateBytes": {
         "type": "integer",
@@ -4464,7 +4475,7 @@
       "recallMemoryHandles": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #1582 — append stable short handles (`[m:4f2a]`) to injected memory lines at recall render time. Default false: off = byte-identical injection. Token cost ~9 chars/memory; flip the default only with benchmark evidence that answer quality is unaffected."
+        "description": "Issue #1582 \u2014 append stable short handles (`[m:4f2a]`) to injected memory lines at recall render time. Default false: off = byte-identical injection. Token cost ~9 chars/memory; flip the default only with benchmark evidence that answer quality is unaffected."
       },
       "recallMemoryWorthFilterEnabled": {
         "type": "boolean",
@@ -4474,7 +4485,7 @@
       "recallTrustStageCorpusFallbackEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), the Memory-Worth/TrustScore recall rerank stage probes a per-namespace corpus counter/signal map for candidates whose frontmatter was NOT already loaded on the hot path (cold-tier / embedding-fallback / archive rows). The map is version-keyed (invalidated on corpus mutation) and age-bounded for trust signals, so it hits in steady state without the old 30s-TTL permanent-miss. Set false to disable the corpus fallback entirely (only preloaded-candidate + direct-read paths run) — max performance when every candidate is hot, at the cost of neutral treatment for cold candidates."
+        "description": "When true (default), the Memory-Worth/TrustScore recall rerank stage probes a per-namespace corpus counter/signal map for candidates whose frontmatter was NOT already loaded on the hot path (cold-tier / embedding-fallback / archive rows). The map is version-keyed (invalidated on corpus mutation) and age-bounded for trust signals, so it hits in steady state without the old 30s-TTL permanent-miss. Set false to disable the corpus fallback entirely (only preloaded-candidate + direct-read paths run) \u2014 max performance when every candidate is hot, at the cost of neutral treatment for cold candidates."
       },
       "hotMemoriesCacheEnabled": {
         "type": "boolean",
@@ -4630,12 +4641,12 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain — any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain \u2014 any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",
         "default": false,
-        "description": "Run recall planner in shadow mode — evaluate but do not apply results."
+        "description": "Run recall planner in shadow mode \u2014 evaluate but do not apply results."
       },
       "recallPlannerTelemetryEnabled": {
         "type": "boolean",
@@ -5018,7 +5029,7 @@
       "semanticDedupEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Issue #373 — enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
+        "description": "Issue #373 \u2014 enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
       },
       "semanticDedupThreshold": {
         "type": "number",
@@ -5347,7 +5358,7 @@
       "temporalExpiredInInjection": {
         "type": "boolean",
         "default": false,
-        "description": "Escape hatch for the bi-temporal injection filter (issue #1578). When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on — some deployments prefer the older (always-inject) behavior."
+        "description": "Escape hatch for the bi-temporal injection filter (issue #1578). When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on \u2014 some deployments prefer the older (always-inject) behavior."
       },
       "temporalIndexMaxEntries": {
         "type": "number",
@@ -5402,7 +5413,7 @@
       "tombstonesEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the tombstone non-resurrection invariant (#1579). When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active — visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
+        "description": "Master gate for the tombstone non-resurrection invariant (#1579). When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active \u2014 visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
       },
       "tombstonesSemanticMatch": {
         "type": "boolean",
@@ -5442,7 +5453,7 @@
       "traceWeaverOverlapThreshold": {
         "type": "number",
         "default": 0.4,
-        "description": "Minimum Jaccard topic overlap to assign the same traceId (0–1)."
+        "description": "Minimum Jaccard topic overlap to assign the same traceId (0\u20131)."
       },
       "transcriptEnabled": {
         "type": "boolean",
@@ -5492,12 +5503,12 @@
       "trustScoreMaxMultiplier": {
         "type": "number",
         "default": 1.25,
-        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier] (#1577)."
+        "description": "Upper bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier] (#1577)."
       },
       "trustScoreMinMultiplier": {
         "type": "number",
         "default": 0.5,
-        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier] (#1577)."
+        "description": "Lower bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier] (#1577)."
       },
       "trustScoreQuarantine": {
         "type": "boolean",
@@ -5874,7 +5885,7 @@
                   "minimum": 0,
                   "maximum": 1,
                   "default": 0.8,
-                  "description": "Trust prior for this source's transcription quality (0..1). Multiplies extraction confidence in smart mode — lower it for a device that mis-transcribes often."
+                  "description": "Trust prior for this source's transcription quality (0..1). Multiplies extraction confidence in smart mode \u2014 lower it for a device that mis-transcribes often."
                 },
                 "autoApproveTrust": {
                   "type": "number",

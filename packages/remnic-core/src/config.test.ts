@@ -2349,6 +2349,28 @@ test("parseConfig bounded-state knobs coerce valid strings, preserve 0, and reje
     assert.throws(() => parseConfig({ recallImpressionsRotateKeep: "1000000" }), /between 1 and 1000/);
   }));
 
+test("parseConfig projection-rebuild knobs: defaults, boolean coercion, numeric override, and 60s floor (#2119)", () => {
+  const defaults = parseConfig({});
+  // Enabled by default — the projection must stay fresh without operator action,
+  // mirroring lifecycle-ledger auto-compaction's enabled-by-default posture.
+  assert.equal(defaults.projectionRebuildEnabled, true);
+  assert.equal(defaults.projectionRebuildIntervalMs, 6 * 60 * 60 * 1000);
+
+  // Boolean coerced via the shared helper (string "false" must disable, not read
+  // as truthy — gotcha #36).
+  assert.equal(parseConfig({ projectionRebuildEnabled: "false" }).projectionRebuildEnabled, false);
+  assert.equal(parseConfig({ projectionRebuildEnabled: false }).projectionRebuildEnabled, false);
+
+  // Numeric override is honored; a sub-floor value is clamped to the 60s floor.
+  assert.equal(parseConfig({ projectionRebuildIntervalMs: 3600000 }).projectionRebuildIntervalMs, 3600000);
+  // String forms are coerced (CLI/--config inputs arrive as strings, gotcha #17)...
+  assert.equal(parseConfig({ projectionRebuildIntervalMs: "3600000" }).projectionRebuildIntervalMs, 3600000);
+  // ...and invalid values are REJECTED, never silently reinterpreted (pattern #39):
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 1000 }), /projectionRebuildIntervalMs/);
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 3600000.5 }), /projectionRebuildIntervalMs/);
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: "abc" }), /projectionRebuildIntervalMs/);
+});
+
 test("parseConfig forwards activity source settings", () => {
   const config = parseConfig({
     activity: {

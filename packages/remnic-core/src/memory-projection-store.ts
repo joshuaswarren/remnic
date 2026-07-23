@@ -366,7 +366,7 @@ function logProjectionOpenFailure(memoryDir: string, error: unknown): void {
   );
 }
 
-function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
+export function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
   const dbPath = getMemoryProjectionPath(memoryDir);
   // A MISSING file is a normal fallback (cold install, never built). A file
   // that EXISTS but cannot open (wrong ABI / corrupt / bad perms) is a real
