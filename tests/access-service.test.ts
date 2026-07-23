@@ -3368,15 +3368,13 @@ test("access service entitySynthesisRun rejects invalid maxEntities (#2136)", as
       },
     } as any);
 
-    for (const bad of [0, -5, Number.NaN, 1.5 - 1.5 + Number.POSITIVE_INFINITY]) {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, 0.9, 2.9]) {
       await assert.rejects(
         () => service.entitySynthesisRun({ maxEntities: bad }),
         /Invalid maxEntities/,
-        `maxEntities=${bad} must be rejected, not silently defaulted`,
+        `maxEntities=${bad} must be rejected, not silently reinterpreted`,
       );
     }
-    // Fractional values >= 1 floor (2.9 -> 2) rather than reject; sub-1 fractions reject.
-    await assert.rejects(() => service.entitySynthesisRun({ maxEntities: 0.9 }), /Invalid maxEntities/);
     assert.equal(drained, 0, "no drain ran for rejected inputs");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

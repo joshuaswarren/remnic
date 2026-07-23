@@ -244,14 +244,14 @@ export class AccessAdminOpsSurface {
     if (request.maxEntities !== undefined) {
       if (
         typeof request.maxEntities !== "number"
-        || !Number.isFinite(request.maxEntities)
-        || Math.floor(request.maxEntities) < 1
+        || !Number.isInteger(request.maxEntities)
+        || request.maxEntities < 1
       ) {
         throw new Error(
           `Invalid maxEntities: ${String(request.maxEntities)} (expected an integer >= 1)`,
         );
       }
-      requested = Math.min(200, Math.floor(request.maxEntities));
+      requested = Math.min(200, request.maxEntities);
     }
     const processed = await this.deps.orchestrator.entitySynthesisCoordinator.processQueue(
       resolvedNamespace,
