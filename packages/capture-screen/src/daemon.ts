@@ -1,0 +1,346 @@
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync } from "node:fs";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import { dirname } from "node:path";
+
+import { activityDayWindow } from "@remnic/core";
+import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
+
+export interface CaptureSnapshot {
+  capturedAtUtc: string;
+  app: string;
+  windowTitle: string;
+  text: string;
+  textSource: "ax" | "ocr";
+}
+
+export interface CaptureScreenDaemonOptions {
+  authToken: string;
+  spoolPath: string;
+  replay?: readonly CaptureSnapshot[];
+  host?: string;
+  port?: number;
+}
+
+export interface RunningCaptureScreenDaemon {
+  url: string;
+  close(): Promise<void>;
+}
+
+export interface CaptureScreenDaemon {
+  start(): Promise<RunningCaptureScreenDaemon>;
+  close(): Promise<void>;
+}
+
+type SnapshotRow = CaptureSnapshot & { id: number; contentHash: string };
+
+function isLoopback(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/** Bracket an IPv6 literal so it is a valid URL host (`::1` -> `[::1]`). */
+function hostForUrl(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
+ * Confine the spool to an owner-only directory whose whole ancestry is safe, so
+ * no other local user can plant or swap a symlink/file at the path between our
+ * exclusive create and SQLite's own reopen-by-path. The immediate parent must
+ * be a real (non-symlink) directory, owner-only (no group/other bits) and — on
+ * POSIX — owned by this user (created 0700 when absent). Every existing ancestor
+ * above it must be a non-symlink directory that is not attacker-writable
+ * (group/other-writable without the sticky bit), which still allows standard
+ * root-owned system dirs (e.g. 0755) and sticky world-writable dirs (e.g. /tmp).
+ */
+function ensureSecureSpoolParent(spoolPath: string): void {
+  const parent = dirname(spoolPath);
+  // Owner-only/uid/attacker-writable checks are POSIX permission semantics.
+  // On Windows fs mode bits and process.getuid don't carry them, so gate those
+  // there while keeping symlink/type validation and secure creation everywhere.
+  const posix = process.platform !== "win32";
+  const uid = posix && typeof process.getuid === "function" ? process.getuid() : undefined;
+
+  let previous = parent;
+  let current = dirname(parent);
+  while (current !== previous) {
+    const ancestor = lstatSync(current, { throwIfNoEntry: false });
+    if (ancestor !== undefined) {
+      if (ancestor.isSymbolicLink()) throw new RangeError("a spool ancestor directory must not be a symlink");
+      if (!ancestor.isDirectory()) throw new RangeError("a spool ancestor path must be a directory");
+      if (posix) {
+        const groupOtherWritable = (ancestor.mode & 0o022) !== 0;
+        const sticky = (ancestor.mode & 0o1000) !== 0;
+        if (groupOtherWritable && !sticky) throw new RangeError("a spool ancestor directory is writable by other users");
+        // A non-root, non-self owner can chmod/replace the dir (or its sticky
+        // children) and swap the spool target, so require root or this user.
+        if (uid !== undefined && ancestor.uid !== 0 && ancestor.uid !== uid) {
+          throw new RangeError("a spool ancestor directory is owned by another user");
+        }
+      }
+    }
+    previous = current;
+    current = dirname(current);
+  }
+
+  const info = lstatSync(parent, { throwIfNoEntry: false });
+  if (info === undefined) {
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    return;
+  }
+  if (info.isSymbolicLink()) throw new RangeError("spool parent directory must not be a symlink");
+  if (!info.isDirectory()) throw new RangeError("spool parent must be a directory");
+  if (posix) {
+    if ((info.mode & 0o077) !== 0) throw new RangeError("spool parent directory must be owner-only (0700)");
+    if (uid !== undefined && info.uid !== uid) throw new RangeError("spool parent directory must be owned by the current user");
+  }
+}
+
+/**
+ * Validate a capture instant and return its canonical `YYYY-MM-DDTHH:MM:SS.sssZ`
+ * form. `Date.parse` alone rolls impossible dates over (2026-02-30 -> Mar 2), so
+ * the wall-clock calendar fields are checked directly before canonicalizing,
+ * independent of the zone designator. Malformed timestamps must fail here rather
+ * than be persisted and mis-bucketed downstream by the activity pipeline.
+ */
+function canonicalTimestamp(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](?:0\d:[0-5]\d|1[0-3]:[0-5]\d|14:00))$/.exec(iso);
+  const parsed = Date.parse(iso);
+  if (match === null || !Number.isFinite(parsed)) throw new RangeError("capturedAtUtc must be a valid ISO-8601 UTC timestamp");
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) {
+    throw new RangeError("capturedAtUtc is not a real calendar instant");
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizeSnapshot(snapshot: CaptureSnapshot): CaptureSnapshot {
+  for (const value of [snapshot.app, snapshot.windowTitle, snapshot.text]) {
+    if (typeof value !== "string") throw new TypeError("snapshot text fields must be strings");
+  }
+  if (snapshot.textSource !== "ax" && snapshot.textSource !== "ocr") {
+    throw new TypeError('snapshot textSource must be "ax" or "ocr"');
+  }
+  return { ...snapshot, capturedAtUtc: canonicalTimestamp(snapshot.capturedAtUtc) };
+}
+
+function contentHash(snapshot: CaptureSnapshot): string {
+  const hash = createHash("sha256");
+  // Length-prefix each field so control characters (incl. NUL) in captured text
+  // cannot make distinct snapshots collide — a collision would silently drop a
+  // valid capture via the UNIQUE content_hash + INSERT OR IGNORE.
+  for (const field of [snapshot.capturedAtUtc, snapshot.app, snapshot.windowTitle, snapshot.text, snapshot.textSource]) {
+    hash.update(`${Buffer.byteLength(field)}:`).update(field);
+  }
+  return hash.digest("hex");
+}
+
+function applySchema(db: BetterSqlite3Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS capture_snapshots (
+      id INTEGER PRIMARY KEY,
+      captured_at_utc TEXT NOT NULL,
+      app TEXT NOT NULL,
+      window_title TEXT NOT NULL,
+      text TEXT NOT NULL,
+      text_source TEXT NOT NULL,
+      content_hash TEXT NOT NULL UNIQUE
+    );
+    CREATE INDEX IF NOT EXISTS capture_snapshots_capture_at ON capture_snapshots(captured_at_utc, id);
+    CREATE TABLE IF NOT EXISTS capture_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Stable identity of this spool file. Created once per spool and persisted, so
+ * it survives reopen but changes when the spool is rebuilt/replaced (a fresh
+ * file gets a fresh row). The activity sync uses it to deterministically reset
+ * a cursor that belonged to a prior spool generation.
+ */
+function spoolGeneration(db: BetterSqlite3Database): string {
+  db.prepare("INSERT OR IGNORE INTO capture_meta (key, value) VALUES ('generation', ?)").run(randomUUID());
+  const row = db.prepare("SELECT value FROM capture_meta WHERE key = 'generation'").get() as { value: string };
+  return row.value;
+}
+
+function insertReplay(db: BetterSqlite3Database, replay: readonly CaptureSnapshot[]): void {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO capture_snapshots (captured_at_utc, app, window_title, text, text_source, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const transaction = db.transaction((snapshots: readonly CaptureSnapshot[]) => {
+    for (const raw of snapshots) {
+      const snapshot = normalizeSnapshot(raw);
+      insert.run(snapshot.capturedAtUtc, snapshot.app, snapshot.windowTitle, snapshot.text, snapshot.textSource, contentHash(snapshot));
+    }
+  });
+  transaction(replay);
+}
+
+function parseCursor(value: string | null): number {
+  if (value === null || value === "") return 0;
+  const cursor = Number(value);
+  if (!Number.isSafeInteger(cursor) || cursor < 0) throw new RangeError("cursor must be a non-negative integer");
+  return cursor;
+}
+
+function parseLimit(value: string | null): number {
+  if (value === null || value === "") return 100;
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new RangeError("limit must be an integer from 1 to 500");
+  return limit;
+}
+
+function authorized(header: string | undefined, authToken: string): boolean {
+  return header === `Bearer ${authToken}`;
+}
+
+function json(server: ServerResponse, status: number, body: unknown): void {
+  server.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  server.end(JSON.stringify(body));
+}
+
+export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptions): Promise<CaptureScreenDaemon> {
+  if (options.authToken.length === 0) throw new TypeError("authToken must be non-empty");
+  const host = options.host ?? "127.0.0.1";
+  if (!isLoopback(host)) throw new RangeError("capture daemon may bind only to a loopback host");
+  if (options.spoolPath !== ":memory:") {
+    // Confine the spool to an owner-only parent directory: with no other user
+    // able to write there, no symlink can be planted at the path in the window
+    // between our exclusive create and SQLite's reopen-by-path.
+    ensureSecureSpoolParent(options.spoolPath);
+    // Screen-capture history is sensitive; keep the on-disk spool owner-only
+    // (0600) rather than inheriting a world-readable umask on a shared host.
+    // lstat (not stat) so a symlinked spool is rejected instead of silently
+    // redirecting the private capture file to an arbitrary link target; a
+    // directory or other non-file existing path is left for openBetterSqlite3
+    // to reject loudly rather than us mangling its permissions.
+    const existing = lstatSync(options.spoolPath, { throwIfNoEntry: false });
+    if (existing !== undefined && existing.isSymbolicLink()) {
+      throw new RangeError("spool path must not be a symlink");
+    }
+    if (existing === undefined) {
+      const noFollow = constants.O_NOFOLLOW ?? 0;
+      // Exclusive, no-follow create closes the lstat->open race for BOTH a
+      // planted symlink (O_NOFOLLOW) and a planted regular file (O_EXCL): the
+      // open fails rather than adopting an attacker-created target whose mode we
+      // do not control. O_NOFOLLOW is POSIX-only and a no-op flag elsewhere.
+      closeSync(openSync(options.spoolPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600));
+    } else if (existing.isFile()) chmodSync(options.spoolPath, 0o600);
+  }
+  const db = openBetterSqlite3(options.spoolPath);
+  let generation: string;
+  try {
+    applySchema(db);
+    if (options.replay !== undefined) insertReplay(db, options.replay);
+    generation = spoolGeneration(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
+  let server: Server | undefined;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    try {
+      if (server !== undefined) {
+        const closing = server;
+        server = undefined;
+        await new Promise<void>((resolve, reject) => closing.close((error) => (error == null ? resolve() : reject(error))));
+      }
+    } finally {
+      db.close();
+    }
+  };
+
+  return {
+    async start(): Promise<RunningCaptureScreenDaemon> {
+      if (closed) throw new Error("capture daemon is closed");
+      if (server !== undefined) throw new Error("capture daemon is already running");
+      const created = createServer((request, response) => {
+        if (!authorized(request.headers.authorization, options.authToken)) {
+          response.setHeader("www-authenticate", "Bearer");
+          json(response, 401, { error: "unauthorized" });
+          return;
+        }
+        const url = new URL(request.url ?? "/", `http://${hostForUrl(host)}`);
+        if (request.method !== "GET") {
+          json(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        if (url.pathname === "/v1/health") {
+          const row = db.prepare("SELECT COUNT(*) AS count FROM capture_snapshots").get() as { count: number };
+          json(response, 200, { ok: true, snapshots: row.count });
+          return;
+        }
+        if (url.pathname !== "/v1/snapshots") {
+          json(response, 404, { error: "not_found" });
+          return;
+        }
+        try {
+          const cursor = parseCursor(url.searchParams.get("cursor"));
+          const limit = parseLimit(url.searchParams.get("limit"));
+          const date = url.searchParams.get("date");
+          const timezone = url.searchParams.get("timezone");
+          if ((date === null) !== (timezone === null)) {
+            throw new RangeError("date and timezone must be provided together");
+          }
+          // A cursor beyond the current max row id is stale: the spool was
+          // rebuilt/truncated (ids reset to 1) while core still holds the old
+          // high-water mark. Reset to 0 so the rebuilt spool is readable again
+          // instead of returning empty pages forever.
+          // sqlite row shape is fixed by the SELECT; a runtime schema check is meaningless here.
+          const maxRow = db.prepare("SELECT MAX(id) AS maxId FROM capture_snapshots").get() as { maxId: number | null };
+          const maxId = maxRow.maxId ?? 0;
+          const effectiveCursor = cursor > maxId ? 0 : cursor;
+          const columns = "id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text, text_source AS textSource, content_hash AS contentHash";
+          let rows: SnapshotRow[];
+          if (date !== null && timezone !== null) {
+            // Honor the ActivitySourceClient contract: one page scoped to a
+            // single local day's half-open [start, end) window, cursor within it.
+            const { startUtc, endUtc } = activityDayWindow(date, timezone);
+            rows = db.prepare(`
+              SELECT ${columns} FROM capture_snapshots
+              WHERE id > ? AND captured_at_utc >= ? AND captured_at_utc < ?
+              ORDER BY id ASC LIMIT ?
+            `).all(effectiveCursor, startUtc, endUtc, limit) as SnapshotRow[];
+          } else {
+            rows = db.prepare(`
+              SELECT ${columns} FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
+            `).all(effectiveCursor, limit) as SnapshotRow[];
+          }
+          json(response, 200, {
+            snapshots: rows.map(({ id: _id, ...snapshot }) => snapshot),
+            // Advance the high-water mark whenever rows were served — core only
+            // persists a non-null cursor, so a final partial page must still
+            // return its last id; the follow-up empty page then terminates.
+            nextCursor: rows.length > 0 ? String(rows.at(-1)?.id) : null,
+            generation,
+          });
+        } catch (error) {
+          json(response, 400, { error: displayErrorDetail(error) || "invalid_request" });
+        }
+      });
+      server = created;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          created.once("error", reject);
+          created.listen(options.port ?? 0, host, () => resolve());
+        });
+      } catch (error) {
+        server = undefined;
+        throw error;
+      }
+      const address = created.address();
+      if (address === null || typeof address === "string") throw new Error("capture daemon has no TCP address");
+      return { url: `http://${hostForUrl(host)}:${address.port}`, close };
+    },
+    close,
+  };
+}

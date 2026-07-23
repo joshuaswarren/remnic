@@ -127,6 +127,9 @@ export async function syncActivitySource(
 
   const cursorKey = activityCursorKey(source.machineLabel, options.date);
   let cursor = options.store.getCursor(cursorKey);
+  const priorGeneration = options.store.getCursorGeneration(cursorKey);
+  let generation = priorGeneration;
+  let resetForGeneration = false;
   let pages = 0;
   let fetched = 0;
   let inserted = 0;
@@ -142,6 +145,20 @@ export async function syncActivitySource(
       cursor,
       signal: options.signal,
     });
+    // Deterministic reset on a source spool rebuild (or the first upgrade to a
+    // generation-aware source): a page whose generation differs from the one the
+    // persisted cursor was recorded under — the legacy null state included —
+    // means the cursor belongs to a prior/unknown spool and would skip or
+    // mis-page rows. Restart this day once from the beginning under the new
+    // generation. Sources that omit generation keep the legacy behavior.
+    if (!resetForGeneration && page.generation !== undefined && cursor !== null && page.generation !== priorGeneration) {
+      cursor = null;
+      generation = page.generation;
+      resetForGeneration = true;
+      seenCursors.clear();
+      continue;
+    }
+    if (page.generation !== undefined) generation = page.generation;
     pages += 1;
     fetched += page.snapshots.length;
 
@@ -191,7 +208,7 @@ export async function syncActivitySource(
   });
 
   options.signal?.throwIfAborted();
-  options.store.setCursor(cursorKey, cursor);
+  options.store.setCursor(cursorKey, cursor, generation);
 
   // Rows and digest are durable and the cursor has advanced; refresh the search
   // index so the new digest is discoverable (rule 31). Best-effort: a failure

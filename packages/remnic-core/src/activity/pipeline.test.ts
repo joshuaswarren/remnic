@@ -377,3 +377,146 @@ test("syncActivitySource rejects a calendar-overflow timestamp instead of skippi
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+interface GenerationSourceState {
+  generation: string;
+  pages: Map<string | null, ActivitySnapshot[]>;
+  cursors: Map<string | null, string | null>;
+}
+
+function generationSource(machineLabel: string, state: GenerationSourceState): ActivitySourceClient {
+  return {
+    machineLabel,
+    async verify() {
+      return { ok: true };
+    },
+    async fetchSnapshots({ cursor }) {
+      return {
+        snapshots: state.pages.get(cursor ?? null) ?? [],
+        nextCursor: state.cursors.get(cursor ?? null) ?? null,
+        generation: state.generation,
+      };
+    },
+  };
+}
+
+test("syncActivitySource resets a stale cursor when a smaller rebuilt spool changes generation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-gen-"));
+  const store = ActivityStore.open(memoryDir);
+  const key = activityCursorKey("workstation-a", "2026-07-22");
+  try {
+    const state: GenerationSourceState = { generation: "gen-A", pages: new Map(), cursors: new Map() };
+    const client = generationSource("workstation-a", state);
+
+    state.pages.set(null, [snapshot({ contentHash: "a1" }), snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", contentHash: "a2" })]);
+    state.cursors.set(null, "2");
+    state.pages.set("2", []);
+    state.cursors.set("2", null);
+    await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(store.getCursor(key), "2");
+    assert.equal(store.getCursorGeneration(key), "gen-A");
+
+    // Rebuilt SMALLER: one fresh row at id "1"; the persisted cursor "2" would
+    // strand it forever without a generation-driven reset.
+    state.generation = "gen-B";
+    state.pages.clear();
+    state.cursors.clear();
+    state.pages.set(null, [snapshot({ capturedAtUtc: "2026-07-22T15:00:00.000Z", contentHash: "b1" })]);
+    state.cursors.set(null, "1");
+    state.pages.set("1", []);
+    state.cursors.set("1", null);
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(result.inserted, 1);
+    assert.equal(store.getCursor(key), "1");
+    assert.equal(store.getCursorGeneration(key), "gen-B");
+    const hashes = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z").map((s) => s.contentHash);
+    assert.ok(hashes.includes("b1"), "the post-rebuild capture is ingested");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource resets a stale cursor when a larger rebuilt spool changes generation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-gen-"));
+  const store = ActivityStore.open(memoryDir);
+  const key = activityCursorKey("workstation-a", "2026-07-22");
+  try {
+    const state: GenerationSourceState = { generation: "gen-A", pages: new Map(), cursors: new Map() };
+    const client = generationSource("workstation-a", state);
+
+    state.pages.set(null, [snapshot({ contentHash: "a1" }), snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", contentHash: "a2" })]);
+    state.cursors.set(null, "2");
+    state.pages.set("2", []);
+    state.cursors.set("2", null);
+    await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(store.getCursor(key), "2");
+
+    // Rebuilt LARGER: three fresh rows. The stale-cursor path ("2") would skip
+    // c1/c2 and ingest only c3; the generation reset restarts from the top.
+    state.generation = "gen-C";
+    state.pages.clear();
+    state.cursors.clear();
+    state.pages.set("2", [snapshot({ capturedAtUtc: "2026-07-22T16:03:00.000Z", contentHash: "c3" })]);
+    state.cursors.set("2", null);
+    state.pages.set(null, [
+      snapshot({ capturedAtUtc: "2026-07-22T16:01:00.000Z", contentHash: "c1" }),
+      snapshot({ capturedAtUtc: "2026-07-22T16:02:00.000Z", contentHash: "c2" }),
+      snapshot({ capturedAtUtc: "2026-07-22T16:03:00.000Z", contentHash: "c3" }),
+    ]);
+    state.cursors.set(null, "3");
+    state.pages.set("3", []);
+    state.cursors.set("3", null);
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(result.inserted, 3);
+    const hashes = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z").map((s) => s.contentHash);
+    assert.ok(hashes.includes("c1") && hashes.includes("c2") && hashes.includes("c3"), "every row of the larger rebuild is ingested");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource keeps legacy behavior when the source omits generation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-gen-"));
+  const store = ActivityStore.open(memoryDir);
+  const key = activityCursorKey("workstation-a", "2026-07-22");
+  try {
+    const client = source("workstation-a", new Map([[null, [snapshot()]]]), new Map([[null, null]]));
+    await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    // No generation on the wire -> none persisted, so the reset path never engages.
+    assert.equal(store.getCursorGeneration(key), null);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource resets a legacy generation-less cursor when the source becomes generation-aware", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-gen-"));
+  const store = ActivityStore.open(memoryDir);
+  const key = activityCursorKey("workstation-a", "2026-07-22");
+  try {
+    // Legacy sync state: a persisted cursor with no generation recorded.
+    store.setCursor(key, "5");
+    assert.equal(store.getCursorGeneration(key), null);
+
+    const state: GenerationSourceState = { generation: "gen-new", pages: new Map(), cursors: new Map() };
+    const client = generationSource("workstation-a", state);
+    // Following the stale legacy cursor "5" would skip everything; only the
+    // from-start path carries the rebuilt spool's rows.
+    state.pages.set("5", []);
+    state.cursors.set("5", null);
+    state.pages.set(null, [snapshot({ contentHash: "n1" }), snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", contentHash: "n2" })]);
+    state.cursors.set(null, "2");
+    state.pages.set("2", []);
+    state.cursors.set("2", null);
+
+    const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store });
+    assert.equal(result.inserted, 2, "the reset ingests the rows the legacy cursor would have skipped");
+    assert.equal(store.getCursorGeneration(key), "gen-new");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

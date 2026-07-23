@@ -64,6 +64,17 @@ test("ActivityHttpSourceClient authenticates and maps a snapshot page", async ()
   });
 });
 
+test("ActivityHttpSourceClient surfaces the source generation when present", async () => {
+  await withServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ snapshots: [], nextCursor: null, generation: "spool-gen-xyz" }));
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
+    const page = await client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" });
+    assert.deepEqual(page, { snapshots: [], nextCursor: null, generation: "spool-gen-xyz" });
+  });
+});
+
 test("ActivityHttpSourceClient treats an omitted nextCursor as end-of-pagination", async () => {
   await withServer((_request, response) => {
     response.setHeader("content-type", "application/json");
