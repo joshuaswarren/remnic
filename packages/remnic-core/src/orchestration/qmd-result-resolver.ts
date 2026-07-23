@@ -84,6 +84,17 @@ export function qmdResultPathCandidates(
 
   if (path.isAbsolute(resultPath)) {
     addCandidate(resultPath);
+    // Daemon-mode results can arrive pre-absolutized against the storage
+    // root while the file lives under facts/<date>/ (hot-facts collection
+    // registered at the facts/ subtree — issue #2111). Mirror the relative
+    // branch's facts/ fallback; addCandidate re-checks containment.
+    const relative = path.relative(storageRoot, path.resolve(resultPath));
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      const normalized = relative.split(path.sep).join("/");
+      if (/^\d{4}-\d{2}-\d{2}\//.test(normalized)) {
+        addCandidate(path.join(storageRoot, "facts", normalized));
+      }
+    }
   } else {
     addRelativeCandidates(resultPath);
   }

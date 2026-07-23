@@ -281,52 +281,6 @@ import { EngramAccessInputError, NamespaceNotWritableError } from "./access-erro
 // working after these classes moved to ./access-errors (issue #1888).
 export { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
 
-function qmdCollectionPathParts(resultPath: string): {
-  collection: string;
-  relativePath: string;
-} | null {
-  if (!resultPath || nodePath.isAbsolute(resultPath)) return null;
-  const normalized = resultPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const slashIndex = normalized.indexOf("/");
-  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return null;
-  const collection = normalized.slice(0, slashIndex);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(collection)) return null;
-  return {
-    collection,
-    relativePath: normalized.slice(slashIndex + 1),
-  };
-}
-
-function qmdResultPathCandidates(
-  storageDir: string,
-  resultPath: string,
-): string[] {
-  const candidates = new Set<string>();
-  const storageRoot = nodePath.resolve(storageDir);
-  const addCandidate = (candidate: string) => {
-    const resolved = nodePath.resolve(candidate);
-    if (isPathInsideStorageRoot(storageRoot, resolved)) {
-      candidates.add(resolved);
-    }
-  };
-  const addRelativeCandidates = (relativePath: string) => {
-    const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (!normalized) return;
-    addCandidate(nodePath.join(storageRoot, normalized));
-    if (/^\d{4}-\d{2}-\d{2}\//.test(normalized)) {
-      addCandidate(nodePath.join(storageRoot, "facts", normalized));
-    }
-  };
-
-  if (nodePath.isAbsolute(resultPath)) {
-    addCandidate(resultPath);
-  } else {
-    addRelativeCandidates(resultPath);
-  }
-
-  return [...candidates];
-}
-
 export type AccessProfilingReportRequest = {
   format?: string;
   limit?: number;
