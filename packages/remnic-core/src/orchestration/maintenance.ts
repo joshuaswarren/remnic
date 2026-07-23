@@ -20,7 +20,7 @@
  */
 
 import { resolveNamespaceCapabilities,
-  resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
+  resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities, resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import { existsSync, type Dirent } from "node:fs";
 import { appendFile, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -52,7 +52,7 @@ import {
 } from "../maintenance/memory-governance-cron.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
 import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
-import { readProjectionRebuiltAt } from "../memory-projection-store.js";
+import { readProjectionRebuiltAt } from "../maintenance/projection-support.js";
 import {
   drainPendingLifecycleLedgerIfAny,
   pendingLifecycleLedgerDir,
@@ -1163,7 +1163,7 @@ export class MaintenanceScheduler {
    * the fallback WARN surfaces staleness for any namespace that lags.
    */
   private async maybeRebuildMemoryProjection(): Promise<void> {
-    if (!this.deps.config.projectionRebuildEnabled) return;
+    if (!resolveMemoryLifecycleCapabilities(this.deps.config).projectionRebuild) return;
     if (this.projectionRebuildInFlight) return;
     const intervalMs = this.deps.config.projectionRebuildIntervalMs;
     const now = Date.now();
@@ -1186,6 +1186,9 @@ export class MaintenanceScheduler {
     try {
       const result = await rebuildMemoryProjection({
         memoryDir,
+        // Reuse the daemon's live storage so secure-store deployments rebuild
+        // through the unlocked instance instead of a fresh locked one.
+        ...(rootStorage ? { storage: rootStorage } : {}),
         defaultNamespace: this.deps.config.defaultNamespace,
         dryRun: false,
         now: new Date(now),

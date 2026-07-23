@@ -1,3 +1,4 @@
+import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
   access,
   lstat,
@@ -191,7 +192,6 @@ import {
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
   readProjectedMemoryTimeline,
-  readProjectionRebuiltAt,
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
 import {

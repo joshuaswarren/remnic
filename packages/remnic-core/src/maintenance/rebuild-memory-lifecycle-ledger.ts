@@ -1,6 +1,7 @@
 import path from "node:path";
 import { stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
+import { assertInjectedStorageRooted } from "./projection-support.js";
 import { log } from "../logger.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { MemoryLifecycleEvent } from "../types.js";
@@ -205,13 +206,7 @@ export async function rebuildMemoryLifecycleLedger(
   const dryRun = options.dryRun !== false;
   const now = options.now ?? new Date();
   const outputPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
-  const storage = options.storage ?? new StorageManager(options.memoryDir);
-  if (options.storage && path.resolve(storage.dir) !== path.resolve(options.memoryDir)) {
-    throw new Error(
-      `rebuildMemoryLifecycleLedger: storage.dir (${storage.dir}) must match `
-      + `memoryDir (${options.memoryDir})`,
-    );
-  }
+  const storage = assertInjectedStorageRooted("rebuildMemoryLifecycleLedger", options.memoryDir, options.storage) ?? new StorageManager(options.memoryDir);
   const secureRewrite = options.storage !== undefined;
   const tiers = [
     await storage.readAllMemories(),

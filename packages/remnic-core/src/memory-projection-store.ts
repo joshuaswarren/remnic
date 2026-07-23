@@ -366,7 +366,7 @@ function logProjectionOpenFailure(memoryDir: string, error: unknown): void {
   );
 }
 
-function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
+export function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
   const dbPath = getMemoryProjectionPath(memoryDir);
   // A MISSING file is a normal fallback (cold install, never built). A file
   // that EXISTS but cannot open (wrong ABI / corrupt / bad perms) is a real
@@ -379,30 +379,6 @@ function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null
   } catch (error) {
     logProjectionOpenFailure(memoryDir, error);
     return null;
-  }
-}
-
-/**
- * Read the projection's `rebuiltAt` meta timestamp (ISO 8601) without keeping a
- * handle, or `null` when the projection is absent/unopenable or has never
- * recorded a rebuild (issue #2119). Used to (a) skip a scheduled rebuild when
- * the projection was rebuilt within the cadence — surviving restarts and
- * cross-process CLI rebuilds via the on-disk meta — and (b) surface projection
- * staleness (lag) in the timeline-consumer fallback WARN. Cheap: one small meta
- * read on an already-open sqlite; never throws.
- */
-export function readProjectionRebuiltAt(memoryDir: string): string | null {
-  const db = openProjectionReadonly(memoryDir);
-  if (!db) return null;
-  try {
-    const row = db.prepare("SELECT value FROM meta WHERE key = 'rebuiltAt'").get() as
-      | { value?: unknown }
-      | undefined;
-    return typeof row?.value === "string" && row.value.length > 0 ? row.value : null;
-  } catch {
-    return null;
-  } finally {
-    db.close();
   }
 }
 

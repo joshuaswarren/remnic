@@ -3567,14 +3567,10 @@ export function parseConfig(
         ? Math.max(0, Math.min(1, cfg.graphEdgeDecayVisibilityThreshold))
         : 0.2,
     // Issue #2119 — maintenance-scheduled memory-projection rebuild.
-    // Boolean coerced via shared helper (gotcha #36: string "false" is truthy).
-    // Default true: keep the projection fresh without operator intervention,
-    // mirroring lifecycle-ledger auto-compaction's enabled-by-default posture.
+    // Enabled-by-default (gotcha #36 coercion); interval via the strict shared parser (strings coerced, non-integer/sub-60s rejected — pattern #39).
     projectionRebuildEnabled: coerceBooleanLike(cfg.projectionRebuildEnabled) ?? true,
-    projectionRebuildIntervalMs:
-      typeof cfg.projectionRebuildIntervalMs === "number" && Number.isFinite(cfg.projectionRebuildIntervalMs)
-        ? Math.max(60_000, Math.floor(cfg.projectionRebuildIntervalMs))
-        : 6 * 60 * 60 * 1000,
+    projectionRebuildIntervalMs: parseIntegerAtLeast(
+      cfg.projectionRebuildIntervalMs, 6 * 60 * 60 * 1000, 60_000, "projectionRebuildIntervalMs"),
     ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
     // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
     // documented 0 iterations disables PageRank refinement (BFS scores pass through).

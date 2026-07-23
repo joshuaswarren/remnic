@@ -1017,6 +1017,8 @@ retain the guarantee.
 | `memoryLifecycleLedgerCompactMinIntervalMs` | `21600000` | Minimum interval between auto-compactions of the lifecycle ledger, so the heavy rebuild cannot run back-to-back. Minimum enforced at `60000` ms. Default 6 hours. |
 | `recallImpressionsRotateBytes` | `33554432` | Rotate `state/recall_impressions.jsonl` to `.1..N` once it exceeds this many bytes. The active file name and format are unchanged; only historical rows move to archives. Rotated files are excluded from offline-sync push. Set `0` to disable. Default 32MB. |
 | `recallImpressionsRotateKeep` | `5` | Number of rotated recall-impression archives to keep (`.1 .. .N`). Minimum enforced at `1` when rotation is enabled. Default 5. |
+| `projectionRebuildEnabled` | `true` | Scheduled rebuild of `state/memory-projection.sqlite` off the debounced maintenance path (issue #2119): the projection has no incremental writer, so without this it silently freezes at the last manual rebuild and timeline/browse consumers fall back to full-ledger reads. Boolean-like strings coerced (`"false"` is false). |
+| `projectionRebuildIntervalMs` | `21600000` | Cadence for the scheduled projection rebuild. Finite integer milliseconds, minimum `60000`; string forms are coerced and invalid or sub-minimum values are rejected at parse time (never silently floored). Skipped when the on-disk projection meta `rebuiltAt` is younger than the interval, so operator cron rebuilds and daemon restarts both suppress redundant work. Default 6 hours. |
 
 ## Access Tracking
 

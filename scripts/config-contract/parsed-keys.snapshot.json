@@ -1293,6 +1293,7 @@
     "procedural.successFloor.trim",
     "profilingStorageDir.length",
     "projectionRebuildEnabled.trim",
+    "projectionRebuildIntervalMs.trim",
     "provenance.enabled.trim",
     "provenance.maxQuoteChars.trim",
     "provenance.requireSpans.trim",

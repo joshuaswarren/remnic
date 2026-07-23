@@ -18,6 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { readProjectionRebuiltAt } from "../maintenance/projection-support.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 
@@ -26,7 +27,7 @@ import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projectio
 import {
   probeProjectionHealth,
   readProjectedMemoryBrowse,
-  readProjectionRebuiltAt,
+  
 } from "../memory-projection-store.js";
 import type { PluginConfig } from "../types.js";
 import type { SearchBackend } from "../search/port.js";

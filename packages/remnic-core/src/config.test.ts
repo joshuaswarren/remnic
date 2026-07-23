@@ -2363,7 +2363,12 @@ test("parseConfig projection-rebuild knobs: defaults, boolean coercion, numeric 
 
   // Numeric override is honored; a sub-floor value is clamped to the 60s floor.
   assert.equal(parseConfig({ projectionRebuildIntervalMs: 3600000 }).projectionRebuildIntervalMs, 3600000);
-  assert.equal(parseConfig({ projectionRebuildIntervalMs: 1000 }).projectionRebuildIntervalMs, 60000);
+  // String forms are coerced (CLI/--config inputs arrive as strings, gotcha #17)...
+  assert.equal(parseConfig({ projectionRebuildIntervalMs: "3600000" }).projectionRebuildIntervalMs, 3600000);
+  // ...and invalid values are REJECTED, never silently reinterpreted (pattern #39):
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 1000 }), /projectionRebuildIntervalMs/);
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 3600000.5 }), /projectionRebuildIntervalMs/);
+  assert.throws(() => parseConfig({ projectionRebuildIntervalMs: "abc" }), /projectionRebuildIntervalMs/);
 });
 
 test("parseConfig forwards activity source settings", () => {

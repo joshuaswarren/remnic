@@ -257,7 +257,8 @@ export interface MemoryLifecycleCapabilitySet {
   /** `embeddingFallbackEnabled` — semantic-dedup / archive-search embedding fallback. */
   readonly embeddingFallback: boolean;
   /** `extractionRetryEnabled` — per-fingerprint backoff + provider circuit breaker on the extraction retry path. */
-  readonly extractionRetry: boolean;
+  readonly extractionRetry: boolean;  /** `projectionRebuildEnabled` — scheduled memory-projection rebuild (#2119). */
+  readonly projectionRebuild: boolean;
 }
 
 /**
@@ -277,6 +278,7 @@ export type MemoryLifecycleConfigProjection = Pick<
   | "extractionJudgeTelemetryEnabled"
   | "embeddingFallbackEnabled"
   | "extractionRetryEnabled"
+  | "projectionRebuildEnabled"
 >;
 
 /**
@@ -302,6 +304,7 @@ export function resolveMemoryLifecycleCapabilities(
     extractionJudgeTelemetry: config.extractionJudgeTelemetryEnabled,
     embeddingFallback: config.embeddingFallbackEnabled,
     extractionRetry: config.extractionRetryEnabled,
+    projectionRebuild: config.projectionRebuildEnabled,
   });
 }
 
