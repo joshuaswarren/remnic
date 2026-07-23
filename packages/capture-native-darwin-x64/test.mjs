@@ -13,9 +13,10 @@ assert.ok(
 try {
   await access(helperBinaryPath, constants.X_OK);
   console.log(`ok: ${helperBinaryPath} present and executable`);
-} catch {
-  // The real binary is produced by macOS CI (swift build -c release) and
-  // staged into bin/. On Linux and any pre-build checkout it is absent; the
-  // -x check is skipped with a note so the Linux release-workflow test passes.
+} catch (err) {
+  // The real binary is produced by macOS CI (swift build -c release) and staged
+  // into bin/. Only its ABSENCE (ENOENT) on Linux / pre-build checkouts is a
+  // benign skip; a present-but-not-executable binary (EACCES) is a real failure.
+  if (err?.code !== "ENOENT") throw err;
   console.log(`note: CI-built binary absent at ${helperBinaryPath}; skipping -x check`);
 }

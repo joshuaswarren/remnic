@@ -39,9 +39,11 @@ export function isLoopbackHost(host: string): boolean {
   return Object.hasOwn(LOOPBACK_HOSTS, stripIpv6Brackets(host).toLowerCase());
 }
 
-/** Wrap an IPv6 host in brackets for use in a URL authority; IPv4/hostnames pass through. */
+/** Wrap an IPv6 host in brackets for use in a URL authority; IPv4/hostnames pass
+ *  through. Existing brackets are stripped first so `[::1]` -> `[::1]`, never `[[::1]]`. */
 export function formatHostForUrl(host: string): string {
-  return host.includes(":") ? `[${host}]` : host;
+  const bare = stripIpv6Brackets(host);
+  return bare.includes(":") ? `[${bare}]` : bare;
 }
 
 /** Compact, credential-free description of an unexpected value for messages. */

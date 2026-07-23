@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, statSync } from "node:fs";
+import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -37,4 +37,13 @@ test("bearerFromHeader parses only well-formed Bearer headers", () => {
   assert.equal(bearerFromHeader("Basic xyz"), null);
   assert.equal(bearerFromHeader("Bearerxyz"), null);
   assert.equal(bearerFromHeader(undefined), null);
+});
+
+test("loadOrCreateToken replaces a pre-existing empty token file", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "csr-token-empty-"));
+  const tokenPath = path.join(dir, "token");
+  writeFileSync(tokenPath, "", { mode: 0o600 });
+  const token = loadOrCreateToken(tokenPath);
+  assert.ok(token.length >= 40, "an empty token file must be replaced with a fresh token");
+  assert.equal(loadOrCreateToken(tokenPath), token);
 });

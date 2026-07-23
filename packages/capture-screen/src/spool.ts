@@ -158,6 +158,15 @@ export class Spool {
       // effort; ignored where chmod is a no-op).
       try {
         chmodSync(location, 0o600);
+        // WAL mode writes <location>-wal / <location>-shm sidecars that hold the
+        // same sensitive capture text; keep them owner-only too (best effort).
+        for (const suffix of ["-wal", "-shm"]) {
+          try {
+            chmodSync(`${location}${suffix}`, 0o600);
+          } catch {
+            // sidecar absent yet / no POSIX perms
+          }
+        }
       } catch {
         // filesystem without POSIX perms
       }

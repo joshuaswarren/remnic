@@ -23,9 +23,22 @@ export function loadOrCreateToken(tokenPath: string): string {
     if (existing) return existing;
   }
   const token = generateToken();
-  writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
-  chmodSync(tokenPath, 0o600);
-  return token;
+  try {
+    // Exclusive create: if two daemons start together, the loser gets EEXIST and
+    // reads the winner's token rather than both persisting divergent values.
+    writeFileSync(tokenPath, `${token}\n`, { mode: 0o600, flag: "wx" });
+    chmodSync(tokenPath, 0o600);
+    return token;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    chmodSync(tokenPath, 0o600);
+    const raced = readFileSync(tokenPath, "utf8").trim();
+    if (raced) return raced;
+    // Pre-existing empty file (interrupted prior write): overwrite it.
+    writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+    chmodSync(tokenPath, 0o600);
+    return token;
+  }
 }
 
 /** Constant-time compare; unequal lengths short-circuit to false. */

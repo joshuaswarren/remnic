@@ -5,7 +5,8 @@ Local loopback daemon for replaying and serving screen-text snapshots to Remnic 
 It stores snapshots in SQLite and exposes authenticated, cursor-paginated HTTP endpoints:
 
 - `GET /v1/health`
-- `GET /v1/snapshots?cursor=<id>&limit=<1-500>`
+- `GET /v1/snapshots?date=<YYYY-MM-DD>&timezone=<IANA>&cursor=<token>&limit=<1-500>` — `date` and `timezone` are required; `cursor` is the opaque keyset token returned by the previous page (not a raw row id).
+- `GET /v1/stats?date=<YYYY-MM-DD>&timezone=<IANA>` — per-app time attribution for the day.
 
 The daemon binds only to `127.0.0.1`, `::1`, or `localhost`.
 

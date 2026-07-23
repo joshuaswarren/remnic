@@ -20,7 +20,12 @@ final class AudioCaptureController {
     }
 
     func start() async throws {
-        try micCapture?.start()
+        do {
+            try micCapture?.start()
+        } catch {
+            await systemCapture?.stop()
+            throw error
+        }
         do {
             try await systemCapture?.start()
         } catch {
@@ -100,6 +105,9 @@ private final class MicrophoneCapture {
 private final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let writer: ChunkWriter
     private var stream: SCStream?
+    // Serial delivery: SCStream may otherwise call didOutputSampleBuffer
+    // concurrently, and ChunkWriter mutates file/converter state without locking.
+    private let sampleQueue = DispatchQueue(label: "com.remnic.capture-helper.system-audio")
 
     init(configuration: CaptureConfiguration) throws {
         writer = try ChunkWriter(
@@ -123,7 +131,7 @@ private final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelega
         configuration.excludesCurrentProcessAudio = false
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInitiated))
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
         try await stream.startCapture()
         self.stream = stream
     }

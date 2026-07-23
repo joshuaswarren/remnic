@@ -40,7 +40,7 @@ jobs:
           - runner: macos-14
             arch: arm64
             platformPackage: packages/capture-native-darwin-arm64
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x64
             platformPackage: packages/capture-native-darwin-x64
     name: swift (${{ matrix.arch }})
@@ -52,6 +52,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Pin a toolchain that provides Swift 5.10 (swift-tools-version in
       # Package.swift). latest-stable satisfies this on both runner images.
@@ -113,6 +115,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4

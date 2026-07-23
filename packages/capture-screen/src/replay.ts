@@ -90,6 +90,9 @@ function parseCandidate(raw: unknown, where: string): CaptureCandidate {
     candidate.textSource = obj.textSource;
   }
   if (obj.ax !== undefined) candidate.ax = asObject(obj.ax, `${where}.ax`) as AxNode;
+  if (candidate.text === undefined && candidate.ax === undefined) {
+    throw new CaptureConfigError(`${where}: a fixture must carry 'text' or 'ax' (one is required)`);
+  }
   return candidate;
 }
 

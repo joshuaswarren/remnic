@@ -125,3 +125,15 @@ test("replayed snapshots serve a page ActivityHttpSourceClient would accept", as
   assert.doesNotMatch(allText, /topsecretpassword/);
   assert.doesNotMatch(allText, /vault contents/);
 });
+
+test("replay rejects a fixture carrying neither text nor ax (upfront, atomic)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "csr-replay-bad-"));
+  writeFileSync(
+    path.join(dir, "bad.json"),
+    JSON.stringify({ capturedAtUtc: "2026-07-20T10:00:00.000Z", app: "Safari", windowTitle: "x" }),
+    "utf8",
+  );
+  const spool = new Spool(":memory:");
+  spools.push(spool);
+  assert.throws(() => ingestReplayDir(spool, dir, defaultDaemonConfig()), /must carry 'text' or 'ax'/);
+});

@@ -39,3 +39,10 @@ test("cursor round-trips over (capturedAtUtc, id) and rejects malformed tokens",
     CaptureInputError,
   );
 });
+
+test("decodeCursor rejects non-canonical timestamps (offset or missing ms)", () => {
+  const offset = Buffer.from(JSON.stringify(["2026-07-20T10:00:00+00:00", 1]), "utf8").toString("base64url");
+  assert.throws(() => decodeCursor(offset), CaptureInputError);
+  const noMs = Buffer.from(JSON.stringify(["2026-07-20T10:00:00Z", 1]), "utf8").toString("base64url");
+  assert.throws(() => decodeCursor(noMs), CaptureInputError);
+});

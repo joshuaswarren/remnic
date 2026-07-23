@@ -79,7 +79,8 @@ export function decodeCursor(value: string | null | undefined): Cursor | null {
     Number.isInteger(parsed[1]) &&
     parsed[1] >= 0 &&
     /^\d{4}-\d{2}-\d{2}T/.test(parsed[0]) &&
-    Number.isFinite(Date.parse(parsed[0]))
+    Number.isFinite(Date.parse(parsed[0])) &&
+    new Date(parsed[0]).toISOString() === parsed[0]
   ) {
     return { capturedAtUtc: parsed[0], id: parsed[1] };
   }

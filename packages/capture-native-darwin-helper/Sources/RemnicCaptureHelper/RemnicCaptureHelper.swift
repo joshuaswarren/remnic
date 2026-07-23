@@ -18,6 +18,9 @@ struct RemnicCaptureHelper {
     static let programName = "remnic-capture-helper"
 
     static func main() async {
+        // Writing chunk events to a closed stdout pipe must not SIGPIPE-kill the
+        // helper before controller.stop()/finish() can flush; ignore it here too.
+        Darwin.signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let subcommand = arguments.first else {
             fail("missing subcommand (audio-capture|device-enumerate|ax-snapshot|ocr-window)", code: 2)
