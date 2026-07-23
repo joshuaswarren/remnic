@@ -1724,7 +1724,7 @@ export class Orchestrator {
                   ? { agentId: this.config.fastGatewayAgentId }
                   : gatewayTaskChainOptions(this.config)),
               })
-            : await this.localLlm.chatCompletion(messages, {
+            : await this.fastLlm.chatCompletion(messages, {
                 maxTokens: targetTokens * 2,
                 operation: "lcm-summarize",
                 priority: "background",
