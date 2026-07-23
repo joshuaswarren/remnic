@@ -184,7 +184,11 @@ function buildScreenContext(
     let runEndIdx = runStartIdx + 1;
     while (runEndIdx < win.length && keyOf(win[runEndIdx]!.snap) === key) runEndIdx++;
     const runStartMs = win[runStartIdx]!.ms;
-    const runEndMs = runEndIdx < win.length ? win[runEndIdx]!.ms : windowEndMs;
+    // A run's dwell ends at the NEXT foreground change (next different-key
+    // snapshot). The trailing run has no observed switch-away, so bound it by the
+    // LAST snapshot in the run — never inflate to the meeting end (a lone trailing
+    // alt-tab would otherwise look like it dwelled until the meeting ended).
+    const runEndMs = runEndIdx < win.length ? win[runEndIdx]!.ms : win[runEndIdx - 1]!.ms;
     const dwellSeconds = Math.floor((runEndMs - runStartMs) / 1000);
     const head = win[runStartIdx]!.snap;
 

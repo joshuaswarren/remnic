@@ -187,3 +187,22 @@ test("throws on an invalid meeting window", () => {
     /invalid window/,
   );
 });
+
+test("a lone trailing other-app snapshot is not inflated to the meeting end", () => {
+  const fused = fuseMeeting(
+    {
+      meeting: meeting(),
+      conversations: [
+        conv("desktop", "d1", "2026-03-10T14:05:00.000Z", "2026-03-10T14:12:00.000Z", [
+          seg("Jane", false, "agenda", "2026-03-10T14:06:00.000Z"),
+        ]),
+      ],
+      // A single Notes snapshot 1 min before the window end. With no later
+      // snapshot, the trailing run must NOT count dwell up to the meeting end.
+      activity: [snap({ tsUtc: "2026-03-10T14:29:00.000Z", app: "Notes", title: "scratch" })],
+    },
+    config(),
+  );
+  assert.equal(fused.snapshotCount, 1);
+  assert.deepEqual(fused.screenContext, [], "a lone trailing snapshot has zero observed dwell");
+});

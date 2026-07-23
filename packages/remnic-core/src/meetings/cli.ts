@@ -100,7 +100,7 @@ function renderBuildSummary(summary: MeetingsDayBuildSummary): string {
   }
   const lines = [
     `${summary.date}: ${summary.meetings.length} meeting${summary.meetings.length === 1 ? "" : "s"} ` +
-      `(${summary.built} written, ${summary.skipped} unchanged)`,
+      `(${summary.built} written, ${summary.skipped} unchanged, ${summary.removed.length} removed)`,
   ];
   for (const meeting of summary.meetings) {
     const sources = meeting.sources.length > 0 ? meeting.sources.join("+") : "(none)";
@@ -108,6 +108,9 @@ function renderBuildSummary(summary: MeetingsDayBuildSummary): string {
       `  ${meeting.id}  ${meeting.startUtc}–${meeting.endUtc}  [${meeting.detectionSource}]` +
         ` sources=${sources} snapshots=${meeting.snapshotCount} ${meeting.written ? "written" : "unchanged"}`,
     );
+  }
+  if (summary.reindexWarning !== undefined) {
+    lines.push(`  warning: ${summary.reindexWarning}`);
   }
   return lines.join("\n");
 }

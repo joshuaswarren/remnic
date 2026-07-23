@@ -180,3 +180,20 @@ test("show rejects a syntactically valid but impossible calendar id via Meetings
   assert.equal(result.code, 1);
   assert.match(result.err, /not a real calendar date/);
 });
+
+test("build text output surfaces a reindex-hook warning", async () => {
+  const source: MeetingsDaySource = { loadDayData: () => dayData() };
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const deps: MeetingsCliDeps = {
+    store,
+    builder: new MeetingsBuilder({
+      source,
+      store,
+      config: config(),
+      hooks: { reindex: () => { throw new Error("index offline"); } },
+    }),
+  };
+  const result = await run(deps, ["build", "--date", DATE]);
+  assert.equal(result.code, 0, "reindex failure must not fail the build");
+  assert.match(result.out, /warning:.*index offline/);
+});
