@@ -141,3 +141,7 @@ test("activity config rejects inverted trust thresholds", () => {
     /reviewTrust .* must be below autoApproveTrust/,
   );
 });
+
+test("activity config rejects a null extractionMode instead of silently defaulting to off", () => {
+  assert.throws(() => parseActivityConfig({ extractionMode: null }), /extractionMode/);
+});

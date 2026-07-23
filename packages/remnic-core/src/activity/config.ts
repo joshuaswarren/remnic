@@ -144,11 +144,13 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   if (enabled && sources.length === 0) throw new RangeError("activity.enabled requires at least one source");
 
   // Extraction gate (independent of `enabled` ingestion). Default `off`.
-  const extractionMode = config.extractionMode ?? defaults.extractionMode;
+  // Default only for a missing key; an explicit null/non-string is a malformed
+  // enum and must fail rather than silently disabling extraction.
+  const extractionMode = config.extractionMode === undefined ? defaults.extractionMode : config.extractionMode;
   if (typeof extractionMode !== "string" || !EXTRACTION_MODES.includes(extractionMode as ActivityExtractionMode)) {
     throw new RangeError(`activity.extractionMode must be one of: ${EXTRACTION_MODES.join(", ")}`);
   }
-  const minImportance = config.minImportance ?? defaults.minImportance;
+  const minImportance = config.minImportance === undefined ? defaults.minImportance : config.minImportance;
   if (typeof minImportance !== "string" || !IMPORTANCE_LEVELS.includes(minImportance as ImportanceLevel)) {
     throw new RangeError(`activity.minImportance must be one of: ${IMPORTANCE_LEVELS.join(", ")}`);
   }

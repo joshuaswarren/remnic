@@ -8,7 +8,7 @@ import {
   type SealedMemoryEnvelope,
   type WriteContext,
 } from "../write-envelope.js";
-import { computeTrustScore, decideSmart } from "../wearables/trust.js";
+import { computeTrustScore, decideSmart, type SmartDecision } from "../wearables/trust.js";
 import { activityDayWindow } from "./digest.js";
 import type { ActivityConfig } from "./types.js";
 
@@ -55,13 +55,19 @@ const TRUST_ATTRIBUTE_KEYS: Record<string, true> = {
 
 export interface ActivityMemoryWriter {
   /**
-   * Locate an existing activity memory with this content (any status), or null.
-   * Activity writes are decision/commitment/preference/moment memories, none of
-   * which the fact-only content-hash index covers, so this lookup MUST match
-   * across the activity source — enabling dedup and in-place promotion rather
-   * than duplicate or frozen-pending records.
+   * Locate an existing activity memory for this day whose normalized content
+   * matches, or null. The dedup identity is `(activity day, normalized content)`:
+   * `dayStartUtc`/`dayEndUtc` bound the half-open day window and `normalizedKey`
+   * is trim+lowercase content — so whitespace/case variants collapse, while the
+   * SAME text on a different day is NOT a duplicate (recurring actions persist
+   * per day). Enables dedup and in-place promotion instead of duplicate or
+   * frozen-pending records.
    */
-  findActivityMemoryByContent(content: string): Promise<{ id: string; status: MemoryStatus | undefined } | null>;
+  findActivityMemoryByContent(
+    normalizedKey: string,
+    dayStartUtc: string,
+    dayEndUtc: string,
+  ): Promise<{ id: string; status: MemoryStatus | undefined } | null>;
   /**
    * Count active + pending_review activity memories whose event time falls in
    * the half-open [startUtc, endUtc) day window. Seeds `maxMemoriesPerDay` so
@@ -147,6 +153,7 @@ function composeSalvagedActivityEnvelope(
 
 interface WritableCandidate {
   fact: ExtractedFact;
+  key: string;
   status: Extract<MemoryStatus, "active" | "pending_review">;
   trust: number;
   trustDecision: string;
@@ -228,20 +235,21 @@ export async function generateActivityMemories(
     verdicts = new Map();
   }
 
-  // Score every eligible candidate once. A duplicate of an existing pending_review
-  // row can promote (or demote on a fresh judge-reject) in place instead of being
-  // frozen by all-status dedup; novel survivors queue for the day-capped write.
-  const writable: WritableCandidate[] = [];
-  // Suppress duplicate content within this pass: storage lookups cannot see a
-  // fact queued earlier in the same batch (wearable-path parity).
-  const seenContent = new Set<string>();
+  // Score every candidate once, then keep the STRONGEST (highest-trust) copy per
+  // normalized key so a weaker earlier duplicate (e.g. a judge-rejected one)
+  // cannot crowd out a stronger later one. The day is fixed for this digest, so
+  // the normalized content alone keys the in-run set.
+  interface ScoredCandidate {
+    fact: ExtractedFact;
+    key: string;
+    trust: number;
+    verdictKind?: JudgeVerdictKind;
+    decision: SmartDecision;
+    importance: ImportanceScore;
+  }
+  const strongestByKey = new Map<string, ScoredCandidate>();
   for (let index = 0; index < candidates.length; index += 1) {
     const fact = candidates[index];
-    if (seenContent.has(fact.content)) {
-      result.skipped += 1;
-      continue;
-    }
-    seenContent.add(fact.content);
     const verdict = verdicts.get(index);
     const verdictKind = verdict === undefined ? undefined : getVerdictKind(verdict);
     const trust = computeTrustScore({
@@ -254,14 +262,37 @@ export async function generateActivityMemories(
       autoApproveTrust: config.autoApproveTrust,
       reviewTrust: config.reviewTrust,
     });
-    const existing = await deps.writer.findActivityMemoryByContent(fact.content);
+    // Dedup key: trim + lowercase so whitespace/case variants collapse (day-scoped).
+    const key = fact.content.trim().toLowerCase();
+    const scored: ScoredCandidate = {
+      fact,
+      key,
+      trust,
+      verdictKind,
+      decision,
+      importance: scoreImportance(fact.content, fact.category, fact.tags),
+    };
+    const prev = strongestByKey.get(key);
+    if (prev === undefined) {
+      strongestByKey.set(key, scored);
+    } else {
+      // In-run duplicate: keep whichever copy scores higher trust.
+      result.skipped += 1;
+      if (trust > prev.trust) strongestByKey.set(key, scored);
+    }
+  }
+
+  const writable: WritableCandidate[] = [];
+  for (const scored of strongestByKey.values()) {
+    const existing = await deps.writer.findActivityMemoryByContent(scored.key, startUtc, endUtc);
     if (existing !== null) {
-      // Duplicate: reassess a pending row in place; never write new or use a cap slot.
+      // Same-day duplicate of a persisted row: reassess in place; never write new
+      // or use a cap slot. (The same text on another day is not found here.)
       if (existing.status === "pending_review") {
-        if (decision.outcome === "drop" && decision.reason === "judge-rejected") {
+        if (scored.decision.outcome === "drop" && scored.decision.reason === "judge-rejected") {
           if (
             await deps.writer.demoteActivityMemory(existing.id, {
-              trustScore: trust.toFixed(3),
+              trustScore: scored.trust.toFixed(3),
               trustDecision: "demoted-by-rejection",
               judgeVerdict: "reject",
             })
@@ -269,16 +300,16 @@ export async function generateActivityMemories(
             result.demoted += 1;
             continue;
           }
-        } else if (decision.outcome === "active") {
+        } else if (scored.decision.outcome === "active") {
           if (
             await deps.writer.promoteActivityMemory(
               existing.id,
               {
-                trustScore: trust.toFixed(3),
+                trustScore: scored.trust.toFixed(3),
                 trustDecision: "promoted-by-reassessment",
-                ...(verdictKind !== undefined ? { judgeVerdict: verdictKind } : {}),
+                ...(scored.verdictKind !== undefined ? { judgeVerdict: scored.verdictKind } : {}),
               },
-              trust,
+              scored.trust,
             )
           ) {
             result.promoted += 1;
@@ -289,23 +320,24 @@ export async function generateActivityMemories(
       result.skipped += 1;
       continue;
     }
-    if (decision.outcome === "drop") {
-      if (decision.reason === "judge-rejected") result.rejectedByJudge += 1;
+    if (scored.decision.outcome === "drop") {
+      if (scored.decision.reason === "judge-rejected") result.rejectedByJudge += 1;
       else result.skipped += 1;
       continue;
     }
     writable.push({
-      fact,
-      status: decision.outcome === "active" ? "active" : "pending_review",
-      trust,
-      trustDecision: decision.reason,
-      ...(verdictKind !== undefined ? { judgeVerdict: verdictKind } : {}),
-      importance: scoreImportance(fact.content, fact.category, fact.tags),
+      fact: scored.fact,
+      key: scored.key,
+      status: scored.decision.outcome === "active" ? "active" : "pending_review",
+      trust: scored.trust,
+      trustDecision: scored.decision.reason,
+      ...(scored.verdictKind !== undefined ? { judgeVerdict: scored.verdictKind } : {}),
+      importance: scored.importance,
     });
   }
   writable.sort((a, b) => {
     if (a.trust !== b.trust) return b.trust - a.trust;
-    return a.fact.content < b.fact.content ? -1 : a.fact.content > b.fact.content ? 1 : 0;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });
 
   // Seed the cap from memories already persisted for this day so repeated digest
@@ -350,7 +382,7 @@ export async function generateActivityMemories(
     );
     const write = await deps.writer.writeSealedMemory(envelope, {
       status: entry.status,
-      contentHashSource: entry.fact.content,
+      contentHashSource: entry.key,
       importance: entry.importance,
     });
     if (write.tombstoneBlocked) {

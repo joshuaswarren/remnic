@@ -9,7 +9,7 @@ import {
   type ActivityMemoryWriter,
 } from "./memory-gen.js";
 import type { ExtractedFact, ImportanceScore, MemoryStatus } from "../types.js";
-import type { JudgeCandidate, JudgeVerdict } from "../extraction-judge.js";
+import type { JudgeCandidate, JudgeVerdict, JudgeVerdictKind } from "../extraction-judge.js";
 import { scoreImportance } from "../importance.js";
 
 const DATE = "2026-03-10";
@@ -27,12 +27,13 @@ const ownDecision: ActFact = {
 function depsFor(
   facts: ActFact[],
   opts: {
-    existing?: { id: string; status: MemoryStatus | undefined } | null;
+    existing?: { id: string; status: MemoryStatus | undefined; key?: string; startUtc?: string } | null;
     promoteResult?: boolean;
     demoteResult?: boolean;
     dayCount?: number;
     judgeThrows?: boolean;
     judgeRejects?: boolean;
+    judgeVerdictByIndex?: Record<number, JudgeVerdictKind>;
     extractThrows?: boolean;
     extractionFailure?: string;
   } = {},
@@ -49,7 +50,13 @@ function depsFor(
   const demotions: Array<{ id: string; attrs: Record<string, string> }> = [];
   let extractCalls = 0;
   const writer: ActivityMemoryWriter = {
-    findActivityMemoryByContent: async () => opts.existing ?? null,
+    findActivityMemoryByContent: async (key, startUtc) => {
+      const e = opts.existing;
+      if (e === undefined || e === null) return null;
+      if (e.key !== undefined && e.key !== key) return null;
+      if (e.startUtc !== undefined && e.startUtc !== startUtc) return null;
+      return { id: e.id, status: e.status };
+    },
     countActivityMemoriesForDay: async () => opts.dayCount ?? 0,
     promoteActivityMemory: async (id, attrs, confidence) => {
       promotions.push({ id, attrs, confidence });
@@ -79,10 +86,12 @@ function depsFor(
     },
     judge: async (candidates: JudgeCandidate[]) => {
       if (opts.judgeThrows) throw new Error("judge exploded");
-      const verdict: JudgeVerdict = opts.judgeRejects
-        ? { durable: false, reason: "not durable", kind: "reject" }
-        : { durable: true, reason: "durable", kind: "accept" };
-      return new Map<number, JudgeVerdict>(candidates.map((_c, i): [number, JudgeVerdict] => [i, verdict]));
+      return new Map<number, JudgeVerdict>(
+        candidates.map((_c, i): [number, JudgeVerdict] => {
+          const kind: JudgeVerdictKind = opts.judgeVerdictByIndex?.[i] ?? (opts.judgeRejects ? "reject" : "accept");
+          return [i, { durable: kind === "accept", reason: kind, kind }];
+        }),
+      );
     },
     writer,
   };
@@ -336,4 +345,50 @@ test("activity smart mode rejects a non-finite confidence before the floor", asy
   assert.equal(result.created, 0);
   assert.equal(result.skipped, 1);
   assert.deepEqual(writes, []);
+});
+
+test("activity smart mode dedups whitespace/case content variants within a pass", async () => {
+  const a: ActFact = { ...ownDecision, content: "I decided to consolidate the settings." };
+  const b: ActFact = { ...ownDecision, content: "  I DECIDED to Consolidate the Settings.  " };
+  const { deps, writes } = depsFor([a, b]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(writes.length, 1);
+});
+
+test("activity smart mode keeps the stronger duplicate over a weaker earlier reject", async () => {
+  const first: ActFact = { ...ownDecision, confidence: 0.8 };
+  const second: ActFact = { ...ownDecision, confidence: 0.99 };
+  const { deps, writes } = depsFor([first, second], { judgeVerdictByIndex: { 0: "reject", 1: "accept" } });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  // The later accepted copy wins; the earlier reject must not block it.
+  assert.equal(result.created, 1);
+  assert.equal(result.rejectedByJudge, 0);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]?.status, "active");
+});
+
+test("activity smart mode treats same-day duplicate content as a duplicate", async () => {
+  const { deps, writes } = depsFor([ownDecision], { existing: { id: "m-sameday", status: "active", startUtc: DAY_START } });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 0);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(writes, []);
+});
+
+test("activity smart mode writes recurring content on a different day (day-scoped dedup)", async () => {
+  const { deps, writes } = depsFor([ownDecision], { existing: { id: "m-day1", status: "active", startUtc: DAY_START } });
+  const result = await generateActivityMemories("2026-03-11", "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  // The existing row is on 2026-03-10; the same text on 2026-03-11 is not a duplicate.
+  assert.equal(result.created, 1);
+  assert.equal(writes.length, 1);
 });
