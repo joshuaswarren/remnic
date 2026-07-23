@@ -858,6 +858,7 @@ function sanitizeGatewayConfigForIdentity(value: unknown): unknown {
     if (key === "apiKey" || key === "headers" || key === "authHeader") continue;
     out[key] = sanitizeGatewayConfigForIdentity(child);
   }
+  return out;
 }
 
 function validateProviderConfig(

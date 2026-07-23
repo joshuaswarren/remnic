@@ -14,6 +14,7 @@ import {
   createProviderBackedStructuredJudge,
   createResponderFromProvider,
   createStructuredJudgeFromProvider,
+  getGatewayResponderIdentity,
 } from "./responders.ts";
 
 function createFakeProvider(resultText: string, onPrompt?: (prompt: string) => void): LlmProvider {
@@ -697,6 +698,66 @@ test("provider-backed responder exposes a stable sanitized identity", async () =
     baseUrl: "https://other.example.com/v1",
   });
   assert.equal(id1, id2, "apiKey differences must not change the identity");
+  assert.notEqual(id1, idDifferentModel, "model differences must change the identity");
+  assert.notEqual(id1, idDifferentBase, "baseUrl differences must change the identity");
+});
+
+test("getGatewayResponderIdentity fingerprints the sanitized config (and not undefined)", () => {
+  const configA = {
+    agents: {
+      defaults: {
+        model: { primary: "gpt-5.4-mini", backup: "gpt-5.4" },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-secret-a",
+          headers: { Authorization: "Bearer a" },
+          authHeader: true,
+          models: [],
+        },
+      },
+    },
+  };
+  const configB = {
+    agents: {
+      defaults: {
+        model: { primary: "gpt-5.4-mini", backup: "gpt-5.4" },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-secret-b",
+          headers: { Authorization: "Bearer b" },
+          authHeader: false,
+          models: [],
+        },
+      },
+    },
+  };
+  const configDifferentBaseUrl = JSON.parse(JSON.stringify(configA));
+  configDifferentBaseUrl.models.providers.openai.baseUrl = "https://other.example.com/v1";
+  const configDifferentAgent = JSON.parse(JSON.stringify(configA));
+  configDifferentAgent.agents.defaults.model.primary = "gpt-5.4";
+
+  const idA = getGatewayResponderIdentity(configA as never, "agent-a");
+  const idAOtherAgent = getGatewayResponderIdentity(configA as never, "agent-b");
+  const idAUndefAgent = getGatewayResponderIdentity(configA as never, undefined);
+  const idB = getGatewayResponderIdentity(configB as never, "agent-a");
+  const idDifferentBaseUrl = getGatewayResponderIdentity(configDifferentBaseUrl as never, "agent-a");
+  const idDifferentAgent = getGatewayResponderIdentity(configDifferentAgent as never, "agent-a");
+
+  assert.match(idA, /^gateway:sha256:[0-9a-f]{64}$/);
+  assert.equal(idA, idB, "apiKey/headers/authHeader differences must not change the identity");
+  assert.notEqual(idA, idAOtherAgent, "different agentId must change the identity");
+  assert.notEqual(idA, idAUndefAgent, "agentId vs undefined must change the identity");
+  assert.notEqual(idA, idDifferentBaseUrl, "baseUrl differences must change the identity");
+  assert.notEqual(idA, idDifferentAgent, "agent model differences must change the identity");
+  assert.notEqual(idA, "undefined", "identity must not collapse to a literal undefined sentinel");
 });
 
 test("createProviderBackedResponder wires the identity to the returned responder", async () => {
