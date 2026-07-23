@@ -21,6 +21,7 @@ import {
   type SealedMemoryEnvelope,
 } from "../write-envelope.js";
 import { log } from "../logger.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { ImportanceScore, MemoryCategory, MemoryStatus } from "../types.js";
 import { computeTrustScore, decideSmart, type TrustEvidence } from "../wearables/trust.js";
 import type { MeetingRecord, MeetingsConfig } from "./types.js";
@@ -51,8 +52,21 @@ export interface MeetingMemoryWriter {
       memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
     },
   ): Promise<MemoryWriteResult>;
-  /** True when a memory with this exact content already exists (idempotency). */
-  hasFactContentHash(content: string): Promise<boolean>;
+  /**
+   * True when an active/pending memory whose frontmatter `source` equals
+   * `source` already carries this exact content. Meeting memories are episodes
+   * (`moment`) and decisions/commitments (`decision`/`commitment`) — categories
+   * the storage fact-hash index does NOT cover — so idempotency is a
+   * source-scoped content scan, mirroring the wearables writer, NOT
+   * `hasFactContentHash` (fact-only; always false here → duplicates on rebuild).
+   */
+  hasMemoryFromSource(source: string, content: string): Promise<boolean>;
+  /**
+   * Retire (invalidate) every memory whose frontmatter `source` equals `source`.
+   * Returns the count retired. Used to reconcile away a removed meeting's
+   * episode/summary memories so recall never surfaces a meeting `show` can't load.
+   */
+  retireMemoriesFromSource(source: string): Promise<number>;
 }
 
 /** Render the deterministic episode content for a meeting. Pure. */
@@ -82,7 +96,7 @@ export async function writeMeetingEpisodeMemory(
   writer: MeetingMemoryWriter,
 ): Promise<boolean> {
   const content = composeMeetingEpisodeContent(record);
-  if (await writer.hasFactContentHash(content)) return false;
+  if (await writer.hasMemoryFromSource(meetingSourceLabel(record.id), content)) return false;
 
   const structuredAttributes: Record<string, string> = {
     meetingId: record.id,
@@ -181,6 +195,9 @@ export interface MeetingSummaryResult {
   review: number;
   /** Candidates dropped below the trust bar or judge-rejected. */
   dropped: number;
+  /** Candidates/summary skipped because an identical memory already existed
+   *  for this meeting (idempotent rebuild). */
+  skipped: number;
   /** True when a non-empty summary memory was written. */
   summaryWritten: boolean;
 }
@@ -238,6 +255,31 @@ async function writeMeetingFact(
   });
 }
 
+/** Confidence assigned to the synthesized meeting-summary fact. */
+const SUMMARY_FACT_CONFIDENCE = 0.8;
+
+/**
+ * Route one meeting claim (candidate or the synthesized summary) to active /
+ * review / drop through the SAME trust decision. `review` mode never
+ * auto-actives (queue everything survivable); `smart` mode uses the shared
+ * band decision. A judge reject drops in both. Used for BOTH the extracted
+ * candidates and the summary text so a rejected/low-trust meeting can never
+ * push its summary active behind the gate's back.
+ */
+function resolveMeetingFactOutcome(
+  config: MeetingsConfig,
+  trust: number,
+  judgeVerdict: "accept" | "reject" | "defer" | undefined,
+): "active" | "review" | "drop" {
+  if (config.summaryMode === "review") {
+    return judgeVerdict === "reject" ? "drop" : "review";
+  }
+  return decideSmart(trust, judgeVerdict, {
+    autoApproveTrust: config.autoApproveTrust,
+    reviewTrust: config.reviewTrust,
+  }).outcome;
+}
+
 /**
  * Layer 2: extract a trust-gated summary + facts (decisions/commitments/open
  * questions) for one meeting and persist the survivors. Reuses the shared trust
@@ -258,6 +300,7 @@ export async function generateMeetingSummaryFacts(
     active: 0,
     review: 0,
     dropped: 0,
+    skipped: 0,
     summaryWritten: false,
   };
   if (config.summaryMode === "off") return empty;
@@ -275,46 +318,111 @@ export async function generateMeetingSummaryFacts(
   // claims (record.corroboratedBy already lists the out-voted sources).
   const evidence: TrustEvidence = { corroboratedBySources: [...record.corroboratedBy] };
 
+  const source = meetingSourceLabel(record.id);
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]!;
     const judgeVerdict = verdicts?.[i];
+    // Idempotent rebuild: an identical claim already persisted for THIS meeting
+    // must not be written a second time (facts are not in the fact-hash index).
+    if (await deps.writer.hasMemoryFromSource(source, candidate.content)) {
+      result.skipped++;
+      continue;
+    }
     const trust = computeTrustScore({
       extractionConfidence: candidate.confidence,
       sourceTrust: config.sourceTrust,
       judgeVerdict,
       evidence,
     });
-    // review mode: everything to the queue (never auto-active). smart mode: the
-    // shared band decision. A judge reject drops in both.
-    const decision =
-      config.summaryMode === "review"
-        ? judgeVerdict === "reject"
-          ? { outcome: "drop" as const }
-          : { outcome: "review" as const }
-        : decideSmart(trust, judgeVerdict, {
-            autoApproveTrust: config.autoApproveTrust,
-            reviewTrust: config.reviewTrust,
-          });
-    if (decision.outcome === "drop") {
+    const outcome = resolveMeetingFactOutcome(config, trust, judgeVerdict);
+    if (outcome === "drop") {
       result.dropped++;
       continue;
     }
-    const status = decision.outcome === "active" ? "active" : "pending_review";
+    const status = outcome === "active" ? "active" : "pending_review";
     await writeMeetingFact(record, candidate, status, deps.writer);
     if (status === "active") result.active++;
     else result.review++;
   }
 
+  // The synthesized summary is a meeting claim too: gate it through the SAME
+  // trust decision so a meeting whose candidates were all rejected / below the
+  // bar cannot slip its summary in as an active fact (it was force-active before).
   const summaryText = summary.trim();
-  if (summaryText.length > 0 && !(await deps.writer.hasFactContentHash(summaryText))) {
-    const status = config.summaryMode === "review" ? "pending_review" : "active";
-    await writeMeetingFact(
-      record,
-      { content: summaryText, category: "fact", confidence: 0.8 },
-      status,
-      deps.writer,
-    );
-    result.summaryWritten = true;
+  if (summaryText.length > 0) {
+    if (await deps.writer.hasMemoryFromSource(source, summaryText)) {
+      result.skipped++;
+    } else {
+      const summaryTrust = computeTrustScore({
+        extractionConfidence: SUMMARY_FACT_CONFIDENCE,
+        sourceTrust: config.sourceTrust,
+        evidence,
+      });
+      const outcome = resolveMeetingFactOutcome(config, summaryTrust, undefined);
+      if (outcome === "drop") {
+        result.dropped++;
+      } else {
+        await writeMeetingFact(
+          record,
+          { content: summaryText, category: "fact", confidence: SUMMARY_FACT_CONFIDENCE },
+          outcome === "active" ? "active" : "pending_review",
+          deps.writer,
+        );
+        result.summaryWritten = true;
+      }
+    }
   }
   return result;
+}
+
+/**
+ * Storage capabilities `createMeetingMemoryWriter` needs, satisfied structurally
+ * by `StorageManager`. Kept narrow (the same rationale as the wearables writer)
+ * so this module performs NO direct fs and never touches the secure-store key.
+ */
+export interface MeetingMemoryStorageIo {
+  writeSealedMemory: MeetingMemoryWriter["writeSealedMemory"];
+  readAllMemories(): Promise<
+    Array<{
+      path: string;
+      frontmatter: { id: string; source: string; status?: string };
+      content: string;
+    }>
+  >;
+  invalidateMemory(id: string): Promise<boolean>;
+}
+
+/**
+ * Build the meeting memory writer used by production builds. Mirrors
+ * `createWearableMemoryWriter`: the storage fact-hash index only covers
+ * category "fact", so meeting episodes (`moment`) and decisions/commitments
+ * dedup by a bounded, source-scoped content scan over `meeting:<id>`-tagged
+ * memories — without it, a forced/retried day re-writes identical episodes and
+ * facts (issue #1900).
+ */
+export function createMeetingMemoryWriter(storage: MeetingMemoryStorageIo): MeetingMemoryWriter {
+  return {
+    writeSealedMemory: storage.writeSealedMemory.bind(storage),
+    hasMemoryFromSource: async (source: string, content: string): Promise<boolean> => {
+      // Stored bodies carry the "[Attributes: ...]" enrichment suffix; callers
+      // pass raw text — strip on BOTH sides so attribute-bearing memories match.
+      const needle = stripAttributesSuffix(content);
+      const memories = await storage.readAllMemories();
+      return memories.some(
+        (memory) =>
+          memory.frontmatter.source === source &&
+          memory.frontmatter.status !== "rejected" &&
+          stripAttributesSuffix(memory.content) === needle,
+      );
+    },
+    retireMemoriesFromSource: async (source: string): Promise<number> => {
+      const memories = await storage.readAllMemories();
+      let retired = 0;
+      for (const memory of memories) {
+        if (memory.frontmatter.source !== source) continue;
+        if (await storage.invalidateMemory(memory.frontmatter.id)) retired++;
+      }
+      return retired;
+    },
+  };
 }

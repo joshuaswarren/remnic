@@ -14,8 +14,16 @@
 
 import { detectMeetings } from "./detect.js";
 import { fuseMeeting, type MeetingFusionOptions } from "./fuse.js";
-import { composeMeetingRecord, type MeetingRecordStore } from "./store.js";
-import { generateMeetingEpisodes, type MeetingEpisodeGenResult, type MeetingMemoryWriter } from "./memory-gen.js";
+import { composeMeetingRecord, type MeetingRecordStore, type MeetingRecordSummary } from "./store.js";
+import {
+  generateMeetingEpisodes,
+  generateMeetingSummaryFacts,
+  meetingSourceLabel,
+  type MeetingEpisodeGenResult,
+  type MeetingMemoryWriter,
+  type MeetingSummaryExtractor,
+  type MeetingSummaryJudge,
+} from "./memory-gen.js";
 import type { FusionConversationInput } from "../wearables/fusion/types.js";
 import type {
   DetectedMeeting,
@@ -90,6 +98,22 @@ export interface MeetingBuildOutcome {
   written: boolean;
 }
 
+/** Day-level aggregate of the trust-gated summary/fact layer across records. */
+export interface MeetingsDayFactGenResult {
+  /** True when the LLM extractor ran for at least one record. */
+  llmInvoked: boolean;
+  /** Facts written active. */
+  active: number;
+  /** Facts queued for review (pending_review). */
+  review: number;
+  /** Candidates/summaries dropped below the trust bar or judge-rejected. */
+  dropped: number;
+  /** Candidates/summaries skipped because an identical memory already existed. */
+  skipped: number;
+  /** Count of records whose summary memory was written. */
+  summariesWritten: number;
+}
+
 /** Result of building one day's meetings. */
 export interface MeetingsDayBuildSummary {
   date: string;
@@ -113,6 +137,13 @@ export interface MeetingsDayBuildSummary {
    * injected. One recall-anchor episode is written per built record (idempotent).
    */
   episodes?: MeetingEpisodeGenResult;
+  /**
+   * Trust-gated summary/fact counts (decisions, commitments, questions, and the
+   * synthesized summary), present only when a `memoryWriter` AND summary deps
+   * were injected and `summaryMode !== "off"`. Aggregated across the day's
+   * records.
+   */
+  facts?: MeetingsDayFactGenResult;
 }
 
 /** Optional side effects the builder fires after a day build. */
@@ -142,6 +173,18 @@ export class MeetingsBuilder {
        * detect+fuse+store). The trust-gated summary/facts layer is separate.
        */
       memoryWriter?: MeetingMemoryWriter;
+      /**
+       * Trust-gated summary/fact deps (LLM extractor + optional durability
+       * judge). When present alongside `memoryWriter` and `summaryMode !== "off"`,
+       * `buildDay` runs `generateMeetingSummaryFacts` per record on the
+       * production path (issue #1900). Optional so fixtures/DI construct the
+       * builder for pure detect+fuse+store, and `off` mode provably never calls
+       * the extractor.
+       */
+      summary?: {
+        extractor: MeetingSummaryExtractor;
+        judge?: MeetingSummaryJudge;
+      };
     },
   ) {}
 
@@ -201,7 +244,35 @@ export class MeetingsBuilder {
       removed.push(existingId);
     }
     const summary: MeetingsDayBuildSummary = { date, enabled: true, meetings, built, skipped, removed };
-    if (built > 0 || removed.length > 0) {
+    const writer = this.opts.memoryWriter;
+    if (writer !== undefined) {
+      // A removed meeting's episode/summary memories must be retired too, or
+      // recall keeps surfacing a meeting `show <id>` can no longer load.
+      for (const removedId of removed) {
+        await writer.retireMemoriesFromSource(meetingSourceLabel(removedId));
+      }
+      // Deterministic recall-anchor episode per meeting (idempotent). Runs on
+      // ALL records, so an unchanged rebuild whose earlier episode write failed
+      // still lands the episode now.
+      if (records.length > 0) {
+        summary.episodes = await generateMeetingEpisodes(records, writer);
+        // Trust-gated summary/facts on the production path (issue #1900).
+        if (this.opts.summary !== undefined && this.opts.config.summaryMode !== "off") {
+          summary.facts = await this.generateDayFacts(records, writer, this.opts.summary);
+        }
+      }
+    }
+    // Meeting records AND their episode/summary memories live inside the QMD
+    // collection root. Fire the isolated reindex whenever anything discoverable
+    // changed — records written/removed OR newly written episodes/facts. A
+    // rebuild whose records were unchanged (built == 0 && removed == 0) but whose
+    // prior episode write had failed still creates active memories that must be
+    // indexed now, not left dark until the next scheduled maintenance pass.
+    const factsWrote =
+      summary.facts !== undefined &&
+      summary.facts.active + summary.facts.review + summary.facts.summariesWritten > 0;
+    const episodesWrote = (summary.episodes?.written ?? 0) > 0;
+    if (built > 0 || removed.length > 0 || episodesWrote || factsWrote) {
       // The store mutation already succeeded; a reindex-hook rejection must not
       // fail the whole build. Surface it as a warning so the caller can log it,
       // and let the next scheduled index update catch up.
@@ -213,31 +284,59 @@ export class MeetingsBuilder {
         }`;
       }
     }
-    // Deterministic recall-anchor episode per meeting (issue #1900), when a
-    // writer is injected. Idempotent (skips identical episodes); the trust-gated
-    // summary/facts layer is a separate, LLM-driven step.
-    if (this.opts.memoryWriter !== undefined && records.length > 0) {
-      summary.episodes = await generateMeetingEpisodes(records, this.opts.memoryWriter);
-    }
     return summary;
+  }
+
+  /** Run the trust-gated summary/fact layer over the day's records and fold the
+   *  per-record results into one day aggregate. */
+  private async generateDayFacts(
+    records: readonly MeetingRecord[],
+    writer: MeetingMemoryWriter,
+    summaryDeps: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
+  ): Promise<MeetingsDayFactGenResult> {
+    const agg: MeetingsDayFactGenResult = {
+      llmInvoked: false,
+      active: 0,
+      review: 0,
+      dropped: 0,
+      skipped: 0,
+      summariesWritten: 0,
+    };
+    for (const record of records) {
+      const result = await generateMeetingSummaryFacts(record, this.opts.config, {
+        extractor: summaryDeps.extractor,
+        ...(summaryDeps.judge !== undefined ? { judge: summaryDeps.judge } : {}),
+        writer,
+      });
+      if (result.llmInvoked) agg.llmInvoked = true;
+      agg.active += result.active;
+      agg.review += result.review;
+      agg.dropped += result.dropped;
+      agg.skipped += result.skipped;
+      if (result.summaryWritten) agg.summariesWritten++;
+    }
+    return agg;
   }
 
   /**
    * Pick the existing same-day record whose window best overlaps `meeting` and
-   * reuse its id (one-to-one, deterministic: max overlap, then earliest start,
-   * then id). Preserves stable `show <id>` links when a resync shifts a
-   * meeting's start. Returns the detector's fresh id when nothing overlaps — a
-   * genuinely new meeting.
+   * reuse its id — but ONLY when adoption is safe: the windows substantially
+   * coincide (overlap covers a majority of the shorter window) OR a corroborating
+   * identity signal agrees (same app, same title, or a shared transcript source).
+   * A marginal sliver of overlap between two genuinely different meetings must
+   * NOT overwrite the other's record, or `show <old-id>` would point at the wrong
+   * meeting. Candidate selection is deterministic (max overlap, then earliest
+   * start, then id). Returns the detector's fresh id when nothing qualifies.
    */
   private adoptExistingId(
     meeting: DetectedMeeting,
-    existing: readonly { id: string; startUtc: string; endUtc: string }[],
+    existing: readonly MeetingRecordSummary[],
     claimed: Set<string>,
   ): string {
     const dStart = Date.parse(meeting.startUtc);
     const dEnd = Date.parse(meeting.endUtc);
     if (!Number.isFinite(dStart) || !Number.isFinite(dEnd)) return meeting.id;
-    let best: { id: string; overlap: number; startUtc: string } | undefined;
+    let best: { record: MeetingRecordSummary; overlap: number; existingDurationMs: number } | undefined;
     for (const record of existing) {
       if (claimed.has(record.id)) continue;
       const eStart = Date.parse(record.startUtc);
@@ -249,12 +348,24 @@ export class MeetingsBuilder {
         best === undefined ||
         overlap > best.overlap ||
         (overlap === best.overlap &&
-          (record.startUtc < best.startUtc ||
-            (record.startUtc === best.startUtc && record.id < best.id)));
-      if (better) best = { id: record.id, overlap, startUtc: record.startUtc };
+          (record.startUtc < best.record.startUtc ||
+            (record.startUtc === best.record.startUtc && record.id < best.record.id)));
+      if (better) best = { record, overlap, existingDurationMs: eEnd - eStart };
     }
     if (best === undefined) return meeting.id;
-    claimed.add(best.id);
-    return best.id;
+    // Adoption bar (issue #1900): substantial overlap OR a corroborating
+    // identity signal — otherwise treat as removed + new.
+    const shorterWindowMs = Math.min(dEnd - dStart, best.existingDurationMs);
+    const substantial = shorterWindowMs > 0 && best.overlap * 2 >= shorterWindowMs;
+    const sharedSource = meeting.sources.some((source) => best!.record.sources.includes(source));
+    const sameApp =
+      meeting.app !== undefined &&
+      best.record.app !== undefined &&
+      meeting.app.toLowerCase() === best.record.app.toLowerCase();
+    const meetingTitle = meeting.title?.trim() ?? "";
+    const sameTitle = meetingTitle.length > 0 && meetingTitle === (best.record.title?.trim() ?? "");
+    if (!substantial && !sharedSource && !sameApp && !sameTitle) return meeting.id;
+    claimed.add(best.record.id);
+    return best.record.id;
   }
 }

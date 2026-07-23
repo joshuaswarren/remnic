@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 
 import { composeMeetingRecord, type MeetingRecordBase } from "./store.js";
 import {
@@ -9,6 +12,7 @@ import {
   meetingDayTag,
   meetingSourceLabel,
   writeMeetingEpisodeMemory,
+  createMeetingMemoryWriter,
   type MeetingFactCandidate,
   type MeetingMemoryWriter,
   type MeetingSummaryExtractor,
@@ -17,7 +21,7 @@ import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import type { FusedMeeting, MeetingRecord, MeetingsConfig } from "./types.js";
 import type { FusedSegment } from "../wearables/fusion/types.js";
 import type { SealedMemoryEnvelope } from "../write-envelope.js";
-import type { MemoryWriteResult } from "../storage.js";
+import { StorageManager, type MemoryWriteResult } from "../storage.js";
 
 const DATE = "2026-03-10";
 
@@ -26,21 +30,32 @@ interface WriteCall {
   extras: { status?: string; memoryKind?: string };
 }
 
-/** In-memory writer modelling the sealed write path + content-hash dedup. */
+/** In-memory writer modelling the sealed write path + source-scoped dedup. */
 class FakeWriter implements MeetingMemoryWriter {
   writes: WriteCall[] = [];
-  private hashes = new Set<string>();
+  retired: string[] = [];
+  private bySource = new Map<string, Set<string>>();
 
   async writeSealedMemory(
     envelope: SealedMemoryEnvelope,
     extras: { status?: string; memoryKind?: string; contentHashSource?: string },
   ): Promise<MemoryWriteResult> {
     this.writes.push({ envelope, extras });
-    if (extras.contentHashSource !== undefined) this.hashes.add(extras.contentHashSource);
+    if (extras.contentHashSource !== undefined) {
+      const set = this.bySource.get(envelope.source) ?? new Set<string>();
+      set.add(extras.contentHashSource);
+      this.bySource.set(envelope.source, set);
+    }
     return { id: `m${this.writes.length}`, path: `moments/m${this.writes.length}.md` } as unknown as MemoryWriteResult;
   }
-  async hasFactContentHash(content: string): Promise<boolean> {
-    return this.hashes.has(content);
+  async hasMemoryFromSource(source: string, content: string): Promise<boolean> {
+    return this.bySource.get(source)?.has(content) ?? false;
+  }
+  async retireMemoriesFromSource(source: string): Promise<number> {
+    this.retired.push(source);
+    const count = this.bySource.get(source)?.size ?? 0;
+    this.bySource.delete(source);
+    return count;
   }
 }
 
@@ -239,4 +254,72 @@ test("no transcript (no audio) short-circuits without invoking the extractor", a
   const res = await generateMeetingSummaryFacts(record({}, { transcript: [] }), meetingConfig({ summaryMode: "smart" }), { extractor, writer });
   assert.equal(res.llmInvoked, false);
   assert.equal(extractor.calls, 0);
+});
+
+test("finding 3 — smart-mode summary is trust-gated, not force-active for a low-trust meeting", async () => {
+  const writer = new FakeWriter();
+  // sourceTrust 0.5 → summary trust 0.8 * 0.5 = 0.4 < reviewTrust 0.45 → drop.
+  // The judge also rejects the only candidate. Before the fix the summary text
+  // was written ACTIVE whenever not already hashed, bypassing the gate.
+  const extractor = spyExtractor("Everyone agreed to ship on Friday.", [
+    { content: "we will ship on friday", category: "decision", confidence: 0.9 },
+  ]);
+  const res = await generateMeetingSummaryFacts(
+    TRANSCRIPT_RECORD(),
+    meetingConfig({ summaryMode: "smart", sourceTrust: 0.5 }),
+    { extractor, writer, judge: { async judge() { return ["reject"]; } } },
+  );
+  assert.equal(res.active, 0, "no candidate auto-actives");
+  assert.equal(res.summaryWritten, false, "the summary must be gated, not force-active");
+  assert.ok(res.dropped >= 1, "the below-review-bar summary is dropped");
+  assert.equal(writer.writes.length, 0, "nothing was written when everything is below the bar");
+});
+
+test("finding 1 — episode idempotency holds against a real StorageManager (source+content, not fact-only hash)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-meeting-mem-"));
+  try {
+    const storage = new StorageManager(dir);
+    const writer = createMeetingMemoryWriter(storage);
+    const rec = record();
+    assert.equal(await writeMeetingEpisodeMemory(rec, writer), true, "first write lands the episode");
+    // The episode is a `moment`, absent from the fact-only hash index, so a
+    // rebuild must recognize it via the source+content probe and skip.
+    assert.equal(await writeMeetingEpisodeMemory(rec, writer), false, "unchanged rebuild skips");
+    const memories = await storage.readAllMemories();
+    const episodes = memories.filter((m) => m.frontmatter.source === meetingSourceLabel(rec.id));
+    assert.equal(episodes.length, 1, "exactly one episode after two runs — no duplicate");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finding 2 — smart-mode facts are idempotent on rebuild against a real StorageManager", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-meeting-mem-"));
+  try {
+    const storage = new StorageManager(dir);
+    const writer = createMeetingMemoryWriter(storage);
+    const extractor = spyExtractor("Team shipped v2 on Friday.", [
+      { content: "Team decided to ship v2 on Friday", category: "decision", confidence: 0.9 },
+      { content: "Sam will send the recap by EOD", category: "commitment", confidence: 0.9 },
+    ]);
+    const cfg = meetingConfig({ summaryMode: "smart" });
+    const rec = TRANSCRIPT_RECORD();
+    const first = await generateMeetingSummaryFacts(rec, cfg, { extractor, writer });
+    assert.equal(first.active, 2, "both high-trust candidates auto-active on the first pass");
+    assert.equal(first.skipped, 0);
+    const afterFirst = (await storage.readAllMemories()).filter(
+      (m) => m.frontmatter.source === meetingSourceLabel(rec.id),
+    ).length;
+    // Rebuild/retry with identical extraction: every claim already persisted for
+    // this meeting → all skipped, nothing duplicated.
+    const second = await generateMeetingSummaryFacts(rec, cfg, { extractor, writer });
+    assert.equal(second.active, 0, "no new active facts on the second pass");
+    assert.ok(second.skipped >= 2, "duplicate candidates are skipped, not re-written");
+    const afterSecond = (await storage.readAllMemories()).filter(
+      (m) => m.frontmatter.source === meetingSourceLabel(rec.id),
+    ).length;
+    assert.equal(afterSecond, afterFirst, "no meeting-derived memory was duplicated on rebuild");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

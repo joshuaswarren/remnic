@@ -58,3 +58,15 @@ test("trust knobs default and reject out-of-range values", () => {
   assert.throws(() => parseMeetingsConfig({ reviewTrust: -0.1 }), /in \[0, 1\]/);
   assert.equal(parseMeetingsConfig({ autoApproveTrust: "0.9" }).autoApproveTrust, 0.9);
 });
+
+test("finding 5 — inverted trust thresholds (autoApprove < review) are rejected", () => {
+  assert.throws(
+    () => parseMeetingsConfig({ autoApproveTrust: 0.4, reviewTrust: 0.6 }),
+    /autoApproveTrust .* must be >= meetings\.reviewTrust/,
+  );
+  // Equal thresholds are allowed (auto-approve band coincides with review bar).
+  assert.equal(parseMeetingsConfig({ autoApproveTrust: 0.5, reviewTrust: 0.5 }).autoApproveTrust, 0.5);
+  // A default reviewTrust (0.45) with a lowered autoApproveTrust below it is
+  // still caught (the override interacts with the default).
+  assert.throws(() => parseMeetingsConfig({ autoApproveTrust: 0.3 }), /must be >= meetings\.reviewTrust/);
+});

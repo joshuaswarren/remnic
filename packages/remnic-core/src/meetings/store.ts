@@ -411,9 +411,14 @@ export class MeetingRecordStore {
     // Reject a symlinked meetings root OR a symlinked intermediate day directory
     // outright — even when the link resolves inside the memory dir (aliasing /
     // tampering) — before any read/write (AGENTS.md pattern #3).
-    await this.assertDirNotSymlinked(this.meetingsDir);
+    await this.assertNotSymlink(this.meetingsDir, "directory");
     const dayDir = this.dayDirWithin(targetPath);
-    if (dayDir !== null) await this.assertDirNotSymlinked(dayDir);
+    if (dayDir !== null) await this.assertNotSymlink(dayDir, "directory");
+    // Reject a symlinked LEAF record file too: lstat'ing only the root + day dir
+    // let a pre-existing `<id>.md` symlink (e.g. into facts/) pass realpath
+    // containment, so the read/write would FOLLOW the link and leak raw
+    // transcript into the recall corpus. Refuse the link before any IO.
+    if (targetPath.endsWith(".md")) await this.assertNotSymlink(targetPath, "record file");
   }
 
   /** The `<meetings>/<date>` directory on the path to `targetPath`, or null when
@@ -426,18 +431,18 @@ export class MeetingRecordStore {
     return path.join(this.meetingsDir, first);
   }
 
-  private async assertDirNotSymlinked(dir: string): Promise<void> {
+  private async assertNotSymlink(target: string, kind: "directory" | "record file"): Promise<void> {
     let stat: { isSymbolicLink: boolean };
     try {
-      stat = await this.io.lstat(dir);
+      stat = await this.io.lstat(target);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       throw err;
     }
     if (stat.isSymbolicLink) {
-      const label = path.relative(this.memoryDir, dir) || MEETINGS_DIR_NAME;
+      const label = path.relative(this.memoryDir, target) || MEETINGS_DIR_NAME;
       throw new Error(
-        `meetings directory '${label}' is a symbolic link — refusing to follow it even when it resolves inside the memory dir (AGENTS.md pattern #3)`,
+        `meetings ${kind} '${label}' is a symbolic link — refusing to follow it even when it resolves inside the memory dir (AGENTS.md pattern #3)`,
       );
     }
   }

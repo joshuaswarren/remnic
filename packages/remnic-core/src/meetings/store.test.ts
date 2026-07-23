@@ -213,3 +213,20 @@ test("a symlinked intermediate day directory is refused for reads and writes", a
     /symbolic link/,
   );
 });
+
+test("finding 4 — a symlinked leaf record file is refused for reads and writes", async () => {
+  const io = new InMemoryIo();
+  // A pre-existing `<id>.md` symlink (e.g. pointing into facts/) resolves inside
+  // the memory dir, so realpath containment + the dir checks pass — but a
+  // follow would write raw transcript into the recall corpus. Refuse the leaf.
+  io.symlinkedDirs.add("/mem/meetings/2026-03-10/mtg-2026-03-10-abcdef01.md");
+  const store = new MeetingRecordStore(MEMORY_DIR, io);
+  await assert.rejects(
+    () => store.saveMeetingRecord(composeMeetingRecord(base(), fused())),
+    /symbolic link/,
+  );
+  await assert.rejects(
+    () => store.readMeetingRecord(DATE, "mtg-2026-03-10-abcdef01"),
+    /symbolic link/,
+  );
+});

@@ -260,10 +260,16 @@ export function fuseMeeting(
 
   const corroborated = new Set<string>();
   for (const segment of fused.segments) {
-    for (const alt of segment.provenance.alternatives) corroborated.add(alt.source);
+    for (const alt of segment.provenance.alternatives) {
+      // Suppress a source only as corroborator of the SAME segment it won
+      // (a winner is never its own alternative, so this is a guard). A source
+      // that WON one segment but lost another still corroborates the one it
+      // lost — deleting it globally erased legitimate multi-device corroboration
+      // and dropped the summary/fact trust boost.
+      if (alt.source === segment.provenance.source) continue;
+      corroborated.add(alt.source);
+    }
   }
-  // A pick winner that is its own alternative is impossible, but guard anyway.
-  for (const segment of fused.segments) corroborated.delete(segment.provenance.source);
 
   const attendees = new Set<string>();
   for (const speaker of fused.speakers) {

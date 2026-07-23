@@ -13,6 +13,7 @@ import { isValidTranscriptDate } from "../wearables/day-store.js";
 import type { MeetingsBuilder, MeetingsDayBuildSummary } from "./build.js";
 import { MeetingsInputError } from "./errors.js";
 import { meetingIdDate, type MeetingRecordStore, type MeetingRecordSummary } from "./store.js";
+import type { MeetingsConfig } from "./types.js";
 
 export interface MeetingsCliIo {
   stdout: { write(chunk: string): unknown };
@@ -24,6 +25,13 @@ export interface MeetingsCliIo {
 export interface MeetingsCliDeps {
   store: MeetingRecordStore;
   builder: MeetingsBuilder;
+  /**
+   * Meetings config, so list/show honor `meetings.enabled`. The runner reads the
+   * store directly (not through an enabled-aware service), so without this gate a
+   * disabled subsystem would still expose stored records via list/show even
+   * though `build` refuses. Disabled => no exposure (issue #1900).
+   */
+  config: MeetingsConfig;
 }
 
 const USAGE = `Usage: meetings <command> [options]
@@ -134,6 +142,14 @@ export async function runMeetingsCliCommand(
         const parsed = parseFlags(rest);
         const json = parsed.flags.has("--json");
         const dateFlag = parsed.flags.get("--date");
+        if (!deps.config.enabled) {
+          if (json) {
+            io.stdout.write(typeof dateFlag === "string" ? "[]\n" : "{}\n");
+          } else {
+            io.stdout.write("meetings disabled — set meetings.enabled=true to build\n");
+          }
+          return 0;
+        }
         if (typeof dateFlag === "string") {
           if (!isValidTranscriptDate(dateFlag)) {
             throw new MeetingsInputError(`--date must be a real YYYY-MM-DD; got '${dateFlag}'`);
@@ -171,6 +187,10 @@ export async function runMeetingsCliCommand(
       }
       case "show": {
         const parsed = parseFlags(rest);
+        if (!deps.config.enabled) {
+          io.stdout.write("meetings disabled — set meetings.enabled=true to build\n");
+          return 0;
+        }
         const id = parsed.positional[0];
         if (id === undefined) {
           throw new MeetingsInputError("show requires a meeting id");

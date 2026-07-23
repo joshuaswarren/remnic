@@ -6,7 +6,13 @@ import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import { MeetingRecordStore, type MeetingRecordFileIo } from "./store.js";
 import type { MeetingActivitySnapshot, MeetingsConfig, MeetingAppSpan, MeetingAudioWindow } from "./types.js";
 import type { FusionConversationInput, FusionSegmentInput } from "../wearables/fusion/types.js";
-import type { MeetingMemoryWriter } from "./memory-gen.js";
+import {
+  meetingSourceLabel,
+  type MeetingFactCandidate,
+  type MeetingMemoryWriter,
+  type MeetingSummaryExtractor,
+  type MeetingSummaryJudge,
+} from "./memory-gen.js";
 import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryWriteResult } from "../storage.js";
 
@@ -52,6 +58,56 @@ function enoent(): NodeJS.ErrnoException {
   const err = new Error("ENOENT") as NodeJS.ErrnoException;
   err.code = "ENOENT";
   return err;
+}
+
+/** Fake meeting memory writer modelling source-scoped dedup + retire. */
+class FakeMeetingWriter implements MeetingMemoryWriter {
+  writes: Array<{ source: string; content?: string; status?: string; category: string; meetingId?: string }> = [];
+  retired: string[] = [];
+  private bySource = new Map<string, Set<string>>();
+
+  async writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: { contentHashSource?: string; status?: string },
+  ): Promise<MemoryWriteResult> {
+    this.writes.push({
+      source: envelope.source,
+      ...(extras.contentHashSource !== undefined ? { content: extras.contentHashSource } : {}),
+      ...(extras.status !== undefined ? { status: extras.status } : {}),
+      category: envelope.category,
+      ...(envelope.rawStructuredAttributes?.meetingId !== undefined
+        ? { meetingId: envelope.rawStructuredAttributes.meetingId }
+        : {}),
+    });
+    if (extras.contentHashSource !== undefined) {
+      const set = this.bySource.get(envelope.source) ?? new Set<string>();
+      set.add(extras.contentHashSource);
+      this.bySource.set(envelope.source, set);
+    }
+    return { id: `m${this.writes.length}`, path: `mem/m${this.writes.length}.md` } as unknown as MemoryWriteResult;
+  }
+  async hasMemoryFromSource(source: string, content: string): Promise<boolean> {
+    return this.bySource.get(source)?.has(content) ?? false;
+  }
+  async retireMemoriesFromSource(source: string): Promise<number> {
+    this.retired.push(source);
+    const count = this.bySource.get(source)?.size ?? 0;
+    this.bySource.delete(source);
+    return count;
+  }
+}
+
+function spyExtractor(
+  summary: string,
+  candidates: MeetingFactCandidate[],
+): MeetingSummaryExtractor & { calls: number } {
+  return {
+    calls: 0,
+    async extract() {
+      this.calls++;
+      return { summary, candidates };
+    },
+  };
 }
 
 function config(overrides: Partial<MeetingsConfig> = {}): MeetingsConfig {
@@ -323,18 +379,7 @@ test("buildDay rejects a day source whose detection.date disagrees with the requ
 
 test("builder writes a deterministic episode memory per built record when a writer is injected", async () => {
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
-  const seen = new Set<string>();
-  let writes = 0;
-  const memoryWriter: MeetingMemoryWriter = {
-    async writeSealedMemory(_envelope: SealedMemoryEnvelope, extras: { contentHashSource?: string }) {
-      writes++;
-      if (extras.contentHashSource !== undefined) seen.add(extras.contentHashSource);
-      return { id: `m${writes}`, path: `moments/m${writes}.md` } as unknown as MemoryWriteResult;
-    },
-    async hasFactContentHash(content: string) {
-      return seen.has(content);
-    },
-  };
+  const memoryWriter = new FakeMeetingWriter();
   const data: MeetingDayData = {
     detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
@@ -343,9 +388,175 @@ test("builder writes a deterministic episode memory per built record when a writ
   const first = await builder.buildDay(DATE);
   assert.equal(first.meetings.length, 1);
   assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
-  assert.equal(writes, 1);
+  assert.equal(memoryWriter.writes.length, 1);
   // Rebuild: the episode already exists → skipped, no second write.
   const second = await builder.buildDay(DATE);
   assert.deepEqual(second.episodes, { written: 0, skipped: 1 });
-  assert.equal(writes, 1);
+  assert.equal(memoryWriter.writes.length, 1);
+});
+
+test("finding 6 — a marginally-overlapping different meeting does not adopt a stale id", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const cfg = config();
+  const first: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg }).buildDay(DATE);
+  const staleId = firstSummary.meetings[0]!.id;
+
+  // A genuinely DIFFERENT meeting [14:55,16:00): 5 min overlap of a >= 60 min
+  // shorter window (not substantial), a different app AND source (no identity
+  // signal). It must NOT adopt the stored id and overwrite the other meeting's
+  // record — old is removed, new gets a fresh id.
+  const OVERLAP_START = "2026-03-10T14:55:00.000Z";
+  const LATER_END = "2026-03-10T16:00:00.000Z";
+  const second: MeetingDayData = {
+    detection: {
+      date: DATE,
+      appSpans: [appSpan("Microsoft Teams", OVERLAP_START, LATER_END)],
+      audioWindows: [audioWin("pendant", OVERLAP_START, LATER_END)],
+    },
+    conversations: [
+      {
+        source: "pendant",
+        conversationId: "p1",
+        startIso: OVERLAP_START,
+        endIso: LATER_END,
+        segments: [{ speaker: "Bob", isSelf: false, text: "different meeting", startIso: "2026-03-10T15:30:00.000Z" }],
+      },
+    ],
+  };
+  const secondSummary = await new MeetingsBuilder({ source: fixedSource(second), store, config: cfg }).buildDay(DATE);
+  assert.equal(secondSummary.meetings.length, 1);
+  assert.notEqual(secondSummary.meetings[0]?.id, staleId, "marginal overlap must NOT reuse the stale id");
+  assert.deepEqual(secondSummary.removed, [staleId], "the stale meeting is removed, not overwritten");
+  assert.equal(await store.readMeetingRecord(DATE, staleId), null);
+});
+
+test("finding 8 — reindex fires when only episodes are newly written (records unchanged)", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const data: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  // First build with NO memory writer: the record persists, but no episode is
+  // written (models a prior run whose episode write had not happened / failed).
+  await new MeetingsBuilder({ source: fixedSource(data), store, config: config() }).buildDay(DATE);
+
+  // Second build with a writer + reindex hook: the record is unchanged
+  // (built == 0 && removed == 0) but a new episode is created → reindex MUST
+  // still fire so the new active memory is discoverable now.
+  const memoryWriter = new FakeMeetingWriter();
+  const calls: MeetingsDayBuildSummary[] = [];
+  const summary = await new MeetingsBuilder({
+    source: fixedSource(data),
+    store,
+    config: config(),
+    memoryWriter,
+    hooks: { reindex: (s) => { calls.push(s); } },
+  }).buildDay(DATE);
+  assert.equal(summary.built, 0, "the record was unchanged");
+  assert.equal(summary.removed.length, 0);
+  assert.deepEqual(summary.episodes, { written: 1, skipped: 0 });
+  assert.equal(calls.length, 1, "reindex fires because a new episode was written");
+});
+
+test("finding 9 — removing a meeting retires its episode/summary memories", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const memoryWriter = new FakeMeetingWriter();
+  const first: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: config(), memoryWriter }).buildDay(DATE);
+  const staleId = firstSummary.meetings[0]!.id;
+  const episodeContent = memoryWriter.writes.find((w) => w.source === meetingSourceLabel(staleId))?.content;
+  assert.ok(episodeContent !== undefined, "episode written for the meeting");
+  assert.equal(await memoryWriter.hasMemoryFromSource(meetingSourceLabel(staleId), episodeContent!), true);
+
+  // Rebuild: a non-overlapping later meeting replaces it → the stale meeting is
+  // removed, and its meeting-derived memories must be retired too.
+  const LATER_START = "2026-03-10T16:00:00.000Z";
+  const LATER_END = "2026-03-10T17:00:00.000Z";
+  const second: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", LATER_START, LATER_END)], audioWindows: [audioWin("desktop", LATER_START, LATER_END)] },
+    conversations: [
+      { source: "desktop", conversationId: "d2", startIso: LATER_START, endIso: LATER_END, segments: [{ speaker: "Jane", isSelf: false, text: "later", startIso: "2026-03-10T16:05:00.000Z" }] },
+    ],
+  };
+  const secondSummary = await new MeetingsBuilder({ source: fixedSource(second), store, config: config(), memoryWriter }).buildDay(DATE);
+  assert.deepEqual(secondSummary.removed, [staleId]);
+  assert.ok(memoryWriter.retired.includes(meetingSourceLabel(staleId)), "the removed meeting's memories are retired");
+  assert.equal(
+    await memoryWriter.hasMemoryFromSource(meetingSourceLabel(staleId), episodeContent!),
+    false,
+    "no memory remains for the removed meeting",
+  );
+});
+
+function summaryData(): MeetingDayData {
+  return {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("we shipped v2", "2026-03-10T14:05:00.000Z")])],
+  };
+}
+
+const SUMMARY_CANDIDATES: MeetingFactCandidate[] = [
+  { content: "Team decided to ship v2 on Friday", category: "decision", confidence: 0.9 },
+  { content: "Sam will send the recap by EOD", category: "commitment", confidence: 0.9 },
+];
+
+test("finding 11+12 — smart mode wires trust-gated decision + commitment on the production build path", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const memoryWriter = new FakeMeetingWriter();
+  const extractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const summary = await new MeetingsBuilder({
+    source: fixedSource(summaryData()),
+    store,
+    config: config({ summaryMode: "smart" }),
+    memoryWriter,
+    summary: { extractor },
+  }).buildDay(DATE);
+  const builtId = summary.meetings[0]!.id;
+  assert.equal(extractor.calls, 1, "the extractor runs on the production path");
+  assert.ok(summary.facts !== undefined, "facts aggregate is present");
+  assert.equal(summary.facts?.llmInvoked, true);
+  assert.equal(summary.facts?.active, 2, "both high-trust claims auto-active");
+  const commitment = memoryWriter.writes.find((w) => w.category === "commitment");
+  assert.ok(commitment, "a commitment fact was written");
+  assert.equal(commitment?.status, "active");
+  assert.equal(commitment?.meetingId, builtId, "commitment carries meetingId provenance");
+  assert.ok(memoryWriter.writes.some((w) => w.category === "decision" && w.status === "active"), "a decision fact was written active");
+});
+
+test("finding 11+12 — review mode queues facts, off mode makes zero LLM calls", async () => {
+  const reviewStore = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const reviewWriter = new FakeMeetingWriter();
+  const reviewExtractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const reviewSummary = await new MeetingsBuilder({
+    source: fixedSource(summaryData()),
+    store: reviewStore,
+    config: config({ summaryMode: "review" }),
+    memoryWriter: reviewWriter,
+    summary: { extractor: reviewExtractor },
+  }).buildDay(DATE);
+  assert.equal(reviewExtractor.calls, 1);
+  assert.equal(reviewSummary.facts?.active, 0, "review mode never auto-actives");
+  assert.equal(reviewSummary.facts?.review, 2, "both candidates queued for review");
+  assert.ok(reviewWriter.writes.some((w) => w.category === "commitment" && w.status === "pending_review"));
+
+  const offStore = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const offWriter = new FakeMeetingWriter();
+  const offExtractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const offSummary = await new MeetingsBuilder({
+    source: fixedSource(summaryData()),
+    store: offStore,
+    config: config({ summaryMode: "off" }),
+    memoryWriter: offWriter,
+    summary: { extractor: offExtractor },
+  }).buildDay(DATE);
+  assert.equal(offExtractor.calls, 0, "off mode must NEVER invoke the extractor");
+  assert.equal(offSummary.facts, undefined, "no fact aggregate in off mode");
+  assert.ok(offWriter.writes.every((w) => w.category === "moment"), "off mode writes only the episode, no summary facts");
 });

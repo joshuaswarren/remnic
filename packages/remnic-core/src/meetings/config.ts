@@ -127,7 +127,7 @@ export function parseMeetingsConfig(value: unknown): MeetingsConfig {
     throw new Error(`meetings must be an object; got ${JSON.stringify(value)}`);
   }
   const raw = value as Record<string, unknown>;
-  return {
+  const config: MeetingsConfig = {
     enabled: parseBool(raw.enabled, "meetings.enabled", DEFAULT_MEETINGS_CONFIG.enabled),
     appPatterns: parseAppPatterns(raw.appPatterns),
     minOverlapMinutes: parseBoundedInt(
@@ -170,4 +170,14 @@ export function parseMeetingsConfig(value: unknown): MeetingsConfig {
     autoApproveTrust: parseTrust01(raw.autoApproveTrust, "meetings.autoApproveTrust", DEFAULT_AUTO_APPROVE_TRUST),
     reviewTrust: parseTrust01(raw.reviewTrust, "meetings.reviewTrust", DEFAULT_REVIEW_TRUST),
   };
+  // decideSmart checks the auto-approve band FIRST, so autoApproveTrust below
+  // reviewTrust fails open (a claim under the review bar would auto-activate).
+  // Reject the inversion loudly rather than silently mis-gate meeting facts.
+  if (config.autoApproveTrust < config.reviewTrust) {
+    throw new Error(
+      `meetings.autoApproveTrust (${config.autoApproveTrust}) must be >= meetings.reviewTrust ` +
+        `(${config.reviewTrust}); an inverted gate would auto-approve below the review bar`,
+    );
+  }
+  return config;
 }

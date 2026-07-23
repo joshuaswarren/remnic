@@ -67,7 +67,7 @@ function dayData(): MeetingDayData {
 function makeDeps(data: MeetingDayData = dayData(), cfg: MeetingsConfig = config()): MeetingsCliDeps {
   const source: MeetingsDaySource = { loadDayData: () => data };
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
-  return { store, builder: new MeetingsBuilder({ source, store, config: cfg }) };
+  return { store, builder: new MeetingsBuilder({ source, store, config: cfg }), config: cfg };
 }
 
 interface Captured {
@@ -192,8 +192,40 @@ test("build text output surfaces a reindex-hook warning", async () => {
       config: config(),
       hooks: { reindex: () => { throw new Error("index offline"); } },
     }),
+    config: config(),
   };
   const result = await run(deps, ["build", "--date", DATE]);
   assert.equal(result.code, 0, "reindex failure must not fail the build");
   assert.match(result.out, /warning:.*index offline/);
+});
+
+test("finding 10 — list/show expose nothing when meetings.enabled is false", async () => {
+  // Build a real record with the subsystem enabled, then flip config off and
+  // route list/show through the disabled config: records must not be exposed.
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const source: MeetingsDaySource = { loadDayData: () => dayData() };
+  const enabled: MeetingsCliDeps = { store, builder: new MeetingsBuilder({ source, store, config: config() }), config: config() };
+  await run(enabled, ["build", "--date", DATE]);
+  const id = (await store.listMeetingIds(DATE))[0]!;
+
+  const disabled: MeetingsCliDeps = {
+    store,
+    builder: new MeetingsBuilder({ source, store, config: config({ enabled: false }) }),
+    config: config({ enabled: false }),
+  };
+  const listAll = await run(disabled, ["list"]);
+  assert.equal(listAll.code, 0);
+  assert.doesNotMatch(listAll.out, new RegExp(id), "disabled list must not expose a stored record");
+  assert.match(listAll.out, /meetings disabled/);
+
+  const listDay = await run(disabled, ["list", "--date", DATE]);
+  assert.doesNotMatch(listDay.out, new RegExp(id));
+
+  const listJson = await run(disabled, ["list", "--date", DATE, "--json"]);
+  assert.equal(listJson.out.trim(), "[]", "disabled json list exposes nothing");
+
+  const shown = await run(disabled, ["show", id]);
+  assert.equal(shown.code, 0);
+  assert.doesNotMatch(shown.out, /kind: meeting/, "disabled show must not print the record");
+  assert.match(shown.out, /meetings disabled/);
 });
