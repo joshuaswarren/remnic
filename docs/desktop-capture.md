@@ -267,9 +267,11 @@ modality with its own FTS5 store; meeting detection reads both.
 ## Configuration (design — synthetic placeholders)
 
 The gates below are the *binding config contract* the capture slices introduce.
-They are **not yet present in `docs/config-reference.md`** and setting them has
-no effect until the corresponding daemon slice lands. Values shown are synthetic
-examples.
+The `activity.*` and `meetings.*` blocks are **not yet parsed** — they are absent
+from `docs/config-reference.md` and setting them has no effect until their slice
+lands. The `wearables.sources` map, by contrast, is parsed today: see the
+warning on the desktop example below before enabling it. Values shown are
+synthetic examples.
 
 Screen activity (planned `activity.*` block):
 
@@ -288,7 +290,13 @@ Screen activity (planned `activity.*` block):
 ```
 
 Desktop audio (planned entry under the existing open `wearables.sources` map;
-all standard `WearableSourceSettings` fields apply):
+all standard `WearableSourceSettings` fields apply). **Do not enable the
+`desktop` source yet.** `wearables.sources` is parsed today and the service
+treats every enabled source as a sync target, but no `desktop` connector is
+registered until `@remnic/capture-audio` ships. Enabling it now (master gate +
+`sources.desktop.enabled: true`) makes `remnic wearables sync` fail with a
+missing-connector install hint, not do nothing. Keep it `false` until the slice
+lands; the block below is the shape it will take:
 
 ```jsonc
 {
