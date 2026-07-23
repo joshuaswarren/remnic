@@ -253,3 +253,26 @@ test("fetchConversations rejects a malformed baseUrl as a daemon error, not a ra
     DesktopDaemonError,
   );
 });
+
+test("fetchConversations honors a caller abort during the request, never mislabeling it", async () => {
+  // The server flushes headers 200 OK but withholds the body, so the caller's
+  // abort lands while the request/body read is still pending.
+  const { promise: requestReceived, resolve: onRequest } = Promise.withResolvers<void>();
+  const daemon = await startMockDaemon((_url, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    onRequest();
+  });
+  try {
+    const controller = new AbortController();
+    const pending = connectorFor(daemon.url).fetchConversations({
+      date: "2026-07-20",
+      timezone: "UTC",
+      signal: controller.signal,
+    });
+    await requestReceived;
+    controller.abort();
+    await assert.rejects(pending, (err: Error) => err.name === "AbortError");
+  } finally {
+    await daemon.close();
+  }
+});

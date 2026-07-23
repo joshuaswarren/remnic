@@ -183,7 +183,9 @@ class DesktopClient {
     let page: ConversationPage;
     try {
       page = (await res.json()) as ConversationPage;
-    } catch {
+    } catch (err) {
+      // Honor caller cancellation that lands mid-body-read.
+      if (opts.signal?.aborted) throw err;
       // A 200 with an empty/non-JSON body is a backend fault, not an empty day.
       throw new DesktopDaemonError("desktop capture daemon returned a non-JSON conversations response");
     }
