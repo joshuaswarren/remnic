@@ -256,3 +256,52 @@ test("duplicate conversation ids within a batch are rejected (no silent overwrit
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
   spool.close();
 });
+
+test("replay rejects non-round-trippable calendar timestamps", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "bad.json": {
+      startedAtUtc: "2026-02-30T00:00:00.000Z",
+      segments: [{ channel: "mic", text: "x", startUtc: "2026-02-30T00:00:00.000Z", endUtc: "2026-02-30T00:00:01.000Z" }],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, dir), /not a real calendar date/);
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});
+
+test("replay refuses a symlinked replay root", () => {
+  const spool = new Spool(":memory:");
+  const real = fixtureDir({
+    "a.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+  });
+  const link = mkdtempSync(path.join(tmpdir(), "cap-link-")) + "-ln";
+  symlinkSync(real, link);
+  createdDirs.push(link);
+  assert.throws(() => ingestReplayDir(spool, link), /symlink/);
+  spool.close();
+});
+
+test("a later { id }-only speaker reference preserves the established speaker's fields", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "a.json": {
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      speakers: [{ id: "self", label: "Me", isSelf: true }],
+      segments: [{ channel: "mic", text: "one", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+    "b.json": {
+      startedAtUtc: "2026-07-20T16:00:00.000Z",
+      speakers: [{ id: "self" }],
+      segments: [{ channel: "mic", text: "two", startUtc: "2026-07-20T16:00:00.000Z", endUtc: "2026-07-20T16:00:01.000Z" }],
+    },
+  });
+  ingestReplayDir(spool, dir);
+  const self = spool.listSpeakers().find((s) => s.id === "self");
+  assert.equal(self?.label, "Me");
+  assert.equal(self?.isSelf, true);
+  spool.close();
+});

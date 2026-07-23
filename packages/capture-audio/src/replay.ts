@@ -58,6 +58,14 @@ function parseTimestamp(value: unknown, where: string): string {
   if (!Number.isFinite(ms)) {
     throw new CaptureConfigError(`${where}: expected a valid ISO timestamp`);
   }
+  // Reject non-round-trippable calendar dates (e.g. 2026-02-30) that Date.parse
+  // silently rolls forward. Validate the written date part directly.
+  const [cy, cm, cd] = value.slice(0, 10).split("-").map(Number);
+  const probe = new Date(Date.UTC(cy, cm - 1, cd));
+  probe.setUTCFullYear(cy);
+  if (probe.getUTCFullYear() !== cy || probe.getUTCMonth() !== cm - 1 || probe.getUTCDate() !== cd) {
+    throw new CaptureConfigError(`${where}: '${value}' is not a real calendar date`);
+  }
   // Canonicalize to UTC (Z) so an offset timestamp sorts correctly under the
   // keyset that orders by the stored *_utc value.
   return new Date(ms).toISOString();
@@ -137,11 +145,17 @@ function parseSpeakers(raw: unknown, where: string): SpeakerInput[] {
     if (obj.isSelf !== undefined && typeof obj.isSelf !== "boolean") {
       throw new CaptureConfigError(`${where}.speakers[${i}].isSelf: expected a boolean`);
     }
-    return {
-      id: obj.id,
-      label: optionalString(obj.label, `${where}.speakers[${i}].label`, null),
-      isSelf: obj.isSelf === true,
-    };
+    // Only carry fields the fixture actually provided so upsertSpeaker
+    // preserves omitted label/isSelf on an existing cluster (issue: a later
+    // { id } reference must not wipe an established speaker).
+    const speaker: SpeakerInput = { id: obj.id };
+    if (obj.label !== undefined) {
+      speaker.label = optionalString(obj.label, `${where}.speakers[${i}].label`, null);
+    }
+    if (obj.isSelf !== undefined) {
+      speaker.isSelf = obj.isSelf === true;
+    }
+    return speaker;
   });
 }
 
@@ -160,8 +174,12 @@ interface ParsedFixture {
 export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
   let entries: string[];
   try {
+    if (lstatSync(dir).isSymbolicLink()) {
+      throw new CaptureConfigError(`replay dir ${dir} is a symlink; refusing to follow it`);
+    }
     entries = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
-  } catch {
+  } catch (err) {
+    if (err instanceof CaptureConfigError) throw err;
     throw new CaptureConfigError(`replay dir not found or unreadable: ${dir}`);
   }
   if (entries.length === 0) {
