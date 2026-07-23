@@ -91,26 +91,24 @@ At 7B-Q4 single-seed no cell moves any metric outside the run-to-run noise
 band, so no shipped default is changed by that ablation.
 
 The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison and its
-July 16 current-main follow-up are diagnosed in
+current-main follow-ups are diagnosed in
 [`docs/benchmarks/locomo-profile-diagnosis.md`](./benchmarks/locomo-profile-diagnosis.md).
 The historical regression was concentrated in multi-hop questions and present
-on judge-independent F1. Current main's provider-free paired capture found no
-retrieval-structure delta across those 321 tasks, and the scored GPT-5.6 pair
-reduced the historical gap to -0.0067 `llm_judge` and -0.0044 F1 while moving
-`contains_answer` +0.0031. That result does not establish parity or a causal
-retrieval mechanism. The old `baseline` recommendation is therefore only
-historical reproduction guidance for the July 14 configuration, not current-
-main or production guidance, and no shipped default changes on this evidence.
+on judge-independent F1. A fresh current-main paired capture of the same 321
+tasks with the same model, judge, seed, and recall budget yielded
+`llm_judge` -0.0025 (14 real wins, 13 losses, 294 ties). The differing
+answers reused the same recalled evidence in sampled records, so the result
+does not establish a retrieval-side regression or causal mechanism. The old
+`baseline` recommendation is therefore historical reproduction guidance for
+the July 14 configuration, not current-main or production guidance, and no
+shipped default changes on this evidence.
 
-An answer-time support gate is available as a read-time faithfulness control.
-It defaults to `true` for the full-feature `real` profile and remains disabled
-for the stripped `baseline` profile. To disable it for an ablation, put the
-following top-level setting in the JSON passed to the existing
-`--remnic-config` option (a nested `remnic` object is also accepted):
+An answer-time support gate is available as an opt-in read-time faithfulness
+control. It must be enabled explicitly for either runtime profile:
 
 ```json
 {
-  "answerSupportGate": false
+  "answerSupportGate": true
 }
 ```
 

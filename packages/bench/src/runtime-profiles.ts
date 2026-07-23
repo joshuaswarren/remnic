@@ -277,12 +277,6 @@ export async function resolveBenchRuntimeProfile(
       : {};
     const realProfileOverrides = {
       lcmEnabled: true,
-      // Read-time faithfulness is on by default for the full-feature profile.
-      // An explicit config value (including false-like strings) remains
-      // authoritative so benchmark operators can perform reversible ablations.
-      ...(fileConfig.answerSupportGate === undefined
-        ? { answerSupportGate: true }
-        : {}),
       ...(options.modelSource ? { modelSource: options.modelSource } : {}),
       ...(options.gatewayAgentId ? { gatewayAgentId: options.gatewayAgentId } : {}),
       ...(options.fastGatewayAgentId
