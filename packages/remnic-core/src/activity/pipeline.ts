@@ -52,6 +52,15 @@ export interface ActivitySyncOptions {
   signal?: AbortSignal;
   /** Runaway-pagination guard; defaults to MAX_SYNC_PAGES. */
   maxPages?: number;
+  /**
+   * Search-index refresh, run after a digest is (re)written so the durable
+   * markdown becomes discoverable (AGENTS.md rule 31; the digest lives in the
+   * QMD collection root but bypasses the extraction->persist->index pipeline).
+   * Host-agnostic: the caller injects the core index seam (SearchBackend.update).
+   * Best-effort — a failure never fails the sync (rows/digest are durable and
+   * index on the next update); it surfaces as `reindexError`.
+   */
+  afterWrites?: () => Promise<void>;
 }
 
 export interface ActivitySyncResult {
@@ -61,6 +70,8 @@ export interface ActivitySyncResult {
   duplicates: number;
   cursor: string | null;
   digestWritten: boolean;
+  /** Set when the post-write reindex threw; the sync still succeeded. */
+  reindexError?: string;
 }
 
 function snapshotForMachine(snapshot: ActivitySnapshot, machine: string): ActivitySnapshot {
@@ -170,5 +181,26 @@ export async function syncActivitySource(
   });
 
   options.store.setCursor(cursorKey, cursor);
-  return { machine: source.machineLabel, fetched, inserted, duplicates, cursor, digestWritten };
+
+  // Rows and digest are durable and the cursor has advanced; refresh the search
+  // index so the new digest is discoverable (rule 31). Best-effort: a failure
+  // is reported, not thrown — the data indexes on the next update.
+  let reindexError: string | undefined;
+  if (digestWritten && options.afterWrites !== undefined) {
+    try {
+      await options.afterWrites();
+    } catch (error: unknown) {
+      reindexError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return {
+    machine: source.machineLabel,
+    fetched,
+    inserted,
+    duplicates,
+    cursor,
+    digestWritten,
+    ...(reindexError === undefined ? {} : { reindexError }),
+  };
 }

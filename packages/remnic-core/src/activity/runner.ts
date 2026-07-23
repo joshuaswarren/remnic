@@ -64,6 +64,12 @@ export interface ActivitySyncRunOptions {
   signal?: AbortSignal;
   /** Injectable client factory; builds an ActivityHttpSourceClient by default. */
   createSourceClient?: (source: ActivitySourceConfig) => ActivitySourceClient;
+  /**
+   * Search-index refresh forwarded to each source sync as `afterWrites`, run
+   * after a digest is (re)written so it becomes discoverable (rule 31).
+   * Host wires the core index seam (SearchBackend.update); best-effort.
+   */
+  reindexSearch?: () => Promise<void>;
 }
 
 /** Format a Date as YYYY-MM-DD in an IANA timezone (local calendar day). */
@@ -158,6 +164,7 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
             memoryDir: options.memoryDir,
             store,
             signal: options.signal,
+            ...(options.reindexSearch === undefined ? {} : { afterWrites: options.reindexSearch }),
           });
           item.fetched += result.fetched;
           item.inserted += result.inserted;

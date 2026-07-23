@@ -37,6 +37,8 @@ export interface ActivitySyncSchedulerOptions {
   intervalMs?: number;
   /** The sync pass to run each tick; defaults to the durable runner. */
   invoke?: (signal?: AbortSignal) => Promise<ActivitySyncRunSummary>;
+  /** Search-index refresh forwarded to the default runner as `reindexSearch`. */
+  reindexSearch?: () => Promise<void>;
   /** Timer factory (injectable for tests); defaults to an unref'd setInterval. */
   setTimer?: (fn: () => void, ms: number) => TimerHandle;
   /** Timer canceller matching setTimer; defaults to clearInterval. */
@@ -79,7 +81,14 @@ export class ActivitySyncScheduler {
     this.memoryDir = options.memoryDir;
     this.intervalMs = options.intervalMs ?? ACTIVITY_SYNC_DEFAULT_INTERVAL_MS;
     this.invoke =
-      options.invoke ?? ((signal) => runActivitySyncOnce({ config: this.config, memoryDir: this.memoryDir, signal }));
+      options.invoke ??
+      ((signal) =>
+        runActivitySyncOnce({
+          config: this.config,
+          memoryDir: this.memoryDir,
+          signal,
+          ...(options.reindexSearch === undefined ? {} : { reindexSearch: options.reindexSearch }),
+        }));
     this.setTimer =
       options.setTimer ??
       ((fn, ms) => {

@@ -299,3 +299,35 @@ test("restart: a fresh run resumes from the persisted cursor", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("reindexSearch is forwarded per source and a failure never fails the run", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = fixtureClient(
+      "workstation-a",
+      new Map([[null, { snapshots: [snapshot()], nextCursor: null }]]),
+    );
+    let reindexCalls = 0;
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig(),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      reindexSearch: async () => {
+        reindexCalls += 1;
+        throw new Error("qmd offline");
+      },
+    });
+
+    assert.equal(reindexCalls, 1, "the runner forwards reindexSearch to the source sync");
+    assert.equal(summary.ranCount, 1, "a reindex failure does not fail the source");
+    assert.equal(summary.errorCount, 0);
+    assert.equal(summary.results[0]?.ran, true);
+    assert.equal(summary.results[0]?.inserted, 1);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

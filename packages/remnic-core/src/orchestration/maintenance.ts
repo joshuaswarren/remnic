@@ -208,6 +208,10 @@ export class MaintenanceScheduler {
       this.activitySyncScheduler = new ActivitySyncScheduler({
         config: this.deps.config.activity,
         memoryDir: this.deps.config.memoryDir,
+        // Refresh the search index after each digest write so it is
+        // discoverable (rule 31). Reuses the live core QMD seam wearables
+        // uses (SearchBackend.update is fail-open); no OpenClaw/host adapter.
+        reindexSearch: () => this.deps.getQmd().update(),
       });
       this.activitySyncScheduler.start();
       // Close the race where abort fires between the guard above and start().

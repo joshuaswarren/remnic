@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -178,6 +178,93 @@ test("concurrent same-day syncs from two sources persist without corrupting the 
     assert.match(digest, /snapshotCount: 2/);
     assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null);
     assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource reindexes after a digest write, with the digest already durable", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = source("workstation-a", new Map([[null, [snapshot()]]]), new Map([[null, null]]));
+    let reindexed = 0;
+    let digestAtReindex = "";
+    const result = await syncActivitySource(client, {
+      date: "2026-07-22",
+      timezone: "UTC",
+      memoryDir,
+      store,
+      afterWrites: async () => {
+        reindexed += 1;
+        // The reindex must see the durable digest already on disk — that is
+        // what makes the new day discoverable (rule 31).
+        digestAtReindex = await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8");
+      },
+    });
+
+    assert.equal(result.digestWritten, true);
+    assert.equal(reindexed, 1, "reindex fires exactly once after the digest write");
+    assert.match(digestAtReindex, /snapshotCount: 1/, "the written digest is visible to the reindex");
+    assert.equal(result.reindexError, undefined);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource skips the reindex when the digest is unchanged", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    let reindexed = 0;
+    const opts = {
+      date: "2026-07-22",
+      timezone: "UTC",
+      memoryDir,
+      store,
+      afterWrites: async () => {
+        reindexed += 1;
+      },
+    };
+    const first = source("workstation-a", new Map([[null, [snapshot()]]]), new Map([[null, null]]));
+    await syncActivitySource(first, opts);
+    const second = source("workstation-a", new Map([[null, [snapshot()]]]), new Map([[null, null]]));
+    const result = await syncActivitySource(second, opts);
+
+    assert.equal(result.digestWritten, false, "an unchanged day rewrites nothing");
+    assert.equal(reindexed, 1, "no reindex when the digest did not change");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("syncActivitySource isolates a reindex failure: rows, digest, and cursor still commit", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const client = source("workstation-a", new Map([[null, [snapshot()]]]), new Map([[null, null]]));
+    const result = await syncActivitySource(client, {
+      date: "2026-07-22",
+      timezone: "UTC",
+      memoryDir,
+      store,
+      afterWrites: async () => {
+        throw new Error("qmd offline");
+      },
+    });
+
+    assert.equal(result.digestWritten, true, "the digest is durable despite the reindex failure");
+    assert.match(result.reindexError ?? "", /qmd offline/);
+    assert.equal(result.inserted, 1);
+    await access(activityDigestPath(memoryDir, "2026-07-22"));
+    assert.equal(
+      store.getCursor(activityCursorKey("workstation-a", "2026-07-22")),
+      null,
+      "cursor still advanced; reindex is best-effort",
+    );
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
