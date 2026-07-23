@@ -32,7 +32,7 @@ import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./
 import { ingestReplayDirResponsive } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
-import { formatHostForUrl, isLoopbackHost } from "./util.js";
+import { formatHostForUrl, isLoopbackHost, stripIpv6Brackets } from "./util.js";
 
 export interface CliIo {
   argv: string[];
@@ -80,6 +80,9 @@ const GLOBAL_FLAGS: Record<string, true> = { "base-dir": true, help: true };
 
 /** How long background start waits for the child daemon to bind before failing. */
 const READINESS_TIMEOUT_MS = 10_000;
+
+/** How long `stop` waits for the daemon to exit + remove its pid file before returning. */
+const STOP_TIMEOUT_MS = 10_000;
 
 function parseArgs(argv: string[]): ParsedArgs {
   const tokens: string[] = [];
@@ -139,6 +142,9 @@ function applyBindingOverrides(
   if (typeof flags.port === "string") {
     next.port = coerceNumber(flags.port, "--port", { integer: true, min: 1, max: 65535 });
   }
+  // Normalize a bracketed IPv6 authority host ([::1]) to its bare form (::1) so
+  // the loopback check and the actual listen() bind both see a valid address.
+  next.host = stripIpv6Brackets(next.host);
   return next;
 }
 
@@ -531,9 +537,22 @@ async function cmdStop(
     throw err;
   }
   // The daemon's own shutdown handler removes the pid file once it has
-  // finalized conversations and released the spool/socket — don't delete
-  // it here (valid state must survive until replacement is confirmed).
-  stdout(`sent SIGTERM to daemon (pid ${record.pid}); waiting for shutdown`);
+  // finalized conversations and released the spool/socket — don't delete it
+  // here (valid state must survive until replacement is confirmed). Wait
+  // boundedly for that so automation (a following `start`/`status`) doesn't
+  // see the old pid as still running, and callers don't observe `stop` as
+  // done before final conversations are persisted.
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(record.pid) || readPidRecord(paths.pidPath) === null) {
+      stdout(`daemon (pid ${record.pid}) stopped`);
+      return 0;
+    }
+    await delay(100);
+  }
+  stdout(
+    `sent SIGTERM to daemon (pid ${record.pid}); still shutting down after ${STOP_TIMEOUT_MS / 1000}s`,
+  );
   return 0;
 }
 

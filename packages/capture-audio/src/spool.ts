@@ -167,6 +167,25 @@ function assertIsoInstant(value: string, label: string): void {
   }
 }
 
+/**
+ * Validate + canonicalize an instant to UTC `Z`. Accepted offset instants are
+ * normalized (not stored verbatim) so every persisted `*_utc` value and the
+ * keyset cursor sort by true UTC under SQLite's lexical TEXT ordering.
+ */
+function canonicalInstant(value: string, label: string): string {
+  assertIsoInstant(value, label);
+  return new Date(value).toISOString();
+}
+
+/** Runtime-checkable enum tables (Spool is exported; JS callers are unchecked by TS). */
+const CONVERSATION_STATES: Record<ConversationState, true> = { capturing: true, final: true };
+const CHUNK_STATUSES: Record<ChunkStatus, true> = {
+  pending: true,
+  transcribed: true,
+  failed: true,
+  deleted: true,
+};
+
 export class Spool {
   #db: DatabaseSync;
   #closed = false;
@@ -227,28 +246,41 @@ export class Spool {
     // Validate every timestamp before persisting so a direct Spool caller (not
     // just replay) cannot store a value that becomes an Invalid Date in
     // queryFinalConversations' day bucketing.
-    assertIsoInstant(input.startedAtUtc, "conversation.startedAtUtc");
-    if (input.endedAtUtc !== undefined && input.endedAtUtc !== null) {
-      assertIsoInstant(input.endedAtUtc, "conversation.endedAtUtc");
-      if (Date.parse(input.endedAtUtc) < Date.parse(input.startedAtUtc)) {
-        throw new CaptureConfigError("conversation.endedAtUtc: must not precede startedAtUtc");
-      }
+    const startedAtUtc = canonicalInstant(input.startedAtUtc, "conversation.startedAtUtc");
+    const endedAtUtcInput =
+      input.endedAtUtc !== undefined && input.endedAtUtc !== null
+        ? canonicalInstant(input.endedAtUtc, "conversation.endedAtUtc")
+        : null;
+    if (endedAtUtcInput !== null && Date.parse(endedAtUtcInput) < Date.parse(startedAtUtc)) {
+      throw new CaptureConfigError("conversation.endedAtUtc: must not precede startedAtUtc");
     }
-    input.segments.forEach((seg, i) => {
-      assertIsoInstant(seg.startUtc, `conversation.segments[${i}].startUtc`);
-      assertIsoInstant(seg.endUtc, `conversation.segments[${i}].endUtc`);
-      if (Date.parse(seg.endUtc) < Date.parse(seg.startUtc)) {
+    // Spool is exported and callable from JS, so reject an unknown state/chunkStatus
+    // at the persistence boundary instead of storing a row the query/finalize/count
+    // paths don't recognize (which would silently hide or miscount it).
+    if (input.state !== undefined && !Object.hasOwn(CONVERSATION_STATES, input.state)) {
+      throw new CaptureConfigError(`conversation.state: unknown value '${input.state}'`);
+    }
+    if (input.chunkStatus !== undefined && !Object.hasOwn(CHUNK_STATUSES, input.chunkStatus)) {
+      throw new CaptureConfigError(`conversation.chunkStatus: unknown value '${input.chunkStatus}'`);
+    }
+    const segments = input.segments.map((seg, i) => {
+      const startUtc = canonicalInstant(seg.startUtc, `conversation.segments[${i}].startUtc`);
+      const endUtc = canonicalInstant(seg.endUtc, `conversation.segments[${i}].endUtc`);
+      if (Date.parse(endUtc) < Date.parse(startUtc)) {
         throw new CaptureConfigError(`conversation.segments[${i}]: endUtc must not precede startUtc`);
       }
+      if (typeof seg.text !== "string" || seg.text === "") {
+        throw new CaptureConfigError(`conversation.segments[${i}].text: expected a non-empty string`);
+      }
+      return { ...seg, startUtc, endUtc };
     });
     const convId = input.id ?? `conv_${ulid()}`;
     const chunkId = `chk_${convId}`;
     const state: ConversationState = input.state ?? "final";
     const chunkStatus: ChunkStatus = input.chunkStatus ?? "transcribed";
     const wavPath = input.wavPath ?? null;
-    const lastSeg = input.segments[input.segments.length - 1];
-    const endedAtUtc = input.endedAtUtc ?? lastSeg?.endUtc ?? input.startedAtUtc;
-    const chunkChannel = input.segments[0]?.channel ?? "mic";
+    const endedAtUtc = endedAtUtcInput ?? segments[segments.length - 1]?.endUtc ?? startedAtUtc;
+    const chunkChannel = segments[0]?.channel ?? "mic";
 
     const db = this.#db;
     db.exec("BEGIN");
@@ -257,18 +289,15 @@ export class Spool {
       db.prepare("DELETE FROM chunks WHERE id = ?").run(chunkId);
       db.prepare(
         "INSERT INTO chunks(id, channel, device, started_at_utc, ended_at_utc, status, wav_path) VALUES (?,?,?,?,?,?,?)",
-      ).run(chunkId, chunkChannel, input.device ?? null, input.startedAtUtc, endedAtUtc, chunkStatus, wavPath);
+      ).run(chunkId, chunkChannel, input.device ?? null, startedAtUtc, endedAtUtc, chunkStatus, wavPath);
       db.prepare(
         "INSERT INTO conversations(id, started_at_utc, ended_at_utc, state, segment_count) VALUES (?,?,?,?,?)",
-      ).run(convId, input.startedAtUtc, endedAtUtc, state, input.segments.length);
+      ).run(convId, startedAtUtc, endedAtUtc, state, segments.length);
       const segStmt = db.prepare(
         "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
       );
-      for (let i = 0; i < input.segments.length; i++) {
-        const seg = input.segments[i];
-        if (typeof seg.text !== "string" || seg.text === "") {
-          throw new CaptureConfigError(`conversation.segments[${i}].text: expected a non-empty string`);
-        }
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
         segStmt.run(
           `seg_${ulid()}`,
           chunkId,

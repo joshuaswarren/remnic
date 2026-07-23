@@ -52,9 +52,14 @@ function asObject(value: unknown, where: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** A full ISO instant: date + time + Z or numeric offset. Offsetless local
+ *  timestamps are rejected so a non-UTC host cannot shift a `*Utc` fixture to
+ *  the wrong UTC day during canonicalization below. */
+const REPLAY_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
 function parseTimestamp(value: unknown, where: string): string {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-    throw new CaptureConfigError(`${where}: expected an ISO timestamp`);
+  if (typeof value !== "string" || !REPLAY_INSTANT.test(value)) {
+    throw new CaptureConfigError(`${where}: expected an ISO instant with a Z or numeric offset`);
   }
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) {

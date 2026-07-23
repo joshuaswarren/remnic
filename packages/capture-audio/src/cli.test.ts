@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { test } from "node:test";
 
@@ -14,6 +14,7 @@ import { startDaemon } from "./daemon.js";
 import { Spool } from "./spool.js";
 import { isProcessAlive, readPidRecord, writePidFile } from "./control.js";
 import { capturePaths, expandTilde } from "./paths.js";
+import { isLoopbackHost, stripIpv6Brackets } from "./util.js";
 
 async function withBaseDir(fn: (baseDir: string) => Promise<void>): Promise<void> {
   const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
@@ -24,11 +25,19 @@ async function withBaseDir(fn: (baseDir: string) => Promise<void>): Promise<void
   }
 }
 
+/** Await a child's exit, but return immediately if it has already exited — a
+ *  daemon-style `stop` now blocks until the process is gone, so the child is
+ *  frequently already reaped by the time cleanup runs. */
+async function waitExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await once(child, "exit");
+}
+
 /** Spawn a throwaway process, wait for it to exit, and return its (now-dead) pid. */
 async function deadPid(): Promise<number> {
   const child = spawn(process.execPath, ["-e", ""]);
   assert.ok(child.pid);
-  await once(child, "exit");
+  await waitExit(child);
   return child.pid;
 }
 
@@ -80,7 +89,7 @@ test("stop retains the pid file until the daemon exits", async () => {
       assert.equal(existsSync(paths.pidPath), true);
     } finally {
       child.kill("SIGKILL");
-      await once(child, "exit");
+      await waitExit(child);
     }
   });
 });
@@ -305,8 +314,8 @@ test("stop --force signals an unverifiable (health-unreachable) recorded pid", a
       const out: string[] = [];
       const code = await runCapture({ argv: ["stop", "--force", "--base-dir", baseDir], stdout: (l) => out.push(l) });
       assert.equal(code, 0);
-      assert.match(out.join("\n"), /sent SIGTERM/);
-      await once(child, "exit");
+      assert.match(out.join("\n"), /sent SIGTERM|stopped/);
+      await waitExit(child);
     } finally {
       child.kill("SIGKILL");
     }
@@ -416,8 +425,8 @@ test("stop signals only when both instanceId and health pid match the record", a
       const out: string[] = [];
       const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: (l) => out.push(l) });
       assert.equal(code, 0);
-      assert.match(out.join("\n"), /sent SIGTERM/);
-      await once(child, "exit"); // the verified pid was signalled
+      assert.match(out.join("\n"), /sent SIGTERM|stopped/);
+      await waitExit(child); // the verified pid was signalled
     } finally {
       child.kill("SIGKILL");
     }
@@ -460,7 +469,7 @@ test("recordChildPidOrTerminate kills the child when the pid write fails", async
       const ok = recordChildPidOrTerminate(child.pid, paths, { host: "127.0.0.1", port: 4340 }, (l) => errs.push(l));
       assert.equal(ok, false);
       assert.ok(errs.some((l) => l.includes("failed to record daemon pid")), errs.join("|"));
-      await once(child, "exit"); // child was terminated
+      await waitExit(child); // child was terminated
     } finally {
       child.kill("SIGKILL");
     }
@@ -694,5 +703,34 @@ test("a valid subcommand flag plus the global --base-dir is accepted", async () 
     });
     assert.equal(code, 0);
     assert.equal(existsSync(paths.configPath), true);
+  });
+});
+
+test("bracketed IPv6 loopback host is recognized (start must not refuse [::1])", () => {
+  assert.equal(stripIpv6Brackets("[::1]"), "::1");
+  assert.equal(stripIpv6Brackets("127.0.0.1"), "127.0.0.1");
+  assert.equal(isLoopbackHost("[::1]"), true);
+  assert.equal(isLoopbackHost("::1"), true);
+  assert.equal(isLoopbackHost("[::ffff:127.0.0.1]"), true);
+  assert.equal(isLoopbackHost("[2001:db8::1]"), false); // a non-loopback IPv6 is still refused
+});
+
+test("stop waits (bounded) for the daemon to exit before returning", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(child.pid);
+    const pid = child.pid;
+    try {
+      writePidFile(paths.pidPath, pid);
+      const out: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--force", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+      assert.equal(code, 0);
+      // The bounded wait must not return while the process is still alive.
+      assert.equal(isProcessAlive(pid), false, "stop returned before the daemon exited");
+      assert.ok(out.some((l) => l.includes("stopped")), out.join("|"));
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });

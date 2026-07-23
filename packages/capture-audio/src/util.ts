@@ -64,8 +64,15 @@ const LOOPBACK_HOSTS: Record<string, true> = {
  * Binding anything else (a LAN address, 0.0.0.0, ::) exposes the daemon
  * to the network and REQUIRES bearer-token auth on every request.
  */
+/** Strip a single pair of surrounding brackets from a URL-authority IPv6 host
+ *  (`[::1]` -> `::1`); non-bracketed hosts pass through unchanged. */
+export function stripIpv6Brackets(host: string): string {
+  const h = host.trim();
+  return h.startsWith("[") && h.endsWith("]") ? h.slice(1, -1) : h;
+}
+
 export function isLoopbackHost(host: string): boolean {
-  return Object.hasOwn(LOOPBACK_HOSTS, host.trim().toLowerCase());
+  return Object.hasOwn(LOOPBACK_HOSTS, stripIpv6Brackets(host).toLowerCase());
 }
 
 /** Compact, credential-free description of an unexpected value for messages. */

@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { Spool } from "./spool.js";
-import type { SegmentInput } from "./spool.js";
+import type { ChunkStatus, ConversationState, SegmentInput } from "./spool.js";
 
 const seg = (text: string): SegmentInput => ({
   channel: "mic",
@@ -246,5 +246,69 @@ test("insertConversation requires a canonical instant (rejects date-only / offse
     segments: [seg("x")],
   });
   assert.equal(id, "c_ok");
+  spool.close();
+});
+
+test("insertConversation rejects unknown state/chunkStatus at the persistence boundary (JS callers)", () => {
+  const spool = new Spool(":memory:");
+  // Simulate an untyped JS caller passing values the query/finalize/count paths
+  // don't recognize; the runtime guard must reject rather than persist them.
+  assert.throws(
+    () =>
+      spool.insertConversation({
+        id: "c_badstate",
+        startedAtUtc: "2026-07-20T10:00:00.000Z",
+        state: "finished" as ConversationState,
+        segments: [seg("x")],
+      }),
+    CaptureConfigError,
+  );
+  assert.throws(
+    () =>
+      spool.insertConversation({
+        id: "c_badchunk",
+        startedAtUtc: "2026-07-20T10:00:00.000Z",
+        chunkStatus: "done" as ChunkStatus,
+        segments: [seg("x")],
+      }),
+    CaptureConfigError,
+  );
+  assert.equal(spool.stats().conversations, 0);
+  const id = spool.insertConversation({
+    id: "c_ok",
+    startedAtUtc: "2026-07-20T10:00:00.000Z",
+    state: "capturing",
+    chunkStatus: "pending",
+    segments: [seg("x")],
+  });
+  assert.equal(id, "c_ok");
+  spool.close();
+});
+
+test("insertConversation normalizes offset instants to UTC Z so the keyset orders chronologically", () => {
+  const spool = new Spool(":memory:");
+  // conv_a is chronologically earlier (10:30Z) but its RAW offset text sorts
+  // lexically AFTER conv_b's Z text — proving the write must normalize to Z.
+  spool.insertConversation({
+    id: "conv_a",
+    startedAtUtc: "2026-07-20T11:30:00+01:00",
+    segments: [{ channel: "mic", text: "a", startUtc: "2026-07-20T11:30:00+01:00", endUtc: "2026-07-20T11:30:05+01:00" }],
+  });
+  spool.insertConversation({
+    id: "conv_b",
+    startedAtUtc: "2026-07-20T11:00:00.000Z",
+    segments: [{ channel: "mic", text: "b", startUtc: "2026-07-20T11:00:00.000Z", endUtc: "2026-07-20T11:00:05.000Z" }],
+  });
+  const page = spool.queryFinalConversations({ date: "2026-07-20", timezone: "UTC", cursor: null, limit: 10 });
+  assert.deepEqual(
+    page.conversations.map((c) => c.id),
+    ["conv_a", "conv_b"],
+    "final conversations must page in true UTC order, not lexical raw-text order",
+  );
+  assert.equal(
+    page.conversations.find((c) => c.id === "conv_a")?.startedAtUtc,
+    "2026-07-20T10:30:00.000Z",
+    "an accepted offset instant is stored normalized to Z",
+  );
   spool.close();
 });

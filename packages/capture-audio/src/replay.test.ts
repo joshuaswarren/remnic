@@ -340,3 +340,32 @@ test("ingestReplayDirResponsive commits nothing when aborted before it runs", as
   assert.equal(spool.stats().conversations, 0);
   assert.doesNotThrow(() => spool.close());
 });
+
+test("replay rejects offsetless timestamps and canonicalizes offsets to Z", () => {
+  const spool = new Spool(":memory:");
+  const badDir = fixtureDir({
+    "bad.json": {
+      id: "c_bad",
+      startedAtUtc: "2026-07-20T15:00:00",
+      segments: [{ channel: "mic", text: "x", startUtc: "2026-07-20T15:00:00Z", endUtc: "2026-07-20T15:00:05Z" }],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, badDir), CaptureConfigError);
+  assert.equal(spool.stats().conversations, 0);
+
+  const offDir = fixtureDir({
+    "off.json": {
+      id: "c_off",
+      startedAtUtc: "2026-07-20T12:00:00+01:00",
+      segments: [{ channel: "mic", text: "x", startUtc: "2026-07-20T12:00:00+01:00", endUtc: "2026-07-20T12:00:05+01:00" }],
+    },
+  });
+  ingestReplayDir(spool, offDir);
+  const page = spool.queryFinalConversations({ date: "2026-07-20", timezone: "UTC", cursor: null, limit: 10 });
+  assert.equal(
+    page.conversations.find((c) => c.id === "c_off")?.startedAtUtc,
+    "2026-07-20T11:00:00.000Z",
+    "offset replay timestamp canonicalized to Z before storage",
+  );
+  spool.close();
+});
