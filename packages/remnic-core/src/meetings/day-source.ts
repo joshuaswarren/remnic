@@ -107,12 +107,44 @@ function toMeetingActivitySnapshot(snapshot: ActivitySnapshot): MeetingActivityS
 }
 
 /**
+ * Fallback dwell for a lone trailing meeting-app tick on a machine that
+ * captured no other snapshot to estimate a cadence from. Five minutes keeps
+ * the inferred span above the default `minOverlapMinutes`, so a single
+ * end-of-window tick with overlapping audio still pairs.
+ */
+const LONE_TRAILING_SPAN_MS = 5 * 60_000;
+
+/**
+ * Estimate a machine's capture cadence as the median positive gap between its
+ * consecutive (time-sorted) snapshots; falls back to {@link LONE_TRAILING_SPAN_MS}
+ * when there is no gap to observe (a single snapshot on the machine).
+ */
+function estimateSamplingIntervalMs(sorted: readonly ActivitySnapshot[]): number {
+  const gaps: number[] = [];
+  let prevMs = Number.NaN;
+  for (const snapshot of sorted) {
+    const curMs = Date.parse(snapshot.capturedAtUtc);
+    if (Number.isFinite(prevMs) && Number.isFinite(curMs) && curMs > prevMs) gaps.push(curMs - prevMs);
+    prevMs = curMs;
+  }
+  if (gaps.length === 0) return LONE_TRAILING_SPAN_MS;
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  const median = gaps.length % 2 === 0 ? (gaps[mid - 1]! + gaps[mid]!) / 2 : gaps[mid]!;
+  return Math.round(median);
+}
+
+/**
  * Derive meeting-app foreground spans from the day's snapshots. A span is a
  * maximal run of consecutive (time-ordered) snapshots on ONE capture machine
  * whose app/title/url matches any configured pattern; the next non-matching
  * snapshot ends the run AND bounds its end (so a lone matching snapshot still
- * yields a non-zero span). Brief app switches during a call surface as adjacent
- * spans and the detector's `mergeGapMinutes` re-merges them.
+ * yields a non-zero span). A trailing run at the END of a machine's snapshots
+ * has no following non-matching tick to bound it, so a lone trailing tick is
+ * extended by the machine's sampling cadence rather than collapsing to a
+ * zero-length point the detector's `isFinitePair` rejects. Brief app switches
+ * during a call surface as adjacent spans and the detector's `mergeGapMinutes`
+ * re-merges them.
  */
 export function deriveAppSpans(
   snapshots: readonly ActivitySnapshot[],
@@ -139,6 +171,7 @@ export function deriveAppSpans(
   const spans: MeetingAppSpan[] = [];
   for (const machineSnaps of byMachine.values()) {
     const sorted = [...machineSnaps].sort(byCaptureTime);
+    const intervalMs = estimateSamplingIntervalMs(sorted);
     let run: MeetingAppSpan | null = null;
     for (const snapshot of sorted) {
       const hay = `${snapshot.app}\n${snapshot.windowTitle}\n${snapshot.browserUrl ?? ""}`.toLowerCase();
@@ -157,7 +190,18 @@ export function deriveAppSpans(
         run = null;
       }
     }
-    if (run !== null) spans.push(run);
+    if (run !== null) {
+      // End-of-array trailing run: with no following non-matching snapshot to
+      // bound it, a lone matching tick collapses to a zero-length point that
+      // detect's isFinitePair drops. Infer the missing next tick at the
+      // machine's sampling cadence so an end-of-window Zoom/Teams tick still
+      // yields a finite span that pairs with overlapping audio.
+      if (run.endUtc === run.startUtc) {
+        const startMs = Date.parse(run.startUtc);
+        if (Number.isFinite(startMs)) run.endUtc = new Date(startMs + intervalMs).toISOString();
+      }
+      spans.push(run);
+    }
   }
   spans.sort((a, b) =>
     a.startUtc < b.startUtc ? -1 : a.startUtc > b.startUtc ? 1
@@ -219,6 +263,14 @@ function shiftFusionInputsToUtc(
 }
 
 /**
+ * Cloud meeting-provider sources that supply explicit meeting boundaries and
+ * titles (Granola/Fireflies): such a conversation is a meeting on its own, so
+ * its audio window is marked `providerMeeting` to fire detect's provider branch
+ * even with no matching app span.
+ */
+const PROVIDER_MEETING_SOURCES: Record<string, true> = { granola: true, fireflies: true };
+
+/**
  * Derive audio windows from reconstructed conversations. Each conversation is
  * one window on its source; `distinctNonWearerSpeakers` counts distinct
  * non-self speaker labels (the audio-only detection rule), and the end is the
@@ -241,12 +293,21 @@ export function buildAudioWindows(
     const endUtc =
       conversation.endIso ??
       (Number.isFinite(maxEndMs) ? new Date(maxEndMs).toISOString() : conversation.startIso);
-    return {
+    const audioWindow: MeetingAudioWindow = {
       source: conversation.source,
       startUtc: conversation.startIso,
       endUtc,
       distinctNonWearerSpeakers: speakers.size,
     };
+    // Carry the provider-supplied title so app+audio/audio/provider candidates
+    // can label the meeting; mark known cloud meeting providers so a titled
+    // provider conversation with no matching app span still fires detect's
+    // provider branch (a meeting on its own).
+    if (conversation.title !== undefined && conversation.title.length > 0) {
+      audioWindow.title = conversation.title;
+    }
+    if (PROVIDER_MEETING_SOURCES[conversation.source]) audioWindow.providerMeeting = true;
+    return audioWindow;
   });
 }
 

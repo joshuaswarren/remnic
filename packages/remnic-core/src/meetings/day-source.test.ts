@@ -61,7 +61,7 @@ test("deriveAppSpans groups consecutive matching snapshots and breaks on a non-m
   );
   assert.equal(spans.length, 2, "the non-matching snapshot splits the run into two spans");
   assert.deepEqual(spans[0], { app: "Zoom", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:02:00.000Z" }, "the run ends at the next (non-matching) snapshot that bounds it");
-  assert.deepEqual(spans[1], { app: "Zoom", startUtc: "2026-03-10T14:03:00.000Z", endUtc: "2026-03-10T14:03:00.000Z" });
+  assert.deepEqual(spans[1], { app: "Zoom", startUtc: "2026-03-10T14:03:00.000Z", endUtc: "2026-03-10T14:04:00.000Z" }, "a lone trailing run gets a finite end at the machine's cadence, not a zero-length point");
 });
 
 test("deriveAppSpans matches a meeting URL in the browser url, not just the app name", () => {
@@ -220,4 +220,56 @@ test("loadDayData converts the transcript timezone so audio lines up with UTC sc
   const detected = detectMeetings(data.detection);
   assert.equal(detected.length, 1);
   assert.equal(detected[0]?.detectionSource, "app+audio");
+});
+
+test("deriveAppSpans gives a LONE TRAILING matching snapshot a finite span so end-of-window app+audio is not missed (issue #1900)", () => {
+  // A single Zoom tick at the end of the machine's snapshots, with NO later
+  // non-matching tick to bound it. Before the fix this pushed endUtc==startUtc,
+  // a zero-length point detect's isFinitePair dropped — so overlapping audio
+  // never paired and no meeting surfaced.
+  const spans = deriveAppSpans(
+    [snap({ app: "Zoom", capturedAtUtc: "2026-03-10T14:00:00.000Z" })],
+    config().appPatterns,
+  );
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0]?.startUtc, "2026-03-10T14:00:00.000Z");
+  assert.ok(
+    Date.parse(spans[0]!.endUtc) > Date.parse(spans[0]!.startUtc),
+    "the trailing run gets a non-zero end so detect's isFinitePair keeps it",
+  );
+  const detected = detectMeetings(
+    {
+      date: DATE,
+      appSpans: spans,
+      audioWindows: [
+        { source: "desktop", startUtc: "2026-03-10T14:00:00.000Z", endUtc: "2026-03-10T14:30:00.000Z", distinctNonWearerSpeakers: 1 },
+      ],
+    },
+    config(),
+  );
+  assert.equal(detected.length, 1, "the finite trailing span now pairs with the overlapping audio window");
+  assert.equal(detected[0]?.detectionSource, "app+audio");
+});
+
+test("buildAudioWindows marks provider sources + carries the title so a titled provider conversation with no app span is detected (issue #1900)", () => {
+  const windows = buildAudioWindows([
+    conv({
+      source: "granola",
+      conversationId: "g1",
+      title: "Weekly sync",
+      startIso: "2026-03-10T16:00:00.000Z",
+      endIso: "2026-03-10T16:30:00.000Z",
+      segments: [{ speaker: "Jane", isSelf: false, text: "hi", startIso: "2026-03-10T16:05:00.000Z" }],
+    }),
+  ]);
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0]?.providerMeeting, true, "a known provider source is marked so detect's provider branch fires");
+  assert.equal(windows[0]?.title, "Weekly sync", "the provider-supplied title is carried onto the window");
+  // No app spans and only one non-wearer speaker: the provider branch is the
+  // ONLY path to a meeting. Before the fix the window carried neither
+  // providerMeeting nor title, so nothing was detected.
+  const detected = detectMeetings({ date: DATE, appSpans: [], audioWindows: windows });
+  assert.equal(detected.length, 1);
+  assert.equal(detected[0]?.detectionSource, "provider");
+  assert.equal(detected[0]?.title, "Weekly sync");
 });

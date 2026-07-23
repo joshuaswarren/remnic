@@ -701,6 +701,26 @@ export class WorkspaceOpsCoordinator {
           // (#1904, Codex).
           await this.deps.qmd.update();
         },
+        // Meeting tail-step (issue #1900): schedule a debounced meeting rebuild
+        // for every day a wearable sync touched. Wired on the shared service so
+        // BOTH the auto-sync adapter and the manual HTTP/MCP/CLI sync path
+        // (EngramAccessService.wearablesSync -> getWearablesService().sync)
+        // rebuild affected meetings. Gated on meetings.enabled so a sync of
+        // other signals never spins up meeting building; a failure never fails
+        // the sync.
+        onDaysSynced: async (days) => {
+          if (!this.deps.config.meetings.enabled) return;
+          try {
+            const meetings = await this.getMeetingsService();
+            for (const day of days) meetings.requestBuild(day);
+          } catch (err) {
+            log.warn(
+              `meetings: failed to schedule post-wearable-sync build: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        },
       });
     }
     return this.deps.wearablesServiceInstance;

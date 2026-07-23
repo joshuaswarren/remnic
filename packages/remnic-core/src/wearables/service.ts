@@ -132,6 +132,15 @@ export interface WearablesServiceDeps {
   searchBackend: WearableSearchBackend | null;
   /** Fired after transcript writes so the search index refreshes. */
   reindexSearch?: () => Promise<void>;
+  /**
+   * Meeting tail-step (issue #1900): fired once after a sync with the union of
+   * days it touched, so a dependent subsystem (meeting building) can rebuild the
+   * affected day(s). Wired for EVERY sync path — auto-sync AND manual
+   * HTTP/MCP/CLI backfill — because they all share this one service. Optional;
+   * omitted by hosts that do not build meetings. The hook self-gates and never
+   * fails the sync.
+   */
+  onDaysSynced?: (days: readonly string[]) => void | Promise<void>;
 }
 
 export interface WearableTranscriptSearchResult {
@@ -397,6 +406,24 @@ export class WearablesService {
         },
       );
       summaries.push(summary);
+    }
+    // Tail step (issue #1900): a wearable sync changed a day's audio, so fan out
+    // the affected days to the injected build hook (wired to the meetings
+    // service's debounced rebuild). Fires for every sync path — auto-sync and
+    // manual HTTP/MCP/CLI backfill alike — since they all share this service.
+    // The hook self-gates on meetings.enabled and coalesces; a failure here
+    // never fails the sync that called us.
+    const syncedDays = [...new Set(summaries.flatMap((summary) => summary.days))];
+    if (syncedDays.length > 0 && this.deps.onDaysSynced) {
+      try {
+        await this.deps.onDaysSynced(syncedDays);
+      } catch (err) {
+        log.warn(
+          `wearables: post-sync meeting build hook failed (non-fatal): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
     return summaries;
   }
