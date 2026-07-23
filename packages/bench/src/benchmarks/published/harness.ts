@@ -487,6 +487,19 @@ function resolveAnswerSupportGate(options: ResolvedRunBenchmarkOptions): boolean
   );
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
+    .join(",")}}`;
+}
+
 function pairedAnswerReplayKey(
   trial: HarnessTrial,
   recalledText: string,
@@ -495,7 +508,7 @@ function pairedAnswerReplayKey(
 ): string {
   return createHash("sha256")
     .update(
-      JSON.stringify({
+      stableStringify({
         responder: {
           baseUrl: systemProvider?.baseUrl ?? null,
           disableThinking: systemProvider?.disableThinking ?? null,

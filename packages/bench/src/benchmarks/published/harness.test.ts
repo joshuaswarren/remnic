@@ -1444,3 +1444,48 @@ test("runPublishedHarness does not replay a baseline answer after a later trial 
   assert.equal(realResult.results.tasks[0]?.actual, "real answer");
   assert.equal(realResponds, 2);
 });
+
+test("pairedAnswerReplayKey hashes identical nested retryOptions regardless of property order", () => {
+  const baseSystemProvider = {
+    provider: "openai" as const,
+    model: "gpt-test",
+  };
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{
+      taskId: "paired",
+      question: "What happened?",
+      expected: "baseline answer",
+      recallSessionIds: ["session"],
+    }],
+  };
+  const runWithRetry = (retryOptions: Record<string, unknown>) => {
+    const baseline = makeFakeSystem({ recallPrefix: "shared" });
+    baseline.system.responder.respond = async () => ({
+      text: "baseline answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    });
+    return runPublishedHarness({
+      options: makeOptions(baseline.system, {
+        runtimeProfile: "baseline",
+        systemProvider: {
+          ...baseSystemProvider,
+          retryOptions: retryOptions as never,
+        },
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+  };
+  const first = runWithRetry({ maxAttempts: 3, baseBackoffMs: 100 });
+  const second = runWithRetry({ baseBackoffMs: 100, maxAttempts: 3 });
+  return Promise.all([first, second]).then(([a, b]) => {
+    assert.equal(
+      a.results.tasks[0]?.actual,
+      b.results.tasks[0]?.actual,
+      "identical retryOptions must produce identical answers",
+    );
+  });
+});
