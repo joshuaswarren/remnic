@@ -60,5 +60,5 @@ export {
   writePidFile,
 } from "./control.js";
 export type { PidRecord } from "./control.js";
-export { runCapture } from "./cli.js";
+export { runCapture, superviseReplay } from "./cli.js";
 export type { CliIo } from "./cli.js";

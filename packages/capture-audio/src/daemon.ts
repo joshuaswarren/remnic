@@ -59,6 +59,7 @@ function handleHealth(deps: DaemonDeps, res: http.ServerResponse): void {
     sttModel: deps.config.stt.modelPath,
     pendingChunks: deps.spool.pendingChunkCount(),
     instanceId: deps.spool.meta("instance_id"),
+    replayStatus: deps.spool.meta("replay_status"),
   });
 }
 

@@ -196,6 +196,36 @@ async function isOwnRunningDaemon(
   return live === record.instanceId;
 }
 
+/**
+ * Run replay ingestion as a supervised task AFTER the daemon is ready. Never
+ * throws: success/failure is surfaced via the spool's `replay_status` meta
+ * (also exposed on /v1/health) and the daemon log, so a failed or slow replay
+ * never kills the daemon or retracts its readiness.
+ */
+export async function superviseReplay(
+  spool: Spool,
+  replayDir: string,
+  io: { stdout: (l: string) => void; stderr: (l: string) => void },
+): Promise<void> {
+  // Yield first so the caller returns to serving before the (synchronous)
+  // ingest runs — readiness is already established.
+  await Promise.resolve();
+  spool.setMeta("replay_status", "running");
+  try {
+    const summary = ingestReplayDir(spool, replayDir);
+    spool.setMeta("replay_status", "ok");
+    io.stdout(
+      `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
+        `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
+    );
+  } catch (err) {
+    const message =
+      err instanceof CaptureConfigError || err instanceof CaptureInputError ? err.message : describeError(err);
+    spool.setMeta("replay_status", `failed: ${message}`);
+    io.stderr(`replay ingestion failed: ${message}`);
+  }
+}
+
 function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, stdout: (l: string) => void): number {
   ensurePrivateDir(paths.baseDir);
   if (existsSync(paths.configPath) && flags.force !== true) {
@@ -293,16 +323,11 @@ async function cmdStart(
   const spool = new Spool(paths.spoolPath);
   let handle: DaemonHandle;
   try {
-    if (replayDir) {
-      const summary = ingestReplayDir(spool, replayDir);
-      stdout(
-        `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
-          `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
-      );
-    }
+    // Bind and report the HTTP service FIRST so daemon readiness is independent
+    // of replay volume.
     handle = await startDaemon({ spool, config, token, capturing: false });
   } catch (err) {
-    // Don't leak the spool handle if ingestion or bind fails.
+    // Don't leak the spool handle if the bind fails.
     spool.close();
     throw err;
   }
@@ -312,6 +337,11 @@ async function cmdStart(
     port: handle.port,
   });
   stdout(`listening on ${handle.url}`);
+  if (replayDir) {
+    // Supervised AFTER readiness: replay volume/failure never delays or fails
+    // readiness, and never kills the daemon.
+    void superviseReplay(spool, replayDir, { stdout, stderr });
+  }
 
   return await new Promise<number>((resolve) => {
     let closing = false;

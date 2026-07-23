@@ -185,6 +185,12 @@ export class Spool {
     return row?.value ?? null;
   }
 
+  setMeta(key: string, value: string): void {
+    this.#db
+      .prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
+  }
+
   /**
    * Insert (or replace) a whole conversation with its segments and a
    * backing chunk row, atomically. Idempotent by conversation id:

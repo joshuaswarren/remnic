@@ -8,11 +8,11 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 import { test } from "node:test";
 
-import { runCapture } from "./cli.js";
+import { runCapture, superviseReplay } from "./cli.js";
 import { defaultDaemonConfig } from "./config.js";
 import { startDaemon } from "./daemon.js";
 import { Spool } from "./spool.js";
-import { writePidFile } from "./control.js";
+import { readPidRecord, writePidFile } from "./control.js";
 import { capturePaths, expandTilde } from "./paths.js";
 
 async function withBaseDir(fn: (baseDir: string) => Promise<void>): Promise<void> {
@@ -321,6 +321,81 @@ test("stop --force signals an unverifiable (health-unreachable) recorded pid", a
       await once(child, "exit");
     } finally {
       child.kill("SIGKILL");
+    }
+  });
+});
+
+test("superviseReplay ingests after readiness and surfaces an ok status", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cap-sr-"));
+  try {
+    writeFileSync(
+      path.join(dir, "a.json"),
+      JSON.stringify({
+        id: "conv_a",
+        startedAtUtc: "2026-07-20T15:00:00.000Z",
+        segments: [{ channel: "mic", text: "hi", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+      }),
+    );
+    const spool = new Spool(":memory:");
+    await superviseReplay(spool, dir, { stdout: () => undefined, stderr: () => undefined });
+    assert.equal(spool.meta("replay_status"), "ok");
+    assert.equal(spool.stats().conversations, 1);
+    spool.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a replay failure after readiness surfaces state without killing or lying about the daemon", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cap-sr-"));
+  try {
+    writeFileSync(path.join(dir, "bad.json"), JSON.stringify({ startedAtUtc: "2026-07-20T15:00:00.000Z", state: "finished", segments: [] }));
+    const spool = new Spool(":memory:");
+    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    try {
+      await superviseReplay(spool, dir, { stdout: () => undefined, stderr: () => undefined });
+      assert.ok((spool.meta("replay_status") ?? "").startsWith("failed"));
+      assert.equal(spool.stats().conversations, 0); // atomic: nothing persisted
+      const res = await fetch(`${handle.url}/v1/health`, { headers: { authorization: "Bearer tok" } });
+      assert.equal(res.status, 200); // daemon still serving
+      const body = (await res.json()) as { replayStatus?: unknown };
+      assert.ok(String(body.replayStatus).startsWith("failed")); // surfaced on health
+    } finally {
+      await handle.close();
+      spool.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readiness is established before replay and a slow replay still reaches ok", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const dir = await mkdtemp(path.join(tmpdir(), "cap-sr-"));
+    try {
+      const docs = Array.from({ length: 6 }, (_, i) => ({
+        id: `conv_${i}`,
+        startedAtUtc: `2026-07-20T15:0${i}:00.000Z`,
+        segments: [{ channel: "mic", text: `t${i}`, startUtc: `2026-07-20T15:0${i}:00.000Z`, endUtc: `2026-07-20T15:0${i}:01.000Z` }],
+      }));
+      writeFileSync(path.join(dir, "m.json"), JSON.stringify(docs));
+      const spool = new Spool(":memory:");
+      const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+      try {
+        // Readiness marker is written before any replay ingestion runs.
+        writePidFile(paths.pidPath, process.pid, { instanceId: spool.meta("instance_id")!, host: handle.host, port: handle.port });
+        assert.ok(readPidRecord(paths.pidPath)?.instanceId, "ready marker set before replay");
+        await superviseReplay(spool, dir, { stdout: () => undefined, stderr: () => undefined });
+        assert.equal(spool.meta("replay_status"), "ok");
+        assert.equal(spool.stats().conversations, 6);
+        assert.equal((await fetch(`${handle.url}/v1/health`, { headers: { authorization: "Bearer tok" } })).status, 200);
+      } finally {
+        await handle.close();
+        spool.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
