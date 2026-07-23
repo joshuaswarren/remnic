@@ -150,8 +150,12 @@ corroboration (the existing `+0.15` trust signal; see [wearables](wearables.md))
 - **Spool is a buffer, not an archive.** Raw WAV/frame files are deleted once a
   chunk is transcribed (unless `rawRetentionHours > 0`). A janitor prunes
   segments/conversations older than `spoolRetentionDays` (default `30`). The
-  durable copy is the Remnic day store, whose own retention is governed by
-  [retention policy](retention-policy.md).
+  durable copy is the Remnic day store. Note that day transcripts and rendered
+  digests do **not** auto-age: the [retention policy](retention-policy.md)
+  tiers and purges *memory files*, not these day artifacts, and the activity
+  store exposes only a `pruneOlderThan` snapshot-row helper — so captured day
+  files persist until you delete them (the wearables pipeline leaves an existing
+  day transcript in place and expects manual removal).
 
 ## Platform support & degradation
 
@@ -383,6 +387,7 @@ import { ActivityStore, composeActivityDigestBody, detectMeetings } from "@remni
   above are added as their slices land).
 - [Connectors CLI](connectors.md) and [live connectors](live-connectors.md) —
   the operator surface for scheduled ingest.
-- [Retention policy](retention-policy.md) — how the durable day store ages out.
+- [Retention policy](retention-policy.md) — hot/cold tiering and purging of
+  *memory files* (not the day transcripts/digests, which persist until removed).
 - [Architecture index](architecture/README.md) and `AGENTS.md` — architecture
   boundaries and the `activity/` + `meetings/` core-subsystem notes.
