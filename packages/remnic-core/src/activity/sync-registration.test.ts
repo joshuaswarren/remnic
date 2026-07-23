@@ -8,6 +8,7 @@ import {
   type ActivitySyncRegistrarDeps,
   type ActivitySyncSchedulerLike,
 } from "./sync-registration.js";
+import { defaultActivityConfig } from "./config.js";
 
 class FakeScheduler implements ActivitySyncSchedulerLike {
   starts = 0;
@@ -33,7 +34,7 @@ function makeDeps(overrides: Partial<ActivitySyncRegistrarDeps> = {}): {
   const created: FakeScheduler[] = [];
   const state = { retries: 0 };
   const deps: ActivitySyncRegistrarDeps = {
-    config: { enabled: true, timezone: "UTC", syncDays: 1, autoSyncIntervalMinutes: 15, sources: [] },
+    config: { ...defaultActivityConfig(), enabled: true, sources: [] },
     memoryDir: "/tmp/remnic-activity-registrar",
     qmdCollection: "openclaw-engram",
     secureStoreEnabled: false,

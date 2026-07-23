@@ -8,6 +8,7 @@ import { ACTIVITY_SYNC_DEFAULT_INTERVAL_MS, ActivitySyncScheduler } from "./sche
 import { runActivitySyncOnce, type ActivitySyncRunSummary } from "./runner.js";
 import { ActivityStore } from "./store.js";
 import { activityCursorKey } from "./pipeline.js";
+import { defaultActivityConfig } from "./config.js";
 import type { ActivityConfig, ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
 /** A hand-driven timer: records armed callbacks + intervals, fires on demand. */
@@ -53,6 +54,7 @@ const SUMMARY: ActivitySyncRunSummary = {
 
 function enabledConfig(): ActivityConfig {
   return {
+    ...defaultActivityConfig(),
     enabled: true,
     timezone: "UTC",
     syncDays: 1,
@@ -63,6 +65,7 @@ function enabledConfig(): ActivityConfig {
 
 function disabledConfig(): ActivityConfig {
   return {
+    ...defaultActivityConfig(),
     enabled: false,
     timezone: "UTC",
     syncDays: 1,

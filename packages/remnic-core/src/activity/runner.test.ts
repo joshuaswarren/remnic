@@ -8,6 +8,7 @@ import { activityDatabasePath, ActivityStore } from "./store.js";
 import { activityDigestPath } from "./digest.js";
 import { runActivitySyncOnce } from "./runner.js";
 import { activityCursorKey } from "./pipeline.js";
+import { defaultActivityConfig } from "./config.js";
 import type {
   ActivityConfig,
   ActivitySnapshot,
@@ -55,6 +56,7 @@ function fixtureClient(
 
 function enabledConfig(overrides: Partial<ActivityConfig> = {}): ActivityConfig {
   return {
+    ...defaultActivityConfig(),
     enabled: true,
     timezone: "UTC",
     syncDays: 1,
@@ -70,6 +72,7 @@ test("disabled config makes no client, no HTTP call, and no store write", async 
     let clientBuilt = false;
     const summary = await runActivitySyncOnce({
       config: {
+        ...defaultActivityConfig(),
         enabled: false,
         timezone: "UTC",
         syncDays: 1,

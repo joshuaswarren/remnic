@@ -1755,3 +1755,12 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryExtensionsEnabled` | `true` | `true` |
 | `memoryExtensionsRoot` | `""` | `""` |
 | `offlineSyncExcludes` | `[]` | `[]` |
+| `activity.enabled` | `false` | `false` until a trusted local activity source is configured |
+| `activity.extractionMode` | `"off"` | `"off"`; set `"smart"` only to create trust-gated first-person memory candidates |
+| `activity.timezone` | `"UTC"` | Machine-local IANA timezone |
+| `activity.sourceTrust` | `0.6` | `0.6` |
+| `activity.autoApproveTrust` | `0.8` | `0.8` |
+| `activity.reviewTrust` | `0.5` | `0.5` |
+| `activity.minConfidence` | `0.7` | `0.7` |
+| `activity.minImportance` | `"normal"` | `"normal"` |
+| `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
