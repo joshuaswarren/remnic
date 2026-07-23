@@ -5762,9 +5762,18 @@ export class EngramAccessService {
   }
 
   async wearablesSync(request: { source?: string; date?: string; days?: number; forceMemories?: boolean } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
-    return this.orchestrator
-      .getWearablesService(this.writableNamespaceFor(request.namespace, request.sessionKey, request.authenticatedPrincipal))
+    const namespace = this.writableNamespaceFor(request.namespace, request.sessionKey, request.authenticatedPrincipal);
+    const summaries = await this.orchestrator
+      .getWearablesService(namespace)
       .sync({ source: request.source, date: request.date, days: request.days, forceMemories: request.forceMemories });
+    // Manual one-shot sync (HTTP/MCP/CLI): the meeting tail-step arms a
+    // debounced, unref'd timer a short-lived caller exits before firing. Drain
+    // it now so a manual sync's meeting build actually runs before we return.
+    // The long-lived auto-sync daemon does NOT flush — it keeps coalescing.
+    if (this.orchestrator.config.meetings.enabled) {
+      await (await this.orchestrator.getMeetingsService(namespace)).flushBuilds();
+    }
+    return summaries;
   }
 
   async wearablesTranscriptDay(request: { date: string; source?: string } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {

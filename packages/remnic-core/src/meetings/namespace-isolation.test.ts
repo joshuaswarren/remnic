@@ -43,12 +43,15 @@ test("namespace isolation: principal A's wearable source, meeting record, and ep
     const sync = await h.service.wearablesSync({ date: DATE, ...scope("nsA", "pA") });
     assert.equal(sync[0]?.transcriptsWritten.includes(DATE), true, "sync wrote a transcript for the day");
 
+    // The manual sync already flushed the debounced tail-step build (P2 fix;
+    // see manual-sync-flush.test.ts), so this explicit build is an idempotent
+    // rebuild: detection is stable (the audio meeting re-detects) and the
+    // unchanged record regenerates no duplicate episode. The record + episode
+    // that physically landed under nsA are asserted on storage below.
     const build = await h.service.meetingsBuild(DATE, scope("nsA", "pA"));
     assert.equal(build.enabled, true);
     assert.equal(build.meetings.length, 1, "one audio-only meeting detected from A's wearables");
     assert.equal(build.meetings[0]?.detectionSource, "audio");
-    assert.ok(build.episodes, "episode generation ran (memory generator injected)");
-    assert.equal(build.episodes.written, 1, "one episode memory written");
 
     const storageA = await h.storageForNs("nsA");
     assert.notEqual(
