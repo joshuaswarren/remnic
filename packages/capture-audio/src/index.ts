@@ -44,6 +44,7 @@ export type {
   DaemonSegment,
   QueryFinalOptions,
   SegmentInput,
+  SpeakerClusterRow,
   SpeakerInput,
   SpeakerRow,
 } from "./spool.js";
@@ -69,3 +70,18 @@ export {
 export type { PidRecord } from "./control.js";
 export { runCapture, superviseReplay } from "./cli.js";
 export type { CliIo } from "./cli.js";
+export {
+  createDesktopConnector,
+  daemonConversationToWearable,
+  DesktopDaemonError,
+  DESKTOP_SOURCE_ID,
+  ensureDesktopConnectorRegistered,
+  resolveCaptureAudioToken,
+  wearableConnectorRegistration,
+} from "./connector.js";
+export { dedupeCrossChannel, wordJaccard } from "./dedup.js";
+export type { DedupSegment } from "./dedup.js";
+export { assembleConversations } from "./assembly.js";
+export type { AssemblySegment } from "./assembly.js";
+export { cosineSimilarity, decodeEmbedding, encodeEmbedding, SpeakerClusterer } from "./diarization.js";
+export type { Embedding, SpeakerCluster } from "./diarization.js";

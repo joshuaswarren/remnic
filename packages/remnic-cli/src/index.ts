@@ -293,6 +293,7 @@ import { parseConnectorConfig, stripConfigArgv } from "./parse-connector-config.
 // import; slice 1 ships only the dispatcher and surfaces a clean install hint
 // when an adapter package is absent.
 import { cmdImport, IMPORT_USAGE } from "./import-dispatch.js";
+import { cmdCapture } from "./capture-dispatch.js";
 import { cmdImportLosslessClaw } from "./import-lossless-claw-cmd.js";
 
 export { parseConnectorConfig, stripConfigArgv };
@@ -403,6 +404,7 @@ type CommandName =
   | "wearables"
   | "capsule"
   | "offline"
+  | "capture"
   | "oauth";
 
 type DaemonAction = "start" | "stop" | "restart" | "install" | "uninstall" | "status";
@@ -13387,6 +13389,18 @@ Other:
       // and the destination is the LCM SQLite store, not the orchestrator.
       const exitCode = await cmdImportLosslessClaw(rest, {
         resolveMemoryDir,
+        stdout: (line) => console.log(line),
+        stderr: (line) => console.error(line),
+      });
+      if (exitCode !== 0) process.exit(exitCode);
+      break;
+    }
+
+    case "capture": {
+      // `remnic capture audio <sub>` forwards to the optional
+      // @remnic/capture-audio CLI (loaded via computed-specifier dynamic
+      // import; clean install hint when absent — issue #1897).
+      const exitCode = await cmdCapture(rest, {
         stdout: (line) => console.log(line),
         stderr: (line) => console.error(line),
       });
