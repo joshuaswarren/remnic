@@ -12,6 +12,7 @@ const expectedPublishDirs = [
   "packages/bench",
   "packages/coding-graph",
   "packages/capture-audio",
+  "packages/capture-screen",
   "packages/export-weclone",
   "packages/import-weclone",
   "packages/import-chatgpt",
