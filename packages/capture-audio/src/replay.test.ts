@@ -237,3 +237,22 @@ test("symlinked replay fixtures are rejected", () => {
   assert.throws(() => ingestReplayDir(spool, dir), /symlink/);
   spool.close();
 });
+
+test("duplicate conversation ids within a batch are rejected (no silent overwrite)", () => {
+  const spool = new Spool(":memory:");
+  const dir = fixtureDir({
+    "a.json": {
+      id: "conv_dup",
+      startedAtUtc: "2026-07-20T15:00:00.000Z",
+      segments: [{ channel: "mic", text: "one", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }],
+    },
+    "b.json": {
+      id: "conv_dup",
+      startedAtUtc: "2026-07-20T16:00:00.000Z",
+      segments: [{ channel: "mic", text: "two", startUtc: "2026-07-20T16:00:00.000Z", endUtc: "2026-07-20T16:00:01.000Z" }],
+    },
+  });
+  assert.throws(() => ingestReplayDir(spool, dir), /duplicate conversation id/);
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});

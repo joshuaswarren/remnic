@@ -170,6 +170,7 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
 
   // Phase 1 — parse + validate everything; no spool writes.
   const parsedFixtures: ParsedFixture[] = [];
+  const seenIds = new Set<string>();
   let files = 0;
   for (const name of entries) {
     const filePath = path.join(dir, name);
@@ -199,6 +200,14 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
         });
         conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
       }
+      // Distinct conversations must not share an id within one batch — a
+      // silent delete-then-insert overwrite would drop data. (Cross-call
+      // re-ingest of the same fixture stays idempotent: each call is its own
+      // batch.)
+      if (seenIds.has(conv.id as string)) {
+        throw new CaptureConfigError(`${where}: duplicate conversation id '${conv.id}' in this replay batch`);
+      }
+      seenIds.add(conv.id as string);
       const speakers = parseSpeakers(asObject(doc, where).speakers, where);
       parsedFixtures.push({ speakers, conv });
     });
