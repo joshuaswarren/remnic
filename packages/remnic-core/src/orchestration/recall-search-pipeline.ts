@@ -59,7 +59,7 @@ import {
   type QmdRecallSnapshot,
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
-import { isNonRecallableMemoryPath } from "./orchestrator-helpers.js";
+import { isActivityDigestPath, isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -466,6 +466,7 @@ export class RecallSearchPipelineCoordinator {
       recallNamespaces: options.recallNamespaces,
       resolveNamespace: options.resolveNamespace,
       limit: qmdFetchLimit,
+      memoryRoot: this.deps.config.memoryDir,
     });
     const emitDebugSnapshot = async (
       results: QmdSearchResult[],
@@ -610,6 +611,7 @@ export class RecallSearchPipelineCoordinator {
         recallNamespaces: options.recallNamespaces,
         resolveNamespace: options.resolveNamespace,
         limit: fetchLimit,
+        memoryRoot: this.deps.config.memoryDir,
       });
 
       if (filteredResults.length >= qmdFetchLimit) {
@@ -692,10 +694,10 @@ export class RecallSearchPipelineCoordinator {
             { allowArchived: true },
           )
         : []
-    ).filter((result) => !isNonRecallableMemoryPath(result.path));
-    // Drop non-recallable seed paths (artifacts, meeting records) BEFORE the cap
-    // so they never consume a result slot — and so EVERY early-return /
-    // direct-caller path below returns already-filtered seed results.
+    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir));
+    // Drop non-recallable seed paths (artifacts, activity digests, meeting records)
+    // BEFORE the cap so they never consume a result slot — and so EVERY
+    // early-return / direct-caller path below returns already-filtered seeds.
     if (scopedSeedResults.length >= cappedLimit) {
       return scopedSeedResults.slice(0, cappedLimit);
     }
@@ -729,7 +731,7 @@ export class RecallSearchPipelineCoordinator {
       [...scopedSeedResults, ...scored],
       this.deps.namespaceFromPath,
       cappedLimit,
-      { filter: (result) => !isNonRecallableMemoryPath(result.path) },
+      { filter: (result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir) },
     );
   }
 
@@ -977,8 +979,9 @@ export class RecallSearchPipelineCoordinator {
       }
       results = scopedResults;
     }
-    // Isolation contract: generic recall paths must exclude artifacts + meeting records.
-    results = results.filter((r) => !isNonRecallableMemoryPath(r.path));
+    // Dedicated-surface isolation: generic recall must exclude artifacts and
+    // activity digests (both remain readable via explicit search).
+    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =
@@ -1354,10 +1357,15 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
+        // Activity day-digests are a dedicated searchable surface (explicit
+        // activity search), never generic recall — captured screen text must not
+        // auto-inject into ordinary prompts (issue #1899). Keyed on the PATH:
+        // the digest's `kind` frontmatter marker does not survive parseFrontmatter.
         if (
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
-            memory.frontmatter.memoryKind === "procedural")
+            memory.frontmatter.memoryKind === "procedural" ||
+            isActivityDigestPath(memory.path, this.deps.config.memoryDir))
         ) {
           dedicatedSurfaceFilteredCount += 1;
           continue;
@@ -1382,7 +1390,7 @@ export class RecallSearchPipelineCoordinator {
     }
     if (dedicatedSurfaceFilteredCount > 0) {
       log.debug(
-        `dedicated surface filter removed ${dedicatedSurfaceFilteredCount} dream/procedural candidates from generic recall`,
+        `dedicated surface filter removed ${dedicatedSurfaceFilteredCount} dream/procedural/activity-digest candidates from generic recall`,
       );
     }
     if (forgottenFilteredCount > 0) {

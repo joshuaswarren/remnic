@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.15.1",
+  "version": "9.16.1",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -5615,6 +5615,65 @@
         "type": "string",
         "default": ".versions",
         "description": "Name of the sidecar directory inside memoryDir for version snapshots."
+      },
+      "activity": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Opt-in screen-activity synchronization from trusted local capture daemons.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate for the activity subsystem."
+          },
+          "timezone": {
+            "type": "string",
+            "default": "UTC",
+            "description": "IANA timezone used to group captured snapshots into days."
+          },
+          "syncDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "default": 1,
+            "description": "Number of local days to synchronize per run."
+          },
+          "autoSyncIntervalMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "default": 15,
+            "description": "Periodic auto-sync cadence in minutes (default 15)."
+          },
+          "sources": {
+            "type": "array",
+            "default": [],
+            "description": "Trusted local capture daemons to synchronize.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "machineLabel",
+                "baseUrl"
+              ],
+              "properties": {
+                "machineLabel": {
+                  "type": "string",
+                  "description": "Stable label for the capture machine."
+                },
+                "baseUrl": {
+                  "type": "string",
+                  "description": "HTTP or HTTPS URL of the capture daemon."
+                },
+                "token": {
+                  "type": "string",
+                  "description": "Literal bearer token sent to a trusted local capture daemon over loopback; this parser does not resolve secret references, so omit the field when the daemon needs no auth."
+                }
+              }
+            }
+          }
+        }
       },
       "wearables": {
         "type": "object",

@@ -86,6 +86,7 @@ function fallbackCoordinator(seed: QmdSearchResult[], archived: MemoryFile[]): R
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
     readArchivedMemoriesForNamespaces,
     namespaceFromPath,
+    config: { memoryDir: "/mem" },
   } as unknown as RecallSearchPipelineDeps;
   return new RecallSearchPipelineCoordinator(deps);
 }

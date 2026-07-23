@@ -5,7 +5,7 @@ import {
   filterRecallCandidates,
   isArtifactMemoryPath,
   isMeetingRecordPath,
-  isNonRecallableMemoryPath,
+  isGenericRecallExcludedPath,
 } from "../orchestration/orchestrator-helpers.js";
 import type { QmdSearchResult } from "../types.js";
 
@@ -31,12 +31,12 @@ test("isMeetingRecordPath matches only the full meeting-record shape", () => {
   assert.equal(isMeetingRecordPath("facts/team-meetings-notes.md"), false);
 });
 
-test("isNonRecallableMemoryPath unifies artifacts + meeting records", () => {
-  assert.equal(isNonRecallableMemoryPath("artifacts/x.md"), true);
-  assert.equal(isNonRecallableMemoryPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
-  assert.equal(isNonRecallableMemoryPath("facts/a.md"), false);
+test("isGenericRecallExcludedPath unifies artifacts + meeting records", () => {
+  assert.equal(isGenericRecallExcludedPath("artifacts/x.md"), true);
+  assert.equal(isGenericRecallExcludedPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), true);
+  assert.equal(isGenericRecallExcludedPath("facts/a.md"), false);
   // A namespace named "meetings" is not a record dir → its memories stay recallable.
-  assert.equal(isNonRecallableMemoryPath("namespaces/meetings/facts/a.md"), false);
+  assert.equal(isGenericRecallExcludedPath("namespaces/meetings/facts/a.md"), false);
   // The artifact predicate itself is unchanged.
   assert.equal(isArtifactMemoryPath("meetings/2026-03-10/mtg-2026-03-10-abcdef01.md"), false);
 });
@@ -82,7 +82,7 @@ test("filterRecallCandidates drops non-recallable paths BEFORE applying the limi
     ["facts/a.md", "facts/b.md"],
   );
   assert.ok(
-    kept.every((r) => !isNonRecallableMemoryPath(r.path)),
+    kept.every((r) => !isGenericRecallExcludedPath(r.path)),
     "no non-recallable path may survive the cap",
   );
 });

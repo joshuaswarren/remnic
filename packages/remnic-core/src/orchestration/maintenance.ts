@@ -57,6 +57,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
+import { ActivitySyncRegistrar } from "../activity/sync-registration.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -133,7 +134,20 @@ export class MaintenanceScheduler {
   // fixture.
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
 
-  constructor(private readonly deps: MaintenanceSchedulerDeps) {}
+  // ── Activity (screen-capture) sync scheduler (issue #1900) ──
+  // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
+  private readonly activityRegistrar: ActivitySyncRegistrar;
+
+  constructor(private readonly deps: MaintenanceSchedulerDeps) {
+    this.activityRegistrar = new ActivitySyncRegistrar({
+      config: deps.config.activity,
+      memoryDir: deps.config.memoryDir,
+      qmdCollection: deps.config.qmdCollection,
+      secureStoreEnabled: resolveRecallAuxiliaryCapabilities(deps.config).secureStore,
+      getQmd: () => deps.getQmd(),
+      requestReindexRetry: () => this.requestQmdMaintenanceForTool("activity-reindex-retry"),
+    });
+  }
 
   // ───────────────────────────────────────────────────────────────────────
   // Cron auto-registration
@@ -148,7 +162,7 @@ export class MaintenanceScheduler {
    * Returns when all eligible registrations have completed so callers that
    * `await deferredReady` can rely on jobs.json being current.
    */
-  async autoRegisterCrons(_signal: AbortSignal): Promise<void> {
+  async autoRegisterCrons(signal: AbortSignal): Promise<void> {
     if (resolveRecallAuxiliaryCapabilities(this.deps.config).daySummary) {
       try {
         await this.autoRegisterDaySummaryCron();
@@ -191,6 +205,11 @@ export class MaintenanceScheduler {
         log.debug(`graph edge decay cron auto-register failed (non-fatal): ${err}`);
       }
     }
+
+    // Activity (screen-capture) in-process sync scheduler (issue #1900),
+    // master default-off. The registrar owns the arm/re-arm/teardown contract
+    // (stop-prior, abort/teardown guards, secure-store refusal, retry latch).
+    await this.activityRegistrar.register(signal);
   }
 
   async autoRegisterDaySummaryCron(): Promise<void> {
@@ -1125,10 +1144,23 @@ export class MaintenanceScheduler {
   // ───────────────────────────────────────────────────────────────────────
 
   /**
-   * Clear any pending debounce timer. Called from the orchestrator's
-   * destroy() so a late tick does not fire on a torn-down instance.
+   * Clear any pending debounce timer and drain the activity sync scheduler.
+   * Called from the orchestrator's destroy() so a late tick does not fire on a
+   * torn-down instance and no in-flight activity tick keeps writing after
+   * teardown. Async: awaits the scheduler's abort+drain before resolving.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
+    // The registrar latches teardown first (so a draining tick's onRun cannot
+    // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
+    // await it last so the rest of teardown runs while the aborted tick unwinds.
+    const activityDrain = this.activityRegistrar.dispose();
+    if (this.qmdMaintenanceTimer) {
+      clearTimeout(this.qmdMaintenanceTimer);
+      this.qmdMaintenanceTimer = null;
+    }
+    this.qmdMaintenancePending = false;
+    await activityDrain;
+    // Belt-and-suspenders: clear anything a late tick armed before the latch.
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;

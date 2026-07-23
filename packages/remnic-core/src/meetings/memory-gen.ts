@@ -15,7 +15,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
-import type { MemoryWriteResult } from "../storage.js";
+import type { MemoryWriteResult } from "../index.js";
 import {
   composeMemoryEnvelope,
   type SealedMemoryEnvelope,

@@ -55,11 +55,11 @@ function timezoneOffsetIso(instant: Date, timezone: string): string {
   return match?.[1] ?? "+00:00";
 }
 
-function assertValidTimezone(timezone: string): void {
+export function assertValidTimezone(timezone: string): void {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: timezone });
   } catch {
-    throw new RangeError(`Invalid IANA timezone "${timezone}" for the activity digest.`);
+    throw new RangeError(`Invalid IANA timezone "${timezone}".`);
   }
 }
 

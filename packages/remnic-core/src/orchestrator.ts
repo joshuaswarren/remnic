@@ -138,7 +138,7 @@ import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
-  isNonRecallableMemoryPath,
+  isGenericRecallExcludedPath,
   mergeArtifactRecallCandidates,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
@@ -955,7 +955,7 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
-    this.maintenanceScheduler.dispose();
+    await this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
     // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
     // short-lived writer's durable fact hash reaches disk before the process
@@ -2481,7 +2481,7 @@ export class Orchestrator {
     if (!paths) return null;
     const scoped = new Set<string>();
     for (const memoryPath of paths) {
-      if (!memoryPath || isNonRecallableMemoryPath(memoryPath)) continue;
+      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config.memoryDir)) continue;
       if (
         resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))

@@ -52,6 +52,7 @@ import {
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseMeetingsConfig } from "./meetings/config.js";
+import { parseActivityConfig } from "./activity/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
@@ -1173,6 +1174,7 @@ export function parseConfig(
 
   // Wearable transcript ingestion (Limitless / Bee / Omi) — delegated to the wearables module.
   const wearables = parseWearablesConfig(cfg.wearables);
+  const activity = parseActivityConfig(cfg.activity);
 
   // Retrospective meeting intelligence (issue #1900) — delegated to the meetings module.
   const meetings = parseMeetingsConfig(cfg.meetings);
@@ -2340,6 +2342,7 @@ export function parseConfig(
     procedural,
     wearables,
     meetings,
+    activity,
     provenance,
     // At-rest encryption (issue #690 PR 3/4)
     // coerceBool handles CLI string inputs: `--config secureStoreEnabled=true`

@@ -75,6 +75,7 @@ packaged adapter is.
 ### Wearables and connectors
 
 - [Wearable transcripts](wearables.md) — Ingest Limitless, Bee, and Omi recordings into searchable day transcripts under strict trust gates.
+- [Desktop capture](desktop-capture.md) — On-screen activity, desktop audio, and meeting intelligence: the daemon model, privacy charter, and what has shipped versus what is planned.
 - [Live connectors](live-connectors.md) — The continuous, scheduled ingest path for external services.
 - [Connectors CLI](connectors.md) — Inspect and manually control the live connectors from the operator surface.
 
