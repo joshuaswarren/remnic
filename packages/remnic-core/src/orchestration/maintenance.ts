@@ -1147,7 +1147,10 @@ export class MaintenanceScheduler {
    * destroy() so a late tick does not fire on a torn-down instance.
    */
   dispose(): void {
-    this.activitySyncScheduler?.stop();
+    // stop() aborts the in-flight sync synchronously and clears the timer; the
+    // returned drain is best-effort in this sync teardown (the unref'd timer
+    // never holds the process open).
+    void this.activitySyncScheduler?.stop();
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;

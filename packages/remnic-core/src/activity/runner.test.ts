@@ -7,6 +7,7 @@ import test from "node:test";
 import { activityDatabasePath, ActivityStore } from "./store.js";
 import { activityDigestPath } from "./digest.js";
 import { runActivitySyncOnce } from "./runner.js";
+import { activityCursorKey } from "./pipeline.js";
 import type {
   ActivityConfig,
   ActivitySnapshot,
@@ -127,7 +128,7 @@ test("enabled source syncs from parsed config: persists, renders digest, advance
       digestsWritten: 1,
       cursor: "c1",
     });
-    assert.equal(store.getCursor("workstation-a"), "c1");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "c1");
     assert.match(await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8"), /snapshotCount: 2/);
   } finally {
     store.close();
@@ -175,7 +176,7 @@ test("multi-source: one source's fault is isolated and never advances the other"
     assert.equal(byLabel.get("workstation-b")?.ran, false);
     assert.match(byLabel.get("workstation-b")?.error ?? "", /connection refused/);
     // The healthy source still committed; the faulty one never wrote a cursor.
-    assert.equal(store.getCursor("workstation-b"), null);
+    assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -248,7 +249,7 @@ test("stop: an aborted run leaves the cursor unadvanced", async () => {
     assert.equal(summary.errorCount, 1);
     assert.equal(summary.ranCount, 0);
     assert.equal(client.seenCursors.length, 0, "aborted before any fetch reached the daemon");
-    assert.equal(store.getCursor("workstation-a"), null, "no cursor persisted on abort");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null, "no cursor persisted on abort");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -273,7 +274,7 @@ test("restart: a fresh run resumes from the persisted cursor", async () => {
       now: NOW,
       createSourceClient: () => first,
     });
-    assert.equal(store.getCursor("workstation-a"), "c1");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "c1");
 
     // Simulate a process restart: a brand-new client that only knows how to
     // continue from the persisted cursor. If the runner ignored it, this
@@ -292,7 +293,7 @@ test("restart: a fresh run resumes from the persisted cursor", async () => {
 
     assert.deepEqual(second.seenCursors, ["c1"], "restart resumed from the stored cursor");
     assert.equal(summary.results[0]?.inserted, 1);
-    assert.equal(store.getCursor("workstation-a"), "c1");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "c1");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });

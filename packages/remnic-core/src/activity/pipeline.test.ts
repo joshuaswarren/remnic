@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { activityDigestPath } from "./digest.js";
-import { syncActivitySource } from "./pipeline.js";
+import { activityCursorKey, syncActivitySource } from "./pipeline.js";
 import { ActivityStore } from "./store.js";
 import type { ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
@@ -64,7 +64,7 @@ test("syncActivitySource persists every page, renders the digest, then advances 
       cursor: "cursor-2",
       digestWritten: true,
     });
-    assert.equal(store.getCursor("workstation-a"), "cursor-2");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "cursor-2");
     assert.deepEqual(
       store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z").map((item) => item.machine),
       ["workstation-a", "workstation-a"],
@@ -98,7 +98,7 @@ test("syncActivitySource leaves the cursor unchanged when a later page cannot pe
       /capture timestamp/,
     );
 
-    assert.equal(store.getCursor("workstation-a"), null);
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null);
     assert.equal(store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z").length, 1);
   } finally {
     store.close();
@@ -127,7 +127,7 @@ test("syncActivitySource completes normally when the final page lands on the pag
     const result = await syncActivitySource(client, { date: "2026-07-22", timezone: "UTC", memoryDir, store, maxPages: 2 });
     assert.equal(result.inserted, 2);
     assert.equal(result.cursor, "cursor-1");
-    assert.equal(store.getCursor("workstation-a"), "cursor-1");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), "cursor-1");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -154,7 +154,7 @@ test("syncActivitySource rejects runaway pagination and leaves the cursor unadva
       syncActivitySource(runaway, { date: "2026-07-22", timezone: "UTC", memoryDir, store, maxPages: 3 }),
       /exceeded 3 pages/,
     );
-    assert.equal(store.getCursor("workstation-a"), null);
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null);
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -175,9 +175,9 @@ test("concurrent same-day syncs from two sources persist without corrupting the 
 
     const digest = await readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8");
     assert.match(digest, /kind: activity-digest/);
-    assert.match(digest, /snapshotCount: [12]/);
-    assert.equal(store.getCursor("workstation-a"), null);
-    assert.equal(store.getCursor("workstation-b"), null);
+    assert.match(digest, /snapshotCount: 2/);
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null);
+    assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });

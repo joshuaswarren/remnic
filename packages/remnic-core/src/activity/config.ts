@@ -15,11 +15,15 @@ function optionalString(value: unknown, name: string): string | undefined {
   return value;
 }
 
+const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true };
+
 /**
- * Parse and protocol-check an activity source base URL. Shared with
- * ActivityHttpSourceClient so config-load and client construction reject the
- * exact same shapes with the same prefixed message (a bare `new URL()` throws
- * an opaque TypeError on malformed input).
+ * Parse, protocol-check, and confine an activity source base URL to a local
+ * loopback host. Shared with ActivityHttpSourceClient so config-load and client
+ * construction reject the exact same shapes with the same prefixed message (a
+ * bare `new URL()` throws an opaque TypeError on malformed input). The bearer
+ * token travels in an Authorization header, so a non-loopback baseUrl would
+ * exfiltrate it; the subsystem contract is local capture daemons only.
  */
 export function validateActivityBaseUrl(baseUrl: string): URL {
   let parsed: URL;
@@ -30,6 +34,11 @@ export function validateActivityBaseUrl(baseUrl: string): URL {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
+  }
+  // URL keeps IPv6 hosts bracketed (e.g. "[::1]"); normalize before the lookup.
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (LOOPBACK_HOSTS[host] !== true && !/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+    throw new RangeError(`activity source baseUrl must target a loopback host (got ${parsed.hostname})`);
   }
   return parsed;
 }

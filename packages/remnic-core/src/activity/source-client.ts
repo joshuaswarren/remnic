@@ -1,4 +1,5 @@
 import { validateActivityBaseUrl } from "./config.js";
+import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { ActivitySnapshot, ActivitySnapshotPage, ActivitySourceCheck, ActivitySourceClient } from "./types.js";
 
 /** Abort a stalled capture-daemon request rather than hang the whole sync. */
@@ -109,7 +110,15 @@ export class ActivityHttpSourceClient implements ActivitySourceClient {
       await this.request(requestUrl(this.baseUrl, "/v1/health", {}), signal);
       return { ok: true };
     } catch (error: unknown) {
-      return { ok: false, detail: error instanceof Error ? error.message.replace("activity source ", "") : "request failed" };
+      // The controlled `HTTP <status>` message is safe to surface verbatim;
+      // anything else (network/runtime fetch errors that can embed hostnames or
+      // absolute paths) is reduced to a sanitized name+code via
+      // displayErrorDetail, matching the wearables operator-facing path.
+      const detail =
+        error instanceof Error && error.message.startsWith("activity source HTTP ")
+          ? error.message.slice("activity source ".length)
+          : displayErrorDetail(error) || "request failed";
+      return { ok: false, detail };
     }
   }
 

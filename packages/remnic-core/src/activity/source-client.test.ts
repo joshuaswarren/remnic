@@ -105,3 +105,14 @@ test("ActivityHttpSourceClient rejects a non-positive timeout", () => {
     /timeoutMs must be a positive number/,
   );
 });
+
+test("ActivityHttpSourceClient.verify returns a sanitized detail for network errors", async () => {
+  // Port 1 refuses immediately; the fetch TypeError must not leak host/port
+  // into the operator-facing detail (sanitized to a name/code by displayErrorDetail).
+  const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:1" });
+  const check = await client.verify();
+  assert.equal(check.ok, false);
+  assert.ok(check.detail && check.detail.length > 0, "a failure carries some detail");
+  assert.ok(!check.detail?.includes("127.0.0.1"), "detail does not echo the host");
+  assert.ok(!check.detail?.includes(":1"), "detail does not echo the port");
+});

@@ -80,3 +80,23 @@ test("parseActivityConfig reports a malformed baseUrl with a prefixed validation
     /activity source baseUrl must be a valid URL/,
   );
 });
+
+test("parseActivityConfig rejects a non-loopback baseUrl that could exfiltrate the token", () => {
+  assert.throws(
+    () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "fixture", baseUrl: "https://example.test" }] }),
+    /must target a loopback host/,
+  );
+});
+
+test("parseActivityConfig accepts localhost and 127.x loopback hosts", () => {
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "a", baseUrl: "http://localhost:4319" }] }).sources
+      .length,
+    1,
+  );
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "b", baseUrl: "http://127.0.0.5:4319" }] }).sources
+      .length,
+    1,
+  );
+});

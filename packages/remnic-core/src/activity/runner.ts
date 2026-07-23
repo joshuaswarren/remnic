@@ -145,7 +145,9 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
         inserted: 0,
         duplicates: 0,
         digestsWritten: 0,
-        cursor: store.getCursor(sourceConfig.machineLabel),
+        // Cursors are now per (machine, date); report the last synced day's
+        // cursor. Null until a day advances it.
+        cursor: null,
       };
       try {
         const client = createSourceClient(sourceConfig);
@@ -165,11 +167,10 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
         }
         item.ran = true;
       } catch (error) {
-        // A runtime fault stays distinguishable from an empty page: the source
-        // reports an error and its cursor is whatever durably persisted before
-        // the failure (syncActivitySource advances it only on full success).
+        // A runtime fault stays distinguishable from an empty page. item.cursor
+        // already reflects the last day that advanced durably before the failure
+        // (syncActivitySource advances a per-day cursor only on full success).
         item.error = error instanceof Error ? error.message : String(error);
-        item.cursor = store.getCursor(sourceConfig.machineLabel);
       }
       results.push(item);
     }

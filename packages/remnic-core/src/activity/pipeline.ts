@@ -15,6 +15,35 @@ import type { ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
 const MAX_SYNC_PAGES = 10_000;
 
+/**
+ * Sync cursors are scoped per (machine, local day): each date resumes its own
+ * pagination independently, so a multi-day window never inherits an earlier
+ * day's cursor (which could skip backfill). Encoded into the store's single
+ * key column with a NUL separator that cannot occur in a machine label.
+ */
+export function activityCursorKey(machine: string, date: string): string {
+  return `${machine}\u0000${date}`;
+}
+
+// Serializes the list -> compose -> write digest section per (memoryDir, date)
+// so two sources syncing the same day cannot lose-update each other's digest:
+// the last writer in the chain lists every row present and wins.
+const digestLocks = new Map<string, Promise<unknown>>();
+
+function withDigestLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prior = digestLocks.get(key) ?? Promise.resolve();
+  const next = prior.then(fn, fn);
+  const tail = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  digestLocks.set(key, tail);
+  void tail.then(() => {
+    if (digestLocks.get(key) === tail) digestLocks.delete(key);
+  });
+  return next;
+}
+
 export interface ActivitySyncOptions {
   date: string;
   timezone: string;
@@ -83,7 +112,8 @@ export async function syncActivitySource(
     throw new RangeError("activity sync maxPages must be a positive integer");
   }
 
-  let cursor = options.store.getCursor(source.machineLabel);
+  const cursorKey = activityCursorKey(source.machineLabel, options.date);
+  let cursor = options.store.getCursor(cursorKey);
   let pages = 0;
   let fetched = 0;
   let inserted = 0;
@@ -128,15 +158,17 @@ export async function syncActivitySource(
     throw new Error(`activity source exceeded ${maxPages} pages`);
   }
 
-  const { startUtc, endUtc } = activityDayWindow(options.date, options.timezone);
-  const snapshots = options.store.listSnapshotsForDay(null, startUtc, endUtc);
-  const body = composeActivityDigestBody(options.date, options.timezone, snapshots);
-  const machines = [...new Set(snapshots.map((snapshot) => snapshot.machine))].sort((a, b) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  const serialized = serializeActivityDigest(composeActivityDigestMeta(options.date, machines, snapshots, body), body);
-  const digestWritten = await writeDigestIfChanged(options.memoryDir, options.date, serialized);
+  const digestWritten = await withDigestLock(`${options.memoryDir}\u0000${options.date}`, async () => {
+    const { startUtc, endUtc } = activityDayWindow(options.date, options.timezone);
+    const snapshots = options.store.listSnapshotsForDay(null, startUtc, endUtc);
+    const body = composeActivityDigestBody(options.date, options.timezone, snapshots);
+    const machines = [...new Set(snapshots.map((snapshot) => snapshot.machine))].sort((a, b) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    const serialized = serializeActivityDigest(composeActivityDigestMeta(options.date, machines, snapshots, body), body);
+    return writeDigestIfChanged(options.memoryDir, options.date, serialized);
+  });
 
-  options.store.setCursor(source.machineLabel, cursor);
+  options.store.setCursor(cursorKey, cursor);
   return { machine: source.machineLabel, fetched, inserted, duplicates, cursor, digestWritten };
 }

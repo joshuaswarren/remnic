@@ -71,6 +71,8 @@ export class ActivitySyncScheduler {
   private handle: TimerHandle = null;
   private stopped = false;
   private inFlight = false;
+  private inFlightPromise: Promise<void> | null = null;
+  private readonly abortController = new AbortController();
 
   constructor(options: ActivitySyncSchedulerOptions) {
     this.config = options.config;
@@ -104,13 +106,20 @@ export class ActivitySyncScheduler {
     return { registered: true, intervalMs: this.intervalMs };
   }
 
-  /** Cancel the periodic sync; no later tick invokes. Idempotent. */
-  stop(): void {
+  /**
+   * Cancel the periodic sync and abort any in-flight tick, then resolve once it
+   * has unwound. The abort + timer-clear + stop-latch happen synchronously, so
+   * even a caller that cannot await (a sync teardown) still signals the running
+   * sync to stop; async callers can await the returned drain. Idempotent.
+   */
+  async stop(): Promise<void> {
     this.stopped = true;
+    this.abortController.abort();
     if (this.handle !== null) {
       this.clearTimer(this.handle);
       this.handle = null;
     }
+    await this.inFlightPromise?.catch(() => undefined);
   }
 
   private tick(): void {
@@ -118,11 +127,12 @@ export class ActivitySyncScheduler {
     // while a prior slow sync is still running, must not invoke.
     if (this.stopped || this.inFlight) return;
     this.inFlight = true;
-    void this.invoke()
+    this.inFlightPromise = this.invoke(this.abortController.signal)
       .then((summary) => this.onRun?.(summary))
       .catch((error) => this.onError?.(error))
       .finally(() => {
         this.inFlight = false;
+        this.inFlightPromise = null;
       });
   }
 }

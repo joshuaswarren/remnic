@@ -7,6 +7,7 @@ import test from "node:test";
 import { ACTIVITY_SYNC_DEFAULT_INTERVAL_MS, ActivitySyncScheduler } from "./scheduler.js";
 import { runActivitySyncOnce, type ActivitySyncRunSummary } from "./runner.js";
 import { ActivityStore } from "./store.js";
+import { activityCursorKey } from "./pipeline.js";
 import type { ActivityConfig, ActivitySnapshot, ActivitySourceClient } from "./types.js";
 
 /** A hand-driven timer: records armed callbacks + intervals, fires on demand. */
@@ -166,7 +167,7 @@ test("stop cancels the timer so no later tick invokes", async () => {
   await flush();
   assert.equal(calls, 1);
 
-  scheduler.stop();
+  await scheduler.stop();
   assert.equal(timer.cleared, 1, "stop cancels the underlying timer");
 
   // A stray callback firing after stop must not invoke (latched-stop guard).
@@ -258,11 +259,42 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
     timer.armed[0].fn();
     await flush();
 
-    assert.equal(store.getCursor("workstation-a"), null, "cursor advanced by the durable sync");
+    assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null, "cursor advanced by the durable sync");
     const rows = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
     assert.equal(rows.length, 1, "the tick persisted the snapshot durably");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("stop aborts an in-flight tick and drains before resolving", async () => {
+  const timer = fakeTimer();
+  let observedSignal: AbortSignal | undefined;
+  let unwound = false;
+  const scheduler = new ActivitySyncScheduler({
+    config: enabledConfig(),
+    memoryDir: "/tmp/unused-activity-scheduler",
+    invoke: (signal) =>
+      new Promise<ActivitySyncRunSummary>((_resolve, reject) => {
+        observedSignal = signal;
+        signal?.addEventListener("abort", () => {
+          unwound = true;
+          reject(new Error("aborted"));
+        });
+      }),
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+    onError: () => {}, // swallow the abort rejection so the drain resolves
+  });
+
+  scheduler.start();
+  timer.armed[0].fn(); // launch a sync that stays in-flight until aborted
+  await flush();
+  assert.ok(observedSignal, "tick threads an abort signal into invoke");
+  assert.equal(observedSignal?.aborted, false, "not aborted while running");
+
+  await scheduler.stop();
+  assert.equal(observedSignal?.aborted, true, "stop aborts the in-flight tick");
+  assert.equal(unwound, true, "stop waited for the aborted sync to unwind");
 });
