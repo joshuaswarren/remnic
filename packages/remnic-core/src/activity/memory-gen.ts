@@ -34,9 +34,13 @@ const SPEECH_VERB =
   String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
 const VERB_ATTRIBUTION = new RegExp(String.raw`^\s*${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
 const LABEL_ATTRIBUTION = new RegExp(
-  String.raw`^\s*(${ATTRIBUTION_SPEAKER}(?:\s+[A-Za-z][\w.'’-]*){0,3})\s*:\s`,
+  String.raw`^\s*(${ATTRIBUTION_SPEAKER}(?:\s+[A-Za-z][\w.'’-]*){0,3})\s*:\s*`,
   "i",
 );
+// A sender named inside an otherwise-allowlisted label ("Update from Alice:",
+// "Note by Bob:") is still attribution. Case-sensitive on the capitalized name
+// so generic labels ("Summary by section:") stay eligible.
+const LABEL_NAMES_SENDER = /\b(?:from|by)\s+[A-Z][a-z]/;
 const NON_SENDER_LABELS: Record<string, true> = {
   note: true, notes: true, todo: true, fixme: true, reminder: true, update: true,
   updates: true, warning: true, info: true, tip: true, tips: true, summary: true,
@@ -98,7 +102,11 @@ export function isEligibleActivityFact(fact: ExtractionResult["facts"][number]):
   if (!FIRST_PERSON.test(fact.content)) return false;
   if (VERB_ATTRIBUTION.test(fact.content)) return false;
   const label = LABEL_ATTRIBUTION.exec(fact.content);
-  if (label !== null && NON_SENDER_LABELS[label[1].trim().split(/\s+/)[0].toLowerCase()] !== true) return false;
+  if (label !== null) {
+    const labelText = label[1].trim();
+    const firstToken = labelText.split(/\s+/)[0].toLowerCase();
+    if (NON_SENDER_LABELS[firstToken] !== true || LABEL_NAMES_SENDER.test(labelText)) return false;
+  }
   return true;
 }
 

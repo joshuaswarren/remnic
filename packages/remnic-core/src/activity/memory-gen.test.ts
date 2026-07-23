@@ -96,6 +96,11 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Alice Smith: I decided to leave." }), false);
   // Multi-word document labels stay eligible via the first-token check.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Action items: I will refactor the parser." }), true);
+  // Colon labels with no space after the colon are still attribution.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Bob:I decided to refactor the parser." }), false);
+  // An allowlisted label that names a sender ("Update from Alice:", "Note by Bob:") rejects.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Update from Alice: I decided to cancel the migration." }), false);
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Note by Bob: I will handle it." }), false);
   // Verb attribution only fires at the leading position: a first-person decision
   // that mentions a named person's past action in passing stays eligible, while a
   // leading "Name wrote/said" header still rejects.
