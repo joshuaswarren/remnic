@@ -193,3 +193,60 @@ test("finding 1 (round-4) — hot QMD seed path overfetches scoped seeds before 
     "an excluded-first candidate must not starve the hot seed of a recallable hit at the cap",
   );
 });
+
+function resultScored(namespace: string, path: string, score: number): QmdSearchResult {
+  return { docid: `${namespace}:${path}`, namespace, path, score, snippet: path };
+}
+
+function meetingRecordPath(hash: string): string {
+  return `meetings/2026-03-10/mtg-2026-03-10-${hash}.md`;
+}
+
+function starvedPrimaryCoordinator(
+  seed: QmdSearchResult[],
+  primary: QmdSearchResult[],
+): RecallSearchPipelineCoordinator {
+  const deps = {
+    config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
+    qmd: {},
+    searchScopedMemoryCandidates: scopedCandidatesStub(seed),
+    // Faithful to the QMD backend: cap the primary hits to the requested budget.
+    searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) =>
+      [...primary].sort((a, b) => b.score - a.score).slice(0, Math.max(0, maxResults)),
+    namespaceFromPath: () => "default",
+  } as unknown as RecallSearchPipelineDeps;
+  return new RecallSearchPipelineCoordinator(deps);
+}
+
+test("finding 1 (round-5) — excluded seeds must not fill the merge cap and starve a primary hit", async () => {
+  // Excluded meeting records dominate the query-aware SEED set (higher score),
+  // while the sole recallable memory arrives from the PRIMARY QMD search — so the
+  // scoped-seed overfetch fix and the seed-derived `bestFiltered` fallback cannot
+  // rescue it. The seed MERGE `[...seeds, ...primary]` capped to fetchLimit BEFORE
+  // filterRecallCandidates ran, so every cap slot (even after the two-attempt
+  // fetchLimit growth) went to meeting records later filtered out — dropping
+  // facts/a.md with no refill. Excluding non-recallable paths BEFORE the cap must
+  // let the primary hit survive at qmdFetchLimit=1.
+  const meetings = [
+    "aaaaaaaa",
+    "bbbbbbbb",
+    "cccccccc",
+    "dddddddd",
+    "eeeeeeee",
+    "ffffffff",
+  ].map((h) => resultScored("default", meetingRecordPath(h), 2));
+  const coordinator = starvedPrimaryCoordinator(meetings, [
+    resultScored("default", "facts/a.md", 1),
+  ]);
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("quarterly", 1, 1, {
+    namespacesEnabled: false,
+    recallNamespaces: ["default"],
+    resolveNamespace: () => "default",
+    queryAwarePrefilter: prefilter(meetings.map((m) => m.path)),
+  });
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"],
+    "excluded seeds ranked ahead must not fill the fetchLimit cap and starve the recallable primary hit",
+  );
+});

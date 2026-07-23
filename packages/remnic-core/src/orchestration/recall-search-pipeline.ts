@@ -433,6 +433,8 @@ export class RecallSearchPipelineCoordinator {
           { allowArchived: options.collection !== undefined },
         )
       : [];
+    // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
+    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir);
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
     const maxFetchLimit = Math.min(
@@ -593,13 +595,12 @@ export class RecallSearchPipelineCoordinator {
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
-            // Dedup by composite (namespace, path) so a fanout hit and a
-            // seed/hybrid hit for the same memory never inject twice (#2020).
+            // Dedup by composite (namespace, path) so a hit never injects twice (#2020).
             mergedResults = dedupeResultsByNamespace(
               [...primaryResults, ...hybridResults],
               this.deps.namespaceFromPath,
               fetchLimit,
-              { transportFallback: "hybrid" },
+              { transportFallback: "hybrid", filter: recallable },
             );
           }
         }
@@ -610,6 +611,7 @@ export class RecallSearchPipelineCoordinator {
           [...scopedSeedResults, ...mergedResults],
           this.deps.namespaceFromPath,
           fetchLimit,
+          { filter: recallable },
         );
       }
 
