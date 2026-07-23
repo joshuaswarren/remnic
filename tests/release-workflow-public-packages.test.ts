@@ -11,6 +11,7 @@ const expectedPublishDirs = [
   "packages/remnic-core",
   "packages/bench",
   "packages/coding-graph",
+  "packages/capture-audio",
   "packages/export-weclone",
   "packages/import-weclone",
   "packages/import-chatgpt",
