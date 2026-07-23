@@ -310,6 +310,10 @@ export function registerDelegateRuntime(
     }
     const sessionKey = sessionKeyFrom(event, ctx);
     const turn = extractLastTurn(event.messages as Array<Record<string, unknown>>)
+      // Embedded parity: the 10-char noise gate applies to the RAW extracted
+      // text BEFORE envelope cleaning (a short question in a long envelope
+      // must survive; embedded gates pre-clean).
+      .filter((message) => extractTextContent(message).length >= 10)
       .map((message) => ({
         role: message.role,
         content:
@@ -322,9 +326,7 @@ export function registerDelegateRuntime(
           (message.role === "user" || message.role === "assistant") &&
           message.content.trim().length > 0,
       );
-    // Embedded parity: agent_end skips sub-10-char texts (noise gate).
-    const gated = turn.filter((message) => String(message.content).length >= 10);
-    if (gated.length === 0) return;
+    if (turn.length === 0) return;
     try {
       const cwd = cwdFrom(event, ctx, options.cwd);
       await postJson(
@@ -332,7 +334,7 @@ export function registerDelegateRuntime(
         "/engram/v1/observe",
         withNamespace(namespace, {
           sessionKey,
-          messages: gated,
+          messages: turn,
           ...(cwd ? { cwd } : {}),
           ...(options.projectTag ? { projectTag: options.projectTag } : {}),
         }),
@@ -347,7 +349,13 @@ export function registerDelegateRuntime(
     event: Record<string, unknown>,
     ctx: Record<string, unknown>,
   ): Promise<void> => {
-    const sessionKey = sessionKeyFrom(event, ctx);
+    // Embedded parity: lifecycle events name the ENDED/RESET session on the
+    // event; the ambient ctx may already point at the successor session.
+    const fromEvent = event?.sessionKey;
+    const sessionKey =
+      typeof fromEvent === "string" && fromEvent.length > 0
+        ? fromEvent
+        : sessionKeyFrom(event, ctx);
     try {
       await postJson(
         target,
@@ -449,10 +457,11 @@ export function maybeRegisterDelegateRuntime(
     return false;
   }
   if (bridge.mode !== "delegate") {
-    // The caller will bind embedded hooks on this api. Record it so a later
-    // reload that flips to delegate on the SAME api stays embedded instead of
-    // stacking both memory paths (same invariant as the daemon-down fallback).
-    delegateEmbeddedFallbackApis.add(api);
+    // The caller will bind embedded hooks on this api (unless passive, which
+    // binds nothing and must not poison a later delegate registration).
+    // Record active registers so a later reload that flips to delegate on the
+    // SAME api stays embedded instead of stacking both memory paths.
+    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
     return false;
   }
   const boundServices = delegateHookApiServices.get(api);

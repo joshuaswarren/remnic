@@ -197,6 +197,28 @@ function shouldProbeDaemonHealth(host: string): boolean {
 }
 
 /**
+ * Read daemon host from environment or remnic config (server.host), mirroring
+ * readDaemonPort's precedence. Falls back to DEFAULT_HOST.
+ */
+function readDaemonHost(): string {
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  if (envHost !== undefined && envHost.trim() !== "") return normalizeDaemonHost(envHost);
+  for (const p of configPathCandidates()) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+      const configHost = raw.server?.host;
+      if (typeof configHost === "string" && configHost.trim() !== "") {
+        return normalizeDaemonHost(configHost);
+      }
+    } catch {
+      // Ignore malformed config files and continue to the next candidate.
+    }
+  }
+  return DEFAULT_HOST;
+}
+
+/**
  * Read daemon port from environment or remnic config.
  */
 function readDaemonPort(): number {
@@ -228,7 +250,7 @@ export function detectBridgeMode(): BridgeConfig {
   if (envMode === "delegate") {
     return {
       mode: "delegate",
-      daemonHost: normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST),
+      daemonHost: readDaemonHost(),
       daemonPort: readDaemonPort(),
     };
   }
@@ -241,7 +263,7 @@ export function detectBridgeMode(): BridgeConfig {
     };
   }
 
-  const daemonHost = normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST);
+  const daemonHost = readDaemonHost();
   const daemonPort = readDaemonPort();
 
   const hasDaemonPidHint = isDaemonRunning();
@@ -300,7 +322,7 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
   }
   return {
     mode,
-    daemonHost: normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST),
+    daemonHost: readDaemonHost(),
     daemonPort: readDaemonPort(),
   };
 }
