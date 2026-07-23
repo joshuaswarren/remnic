@@ -23,6 +23,11 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { execFileSync } from "node:child_process";
 
 import { MaintenanceScheduler } from "./maintenance.js";
+import {
+  createProjectionRebuildScheduleState,
+  maybeRebuildMemoryProjectionScheduled,
+  type ProjectionRebuildScheduleState,
+} from "./projection-rebuild-schedule.js";
 import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
 import {
   probeProjectionHealth,
@@ -2848,13 +2853,6 @@ test("catalog-disabled fallback pending drain skips unsafe spill entries (symlin
 // Memory-projection scheduled rebuild (issue #2119)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Access the private scheduled-rebuild trigger for focused testing, mirroring
- *  CompactableScheduler. */
-interface ProjectionRebuildableScheduler {
-  maybeRebuildMemoryProjection(): Promise<void>;
-  lastProjectionRebuildAtMs: number;
-  dispose(): void;
-}
 
 async function seedMemoryDirWithOneFact(): Promise<string> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-projrebuild-"));
@@ -2878,14 +2876,9 @@ alpha
   );
   return memoryDir;
 }
-
-function buildProjectionScheduler(config: PluginConfig): ProjectionRebuildableScheduler {
-  return new MaintenanceScheduler({
-    config,
-    getQmd: () => stubQmd(),
-    namespaceSearchRouter: {} as unknown as NamespaceSearchRouter,
-    namespaceCatalog: {} as unknown as NamespaceCatalog,
-  }) as unknown as ProjectionRebuildableScheduler;
+/** Build the pure-function state the extracted scheduled rebuild owns. */
+function projectionScheduleState(): ProjectionRebuildScheduleState {
+  return createProjectionRebuildScheduleState();
 }
 
 test("scheduled projection rebuild runs when enabled and writes a populated projection (#2119)", async () => {
@@ -2894,18 +2887,14 @@ test("scheduled projection rebuild runs when enabled and writes a populated proj
     // No projection built yet — the exact issue-#2119 cold state where timeline
     // consumers would fall back to full-corpus scans.
     assert.equal(probeProjectionHealth(memoryDir).state, "absent");
-    const scheduler = buildProjectionScheduler(
-      fixtureConfig({
+    await maybeRebuildMemoryProjectionScheduled({
+      config: fixtureConfig({
         memoryDir,
         projectionRebuildEnabled: true,
         projectionRebuildIntervalMs: 6 * 60 * 60 * 1000,
       }),
-    );
-    try {
-      await scheduler.maybeRebuildMemoryProjection();
-    } finally {
-      scheduler.dispose();
-    }
+      state: projectionScheduleState(),
+    });
     // The projection now exists, is openable, and carries the seeded memory.
     assert.equal(probeProjectionHealth(memoryDir).state, "openable");
     assert.equal(readProjectedMemoryBrowse(memoryDir, { limit: 5, offset: 0 })?.total, 1);
@@ -2918,18 +2907,14 @@ test("scheduled projection rebuild runs when enabled and writes a populated proj
 test("scheduled projection rebuild is a no-op when disabled by config (#2119)", async () => {
   const memoryDir = await seedMemoryDirWithOneFact();
   try {
-    const scheduler = buildProjectionScheduler(
-      fixtureConfig({
+    await maybeRebuildMemoryProjectionScheduled({
+      config: fixtureConfig({
         memoryDir,
         projectionRebuildEnabled: false,
         projectionRebuildIntervalMs: 6 * 60 * 60 * 1000,
       }),
-    );
-    try {
-      await scheduler.maybeRebuildMemoryProjection();
-    } finally {
-      scheduler.dispose();
-    }
+      state: projectionScheduleState(),
+    });
     // Gate off: no projection is created, so the CLI/cron path remains the only
     // way to build it.
     assert.equal(probeProjectionHealth(memoryDir).state, "absent");
@@ -2948,18 +2933,14 @@ test("scheduled projection rebuild skips when the projection was rebuilt within 
     const before = readProjectionRebuiltAt(memoryDir);
     assert.equal(before, oneMinuteAgo.toISOString());
 
-    const scheduler = buildProjectionScheduler(
-      fixtureConfig({
+    await maybeRebuildMemoryProjectionScheduled({
+      config: fixtureConfig({
         memoryDir,
         projectionRebuildEnabled: true,
         projectionRebuildIntervalMs: 6 * 60 * 60 * 1000,
       }),
-    );
-    try {
-      await scheduler.maybeRebuildMemoryProjection();
-    } finally {
-      scheduler.dispose();
-    }
+      state: projectionScheduleState(),
+    });
     // Fresh-within-interval: rebuiltAt is unchanged (no rebuild happened) and no
     // backup was written (a rebuild would have archived the prior projection).
     assert.equal(readProjectionRebuiltAt(memoryDir), before, "projection must not be rebuilt when fresh");
