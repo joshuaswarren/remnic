@@ -59,6 +59,38 @@ export function getProviderBackedJudgePromptIdentity(config: ProviderFactoryConf
   return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
 }
 
+/**
+ * Sanitized non-secret fingerprint of a responder configuration. Two
+ * built-in responders with identical `ProviderFactoryConfig` (provider,
+ * model, baseUrl, budgets, retry options, sampling settings) hash to
+ * the same identity, so the paired harness treats them as the same
+ * responder for cache-key purposes. `apiKey` and any field absent from
+ * `ProviderFactoryConfig` are deliberately excluded.
+ */
+export function getProviderBackedResponderIdentity(config: ProviderFactoryConfig): string {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (key === "apiKey" || key === "authToken" || key === "bearerToken") continue;
+    sanitized[key] = value;
+  }
+  return `responder:sha256:${createHash("sha256")
+    .update(stableStringifyForIdentity(sanitized))
+    .digest("hex")}`;
+}
+
+function stableStringifyForIdentity(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringifyForIdentity(entry)).join(",")}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringifyForIdentity((value as Record<string, unknown>)[key])}`)
+    .join(",")}}`;
+}
+
 const AMA_BENCH_RECOMMENDED_JUDGE_SYSTEM_PROMPT = [
   "You are evaluating an AMA-Bench long-horizon memory question.",
   "Decide whether the predicted answer correctly answers the question using the reference answer as ground truth.",
@@ -90,12 +122,12 @@ export interface ProviderResponderOptions {
   contextBudgetChars?: number;
   promptBudgetChars?: number;
 }
-
 export function createResponderFromProvider(
   provider: LlmProvider,
-  options: ProviderResponderOptions = {}
+  options: ProviderResponderOptions = {},
+  responderIdentity?: string
 ): BenchResponder {
-  return {
+  const responder: BenchResponder = {
     async respond(question: string, recalledText: string, control): Promise<BenchResponse> {
       const responderQuestion =
         options.promptBudgetChars === undefined
@@ -130,6 +162,10 @@ export function createResponderFromProvider(
       };
     },
   };
+  if (responderIdentity && responderIdentity.trim().length > 0) {
+    responder.identity = () => responderIdentity;
+  }
+  return responder;
 }
 
 export function createProviderBackedResponder(
@@ -137,10 +173,14 @@ export function createProviderBackedResponder(
   providerInstance?: LlmProvider
 ): BenchResponder {
   validateProviderConfig(config, "responder");
-  return createResponderFromProvider(providerInstance ?? createProvider(config), {
-    contextBudgetChars: config.responderContextBudgetChars,
-    promptBudgetChars: config.responderPromptBudgetChars,
-  });
+  return createResponderFromProvider(
+    providerInstance ?? createProvider(config),
+    {
+      contextBudgetChars: config.responderContextBudgetChars,
+      promptBudgetChars: config.responderPromptBudgetChars,
+    },
+    getProviderBackedResponderIdentity(config),
+  );
 }
 
 export function compactResponderQuestion(question: string, maxChars: number): string {
@@ -742,7 +782,12 @@ export function createGatewayResponder(options: GatewayResponderOptions): BenchR
     options.llmFactory?.(options.gatewayConfig, runtimeContext) ??
     new FallbackLlmClient(options.gatewayConfig, runtimeContext);
 
-  return {
+  const responderIdentity = getGatewayResponderIdentity(
+    options.gatewayConfig,
+    options.agentId,
+  );
+
+  const responder: BenchResponder = {
     async respond(question: string, recalledText: string, control): Promise<BenchResponse> {
       const startedAt = performance.now();
       const response = await llm.chatCompletion(
@@ -782,6 +827,37 @@ export function createGatewayResponder(options: GatewayResponderOptions): BenchR
       };
     },
   };
+  if (responderIdentity) {
+    responder.identity = () => responderIdentity;
+  }
+  return responder;
+}
+
+/**
+ * Sanitized non-secret fingerprint of a gateway-backed responder. The
+ * config is recursively stripped of `apiKey` and `headers` (which may
+ * carry bearer tokens) before hashing; the agent id is included so two
+ * different agents under the same gateway produce distinct identities.
+ */
+export function getGatewayResponderIdentity(
+  config: GatewayConfig,
+  agentId: string | undefined,
+): string {
+  const sanitized = sanitizeGatewayConfigForIdentity(config);
+  return `gateway:sha256:${createHash("sha256")
+    .update(stableStringifyForIdentity({ agentId: agentId ?? null, config: sanitized }))
+    .digest("hex")}`;
+}
+
+function sanitizeGatewayConfigForIdentity(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sanitizeGatewayConfigForIdentity);
+  const record = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    if (key === "apiKey" || key === "headers" || key === "authHeader") continue;
+    out[key] = sanitizeGatewayConfigForIdentity(child);
+  }
 }
 
 function validateProviderConfig(

@@ -391,7 +391,7 @@ function wrapResponder(
   responder: BenchResponder,
   run: <T>(phase: string, fn: (signal: AbortSignal) => Promise<T>) => Promise<T>,
 ): BenchResponder {
-  return {
+  const wrapped: BenchResponder = {
     respond(question, recalledText, control) {
       return run("respond", async (signal) => {
         const merged = mergeBenchPhaseControl(signal, control);
@@ -403,6 +403,11 @@ function wrapResponder(
       });
     },
   };
+  if (typeof responder.identity === "function") {
+    const inner = responder.identity.bind(responder);
+    wrapped.identity = () => inner();
+  }
+  return wrapped;
 }
 
 function wrapJudge(

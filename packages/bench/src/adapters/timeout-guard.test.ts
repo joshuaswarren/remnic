@@ -323,6 +323,47 @@ test("timeout guard wraps responder and judge calls", async () => {
   assert.equal(await guarded.judge?.score("q", "p", "e"), 1);
 });
 
+test("timeout guard forwards responder identity when the inner responder declares one", () => {
+  const adapter = makeAdapter();
+  adapter.responder = {
+    async respond() {
+      return {
+        text: "answer",
+        tokens: { input: 1, output: 1 },
+        latencyMs: 1,
+        model: "fake",
+      };
+    },
+    identity() {
+      return "responder:fake";
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 100,
+  });
+  assert.equal(guarded.responder?.identity?.(), "responder:fake");
+});
+
+test("timeout guard omits responder identity when the inner responder has none", () => {
+  const adapter = makeAdapter();
+  adapter.responder = {
+    async respond() {
+      return {
+        text: "answer",
+        tokens: { input: 1, output: 1 },
+        latencyMs: 1,
+        model: "fake",
+      };
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 100,
+  });
+  assert.equal(guarded.responder?.identity, undefined);
+});
+
 test("timeout guard merges caller abort signal for responder calls", async () => {
   const adapter = makeAdapter();
   let sawAbort = false;

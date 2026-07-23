@@ -675,3 +675,37 @@ test("provider-backed judge prompt identity tracks the actual structured and sca
   assert.notEqual(scalar, structuredV1);
   assert.notEqual(structuredV1, structuredV2);
 });
+
+
+test("provider-backed responder exposes a stable sanitized identity", async () => {
+  const { getProviderBackedResponderIdentity } = await import("./responders.ts");
+  const base = {
+    provider: "openai" as const,
+    model: "gpt-5.4-mini",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "sk-secret",
+    temperature: 0,
+    seed: 42,
+    responderContextBudgetChars: 4000,
+    responderPromptBudgetChars: 2000,
+  };
+  const id1 = getProviderBackedResponderIdentity(base);
+  const id2 = getProviderBackedResponderIdentity({ ...base, apiKey: "sk-different" });
+  const idDifferentModel = getProviderBackedResponderIdentity({ ...base, model: "gpt-5.4" });
+  const idDifferentBase = getProviderBackedResponderIdentity({
+    ...base,
+    baseUrl: "https://other.example.com/v1",
+  });
+  assert.equal(id1, id2, "apiKey differences must not change the identity");
+});
+
+test("createProviderBackedResponder wires the identity to the returned responder", async () => {
+  const { createProviderBackedResponder } = await import("./responders.ts");
+  const responder = createProviderBackedResponder({
+    provider: "openai",
+    model: "gpt-5.4-mini",
+  });
+  const identity = responder.identity?.();
+  assert.ok(identity, "provider-backed responder must expose identity()");
+  assert.match(identity, /^responder:sha256:[0-9a-f]{64}$/);
+});
