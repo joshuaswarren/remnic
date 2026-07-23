@@ -2365,5 +2365,12 @@ test("parseConfig forwards activity source settings", () => {
     syncDays: 2,
     autoSyncIntervalMinutes: 15,
     sources: [{ machineLabel: "fixture-machine", baseUrl: "http://127.0.0.1:4319" }],
+    extractionMode: "off",
+    sourceTrust: 0.6,
+    autoApproveTrust: 0.8,
+    reviewTrust: 0.5,
+    minConfidence: 0.7,
+    minImportance: "normal",
+    maxMemoriesPerDay: 0,
   });
 });
