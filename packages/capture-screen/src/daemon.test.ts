@@ -194,24 +194,52 @@ test("daemon rejects a directory spool path without mangling its permissions", {
 
 test("CLI command releases the daemon when startup fails to bind", async () => {
   const occupier = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath: ":memory:" });
+  const previousToken = process.env.REMNIC_CAPTURE_TOKEN;
+  process.env.REMNIC_CAPTURE_TOKEN = "test-token";
   try {
     const { url } = await occupier.start();
     const port = Number(new URL(url).port);
     await assert.rejects(
-      () => runCaptureScreenCommand(["--auth-token", "test-token", "--spool", ":memory:", "--port", String(port)]),
+      () => runCaptureScreenCommand(["--spool", ":memory:", "--port", String(port)]),
       /EADDRINUSE/,
     );
   } finally {
+    if (previousToken === undefined) delete process.env.REMNIC_CAPTURE_TOKEN;
+    else process.env.REMNIC_CAPTURE_TOKEN = previousToken;
     await occupier.close();
+  }
+});
+
+test("CLI reads the bearer token from the environment and authenticates without argv exposure", async () => {
+  const previousToken = process.env.REMNIC_CAPTURE_TOKEN;
+  delete process.env.REMNIC_CAPTURE_TOKEN;
+  try {
+    await assert.rejects(() => runCaptureScreenCommand(["--spool", ":memory:"]), /REMNIC_CAPTURE_TOKEN must be set/);
+
+    process.env.REMNIC_CAPTURE_TOKEN = "env-token";
+    const running = await runCaptureScreenCommand(["--spool", ":memory:"]);
+    try {
+      const ok = await fetch(`${running.url}/v1/health`, { headers: { authorization: "Bearer env-token" } });
+      assert.equal(ok.status, 200);
+      const denied = await fetch(`${running.url}/v1/health`);
+      assert.equal(denied.status, 401);
+    } finally {
+      await running.close();
+    }
+  } finally {
+    if (previousToken === undefined) delete process.env.REMNIC_CAPTURE_TOKEN;
+    else process.env.REMNIC_CAPTURE_TOKEN = previousToken;
   }
 });
 
 test("CLI expands a tilde spool path to the home directory", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-home-"));
   const previousHome = process.env.HOME;
+  const previousToken = process.env.REMNIC_CAPTURE_TOKEN;
   process.env.HOME = home;
+  process.env.REMNIC_CAPTURE_TOKEN = "test-token";
   try {
-    const daemon = await runCaptureScreenCommand(["--auth-token", "test-token", "--spool", "~/capture.sqlite"]);
+    const daemon = await runCaptureScreenCommand(["--spool", "~/capture.sqlite"]);
     try {
       const stats = await stat(path.join(home, "capture.sqlite"));
       assert.ok(stats.isFile());
@@ -221,23 +249,26 @@ test("CLI expands a tilde spool path to the home directory", async () => {
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
+    if (previousToken === undefined) delete process.env.REMNIC_CAPTURE_TOKEN;
+    else process.env.REMNIC_CAPTURE_TOKEN = previousToken;
     await rm(home, { recursive: true, force: true });
   }
 });
 
-test("capture daemon CLI rejects malformed input and preserves an ephemeral port", () => {
-  assert.throws(() => parseCaptureScreenArgs(["--auth-token", "token"]), /--spool is required/);
+test("capture daemon CLI rejects malformed input and the unsafe --auth-token flag", () => {
+  assert.throws(() => parseCaptureScreenArgs(["--auth-token", "token", "--spool", "capture.sqlite"]), /--auth-token is not accepted/);
+  assert.throws(() => parseCaptureScreenArgs([]), /--spool is required/);
   assert.throws(
-    () => parseCaptureScreenArgs(["--auth-token", "token", "--spool", "capture.sqlite", "--port", "1.5"]),
+    () => parseCaptureScreenArgs(["--spool", "capture.sqlite", "--port", "1.5"]),
     /integer/,
   );
-  assert.throws(() => parseCaptureScreenArgs(["--auth-token", "token", "--spool", ""]), /--spool requires a value/);
+  assert.throws(() => parseCaptureScreenArgs(["--spool", ""]), /--spool requires a value/);
   assert.throws(
-    () => parseCaptureScreenArgs(["--auth-token", "token", "--spool", "capture.sqlite", "--port", ""]),
+    () => parseCaptureScreenArgs(["--spool", "capture.sqlite", "--port", ""]),
     /--port requires a value/,
   );
   assert.deepEqual(
-    parseCaptureScreenArgs(["--auth-token", "token", "--spool", "capture.sqlite", "--port", "0"]),
-    { authToken: "token", spoolPath: "capture.sqlite", port: 0 },
+    parseCaptureScreenArgs(["--spool", "capture.sqlite", "--port", "0"]),
+    { spoolPath: "capture.sqlite", port: 0 },
   );
 });

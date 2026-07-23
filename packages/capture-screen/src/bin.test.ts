@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { before } from "node:test";
@@ -14,13 +14,24 @@ const distCli = path.join(pkgRoot, "dist", "cli.js");
 // to its built dist. The root test runner exports NODE_OPTIONS=--conditions=
 // remnic-source, which would instead point core at its .ts source and make the
 // plain-node child throw ERR_UNKNOWN_FILE_EXTENSION. Strip it for the child.
-const childEnv: NodeJS.ProcessEnv = {
+const baseEnv: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_OPTIONS: (process.env.NODE_OPTIONS ?? "")
     .replace(/--conditions[=\s]+remnic-source/g, "")
     .replace(/\s+/g, " ")
     .trim(),
 };
+
+function envWithToken(token: string): NodeJS.ProcessEnv {
+  return { ...baseEnv, REMNIC_CAPTURE_TOKEN: token };
+}
+
+function envWithoutToken(): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  delete env.REMNIC_CAPTURE_TOKEN;
+  delete env.ENGRAM_CAPTURE_TOKEN;
+  return env;
+}
 
 // The bin wrapper imports the compiled ../dist/cli.js, so a fresh checkout that
 // has not built the package yet must build it before these child-process tests
@@ -33,7 +44,7 @@ before(() => {
 });
 
 test("bin sanitizes startup errors on stderr instead of leaking raw messages", () => {
-  const result = spawnSync(process.execPath, [binPath, "--auth-token", "token"], { encoding: "utf8", env: childEnv });
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: envWithoutToken() });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "TypeError");
   // The raw error text ("--spool is required") could embed absolute paths on
@@ -42,9 +53,9 @@ test("bin sanitizes startup errors on stderr instead of leaking raw messages", (
 });
 
 test("bin terminates the process on SIGTERM after a clean shutdown", { timeout: 20000 }, async () => {
-  const child = spawn(process.execPath, [binPath, "--auth-token", "token", "--spool", ":memory:"], {
+  const child = spawn(process.execPath, [binPath, "--spool", ":memory:"], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: childEnv,
+    env: envWithToken("sigterm-token"),
   });
   const stdout = child.stdout;
   if (stdout === null) throw new Error("child stdout was not piped");
@@ -69,5 +80,47 @@ test("bin terminates the process on SIGTERM after a clean shutdown", { timeout: 
     assert.equal(code, 0);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+});
+
+test("bin takes the bearer token from the env, keeps it out of argv, and still authenticates", { timeout: 20000 }, async () => {
+  const token = "argv-should-never-hold-this-secret";
+  const child = spawn(process.execPath, [binPath, "--spool", ":memory:"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: envWithToken(token),
+  });
+  const stdout = child.stdout;
+  if (stdout === null) throw new Error("child stdout was not piped");
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      let out = "";
+      const onData = (chunk: Buffer) => {
+        out += chunk.toString("utf8");
+        const match = out.match(/http:\/\/\S+/);
+        if (match) {
+          stdout.off("data", onData);
+          resolve(match[0].trim());
+        }
+      };
+      stdout.on("data", onData);
+      child.once("error", reject);
+    });
+
+    // The token must never reach the process command line (ps / /proc leak).
+    if (process.platform === "linux" && child.pid !== undefined && existsSync(`/proc/${child.pid}/cmdline`)) {
+      const cmdline = readFileSync(`/proc/${child.pid}/cmdline`, "utf8");
+      assert.ok(cmdline.includes("remnic-capture-screen"), "read the daemon's own cmdline");
+      assert.ok(!cmdline.includes(token), "bearer token must not appear in argv");
+    }
+
+    const ok = await fetch(`${url}/v1/health`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(ok.status, 200);
+    const denied = await fetch(`${url}/v1/health`);
+    assert.equal(denied.status, 401);
+  } finally {
+    child.kill("SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) {
+      await once(child, "exit").catch(() => undefined);
+    }
   }
 });
