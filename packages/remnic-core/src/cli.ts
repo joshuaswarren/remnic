@@ -13,6 +13,7 @@ import { ThreadingManager } from "./threading.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
+import { registerMeetingsCommands } from "./cli/meetings-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
 import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
 import type {
@@ -6230,7 +6231,7 @@ export function registerCli(
 
       registerResearchStatusCommands(cmd, orchestrator);
 
-      registerCreationLedgerCommands(cmd, orchestrator);
+      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator);
 
       cmd
         .command("trust-zone-promote")

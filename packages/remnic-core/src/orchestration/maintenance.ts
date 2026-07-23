@@ -62,6 +62,7 @@ import {
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import { ActivitySyncRegistrar } from "../activity/sync-registration.js";
+import type { ActivitySyncRunSummary } from "../activity/runner.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -105,6 +106,12 @@ export interface MaintenanceSchedulerDeps {
    * (#1910). Consulted only when namespaces are enabled.
    */
   storageForNamespace?: (namespace: string) => Promise<StorageManager>;
+  /**
+   * Tail step (issue #1900): observe a durable activity sync tick so the
+   * meetings builder can rebuild the affected day(s). Optional; omitted by
+   * hosts that do not build meetings.
+   */
+  onActivitySynced?: (summary: ActivitySyncRunSummary) => void;
 }
 
 /**
@@ -153,6 +160,7 @@ export class MaintenanceScheduler {
       secureStoreEnabled: resolveRecallAuxiliaryCapabilities(deps.config).secureStore,
       getQmd: () => deps.getQmd(),
       requestReindexRetry: () => this.requestQmdMaintenanceForTool("activity-reindex-retry"),
+      ...(deps.onActivitySynced ? { onSynced: deps.onActivitySynced } : {}),
     });
   }
 

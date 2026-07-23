@@ -45,7 +45,7 @@ export function activityDigestPath(memoryDir: string, date: string): string {
 
 // ── DST-aware local-day window ──────────────────────────────────────────────
 
-function timezoneOffsetIso(instant: Date, timezone: string): string {
+export function timezoneOffsetIso(instant: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     timeZoneName: "longOffset",

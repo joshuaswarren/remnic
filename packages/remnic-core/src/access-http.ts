@@ -17,7 +17,7 @@ import {
   type EngramAccessWriteResponse,
 } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
-import { WearablesInputError } from "./wearables/errors.js";
+import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
@@ -349,9 +349,7 @@ function decodeRelayMissionIdSegment(raw: string): string {
   try {
     return decodeURIComponent(raw);
   } catch {
-    throw new EngramAccessInputError(
-      "missionId path segment is not valid percent-encoded input",
-    );
+    throw new EngramAccessInputError("missionId path segment is not valid percent-encoded input");
   }
 }
 
@@ -725,11 +723,7 @@ export class EngramAccessHttpServer {
     // and the id-loaded contradiction routes — one rule, every surface. The
     // effective namespace (explicit OR server default) must be a member; fail
     // closed. No-op for unrestricted tokens (no namespaces allow-list).
-    enforceNamespaceAllowList(
-      tokenCapabilityStore.getStore(),
-      namespace,
-      this.service.configRef?.defaultNamespace,
-    );
+    enforceNamespaceAllowList(tokenCapabilityStore.getStore(), namespace, this.service.configRef?.defaultNamespace);
     return namespace;
   }
 
@@ -1351,11 +1345,7 @@ export class EngramAccessHttpServer {
         req,
         namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
       );
-      const payload = await this.service.recallTierExplain(
-        sessionKey,
-        namespace,
-        this.resolveRequestPrincipal(req),
-      );
+      const payload = await this.service.recallTierExplain(sessionKey, namespace, this.resolveRequestPrincipal(req));
       this.respondJson(res, 200, payload);
       return;
     }
@@ -1609,6 +1599,15 @@ export class EngramAccessHttpServer {
       }
       return;
     }
+
+    if (req.method === "GET" && (pathname === "/engram/v1/meetings" || pathname === "/remnic/v1/meetings")) {
+      this.enforceTokenOp("meetings_list"); await respondMeetingsList(res, this.respondJson.bind(this), this.service, nonEmptyQueryParam(parsed.searchParams.get("date"))); return; }
+    if (req.method === "POST" && (pathname === "/engram/v1/meetings/build" || pathname === "/remnic/v1/meetings/build")) {
+      this.enforceTokenOp("meetings_build"); await respondMeetingsBuild(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, { enforceQuota: () => this.ensureWriteRateLimitAvailable(req), recordHit: () => this.recordWriteRateLimitHit(req) }); return; }
+    const meetingGetEngram = /^\/engram\/v1\/meetings\/([^/]+)$/.exec(pathname);
+    if (req.method === "GET" && meetingGetEngram) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetEngram[1] ?? ""); return; }
+    const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname);
+    if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? ""); return; }
 
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
