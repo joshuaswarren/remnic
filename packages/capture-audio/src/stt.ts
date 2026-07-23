@@ -145,7 +145,18 @@ export function runWhisperCli(command: string, args: string[]): Promise<WhisperR
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.once("error", reject);
+    child.once("error", (error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        reject(
+          new CaptureConfigError(
+            `whisper-cli executable '${command}' not found on PATH; install whisper.cpp or configure its path before transcribing`,
+          ),
+        );
+        return;
+      }
+      reject(new CaptureConfigError(`failed to launch whisper-cli '${command}'${code ? ` (${code})` : ""}`));
+    });
     child.once("close", (code) => {
       resolve({
         code: code ?? 1,

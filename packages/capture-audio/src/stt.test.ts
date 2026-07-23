@@ -150,3 +150,14 @@ test("runWhisperCli returns stdout and stderr from an argv-only subprocess", asy
 
   assert.deepEqual(result, { code: 0, stdout: "out", stderr: "err" });
 });
+
+test("runWhisperCli translates a missing executable into an actionable config error", async () => {
+  await assert.rejects(
+    runWhisperCli("remnic-nonexistent-whisper-cli", ["-h"]),
+    (error: unknown) => {
+      assert.ok(error instanceof CaptureConfigError);
+      assert.match(error.message, /not found on PATH/);
+      return true;
+    },
+  );
+});
