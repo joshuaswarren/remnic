@@ -108,6 +108,8 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Note: I decided to refactor the parser." }), true);
   // A chat self-label ("Me:") is the user, not a third party — stays eligible.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Me: I decided to consolidate the settings." }), true);
+  // "Us:" is a first-person plural self-label, like "Me:".
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Us: we decided to ship on Friday." }), true);
   // Third-person speakers are attribution, not the user — must be rejected.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "They wrote: I decided to leave." }), false);
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "He said: I will handle the migration." }), false);
@@ -309,4 +311,16 @@ test("activity smart mode skips an existing active duplicate without promoting",
   assert.equal(result.promoted, 0);
   assert.deepEqual(writes, []);
   assert.equal(promotions.length, 0);
+});
+
+test("activity smart mode suppresses intra-run duplicate content", async () => {
+  // Two identical eligible facts in one batch: storage cannot see the first
+  // before the second is processed, so only one is written.
+  const { deps, writes } = depsFor([ownDecision, { ...ownDecision }]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(writes.length, 1);
 });

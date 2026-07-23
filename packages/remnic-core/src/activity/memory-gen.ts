@@ -29,7 +29,7 @@ const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
  *   - leading label:     "Alice: I decided ..." (chat/comment sender headers)
  * Common document labels ("Note:", "TODO:") are not senders and stay eligible.
  */
-const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|me|my|our)\b)[A-Za-z][\w.'’-]*`;
+const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|us|me|my|our)\b)[A-Za-z][\w.'’-]*`;
 const SPEECH_VERB =
   String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
 const VERB_ATTRIBUTION = new RegExp(String.raw`^\s*${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
@@ -228,8 +228,16 @@ export async function generateActivityMemories(
   // row can promote (or demote on a fresh judge-reject) in place instead of being
   // frozen by all-status dedup; novel survivors queue for the day-capped write.
   const writable: WritableCandidate[] = [];
+  // Suppress duplicate content within this pass: storage lookups cannot see a
+  // fact queued earlier in the same batch (wearable-path parity).
+  const seenContent = new Set<string>();
   for (let index = 0; index < candidates.length; index += 1) {
     const fact = candidates[index];
+    if (seenContent.has(fact.content)) {
+      result.skipped += 1;
+      continue;
+    }
+    seenContent.add(fact.content);
     const verdict = verdicts.get(index);
     const verdictKind = verdict === undefined ? undefined : getVerdictKind(verdict);
     const trust = computeTrustScore({
