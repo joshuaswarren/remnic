@@ -33,6 +33,7 @@ import type {
 } from "../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
+  buildStrictBenchmarkQuestion,
   type BenchmarkAnswerResult,
   type BenchmarkAnswerFormat,
 } from "../../answering.js";
@@ -505,11 +506,19 @@ function pairedAnswerReplayKey(
   trial: HarnessTrial,
   recalledText: string,
   recallSupport: BenchRecallSupportAssessment | undefined,
+  systemProvider: ResolvedRunBenchmarkOptions["systemProvider"],
 ): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        answerFormat: trial.answerFormat ?? null,
+        responder: {
+          model: systemProvider?.model ?? null,
+          provider: systemProvider?.provider ?? null,
+        },
+        responderPrompt: buildStrictBenchmarkQuestion(
+          trial.question,
+          trial.answerFormat ?? "auto",
+        ),
         answerMode: "strict",
         question: trial.question,
         recalledText,
@@ -568,25 +577,31 @@ async function executeTrial(
   });
   const { recalledText, recallSupport } = recallResult;
   const answerReplayKey = ctx.options.pairedAnswerReplayCache
-    ? pairedAnswerReplayKey(trial, recalledText, recallSupport)
+    ? pairedAnswerReplayKey(
+        trial,
+        recalledText,
+        recallSupport,
+        ctx.options.systemProvider,
+      )
     : undefined;
   const cachedAnswer = answerReplayKey
     ? ctx.options.pairedAnswerReplayCache?.get(answerReplayKey)
     : undefined;
   const currentProfile = ctx.options.runtimeProfile ?? null;
+  const pairedAnswerReusedFrom =
+    cachedAnswer?.sourceRuntimeProfile === "baseline" && currentProfile === "real"
+      ? "baseline"
+      : undefined;
   let answered: HarnessAnswerResult;
-  if (
-    cachedAnswer
-    && cachedAnswer.sourceRuntimeProfile === "baseline"
-    && currentProfile === "real"
-  ) {
+  if (pairedAnswerReusedFrom) {
+    const reusedAnswer = cachedAnswer!;
     answered = {
-      finalAnswer: cachedAnswer.finalAnswer,
+      finalAnswer: reusedAnswer.finalAnswer,
       recalledText,
-      answeredText: cachedAnswer.answeredText,
+      answeredText: reusedAnswer.answeredText,
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
-      model: cachedAnswer.model,
+      model: reusedAnswer.model,
     };
   } else {
     answered = await answerBenchmarkQuestion({
@@ -694,9 +709,7 @@ async function executeTrial(
     ...(answerSupportGate
       ? { answerSupportGate: true, recallSupport }
       : {}),
-    ...(cachedAnswer && cachedAnswer.sourceRuntimeProfile !== currentProfile
-      ? { pairedAnswerReusedFrom: cachedAnswer.sourceRuntimeProfile }
-      : {}),
+    ...(pairedAnswerReusedFrom ? { pairedAnswerReusedFrom } : {}),
     responderModel: answered.model,
     judgeModel: judgeResult.model,
     ...(answered.fallbackReason

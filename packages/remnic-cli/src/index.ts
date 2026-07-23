@@ -1965,6 +1965,7 @@ export const __benchDatasetTestHooks = {
   resolveBenchDatasetDir,
   resolveDownloadedBenchDatasetDir,
   pairedAnswerReplayCacheForBenchmark,
+  orderPairedLoCoMoWorkItemsForTest: orderPairedLoCoMoWorkItems,
   buildPublishedBenchmarkOptionsForTest(
     benchmarkId: string,
     args: {
@@ -3072,8 +3073,13 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     return;
   }
 
-  const runtimeProfiles = resolveBenchRunProfiles(parsed);
   const benchmarkId = parsed.publishedName;
+  const runtimeProfiles = orderPairedLoCoMoWorkItems(
+    resolveBenchRunProfiles(parsed).map((runtimeProfile) => ({
+      benchmarkId,
+      runtimeProfile,
+    })),
+  ).map((item) => item.runtimeProfile);
   // Collect artifact paths written by each runtime profile so the
   // --out promotion step copies the exact file just produced rather
   // than scanning the whole results directory (Cursor Medium + Codex
@@ -3498,6 +3504,24 @@ function pairedAnswerReplayCacheForBenchmark(
   pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
 ): import("@remnic/bench").PairedAnswerReplayCache | undefined {
   return benchmarkId === "locomo" ? pairedAnswerReplayCache : undefined;
+}
+
+function orderPairedLoCoMoWorkItems<
+  T extends { benchmarkId: string; runtimeProfile: BenchRuntimeProfile },
+>(workItems: readonly T[]): T[] {
+  const baselineIndex = workItems.findIndex(
+    (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "baseline",
+  );
+  const realIndex = workItems.findIndex(
+    (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "real",
+  );
+  if (baselineIndex < 0 || realIndex < 0 || baselineIndex < realIndex) {
+    return [...workItems];
+  }
+  const ordered = [...workItems];
+  const [baseline] = ordered.splice(baselineIndex, 1);
+  ordered.splice(realIndex, 0, baseline!);
+  return ordered;
 }
 
 async function runBenchViaPackage(
@@ -10995,7 +11019,7 @@ async function cmdBench(rest: string[]): Promise<void> {
       ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
       : undefined;
   try {
-    for (const { benchmarkId, runtimeProfile } of selectedWorkItems) {
+    for (const { benchmarkId, runtimeProfile } of orderPairedLoCoMoWorkItems(selectedWorkItems)) {
       const statusId = runtimeProfiles.length > 1
         ? `${benchmarkId} [${runtimeProfile}]`
         : benchmarkId;

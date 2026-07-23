@@ -276,8 +276,64 @@ test("runPublishedHarness never replays a real answer into baseline", async () =
 
   assert.equal(realResult.results.tasks[0]?.actual, "real answer");
   assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(
+    baselineResult.results.tasks[0]?.details?.pairedAnswerReusedFrom,
+    undefined,
+  );
   assert.equal(realResponds, 1);
   assert.equal(baselineResponds, 1);
+});
+
+test("runPublishedHarness does not replay across different responder models", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  let baselineResponds = 0;
+  let realResponds = 0;
+  baseline.system.responder.respond = async () => {
+    baselineResponds++;
+    return {
+      text: "baseline answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "baseline-responder",
+    };
+  };
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "real-responder",
+    };
+  };
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+    model: string,
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+        systemProvider: { provider: "openai", model },
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  const baselineResult = await run(baseline.system, "baseline", "baseline-model");
+  const realResult = await run(real.system, "real", "real-model");
+
+  assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(realResult.results.tasks[0]?.actual, "real answer");
+  assert.equal(baselineResponds, 1);
+  assert.equal(realResponds, 1);
 });
 
 test("runPublishedHarness rejects drain failure before scoring trials", async () => {

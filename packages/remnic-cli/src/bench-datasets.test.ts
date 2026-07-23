@@ -19,6 +19,25 @@ test("paired answer replay cache is exclusive to LoCoMo", () => {
   );
 });
 
+test("paired LoCoMo work executes baseline before real", () => {
+  const workItems = [
+    { benchmarkId: "longmemeval", runtimeProfile: "real" },
+    { benchmarkId: "locomo", runtimeProfile: "real" },
+    { benchmarkId: "memoryagentbench", runtimeProfile: "baseline" },
+    { benchmarkId: "locomo", runtimeProfile: "baseline" },
+  ] as const;
+
+  assert.deepEqual(
+    __benchDatasetTestHooks.orderPairedLoCoMoWorkItemsForTest(workItems),
+    [
+      { benchmarkId: "longmemeval", runtimeProfile: "real" },
+      { benchmarkId: "locomo", runtimeProfile: "baseline" },
+      { benchmarkId: "locomo", runtimeProfile: "real" },
+      { benchmarkId: "memoryagentbench", runtimeProfile: "baseline" },
+    ],
+  );
+});
+
 test("resolveDownloadedBenchDatasetDir rejects explicit dataset paths without benchmark markers", async () => {
 
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-datasets-"));
