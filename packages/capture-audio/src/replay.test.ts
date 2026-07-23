@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 
 import { CaptureConfigError } from "./errors.js";
-import { ingestReplayDir } from "./replay.js";
+import { ingestReplayDir, ingestReplayDirResponsive } from "./replay.js";
 import { Spool } from "./spool.js";
 
 const createdDirs: string[] = [];
@@ -304,4 +304,21 @@ test("a later { id }-only speaker reference preserves the established speaker's 
   assert.equal(self?.label, "Me");
   assert.equal(self?.isSelf, true);
   spool.close();
+});
+
+test("ingestReplayDirResponsive stops at a batch boundary on abort (no post-abort commit)", async () => {
+  const docs = Array.from({ length: 60 }, (_, i) => {
+    const t = `2026-07-20T15:00:${String(i).padStart(2, "0")}.000Z`;
+    return { id: `conv_${i}`, startedAtUtc: t, segments: [{ channel: "mic", text: `t${i}`, startUtc: t, endUtc: t }] };
+  });
+  const dir = fixtureDir({ "big.json": docs });
+  const spool = new Spool(":memory:");
+  const ctrl = new AbortController();
+  const pending = ingestReplayDirResponsive(spool, dir, { signal: ctrl.signal });
+  ctrl.abort(); // after the synchronous first batch + first yield
+  const result = await pending;
+  assert.equal(result.aborted, true);
+  assert.equal(result.conversationsIngested, 25); // exactly one commit batch
+  assert.equal(spool.stats().conversations, 25);
+  assert.doesNotThrow(() => spool.close()); // safe to close; nothing written after abort
 });

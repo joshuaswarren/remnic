@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
@@ -39,6 +39,15 @@ async function closedPort(): Promise<number> {
   const port = (srv.address() as net.AddressInfo).port;
   await new Promise<void>((res) => srv.close(() => res()));
   return port;
+}
+
+async function waitFor(fn: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fn()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("waitFor timed out");
 }
 
 test("start refuses when a DIFFERENT live pid holds a bare record", async () => {
@@ -562,5 +571,72 @@ test("foreground start closes the server and spool if pid persistence fails afte
       s.once("error", reject);
       s.listen(port, "127.0.0.1", () => s.close(() => resolve()));
     });
+  });
+});
+
+test("SIGTERM during a large replay shuts down cleanly (drains, no write-after-close)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const dir = await mkdtemp(path.join(tmpdir(), "cap-big-"));
+    try {
+      const iso = (i: number) => new Date(Date.UTC(2026, 6, 20, 0, Math.floor(i / 60), i % 60)).toISOString();
+      const docs = Array.from({ length: 120 }, (_, i) => ({
+        id: `conv_${i}`,
+        startedAtUtc: iso(i),
+        segments: [{ channel: "mic", text: `t${i}`, startUtc: iso(i), endUtc: iso(i) }],
+      }));
+      writeFileSync(path.join(dir, "big.json"), JSON.stringify(docs));
+      const port = await closedPort();
+      const run = runCapture({
+        argv: ["start", "--foreground", "--replay", dir, "--host", "127.0.0.1", "--port", String(port), "--base-dir", baseDir],
+        stdout: () => undefined,
+        stderr: () => undefined,
+      });
+      await waitFor(() => readPidRecord(paths.pidPath)?.instanceId != null);
+      process.emit("SIGTERM");
+      const code = await run;
+      assert.equal(code, 0); // clean drain + close, no unhandled write-after-close
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("normal replay completes, then SIGTERM shuts down cleanly", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const dir = await mkdtemp(path.join(tmpdir(), "cap-sm-"));
+    try {
+      writeFileSync(
+        path.join(dir, "a.json"),
+        JSON.stringify([
+          { id: "c0", startedAtUtc: "2026-07-20T15:00:00.000Z", segments: [{ channel: "mic", text: "a", startUtc: "2026-07-20T15:00:00.000Z", endUtc: "2026-07-20T15:00:01.000Z" }] },
+          { id: "c1", startedAtUtc: "2026-07-20T15:01:00.000Z", segments: [{ channel: "mic", text: "b", startUtc: "2026-07-20T15:01:00.000Z", endUtc: "2026-07-20T15:01:01.000Z" }] },
+        ]),
+      );
+      const port = await closedPort();
+      const run = runCapture({
+        argv: ["start", "--foreground", "--replay", dir, "--host", "127.0.0.1", "--port", String(port), "--base-dir", baseDir],
+        stdout: () => undefined,
+        stderr: () => undefined,
+      });
+      await waitFor(() => existsSync(paths.tokenPath));
+      const token = readFileSync(paths.tokenPath, "utf8").trim();
+      await waitFor(async () => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { authorization: `Bearer ${token}` } });
+          if (!r.ok) return false;
+          const b = (await r.json()) as { replayStatus?: unknown };
+          return b.replayStatus === "ok";
+        } catch {
+          return false;
+        }
+      });
+      process.emit("SIGTERM");
+      const code = await run;
+      assert.equal(code, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

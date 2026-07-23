@@ -256,18 +256,24 @@ export async function superviseReplay(
   spool: Spool,
   replayDir: string,
   io: { stdout: (l: string) => void; stderr: (l: string) => void },
+  signal?: AbortSignal,
 ): Promise<void> {
   // Yield first so the caller returns to serving before the (synchronous)
   // ingest runs — readiness is already established.
   await Promise.resolve();
   spool.setMeta("replay_status", "running");
   try {
-    const summary = await ingestReplayDirResponsive(spool, replayDir);
-    spool.setMeta("replay_status", "ok");
-    io.stdout(
-      `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
-        `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
-    );
+    const summary = await ingestReplayDirResponsive(spool, replayDir, { signal });
+    if (summary.aborted) {
+      spool.setMeta("replay_status", "cancelled");
+      io.stdout(`replay: cancelled after ${summary.conversationsIngested} conversation(s)`);
+    } else {
+      spool.setMeta("replay_status", "ok");
+      io.stdout(
+        `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
+          `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
+      );
+    }
   } catch (err) {
     const message =
       err instanceof CaptureConfigError || err instanceof CaptureInputError ? err.message : describeError(err);
@@ -405,23 +411,29 @@ async function cmdStart(
     throw err;
   }
   stdout(`listening on ${handle.url}`);
-  if (replayDir) {
-    // Supervised AFTER readiness: replay volume/failure never delays or fails
-    // readiness, and never kills the daemon.
-    void superviseReplay(spool, replayDir, { stdout, stderr });
-  }
+  // Supervised AFTER readiness: replay volume/failure never delays or fails
+  // readiness, and never kills the daemon. The task is tracked so shutdown can
+  // cancel and drain it before the spool closes.
+  const replayAbort = new AbortController();
+  const replayTask: Promise<void> = replayDir
+    ? superviseReplay(spool, replayDir, { stdout, stderr }, replayAbort.signal)
+    : Promise.resolve();
 
   return await new Promise<number>((resolve) => {
     let closing = false;
     const shutdown = () => {
       if (closing) return;
       closing = true;
-      spool.finalizeOpenConversations();
-      // Cleanup must run whether close resolves or rejects — a rejected
-      // close must not become an unhandled rejection.
-      handle
-        .close()
+      // Cancel any in-flight replay and drain it (bounded: ingestion stops at
+      // the next commit-batch boundary) BEFORE closing the spool, so no
+      // ingestion write can ever hit a closed database.
+      replayAbort.abort();
+      void replayTask
         .catch(() => undefined)
+        .then(() => {
+          spool.finalizeOpenConversations();
+          return handle.close().catch(() => undefined);
+        })
         .finally(() => {
           spool.close();
           removePidFileIfOwner(paths.pidPath, process.pid);

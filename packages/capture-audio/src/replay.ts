@@ -41,6 +41,8 @@ export interface ReplayResult {
   conversationsIngested: number;
   segmentsIngested: number;
   ids: string[];
+  /** True when a cooperative cancel (AbortSignal) stopped ingestion early. */
+  aborted: boolean;
 }
 
 function asObject(value: unknown, where: string): Record<string, unknown> {
@@ -255,7 +257,7 @@ export const REPLAY_COMMIT_BATCH = 25;
 /** Synchronous ingest: validate the whole directory, then commit it all. */
 export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
   const { fixtures, files } = parseReplayDir(dir);
-  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
+  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [], aborted: false };
   for (const fixture of fixtures) commitFixture(spool, fixture, result);
   return result;
 }
@@ -266,10 +268,20 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
  * event-loop yield between them so a co-hosted HTTP server stays responsive
  * during a large replay.
  */
-export async function ingestReplayDirResponsive(spool: Spool, dir: string): Promise<ReplayResult> {
+export async function ingestReplayDirResponsive(
+  spool: Spool,
+  dir: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ReplayResult> {
   const { fixtures, files } = parseReplayDir(dir);
-  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
+  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [], aborted: false };
   for (let i = 0; i < fixtures.length; i += REPLAY_COMMIT_BATCH) {
+    // Cooperative cancel: check between batches so no commit runs after a
+    // shutdown has been requested (and thus none after the spool is closed).
+    if (options.signal?.aborted) {
+      result.aborted = true;
+      break;
+    }
     for (const fixture of fixtures.slice(i, i + REPLAY_COMMIT_BATCH)) {
       commitFixture(spool, fixture, result);
     }
