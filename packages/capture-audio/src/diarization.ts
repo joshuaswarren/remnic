@@ -21,7 +21,7 @@ export interface SpeakerCluster {
   id: string;
   centroid: number[];
   examples: number[][];
-  count: number;
+  embeddingCount: number;
   isSelf: boolean;
   label: string | null;
 }
@@ -63,7 +63,7 @@ export class SpeakerClusterer {
         id: c.id,
         centroid: [...c.centroid],
         examples: c.examples.map((e) => [...e]),
-        count: c.count,
+        embeddingCount: c.embeddingCount,
         isSelf: c.isSelf,
         label: c.label,
       });
@@ -84,7 +84,7 @@ export class SpeakerClusterer {
       id: SELF_ID,
       centroid: [...embedding],
       examples: [[...embedding]],
-      count: 1,
+      embeddingCount: 1,
       isSelf: true,
       label: null,
     });
@@ -102,11 +102,11 @@ export class SpeakerClusterer {
 
   #update(cluster: SpeakerCluster, embedding: Embedding): void {
     // Running mean centroid.
-    const n = cluster.count;
+    const n = cluster.embeddingCount;
     for (let i = 0; i < cluster.centroid.length && i < embedding.length; i++) {
       cluster.centroid[i] = (cluster.centroid[i] * n + embedding[i]) / (n + 1);
     }
-    cluster.count = n + 1;
+    cluster.embeddingCount = n + 1;
     if (cluster.examples.length < MAX_EXAMPLES) {
       cluster.examples.push([...embedding]);
     } else {
@@ -144,7 +144,7 @@ export class SpeakerClusterer {
       id: `spk_${this.#next++}`,
       centroid: [...embedding],
       examples: [[...embedding]],
-      count: 1,
+      embeddingCount: 1,
       isSelf: false,
       label: null,
     };
@@ -158,7 +158,7 @@ export class SpeakerClusterer {
       id: c.id,
       centroid: [...c.centroid],
       examples: c.examples.map((e) => [...e]),
-      count: c.count,
+      embeddingCount: c.embeddingCount,
       isSelf: c.isSelf,
       label: c.label,
     }));

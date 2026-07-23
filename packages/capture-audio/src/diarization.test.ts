@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cosineSimilarity, SpeakerClusterer } from "./diarization.js";
+import { SpeakerClusterer, cosineSimilarity } from "./diarization.js";
+import { Spool } from "./spool.js";
 
 /** Deterministic pseudo-embedding near a base vector (same speaker) with jitter. */
 function nearVoice(base: number[], seed: number, jitter = 0.02): number[] {
@@ -53,4 +54,28 @@ test("enrolled self voice is labeled `self`", () => {
 test("constructor rejects an out-of-range threshold", () => {
   assert.throws(() => new SpeakerClusterer(0));
   assert.throws(() => new SpeakerClusterer(1));
+});
+
+test("a clusters() snapshot persists its embeddingCount through the spool (no reset to 0)", () => {
+  const clusterer = new SpeakerClusterer(0.5);
+  const voice = [0.9, 0.1, 0.2, 0.0];
+  clusterer.assign(voice);
+  clusterer.assign(nearVoice(voice, 1)); // merges -> embeddingCount 2
+  const [snapshot] = clusterer.clusters();
+  assert.equal(snapshot.embeddingCount, 2);
+
+  const spool = new Spool(":memory:");
+  try {
+    // Persist the snapshot object directly, as daemon/library wiring would;
+    // the field names must line up or the count is silently stored as 0.
+    for (const c of clusterer.clusters()) spool.upsertSpeaker(c);
+    const rows = spool.readSpeakerClusters();
+    assert.equal(rows[0].embeddingCount, 2);
+    // Seeding a fresh clusterer from the persisted rows keeps the sample
+    // count, so established speakers are not treated as fresh on restart.
+    const seeded = new SpeakerClusterer(0.5, rows);
+    assert.equal(seeded.clusters()[0].embeddingCount, 2);
+  } finally {
+    spool.close();
+  }
 });
