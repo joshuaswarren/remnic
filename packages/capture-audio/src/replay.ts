@@ -171,7 +171,17 @@ interface ParsedFixture {
  * later invalid record therefore leaves no earlier mutation (no stray
  * speaker rows, no half-committed batch).
  */
-export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
+interface ParsedReplay {
+  fixtures: ParsedFixture[];
+  files: number;
+}
+
+/**
+ * Parse + validate an entire replay directory WITHOUT writing to the spool.
+ * Throws on the first invalid record so nothing is ever partially committed
+ * (atomic failure semantics live here, before any commit runs).
+ */
+function parseReplayDir(dir: string): ParsedReplay {
   let entries: string[];
   try {
     if (lstatSync(dir).isSymbolicLink()) {
@@ -186,8 +196,7 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
     throw new CaptureConfigError(`replay dir ${dir} contains no *.json fixtures`);
   }
 
-  // Phase 1 — parse + validate everything; no spool writes.
-  const parsedFixtures: ParsedFixture[] = [];
+  const fixtures: ParsedFixture[] = [];
   const seenIds = new Set<string>();
   let files = 0;
   for (const name of entries) {
@@ -218,27 +227,53 @@ export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
         });
         conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
       }
-      // Distinct conversations must not share an id within one batch — a
-      // silent delete-then-insert overwrite would drop data. (Cross-call
-      // re-ingest of the same fixture stays idempotent: each call is its own
-      // batch.)
+      // Distinct conversations must not share an id within one batch — a silent
+      // delete-then-insert overwrite would drop data. (Cross-call re-ingest of
+      // the same fixture stays idempotent: each call is its own batch.)
       if (seenIds.has(conv.id as string)) {
         throw new CaptureConfigError(`${where}: duplicate conversation id '${conv.id}' in this replay batch`);
       }
       seenIds.add(conv.id as string);
       const speakers = parseSpeakers(asObject(doc, where).speakers, where);
-      parsedFixtures.push({ speakers, conv });
+      fixtures.push({ speakers, conv });
     });
   }
+  return { fixtures, files };
+}
 
-  // Phase 2 — commit; every record above is already validated.
+function commitFixture(spool: Spool, fixture: ParsedFixture, result: ReplayResult): void {
+  for (const speaker of fixture.speakers) spool.upsertSpeaker(speaker);
+  const id = spool.insertConversation(fixture.conv);
+  result.ids.push(id);
+  result.conversationsIngested += 1;
+  result.segmentsIngested += fixture.conv.segments.length;
+}
+
+/** Commit size between event-loop yields in the responsive ingester. */
+export const REPLAY_COMMIT_BATCH = 25;
+
+/** Synchronous ingest: validate the whole directory, then commit it all. */
+export function ingestReplayDir(spool: Spool, dir: string): ReplayResult {
+  const { fixtures, files } = parseReplayDir(dir);
   const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
-  for (const { speakers, conv } of parsedFixtures) {
-    for (const speaker of speakers) spool.upsertSpeaker(speaker);
-    const id = spool.insertConversation(conv);
-    result.ids.push(id);
-    result.conversationsIngested += 1;
-    result.segmentsIngested += conv.segments.length;
+  for (const fixture of fixtures) commitFixture(spool, fixture, result);
+  return result;
+}
+
+/**
+ * Responsive ingest: everything is validated up front (atomic — a later
+ * invalid record commits nothing), then committed in bounded batches with an
+ * event-loop yield between them so a co-hosted HTTP server stays responsive
+ * during a large replay.
+ */
+export async function ingestReplayDirResponsive(spool: Spool, dir: string): Promise<ReplayResult> {
+  const { fixtures, files } = parseReplayDir(dir);
+  const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [] };
+  for (let i = 0; i < fixtures.length; i += REPLAY_COMMIT_BATCH) {
+    for (const fixture of fixtures.slice(i, i + REPLAY_COMMIT_BATCH)) {
+      commitFixture(spool, fixture, result);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   return result;
 }

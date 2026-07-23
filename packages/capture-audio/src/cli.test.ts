@@ -465,3 +465,53 @@ test("unexpected positional arguments are rejected before side effects", async (
     assert.equal(existsSync(paths.configPath), false); // init did not run
   });
 });
+
+test("global flags before the subcommand are accepted", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const out: string[] = [];
+    const code = await runCapture({ argv: ["--base-dir", baseDir, "init"], stdout: (l) => out.push(l) });
+    assert.equal(code, 0);
+    assert.equal(existsSync(paths.configPath), true);
+  });
+});
+
+test("replay failure status is sanitized before it reaches health output", async () => {
+  const spool = new Spool(":memory:");
+  const missing = path.join(tmpdir(), "cap-definitely-missing-xyz");
+  await superviseReplay(spool, missing, { stdout: () => undefined, stderr: () => undefined });
+  const status = spool.meta("replay_status") ?? "";
+  assert.ok(status.startsWith("failed"), status);
+  assert.ok(!status.includes(missing), status); // absolute path stripped
+  assert.ok(status.includes("<path>"), status);
+  spool.close();
+});
+
+test("replay ingestion yields so the daemon stays responsive during a multi-batch replay", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cap-big-"));
+  try {
+    const iso = (s: number, ms = 0) => new Date(Date.UTC(2026, 6, 20, 0, 0, s, ms)).toISOString();
+    const docs = Array.from({ length: 60 }, (_, i) => ({
+      id: `conv_${i}`,
+      startedAtUtc: iso(i),
+      segments: [{ channel: "mic", text: `t${i}`, startUtc: iso(i), endUtc: iso(i, 500) }],
+    }));
+    writeFileSync(path.join(dir, "big.json"), JSON.stringify(docs));
+    const spool = new Spool(":memory:");
+    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    try {
+      const ingest = superviseReplay(spool, dir, { stdout: () => undefined, stderr: () => undefined });
+      // The bound server answers health while ingestion is still in flight.
+      const res = await fetch(`${handle.url}/v1/health`, { headers: { authorization: "Bearer tok" } });
+      assert.equal(res.status, 200);
+      await ingest;
+      assert.equal(spool.meta("replay_status"), "ok");
+      assert.equal(spool.stats().conversations, 60);
+    } finally {
+      await handle.close();
+      spool.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

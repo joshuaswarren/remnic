@@ -29,7 +29,7 @@ import {
 import { startDaemon, type DaemonHandle } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
-import { ingestReplayDir } from "./replay.js";
+import { ingestReplayDirResponsive } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
 import { formatHostForUrl, isLoopbackHost } from "./util.js";
@@ -68,11 +68,11 @@ const BOOLEAN_FLAGS: Record<string, true> = {
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const positionals: string[] = [];
+  const tokens: string[] = [];
   const flags: Record<string, string | boolean> = {};
-  let i = 0;
-  const command = argv[0] && !argv[0].startsWith("-") ? argv[(i = 1) - 1] : "help";
-  for (; i < argv.length; i++) {
+  // Collect flags anywhere (so global flags may precede the subcommand); the
+  // first non-flag token is the command, the rest are positionals.
+  for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
@@ -89,10 +89,11 @@ function parseArgs(argv: string[]): ParsedArgs {
         throw new CaptureInputError(`unknown flag --${key}`);
       }
     } else {
-      positionals.push(arg);
+      tokens.push(arg);
     }
   }
-  return { command, positionals, flags };
+  const command = tokens.length > 0 ? tokens[0] : "help";
+  return { command, positionals: tokens.slice(1), flags };
 }
 
 function resolvePaths(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): CapturePaths {
@@ -245,7 +246,7 @@ export async function superviseReplay(
   await Promise.resolve();
   spool.setMeta("replay_status", "running");
   try {
-    const summary = ingestReplayDir(spool, replayDir);
+    const summary = await ingestReplayDirResponsive(spool, replayDir);
     spool.setMeta("replay_status", "ok");
     io.stdout(
       `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
@@ -254,7 +255,10 @@ export async function superviseReplay(
   } catch (err) {
     const message =
       err instanceof CaptureConfigError || err instanceof CaptureInputError ? err.message : describeError(err);
-    spool.setMeta("replay_status", `failed: ${message}`);
+    // Sanitize before it reaches the spool meta / /v1/health: strip any
+    // filesystem paths from the surfaced status; the full detail goes to the log.
+    const sanitized = message.replace(/\/\S+/g, "<path>");
+    spool.setMeta("replay_status", `failed: ${sanitized}`);
     io.stderr(`replay ingestion failed: ${message}`);
   }
 }

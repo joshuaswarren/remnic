@@ -145,6 +145,18 @@ function assertIsoInstant(value: string, label: string): void {
   if (typeof value !== "string" || value.trim() === "" || !Number.isFinite(Date.parse(value))) {
     throw new CaptureConfigError(`${label}: expected a valid ISO timestamp`);
   }
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) {
+    throw new CaptureConfigError(`${label}: expected an ISO timestamp with a calendar date`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  probe.setUTCFullYear(year);
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    throw new CaptureConfigError(`${label}: '${value}' is not a real calendar date`);
+  }
 }
 
 export class Spool {

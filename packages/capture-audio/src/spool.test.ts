@@ -192,3 +192,13 @@ test("insertConversation rejects invalid timestamps before persisting (no partia
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
   spool.close();
 });
+
+test("insertConversation rejects invalid calendar dates at the Spool boundary", () => {
+  const spool = new Spool(":memory:");
+  assert.throws(
+    () => spool.insertConversation({ id: "c", startedAtUtc: "2026-02-30T00:00:00.000Z", segments: [seg("a")] }),
+    /not a real calendar date/,
+  );
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
+});
