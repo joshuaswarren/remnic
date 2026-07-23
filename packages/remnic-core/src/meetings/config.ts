@@ -14,13 +14,18 @@
 
 import { coerceBool, coerceNumber } from "../connectors/coerce.js";
 import { DEFAULT_MEETING_APP_PATTERNS } from "./detect.js";
-import type { MeetingsConfig } from "./types.js";
+import type { MeetingsConfig, MeetingSummaryMode } from "./types.js";
 
 const DEFAULT_MIN_OVERLAP_MINUTES = 2;
 const DEFAULT_AUDIO_ONLY_MIN_MINUTES = 15;
 const DEFAULT_MERGE_GAP_MINUTES = 2;
 const DEFAULT_CONTEXT_DWELL_SECONDS = 20;
 const DEFAULT_MAX_CONTEXT_CHARS = 4000;
+const DEFAULT_SUMMARY_MODE: MeetingSummaryMode = "smart";
+const DEFAULT_SOURCE_TRUST = 0.85;
+const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
+const DEFAULT_REVIEW_TRUST = 0.45;
+const SUMMARY_MODES: readonly MeetingSummaryMode[] = ["off", "review", "smart"];
 
 export const DEFAULT_MEETINGS_CONFIG: MeetingsConfig = {
   enabled: false,
@@ -30,6 +35,10 @@ export const DEFAULT_MEETINGS_CONFIG: MeetingsConfig = {
   mergeGapMinutes: DEFAULT_MERGE_GAP_MINUTES,
   contextDwellSeconds: DEFAULT_CONTEXT_DWELL_SECONDS,
   maxContextChars: DEFAULT_MAX_CONTEXT_CHARS,
+  summaryMode: DEFAULT_SUMMARY_MODE,
+  sourceTrust: DEFAULT_SOURCE_TRUST,
+  autoApproveTrust: DEFAULT_AUTO_APPROVE_TRUST,
+  reviewTrust: DEFAULT_REVIEW_TRUST,
 };
 
 function parseBool(value: unknown, name: string, fallback: boolean): boolean {
@@ -90,6 +99,25 @@ function parseAppPatterns(value: unknown): string[] {
   return [...new Set(merged)];
 }
 
+function parseSummaryMode(value: unknown): MeetingSummaryMode {
+  if (value === undefined || value === null) return DEFAULT_SUMMARY_MODE;
+  if (typeof value === "string" && (SUMMARY_MODES as readonly string[]).includes(value)) {
+    return value as MeetingSummaryMode;
+  }
+  throw new Error(
+    `meetings.summaryMode must be one of ${SUMMARY_MODES.join(", ")}; got ${JSON.stringify(value)}`,
+  );
+}
+
+function parseTrust01(value: unknown, name: string, fallback: number): number {
+  if (value === undefined || value === null) return fallback;
+  const coerced = coerceNumber(value);
+  if (coerced === undefined || !Number.isFinite(coerced) || coerced < 0 || coerced > 1) {
+    throw new Error(`${name} must be a number in [0, 1]; got ${JSON.stringify(value)}`);
+  }
+  return coerced;
+}
+
 /** Parse the `meetings` config block. Absent/`{}` → defaults (subsystem off). */
 export function parseMeetingsConfig(value: unknown): MeetingsConfig {
   if (value === undefined || value === null) {
@@ -137,5 +165,9 @@ export function parseMeetingsConfig(value: unknown): MeetingsConfig {
       0,
       1_000_000,
     ),
+    summaryMode: parseSummaryMode(raw.summaryMode),
+    sourceTrust: parseTrust01(raw.sourceTrust, "meetings.sourceTrust", DEFAULT_SOURCE_TRUST),
+    autoApproveTrust: parseTrust01(raw.autoApproveTrust, "meetings.autoApproveTrust", DEFAULT_AUTO_APPROVE_TRUST),
+    reviewTrust: parseTrust01(raw.reviewTrust, "meetings.reviewTrust", DEFAULT_REVIEW_TRUST),
   };
 }

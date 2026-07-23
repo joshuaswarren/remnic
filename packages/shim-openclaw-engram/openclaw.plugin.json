@@ -5931,6 +5931,37 @@
             "maximum": 1000000,
             "default": 4000,
             "description": "Cap on total deduped screen-context excerpt characters."
+          },
+          "summaryMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "review",
+              "smart"
+            ],
+            "default": "smart",
+            "description": "LLM meeting-summary mode: off (episode only), review (queue all candidates), smart (trust-gated)."
+          },
+          "sourceTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.85,
+            "description": "Provenance trust prior for meeting-derived facts (0..1)."
+          },
+          "autoApproveTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.7,
+            "description": "Trust at/above which a smart-mode meeting fact is auto-approved to active."
+          },
+          "reviewTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.45,
+            "description": "Trust at/above which a smart-mode meeting fact is queued for review."
           }
         }
       },

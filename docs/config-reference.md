@@ -1757,3 +1757,7 @@ installs see zero behavior change.
 | `meetings.mergeGapMinutes` | `2` | Merge adjacent same-app candidates within this gap (minutes) for rejoin-after-drop. |
 | `meetings.contextDwellSeconds` | `20` | Minimum other-app foreground dwell (seconds) to include a span in the screen-context timeline. |
 | `meetings.maxContextChars` | `4000` | Cap on total deduped screen-context excerpt characters. |
+| `meetings.summaryMode` | `smart` | LLM summary/facts mode: `off` (deterministic episode only, no LLM), `review` (queue every candidate), `smart` (trust-gated). |
+| `meetings.sourceTrust` | `0.85` | Provenance trust prior for meeting-derived facts (0..1). |
+| `meetings.autoApproveTrust` | `0.7` | Trust at/above which a smart-mode meeting fact is auto-approved to active. |
+| `meetings.reviewTrust` | `0.45` | Trust at/above which a smart-mode meeting fact is queued for review (below is dropped). |

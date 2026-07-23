@@ -113,6 +113,10 @@ export interface MeetingScreenContextEvent {
   dwellSeconds: number;
 }
 
+/** LLM meeting-summary mode: off (episode only), review (all to review queue),
+ *  or smart (trust-gated). */
+export type MeetingSummaryMode = "off" | "review" | "smart";
+
 /** Detection-plus-fusion configuration for meeting building. */
 export interface MeetingsConfig extends MeetingsDetectionConfig {
   /** Master gate for the meetings subsystem. */
@@ -121,6 +125,14 @@ export interface MeetingsConfig extends MeetingsDetectionConfig {
   contextDwellSeconds: number;
   /** Cap on total deduped screen-context excerpt characters. */
   maxContextChars: number;
+  /** LLM summary/facts mode: off | review | smart (default smart). */
+  summaryMode: MeetingSummaryMode;
+  /** Provenance trust prior for meeting-derived facts (0..1). */
+  sourceTrust: number;
+  /** Trust at/above which a smart-mode fact is auto-approved to active. */
+  autoApproveTrust: number;
+  /** Trust at/above which a smart-mode fact is queued for review. */
+  reviewTrust: number;
 }
 
 /** Per-meeting build input (day conversations + activity are clipped here). */

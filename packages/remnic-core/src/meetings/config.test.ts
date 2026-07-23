@@ -40,3 +40,21 @@ test("numeric knobs coerce CLI string values", () => {
   assert.equal(cfg.minOverlapMinutes, 5);
   assert.equal(cfg.contextDwellSeconds, 45);
 });
+
+test("summary mode defaults to smart and rejects unknown values", () => {
+  assert.equal(parseMeetingsConfig(undefined).summaryMode, "smart");
+  assert.equal(parseMeetingsConfig({ summaryMode: "off" }).summaryMode, "off");
+  assert.equal(parseMeetingsConfig({ summaryMode: "review" }).summaryMode, "review");
+  assert.throws(() => parseMeetingsConfig({ summaryMode: "loud" }), /off, review, smart/);
+});
+
+test("trust knobs default and reject out-of-range values", () => {
+  const cfg = parseMeetingsConfig(undefined);
+  assert.equal(cfg.sourceTrust, 0.85);
+  assert.equal(cfg.autoApproveTrust, 0.7);
+  assert.equal(cfg.reviewTrust, 0.45);
+  assert.equal(parseMeetingsConfig({ sourceTrust: 0.5 }).sourceTrust, 0.5);
+  assert.throws(() => parseMeetingsConfig({ sourceTrust: 1.5 }), /in \[0, 1\]/);
+  assert.throws(() => parseMeetingsConfig({ reviewTrust: -0.1 }), /in \[0, 1\]/);
+  assert.equal(parseMeetingsConfig({ autoApproveTrust: "0.9" }).autoApproveTrust, 0.9);
+});
