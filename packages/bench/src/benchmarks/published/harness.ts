@@ -615,7 +615,11 @@ async function executeTrial(
       answerWithTrialFallback(trial, recalledText, error),
     );
     answered = refineTrialAnswer(trial, recalledText, answered);
-    if (answerReplayKey && answered.fallbackReason === undefined) {
+    if (
+      answerReplayKey
+      && currentProfile === "baseline"
+      && answered.fallbackReason === undefined
+    ) {
       ctx.options.pairedAnswerReplayCache?.set(
         answerReplayKey,
         pairedAnswerReplayEntry(currentProfile, answered),

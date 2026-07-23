@@ -1346,3 +1346,61 @@ test("runPublishedHarness does not replay a baseline fallback answer", async () 
   assert.equal(realResult.results.tasks[0]?.actual, "real answer");
   assert.equal(realResponds, 1);
 });
+
+test("runPublishedHarness preserves a baseline replay answer across another profile", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const localLab = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  let baselineResponds = 0;
+  let localLabResponds = 0;
+  baseline.system.responder.respond = async () => {
+    baselineResponds++;
+    return {
+      text: "baseline answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  localLab.system.responder.respond = async () => {
+    localLabResponds++;
+    return {
+      text: "local-lab answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  real.system.responder.respond = async () => ({
+    text: "real answer",
+    tokens: { input: 1, output: 1 },
+    latencyMs: 1,
+    model: "shared-responder",
+  });
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "local-lab" | "real",
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  await run(baseline.system, "baseline");
+  await run(localLab.system, "local-lab");
+  const realResult = await run(real.system, "real");
+
+  assert.equal(realResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(baselineResponds, 1);
+  assert.equal(localLabResponds, 1);
+  assert.equal(real.calls.filter((call) => call.kind === "respond").length, 0);
+});
