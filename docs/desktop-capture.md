@@ -87,11 +87,14 @@ capture slice; each slice references them by name (for example
    password/secure fields (macOS `AXSecureTextField`, Windows UIA `IsPassword`)
    and the capture layer skips them.
 6. **Redaction before disk** — the wearables redaction stage (built-in SSN /
-   payment-card patterns plus your `redactionPatterns`) always runs before any
-   `memoryDir` write, and the capture daemons redact at spool-write time so raw
-   captured text is not persisted unredacted. Spool-time redaction is a binding
-   design contract for the (unbuilt) daemons; the `memoryDir`-write guarantee
-   holds today for every source on the shipped wearables pipeline.
+   payment-card patterns plus your `redactionPatterns`) runs on captured
+   transcript text during cleanup, before the day transcript and digest are
+   written to `memoryDir`, and the capture daemons redact at spool-write time so
+   raw captured text is not persisted unredacted (a binding design contract for
+   the unbuilt daemons). The guarantee covers day transcripts and digests; it
+   does **not** yet cover provider-native imported facts (Bee/Omi via
+   `importNativeMemories`), which today write their content to `memoryDir`
+   without the redaction pass — enable that path only for sources you trust.
 7. **Zero telemetry** — no analytics, no crash reporting, no network calls
    except the ones you configured. STT model downloads happen only on explicit
    invocation.
