@@ -55,8 +55,9 @@
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "postinstall": "node ./scripts/postinstall-banner.mjs",
-    "prepack": "npm run build",
-    "prepublishOnly": "npm run build"
+    "prepack": "node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "prepublishOnly": "npm run build",
+    "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
