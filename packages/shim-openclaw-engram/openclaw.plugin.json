@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.16.3",
+  "version": "9.17.0",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -5675,17 +5675,46 @@
           },
           "extractionMode": {
             "type": "string",
-            "enum": ["off", "smart"],
+            "enum": [
+              "off",
+              "smart"
+            ],
             "default": "off",
             "description": "Set smart to extract trust-gated personal activity memories. off keeps digests searchable only."
           },
-          "sourceTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 },
-          "autoApproveTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
-          "reviewTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
-          "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+          "sourceTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.6
+          },
+          "autoApproveTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.8
+          },
+          "reviewTrust": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.5
+          },
+          "minConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.7
+          },
           "minImportance": {
             "type": "string",
-            "enum": ["critical", "high", "normal", "low", "trivial"],
+            "enum": [
+              "critical",
+              "high",
+              "normal",
+              "low",
+              "trivial"
+            ],
             "default": "normal"
           },
           "maxMemoriesPerDay": {
