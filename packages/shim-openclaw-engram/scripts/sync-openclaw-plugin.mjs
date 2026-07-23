@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,4 +17,8 @@ const packageJson = JSON.parse(await readFile(packageJsonPath, "utf-8"));
 const manifest = JSON.parse(raw);
 manifest.id = "openclaw-engram";
 manifest.version = packageJson.version;
-await writeFile(target, JSON.stringify(manifest, null, 2) + "\n");
+// Atomic write (rule 54): a concurrent reader (e.g. the package test during a
+// parallel `pnpm -r run build`) must never see a truncated 294 KB manifest.
+const tmp = `${target}.tmp-${process.pid}`;
+await writeFile(tmp, JSON.stringify(manifest, null, 2) + "\n");
+await rename(tmp, target);
