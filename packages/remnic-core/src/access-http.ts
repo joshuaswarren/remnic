@@ -3224,8 +3224,7 @@ export class EngramAccessHttpServer {
         toolName === "remnic.capsule_export" ||
         toolName === "engram.capsule_import" ||
         toolName === "remnic.capsule_import" ||
-        toolName === "engram.entity_synthesis_run" ||
-        toolName === "remnic.entity_synthesis_run" ||
+        toolName === "engram.entity_synthesis_run" || toolName === "remnic.entity_synthesis_run" ||
         (
           !dreamsRunDryRun &&
           (toolName === "engram.dreams_run" || toolName === "remnic.dreams_run")
