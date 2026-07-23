@@ -9,6 +9,7 @@ import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
 import type { RecallSearchPipelineDeps } from "./recall-search-pipeline.js";
 import type { MemoryFile, QmdSearchResult } from "../types.js";
 import type { StorageManager } from "../index.js";
+import type { QueryAwarePrefilter } from "../orchestrator.js";
 
 function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
@@ -67,4 +68,70 @@ test("recall safety keeps same relative path distinct across namespaces", async 
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+function scopedCandidatesStub(
+  seed: QmdSearchResult[],
+): RecallSearchPipelineDeps["searchScopedMemoryCandidates"] {
+  // Faithful to production: return only the requested candidates, capped to limit.
+  return async (candidatePaths, _query, limit) =>
+    seed.filter((r) => candidatePaths.has(r.path)).slice(0, Math.max(0, limit));
+}
+
+function fallbackCoordinator(seed: QmdSearchResult[], archived: MemoryFile[]): RecallSearchPipelineCoordinator {
+  const readArchivedMemoriesForNamespaces: RecallSearchPipelineDeps["readArchivedMemoriesForNamespaces"] =
+    async () => archived;
+  const namespaceFromPath: RecallSearchPipelineDeps["namespaceFromPath"] = () => "default";
+  const deps = {
+    searchScopedMemoryCandidates: scopedCandidatesStub(seed),
+    readArchivedMemoriesForNamespaces,
+    namespaceFromPath,
+    config: { memoryDir: "/mem" },
+  } as unknown as RecallSearchPipelineDeps;
+  return new RecallSearchPipelineCoordinator(deps);
+}
+
+function prefilter(paths: string[]): QueryAwarePrefilter {
+  return {
+    candidatePaths: new Set(paths),
+    temporalFromDate: null,
+    matchedTags: [],
+    expandedTags: [],
+    combination: "none",
+    filteredToFullSearch: false,
+  };
+}
+
+const MEETING_RECORD = "meetings/2026-03-10/mtg-2026-03-10-abcdef01.md";
+const SEED_PATHS = [MEETING_RECORD, "facts/a.md", "artifacts/y.md"];
+const SEED_WITH_NON_RECALLABLE = SEED_PATHS.map((p) => result("default", p));
+const PREFILTER = prefilter(SEED_PATHS);
+
+test("archive fallback excludes non-recallable seeds on the archived-empty early return", async () => {
+  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, []);
+  // limit 10 > filtered seed count, tokens non-empty, archived empty → the
+  // `return scopedSeedResults` early path at the archived-empty guard.
+  const out = await coordinator.searchLongTermArchiveFallback("quarterly report", ["default"], 10, PREFILTER);
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"],
+    "meeting record + artifact must not leak through the direct-caller early return",
+  );
+});
+
+test("archive fallback excludes non-recallable seeds on the empty-tokens early return", async () => {
+  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, [memory("facts/z.md", "archived")]);
+  // Empty prompt → zero tokens → the `return scopedSeedResults` early path
+  // before archive scoring is even attempted.
+  const out = await coordinator.searchLongTermArchiveFallback("", ["default"], 10, PREFILTER);
+  assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
+});
+
+test("archive fallback applies the cap to FILTERED seeds, not raw non-recallable hits", async () => {
+  // The scoped search returns a single non-recallable hit that would fill a cap
+  // of 1 if counted raw; the method must count only recallable seeds, so it does
+  // not early-return that hit and (archive empty) yields nothing.
+  const coordinator = fallbackCoordinator([result("default", MEETING_RECORD)], []);
+  const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 1, prefilter([MEETING_RECORD]));
+  assert.deepEqual(out.map((r) => r.path), []);
 });
