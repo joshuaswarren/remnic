@@ -8,7 +8,7 @@
  * of the same document; `postpack` restores the pretty original so the git
  * tree stays clean. The committed file remains pretty-printed for review.
  */
-import { copyFileSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import { copyFileSync, readFileSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const packageDir = process.cwd();
@@ -33,13 +33,21 @@ if (command === "minify") {
     );
     process.exit(1);
   }
-  copyFileSync(manifestPath, backupPath);
+  // A leftover backup from a crashed pack holds the authoritative pretty
+  // form — never clobber it with a possibly already-minified manifest.
+  if (!existsSync(backupPath)) {
+    copyFileSync(manifestPath, backupPath);
+  }
   writeFileSync(manifestPath, compact);
   console.log(`openclaw.plugin.json minified for pack: ${bytes} bytes (cap ${HARD_CAP_BYTES}).`);
 } else if (command === "restore") {
   if (existsSync(backupPath)) {
-    renameSync(backupPath, manifestPath);
-    console.log("openclaw.plugin.json restored to the committed pretty form.");
+    // copy+unlink instead of rename: fs.renameSync cannot overwrite an
+    // existing destination on Windows (EEXIST) and the destination always
+    // exists here (it is the minified manifest).
+    copyFileSync(backupPath, manifestPath);
+    unlinkSync(backupPath);
+    console.log("openclaw.plugin.json reset to the committed pretty form.");
   }
 } else {
   console.error("usage: manifest-pack.mjs <minify|restore>");

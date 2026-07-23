@@ -55,7 +55,7 @@
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "postinstall": "node ./scripts/postinstall-banner.mjs",
-    "prepack": "node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "prepack": "npm run build && node ../../scripts/openclaw-manifest-pack.mjs minify",
     "prepublishOnly": "npm run build",
     "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
   },
