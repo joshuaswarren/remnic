@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import http from "node:http";
 
-import { registerDelegateRuntime, type DelegateRuntimeOptions } from "./delegate-runtime.js";
+import {
+  maybeRegisterDelegateRuntime,
+  registerDelegateRuntime,
+  type DelegateRuntimeOptions,
+} from "./delegate-runtime.js";
 import { resolveBridgeMode } from "./bridge.js";
 
 type HookHandler = (
@@ -92,6 +96,8 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
     namespace: "",
     allowPromptInjection: true,
     passive: false,
+    gateHeartbeatTurns: false,
+    recallBudgetChars: 0,
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
@@ -245,5 +251,126 @@ test("resolveBridgeMode is explicit-only: config delegate activates, absence sta
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
+
+test("delegate observe skips heartbeat-triggered turns when gated", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: 0 }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { gateHeartbeatTurns: true }));
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        trigger: "heartbeat",
+        messages: [{ role: "user", content: "heartbeat chatter" }],
+      },
+      { sessionKey: "hb" },
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/observe").length,
+      0,
+      "heartbeat turns must not be observed when the gate is on",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate recall trims injected context to recallBudgetChars", async () => {
+  const stub = await startDaemonStub(() => ({ context: "x".repeat(500) }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { recallBudgetChars: 100 }));
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "long enough query" },
+      { sessionKey: "budget" },
+    )) as Record<string, unknown>;
+    const injected = String(result.prependSystemContext);
+    assert.ok(
+      injected.length <= 100 + "## Memory Context (Remnic)\n\n".length,
+      `injection stays within budget (+header): got ${injected.length}`,
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate uses the section builder on hosts that expose it (no hook injection)", async () => {
+  const stub = await startDaemonStub(() => ({ context: "section daemon context" }));
+  try {
+    const api = recordingApi();
+    const captured: {
+      builder: null | ((params: { sessionKey?: string }) => string[] | null);
+    } = { builder: null };
+    const sectionApi = Object.assign(api, {
+      registerMemoryPromptSection(builder: (params: { sessionKey?: string }) => string[] | null): void {
+        captured.builder = builder;
+      },
+    });
+    registerDelegateRuntime(sectionApi, optionsFor(stub.port));
+    const builder = captured.builder;
+    if (builder === null) {
+      throw new Error("section builder was not registered");
+    }
+
+    const result = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "query for the section path" },
+      { sessionKey: "sect" },
+    );
+    assert.equal(result, undefined, "hook must not inject when the builder owns injection");
+    const lines = builder({ sessionKey: "sect" });
+    assert.ok(lines && lines.join("\n").includes("section daemon context"), "builder serves the recall");
+    assert.equal(builder({ sessionKey: "sect" }), null, "consumed lines are evicted");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", async () => {
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  try {
+    const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+    const priorHost = process.env.REMNIC_HOST;
+    const priorPort = process.env.REMNIC_PORT;
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    try {
+      const api = recordingApi();
+      const opts = {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 0,
+      };
+      const healthDeps = { checkHealth: () => true };
+      const first = maybeRegisterDelegateRuntime(api, opts, healthDeps);
+      const second = maybeRegisterDelegateRuntime(api, opts, healthDeps);
+      assert.equal(first, true, "first registration handles delegate");
+      assert.equal(second, true, "second call still reports delegate handled");
+      assert.equal(
+        api.handlers.get("agent_end")?.length ?? 0,
+        1,
+        "hooks are bound exactly once per api object",
+      );
+    } finally {
+      if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+      else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+      if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+      else process.env.REMNIC_HOST = priorHost;
+      if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+      else process.env.REMNIC_PORT = priorPort;
+    }
+  } finally {
+    await stub.close();
   }
 });

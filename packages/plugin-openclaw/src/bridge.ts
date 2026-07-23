@@ -290,6 +290,15 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
  * delegate runtime (issue #2120).
  */
 export function loadDaemonAuthToken(): string {
+  // Environment-provided tokens first: for delegate-mode daemon operations the
+  // operator must be able to pin a token authorized for recall/observe/lcm
+  // rather than inheriting whatever happens to be first in tokens.json
+  // (least-privilege stores can hold narrowly scoped tokens up front).
+  const envToken =
+    readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN") ??
+    readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN") ??
+    readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
+  if (envToken) return envToken;
   const tokenPaths = [
     path.join(resolveHomeDir(), ".remnic", "tokens.json"),
     path.join(resolveHomeDir(), ".engram", "tokens.json"),
@@ -325,12 +334,7 @@ export function loadDaemonAuthToken(): string {
   } catch {
     // ignore
   }
-  return (
-    readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN") ??
-    readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN") ??
-    readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ??
-    ""
-  );
+  return "";
 }
 
 /**

@@ -22,6 +22,11 @@
 
 import { log } from "@remnic/core/logger";
 import {
+  checkDaemonHealthSync,
+  loadDaemonAuthToken,
+  resolveBridgeMode,
+} from "./bridge.js";
+import {
   extractLastTurn,
   extractTextContent,
 } from "./transcript-turns.js";
@@ -42,13 +47,22 @@ export interface DelegateRuntimeOptions {
   /** Passive slot mode: register nothing, exactly like embedded passive mode
    * skips prompt-injection and extraction hooks. */
   passive: boolean;
+  /** Mirrors embedded `heartbeat.gateExtractionDuringHeartbeat`: skip
+   * observing heartbeat-triggered turns. */
+  gateHeartbeatTurns: boolean;
+  /** Cap on injected recall context characters (0 = uncapped), mirroring the
+   * embedded recallBudgetChars trim. */
+  recallBudgetChars: number;
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
 }
 
-interface MinimalHookApi {
+export interface DelegateHookApi {
   on(hook: string, handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown): void;
+  // Method syntax (bivariant params) so the real OpenClaw api — whose
+  // builder parameter is a wider SDK union — remains assignable.
+  registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
 }
 
 const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
@@ -119,7 +133,7 @@ function withNamespace(
  * never break the agent turn" contract of the embedded hooks.
  */
 export function registerDelegateRuntime(
-  api: MinimalHookApi,
+  api: DelegateHookApi,
   options: DelegateRuntimeOptions,
 ): void {
   const { target, namespace } = options;
@@ -131,6 +145,12 @@ export function registerDelegateRuntime(
   }
 
   if (options.allowPromptInjection) {
+    // Session-scoped cache for the section-builder path, mirroring the
+    // embedded pre-compute-then-consume contract: the hook fills it, the
+    // synchronous builder consumes (and evicts) it.
+    const promptLinesBySession = new Map<string, string[]>();
+    const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
+
     const recallHandler = async (
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
@@ -138,6 +158,7 @@ export function registerDelegateRuntime(
       const query = recallQueryFrom(event);
       if (query.trim().length < 5) return undefined;
       const sessionKey = sessionKeyFrom(event, ctx);
+      if (useSectionBuilder) promptLinesBySession.delete(sessionKey);
       try {
         const response = await postJson(
           target,
@@ -145,11 +166,24 @@ export function registerDelegateRuntime(
           withNamespace(namespace, { query, sessionKey, mode: "auto" }),
           options.recallTimeoutMs,
         );
-        const context = response?.context;
-        if (typeof context !== "string" || context.trim().length === 0) {
+        const rawContext = response?.context;
+        if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
           return undefined;
         }
+        // Mirror the embedded recallBudgetChars trim so delegate mode cannot
+        // exceed the configured injection budget.
+        const context =
+          options.recallBudgetChars > 0
+            ? rawContext.slice(0, options.recallBudgetChars)
+            : rawContext;
         const prompt = `${MEMORY_CONTEXT_HEADER}\n\n${context}`;
+        if (useSectionBuilder) {
+          // Section-builder hosts inject through the registered builder; the
+          // hook only pre-computes. Returning injection fields here too would
+          // double-inject.
+          promptLinesBySession.set(sessionKey, prompt.split("\n"));
+          return undefined;
+        }
         // before_prompt_build consumes prependSystemContext; the legacy
         // before_agent_start path may consume either field, matching the
         // embedded handler's dual-field return.
@@ -163,6 +197,18 @@ export function registerDelegateRuntime(
     // the other, never both, so dual registration cannot double-inject.
     api.on("before_prompt_build", recallHandler);
     api.on("before_agent_start", recallHandler);
+    if (useSectionBuilder && api.registerMemoryPromptSection) {
+      const memoryBuildFn = Object.assign(
+        (params: { sessionKey?: string }): string[] | null => {
+          const key = params?.sessionKey ?? "default";
+          const lines = promptLinesBySession.get(key) ?? null;
+          promptLinesBySession.delete(key);
+          return lines;
+        },
+        { id: "remnic-delegate-memory", label: "Remnic Memory Context (delegate)" },
+      );
+      api.registerMemoryPromptSection(memoryBuildFn);
+    }
   } else {
     log.info(
       `[${options.serviceId}] bridge mode delegate: prompt injection disabled by hooks policy`,
@@ -172,6 +218,14 @@ export function registerDelegateRuntime(
   api.on("agent_end", async (event, ctx) => {
     if (event.success !== true || !Array.isArray(event.messages)) return;
     if (event.messages.length === 0) return;
+    // Mirror the embedded heartbeat gate: heartbeat-triggered turns are
+    // operational chatter, not user memory.
+    if (
+      options.gateHeartbeatTurns &&
+      (event.trigger === "heartbeat" || ctx?.trigger === "heartbeat")
+    ) {
+      return;
+    }
     const sessionKey = sessionKeyFrom(event, ctx);
     const turn = extractLastTurn(event.messages as Array<Record<string, unknown>>)
       .map((message) => ({
@@ -220,4 +274,76 @@ export function registerDelegateRuntime(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
       `${target.host}:${target.port} (embedded orchestrator skipped; tools/CLI/surfaces stay daemon-side)`,
   );
+}
+
+export interface MaybeRegisterDelegateOptions {
+  serviceId: string;
+  /** The parsed plugin config's `bridgeMode` value. */
+  configBridgeMode: string;
+  passive: boolean;
+  allowPromptInjection: boolean;
+  /** Embedded parity: `heartbeat.enabled && heartbeat.gateExtractionDuringHeartbeat`. */
+  gateHeartbeatTurns: boolean;
+  /** Embedded parity: the config's recallBudgetChars injection cap. */
+  recallBudgetChars: number;
+}
+
+// Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
+// WeakSet): the gateway can invoke register() more than once with the same
+// api object during reload edge cases, and re-binding would double-fire every
+// handler (double recall, double observe, double flush).
+const delegateHookApis = new WeakSet<object>();
+
+/**
+ * Resolve bridge mode, preflight the daemon, and register the delegate
+ * runtime. Returns true when delegate mode handled registration (the caller
+ * must skip the embedded runtime), false when the caller should proceed
+ * embedded — either because delegate was not requested or because the
+ * requested daemon failed its preflight (logged loudly).
+ */
+export interface MaybeRegisterDelegateDeps {
+  /** Injectable preflight — defaults to the bridge's worker-backed sync probe. */
+  checkHealth: (host: string, port: number) => boolean;
+}
+
+export function maybeRegisterDelegateRuntime(
+  api: DelegateHookApi,
+  options: MaybeRegisterDelegateOptions,
+  deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
+): boolean {
+  const bridge = resolveBridgeMode(options.configBridgeMode);
+  if (bridge.mode !== "delegate") return false;
+  if (delegateHookApis.has(api)) {
+    log.debug(
+      "delegate register: this api already has hooks bound — skipping duplicate registration",
+    );
+    return true;
+  }
+  // register() is synchronous, so the preflight uses the bridge's
+  // worker-backed sync health check (the same probe detectBridgeMode uses).
+  if (!deps.checkHealth(bridge.daemonHost, bridge.daemonPort)) {
+    log.error(
+      `bridge mode delegate requested but no healthy daemon at ` +
+        `${bridge.daemonHost}:${bridge.daemonPort} — falling back to the embedded runtime`,
+    );
+    return false;
+  }
+  delegateHookApis.add(api);
+  registerDelegateRuntime(api, {
+    serviceId: options.serviceId,
+    target: {
+      host: bridge.daemonHost,
+      port: bridge.daemonPort,
+      authToken: loadDaemonAuthToken(),
+    },
+    namespace: "",
+    allowPromptInjection: options.allowPromptInjection,
+    passive: options.passive,
+    gateHeartbeatTurns: options.gateHeartbeatTurns,
+    recallBudgetChars: options.recallBudgetChars,
+    recallTimeoutMs: 25_000,
+    observeTimeoutMs: 120_000,
+    flushTimeoutMs: 55_000,
+  });
+  return true;
 }

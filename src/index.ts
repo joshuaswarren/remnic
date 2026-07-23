@@ -75,11 +75,9 @@ import {
   resolveRemnicOpenClawPluginEntry,
 } from "../packages/plugin-openclaw/src/plugin-id.js";
 import {
-  checkDaemonHealthSync,
-  loadDaemonAuthToken,
-  resolveBridgeMode,
-} from "../packages/plugin-openclaw/src/bridge.js";
-import { registerDelegateRuntime } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+  maybeRegisterDelegateRuntime,
+  type DelegateHookApi,
+} from "../packages/plugin-openclaw/src/delegate-runtime.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -1409,44 +1407,26 @@ const pluginDefinition = {
       );
     }
 
-    // Bridge mode (issue #2120): in delegate mode a running standalone daemon
-    // owns memory; back the core loop with its HTTP API and skip the embedded
-    // orchestrator entirely. Explicit-only (env REMNIC_BRIDGE_MODE or config
-    // bridgeMode) — never auto-detected, so existing co-located deployments
-    // keep their embedded behavior until the operator opts in.
-    const bridge = resolveBridgeMode(cfg.bridgeMode);
-    if (bridge.mode === "delegate") {
-      // register() is synchronous, so the preflight uses the bridge's
-      // worker-backed sync health check (the same probe detectBridgeMode uses).
-      const daemonHealthy = checkDaemonHealthSync(
-        bridge.daemonHost,
-        bridge.daemonPort,
-      );
-      if (daemonHealthy) {
-        registerDelegateRuntime(api, {
-          serviceId,
-          target: {
-            host: bridge.daemonHost,
-            port: bridge.daemonPort,
-            authToken: loadDaemonAuthToken(),
-          },
-          namespace: "",
-          allowPromptInjection:
-            coerceRawConfigBoolean(
-              readPluginHooksPolicy(api.config, serviceId)?.allowPromptInjection,
-            ) !== false,
-          passive: passiveMode,
-          recallTimeoutMs: 25_000,
-          observeTimeoutMs: 120_000,
-          flushTimeoutMs: 55_000,
-        });
-        return;
-      }
-      log.error(
-        `bridge mode delegate requested but no healthy daemon at ` +
-          `${bridge.daemonHost}:${bridge.daemonPort} — falling back to the embedded runtime`,
-      );
-    }
+    // Bridge mode (issue #2120): delegate backs the memory loop with a running
+    // standalone daemon over HTTP and skips the embedded orchestrator. All
+    // resolution/preflight/fallback logic lives in the plugin package.
+    // OpenClawPluginApi's registerMemoryPromptSection parameter is a wider
+    // SDK union than the minimal builder surface the delegate runtime uses;
+    // structurally compatible, but the union defeats direct assignability.
+    const delegateApi = api as unknown as DelegateHookApi;
+    const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
+      serviceId,
+      configBridgeMode: cfg.bridgeMode,
+      passive: passiveMode,
+      allowPromptInjection:
+        coerceRawConfigBoolean(
+          readPluginHooksPolicy(api.config, serviceId)?.allowPromptInjection,
+        ) !== false,
+      gateHeartbeatTurns:
+        cfg.heartbeat.enabled && cfg.heartbeat.gateExtractionDuringHeartbeat,
+      recallBudgetChars: cfg.recallBudgetChars,
+    });
+    if (delegateHandled) return;
     const channelEnvelopeCleaning = resolveChannelEnvelopePrefixes(cfg);
     const cleanOpenClawUserMessage = createOpenClawUserMessageCleaner(
       channelEnvelopeCleaning.prefixes,
