@@ -176,10 +176,11 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
     const dia = asObject(obj.diarization, "diarization");
     warnUnknownKeys(dia, { similarityThreshold: true }, "diarization");
     if (dia.similarityThreshold !== undefined) {
-      cfg.diarization.similarityThreshold = coerceNumber(dia.similarityThreshold, "diarization.similarityThreshold", {
-        min: 0,
-        max: 1,
-      });
+      const threshold = coerceNumber(dia.similarityThreshold, "diarization.similarityThreshold", { max: 1 });
+      if (threshold <= 0 || threshold >= 1) {
+        throw new CaptureConfigError("diarization.similarityThreshold must be between 0 and 1");
+      }
+      cfg.diarization.similarityThreshold = threshold;
     }
   }
 

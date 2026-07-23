@@ -76,8 +76,11 @@ test("unknown stt engine is rejected", () => {
   );
 });
 
-test("similarityThreshold out of [0,1] is rejected", () => {
+test("similarityThreshold outside exclusive (0,1) is rejected, matching the clusterer", () => {
   assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 1.5 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 0 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 1 } }), CaptureConfigError);
+  assert.equal(parseDaemonConfig({ diarization: { similarityThreshold: 0.6 } }).diarization.similarityThreshold, 0.6);
 });
 
 test("wrong types for structured fields are rejected", () => {

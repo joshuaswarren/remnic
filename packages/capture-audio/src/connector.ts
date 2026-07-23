@@ -42,6 +42,14 @@ export const DESKTOP_SOURCE_ID = "desktop";
 export const DESKTOP_DISPLAY_NAME = "Desktop audio";
 const DEFAULT_BASE_URL = `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 
+/** Bounded probe timeout so a wedged daemon reports unreachable instead of hanging. */
+const PROBE_TIMEOUT_MS = 15_000;
+
+function withTimeout(signal: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(PROBE_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 /** Error raised for a genuine backend failure (never for an empty day). */
 export class DesktopDaemonError extends Error {
   constructor(message: string) {
@@ -134,7 +142,7 @@ class DesktopClient {
   async verifyAuth(signal?: AbortSignal): Promise<WearableAuthCheck> {
     let res: Response;
     try {
-      res = await fetch(`${this.#baseUrl}/v1/health`, { headers: this.#headers(), signal });
+      res = await fetch(`${this.#baseUrl}/v1/health`, { headers: this.#headers(), signal: withTimeout(signal) });
     } catch {
       // Connection refused / DNS / offline: the daemon isn't running.
       // This is NOT an auth failure and must never throw (AC2).
@@ -156,7 +164,7 @@ class DesktopClient {
     if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
     let res: Response;
     try {
-      res = await fetch(url, { headers: this.#headers(), signal: opts.signal });
+      res = await fetch(url, { headers: this.#headers(), signal: withTimeout(opts.signal) });
     } catch {
       throw new DesktopDaemonError(
         `desktop capture daemon unreachable at ${this.#baseUrl} (is remnic-capture-audio running?)`,

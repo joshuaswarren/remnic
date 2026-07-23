@@ -50,7 +50,8 @@
     "@remnic/import-supermemory": "^9.22.0",
     "@remnic/connector-limitless": "^9.22.0",
     "@remnic/connector-bee": "^9.22.0",
-    "@remnic/connector-omi": "^9.22.0"
+    "@remnic/connector-omi": "^9.22.0",
+    "@remnic/capture-audio": "^9.22.0"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
@@ -87,6 +88,9 @@
       "optional": true
     },
     "@remnic/connector-omi": {
+      "optional": true
+    },
+    "@remnic/capture-audio": {
       "optional": true
     }
   },
