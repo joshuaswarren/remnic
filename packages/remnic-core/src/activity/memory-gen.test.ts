@@ -15,7 +15,7 @@ import { scoreImportance } from "../importance.js";
 const DATE = "2026-03-10";
 const DAY_START = "2026-03-10T00:00:00.000Z";
 
-type ActFact = Pick<ExtractedFact, "category" | "content" | "confidence" | "tags" | "entityRef">;
+type ActFact = Pick<ExtractedFact, "category" | "content" | "confidence" | "tags" | "entityRef" | "structuredAttributes">;
 
 const ownDecision: ActFact = {
   category: "decision",
@@ -86,6 +86,8 @@ test("isEligibleActivityFact rejects attributed third-party first-person text", 
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Bob: I decided to refactor the parser." }), false);
   // Common document labels are not senders — the user's own note stays eligible.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Note: I decided to refactor the parser." }), true);
+  // A chat self-label ("Me:") is the user, not a third party — stays eligible.
+  assert.equal(isEligibleActivityFact({ ...ownDecision, content: "Me: I decided to consolidate the settings." }), true);
   // Third-person speakers are attribution, not the user — must be rejected.
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "They wrote: I decided to leave." }), false);
   assert.equal(isEligibleActivityFact({ ...ownDecision, content: "He said: I will handle the migration." }), false);
@@ -229,4 +231,18 @@ test("activity smart mode persists trust score, decision, and judge verdict on t
   assert.equal(w?.structuredAttributes?.trustscore, "1.000");
   assert.equal(w?.structuredAttributes?.trustdecision, "auto-approved");
   assert.equal(w?.structuredAttributes?.judgeverdict, "accept");
+});
+
+test("activity smart mode preserves extracted attributes without overriding trust keys", async () => {
+  const fact: ActFact = { ...ownDecision, structuredAttributes: { chosen: "option B", trustScore: "0.001" } };
+  const { deps, writes } = depsFor([fact]);
+  await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(writes.length, 1);
+  const sa = writes[0]?.structuredAttributes;
+  // Extractor attribute is preserved; the extractor's stray trustScore does not
+  // override the path-owned trust key (canonical lowercase).
+  assert.equal(sa?.chosen, "option B");
+  assert.equal(sa?.trustscore, "1.000");
 });

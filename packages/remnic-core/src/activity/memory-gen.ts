@@ -29,7 +29,7 @@ const FIRST_PERSON = /\b(?:i|we|my|our|i['’]ve|we['’]ve)\b/i;
  *   - leading label:     "Alice: I decided ..." (chat/comment sender headers)
  * Common document labels ("Note:", "TODO:") are not senders and stay eligible.
  */
-const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|my|our)\b)[A-Za-z][\w.'’-]*`;
+const ATTRIBUTION_SPEAKER = String.raw`(?!(?:i|we|me|my|our)\b)[A-Za-z][\w.'’-]*`;
 const SPEECH_VERB =
   String.raw`(?:said|says|wrote|writes|posted|typed|asked|replied|messaged|commented|noted|announced|added|responded|mentioned|told)`;
 const VERB_ATTRIBUTION = new RegExp(String.raw`^\s*${ATTRIBUTION_SPEAKER}\s+${SPEECH_VERB}\b`, "i");
@@ -42,6 +42,11 @@ const NON_SENDER_LABELS: Record<string, true> = {
   updates: true, warning: true, info: true, tip: true, tips: true, summary: true,
   status: true, tldr: true, fyi: true, idea: true, goal: true, goals: true,
   plan: true, plans: true, action: true, actions: true, context: true, question: true,
+};
+const TRUST_ATTRIBUTE_KEYS: Record<string, true> = {
+  trustscore: true,
+  trustdecision: true,
+  judgeverdict: true,
 };
 
 export interface ActivityMemoryWriter {
@@ -245,22 +250,27 @@ export async function generateActivityMemories(
       result.skipped += 1;
       continue;
     }
+    const structuredAttributes: Record<string, string> = {};
+    for (const [key, value] of Object.entries(entry.fact.structuredAttributes ?? {})) {
+      // Extractor-provided attributes are preserved but never override the trust
+      // keys this path owns (compared against the canonical lowercase form).
+      if (TRUST_ATTRIBUTE_KEYS[key.trim().toLowerCase()] !== true) structuredAttributes[key] = value;
+    }
+    structuredAttributes.trustScore = entry.trust.toFixed(3);
+    structuredAttributes.trustDecision = entry.trustDecision;
+    if (entry.judgeVerdict !== undefined) structuredAttributes.judgeVerdict = entry.judgeVerdict;
     const envelope = composeSalvagedActivityEnvelope(
       {
         content: entry.fact.content,
         category: entry.fact.category,
         tags: [...entry.fact.tags, "activity"],
         entityRef: entry.fact.entityRef,
-        // Persist the decision-derived trust as confidence, with the trust
-        // score/decision and judge verdict in structured attributes, mirroring
-        // the wearable smart path so downstream sees the active/pending rationale.
+        // Persist the decision-derived trust as confidence; extractor attributes
+        // ride along, with trust score/decision + judge verdict added last so
+        // downstream sees the active/pending rationale (wearable-path parity).
         confidence: entry.trust,
         validAt: startUtc,
-        structuredAttributes: {
-          trustScore: entry.trust.toFixed(3),
-          trustDecision: entry.trustDecision,
-          ...(entry.judgeVerdict !== undefined ? { judgeVerdict: entry.judgeVerdict } : {}),
-        },
+        structuredAttributes,
         sourceConnector: "activity",
         sourceReason: "screen activity digest",
       },
