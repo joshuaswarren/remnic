@@ -82,6 +82,7 @@ export const OPERATION_NAMES = [
   "capsule_import",
   "capsule_list",
   "memory_governance_run",
+  "entity_synthesis_run",
   "procedure_mining_run",
   "pattern_reinforcement_run",
   "procedural_stats",

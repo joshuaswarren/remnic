@@ -85,6 +85,12 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   }),
   capsule_import: objectSchema({ imported: T_ARRAY, skipped: T_ARRAY, manifest: T_OBJECT }),
   capsule_list: objectSchema({ namespace: T_STRING, capsulesDir: T_STRING, capsules: T_ARRAY }),
+  entity_synthesis_run: objectSchema({
+    namespace: T_STRING,
+    requested: T_NUMBER,
+    processed: T_NUMBER,
+    remaining: T_NUMBER,
+  }),
   memory_governance_run: objectSchema({
     namespace: T_STRING,
     runId: T_STRING,
