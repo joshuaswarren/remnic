@@ -205,6 +205,9 @@ export class MaintenanceScheduler {
     // dispose() has already run (with activitySyncScheduler still null), so
     // arming a timer now would leave an interval that never gets stopped.
     if (signal.aborted) return;
+    // A repeated autoRegisterCrons must not orphan a prior interval: stop the
+    // existing scheduler (abort + drain) before arming a replacement.
+    await this.activitySyncScheduler?.stop();
     try {
       this.activitySyncScheduler = new ActivitySyncScheduler({
         config: this.deps.config.activity,
