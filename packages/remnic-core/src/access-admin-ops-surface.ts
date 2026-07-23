@@ -215,6 +215,53 @@ export class AccessAdminOpsSurface {
     };
   }
 
+  /**
+   * Operator-triggered bulk drain of the entity synthesis queue (issue #2136).
+   * Every automatic call site processes at most 5 entities per event, which a
+   * busy deployment's queue inflow outruns; this surface drains a bounded
+   * batch on demand. `maxEntities` is clamped to 200 per call so a single
+   * request stays bounded; loop until `processed < requested` to drain fully.
+   */
+  async entitySynthesisRun(
+    request: {
+      namespace?: string;
+      maxEntities?: number;
+      authenticatedPrincipal?: string;
+    },
+    principal?: string,
+  ): Promise<{
+    namespace: string;
+    requested: number;
+    processed: number;
+    remaining: number;
+  }> {
+    const resolvedNamespace = this.deps.writableNamespaceFor(
+      request.namespace,
+      undefined,
+      request.authenticatedPrincipal ?? principal,
+    );
+    let requested = 25;
+    if (request.maxEntities !== undefined) {
+      if (
+        typeof request.maxEntities !== "number"
+        || !Number.isFinite(request.maxEntities)
+        || Math.floor(request.maxEntities) < 1
+      ) {
+        throw new Error(
+          `Invalid maxEntities: ${String(request.maxEntities)} (expected an integer >= 1)`,
+        );
+      }
+      requested = Math.min(200, Math.floor(request.maxEntities));
+    }
+    const processed = await this.deps.orchestrator.entitySynthesisCoordinator.processQueue(
+      resolvedNamespace,
+      requested,
+    );
+    const storage = await this.deps.orchestrator.getStorage(resolvedNamespace);
+    const remaining = (await storage.readEntitySynthesisQueue()).length;
+    return { namespace: resolvedNamespace, requested, processed, remaining };
+  }
+
   async conversationIndexUpdate(
     request: {
       sessionKey?: string;

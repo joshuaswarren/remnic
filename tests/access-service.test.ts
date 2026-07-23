@@ -3281,6 +3281,108 @@ test("access service governanceRun skips entity synthesis refresh in shadow mode
   }
 });
 
+test("access service entitySynthesisRun drains a bounded batch and reports remaining (#2136)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-entity-synth-run-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    await writeFile(
+      path.join(memoryDir, "state", "entity-synthesis-queue.json"),
+      JSON.stringify({ updatedAt: new Date().toISOString(), entityNames: ["alpha", "beta", "gamma"] }),
+      "utf-8",
+    );
+    const calls: Array<{ namespace?: string; maxEntities?: number }> = [];
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: false,
+        defaultNamespace: "default",
+        searchBackend: "qmd",
+        qmdEnabled: false,
+        nativeKnowledge: undefined,
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [],
+        namespacePolicies: [],
+        dreamsPhases: dreamsPhasesConfig(),
+      },
+      recall: async () => "ctx",
+      lastRecall: { get: () => null, getMostRecent: () => null },
+      getStorage: async () => storage,
+      entitySynthesisCoordinator: {
+        processQueue: async (namespace?: string, maxEntities?: number) => {
+          calls.push({ namespace, maxEntities });
+          return 3;
+        },
+      },
+    } as any);
+
+    const result = await service.entitySynthesisRun({ maxEntities: 50 });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.maxEntities, 50, "requested batch reaches the coordinator un-shrunk");
+    assert.equal(result.requested, 50);
+    assert.equal(result.processed, 3);
+    assert.equal(result.remaining, 3, "remaining reflects the on-disk queue after the drain");
+
+    // Upper bound is clamped, not rejected: a single call stays bounded.
+    const clamped = await service.entitySynthesisRun({ maxEntities: 10_000 });
+    assert.equal(clamped.requested, 200);
+    assert.equal(calls[1]?.maxEntities, 200);
+
+    // Absent maxEntities defaults to 25.
+    const defaulted = await service.entitySynthesisRun({});
+    assert.equal(defaulted.requested, 25);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access service entitySynthesisRun rejects invalid maxEntities (#2136)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-entity-synth-invalid-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    let drained = 0;
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: false,
+        defaultNamespace: "default",
+        searchBackend: "qmd",
+        qmdEnabled: false,
+        nativeKnowledge: undefined,
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [],
+        namespacePolicies: [],
+        dreamsPhases: dreamsPhasesConfig(),
+      },
+      recall: async () => "ctx",
+      lastRecall: { get: () => null, getMostRecent: () => null },
+      getStorage: async () => storage,
+      entitySynthesisCoordinator: {
+        processQueue: async () => {
+          drained += 1;
+          return 0;
+        },
+      },
+    } as any);
+
+    for (const bad of [0, -5, Number.NaN, 1.5 - 1.5 + Number.POSITIVE_INFINITY]) {
+      await assert.rejects(
+        () => service.entitySynthesisRun({ maxEntities: bad }),
+        /Invalid maxEntities/,
+        `maxEntities=${bad} must be rejected, not silently defaulted`,
+      );
+    }
+    // Fractional values >= 1 floor (2.9 -> 2) rather than reject; sub-1 fractions reject.
+    await assert.rejects(() => service.entitySynthesisRun({ maxEntities: 0.9 }), /Invalid maxEntities/);
+    assert.equal(drained, 0, "no drain ran for rejected inputs");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service governanceRun rejects when deep sleep is disabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-governance-disabled-"));
   try {

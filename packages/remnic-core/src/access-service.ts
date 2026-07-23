@@ -3622,6 +3622,22 @@ export class EngramAccessService {
     );
   }
 
+  async entitySynthesisRun(
+    request: {
+      namespace?: string;
+      maxEntities?: number;
+      authenticatedPrincipal?: string;
+    },
+    principal?: string,
+  ): Promise<{
+    namespace: string;
+    requested: number;
+    processed: number;
+    remaining: number;
+  }> {
+    return this.accessAdminOpsSurface.entitySynthesisRun(request, principal);
+  }
+
   async procedureMiningRun(
     request: {
       namespace?: string;

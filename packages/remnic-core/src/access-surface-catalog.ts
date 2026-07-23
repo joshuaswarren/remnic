@@ -66,6 +66,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "capsule_import", operation: "capsule_import" },
   { tool: "capsule_list", operation: "capsule_list" },
   { tool: "memory_governance_run", operation: "memory_governance_run" },
+  { tool: "entity_synthesis_run", operation: "entity_synthesis_run" },
   { tool: "procedure_mining_run", operation: "procedure_mining_run" },
   { tool: "pattern_reinforcement_run", operation: "pattern_reinforcement_run" },
   { tool: "procedural_stats", operation: "procedural_stats" },
