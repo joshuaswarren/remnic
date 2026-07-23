@@ -26,7 +26,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 
-import type { BenchRecallSupportAssessment, BenchRecallSupportStatus, Message } from "../../adapters/types.js";
+import type { BenchRecallSupportAssessment, BenchRecallSupportStatus, BenchResponder, Message } from "../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
   buildStrictBenchmarkQuestion,
@@ -504,7 +504,8 @@ function pairedAnswerReplayKey(
   trial: HarnessTrial,
   recalledText: string,
   recallSupport: BenchRecallSupportAssessment | undefined,
-  systemProvider: ResolvedRunBenchmarkOptions["systemProvider"]
+  systemProvider: ResolvedRunBenchmarkOptions["systemProvider"],
+  responderIdentity: string | null
 ): string {
   return createHash("sha256")
     .update(
@@ -522,6 +523,7 @@ function pairedAnswerReplayKey(
           seed: systemProvider?.seed ?? null,
           temperature: systemProvider?.temperature ?? null,
         },
+        responderIdentity,
         responderPrompt: buildStrictBenchmarkQuestion(
           trial.question,
           trial.answerFormat ?? "auto"
@@ -556,6 +558,26 @@ function pairedAnswerReplayEntry(
   };
 }
 
+/**
+ * Resolve a non-secret responder fingerprint. Returns `null` when the
+ * responder does not declare an identity, signalling that the replay cache
+ * must be disabled for this trial (paired runs will invoke the responder
+ * directly every time instead of risking a cross-profile replay).
+ */
+function resolveResponderIdentity(responder: BenchResponder | undefined): string | null {
+  if (!responder || typeof responder.identity !== "function") {
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = responder.identity();
+  } catch {
+    return null;
+  }
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 async function executeTrial(
   ctx: HarnessContext,
   trial: HarnessTrial,
@@ -578,9 +600,17 @@ async function executeTrial(
     return { recalledText, recallSupport };
   });
   const { recalledText, recallSupport } = recallResult;
-  const answerReplayKey = ctx.options.pairedAnswerReplayCache
-    ? pairedAnswerReplayKey(trial, recalledText, recallSupport, ctx.options.systemProvider)
-    : undefined;
+  const responderIdentity = resolveResponderIdentity(ctx.options.system.responder);
+  const answerReplayKey =
+    ctx.options.pairedAnswerReplayCache && responderIdentity !== null
+      ? pairedAnswerReplayKey(
+          trial,
+          recalledText,
+          recallSupport,
+          ctx.options.systemProvider,
+          responderIdentity,
+        )
+      : undefined;
   const cachedAnswer = answerReplayKey ? ctx.options.pairedAnswerReplayCache?.get(answerReplayKey) : undefined;
   const currentProfile = ctx.options.runtimeProfile ?? null;
   const pairedAnswerReusedFrom =

@@ -71,6 +71,15 @@ export interface BenchResponder {
     recalledText: string,
     control?: BenchPhaseControl,
   ): Promise<BenchResponse>;
+  /**
+   * Deterministic non-secret fingerprint of the responder's identity
+   * (e.g. model name + provider base URL hash). Used by the published
+   * harness to pin paired-run replay keys to a concrete responder so a
+   * pair of systems with no `systemProvider` cannot cross-replay through
+   * a shared cache. Optional: responders that do not declare an identity
+   * disable the replay cache and always invoke `respond` directly.
+   */
+  identity?(): string;
 }
 
 export interface BenchJudgeResult {

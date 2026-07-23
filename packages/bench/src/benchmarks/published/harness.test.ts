@@ -15,6 +15,7 @@ function makeFakeSystem(opts?: {
   judgeScore?: number;
   responderModel?: string;
   judgeModel?: string;
+  omitResponderIdentity?: boolean;
 }) {
   const calls: Array<
     | { kind: "reset" }
@@ -59,6 +60,13 @@ function makeFakeSystem(opts?: {
           model: opts?.responderModel ?? "smoke-responder",
         };
       },
+      ...(opts?.omitResponderIdentity
+        ? {}
+        : {
+            identity() {
+              return `responder:${opts?.responderModel ?? "smoke-responder"}`;
+            },
+          }),
     },
     judge: {
       async score() {
@@ -389,6 +397,65 @@ test("runPublishedHarness postAnswerHook runs between answer and judge", async (
   assert.ok(calls.some((call) => call.kind === "search"));
 });
 
+
+test("runPublishedHarness skips the replay cache when the responder omits an identity", async () => {
+  const baseline = makeFakeSystem({
+    recallPrefix: "shared",
+    responderModel: "baseline-responder",
+    omitResponderIdentity: true,
+  });
+  const real = makeFakeSystem({
+    recallPrefix: "shared",
+    responderModel: "real-responder",
+    omitResponderIdentity: true,
+  });
+  let baselineResponds = 0;
+  let realResponds = 0;
+  baseline.system.responder.respond = async () => {
+    baselineResponds++;
+    return {
+      text: "baseline answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "baseline-responder",
+    };
+  };
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "real-responder",
+    };
+  };
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  const baselineResult = await run(baseline.system, "baseline");
+  const realResult = await run(real.system, "real");
+
+  assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(realResult.results.tasks[0]?.actual, "real answer");
+  assert.equal(baselineResponds, 1, "baseline must invoke its responder when no identity is declared");
+  assert.equal(realResponds, 1, "real must invoke its responder when no identity is declared");
+  assert.equal(pairedAnswerReplayCache.size, 0, "no entries may be stored without an identity");
+});
 test("runPublishedHarness forwards per-trial answer format to strict answering", async () => {
   const { system, calls } = makeFakeSystem();
   const result = await runPublishedHarness({
