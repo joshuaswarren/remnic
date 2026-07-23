@@ -57,8 +57,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
-import { ActivitySyncScheduler } from "../activity/scheduler.js";
-import { refreshActivityIndex } from "../activity/reindex.js";
+import { ActivitySyncRegistrar } from "./activity-sync-registration.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -136,11 +135,19 @@ export class MaintenanceScheduler {
   private lifecycleLedgerMaxBytes = STATE_FILE_MAX_DECRYPT_BYTES;
 
   // ── Activity (screen-capture) sync scheduler (issue #1900) ──
-  private activitySyncScheduler: ActivitySyncScheduler | null = null;
-  /** Latched by dispose() so a draining tick's onRun cannot re-arm maintenance. */
-  private disposed = false;
+  // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
+  private readonly activityRegistrar: ActivitySyncRegistrar;
 
-  constructor(private readonly deps: MaintenanceSchedulerDeps) {}
+  constructor(private readonly deps: MaintenanceSchedulerDeps) {
+    this.activityRegistrar = new ActivitySyncRegistrar({
+      config: deps.config.activity,
+      memoryDir: deps.config.memoryDir,
+      qmdCollection: deps.config.qmdCollection,
+      secureStoreEnabled: resolveRecallAuxiliaryCapabilities(deps.config).secureStore,
+      getQmd: () => deps.getQmd(),
+      requestReindexRetry: () => this.requestQmdMaintenanceForTool("activity-reindex-retry"),
+    });
+  }
 
   // ───────────────────────────────────────────────────────────────────────
   // Cron auto-registration
@@ -200,40 +207,9 @@ export class MaintenanceScheduler {
     }
 
     // Activity (screen-capture) in-process sync scheduler (issue #1900),
-    // master default-off. Host-agnostic parser -> scheduler -> durable-sync wire
-    // (no OpenClaw cron). Bail if teardown aborted deferred init: dispose() has
-    // already run (scheduler still null), so arming now would orphan the timer.
-    if (signal.aborted) return;
-    // A repeated autoRegisterCrons must not orphan a prior interval: stop the
-    // existing scheduler (abort + drain) before arming a replacement.
-    await this.activitySyncScheduler?.stop();
-    // Re-arming on a reused orchestrator (service restart): clear the teardown
-    // latch so retry signals work again for the new scheduler's lifetime.
-    this.disposed = false;
-    try {
-      this.activitySyncScheduler = new ActivitySyncScheduler({
-        config: this.deps.config.activity,
-        memoryDir: this.deps.config.memoryDir,
-        intervalMs: this.deps.config.activity.autoSyncIntervalMinutes * 60_000,
-        // Force a strict index refresh after each digest write (rule 31):
-        // updateCollectionStrict bypasses the min-interval gate, throws on real failure.
-        reindexSearch: (signal) => refreshActivityIndex(this.deps.getQmd(), this.deps.config.qmdCollection, signal),
-        // Reindex can fail (QMD down); a later unchanged-digest tick skips
-        // afterWrites, so route the retry through the debounced + singleflighted
-        // QMD maintenance path (durable, throttled), disposed-guarded.
-        onRun: (summary) => {
-          if (summary.reindexErrorCount > 0 && !this.disposed) {
-            log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing a maintenance retry`);
-            this.requestQmdMaintenanceForTool("activity-reindex-retry");
-          }
-        },
-      });
-      this.activitySyncScheduler.start();
-      // Close the race where abort fires between the guard above and start().
-      if (signal.aborted) await this.activitySyncScheduler.stop();
-    } catch (err) {
-      log.debug(`activity sync scheduler start failed (non-fatal): ${err}`);
-    }
+    // master default-off. The registrar owns the arm/re-arm/teardown contract
+    // (stop-prior, abort/teardown guards, secure-store refusal, retry latch).
+    await this.activityRegistrar.register(signal);
   }
 
   async autoRegisterDaySummaryCron(): Promise<void> {
@@ -1174,13 +1150,10 @@ export class MaintenanceScheduler {
    * teardown. Async: awaits the scheduler's abort+drain before resolving.
    */
   async dispose(): Promise<void> {
-    // Latch first so a draining activity tick's onRun cannot re-arm QMD
-    // maintenance during teardown.
-    this.disposed = true;
-    // stop() aborts the in-flight sync and clears its timer synchronously;
-    // capture the drain and await it at the end so the rest of teardown runs
-    // concurrently while the aborted tick unwinds.
-    const activityDrain = this.activitySyncScheduler?.stop();
+    // The registrar latches teardown first (so a draining tick's onRun cannot
+    // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
+    // await it last so the rest of teardown runs while the aborted tick unwinds.
+    const activityDrain = this.activityRegistrar.dispose();
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;
