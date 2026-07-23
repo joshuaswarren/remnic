@@ -63,15 +63,28 @@ export function resolveSherpaExport(module: unknown): SherpaOnnxModule | null {
   return null;
 }
 
-export async function loadSherpaOnnx(): Promise<SherpaOnnxModule> {
+export async function loadSherpaOnnx(
+  importModule: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
+): Promise<SherpaOnnxModule> {
   // Computed specifier keeps the optional sherpa-onnx-node peer out of the static
   // dependency graph so the package builds and runs without it installed.
   const specifier = "sherpa-onnx-" + "node";
   let module: unknown;
   try {
-    module = await import(specifier);
-  } catch {
-    throw new CaptureConfigError("Silero VAD requires optional dependency sherpa-onnx-node; install it before enabling VAD");
+    module = await importModule(specifier);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const missing =
+      (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") &&
+      error instanceof Error &&
+      error.message.includes(specifier);
+    if (missing) {
+      throw new CaptureConfigError(
+        "Silero VAD requires optional dependency sherpa-onnx-node; install it before enabling VAD",
+      );
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CaptureConfigError(`Silero VAD failed to load sherpa-onnx-node: ${detail}`);
   }
   const resolved = resolveSherpaExport(module);
   if (!resolved) {

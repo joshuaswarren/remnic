@@ -4,7 +4,7 @@ import path from "node:path";
 
 import test from "node:test";
 
-import { createSileroVad, resolveSherpaExport } from "./vad.js";
+import { createSileroVad, loadSherpaOnnx, resolveSherpaExport } from "./vad.js";
 
 test("createSileroVad configures the optional Sherpa runtime with audio-safe defaults", async () => {
   let received: unknown;
@@ -70,4 +70,37 @@ test("resolveSherpaExport accepts an ES namespace that exposes Vad directly", ()
 test("resolveSherpaExport returns null when no Vad constructor is present", () => {
   assert.equal(resolveSherpaExport({ default: { notVad: 1 } }), null);
   assert.equal(resolveSherpaExport(null), null);
+});
+
+test("loadSherpaOnnx reports the install hint only when the package itself is missing", async () => {
+  const notFound = Object.assign(new Error("Cannot find package 'sherpa-onnx-node' imported from vad.js"), {
+    code: "ERR_MODULE_NOT_FOUND",
+  });
+  await assert.rejects(
+    loadSherpaOnnx(async () => {
+      throw notFound;
+    }),
+    /install it before enabling VAD/,
+  );
+});
+
+test("loadSherpaOnnx surfaces a broken installed native addon instead of an install hint", async () => {
+  const dlopenFailure = Object.assign(new Error("dlopen failed: libonnxruntime.so: cannot open shared object file"), {
+    code: "ERR_DLOPEN_FAILED",
+  });
+  await assert.rejects(loadSherpaOnnx(async () => {
+    throw dlopenFailure;
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /failed to load sherpa-onnx-node/);
+    assert.match(error.message, /dlopen failed/);
+    assert.doesNotMatch(error.message, /install it before enabling VAD/);
+    return true;
+  });
+});
+
+test("loadSherpaOnnx unwraps a CommonJS module returned by the importer", async () => {
+  class FakeVad {}
+  const resolved = await loadSherpaOnnx(async () => ({ default: { Vad: FakeVad } }));
+  assert.equal(resolved.Vad, FakeVad);
 });
