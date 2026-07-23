@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, openSync, statSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import { activityDayWindow } from "@remnic/core";
 import { openBetterSqlite3, displayErrorDetail, type BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
 
 export interface CaptureSnapshot {
@@ -62,7 +63,7 @@ function canonicalTimestamp(iso: string): string {
 
 function normalizeSnapshot(snapshot: CaptureSnapshot): CaptureSnapshot {
   for (const value of [snapshot.app, snapshot.windowTitle, snapshot.text]) {
-    if (typeof value !== "string" || value.length === 0) throw new TypeError("snapshot text fields must be non-empty strings");
+    if (typeof value !== "string") throw new TypeError("snapshot text fields must be strings");
   }
   if (snapshot.textSource !== "ax" && snapshot.textSource !== "ocr") {
     throw new TypeError('snapshot textSource must be "ax" or "ocr"');
@@ -202,10 +203,27 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
         try {
           const cursor = parseCursor(url.searchParams.get("cursor"));
           const limit = parseLimit(url.searchParams.get("limit"));
-          const rows = db.prepare(`
-            SELECT id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text, text_source AS textSource, content_hash AS contentHash
-            FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
-          `).all(cursor, limit + 1) as SnapshotRow[];
+          const date = url.searchParams.get("date");
+          const timezone = url.searchParams.get("timezone");
+          if ((date === null) !== (timezone === null)) {
+            throw new RangeError("date and timezone must be provided together");
+          }
+          const columns = "id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text, text_source AS textSource, content_hash AS contentHash";
+          let rows: SnapshotRow[];
+          if (date !== null && timezone !== null) {
+            // Honor the ActivitySourceClient contract: one page scoped to a
+            // single local day's half-open [start, end) window, cursor within it.
+            const { startUtc, endUtc } = activityDayWindow(date, timezone);
+            rows = db.prepare(`
+              SELECT ${columns} FROM capture_snapshots
+              WHERE id > ? AND captured_at_utc >= ? AND captured_at_utc < ?
+              ORDER BY id ASC LIMIT ?
+            `).all(cursor, startUtc, endUtc, limit + 1) as SnapshotRow[];
+          } else {
+            rows = db.prepare(`
+              SELECT ${columns} FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
+            `).all(cursor, limit + 1) as SnapshotRow[];
+          }
           const hasNext = rows.length > limit;
           const snapshots = hasNext ? rows.slice(0, limit) : rows;
           json(response, 200, {

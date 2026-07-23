@@ -149,9 +149,9 @@ test("replay validation failure releases the spool and leaves it reusable", asyn
       () => startCaptureScreenDaemon({
         authToken: "test-token",
         spoolPath,
-        replay: [snapshot({ app: "" })],
+        replay: [snapshot({ capturedAtUtc: "2026-02-30T00:00:00.000Z" })],
       }),
-      /non-empty/,
+      /calendar|ISO/,
     );
 
     const daemon = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath });
@@ -164,6 +164,57 @@ test("replay validation failure releases the spool and leaves it reusable", asyn
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("replay accepts empty content fields (untitled window / no extractable text)", async () => {
+  const daemon = await startCaptureScreenDaemon({
+    authToken: "test-token",
+    spoolPath: ":memory:",
+    replay: [snapshot({ app: "", windowTitle: "", text: "" })],
+  });
+  try {
+    const { url } = await daemon.start();
+    assert.deepEqual(await (await fetch(`${url}/v1/health`, { headers: AUTH })).json(), { ok: true, snapshots: 1 });
+    const page = await (await fetch(`${url}/v1/snapshots`, { headers: AUTH })).json() as { snapshots: Array<{ app: string; windowTitle: string; text: string }> };
+    assert.equal(page.snapshots.length, 1);
+    assert.equal(page.snapshots[0]?.app, "");
+    assert.equal(page.snapshots[0]?.text, "");
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("snapshots are scoped to the requested local day via date + timezone", async () => {
+  const daemon = await startCaptureScreenDaemon({
+    authToken: "test-token",
+    spoolPath: ":memory:",
+    replay: [
+      snapshot({ capturedAtUtc: "2026-07-22T14:00:00.000Z", app: "A" }),
+      snapshot({ capturedAtUtc: "2026-07-22T23:59:59.000Z", app: "B" }),
+      snapshot({ capturedAtUtc: "2026-07-23T00:00:00.000Z", app: "C" }),
+    ],
+  });
+  try {
+    const { url } = await daemon.start();
+    const day22 = await (await fetch(`${url}/v1/snapshots?date=2026-07-22&timezone=UTC`, { headers: AUTH })).json() as { snapshots: Array<{ app: string }>; nextCursor: string | null };
+    assert.deepEqual(day22.snapshots.map((s) => s.app), ["A", "B"]);
+    assert.equal(day22.nextCursor, null);
+    const day23 = await (await fetch(`${url}/v1/snapshots?date=2026-07-23&timezone=UTC`, { headers: AUTH })).json() as { snapshots: Array<{ app: string }> };
+    assert.deepEqual(day23.snapshots.map((s) => s.app), ["C"]);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("snapshots reject a date without its timezone (and vice versa)", async () => {
+  const daemon = await startCaptureScreenDaemon({ authToken: "test-token", spoolPath: ":memory:" });
+  try {
+    const { url } = await daemon.start();
+    assert.equal((await fetch(`${url}/v1/snapshots?date=2026-07-22`, { headers: AUTH })).status, 400);
+    assert.equal((await fetch(`${url}/v1/snapshots?timezone=UTC`, { headers: AUTH })).status, 400);
+  } finally {
+    await daemon.close();
   }
 });
 
