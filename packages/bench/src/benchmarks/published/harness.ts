@@ -206,6 +206,11 @@ export interface HarnessContext {
   totalCount?: number;
 }
 
+interface PendingPairedAnswerReplay {
+  key: string;
+  entry: PairedAnswerReplayEntry;
+}
+
 /** Convenience: guard an arbitrary iterable shape into an async iterator. */
 async function* toAsyncIterable<T>(
   iter: Iterable<T> | AsyncIterable<T>,
@@ -242,6 +247,7 @@ export async function runPublishedHarness(
     ctx.options.benchmarkOptions?.trialConcurrency,
   );
   const tasks: TaskResult[] = [];
+  const pendingPairedAnswerReplays = new Map<TaskResult, PendingPairedAnswerReplay>();
 
   for await (const plan of toAsyncIterable(ctx.plans)) {
     await ctx.options.system.reset();
@@ -266,6 +272,7 @@ export async function runPublishedHarness(
       tasks,
       trialConcurrency,
       answerSupportGate,
+      pendingPairedAnswerReplays,
     });
   }
 
@@ -280,6 +287,7 @@ async function executePlanTrials(
     tasks: TaskResult[];
     trialConcurrency: number;
     answerSupportGate: boolean;
+    pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>;
   },
 ): Promise<void> {
   if (options.trialConcurrency === 1 || trials.length <= 1) {
@@ -287,11 +295,13 @@ async function executePlanTrials(
       appendCompletedTask(
         ctx,
         options.tasks,
+        options.pendingPairedAnswerReplays,
         await executeTrialWithFailure(
           ctx,
           trial,
           options.planIndex,
           options.answerSupportGate,
+          options.pendingPairedAnswerReplays,
         ),
       );
     }
@@ -314,6 +324,7 @@ async function executePlanTrials(
           trial,
           options.planIndex,
           options.answerSupportGate,
+          options.pendingPairedAnswerReplays,
         ),
       ),
     );
@@ -340,7 +351,12 @@ async function executePlanTrials(
           `PublishedBenchmarkHarness: concurrent trial ${batchStart + offset} did not settle before canonical emission.`,
         );
       }
-      appendCompletedTask(ctx, options.tasks, result.value);
+      appendCompletedTask(
+        ctx,
+        options.tasks,
+        options.pendingPairedAnswerReplays,
+        result.value,
+      );
     }
 
     if (terminalOffset >= 0) {
@@ -361,8 +377,16 @@ async function executePlanTrials(
 function appendCompletedTask(
   ctx: HarnessContext,
   tasks: TaskResult[],
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>,
   task: TaskResult,
 ): void {
+  const pendingReplay = pendingPairedAnswerReplays.get(task);
+  if (pendingReplay) {
+    ctx.options.pairedAnswerReplayCache?.set(
+      pendingReplay.key,
+      pendingReplay.entry,
+    );
+  }
   tasks.push(task);
   // Pass the GLOBAL total (ctx.totalCount), not a per-plan total —
   // `tasks.length` is cumulative across every plan in ctx.plans, so a
@@ -375,10 +399,16 @@ async function executeTrialWithFailure(
   trial: HarnessTrial,
   planIndex: number,
   answerSupportGate: boolean,
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>,
 ): Promise<TaskResult> {
   const trialId = trial.taskId ?? trial.question.slice(0, 60);
   try {
-    return await executeTrial(ctx, trial, answerSupportGate);
+    return await executeTrial(
+      ctx,
+      trial,
+      answerSupportGate,
+      pendingPairedAnswerReplays,
+    );
   } catch (err) {
     const blocked = findBenchmarkRunBlockedError(err);
     if (blocked) {
@@ -553,6 +583,7 @@ async function executeTrial(
   ctx: HarnessContext,
   trial: HarnessTrial,
   answerSupportGate: boolean,
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>,
 ): Promise<TaskResult> {
   const { result: recallResult, durationMs } = await timed(async () => {
     const recallBudget = benchmarkRecallBudgetForSessionCount(
@@ -615,16 +646,6 @@ async function executeTrial(
       answerWithTrialFallback(trial, recalledText, error),
     );
     answered = refineTrialAnswer(trial, recalledText, answered);
-    if (
-      answerReplayKey
-      && currentProfile === "baseline"
-      && answered.fallbackReason === undefined
-    ) {
-      ctx.options.pairedAnswerReplayCache?.set(
-        answerReplayKey,
-        pairedAnswerReplayEntry(currentProfile, answered),
-      );
-    }
   }
 
   // Post-answer hook runs before the judge so dataset-specific signals
@@ -734,7 +755,7 @@ async function executeTrial(
     Object.assign(details, hookResult.extraDetails);
   }
 
-  return {
+  const task: TaskResult = {
     taskId: trial.taskId,
     question: trial.question,
     expected: trial.expected,
@@ -747,6 +768,17 @@ async function executeTrial(
     },
     details,
   };
+  if (
+    answerReplayKey
+    && currentProfile === "baseline"
+    && answered.fallbackReason === undefined
+  ) {
+    pendingPairedAnswerReplays.set(task, {
+      key: answerReplayKey,
+      entry: pairedAnswerReplayEntry(currentProfile, answered),
+    });
+  }
+  return task;
 }
 
 async function assessRecallSupport(

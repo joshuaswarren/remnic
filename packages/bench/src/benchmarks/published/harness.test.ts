@@ -1151,6 +1151,7 @@ test("runPublishedHarness reuses an answer only for an identical paired input", 
   const baseline = makeFakeSystem({ recallPrefix: "shared" });
   const real = makeFakeSystem({ recallPrefix: "shared" });
   let baselineResponds = 0;
+  let realResponds = 0;
   baseline.system.responder.respond = async () => {
     baselineResponds++;
     return {
@@ -1160,12 +1161,15 @@ test("runPublishedHarness reuses an answer only for an identical paired input", 
       model: "shared-responder",
     };
   };
-  real.system.responder.respond = async () => ({
-    text: "real answer",
-    tokens: { input: 1, output: 1 },
-    latencyMs: 1,
-    model: "shared-responder",
-  });
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
@@ -1190,7 +1194,7 @@ test("runPublishedHarness reuses an answer only for an identical paired input", 
   assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
   assert.equal(realResult.results.tasks[0]?.actual, "baseline answer");
   assert.equal(baselineResponds, 1);
-  assert.equal(real.calls.filter((call) => call.kind === "respond").length, 0);
+  assert.equal(realResponds, 0);
 });
 
 test("runPublishedHarness never replays a real answer into baseline", async () => {
@@ -1353,6 +1357,7 @@ test("runPublishedHarness preserves a baseline replay answer across another prof
   const real = makeFakeSystem({ recallPrefix: "shared" });
   let baselineResponds = 0;
   let localLabResponds = 0;
+  let realResponds = 0;
   baseline.system.responder.respond = async () => {
     baselineResponds++;
     return {
@@ -1371,12 +1376,15 @@ test("runPublishedHarness preserves a baseline replay answer across another prof
       model: "shared-responder",
     };
   };
-  real.system.responder.respond = async () => ({
-    text: "real answer",
-    tokens: { input: 1, output: 1 },
-    latencyMs: 1,
-    model: "shared-responder",
-  });
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
@@ -1402,5 +1410,62 @@ test("runPublishedHarness preserves a baseline replay answer across another prof
   assert.equal(realResult.results.tasks[0]?.actual, "baseline answer");
   assert.equal(baselineResponds, 1);
   assert.equal(localLabResponds, 1);
-  assert.equal(real.calls.filter((call) => call.kind === "respond").length, 0);
+  assert.equal(realResponds, 0);
+});
+
+test("runPublishedHarness does not replay a baseline answer after a later trial failure", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  let realResponds = 0;
+  baseline.system.responder.respond = async () => ({
+    text: "baseline answer",
+    tokens: { input: 1, output: 1 },
+    latencyMs: 1,
+    model: "shared-responder",
+  });
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  let hookCalls = 0;
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{
+      taskId: "paired",
+      question: "What happened?",
+      expected: "baseline answer",
+      recallSessionIds: ["session"],
+      postAnswerHook: async () => {
+        if (hookCalls++ === 0) {
+          throw new Error("late trial failure");
+        }
+        return {};
+      },
+    }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  const baselineResult = await run(baseline.system, "baseline");
+  const realResult = await run(real.system, "real");
+
+  assert.match(baselineResult.results.tasks[0]?.actual ?? "", /late trial failure/);
+  assert.equal(realResult.results.tasks[0]?.actual, "real answer");
+  assert.equal(realResponds, 1);
 });
