@@ -152,7 +152,15 @@ class DesktopClient {
     }
     if (res.status === 401) return { ok: false, detail: "unauthorized" };
     if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
-    const body = (await res.json().catch(() => ({}))) as { ok?: unknown; version?: unknown };
+    let body: { ok?: unknown; version?: unknown };
+    try {
+      body = (await res.json()) as { ok?: unknown; version?: unknown };
+    } catch (err) {
+      // Honor caller cancellation during the body read; a non-JSON body
+      // otherwise just reads as unhealthy (never throws for that, AC2).
+      if (signal?.aborted) throw err;
+      body = {};
+    }
     if (body.ok === true) {
       return { ok: true, detail: typeof body.version === "string" ? `capture-audio ${body.version}` : undefined };
     }

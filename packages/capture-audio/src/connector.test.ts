@@ -278,3 +278,22 @@ test("fetchConversations honors a caller abort during the request, never mislabe
     await daemon.close();
   }
 });
+
+test("verifyAuth honors a caller abort during the request, never reporting a false status", async () => {
+  // Headers flushed, body withheld; abort lands during the health JSON read.
+  const arrival = new EventEmitter();
+  const requestReceived = once(arrival, "request");
+  const daemon = await startMockDaemon((_url, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    arrival.emit("request");
+  });
+  try {
+    const controller = new AbortController();
+    const pending = connectorFor(daemon.url).verifyAuth(controller.signal);
+    await requestReceived;
+    controller.abort();
+    await assert.rejects(pending, (err: Error) => err.name === "AbortError");
+  } finally {
+    await daemon.close();
+  }
+});
