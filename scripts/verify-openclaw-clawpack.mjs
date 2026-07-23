@@ -87,6 +87,21 @@ if (distFiles.length < 2) {
   fail(`${packageJson.name}@${packageJson.version} packlist only includes ${distFiles.length} dist file(s)`);
 }
 
+// OpenClaw rejects plugin manifests >= 256 KiB (MAX_PLUGIN_MANIFEST_BYTES) with
+// "unsafe plugin manifest path (validation)". The prepack minifier must keep the
+// packed manifest under that cap or every install on current hosts fails.
+const MANIFEST_CAP_BYTES = 256 * 1024;
+const manifestEntry = entries.find((entry) => entry.path === "openclaw.plugin.json");
+if (!manifestEntry || typeof manifestEntry.size !== "number") {
+  fail("npm pack output has no size for openclaw.plugin.json");
+}
+if (manifestEntry.size >= MANIFEST_CAP_BYTES) {
+  fail(
+    `packed openclaw.plugin.json is ${manifestEntry.size} bytes — OpenClaw rejects manifests >= ${MANIFEST_CAP_BYTES} bytes. ` +
+      "Ensure the prepack minifier ran and shrink configSchema/uiHints if the compact form still exceeds the cap.",
+  );
+}
+
 console.log(
   `Verified ${packageJson.name}@${packageJson.version} ClawPack packlist: ${files.size} files, ${distFiles.length} dist files.`,
 );

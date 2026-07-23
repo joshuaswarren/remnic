@@ -1,6 +1,6 @@
 {
   "name": "@joshuaswarren/openclaw-engram",
-  "version": "9.16.1",
+  "version": "9.17.0",
   "description": "Deprecated compatibility shim for Engram installs. Re-exports @remnic/plugin-openclaw and forwards engram-access to @remnic/core.",
   "type": "module",
   "main": "dist/index.js",
@@ -55,8 +55,9 @@
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "postinstall": "node ./scripts/postinstall-banner.mjs",
-    "prepack": "npm run build",
-    "prepublishOnly": "npm run build"
+    "prepack": "npm run build && node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "prepublishOnly": "npm run build",
+    "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",

@@ -11,6 +11,10 @@
  * All timestamps are UTC ISO-8601; day bucketing is half-open [start, end).
  */
 
+import type { ImportanceLevel } from "../types.js";
+
+export type ActivityExtractionMode = "off" | "smart";
+
 /** One captured on-screen text snapshot (a single window at a single instant). */
 export interface ActivitySnapshot {
   /** Store row id (assigned on insert; absent before persistence). */
@@ -92,7 +96,7 @@ export interface ActivitySourceConfig {
   token?: string;
 }
 
-/** Opt-in activity synchronization settings. */
+/** Opt-in activity synchronization + trust-gated extraction settings. */
 export interface ActivityConfig {
   enabled: boolean;
   timezone: string;
@@ -100,4 +104,14 @@ export interface ActivityConfig {
   /** Periodic auto-sync cadence in minutes (default 15). */
   autoSyncIntervalMinutes: number;
   sources: ActivitySourceConfig[];
+  /** `off` keeps activity searchable only; `smart` trust-gates durable first-person claims. */
+  extractionMode: ActivityExtractionMode;
+  /** Baseline confidence in activity as a source of the user's own actions. */
+  sourceTrust: number;
+  autoApproveTrust: number;
+  reviewTrust: number;
+  minConfidence: number;
+  minImportance: ImportanceLevel;
+  /** `0` means no count cap. */
+  maxMemoriesPerDay: number;
 }

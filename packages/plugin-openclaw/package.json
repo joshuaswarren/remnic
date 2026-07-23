@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-openclaw",
-  "version": "9.16.1",
+  "version": "9.17.0",
   "description": "OpenClaw adapter for Remnic memory with bundled @remnic/core runtime",
   "type": "module",
   "main": "dist/index.js",
@@ -74,7 +74,9 @@
     "check-types": "tsc -p tsconfig.check.json",
     "plugin:inspect": "plugin-inspector check --config plugin-inspector.config.json --no-openclaw",
     "plugin:inspect:runtime": "pnpm run build && PLUGIN_INSPECTOR_EXECUTE_ISOLATED=1 plugin-inspector check --config plugin-inspector.config.json --no-openclaw --runtime --mock-sdk",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "prepack": "node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
