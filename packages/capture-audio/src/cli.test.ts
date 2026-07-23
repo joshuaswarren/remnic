@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -13,7 +13,7 @@ import { defaultDaemonConfig } from "./config.js";
 import { startDaemon } from "./daemon.js";
 import { Spool } from "./spool.js";
 import { writePidFile } from "./control.js";
-import { capturePaths } from "./paths.js";
+import { capturePaths, expandTilde } from "./paths.js";
 
 async function withBaseDir(fn: (baseDir: string) => Promise<void>): Promise<void> {
   const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
@@ -60,7 +60,7 @@ test("stop retains the pid file until the daemon exits", async () => {
     assert.ok(child.pid);
     try {
       writePidFile(paths.pidPath, child.pid);
-      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined });
+      const code = await runCapture({ argv: ["stop", "--force", "--base-dir", baseDir], stdout: () => undefined });
       assert.equal(code, 0);
       assert.equal(existsSync(paths.pidPath), true);
     } finally {
@@ -233,5 +233,25 @@ test("status reports a sanitized health-check failure (no raw error text)", asyn
     const line = out.join("\n");
     assert.match(line, /health check failed \(/);
     assert.doesNotMatch(line, /https?:\/\//); // no URL / foreign text leaked
+  });
+});
+
+test("expandTilde expands a leading ~ and passes other paths through", () => {
+  const home = os.homedir();
+  assert.equal(expandTilde("~"), home);
+  assert.equal(expandTilde("~/x/y"), path.join(home, "x/y"));
+  assert.equal(expandTilde("/abs/path"), "/abs/path");
+  assert.equal(expandTilde("rel/path"), "rel/path");
+});
+
+test("stop refuses a bare-pid record (no instance id) without --force", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writePidFile(paths.pidPath, process.pid); // bare pid, no instanceId
+    const errs: string[] = [];
+    const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+    assert.equal(code, 1);
+    assert.ok(errs.some((l) => l.includes("cannot verify daemon identity")), errs.join("|"));
+    assert.equal(existsSync(paths.pidPath), true); // not signalled, not removed
   });
 });

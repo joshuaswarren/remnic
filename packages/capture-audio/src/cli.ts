@@ -26,9 +26,9 @@ import {
   writePidFile,
   type PidRecord,
 } from "./control.js";
-import { startDaemon } from "./daemon.js";
+import { startDaemon, type DaemonHandle } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
-import { capturePaths, captureBaseDir, type CapturePaths } from "./paths.js";
+import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
 import { ingestReplayDir } from "./replay.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
@@ -222,7 +222,7 @@ async function cmdStart(
     );
     return 1;
   }
-  const replayDir = typeof flags.replay === "string" ? flags.replay : null;
+  const replayDir = typeof flags.replay === "string" ? expandTilde(flags.replay) : null;
   const previousRecord = readPidRecord(paths.pidPath);
   if (previousRecord !== null) {
     if (isProcessAlive(previousRecord.pid) && (await isOwnRunningDaemon(previousRecord, paths, stderr))) {
@@ -277,14 +277,21 @@ async function cmdStart(
 
   const token = loadOrCreateToken(paths.tokenPath);
   const spool = new Spool(paths.spoolPath);
-  if (replayDir) {
-    const summary = ingestReplayDir(spool, replayDir);
-    stdout(
-      `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
-        `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
-    );
+  let handle: DaemonHandle;
+  try {
+    if (replayDir) {
+      const summary = ingestReplayDir(spool, replayDir);
+      stdout(
+        `replay: ingested ${summary.conversationsIngested} conversation(s), ` +
+          `${summary.segmentsIngested} segment(s) from ${summary.files} fixture file(s)`,
+      );
+    }
+    handle = await startDaemon({ spool, config, token, capturing: false });
+  } catch (err) {
+    // Don't leak the spool handle if ingestion or bind fails.
+    spool.close();
+    throw err;
   }
-  const handle = await startDaemon({ spool, config, token, capturing: false });
   writePidFile(paths.pidPath, process.pid, {
     instanceId: spool.meta("instance_id"),
     host: handle.host,
@@ -345,6 +352,14 @@ async function cmdStop(
       );
       return 1;
     }
+  } else if (flags.force !== true) {
+    // No recorded instance id -> identity is unverifiable; refuse to signal a
+    // pid we can't prove is ours (guards against PID reuse) unless forced.
+    stderr(
+      `cannot verify daemon identity for pid ${record.pid} (no recorded instance id); not signalling. ` +
+        `Re-run \`stop --force\` to stop it anyway, or remove ${paths.pidPath}.`,
+    );
+    return 1;
   }
   try {
     process.kill(record.pid, "SIGTERM");

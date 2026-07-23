@@ -43,9 +43,9 @@ export function assertValidTimezone(value: string | null | undefined): string {
 
 /** Absent limit → default; present-but-invalid → 400. */
 export function parseLimit(value: string | null | undefined): number {
-  if (value === null || value === undefined || value === "") return DEFAULT_CONVERSATIONS_LIMIT;
+  if (value === null || value === undefined) return DEFAULT_CONVERSATIONS_LIMIT;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > MAX_CONVERSATIONS_LIMIT) {
+  if (value === "" || !Number.isInteger(n) || n < 1 || n > MAX_CONVERSATIONS_LIMIT) {
     throw new CaptureInputError(
       `invalid limit '${value}' — expected an integer between 1 and ${MAX_CONVERSATIONS_LIMIT}`,
     );

@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { test } from "node:test";
 
 import { CaptureInputError } from "./errors.js";
-import { decodeCursor, encodeCursor, parseTranscriptDate } from "./validate.js";
+import { decodeCursor, encodeCursor, parseLimit, parseTranscriptDate } from "./validate.js";
 
 test("parseTranscriptDate accepts early years (0000-0099) and rejects impossible dates", () => {
   assert.equal(parseTranscriptDate("0001-02-28"), "0001-02-28");
@@ -26,4 +26,13 @@ test("decodeCursor round-trips valid tokens and rejects malformed values", () =>
   assert.throws(() => decodeCursor(emptyId), CaptureInputError);
   assert.throws(() => decodeCursor(wrongShape), CaptureInputError);
   assert.throws(() => decodeCursor("!!!not-a-token"), CaptureInputError);
+});
+
+test("parseLimit defaults only when absent; a present-but-empty value is rejected", () => {
+  assert.equal(parseLimit(null), 50);
+  assert.equal(parseLimit(undefined), 50);
+  assert.equal(parseLimit("10"), 10);
+  assert.throws(() => parseLimit(""), CaptureInputError);
+  assert.throws(() => parseLimit("0"), CaptureInputError);
+  assert.throws(() => parseLimit("abc"), CaptureInputError);
 });
