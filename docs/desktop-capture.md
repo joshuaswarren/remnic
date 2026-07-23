@@ -29,8 +29,8 @@ re-transcription debugging buffer (see the privacy charter below).
 | `@remnic/capture-audio` (spool + daemon + HTTP, `--replay`) | #1897 | planned |
 | STT + VAD + model download + janitor | #1897 | planned |
 | Diarization + speaker clusters + enroll-self + dedup | #1897 | planned |
-| Meeting fusion + record store + CLI | #1900 | planned |
-| Episode memories + MCP/HTTP surfaces | #1900 | planned |
+| Meeting engine: fusion + record store + `MeetingsBuilder` + `meetings.*` config | #1900 | **shipped** (`@remnic/core`; see [meetings.md](meetings.md)) |
+| Meeting surfaces (CLI/MCP/HTTP) + day-source adapter + auto-build + trust-gated summaries | #2123 | planned |
 | Audio native macOS helper | #1897 | planned, hardware-gated |
 
 The capture **daemons, their config gates, CLIs, and HTTP APIs are not yet
@@ -234,10 +234,10 @@ activity). No store, fusion, or surfaces yet; those are later #1900 slices.
   from the date plus the **exact start instant** only. End and app are excluded,
   so a resync that extends a meeting's end or reassigns its app never renumbers
   it; full start precision keeps short same-minute provider meetings distinct.
-  A resync that moves a meeting's *start* earlier does renumber it — preserving
-  IDs across a shifted start is cross-run identity work that belongs to the
-  fusion/record-store slice, which matches a re-detected meeting to its stored
-  record by overlap.
+  A resync that moves a meeting's *start* earlier does renumber it; the record
+  store and `MeetingsBuilder` (shipped in #2122) reconcile that by matching a
+  re-detected meeting to its stored record by window overlap, so the id is
+  preserved.
 - Timestamps are validated (real calendar instant, `±14:00` offsets); an invalid
   `input.date` or a malformed window is rejected rather than silently coerced.
 - Config thresholds (`minOverlapMinutes`, `audioOnlyMinMinutes`,
@@ -269,7 +269,7 @@ detection:
 | **Screen activity** (planned daemon → shipped `src/activity/`) | screen text + app/window context | `<memoryDir>/state/activity.sqlite` + `<memoryDir>/activity/<date>.md` | opt-in, default off |
 | **Desktop audio** (planned `@remnic/capture-audio`, source `desktop`) | diarized transcripts | `<memoryDir>/wearables/desktop/<date>.md` | trust-gated (wearables pipeline) |
 | **Cloud meeting connectors** (shipped) | provider transcripts | `<memoryDir>/wearables/<source>/<date>.md` | trust-gated (wearables pipeline) |
-| **Meeting intelligence** (detector shipped; fusion planned) | detected/fused meetings | `<memoryDir>/meetings/<date>/<id>.md` (fusion slice) | trust-gated summary + facts |
+| **Meeting intelligence** (engine shipped; surfaces/auto-build planned #2123) | detected + fused meetings | `<memoryDir>/meetings/<date>/<id>.md` | trust-gated summary + facts (generation pending) |
 
 Raw audio/frames and the capture spool (text) live only on the capture machine
 and are never indexed by QMD and never become memories. Desktop audio flows into
@@ -279,9 +279,11 @@ modality with its own FTS5 store; meeting detection reads both.
 ## Configuration (design — synthetic placeholders)
 
 The gates below are the *binding config contract* the capture slices introduce.
-The `activity.*` and `meetings.*` blocks are **not yet parsed** — they are absent
-from `docs/config-reference.md` and setting them has no effect until their slice
-lands. The `wearables.sources` map, by contrast, is parsed today: see the
+The `activity.*` block is **not yet parsed** — it is absent from
+`docs/config-reference.md` and setting it has no effect until its slice lands.
+The `meetings.*` block **is** parsed and documented in `config-reference.md`
+(the engine landed in #2122), though nothing drives it automatically until the
+#2123 auto-build tail-step. The `wearables.sources` map is parsed today: see the
 warning on the desktop example below before enabling it. Values shown are
 synthetic examples.
 
@@ -327,12 +329,14 @@ lands; the block below is the shape it will take:
 }
 ```
 
-Meeting intelligence (planned `meetings.*` block):
+Meeting intelligence — the `meetings.*` block is parsed today (engine shipped in
+#2122; full table in [config-reference.md](config-reference.md) and
+[meetings.md](meetings.md)). Auto-build during sync is pending #2123:
 
 ```jsonc
 {
   "meetings": {
-    "enabled": false                  // fusion + record store + memories, all gated here
+    "enabled": false                  // master gate; engine + config shipped, auto-build pending #2123
   }
 }
 ```
@@ -372,7 +376,7 @@ Native helper binaries (planned) install as platform-specific optional packages
 ├── wearables/
 │   └── desktop/<date>.md          # desktop audio day transcript (planned)
 └── meetings/
-    └── <date>/<id>.md             # meeting records (fusion slice, planned)
+    └── <date>/<id>.md             # meeting records (engine shipped #2122; auto-build pending #2123)
 ```
 
 All `memoryDir` markdown follows the house style (YAML frontmatter, contentHash

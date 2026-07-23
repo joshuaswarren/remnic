@@ -42,7 +42,7 @@ validates, its enforcement lands with the trust-pipeline slice.
 
 Shipped engine stages plus the pending wiring:
 
-```
+```text
 inputs (already on disk, per day):
   wearable day transcripts   <memoryDir>/wearables/<source>/<date>.md
   screen activity            <memoryDir>/activity/... (activity store)
@@ -169,6 +169,36 @@ These are not yet available; they land with the stacked surface PR:
   `remnic` CLI yet.)
 - **Namespace symmetry** — activity is machine-scoped (default namespace only);
   wearable sources, meeting records, and meeting memories are caller-namespaced.
+
+## Namespace + machine-source boundary (pending #2123)
+
+The namespace model below lands with the #2123 surface work; it is the
+caller-derived symmetry the wired engine will follow. The caller's resolved
+namespace determines where meeting inputs are read and outputs are written,
+**except** machine-scoped screen activity, which is global.
+
+- **Caller-namespaced** (per-namespace storage root): wearable source
+  transcripts, meeting records (`<ns>/meetings/<date>/<id>.md`), and meeting
+  episode/summary memories live under the caller's namespace root. Reads resolve
+  through `resolveReadableNamespace`; writes (wearables sync, meetings build)
+  through `writableNamespaceFor`. A build reads wearable source + prior records
+  from the caller namespace's storage only.
+- **Machine-scoped, default-only** (global): screen activity is a single
+  machine-global store (`<memoryDir>/state/activity.sqlite`), never migrated
+  per-namespace. It is consumed only when the resolved caller namespace is the
+  machine-owner (`config.defaultNamespace`). For every non-default caller
+  namespace the day-source is built with no activity reader, so detection
+  degrades to audio-only.
+- **Strict isolation for non-default callers**: a non-default caller reads only
+  its own namespace's wearable days and records — no fallback to
+  default-namespace wearables, no global activity. A day with only
+  default-namespace wearables + global activity yields zero meetings for a
+  non-default caller. The default/machine-owner namespace is the only one that
+  consumes default-namespace wearables (incl. legacy historical data) and the
+  global activity store.
+
+Operator/CLI callers carry the default principal and resolve to
+`config.defaultNamespace`, preserving pre-#1900 single-tenant behavior.
 
 ## Degradation matrix (full engine, once wired)
 
