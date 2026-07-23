@@ -8,7 +8,7 @@ import {
   type ActivityMemoryGenerationDeps,
   type ActivityMemoryWriter,
 } from "./memory-gen.js";
-import type { ExtractedFact, ImportanceScore } from "../types.js";
+import type { ExtractedFact, ImportanceScore, MemoryStatus } from "../types.js";
 import type { JudgeCandidate, JudgeVerdict } from "../extraction-judge.js";
 import { scoreImportance } from "../importance.js";
 
@@ -26,7 +26,16 @@ const ownDecision: ActFact = {
 
 function depsFor(
   facts: ActFact[],
-  opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean; extractThrows?: boolean; extractionFailure?: string } = {},
+  opts: {
+    existing?: { id: string; status: MemoryStatus | undefined } | null;
+    promoteResult?: boolean;
+    demoteResult?: boolean;
+    dayCount?: number;
+    judgeThrows?: boolean;
+    judgeRejects?: boolean;
+    extractThrows?: boolean;
+    extractionFailure?: string;
+  } = {},
 ) {
   const writes: Array<{
     status: string;
@@ -36,10 +45,20 @@ function depsFor(
     structuredAttributes?: Readonly<Record<string, string>>;
     importance?: ImportanceScore;
   }> = [];
+  const promotions: Array<{ id: string; attrs: Record<string, string>; confidence?: number }> = [];
+  const demotions: Array<{ id: string; attrs: Record<string, string> }> = [];
   let extractCalls = 0;
   const writer: ActivityMemoryWriter = {
-    hasActivityMemoryForContent: async () => opts.hasContent ?? false,
+    findActivityMemoryByContent: async () => opts.existing ?? null,
     countActivityMemoriesForDay: async () => opts.dayCount ?? 0,
+    promoteActivityMemory: async (id, attrs, confidence) => {
+      promotions.push({ id, attrs, confidence });
+      return opts.promoteResult ?? true;
+    },
+    demoteActivityMemory: async (id, attrs) => {
+      demotions.push({ id, attrs });
+      return opts.demoteResult ?? true;
+    },
     writeSealedMemory: async (envelope, extras) => {
       writes.push({
         content: envelope.content,
@@ -60,13 +79,14 @@ function depsFor(
     },
     judge: async (candidates: JudgeCandidate[]) => {
       if (opts.judgeThrows) throw new Error("judge exploded");
-      return new Map<number, JudgeVerdict>(
-        candidates.map((_c, i): [number, JudgeVerdict] => [i, { durable: true, reason: "durable", kind: "accept" }]),
-      );
+      const verdict: JudgeVerdict = opts.judgeRejects
+        ? { durable: false, reason: "not durable", kind: "reject" }
+        : { durable: true, reason: "durable", kind: "accept" };
+      return new Map<number, JudgeVerdict>(candidates.map((_c, i): [number, JudgeVerdict] => [i, verdict]));
     },
     writer,
   };
-  return { writes, extractCalls: () => extractCalls, deps };
+  return { writes, promotions, demotions, extractCalls: () => extractCalls, deps };
 }
 
 test("isEligibleActivityFact rejects attributed third-party first-person text", () => {
@@ -117,7 +137,7 @@ test("activity smart mode rejects attributed third-party first-person content be
   const result = await generateActivityMemories(DATE, "## Notable activity", {
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart",
   }, deps);
-  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 1, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(result, { created: 0, promoted: 0, demoted: 0, pendingReview: 0, rejectedDisplayedContent: 1, rejectedByJudge: 0, skipped: 0 });
   assert.deepEqual(writes, []);
 });
 
@@ -137,7 +157,7 @@ test("activity smart mode writes an accepted first-person decision bound to the 
 test("activity extraction remains inactive unless smart mode is explicitly enabled", async () => {
   const { deps, writes, extractCalls } = depsFor([ownDecision]);
   const result = await generateActivityMemories(DATE, "## Notable activity", defaultActivityConfig(), deps);
-  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(result, { created: 0, promoted: 0, demoted: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
   assert.equal(extractCalls(), 0);
   assert.deepEqual(writes, []);
 });
@@ -196,7 +216,7 @@ test("activity smart mode returns a zero result when extraction throws", async (
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
   }, deps);
   // An extraction failure must not throw out of the day's pass.
-  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(result, { created: 0, promoted: 0, demoted: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
   assert.deepEqual(writes, []);
 });
 
@@ -218,7 +238,7 @@ test("activity smart mode returns a zero result on an in-band extraction failure
   const result = await generateActivityMemories(DATE, "## Notable activity", {
     ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
   }, deps);
-  assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
+  assert.deepEqual(result, { created: 0, promoted: 0, demoted: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
   assert.deepEqual(writes, []);
 });
 
@@ -250,4 +270,43 @@ test("activity smart mode preserves extracted attributes without overriding trus
   // override the path-owned trust key (canonical lowercase).
   assert.equal(sa?.chosen, "option B");
   assert.equal(sa?.trustscore, "1.000");
+});
+
+test("activity smart mode promotes a pending_review duplicate on a stronger reassessment", async () => {
+  const { deps, writes, promotions } = depsFor([ownDecision], { existing: { id: "mem-1", status: "pending_review" } });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.promoted, 1);
+  assert.equal(result.created, 0);
+  assert.deepEqual(writes, []);
+  assert.equal(promotions.length, 1);
+  assert.equal(promotions[0]?.id, "mem-1");
+  assert.equal(promotions[0]?.attrs.trustDecision, "promoted-by-reassessment");
+});
+
+test("activity smart mode demotes a pending_review duplicate on a fresh judge reject", async () => {
+  const { deps, writes, demotions } = depsFor([ownDecision], {
+    existing: { id: "mem-2", status: "pending_review" },
+    judgeRejects: true,
+  });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.demoted, 1);
+  assert.equal(result.rejectedByJudge, 0);
+  assert.deepEqual(writes, []);
+  assert.equal(demotions.length, 1);
+  assert.equal(demotions[0]?.id, "mem-2");
+});
+
+test("activity smart mode skips an existing active duplicate without promoting", async () => {
+  const { deps, writes, promotions } = depsFor([ownDecision], { existing: { id: "mem-3", status: "active" } });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.promoted, 0);
+  assert.deepEqual(writes, []);
+  assert.equal(promotions.length, 0);
 });

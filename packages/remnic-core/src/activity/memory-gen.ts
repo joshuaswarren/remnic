@@ -55,13 +55,13 @@ const TRUST_ATTRIBUTE_KEYS: Record<string, true> = {
 
 export interface ActivityMemoryWriter {
   /**
-   * True when an activity memory with this content already exists (any status).
+   * Locate an existing activity memory with this content (any status), or null.
    * Activity writes are decision/commitment/preference/moment memories, none of
    * which the fact-only content-hash index covers, so this lookup MUST match
-   * across the activity source — letting a reprocessed day dedup rather than
-   * writing duplicates.
+   * across the activity source — enabling dedup and in-place promotion rather
+   * than duplicate or frozen-pending records.
    */
-  hasActivityMemoryForContent(content: string): Promise<boolean>;
+  findActivityMemoryByContent(content: string): Promise<{ id: string; status: MemoryStatus | undefined } | null>;
   /**
    * Count active + pending_review activity memories whose event time falls in
    * the half-open [startUtc, endUtc) day window. Seeds `maxMemoriesPerDay` so
@@ -69,6 +69,21 @@ export interface ActivityMemoryWriter {
    * resetting on every call.
    */
   countActivityMemoriesForDay(startUtc: string, endUtc: string): Promise<number>;
+  /**
+   * Promote a pending_review activity memory to active, merging trust evidence.
+   * Returns false when the row is missing or no longer pending.
+   */
+  promoteActivityMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+    confidence?: number,
+  ): Promise<boolean>;
+  /**
+   * Demote a pending_review activity memory to rejected on a fresh judge-reject
+   * re-verdict. Active rows are never auto-demoted. Returns false when missing
+   * or no longer pending.
+   */
+  demoteActivityMemory(id: string, attributeUpdates: Record<string, string>): Promise<boolean>;
   writeSealedMemory(
     envelope: SealedMemoryEnvelope,
     extras: { status: MemoryStatus; contentHashSource: string; importance?: ImportanceScore },
@@ -84,6 +99,10 @@ export interface ActivityMemoryGenerationDeps {
 
 export interface ActivityMemoryGenerationResult {
   created: number;
+  /** Earlier pending_review writes promoted to active by a stronger reassessment. */
+  promoted: number;
+  /** Earlier pending_review writes retired by a fresh judge-reject verdict. */
+  demoted: number;
   pendingReview: number;
   rejectedDisplayedContent: number;
   rejectedByJudge: number;
@@ -143,6 +162,8 @@ export async function generateActivityMemories(
 ): Promise<ActivityMemoryGenerationResult> {
   const result: ActivityMemoryGenerationResult = {
     created: 0,
+    promoted: 0,
+    demoted: 0,
     pendingReview: 0,
     rejectedDisplayedContent: 0,
     rejectedByJudge: 0,
@@ -203,9 +224,9 @@ export async function generateActivityMemories(
     verdicts = new Map();
   }
 
-  // Score every survivor first, then apply the day cap to the strongest by
-  // trust — a lower-trust review write must never crowd out a higher-trust fact
-  // that appears later in the batch.
+  // Score every eligible candidate once. A duplicate of an existing pending_review
+  // row can promote (or demote on a fresh judge-reject) in place instead of being
+  // frozen by all-status dedup; novel survivors queue for the day-capped write.
   const writable: WritableCandidate[] = [];
   for (let index = 0; index < candidates.length; index += 1) {
     const fact = candidates[index];
@@ -221,6 +242,41 @@ export async function generateActivityMemories(
       autoApproveTrust: config.autoApproveTrust,
       reviewTrust: config.reviewTrust,
     });
+    const existing = await deps.writer.findActivityMemoryByContent(fact.content);
+    if (existing !== null) {
+      // Duplicate: reassess a pending row in place; never write new or use a cap slot.
+      if (existing.status === "pending_review") {
+        if (decision.outcome === "drop" && decision.reason === "judge-rejected") {
+          if (
+            await deps.writer.demoteActivityMemory(existing.id, {
+              trustScore: trust.toFixed(3),
+              trustDecision: "demoted-by-rejection",
+              judgeVerdict: "reject",
+            })
+          ) {
+            result.demoted += 1;
+            continue;
+          }
+        } else if (decision.outcome === "active") {
+          if (
+            await deps.writer.promoteActivityMemory(
+              existing.id,
+              {
+                trustScore: trust.toFixed(3),
+                trustDecision: "promoted-by-reassessment",
+                ...(verdictKind !== undefined ? { judgeVerdict: verdictKind } : {}),
+              },
+              trust,
+            )
+          ) {
+            result.promoted += 1;
+            continue;
+          }
+        }
+      }
+      result.skipped += 1;
+      continue;
+    }
     if (decision.outcome === "drop") {
       if (decision.reason === "judge-rejected") result.rejectedByJudge += 1;
       else result.skipped += 1;
@@ -251,10 +307,6 @@ export async function generateActivityMemories(
 
   for (const entry of writable) {
     if (remaining <= 0) {
-      result.skipped += 1;
-      continue;
-    }
-    if (await deps.writer.hasActivityMemoryForContent(entry.fact.content)) {
       result.skipped += 1;
       continue;
     }
