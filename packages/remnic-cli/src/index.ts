@@ -2023,12 +2023,12 @@ export const __benchDatasetTestHooks = {
   printBenchStatusLineForTest: printBenchStatusLine,
   clearPairedAnswerReplayCacheOnFailureForTest: clearPairedAnswerReplayCacheOnFailure,
 };
-
 function printStoredBenchResultSummary(
   result: BenchmarkResult,
   summary: { id: string; path: string },
 ): void {
   console.log(`Run id: ${summary.id}`);
+  printBenchPackageSummary(result, summary.path, "Stored result");
 }
 
 function printBenchStatusLine(jsonMode: boolean, message: string): void {
