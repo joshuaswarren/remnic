@@ -167,6 +167,9 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
     if (vad.threads !== undefined) {
       cfg.vad.threads = coerceNumber(vad.threads, "vad.threads", { integer: true, min: 1, max: 256 });
     }
+    if (cfg.vad.minSpeechMs > cfg.vad.maxSpeechMs) {
+      throw new CaptureConfigError("vad.maxSpeechMs must be greater than or equal to vad.minSpeechMs");
+    }
   }
 
   if (obj.diarization !== undefined) {

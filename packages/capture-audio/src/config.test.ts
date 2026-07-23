@@ -55,6 +55,7 @@ test("VAD options use the same valid ranges as the runtime adapter", () => {
   assert.throws(() => parseDaemonConfig({ vad: { threshold: 1 } }), CaptureConfigError);
   assert.throws(() => parseDaemonConfig({ vad: { threshold: 0 } }), CaptureConfigError);
   assert.equal(parseDaemonConfig({ vad: { modelPath: null } }).vad.modelPath, null);
+  assert.throws(() => parseDaemonConfig({ vad: { minSpeechMs: 40_000, maxSpeechMs: 30_000 } }), CaptureConfigError);
 });
 
 test("non-integer / out-of-range port is rejected loudly", () => {

@@ -29,6 +29,9 @@ export function sileroVadConfig(input: SileroVadInput): { config: object; buffer
   if (!Number.isFinite(minSilenceMs) || minSilenceMs < 0 || !Number.isFinite(maxSpeechMs) || maxSpeechMs <= 0) {
     throw new CaptureConfigError("Silero VAD duration settings are invalid");
   }
+  if (maxSpeechMs < input.minSpeechMs) {
+    throw new CaptureConfigError("Silero VAD maxSpeechMs must be greater than or equal to minSpeechMs");
+  }
   if (!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) {
     throw new CaptureConfigError("Silero VAD threshold must be between 0 and 1");
   }

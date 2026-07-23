@@ -55,6 +55,13 @@ test("createSileroVad requires a positive speech threshold", async () => {
   await assert.rejects(createSileroVad({ modelPath: "/models/vad.onnx", minSpeechMs: 0 }), /positive/);
 });
 
+test("createSileroVad rejects a max speech window shorter than the min", async () => {
+  await assert.rejects(
+    createSileroVad({ modelPath: "/models/vad.onnx", minSpeechMs: 40_000, maxSpeechMs: 30_000 }),
+    /maxSpeechMs must be greater than or equal to minSpeechMs/,
+  );
+});
+
 test("resolveSherpaExport unwraps a CommonJS default export", () => {
   class FakeVad {}
   const cjs = { default: { Vad: FakeVad } };
@@ -85,7 +92,7 @@ test("loadSherpaOnnx reports the install hint only when the package itself is mi
 });
 
 test("loadSherpaOnnx surfaces a broken installed native addon without leaking paths or an install hint", async () => {
-  const dlopenFailure = Object.assign(new Error("dlopen failed: /home/user/node_modules/sherpa-onnx-node/build/Release/x.node"), {
+  const dlopenFailure = Object.assign(new Error("dlopen failed: /app/node_modules/sherpa-onnx-node/build/Release/x.node"), {
     code: "ERR_DLOPEN_FAILED",
   });
   await assert.rejects(loadSherpaOnnx(async () => {
