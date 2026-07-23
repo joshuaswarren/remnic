@@ -138,11 +138,13 @@ enum AXSnapshotReader {
         visited += 1
 
         let role = string(element, kAXRoleAttribute)
+        let subrole = string(element, kAXSubroleAttribute)
 
-        // Never read secure input, and never descend into it — the value is a
-        // password. Emit the role only so the daemon still sees the node exists.
-        if role == (kAXSecureTextFieldRole as String) {
-            return AxNode(role: role, value: nil, title: nil, description: nil, offScreen: nil, children: nil)
+        // Secure text field (subrole AXSecureTextField): never read its value and
+        // never descend — it is a password. Emit the secure role marker only, so
+        // the daemon still sees the node exists but no secret leaves the helper.
+        if subrole == "AXSecureTextField" {
+            return AxNode(role: "AXSecureTextField", value: nil, title: nil, description: nil, offScreen: nil, children: nil)
         }
 
         let onScreen = isOnScreen(element, within: screenBounds)
