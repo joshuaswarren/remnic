@@ -20,6 +20,7 @@ export interface WhisperTranscriptionInput {
   wavPath: string;
   modelPath: string;
   chunkStartedAtUtc: string;
+  threads?: number | null;
   run: (command: string, args: string[]) => Promise<WhisperRunResult>;
 }
 
@@ -121,12 +122,16 @@ export function resolveModelPath(
   return modelPath;
 }
 
-export function buildWhisperArgs(wavPath: string, modelPath: string): string[] {
-  return ["-m", modelPath, "-f", wavPath, "--no-prints", "--output-json", "--output-file", "-"];
+export function buildWhisperArgs(wavPath: string, modelPath: string, threads?: number | null): string[] {
+  const args = ["-m", modelPath, "-f", wavPath, "--no-prints", "--output-json", "--output-file", "-"];
+  if (typeof threads === "number" && Number.isInteger(threads) && threads > 0) {
+    args.push("-t", String(threads));
+  }
+  return args;
 }
 
 export async function transcribeWithWhisper(input: WhisperTranscriptionInput): Promise<TranscribedSegment[]> {
-  const result = await input.run("whisper-cli", buildWhisperArgs(input.wavPath, input.modelPath));
+  const result = await input.run("whisper-cli", buildWhisperArgs(input.wavPath, input.modelPath, input.threads));
   if (result.code !== 0) {
     throw new CaptureConfigError(`whisper-cli failed with exit code ${result.code}`);
   }

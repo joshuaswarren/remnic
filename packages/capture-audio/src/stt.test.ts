@@ -88,6 +88,28 @@ test("buildWhisperArgs requests JSON output without shell interpolation", () => 
   ]);
 });
 
+test("buildWhisperArgs appends -t only when a positive thread count is configured", () => {
+  assert.deepEqual(buildWhisperArgs("/a.wav", "/m.bin", 4).slice(-2), ["-t", "4"]);
+  for (const value of [null, undefined, 0, -1, 1.5, Number.NaN]) {
+    assert.equal(buildWhisperArgs("/a.wav", "/m.bin", value as number | null).includes("-t"), false);
+  }
+});
+
+test("transcribeWithWhisper forwards the configured thread count to whisper-cli", async () => {
+  let seenArgs: string[] = [];
+  await transcribeWithWhisper({
+    wavPath: "/audio/chunk.wav",
+    modelPath: "/models/model.bin",
+    chunkStartedAtUtc: "2026-07-22T12:00:00.000Z",
+    threads: 8,
+    run: async (_command, args) => {
+      seenArgs = args;
+      return { code: 0, stdout: JSON.stringify({ transcription: [] }), stderr: "" };
+    },
+  });
+  assert.deepEqual(seenArgs.slice(-2), ["-t", "8"]);
+});
+
 test("transcribeWithWhisper parses successful subprocess output", async () => {
   const segments = await transcribeWithWhisper({
     wavPath: "/audio/chunk.wav",
