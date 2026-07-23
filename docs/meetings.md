@@ -23,9 +23,8 @@ exists.
 | Record store — content-hash markdown records (`store.ts`) | **shipped** |
 | Orchestration — `MeetingsBuilder` / `buildMeetingRecordsForDay()` (`build.ts`) | **shipped** |
 | `meetings.*` config parsing (`config.ts`, in `config-reference.md`) | **shipped** |
-| Deterministic recall-anchor episode per record | **shipped** (via the builder + memory-generator seam) |
 | Memory-generation contracts (`MeetingMemoryGenerator` seam, `memory-generator.ts`) | **shipped** (interfaces only) |
-| Trust-gated `summaryMode` summary/fact *generation* | pending (trust-pipeline slice) |
+| Concrete memory writes — deterministic episode + trust-gated `summaryMode` summary/facts | pending (behind the optional seam; the engine omits all memory writes when no generator is injected) |
 | Production day-source adapter (activity/wearables) | pending (#2123) |
 | Post-sync auto-build tail-step | pending (#2123) |
 | CLI (`remnic meetings list/show/build`) / MCP / HTTP surfaces | pending (#2123) |
@@ -34,9 +33,11 @@ exists.
 What this means today: you can import the engine and drive it with an injected
 day source, and its detection/fusion/store/build/config are fixture-tested. But
 Remnic does **not** yet build meetings automatically during a sync, there is no
-`remnic meetings` command surface, and the trust-gated summary/fact generation
-that `summaryMode` governs is not wired yet — the config key parses and
-validates, its enforcement lands with the trust-pipeline slice.
+`remnic meetings` command surface, and **no meeting memories are written** — the
+engine omits all memory writes unless a concrete `MeetingMemoryGenerator` is
+injected, and that generator (deterministic episode + trust-gated `summaryMode`
+summary/facts) lands with a later slice (#2123 / trust-pipeline). The
+`meetings.*` config, including `summaryMode`, parses and validates today.
 
 ## Pipeline
 
@@ -121,10 +122,13 @@ record through the injected memory-generator.
 ## Memories (`memory-generator.ts`)
 
 The memory-generation **contracts** ship as a seam (`MeetingMemoryGenerator`,
-`MeetingMemoryWriter`, and the episode/fact result types); the builder drives
-them:
+`MeetingMemoryWriter`, and the episode/fact result types). The builder writes
+memories **only when a `MeetingMemoryGenerator` is injected**; with the seam
+omitted (the state on `main` today) it runs pure detect + fuse + store and
+writes no memories at all. The concrete generator lands with a later slice
+(#2123 / trust-pipeline). When supplied, it produces:
 
-1. **Deterministic episode** (always): one recall anchor per meeting — title,
+1. **Deterministic episode**: one recall anchor per meeting — title,
    span, attendees, sources — `source: meeting:<id>`, tags `meeting` +
    `meeting-day:<date>`, `valid_at` = start. No LLM.
 2. **Trust-gated summary + facts** (`summaryMode`): decisions, commitments

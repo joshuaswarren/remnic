@@ -278,16 +278,18 @@ modality with its own FTS5 store; meeting detection reads both.
 
 ## Configuration (design — synthetic placeholders)
 
-The gates below are the *binding config contract* the capture slices introduce.
-The `activity.*` block is **not yet parsed** — it is absent from
-`docs/config-reference.md` and setting it has no effect until its slice lands.
-The `meetings.*` block **is** parsed and documented in `config-reference.md`
-(the engine landed in #2122), though nothing drives it automatically until the
-#2123 auto-build tail-step. The `wearables.sources` map is parsed today: see the
-warning on the desktop example below before enabling it. Values shown are
-synthetic examples.
+Both the `activity.*` and `meetings.*` config blocks are **parsed and documented
+in `config-reference.md` today** (activity gate + sources landed with #1899's
+core slice; the meetings engine + config landed in #2122). What is still
+pending is the machinery that *drives* them: the capture daemons
+(`@remnic/capture-audio`, `@remnic/capture-screen`) that produce audio/screen
+data, and the meetings auto-build tail-step (#2123). The `wearables.sources` map
+is likewise parsed today — see the warning on the desktop example below before
+enabling it. Values shown are synthetic examples.
 
-Screen activity (planned `activity.*` block):
+Screen activity — the `activity.*` gate and `activity.sources` are parsed today
+(see [config-reference.md](config-reference.md)); the daemon-side deny-list and
+retention knobs below land with `@remnic/capture-screen`:
 
 ```jsonc
 {
