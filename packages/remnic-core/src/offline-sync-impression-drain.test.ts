@@ -8,7 +8,9 @@ import {
   drainPendingImpressionsForOfflineSync,
   drainPendingLifecycleForOfflineSync,
   getOfflineSyncStorage,
+  listOfflineSyncNamespaces,
 } from "./offline-sync-impression-drain.js";
+import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
 
@@ -313,4 +315,56 @@ test("getOfflineSyncStorage never double-folds the root ledger when it is listed
   await getOfflineSyncStorage(orchestrator, "root");
 
   assert.deepEqual(lifecycleDrains, ["root", "team"], "root ledger is folded exactly once");
+});
+
+test("listOfflineSyncNamespaces decodes canonical token dirs and skips names the router would reject", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-ns-enum-"));
+  try {
+    // A project namespace whose canonical token dir `ns-<hex>` exceeds the
+    // 64-char route-namespace cap: `getStorage` on the RAW basename throws
+    // `unsafe namespace` and 500s the whole root snapshot-stream (the regression).
+    const longName = "generalist-project-origin-6d1ad1f2";
+    const longToken = namespaceIdentityToken(longName); // ns-<hex>, 71 chars
+    assert.ok(longToken.length > 64, "token dir must exceed the route-namespace cap");
+    // A namespace whose DECODED name itself exceeds the 64-char route cap:
+    // decoding succeeds but isSafeRouteNamespace must still reject it.
+    const overCapName = `generalist-project-tag-${"x".repeat(60)}`;
+    const overCapToken = namespaceIdentityToken(overCapName);
+    assert.ok(overCapName.length > 64, "decoded name must exceed the route cap");
+    for (const dir of [longToken, overCapToken, "blend", "ns-default"]) {
+      await mkdir(path.join(root, "namespaces", dir, "state"), { recursive: true });
+      await writeFile(
+        path.join(root, "namespaces", dir, LIFECYCLE_LEDGER_REL),
+        "",
+        "utf-8",
+      );
+    }
+    const host = {
+      config: {
+        memoryDir: root,
+        defaultNamespace: "generalist",
+        sharedNamespace: "shared",
+        namespacePolicies: [],
+      },
+      namespaceCatalog: { listNamespaces: async () => [] },
+    } as unknown as Parameters<typeof listOfflineSyncNamespaces>[0];
+
+    const names = new Set(await listOfflineSyncNamespaces(host));
+
+    // The canonical token dir is decoded back to its namespace NAME...
+    assert.ok(names.has(longName), "canonical token dir must be decoded to its namespace name");
+    // ...never surfaced as the raw >64-char token that getStorage would reject.
+    assert.ok(!names.has(longToken), "raw over-cap token must never be enumerated as a namespace");
+    // A decoded name that is ITSELF over the route cap is skipped entirely
+    // (the isSafeRouteNamespace rejection branch).
+    assert.ok(!names.has(overCapName), "over-cap decoded name must be skipped");
+    assert.ok(!names.has(overCapToken), "over-cap raw token must be skipped");
+    // A raw plain-named dir is used verbatim.
+    assert.ok(names.has("blend"), "plain namespace dir must be enumerated verbatim");
+    // The literal ns-default token decodes to the EMPTY default identity and
+    // must map to the configured default namespace, not be skipped as "".
+    assert.ok(names.has("generalist"), "ns-default dir maps to the configured default namespace");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

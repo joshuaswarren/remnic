@@ -12,6 +12,8 @@ import { isErrnoCode } from "./utils/errno.js";
 import { assertPathInsideRoot, pathIsInside } from "./utils/path-containment.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import { getConfiguredNamespaces } from "./scopes/scope-plan.js";
+import { isSafeRouteNamespace } from "./routing/engine.js";
+import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import type { PluginConfig } from "./types.js";
 
 type PendingImpressionDrain = () => Promise<{ pendingDeferred: boolean }>;
@@ -89,7 +91,17 @@ export async function getOfflineSyncStorage<T extends PendingLifecycleDrain & { 
   if (path.resolve(storage.dir) === memoryRoot && orchestrator.listOfflineSyncNamespaces) {
     const drained = new Set<string>([memoryRoot]);
     for (const ns of await orchestrator.listOfflineSyncNamespaces()) {
-      const nsStorage = await orchestrator.getStorage(ns);
+      // A single unresolvable namespace (e.g. a legacy canonical token dir whose
+      // name exceeds the route-namespace length cap) must not abort the whole root
+      // snapshot — degrade to draining the rest. listOfflineSyncNamespaces already
+      // normalizes token dirs, so this is defense-in-depth.
+      let nsStorage: T;
+      try {
+        nsStorage = await orchestrator.getStorage(ns);
+      } catch (err) {
+        log.debug(`offline-sync root drain: skipping namespace ${ns} (non-fatal): ${err}`);
+        continue;
+      }
       const nsDir = path.resolve(nsStorage.dir);
       if (drained.has(nsDir)) continue;
       drained.add(nsDir);
@@ -114,8 +126,28 @@ export async function listOfflineSyncNamespaces(host: OfflineSyncNamespaceHost):
   try {
     for (const ledgerPath of await offlineSyncLifecycleLedgerPaths(host.config.memoryDir)) {
       const namespaceDir = path.dirname(path.dirname(ledgerPath));
-      if (path.basename(path.dirname(namespaceDir)) === "namespaces") {
-        names.add(path.basename(namespaceDir));
+      if (path.basename(path.dirname(namespaceDir)) !== "namespaces") continue;
+      // A namespace is stored under its canonical token dir `ns-<hex>`. Decode the
+      // token back to the namespace NAME so the drain fanout resolves the SAME
+      // storage the token dir belongs to (the catalog rebuild scanner decodes the
+      // same way, catalog.ts finishRebuild). A raw dir already named as a plain
+      // namespace is used verbatim. Skip any name the router would reject — e.g. a
+      // canonical token dir whose decoded-or-raw name exceeds isSafeRouteNamespace's
+      // 64-char cap — because getStorage() would throw `unsafe namespace` and 500
+      // the whole root snapshot-stream (the offline-sync regression this fixes).
+      const dirName = path.basename(namespaceDir);
+      // namespaceIdentityFromToken returns "" for the ns-default token (the
+      // default-namespace identity) — map that to the configured default
+      // namespace instead of skipping the directory as an unsafe empty name.
+      const decoded = namespaceIdentityFromToken(dirName);
+      const name =
+        decoded === null
+          ? dirName
+          : decoded.length > 0
+            ? decoded
+            : host.config.defaultNamespace;
+      if (isSafeRouteNamespace(name)) {
+        names.add(name);
       }
     }
   } catch {
