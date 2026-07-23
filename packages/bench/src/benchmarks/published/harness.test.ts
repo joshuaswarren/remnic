@@ -212,6 +212,25 @@ test("runPublishedHarness rejects drain failure before scoring trials", async ()
     calls.some((call) => call.kind === "judge"),
     false
   );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 });
 
 test("runPublishedHarness recalls from ALL recallSessionIds per trial", async () => {
