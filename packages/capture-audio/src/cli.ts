@@ -197,6 +197,15 @@ export function recordChildPidOrTerminate(
   binding: { host: string; port: number },
   stderr: (l: string) => void,
 ): boolean {
+  const existing = readPidRecord(paths.pidPath);
+  // If the detached child was scheduled first and already published its OWN
+  // full ready record (its pid + a non-null instanceId), don't clobber it with
+  // this provisional write. A record for a DIFFERENT pid (or our pid without an
+  // instanceId yet) is stale by this point — cmdStart's start guard already
+  // refused a real prior daemon — so we overwrite it.
+  if (existing !== null && existing.pid === pid && existing.instanceId !== null) {
+    return true;
+  }
   try {
     writePidFile(paths.pidPath, pid, binding);
     return true;

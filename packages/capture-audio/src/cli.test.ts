@@ -640,3 +640,29 @@ test("normal replay completes, then SIGTERM shuts down cleanly", async () => {
     }
   });
 });
+
+test("recordChildPidOrTerminate does not clobber the child's already-published ready record", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    // Child got scheduled first and wrote its full record with an instanceId.
+    writePidFile(paths.pidPath, 4242, { instanceId: "inst-ready", host: "127.0.0.1", port: 5555 });
+    const ok = recordChildPidOrTerminate(4242, paths, { host: "127.0.0.1", port: 6666 }, () => undefined);
+    assert.equal(ok, true);
+    const rec = readPidRecord(paths.pidPath);
+    assert.equal(rec?.instanceId, "inst-ready"); // preserved, not clobbered
+    assert.equal(rec?.port, 5555);
+  });
+});
+
+test("recordChildPidOrTerminate overwrites a stale full record from a different pid", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writePidFile(paths.pidPath, 9999, { instanceId: "old-inst", host: "127.0.0.1", port: 5555 });
+    const ok = recordChildPidOrTerminate(4242, paths, { host: "127.0.0.1", port: 6666 }, () => undefined);
+    assert.equal(ok, true);
+    const rec = readPidRecord(paths.pidPath);
+    assert.equal(rec?.pid, 4242); // provisional record for our child now owns the file
+    assert.equal(rec?.instanceId, null);
+    assert.equal(rec?.port, 6666);
+  });
+});
