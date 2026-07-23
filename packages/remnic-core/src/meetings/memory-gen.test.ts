@@ -351,25 +351,65 @@ test("finding 1 — two production builds of an unchanged day write the episode 
   }
 });
 
-test("finding 2 — the generator skips unchanged ids: zero extractor calls, nothing written", async () => {
+test("finding 2 — the generator skips an unchanged id WHOSE memories exist: zero extractor calls, nothing new written", async () => {
   const writer = new FakeWriter();
   const extractor = spyExtractor("summary", [{ content: "we decided to ship", category: "decision", confidence: 0.9 }]);
   const cfg = meetingConfig({ summaryMode: "smart" });
   const generator = createMeetingMemoryGenerator(writer, cfg, { extractor });
   const rec = TRANSCRIPT_RECORD();
-  // Every built id is unchanged this rebuild → the generator must skip all of
-  // them: no episode probe/write, and crucially no LLM extractor call.
+  // Seed: a prior build generated this record's episode + facts.
+  await generator.onRecordsBuilt({ built: [rec], removedIds: [], unchangedIds: [], updatedIds: [] });
+  const extractorCallsAfterSeed = extractor.calls;
+  const writesAfterSeed = writer.writes.length;
+  assert.ok(writesAfterSeed > 0, "the seed build wrote memories");
+  // Rebuild: the id is unchanged AND its memories already exist → the generator
+  // must skip it: no episode re-write, and crucially no LLM extractor call.
   const outcome = await generator.onRecordsBuilt({
     built: [rec],
     removedIds: [],
     unchangedIds: [rec.id],
     updatedIds: [],
   });
-  assert.equal(extractor.calls, 0, "the LLM extractor never runs on an idempotent rebuild");
-  assert.equal(writer.writes.length, 0, "no memory is written for an unchanged record");
+  assert.equal(extractor.calls, extractorCallsAfterSeed, "the LLM extractor never re-runs on an idempotent rebuild");
+  assert.equal(writer.writes.length, writesAfterSeed, "no new memory is written for an unchanged record");
   assert.equal(outcome.episodes, undefined, "no episode aggregate when everything was skipped");
   assert.equal(outcome.facts, undefined, "no fact aggregate when everything was skipped");
   assert.equal(outcome.reindexNeeded, false, "a no-op rebuild needs no reindex");
+});
+
+test("finding 2b — an unchanged id whose memories are MISSING is regenerated (retryable after a prior generation throw)", async () => {
+  const writer = new FakeWriter();
+  const extractor = spyExtractor("summary", [{ content: "we decided to ship", category: "decision", confidence: 0.9 }]);
+  const cfg = meetingConfig({ summaryMode: "smart" });
+  const generator = createMeetingMemoryGenerator(writer, cfg, { extractor });
+  const rec = TRANSCRIPT_RECORD();
+  // Build A persisted the record but its generation threw AFTER the record save,
+  // so NO episode/summary memory exists for meeting:<id>. Model that state as a
+  // writer that holds nothing for the source.
+  assert.equal(writer.writes.length, 0, "no memories exist yet (generation threw before writing)");
+  const source = meetingSourceLabel(rec.id);
+  assert.equal(await writer.hasMemoryFromSource(source, composeMeetingEpisodeContent(rec)), false);
+  // Build B: the store reports the record UNCHANGED (contentHash identical). A plain
+  // skip would strand the meeting with zero memories forever; the generator must
+  // instead regenerate because the expected episode is absent.
+  const outcome = await generator.onRecordsBuilt({
+    built: [rec],
+    removedIds: [],
+    unchangedIds: [rec.id],
+    updatedIds: [],
+  });
+  assert.deepEqual(outcome.episodes, { written: 1, skipped: 0 }, "the missing episode is regenerated on the retry build");
+  assert.equal(extractor.calls, 1, "the summary/facts layer runs on the retry too");
+  assert.equal(await writer.hasMemoryFromSource(source, composeMeetingEpisodeContent(rec)), true, "the episode now resolves");
+  // Build C: memories now present → unchanged rebuild skips (idempotent, no LLM).
+  const again = await generator.onRecordsBuilt({
+    built: [rec],
+    removedIds: [],
+    unchangedIds: [rec.id],
+    updatedIds: [],
+  });
+  assert.equal(extractor.calls, 1, "with memories present, the extractor never re-runs");
+  assert.equal(again.episodes, undefined, "with the episode present, an unchanged rebuild skips generation");
 });
 
 test("finding 3 — the generator refreshes an updated id: retract then regenerate, no duplicate", async () => {

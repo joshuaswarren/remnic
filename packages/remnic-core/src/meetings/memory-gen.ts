@@ -508,10 +508,28 @@ export function createMeetingMemoryGenerator(
       for (const updatedId of updatedIds) {
         await writer.retireMemoriesFromSource(meetingSourceLabel(updatedId));
       }
-      // Skip unchanged records entirely: an idempotent rebuild must fire no LLM and
-      // rewrite nothing. Generation runs only on changed (updated) + new records.
+      // Generate changed + new records always. An unchanged record regenerates ONLY
+      // when its deterministic episode memory is ABSENT: a prior build persisted the
+      // record but its generation threw before the memories landed, so the store now
+      // reports the record in unchangedIds (contentHash identical) and a plain skip
+      // would strand the meeting with zero memories forever. "Unchanged" means skip
+      // only when the memories already exist. The episode is the sentinel — it is
+      // always written first (deterministic, no LLM), so an absent episode means the
+      // source is unwritten. Unchanged records whose episode already exists still skip,
+      // so an idempotent rebuild fires zero LLM calls and writes nothing.
       const unchanged = new Set(unchangedIds);
-      const toGenerate = built.filter((record) => !unchanged.has(record.id));
+      const toGenerate: MeetingRecord[] = [];
+      for (const record of built) {
+        if (!unchanged.has(record.id)) {
+          toGenerate.push(record);
+          continue;
+        }
+        const episodePresent = await writer.hasMemoryFromSource(
+          meetingSourceLabel(record.id),
+          composeMeetingEpisodeContent(record),
+        );
+        if (!episodePresent) toGenerate.push(record);
+      }
       const warnings: string[] = [];
       const outcome: MeetingMemoryOutcome = { reindexNeeded: false, warnings };
       if (toGenerate.length > 0) {
