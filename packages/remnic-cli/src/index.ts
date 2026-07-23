@@ -534,6 +534,7 @@ type PackageBenchModule = {
     drainTimeoutMs?: number;
     noJudgeCache?: boolean;
     judgeCacheDir?: string;
+    pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache;
     system: {
       destroy(): Promise<void>;
     };
@@ -3079,6 +3080,12 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
   // publish unrelated or older artifacts under the new canonical
   // filename).
   const writtenPaths: string[] = [];
+  const pairedAnswerReplayCache =
+    benchmarkId === "locomo"
+      && runtimeProfiles.includes("baseline")
+      && runtimeProfiles.includes("real")
+      ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
+      : undefined;
   for (const runtimeProfile of runtimeProfiles) {
     // Forward `--limit` + `--seed` through the existing package
     // runner. `--out` is handled below in the artifact write step.
@@ -3088,6 +3095,7 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       runtimeProfile,
       undefined,
       taskSelector,
+      pairedAnswerReplayCache,
     );
     if (!result.ok) {
       console.error(
@@ -3490,6 +3498,7 @@ async function runBenchViaPackage(
   runtimeProfile: BenchRuntimeProfile,
   benchStatusPath?: string,
   taskSelector?: PackageBenchTaskSelector,
+  pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
 ): Promise<{ ok: boolean; writtenPath?: string }> {
   const loaded = await tryLoadBenchModule();
   if (!loaded) return { ok: false };
@@ -3602,6 +3611,7 @@ async function runBenchViaPackage(
       // Issue #1573 PR1: judge-result cache controls from the CLI flags.
       ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
       ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
+      ...(pairedAnswerReplayCache ? { pairedAnswerReplayCache } : {}),
       ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }
@@ -10963,6 +10973,15 @@ async function cmdBench(rest: string[]): Promise<void> {
   )];
   try { await initBenchStatus(benchStatusPath, statusEntryIds, process.pid); } catch { /* non-fatal */ }
   const writtenPaths: string[] = [];
+  const pairedAnswerReplayCache =
+    selectedWorkItems.some(
+      (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "baseline",
+    )
+    && selectedWorkItems.some(
+      (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "real",
+    )
+      ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
+      : undefined;
   try {
     for (const { benchmarkId, runtimeProfile } of selectedWorkItems) {
       const statusId = runtimeProfiles.length > 1
@@ -10976,6 +10995,7 @@ async function cmdBench(rest: string[]): Promise<void> {
             runtimeProfile,
             benchStatusPath,
             taskSelector,
+            pairedAnswerReplayCache,
           );
           if (handledByPackage.ok) {
             if (handledByPackage.writtenPath) {
