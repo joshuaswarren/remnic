@@ -27,17 +27,21 @@ interface DaemonStub {
 
 interface RecordingApi {
   handlers: Map<string, HookHandler[]>;
-  on: (hook: string, handler: HookHandler) => void;
+  hookOpts: Map<string, unknown>;
+  on: (hook: string, handler: HookHandler, opts?: { timeoutMs?: number }) => void;
 }
 
 function recordingApi(): RecordingApi {
   const handlers = new Map<string, HookHandler[]>();
+  const hookOpts = new Map<string, unknown>();
   return {
     handlers,
-    on(hook: string, handler: HookHandler): void {
+    hookOpts,
+    on(hook: string, handler: HookHandler, opts?: { timeoutMs?: number }): void {
       const list = handlers.get(hook) ?? [];
       list.push(handler);
       handlers.set(hook, list);
+      if (opts !== undefined) hookOpts.set(hook, opts);
     },
   };
 }
@@ -97,7 +101,10 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
     allowPromptInjection: true,
     passive: false,
     gateHeartbeatTurns: false,
-    recallBudgetChars: 0,
+    recallBudgetChars: 8_000,
+    resolveSessionDisabled: async () => false,
+    cleanUserMessage: (text: string) => text,
+    hookTimeoutMs: 5_000,
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
@@ -350,7 +357,12 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
         passive: false,
         allowPromptInjection: true,
         gateHeartbeatTurns: false,
-        recallBudgetChars: 0,
+        recallBudgetChars: 8_000,
+        memoryDir: "/tmp/remnic-delegate-test-memory",
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
       };
       const healthDeps = { checkHealth: () => true };
       const first = maybeRegisterDelegateRuntime(api, opts, healthDeps);
@@ -362,6 +374,17 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
         1,
         "hooks are bound exactly once per api object",
       );
+      const legacy = maybeRegisterDelegateRuntime(
+        api,
+        { ...opts, serviceId: "openclaw-engram" },
+        healthDeps,
+      );
+      assert.equal(legacy, true, "legacy service registers on the same api");
+      assert.equal(
+        api.handlers.get("agent_end")?.length ?? 0,
+        2,
+        "dedupe is scoped per serviceId, not per api object",
+      );
     } finally {
       if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
       else process.env.REMNIC_BRIDGE_MODE = priorEnv;
@@ -370,6 +393,88 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
       if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
       else process.env.REMNIC_PORT = priorPort;
     }
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate recall registers with the configured hook timeout", async () => {
+  const api = recordingApi();
+  registerDelegateRuntime(api, optionsFor(1, { hookTimeoutMs: 1_234 }));
+  assert.deepEqual(api.hookOpts.get("before_prompt_build"), { timeoutMs: 1_234 });
+  assert.deepEqual(api.hookOpts.get("before_agent_start"), { timeoutMs: 1_234 });
+});
+
+test("delegate honors the zero-budget disable contract (no injection hooks)", () => {
+  const api = recordingApi();
+  registerDelegateRuntime(api, optionsFor(1, { recallBudgetChars: 0 }));
+  assert.equal(api.handlers.has("before_prompt_build"), false, "0 disables recall injection");
+  assert.equal(api.handlers.has("before_agent_start"), false);
+  assert.ok(api.handlers.has("agent_end"), "observe is unaffected by the injection budget");
+});
+
+test("delegate recall skips sessions whose memory toggle is disabled", async () => {
+  const stub = await startDaemonStub(() => ({ context: "should never inject" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        resolveSessionDisabled: async (sessionKey: string) => sessionKey === "muted",
+      }),
+    );
+    const muted = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "query in a muted session" },
+      { sessionKey: "muted" },
+    );
+    assert.equal(muted, undefined, "disabled session gets no injection");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
+      0,
+      "daemon recall is not even attempted for a disabled session",
+    );
+    const active = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "query in an active session" },
+      { sessionKey: "active" },
+    )) as Record<string, unknown>;
+    assert.ok(active, "other sessions still recall normally");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate observe cleans user envelopes but not assistant text", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: 2 }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        cleanUserMessage: (text: string) => text.replace(/^\[channel\] /, ""),
+      }),
+    );
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "[channel] the real question" },
+          { role: "assistant", content: "[channel] stays verbatim" },
+        ],
+      },
+      { sessionKey: "clean" },
+    );
+    const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
+    assert.ok(observe, "observe was sent");
+    assert.deepEqual(observe.body.messages, [
+      { role: "user", content: "the real question" },
+      { role: "assistant", content: "[channel] stays verbatim" },
+    ]);
   } finally {
     await stub.close();
   }

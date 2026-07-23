@@ -838,7 +838,9 @@ export function parseConfig(
         : "error",
   };
   const bridgeMode: "embedded" | "delegate" =
-    cfg.bridgeMode === "delegate" ? "delegate" : "embedded";
+    cfg.bridgeMode === undefined || cfg.bridgeMode === "" || cfg.bridgeMode === "embedded" ? "embedded"
+      : cfg.bridgeMode === "delegate" ? "delegate"
+      : (() => { throw new Error(`Invalid bridgeMode: ${String(cfg.bridgeMode)} (expected "embedded" or "delegate")`); })();
   const rawDreaming =
     cfg.dreaming && typeof cfg.dreaming === "object" && !Array.isArray(cfg.dreaming)
       ? (cfg.dreaming as Record<string, unknown>)

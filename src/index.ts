@@ -1406,13 +1406,17 @@ const pluginDefinition = {
         `[remnic] memory slot not assigned to ${serviceId}; running passively`,
       );
     }
+    const channelEnvelopeCleaning = resolveChannelEnvelopePrefixes(cfg);
+    const cleanOpenClawUserMessage = createOpenClawUserMessageCleaner(
+      channelEnvelopeCleaning.prefixes,
+      {
+        includeLegacyChannelEnvelopePattern:
+          channelEnvelopeCleaning.includeLegacyChannelEnvelopePattern,
+      },
+    );
 
-    // Bridge mode (issue #2120): delegate backs the memory loop with a running
-    // standalone daemon over HTTP and skips the embedded orchestrator. All
-    // resolution/preflight/fallback logic lives in the plugin package.
-    // OpenClawPluginApi's registerMemoryPromptSection parameter is a wider
-    // SDK union than the minimal builder surface the delegate runtime uses;
-    // structurally compatible, but the union defeats direct assignability.
+    // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
+    // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
     const delegateApi = api as unknown as DelegateHookApi;
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
@@ -1425,16 +1429,13 @@ const pluginDefinition = {
       gateHeartbeatTurns:
         cfg.heartbeat.enabled && cfg.heartbeat.gateExtractionDuringHeartbeat,
       recallBudgetChars: cfg.recallBudgetChars,
+      memoryDir: cfg.memoryDir,
+      sessionTogglesEnabled: cfg.sessionTogglesEnabled,
+      respectBundledActiveMemoryToggle: cfg.respectBundledActiveMemoryToggle,
+      cleanUserMessage: cleanOpenClawUserMessage,
+      hookTimeoutMs: cfg.initGateTimeoutMs,
     });
     if (delegateHandled) return;
-    const channelEnvelopeCleaning = resolveChannelEnvelopePrefixes(cfg);
-    const cleanOpenClawUserMessage = createOpenClawUserMessageCleaner(
-      channelEnvelopeCleaning.prefixes,
-      {
-        includeLegacyChannelEnvelopePattern:
-          channelEnvelopeCleaning.includeLegacyChannelEnvelopePattern,
-      },
-    );
 
     // Singleton guard: the gateway calls register() once per agent (each with a
     // different plugin registry). Reuse the orchestrator (heavy object) but always

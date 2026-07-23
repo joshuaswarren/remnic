@@ -21,6 +21,8 @@
  */
 
 import { log } from "@remnic/core/logger";
+import path from "node:path";
+import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   checkDaemonHealthSync,
   loadDaemonAuthToken,
@@ -50,16 +52,29 @@ export interface DelegateRuntimeOptions {
   /** Mirrors embedded `heartbeat.gateExtractionDuringHeartbeat`: skip
    * observing heartbeat-triggered turns. */
   gateHeartbeatTurns: boolean;
-  /** Cap on injected recall context characters (0 = uncapped), mirroring the
-   * embedded recallBudgetChars trim. */
+  /** Injection cap in characters. Embedded contract: `0` DISABLES memory
+   * injection entirely (zero-limit semantics are a compatibility guarantee),
+   * any positive value trims the injected context. */
   recallBudgetChars: number;
+  /** Resolve the per-session memory toggle (embedded sessionToggleStore
+   * parity); return true to skip recall for the session. */
+  resolveSessionDisabled: (sessionKey: string, agentId: string) => Promise<boolean>;
+  /** Embedded parity: strip OpenClaw channel envelopes from user messages
+   * before they are observed. */
+  cleanUserMessage: (text: string) => string;
+  /** Passed as the hook registration timeout (embedded initGateTimeoutMs). */
+  hookTimeoutMs: number;
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
 }
 
 export interface DelegateHookApi {
-  on(hook: string, handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown): void;
+  on(
+    hook: string,
+    handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown,
+    opts?: { timeoutMs?: number },
+  ): void;
   // Method syntax (bivariant params) so the real OpenClaw api — whose
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
@@ -144,7 +159,8 @@ export function registerDelegateRuntime(
     return;
   }
 
-  if (options.allowPromptInjection) {
+  // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
+  if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
     // Session-scoped cache for the section-builder path, mirroring the
     // embedded pre-compute-then-consume contract: the hook fills it, the
     // synchronous builder consumes (and evicts) it.
@@ -160,6 +176,11 @@ export function registerDelegateRuntime(
       const sessionKey = sessionKeyFrom(event, ctx);
       if (useSectionBuilder) promptLinesBySession.delete(sessionKey);
       try {
+        const agentId = typeof ctx?.agentId === "string" ? ctx.agentId : "";
+        if (await options.resolveSessionDisabled(sessionKey, agentId)) {
+          log.debug(`delegate recall skipped: session toggle disables memory for ${sessionKey}`);
+          return undefined;
+        }
         const response = await postJson(
           target,
           "/engram/v1/recall",
@@ -171,11 +192,9 @@ export function registerDelegateRuntime(
           return undefined;
         }
         // Mirror the embedded recallBudgetChars trim so delegate mode cannot
-        // exceed the configured injection budget.
-        const context =
-          options.recallBudgetChars > 0
-            ? rawContext.slice(0, options.recallBudgetChars)
-            : rawContext;
+        // exceed the configured injection budget (0 never reaches here — it
+        // disables the handler above).
+        const context = rawContext.slice(0, options.recallBudgetChars);
         const prompt = `${MEMORY_CONTEXT_HEADER}\n\n${context}`;
         if (useSectionBuilder) {
           // Section-builder hosts inject through the registered builder; the
@@ -195,8 +214,8 @@ export function registerDelegateRuntime(
     };
     // Register on the modern hook AND the legacy hook: gateways emit one or
     // the other, never both, so dual registration cannot double-inject.
-    api.on("before_prompt_build", recallHandler);
-    api.on("before_agent_start", recallHandler);
+    api.on("before_prompt_build", recallHandler, { timeoutMs: options.hookTimeoutMs });
+    api.on("before_agent_start", recallHandler, { timeoutMs: options.hookTimeoutMs });
     if (useSectionBuilder && api.registerMemoryPromptSection) {
       const memoryBuildFn = Object.assign(
         (params: { sessionKey?: string }): string[] | null => {
@@ -230,7 +249,10 @@ export function registerDelegateRuntime(
     const turn = extractLastTurn(event.messages as Array<Record<string, unknown>>)
       .map((message) => ({
         role: message.role,
-        content: extractTextContent(message),
+        content:
+          message.role === "user"
+            ? options.cleanUserMessage(extractTextContent(message))
+            : extractTextContent(message),
       }))
       .filter(
         (message) =>
@@ -284,15 +306,26 @@ export interface MaybeRegisterDelegateOptions {
   allowPromptInjection: boolean;
   /** Embedded parity: `heartbeat.enabled && heartbeat.gateExtractionDuringHeartbeat`. */
   gateHeartbeatTurns: boolean;
-  /** Embedded parity: the config's recallBudgetChars injection cap. */
+  /** Embedded parity: the config's recallBudgetChars injection cap (0 disables). */
   recallBudgetChars: number;
+  /** memoryDir used for the file-backed session toggle store. */
+  memoryDir: string;
+  /** Embedded parity: `sessionTogglesEnabled !== false` consults the store. */
+  sessionTogglesEnabled: boolean;
+  /** Embedded parity: also honor the bundled active-memory plugin's toggles. */
+  respectBundledActiveMemoryToggle: boolean;
+  /** Embedded parity: channel-envelope cleaner applied to observed user text. */
+  cleanUserMessage: (text: string) => string;
+  /** Embedded parity: hook registration timeout (initGateTimeoutMs). */
+  hookTimeoutMs: number;
 }
 
 // Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
-// WeakSet): the gateway can invoke register() more than once with the same
-// api object during reload edge cases, and re-binding would double-fire every
-// handler (double recall, double observe, double flush).
-const delegateHookApis = new WeakSet<object>();
+// WeakSet), scoped per serviceId: a migration install can register BOTH the
+// canonical and legacy plugin ids against the same api object, and each
+// service must get its own binding exactly once (double-register of one
+// service would double-fire every handler).
+const delegateHookApiServices = new WeakMap<object, Set<string>>();
 
 /**
  * Resolve bridge mode, preflight the daemon, and register the delegate
@@ -313,9 +346,10 @@ export function maybeRegisterDelegateRuntime(
 ): boolean {
   const bridge = resolveBridgeMode(options.configBridgeMode);
   if (bridge.mode !== "delegate") return false;
-  if (delegateHookApis.has(api)) {
+  const boundServices = delegateHookApiServices.get(api);
+  if (boundServices?.has(options.serviceId)) {
     log.debug(
-      "delegate register: this api already has hooks bound — skipping duplicate registration",
+      `delegate register: ${options.serviceId} already has hooks bound on this api — skipping duplicate registration`,
     );
     return true;
   }
@@ -328,7 +362,21 @@ export function maybeRegisterDelegateRuntime(
     );
     return false;
   }
-  delegateHookApis.add(api);
+  (boundServices ?? delegateHookApiServices.set(api, new Set()).get(api))?.add(
+    options.serviceId,
+  );
+  // Embedded toggle-store parity: same primary path (per-service plugin state)
+  // and optional bundled active-memory secondary read.
+  const toggleStore = options.sessionTogglesEnabled
+    ? createFileToggleStore(
+        path.join(options.memoryDir, "state", "plugins", options.serviceId, "session-toggles.json"),
+        {
+          secondaryReadOnlyPath: options.respectBundledActiveMemoryToggle
+            ? path.join(options.memoryDir, "state", "plugins", "active-memory", "session-toggles.json")
+            : undefined,
+        },
+      )
+    : null;
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,
     target: {
@@ -341,6 +389,10 @@ export function maybeRegisterDelegateRuntime(
     passive: options.passive,
     gateHeartbeatTurns: options.gateHeartbeatTurns,
     recallBudgetChars: options.recallBudgetChars,
+    resolveSessionDisabled: async (sessionKey: string, agentId: string) =>
+      toggleStore ? (await toggleStore.resolve(sessionKey, agentId)).disabled === true : false,
+    cleanUserMessage: options.cleanUserMessage,
+    hookTimeoutMs: options.hookTimeoutMs,
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,

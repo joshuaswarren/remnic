@@ -2396,3 +2396,12 @@ test("parseConfig forwards activity source settings", () => {
     maxMemoriesPerDay: 0,
   });
 });
+
+test("parseConfig bridgeMode: accepts embedded/delegate, rejects anything else", () => {
+  assert.equal(parseConfig({}).bridgeMode, "embedded");
+  assert.equal(parseConfig({ bridgeMode: "embedded" }).bridgeMode, "embedded");
+  assert.equal(parseConfig({ bridgeMode: "delegate" }).bridgeMode, "delegate");
+  assert.throws(() => parseConfig({ bridgeMode: "daemon" }), /Invalid bridgeMode/);
+  assert.throws(() => parseConfig({ bridgeMode: "DELEGATE" }), /Invalid bridgeMode/);
+  assert.throws(() => parseConfig({ bridgeMode: true }), /Invalid bridgeMode/);
+});
