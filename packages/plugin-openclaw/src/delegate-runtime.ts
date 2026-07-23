@@ -240,10 +240,13 @@ export function registerDelegateRuntime(
         if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
           return undefined;
         }
-        // Mirror the embedded recallBudgetChars trim so delegate mode cannot
-        // exceed the configured injection budget (0 never reaches here — it
-        // disables the handler above).
-        const context = rawContext.slice(0, options.recallBudgetChars);
+        // Mirror the embedded recallBudgetChars trim — including the visible
+        // trim marker — so delegate mode cannot exceed the configured
+        // injection budget (0 never reaches here; it disables the handler).
+        const context =
+          rawContext.length > options.recallBudgetChars
+            ? rawContext.slice(0, options.recallBudgetChars) + "\n\n...(memory context trimmed)"
+            : rawContext;
         const prompt = `${MEMORY_CONTEXT_HEADER}\n\n${context}`;
         if (useSectionBuilder) {
           // Section-builder hosts inject through the registered builder; the

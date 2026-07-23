@@ -138,6 +138,13 @@ function isDaemonServiceConfigured(): boolean {
   return false;
 }
 
+/** Normalize a host for node:http/health use: strip surrounding IPv6 brackets
+ * (`[::1]` → `::1`). URL builders re-bracket as needed. */
+function normalizeDaemonHost(value: string): string {
+  const match = value.trim().match(/^\[(.+)\]$/);
+  return match ? match[1] : value.trim();
+}
+
 function coerceDaemonPort(value: unknown): number | undefined {
   const parsed = typeof value === "string" && value.trim() !== ""
     ? Number(value.trim())
@@ -221,7 +228,7 @@ export function detectBridgeMode(): BridgeConfig {
   if (envMode === "delegate") {
     return {
       mode: "delegate",
-      daemonHost: readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST,
+      daemonHost: normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST),
       daemonPort: readDaemonPort(),
     };
   }
@@ -234,7 +241,7 @@ export function detectBridgeMode(): BridgeConfig {
     };
   }
 
-  const daemonHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST;
+  const daemonHost = normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST);
   const daemonPort = readDaemonPort();
 
   const hasDaemonPidHint = isDaemonRunning();
@@ -293,7 +300,7 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
   }
   return {
     mode,
-    daemonHost: readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST,
+    daemonHost: normalizeDaemonHost(readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST),
     daemonPort: readDaemonPort(),
   };
 }

@@ -315,11 +315,13 @@ test("delegate recall trims injected context to recallBudgetChars", async () => 
       { sessionKey: "budget" },
     )) as Record<string, unknown>;
     const injected = String(result.prependSystemContext);
+    const marker = "\n\n...(memory context trimmed)";
     assert.ok(
-      injected.length <= 100 + "## Memory Context (Remnic)\n\n".length,
-      `injection stays within budget (+header): got ${injected.length}`,
+      injected.length <= 100 + "## Memory Context (Remnic)\n\n".length + marker.length,
+      `injection stays within budget (+header +marker): got ${injected.length}`,
     );
     assert.match(injected, /x{100}/, "trim retains the leading 100 budget chars of context");
+    assert.ok(injected.endsWith(marker), "embedded-parity trim marker appended");
   } finally {
     await stub.close();
   }
