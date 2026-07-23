@@ -138,6 +138,13 @@ function isDaemonServiceConfigured(): boolean {
   return false;
 }
 
+/** Normalize a host for node:http/health use: strip surrounding IPv6 brackets
+ * (`[::1]` → `::1`). URL builders re-bracket as needed. */
+function normalizeDaemonHost(value: string): string {
+  const match = value.trim().match(/^\[(.+)\]$/);
+  return match ? match[1] : value.trim();
+}
+
 function coerceDaemonPort(value: unknown): number | undefined {
   const parsed = typeof value === "string" && value.trim() !== ""
     ? Number(value.trim())
@@ -147,7 +154,7 @@ function coerceDaemonPort(value: unknown): number | undefined {
     : undefined;
 }
 
-function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
+export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
 
   let worker: Worker | undefined;
@@ -161,7 +168,7 @@ function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEAL
         host,
         port,
         path: LEGACY_HEALTH_PATH,
-        token: loadAnyToken(),
+        token: loadDaemonAuthToken(),
         timeoutMs,
         state,
       },
@@ -187,6 +194,28 @@ function shouldProbeDaemonHealth(host: string): boolean {
     normalized === "[::1]" ||
     isDaemonServiceConfigured()
   );
+}
+
+/**
+ * Read daemon host from environment or remnic config (server.host), mirroring
+ * readDaemonPort's precedence. Falls back to DEFAULT_HOST.
+ */
+function readDaemonHost(): string {
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  if (envHost !== undefined && envHost.trim() !== "") return normalizeDaemonHost(envHost);
+  for (const p of configPathCandidates()) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+      const configHost = raw.server?.host;
+      if (typeof configHost === "string" && configHost.trim() !== "") {
+        return normalizeDaemonHost(configHost);
+      }
+    } catch {
+      // Ignore malformed config files and continue to the next candidate.
+    }
+  }
+  return DEFAULT_HOST;
 }
 
 /**
@@ -221,7 +250,7 @@ export function detectBridgeMode(): BridgeConfig {
   if (envMode === "delegate") {
     return {
       mode: "delegate",
-      daemonHost: readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST,
+      daemonHost: readDaemonHost(),
       daemonPort: readDaemonPort(),
     };
   }
@@ -234,7 +263,7 @@ export function detectBridgeMode(): BridgeConfig {
     };
   }
 
-  const daemonHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST;
+  const daemonHost = readDaemonHost();
   const daemonPort = readDaemonPort();
 
   const hasDaemonPidHint = isDaemonRunning();
@@ -258,11 +287,61 @@ export function detectBridgeMode(): BridgeConfig {
     daemonPort,
   };
 }
+/**
+ * Resolve the bridge mode for the plugin runtime (issue #2120).
+ *
+ * Unlike `detectBridgeMode`, this resolver is EXPLICIT-ONLY: delegate mode
+ * activates solely via `REMNIC_BRIDGE_MODE=delegate` (or the legacy env) or
+ * the plugin config's `bridgeMode: "delegate"`. The auto-detection branch of
+ * `detectBridgeMode` is intentionally not consulted — auto-flipping existing
+ * co-located deployments (embedded plugin beside a same-host daemon) to
+ * delegate on a restart would be a silent behavior change. Revisit once
+ * delegate mode has production mileage.
+ */
+export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
+  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
+  let mode: BridgeMode;
+  if (envMode === "delegate" || envMode === "embedded") {
+    mode = envMode;
+  } else if (envMode !== undefined && envMode !== "") {
+    throw new Error(
+      `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`,
+    );
+  } else if (
+    configBridgeMode === undefined ||
+    configBridgeMode === "" ||
+    configBridgeMode === "embedded"
+  ) {
+    mode = "embedded";
+  } else if (configBridgeMode === "delegate") {
+    mode = "delegate";
+  } else {
+    throw new Error(
+      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`,
+    );
+  }
+  return {
+    mode,
+    daemonHost: readDaemonHost(),
+    daemonPort: readDaemonPort(),
+  };
+}
 
 /**
- * Load the first valid auth token for health check.
+ * Load the first valid daemon auth token from the standard token stores,
+ * daemon config, or environment. Shared by the health preflight and the
+ * delegate runtime (issue #2120).
  */
-function loadAnyToken(): string {
+export function loadDaemonAuthToken(): string {
+  // Environment-provided tokens first: for delegate-mode daemon operations the
+  // operator must be able to pin a token authorized for recall/observe/lcm
+  // rather than inheriting whatever happens to be first in tokens.json
+  // (least-privilege stores can hold narrowly scoped tokens up front).
+  const envToken =
+    readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN") ??
+    readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN") ??
+    readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
+  if (envToken) return envToken;
   const tokenPaths = [
     path.join(resolveHomeDir(), ".remnic", "tokens.json"),
     path.join(resolveHomeDir(), ".engram", "tokens.json"),
@@ -298,12 +377,7 @@ function loadAnyToken(): string {
   } catch {
     // ignore
   }
-  return (
-    readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN") ??
-    readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN") ??
-    readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ??
-    ""
-  );
+  return "";
 }
 
 /**
@@ -313,7 +387,7 @@ function loadAnyToken(): string {
 export async function checkDaemonHealth(host: string, port: number): Promise<boolean> {
   try {
     const { request } = await import("node:http");
-    const token = loadAnyToken();
+    const token = loadDaemonAuthToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 

@@ -74,6 +74,14 @@ import {
   REMNIC_OPENCLAW_PLUGIN_ID,
   resolveRemnicOpenClawPluginEntry,
 } from "../packages/plugin-openclaw/src/plugin-id.js";
+import {
+  maybeRegisterDelegateRuntime,
+  type DelegateHookApi,
+} from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import {
+  extractLastTurn,
+  extractTextContent,
+} from "../packages/plugin-openclaw/src/transcript-turns.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import { appendRecallAuditEntry, pruneRecallAuditEntries } from "@remnic/core/recall-audit";
 import { createActiveRecallEngine } from "@remnic/core/active-recall";
@@ -1407,15 +1415,37 @@ const pluginDefinition = {
       },
     );
 
-    // Singleton guard: the gateway calls register() once per agent (each with a
-    // different plugin registry). Reuse the orchestrator (heavy object) but always
-    // re-register hooks — each api.on() call binds to the caller's registry, so
-    // skipping registration leaves later registries with zero hooks.
-    //
-    // The orchestrator slot is keyed by serviceId, so a same-process migration
-    // install with both `openclaw-remnic` and `openclaw-engram` plugin ids loaded
-    // gives each plugin its own orchestrator with its own `memoryDir`/policy
-    // instead of forcing the second plugin to reuse the first's (#403 P2).
+    // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
+    // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
+    const delegateApi = api as unknown as DelegateHookApi;
+    const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
+      serviceId,
+      // cfg.bridgeMode is parseConfig's merged file+runtime passthrough, so
+      // file-config-only deployments activate delegate too (round-7 High).
+      configBridgeMode: cfg.bridgeMode,
+      passive: passiveMode,
+      allowPromptInjection:
+        coerceRawConfigBoolean(
+          readPluginHooksPolicy(api.config, serviceId)?.allowPromptInjection,
+        ) !== false,
+      gateHeartbeatTurns:
+        cfg.heartbeat.enabled && cfg.heartbeat.gateExtractionDuringHeartbeat,
+      recallBudgetChars: cfg.recallBudgetChars,
+      memoryDir: cfg.memoryDir,
+      sessionTogglesEnabled: cfg.sessionTogglesEnabled,
+      respectBundledActiveMemoryToggle: cfg.respectBundledActiveMemoryToggle,
+      cleanUserMessage: cleanOpenClawUserMessage,
+      hookTimeoutMs: cfg.initGateTimeoutMs,
+      shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
+      cwd: getOpenClawRuntimeWorkspaceDir(api),
+      flushOnResetEnabled: cfg.flushOnResetEnabled,
+    });
+    if (delegateHandled) return;
+
+    // Singleton guard: register() fires once per agent registry. Reuse the
+    // orchestrator (heavy) but always re-register hooks — each api.on() binds to
+    // the caller's registry. Keyed by serviceId so a migration install with both
+    // plugin ids gives each its own orchestrator/memoryDir (#403 P2).
     const existing = (globalThis as any)[keys.ORCHESTRATOR] as
       | Orchestrator
       | undefined;
@@ -5972,36 +6002,6 @@ function resolveOpenClawFlushPlanProcessingEnabledFromConfig(
   // persisted file-level `false`.
   if (runtimeValue === false || fileValue === false) return false;
   return fileValue ?? runtimeValue ?? true;
-}
-
-function extractLastTurn(
-  messages: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  let lastUserIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "user") {
-      lastUserIdx = i;
-      break;
-    }
-  }
-  return lastUserIdx >= 0 ? messages.slice(lastUserIdx) : messages.slice(-2);
-}
-
-function extractTextContent(msg: Record<string, unknown>): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (Array.isArray(msg.content)) {
-    return (msg.content as Array<Record<string, unknown>>)
-      .filter(
-        (block) =>
-          typeof block === "object" &&
-          block !== null &&
-          block.type === "text" &&
-          typeof block.text === "string",
-      )
-      .map((block) => block.text as string)
-      .join("\n");
-  }
-  return "";
 }
 
 type OpenClawTranscriptMetadata = NonNullable<

@@ -1243,6 +1243,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   // default — byte-identical pre-feature when enabled === false (rule 39).
   chat: ChatConfig;
   slotBehavior: SlotBehaviorConfig;
+  /** OpenClaw bridge mode (#2120): `"embedded"` (default) or `"delegate"`. */
+  bridgeMode: string;
   codexCompat: CodexCompatConfig;
   /**
    * When true (default), the extraction prompt instructs the LLM to classify

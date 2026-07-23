@@ -2339,14 +2339,13 @@ export function parseConfig(
     wearables,
     activity,
     provenance,
-    // At-rest encryption (issue #690 PR 3/4)
-    // coerceBool handles CLI string inputs: `--config secureStoreEnabled=true`
-    // arrives as the string "true" which `=== true` would reject (CLAUDE.md #36).
+    // At-rest encryption (#690): coerceBool handles CLI string "true" (#36).
     secureStoreEnabled: coerceBool(cfg.secureStoreEnabled) === true,
     secureStoreEncryptOnWrite: coerceBool(cfg.secureStoreEncryptOnWrite) !== false, // default: true
     codingMode,
     heartbeat,
     slotBehavior,
+    bridgeMode: cfg.bridgeMode === undefined ? "embedded" : String(cfg.bridgeMode),
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),
