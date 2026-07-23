@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 import { test } from "node:test";
 
-import { recordChildPidOrTerminate, runCapture, superviseReplay } from "./cli.js";
+import { recordChildPidOrTerminate, recordedDaemonIsRunning, runCapture, superviseReplay } from "./cli.js";
 import { defaultDaemonConfig } from "./config.js";
 import { startDaemon } from "./daemon.js";
 import { Spool } from "./spool.js";
@@ -41,15 +41,21 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-test("start preserves an alive daemon pid without spawning another daemon", async () => {
+test("start refuses when a DIFFERENT live pid holds a bare record", async () => {
   await withBaseDir(async (baseDir) => {
     const paths = capturePaths(baseDir);
-    writePidFile(paths.pidPath, process.pid);
-    const output: string[] = [];
-    const code = await runCapture({ argv: ["start", "--base-dir", baseDir], stdout: (line) => output.push(line) });
-    assert.equal(code, 0);
-    assert.deepEqual(output, [`daemon already running (pid ${process.pid})`]);
-    assert.equal(existsSync(paths.pidPath), true);
+    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(child.pid);
+    try {
+      writePidFile(paths.pidPath, child.pid);
+      const output: string[] = [];
+      const code = await runCapture({ argv: ["start", "--base-dir", baseDir], stdout: (line) => output.push(line) });
+      assert.equal(code, 0);
+      assert.deepEqual(output, [`daemon already running (pid ${child.pid})`]);
+      assert.equal(existsSync(paths.pidPath), true);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });
 
@@ -175,22 +181,19 @@ test("start refuses a non-loopback bind host before forking a daemon", async () 
   });
 });
 
-test("start refuses to double-start only after confirming pid identity", async () => {
+test("start refuses to double-start after confirming a prior daemon's identity", async () => {
   await withBaseDir(async (baseDir) => {
     const paths = capturePaths(baseDir);
-    const spool = new Spool(":memory:");
-    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const { child, port } = await spawnFakeDaemon("inst-1");
     try {
-      writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
-      // Alive pid whose recorded instanceId matches the live daemon at the recorded port.
-      writePidFile(paths.pidPath, process.pid, { instanceId: spool.meta("instance_id"), host: handle.host, port: handle.port });
+      writePidFile(paths.pidPath, child.pid!, { instanceId: "inst-1", host: "127.0.0.1", port });
       const out: string[] = [];
       const code = await runCapture({ argv: ["start", "--base-dir", baseDir], stdout: (l) => out.push(l) });
       assert.equal(code, 0);
-      assert.deepEqual(out, [`daemon already running (pid ${process.pid})`]);
+      assert.deepEqual(out, [`daemon already running (pid ${child.pid})`]);
     } finally {
-      await handle.close();
-      spool.close();
+      child.kill("SIGKILL");
     }
   });
 });
@@ -514,4 +517,27 @@ test("replay ingestion yields so the daemon stays responsive during a multi-batc
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("recordedDaemonIsRunning permits the child's own prewritten record (pid === process.pid)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    // The background parent writes this record (our own pid, no instanceId yet).
+    const record = { pid: process.pid, instanceId: null, startedAtIso: new Date().toISOString(), host: "127.0.0.1", port: 4340 };
+    assert.equal(await recordedDaemonIsRunning(record, paths, () => undefined), false);
+  });
+});
+
+test("recordedDaemonIsRunning refuses a real prior daemon at the endpoint", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const { child, port } = await spawnFakeDaemon("inst-1");
+    try {
+      const record = { pid: child.pid!, instanceId: "inst-1", startedAtIso: new Date().toISOString(), host: "127.0.0.1", port };
+      assert.equal(await recordedDaemonIsRunning(record, paths, () => undefined), true);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
 });

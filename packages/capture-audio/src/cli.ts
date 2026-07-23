@@ -231,6 +231,22 @@ async function isOwnRunningDaemon(
 }
 
 /**
+ * True when the pid record denotes a DIFFERENT, currently-running daemon that a
+ * new start must not run over. A record whose pid is our OWN process (the
+ * background parent's prewritten record for this child) is never treated as a
+ * running prior daemon, so the child can proceed to bind and overwrite it.
+ */
+export async function recordedDaemonIsRunning(
+  record: PidRecord,
+  paths: CapturePaths,
+  stderr: (l: string) => void,
+): Promise<boolean> {
+  if (record.pid === process.pid) return false;
+  if (!isProcessAlive(record.pid)) return false;
+  return isOwnRunningDaemon(record, paths, stderr);
+}
+
+/**
  * Run replay ingestion as a supervised task AFTER the daemon is ready. Never
  * throws: success/failure is surfaced via the spool's `replay_status` meta
  * (also exposed on /v1/health) and the daemon log, so a failed or slow replay
@@ -295,12 +311,16 @@ async function cmdStart(
   const replayDir = typeof flags.replay === "string" ? expandTilde(flags.replay) : null;
   const previousRecord = readPidRecord(paths.pidPath);
   if (previousRecord !== null) {
-    if (isProcessAlive(previousRecord.pid) && (await isOwnRunningDaemon(previousRecord, paths, stderr))) {
+    if (await recordedDaemonIsRunning(previousRecord, paths, stderr)) {
       stdout(`daemon already running (pid ${previousRecord.pid})`);
       return 0;
     }
-    // pid is gone, or a different process reused it -> reclaim the stale file.
-    removePidFile(paths.pidPath);
+    // Not a running prior daemon. Reclaim a stale/foreign record, but never our
+    // OWN prewritten record — the background parent wrote it for this child, and
+    // the child overwrites it with the full record after it binds.
+    if (previousRecord.pid !== process.pid) {
+      removePidFile(paths.pidPath);
+    }
   }
 
   if (flags.foreground !== true) {
