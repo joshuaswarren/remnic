@@ -10,6 +10,7 @@ export * from "./config.js";
 export * from "./errors.js";
 export * from "./fuse.js";
 export * from "./store.js";
+export * from "./memory-generator.js";
 export * from "./build.js";
 export * from "./memory-gen.js";
 export * from "./cli.js";

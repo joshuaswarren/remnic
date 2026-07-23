@@ -15,15 +15,12 @@
 import { detectMeetings } from "./detect.js";
 import { fuseMeeting, type MeetingFusionOptions } from "./fuse.js";
 import { composeMeetingRecord, type MeetingRecordStore, type MeetingRecordSummary } from "./store.js";
-import {
-  generateMeetingEpisodes,
-  generateMeetingSummaryFacts,
-  meetingSourceLabel,
-  type MeetingEpisodeGenResult,
-  type MeetingMemoryWriter,
-  type MeetingSummaryExtractor,
-  type MeetingSummaryJudge,
-} from "./memory-gen.js";
+import type {
+  MeetingEpisodeGenResult,
+  MeetingMemoryGenerator,
+  MeetingMemoryOutcome,
+  MeetingsDayFactGenResult,
+} from "./memory-generator.js";
 import type { FusionConversationInput } from "../wearables/fusion/types.js";
 import type {
   DetectedMeeting,
@@ -98,22 +95,6 @@ export interface MeetingBuildOutcome {
   written: boolean;
 }
 
-/** Day-level aggregate of the trust-gated summary/fact layer across records. */
-export interface MeetingsDayFactGenResult {
-  /** True when the LLM extractor ran for at least one record. */
-  llmInvoked: boolean;
-  /** Facts written active. */
-  active: number;
-  /** Facts queued for review (pending_review). */
-  review: number;
-  /** Candidates/summaries dropped below the trust bar or judge-rejected. */
-  dropped: number;
-  /** Candidates/summaries skipped because an identical memory already existed. */
-  skipped: number;
-  /** Count of records whose summary memory was written. */
-  summariesWritten: number;
-}
-
 /** Result of building one day's meetings. */
 export interface MeetingsDayBuildSummary {
   date: string;
@@ -133,15 +114,14 @@ export interface MeetingsDayBuildSummary {
    */
   reindexWarning?: string;
   /**
-   * Deterministic episode-memory counts, present only when a `memoryWriter` was
-   * injected. One recall-anchor episode is written per built record (idempotent).
+   * Deterministic episode-memory counts, present only when a `memoryGenerator`
+   * was injected. One recall-anchor episode is written per built record (idempotent).
    */
   episodes?: MeetingEpisodeGenResult;
   /**
    * Trust-gated summary/fact counts (decisions, commitments, questions, and the
-   * synthesized summary), present only when a `memoryWriter` AND summary deps
-   * were injected and `summaryMode !== "off"`. Aggregated across the day's
-   * records.
+   * synthesized summary), present only when a `memoryGenerator` with summary deps
+   * ran and `summaryMode !== "off"`. Aggregated across the day's records.
    */
   facts?: MeetingsDayFactGenResult;
 }
@@ -168,23 +148,14 @@ export class MeetingsBuilder {
       fusionOptions?: MeetingFusionOptions;
       hooks?: MeetingsBuilderHooks;
       /**
-       * When present, a deterministic recall-anchor episode memory is written
-       * per built record (issue #1900). Omitted → no memory writes (pure
-       * detect+fuse+store). The trust-gated summary/facts layer is separate.
+       * When present, the memory-generation layer runs after the record-store
+       * writes: deterministic recall-anchor episodes per built record, the
+       * trust-gated summary/facts layer, and retract-on-removal — all behind the
+       * `MeetingMemoryGenerator` seam (issue #1900). Omitted → pure
+       * detect+fuse+store with no memory writes. The engine depends only on this
+       * interface, never on the memory-gen module.
        */
-      memoryWriter?: MeetingMemoryWriter;
-      /**
-       * Trust-gated summary/fact deps (LLM extractor + optional durability
-       * judge). When present alongside `memoryWriter` and `summaryMode !== "off"`,
-       * `buildDay` runs `generateMeetingSummaryFacts` per record on the
-       * production path (issue #1900). Optional so fixtures/DI construct the
-       * builder for pure detect+fuse+store, and `off` mode provably never calls
-       * the extractor.
-       */
-      summary?: {
-        extractor: MeetingSummaryExtractor;
-        judge?: MeetingSummaryJudge;
-      };
+      memoryGenerator?: MeetingMemoryGenerator;
     },
   ) {}
 
@@ -244,35 +215,24 @@ export class MeetingsBuilder {
       removed.push(existingId);
     }
     const summary: MeetingsDayBuildSummary = { date, enabled: true, meetings, built, skipped, removed };
-    const writer = this.opts.memoryWriter;
-    if (writer !== undefined) {
-      // A removed meeting's episode/summary memories must be retired too, or
-      // recall keeps surfacing a meeting `show <id>` can no longer load.
-      for (const removedId of removed) {
-        await writer.retireMemoriesFromSource(meetingSourceLabel(removedId));
-      }
-      // Deterministic recall-anchor episode per meeting (idempotent). Runs on
-      // ALL records, so an unchanged rebuild whose earlier episode write failed
-      // still lands the episode now.
-      if (records.length > 0) {
-        summary.episodes = await generateMeetingEpisodes(records, writer);
-        // Trust-gated summary/facts on the production path (issue #1900).
-        if (this.opts.summary !== undefined && this.opts.config.summaryMode !== "off") {
-          summary.facts = await this.generateDayFacts(records, writer, this.opts.summary);
-        }
-      }
-    }
+    // Memory generation runs behind the seam: the deterministic engine hands the
+    // built records + removed ids to the injected generator and folds the
+    // returned counts + reindex signal into the summary. The engine never
+    // imports the memory-gen module.
+    const outcome: MeetingMemoryOutcome | undefined = await this.opts.memoryGenerator?.onRecordsBuilt({
+      built: records,
+      removedIds: removed,
+    });
+    if (outcome?.episodes !== undefined) summary.episodes = outcome.episodes;
+    if (outcome?.facts !== undefined) summary.facts = outcome.facts;
     // Meeting records AND their episode/summary memories live inside the QMD
     // collection root. Fire the isolated reindex whenever anything discoverable
-    // changed — records written/removed OR newly written episodes/facts. A
-    // rebuild whose records were unchanged (built == 0 && removed == 0) but whose
-    // prior episode write had failed still creates active memories that must be
-    // indexed now, not left dark until the next scheduled maintenance pass.
-    const factsWrote =
-      summary.facts !== undefined &&
-      summary.facts.active + summary.facts.review + summary.facts.summariesWritten > 0;
-    const episodesWrote = (summary.episodes?.written ?? 0) > 0;
-    if (built > 0 || removed.length > 0 || episodesWrote || factsWrote) {
+    // changed — records written/removed (engine) OR newly written episodes/facts
+    // (folded into outcome.reindexNeeded). A rebuild whose records were unchanged
+    // (built == 0 && removed == 0) but whose prior episode write had failed still
+    // creates active memories that must be indexed now, not left dark until the
+    // next scheduled maintenance pass.
+    if (built > 0 || removed.length > 0 || (outcome?.reindexNeeded ?? false)) {
       // The store mutation already succeeded; a reindex-hook rejection must not
       // fail the whole build. Surface it as a warning so the caller can log it,
       // and let the next scheduled index update catch up.
@@ -285,37 +245,6 @@ export class MeetingsBuilder {
       }
     }
     return summary;
-  }
-
-  /** Run the trust-gated summary/fact layer over the day's records and fold the
-   *  per-record results into one day aggregate. */
-  private async generateDayFacts(
-    records: readonly MeetingRecord[],
-    writer: MeetingMemoryWriter,
-    summaryDeps: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
-  ): Promise<MeetingsDayFactGenResult> {
-    const agg: MeetingsDayFactGenResult = {
-      llmInvoked: false,
-      active: 0,
-      review: 0,
-      dropped: 0,
-      skipped: 0,
-      summariesWritten: 0,
-    };
-    for (const record of records) {
-      const result = await generateMeetingSummaryFacts(record, this.opts.config, {
-        extractor: summaryDeps.extractor,
-        ...(summaryDeps.judge !== undefined ? { judge: summaryDeps.judge } : {}),
-        writer,
-      });
-      if (result.llmInvoked) agg.llmInvoked = true;
-      agg.active += result.active;
-      agg.review += result.review;
-      agg.dropped += result.dropped;
-      agg.skipped += result.skipped;
-      if (result.summaryWritten) agg.summariesWritten++;
-    }
-    return agg;
   }
 
   /**

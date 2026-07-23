@@ -6,8 +6,8 @@ import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import {
   generateMeetingSummaryFacts,
   type MeetingFactCandidate,
-  type MeetingMemoryWriter,
 } from "./memory-gen.js";
+import type { MeetingMemoryWriter } from "./memory-generator.js";
 import {
   LlmMeetingSummaryExtractor,
   createMeetingSummaryDeps,

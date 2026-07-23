@@ -15,14 +15,17 @@
  */
 
 import { scoreImportance } from "../importance.js";
-import type { MemoryWriteResult } from "../index.js";
-import {
-  composeMemoryEnvelope,
-  type SealedMemoryEnvelope,
-} from "../write-envelope.js";
+import { composeMemoryEnvelope } from "../write-envelope.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import type { ImportanceScore, MemoryCategory, MemoryStatus } from "../types.js";
+import type { MemoryCategory, MemoryStatus } from "../types.js";
+import {
+  type MeetingEpisodeGenResult,
+  type MeetingMemoryGenerator,
+  type MeetingMemoryOutcome,
+  type MeetingMemoryWriter,
+  type MeetingsDayFactGenResult,
+} from "./memory-generator.js";
 import { computeTrustScore, decideSmart, type TrustEvidence } from "../wearables/trust.js";
 import type { MeetingRecord, MeetingsConfig } from "./types.js";
 
@@ -36,39 +39,6 @@ export function meetingSourceLabel(id: string): string {
 export function meetingDayTag(date: string): string {
   return `meeting-day:${date}`;
 }
-
-/**
- * Narrow writer interface satisfied by `StorageManager` — the same sealed
- * write entry point the wearables generator uses, so meeting memories inherit
- * encrypted-at-rest + atomic write + dedup without this module knowing the key.
- */
-export interface MeetingMemoryWriter {
-  writeSealedMemory(
-    envelope: SealedMemoryEnvelope,
-    extras: {
-      importance?: ImportanceScore;
-      contentHashSource?: string;
-      status?: MemoryStatus;
-      memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
-    },
-  ): Promise<MemoryWriteResult>;
-  /**
-   * True when an active/pending memory whose frontmatter `source` equals
-   * `source` already carries this exact content. Meeting memories are episodes
-   * (`moment`) and decisions/commitments (`decision`/`commitment`) — categories
-   * the storage fact-hash index does NOT cover — so idempotency is a
-   * source-scoped content scan, mirroring the wearables writer, NOT
-   * `hasFactContentHash` (fact-only; always false here → duplicates on rebuild).
-   */
-  hasMemoryFromSource(source: string, content: string): Promise<boolean>;
-  /**
-   * Retire (invalidate) every memory whose frontmatter `source` equals `source`.
-   * Returns the count retired. Used to reconcile away a removed meeting's
-   * episode/summary memories so recall never surfaces a meeting `show` can't load.
-   */
-  retireMemoriesFromSource(source: string): Promise<number>;
-}
-
 /** Render the deterministic episode content for a meeting. Pure. */
 export function composeMeetingEpisodeContent(record: MeetingRecord): string {
   const clock = (iso: string): string => {
@@ -127,14 +97,6 @@ export async function writeMeetingEpisodeMemory(
     memoryKind: "episode",
   });
   return true;
-}
-
-/** Result of generating episode memories for a day's meetings. */
-export interface MeetingEpisodeGenResult {
-  /** Episodes newly written. */
-  written: number;
-  /** Episodes skipped because an identical one already existed. */
-  skipped: number;
 }
 
 /** Write one deterministic episode per record, idempotently. */
@@ -423,6 +385,88 @@ export function createMeetingMemoryWriter(storage: MeetingMemoryStorageIo): Meet
         if (await storage.invalidateMemory(memory.frontmatter.id)) retired++;
       }
       return retired;
+    },
+  };
+}
+
+/**
+ * Fold the per-record trust-gated summary/fact results into one day aggregate.
+ * The deterministic builder used to own this loop; it now lives behind the
+ * memory seam so the engine never calls `generateMeetingSummaryFacts`.
+ */
+async function generateMeetingDayFacts(
+  records: readonly MeetingRecord[],
+  config: MeetingsConfig,
+  writer: MeetingMemoryWriter,
+  summaryDeps: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
+): Promise<MeetingsDayFactGenResult> {
+  const agg: MeetingsDayFactGenResult = {
+    llmInvoked: false,
+    active: 0,
+    review: 0,
+    dropped: 0,
+    skipped: 0,
+    summariesWritten: 0,
+  };
+  for (const record of records) {
+    const result = await generateMeetingSummaryFacts(record, config, {
+      extractor: summaryDeps.extractor,
+      ...(summaryDeps.judge !== undefined ? { judge: summaryDeps.judge } : {}),
+      writer,
+    });
+    if (result.llmInvoked) agg.llmInvoked = true;
+    agg.active += result.active;
+    agg.review += result.review;
+    agg.dropped += result.dropped;
+    agg.skipped += result.skipped;
+    if (result.summaryWritten) agg.summariesWritten++;
+  }
+  return agg;
+}
+
+/**
+ * Concrete `MeetingMemoryGenerator` for the builder's memory seam (issue #1900
+ * decouple). Implements `onRecordsBuilt` by driving the EXISTING episode/fact/
+ * retract logic, so behavior is unchanged — only the call site moves behind the
+ * interface the deterministic engine depends on:
+ *
+ * - retire the removed meetings' memories (so recall never surfaces a meeting
+ *   `show <id>` can no longer load);
+ * - write one deterministic recall-anchor episode per built record (idempotent),
+ *   running on ALL records so an unchanged rebuild whose earlier episode write
+ *   failed still lands it now;
+ * - when `summaryDeps` is present and `config.summaryMode !== "off"`, run the
+ *   trust-gated summary/facts layer per record;
+ * - report `reindexNeeded` when new episodes/facts were written, folding the
+ *   builder's old "reindex even if built == 0" rule.
+ *
+ * `config` is captured here (not passed through `onRecordsBuilt`) because the
+ * seam input carries only built records + removed ids, while the summary/facts
+ * layer needs `summaryMode` and the trust bands.
+ */
+export function createMeetingMemoryGenerator(
+  writer: MeetingMemoryWriter,
+  config: MeetingsConfig,
+  summaryDeps?: { extractor: MeetingSummaryExtractor; judge?: MeetingSummaryJudge },
+): MeetingMemoryGenerator {
+  return {
+    async onRecordsBuilt({ built, removedIds }): Promise<MeetingMemoryOutcome> {
+      for (const removedId of removedIds) {
+        await writer.retireMemoriesFromSource(meetingSourceLabel(removedId));
+      }
+      const outcome: MeetingMemoryOutcome = { reindexNeeded: false, warnings: [] };
+      if (built.length > 0) {
+        outcome.episodes = await generateMeetingEpisodes(built, writer);
+        if (summaryDeps !== undefined && config.summaryMode !== "off") {
+          outcome.facts = await generateMeetingDayFacts(built, config, writer, summaryDeps);
+        }
+      }
+      const episodesWrote = (outcome.episodes?.written ?? 0) > 0;
+      const factsWrote =
+        outcome.facts !== undefined &&
+        outcome.facts.active + outcome.facts.review + outcome.facts.summariesWritten > 0;
+      outcome.reindexNeeded = episodesWrote || factsWrote;
+      return outcome;
     },
   };
 }

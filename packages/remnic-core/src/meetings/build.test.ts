@@ -7,12 +7,13 @@ import { MeetingRecordStore, type MeetingRecordFileIo } from "./store.js";
 import type { MeetingActivitySnapshot, MeetingsConfig, MeetingAppSpan, MeetingAudioWindow } from "./types.js";
 import type { FusionConversationInput, FusionSegmentInput } from "../wearables/fusion/types.js";
 import {
+  createMeetingMemoryGenerator,
   meetingSourceLabel,
   type MeetingFactCandidate,
-  type MeetingMemoryWriter,
   type MeetingSummaryExtractor,
   type MeetingSummaryJudge,
 } from "./memory-gen.js";
+import type { MeetingMemoryWriter } from "./memory-generator.js";
 import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryWriteResult } from "../storage.js";
 
@@ -384,7 +385,13 @@ test("builder writes a deterministic episode memory per built record when a writ
     detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
   };
-  const builder = new MeetingsBuilder({ source: fixedSource(data), store, config: config(), memoryWriter });
+  const cfg = config();
+  const builder = new MeetingsBuilder({
+    source: fixedSource(data),
+    store,
+    config: cfg,
+    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg),
+  });
   const first = await builder.buildDay(DATE);
   assert.equal(first.meetings.length, 1);
   assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
@@ -449,11 +456,12 @@ test("finding 8 — reindex fires when only episodes are newly written (records 
   // still fire so the new active memory is discoverable now.
   const memoryWriter = new FakeMeetingWriter();
   const calls: MeetingsDayBuildSummary[] = [];
+  const cfg = config();
   const summary = await new MeetingsBuilder({
     source: fixedSource(data),
     store,
-    config: config(),
-    memoryWriter,
+    config: cfg,
+    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg),
     hooks: { reindex: (s) => { calls.push(s); } },
   }).buildDay(DATE);
   assert.equal(summary.built, 0, "the record was unchanged");
@@ -469,7 +477,8 @@ test("finding 9 — removing a meeting retires its episode/summary memories", as
     detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
     conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
   };
-  const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: config(), memoryWriter }).buildDay(DATE);
+  const cfg = config();
+  const firstSummary = await new MeetingsBuilder({ source: fixedSource(first), store, config: cfg, memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg) }).buildDay(DATE);
   const staleId = firstSummary.meetings[0]!.id;
   const episodeContent = memoryWriter.writes.find((w) => w.source === meetingSourceLabel(staleId))?.content;
   assert.ok(episodeContent !== undefined, "episode written for the meeting");
@@ -485,7 +494,7 @@ test("finding 9 — removing a meeting retires its episode/summary memories", as
       { source: "desktop", conversationId: "d2", startIso: LATER_START, endIso: LATER_END, segments: [{ speaker: "Jane", isSelf: false, text: "later", startIso: "2026-03-10T16:05:00.000Z" }] },
     ],
   };
-  const secondSummary = await new MeetingsBuilder({ source: fixedSource(second), store, config: config(), memoryWriter }).buildDay(DATE);
+  const secondSummary = await new MeetingsBuilder({ source: fixedSource(second), store, config: cfg, memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg) }).buildDay(DATE);
   assert.deepEqual(secondSummary.removed, [staleId]);
   assert.ok(memoryWriter.retired.includes(meetingSourceLabel(staleId)), "the removed meeting's memories are retired");
   assert.equal(
@@ -511,12 +520,12 @@ test("finding 11+12 — smart mode wires trust-gated decision + commitment on th
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const memoryWriter = new FakeMeetingWriter();
   const extractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const cfg = config({ summaryMode: "smart" });
   const summary = await new MeetingsBuilder({
     source: fixedSource(summaryData()),
     store,
-    config: config({ summaryMode: "smart" }),
-    memoryWriter,
-    summary: { extractor },
+    config: cfg,
+    memoryGenerator: createMeetingMemoryGenerator(memoryWriter, cfg, { extractor }),
   }).buildDay(DATE);
   const builtId = summary.meetings[0]!.id;
   assert.equal(extractor.calls, 1, "the extractor runs on the production path");
@@ -534,12 +543,12 @@ test("finding 11+12 — review mode queues facts, off mode makes zero LLM calls"
   const reviewStore = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const reviewWriter = new FakeMeetingWriter();
   const reviewExtractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const reviewCfg = config({ summaryMode: "review" });
   const reviewSummary = await new MeetingsBuilder({
     source: fixedSource(summaryData()),
     store: reviewStore,
-    config: config({ summaryMode: "review" }),
-    memoryWriter: reviewWriter,
-    summary: { extractor: reviewExtractor },
+    config: reviewCfg,
+    memoryGenerator: createMeetingMemoryGenerator(reviewWriter, reviewCfg, { extractor: reviewExtractor }),
   }).buildDay(DATE);
   assert.equal(reviewExtractor.calls, 1);
   assert.equal(reviewSummary.facts?.active, 0, "review mode never auto-actives");
@@ -549,12 +558,12 @@ test("finding 11+12 — review mode queues facts, off mode makes zero LLM calls"
   const offStore = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const offWriter = new FakeMeetingWriter();
   const offExtractor = spyExtractor("We shipped v2.", SUMMARY_CANDIDATES);
+  const offCfg = config({ summaryMode: "off" });
   const offSummary = await new MeetingsBuilder({
     source: fixedSource(summaryData()),
     store: offStore,
-    config: config({ summaryMode: "off" }),
-    memoryWriter: offWriter,
-    summary: { extractor: offExtractor },
+    config: offCfg,
+    memoryGenerator: createMeetingMemoryGenerator(offWriter, offCfg, { extractor: offExtractor }),
   }).buildDay(DATE);
   assert.equal(offExtractor.calls, 0, "off mode must NEVER invoke the extractor");
   assert.equal(offSummary.facts, undefined, "no fact aggregate in off mode");

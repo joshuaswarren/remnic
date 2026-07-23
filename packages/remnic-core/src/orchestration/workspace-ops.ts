@@ -39,7 +39,7 @@ import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { WearablesService } from "../wearables/service.js";
 import { ActivityStore } from "../activity/store.js";
 import { MeetingsBuilder } from "../meetings/build.js";
-import { createMeetingMemoryWriter } from "../meetings/memory-gen.js";
+import { createMeetingMemoryGenerator, createMeetingMemoryWriter } from "../meetings/memory-gen.js";
 import { createMeetingSummaryDeps } from "../meetings/summary-extractor.js";
 import {
   ActivityWearablesMeetingsDaySource,
@@ -784,16 +784,14 @@ export class WorkspaceOpsCoordinator {
             await this.deps.qmd.update();
           },
         },
-        // The same sealed write path the wearables generator uses, adapted so
-        // meeting episodes/facts (categories the fact-hash index does not cover)
-        // dedup by a source-scoped content scan — createMeetingMemoryWriter adds
-        // the hasMemoryFromSource/retireMemoriesFromSource the builder calls at
-        // runtime, which raw StorageManager does not provide (issue #1900).
-        memoryWriter: createMeetingMemoryWriter(storage),
-        // Trust-gated summary/facts on the production build path: with a
-        // memoryWriter present and summaryMode !== "off", buildDay runs
-        // generateMeetingSummaryFacts per record (issue #1900).
-        summary,
+        // Memory generation behind the builder seam (issue #1900 decouple): the
+        // deterministic engine depends only on MeetingMemoryGenerator, never on
+        // memory-gen. The generator wraps the same sealed write path the wearables
+        // generator uses — createMeetingMemoryWriter adds the source-scoped
+        // dedup/retire the raw StorageManager lacks — plus the trust-gated
+        // summary/facts layer (extractor + shared durability judge). It gates on
+        // summaryMode internally, so `off` never invokes the extractor.
+        memoryGenerator: createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config, summary),
       });
       this.deps.meetingsServiceInstance = new MeetingsService({
         config,

@@ -14,9 +14,9 @@ import {
   writeMeetingEpisodeMemory,
   createMeetingMemoryWriter,
   type MeetingFactCandidate,
-  type MeetingMemoryWriter,
   type MeetingSummaryExtractor,
 } from "./memory-gen.js";
+import type { MeetingMemoryWriter } from "./memory-generator.js";
 import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import type { FusedMeeting, MeetingRecord, MeetingsConfig } from "./types.js";
 import type { FusedSegment } from "../wearables/fusion/types.js";
