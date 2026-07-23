@@ -152,7 +152,7 @@ export class MaintenanceScheduler {
    * Returns when all eligible registrations have completed so callers that
    * `await deferredReady` can rely on jobs.json being current.
    */
-  async autoRegisterCrons(_signal: AbortSignal): Promise<void> {
+  async autoRegisterCrons(signal: AbortSignal): Promise<void> {
     if (resolveRecallAuxiliaryCapabilities(this.deps.config).daySummary) {
       try {
         await this.autoRegisterDaySummaryCron();
@@ -200,12 +200,18 @@ export class MaintenanceScheduler {
     // Master default-off: start() arms nothing unless config.activity.enabled.
     // This is the parser -> scheduler -> durable-sync wire; the OpenClaw cron
     // daemon is not involved (host-agnostic, no OpenClaw import).
+    // If teardown aborted deferred init while an earlier registration awaited,
+    // dispose() has already run (with activitySyncScheduler still null), so
+    // arming a timer now would leave an interval that never gets stopped.
+    if (signal.aborted) return;
     try {
       this.activitySyncScheduler = new ActivitySyncScheduler({
         config: this.deps.config.activity,
         memoryDir: this.deps.config.memoryDir,
       });
       this.activitySyncScheduler.start();
+      // Close the race where abort fires between the guard above and start().
+      if (signal.aborted) void this.activitySyncScheduler.stop();
     } catch (err) {
       log.debug(`activity sync scheduler start failed (non-fatal): ${err}`);
     }
