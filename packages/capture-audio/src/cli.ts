@@ -58,6 +58,9 @@ const VALUE_FLAGS: Record<string, true> = {
 };
 
 /** Standalone boolean flags. Any other `--flag` is rejected loudly. */
+/** How long background start waits for the child daemon to bind before failing. */
+const READINESS_TIMEOUT_MS = 10_000;
+
 const BOOLEAN_FLAGS: Record<string, true> = {
   foreground: true,
   force: true,
@@ -258,7 +261,7 @@ async function cmdStart(
     writePidFile(paths.pidPath, child.pid, { host: config.host, port: config.port });
     // Do not report success until the child actually binds: it writes an
     // instanceId into the pid record only after the HTTP server is listening.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + READINESS_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (!isProcessAlive(child.pid)) {
         removePidFileIfOwner(paths.pidPath, child.pid);
@@ -271,8 +274,18 @@ async function cmdStart(
       }
       await delay(100);
     }
-    stdout(`started daemon (pid ${child.pid}); still starting — see ${paths.logPath}`);
-    return 0;
+    // Readiness timed out: the child never bound. Terminate it and fail loudly
+    // so automation never observes a false success.
+    try {
+      process.kill(child.pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+    removePidFileIfOwner(paths.pidPath, child.pid);
+    stderr(
+      `daemon did not become ready within ${READINESS_TIMEOUT_MS / 1000}s; terminated pid ${child.pid}. See ${paths.logPath}.`,
+    );
+    return 1;
   }
 
   ensurePrivateDir(paths.baseDir);
@@ -339,10 +352,17 @@ async function cmdStop(
   if (record.instanceId !== null) {
     const liveInstance = await probeInstanceId(paths, recordHealthUrl(record, paths, stderr));
     if (liveInstance !== null && liveInstance !== record.instanceId) {
-      // Confirmed: a different process reused the pid -> never signal it.
-      removePidFile(paths.pidPath);
-      stdout(`pid ${record.pid} is not our daemon (instance mismatch); cleared stale pid file`);
-      return 0;
+      // Verified NOT ours: the daemon answering this endpoint has a different
+      // instance id than the record. Never signal an unverified pid, and never
+      // reclaim the record before a safe stop succeeds — doing either could kill
+      // an unrelated process or orphan the serving daemon. --force does not
+      // override a verified mismatch (we know this pid is not our daemon).
+      stderr(
+        `recorded pid ${record.pid} does not match the daemon serving this endpoint (instance mismatch); ` +
+          `not signalling and preserving ${paths.pidPath}. Stop the serving daemon via its own controls, ` +
+          `or remove the pid file after verifying it is stale.`,
+      );
+      return 1;
     }
     if (liveInstance === null && flags.force !== true) {
       // Cannot confirm identity (health unreachable): refuse to signal a pid we

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { test } from "node:test";
 
-import { CaptureInputError } from "./errors.js";
+import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { Spool } from "./spool.js";
 import type { SegmentInput } from "./spool.js";
 
@@ -172,4 +172,23 @@ test("an on-disk spool file is created owner-only (0600)", () => {
   spool.close();
   const mode = statSync(file).mode & 0o777;
   assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
+});
+
+test("insertConversation rejects invalid timestamps before persisting (no partial write)", () => {
+  const spool = new Spool(":memory:");
+  assert.throws(
+    () => spool.insertConversation({ id: "c1", startedAtUtc: "not-a-date", segments: [seg("a")] }),
+    CaptureConfigError,
+  );
+  assert.throws(
+    () =>
+      spool.insertConversation({
+        id: "c2",
+        startedAtUtc: "2026-07-20T10:00:00.000Z",
+        segments: [{ channel: "mic", text: "x", startUtc: "bad", endUtc: "2026-07-20T10:00:01.000Z" }],
+      }),
+    CaptureConfigError,
+  );
+  assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
+  spool.close();
 });

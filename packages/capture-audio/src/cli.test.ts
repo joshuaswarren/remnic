@@ -140,7 +140,7 @@ test("start --host/--port persists the effective binding so status reaches that 
   });
 });
 
-test("stop probes the persisted binding (detects instance mismatch, does not kill the wrong pid)", async () => {
+test("stop probes the persisted binding to detect a mismatch (refuses, preserves record, never signals)", async () => {
   await withBaseDir(async (baseDir) => {
     const paths = capturePaths(baseDir);
     const spool = new Spool(":memory:");
@@ -149,12 +149,12 @@ test("stop probes the persisted binding (detects instance mismatch, does not kil
       writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
       // Record points at the live daemon's port but carries a STALE instanceId.
       writePidFile(paths.pidPath, process.pid, { instanceId: "stale-instance", host: handle.host, port: handle.port });
-      const out: string[] = [];
-      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: (l) => out.push(l), stderr: () => undefined });
-      assert.equal(code, 0);
-      // Only reachable via the recorded port: probe returned the real instanceId != "stale-instance".
-      assert.match(out.join("\n"), /instance mismatch/);
-      assert.equal(existsSync(paths.pidPath), false);
+      const errs: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+      // Reached the recorded port, saw a different instanceId: refuse, keep the record, never signal.
+      assert.equal(code, 1);
+      assert.ok(errs.some((l) => l.includes("does not match the daemon serving")), errs.join("|"));
+      assert.equal(existsSync(paths.pidPath), true);
     } finally {
       await handle.close();
       spool.close();
@@ -253,5 +253,74 @@ test("stop refuses a bare-pid record (no instance id) without --force", async ()
     assert.equal(code, 1);
     assert.ok(errs.some((l) => l.includes("cannot verify daemon identity")), errs.join("|"));
     assert.equal(existsSync(paths.pidPath), true); // not signalled, not removed
+  });
+});
+
+test("stop refuses a verified instance mismatch: never signals, preserves the pid file (even with --force)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const spool = new Spool(":memory:");
+    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    try {
+      // Record points at THIS process (alive) + the live daemon's endpoint, but a GHOST instanceId.
+      writePidFile(paths.pidPath, process.pid, { instanceId: "ghost-instance", host: handle.host, port: handle.port });
+      const errs: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: () => undefined, stderr: (l) => errs.push(l) });
+      assert.equal(code, 1);
+      assert.ok(errs.some((l) => l.includes("does not match the daemon serving")), errs.join("|"));
+      assert.equal(existsSync(paths.pidPath), true); // preserved, not reclaimed, not signalled
+      // --force must NOT override a verified mismatch.
+      const code2 = await runCapture({ argv: ["stop", "--force", "--base-dir", baseDir], stdout: () => undefined, stderr: () => undefined });
+      assert.equal(code2, 1);
+      assert.equal(existsSync(paths.pidPath), true);
+    } finally {
+      await handle.close();
+      spool.close();
+    }
+  });
+});
+
+test("stop signals a verified same-instance daemon (record matches the live endpoint)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const spool = new Spool(":memory:");
+    const handle = await startDaemon({ spool, config: { ...defaultDaemonConfig(), host: "127.0.0.1", port: 0 }, token: "tok" });
+    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(child.pid);
+    try {
+      writePidFile(paths.pidPath, child.pid, { instanceId: spool.meta("instance_id")!, host: handle.host, port: handle.port });
+      const out: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+      assert.equal(code, 0);
+      assert.match(out.join("\n"), /sent SIGTERM/);
+      await once(child, "exit"); // the recorded pid was signalled
+      assert.equal(existsSync(paths.pidPath), true); // stop does not reclaim; the daemon self-removes
+    } finally {
+      child.kill("SIGKILL");
+      await handle.close();
+      spool.close();
+    }
+  });
+});
+
+test("stop --force signals an unverifiable (health-unreachable) recorded pid", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    writeFileSync(paths.tokenPath, "tok\n", { mode: 0o600 });
+    const child = spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+    assert.ok(child.pid);
+    try {
+      const port = await closedPort();
+      writePidFile(paths.pidPath, child.pid, { instanceId: "x", host: "127.0.0.1", port });
+      const out: string[] = [];
+      const code = await runCapture({ argv: ["stop", "--force", "--base-dir", baseDir], stdout: (l) => out.push(l) });
+      assert.equal(code, 0);
+      assert.match(out.join("\n"), /sent SIGTERM/);
+      await once(child, "exit");
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });

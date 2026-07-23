@@ -140,6 +140,13 @@ CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
 `;
 
+/** Reject a timestamp that would become an Invalid Date downstream. */
+function assertIsoInstant(value: string, label: string): void {
+  if (typeof value !== "string" || value.trim() === "" || !Number.isFinite(Date.parse(value))) {
+    throw new CaptureConfigError(`${label}: expected a valid ISO timestamp`);
+  }
+}
+
 export class Spool {
   #db: DatabaseSync;
   #closed = false;
@@ -191,6 +198,17 @@ export class Spool {
     if (!Array.isArray(input.segments)) {
       throw new CaptureConfigError("conversation.segments: expected an array");
     }
+    // Validate every timestamp before persisting so a direct Spool caller (not
+    // just replay) cannot store a value that becomes an Invalid Date in
+    // queryFinalConversations' day bucketing.
+    assertIsoInstant(input.startedAtUtc, "conversation.startedAtUtc");
+    if (input.endedAtUtc !== undefined && input.endedAtUtc !== null) {
+      assertIsoInstant(input.endedAtUtc, "conversation.endedAtUtc");
+    }
+    input.segments.forEach((seg, i) => {
+      assertIsoInstant(seg.startUtc, `conversation.segments[${i}].startUtc`);
+      assertIsoInstant(seg.endUtc, `conversation.segments[${i}].endUtc`);
+    });
     const convId = input.id ?? `conv_${ulid()}`;
     const chunkId = `chk_${convId}`;
     const state: ConversationState = input.state ?? "final";
