@@ -471,3 +471,33 @@ test("capture daemon CLI rejects malformed input and the unsafe --auth-token fla
     { spoolPath: "capture.sqlite", port: 0 },
   );
 });
+
+test("snapshots response carries a spool generation that is stable across reopen and changes on rebuild", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const spoolPath = path.join(parent, "capture.sqlite");
+  const generationOf = async (replay?: CaptureSnapshot[]): Promise<string> => {
+    const daemon = await startCaptureScreenDaemon({
+      authToken: "test-token",
+      spoolPath,
+      ...(replay === undefined ? {} : { replay }),
+    });
+    try {
+      const { url } = await daemon.start();
+      const page = await (await fetch(`${url}/v1/snapshots`, { headers: AUTH })).json() as { generation: string };
+      return page.generation;
+    } finally {
+      await daemon.close();
+    }
+  };
+  try {
+    const first = await generationOf([snapshot()]);
+    assert.match(first, /.+/);
+    // Reopening the same spool file keeps the generation.
+    assert.equal(await generationOf(), first);
+    // Rebuilding the spool (fresh file) yields a new generation.
+    await rm(spoolPath, { force: true });
+    assert.notEqual(await generationOf([snapshot()]), first);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

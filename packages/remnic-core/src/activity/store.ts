@@ -74,9 +74,16 @@ function applySchema(db: BetterSqlite3Database): void {
     CREATE TABLE IF NOT EXISTS activity_sync_state (
       machine        TEXT PRIMARY KEY,
       cursor         TEXT,
+      generation     TEXT,
       updated_at_utc TEXT NOT NULL
     );
   `);
+
+  // Add the generation column to sync-state tables created before this field
+  // existed (idempotent; fresh tables above already include it).
+  const syncStateColumns = db.prepare("PRAGMA table_info(activity_sync_state)").all();
+  const hasGeneration = syncStateColumns.some((column) => isRecord(column) && column.name === "generation");
+  if (!hasGeneration) db.exec("ALTER TABLE activity_sync_state ADD COLUMN generation TEXT");
 
   const hasFts = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_snapshots_fts'")
@@ -296,14 +303,25 @@ export class ActivityStore {
     return isRecord(row) && typeof row.cursor === "string" ? row.cursor : null;
   }
 
-  setCursor(machine: string, cursor: string | null, updatedAtUtc: string = new Date().toISOString()): void {
+  /** The persisted source generation paired with this cursor, or null. */
+  getCursorGeneration(machine: string): string | null {
+    const row = this.db.prepare("SELECT generation FROM activity_sync_state WHERE machine = ?").get(machine);
+    return isRecord(row) && typeof row.generation === "string" ? row.generation : null;
+  }
+
+  setCursor(
+    machine: string,
+    cursor: string | null,
+    generation: string | null = null,
+    updatedAtUtc: string = new Date().toISOString(),
+  ): void {
     this.db
       .prepare(
-        `INSERT INTO activity_sync_state (machine, cursor, updated_at_utc)
-         VALUES (?, ?, ?)
-         ON CONFLICT(machine) DO UPDATE SET cursor = excluded.cursor, updated_at_utc = excluded.updated_at_utc`,
+        `INSERT INTO activity_sync_state (machine, cursor, generation, updated_at_utc)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(machine) DO UPDATE SET cursor = excluded.cursor, generation = excluded.generation, updated_at_utc = excluded.updated_at_utc`,
       )
-      .run(machine, cursor, updatedAtUtc);
+      .run(machine, cursor, generation, updatedAtUtc);
   }
 
   /** Full-text search over snapshot text/app/window/url; newest first. */

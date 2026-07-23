@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
@@ -55,6 +55,10 @@ function hostForUrl(host: string): string {
  */
 function ensureSecureSpoolParent(spoolPath: string): void {
   const parent = dirname(spoolPath);
+  // Owner-only/uid/attacker-writable checks are POSIX permission semantics.
+  // On Windows fs mode bits and process.getuid don't carry them, so gate those
+  // there while keeping symlink/type validation and secure creation everywhere.
+  const posix = process.platform !== "win32";
 
   let previous = parent;
   let current = dirname(parent);
@@ -63,9 +67,11 @@ function ensureSecureSpoolParent(spoolPath: string): void {
     if (ancestor !== undefined) {
       if (ancestor.isSymbolicLink()) throw new RangeError("a spool ancestor directory must not be a symlink");
       if (!ancestor.isDirectory()) throw new RangeError("a spool ancestor path must be a directory");
-      const groupOtherWritable = (ancestor.mode & 0o022) !== 0;
-      const sticky = (ancestor.mode & 0o1000) !== 0;
-      if (groupOtherWritable && !sticky) throw new RangeError("a spool ancestor directory is writable by other users");
+      if (posix) {
+        const groupOtherWritable = (ancestor.mode & 0o022) !== 0;
+        const sticky = (ancestor.mode & 0o1000) !== 0;
+        if (groupOtherWritable && !sticky) throw new RangeError("a spool ancestor directory is writable by other users");
+      }
     }
     previous = current;
     current = dirname(current);
@@ -78,9 +84,11 @@ function ensureSecureSpoolParent(spoolPath: string): void {
   }
   if (info.isSymbolicLink()) throw new RangeError("spool parent directory must not be a symlink");
   if (!info.isDirectory()) throw new RangeError("spool parent must be a directory");
-  if ((info.mode & 0o077) !== 0) throw new RangeError("spool parent directory must be owner-only (0700)");
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if (uid !== undefined && info.uid !== uid) throw new RangeError("spool parent directory must be owned by the current user");
+  if (posix) {
+    if ((info.mode & 0o077) !== 0) throw new RangeError("spool parent directory must be owner-only (0700)");
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (uid !== undefined && info.uid !== uid) throw new RangeError("spool parent directory must be owned by the current user");
+  }
 }
 
 /**
@@ -135,7 +143,23 @@ function applySchema(db: BetterSqlite3Database): void {
       content_hash TEXT NOT NULL UNIQUE
     );
     CREATE INDEX IF NOT EXISTS capture_snapshots_capture_at ON capture_snapshots(captured_at_utc, id);
+    CREATE TABLE IF NOT EXISTS capture_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
+}
+
+/**
+ * Stable identity of this spool file. Created once per spool and persisted, so
+ * it survives reopen but changes when the spool is rebuilt/replaced (a fresh
+ * file gets a fresh row). The activity sync uses it to deterministically reset
+ * a cursor that belonged to a prior spool generation.
+ */
+function spoolGeneration(db: BetterSqlite3Database): string {
+  db.prepare("INSERT OR IGNORE INTO capture_meta (key, value) VALUES ('generation', ?)").run(randomUUID());
+  const row = db.prepare("SELECT value FROM capture_meta WHERE key = 'generation'").get() as { value: string };
+  return row.value;
 }
 
 function insertReplay(db: BetterSqlite3Database, replay: readonly CaptureSnapshot[]): void {
@@ -204,9 +228,11 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
     } else if (existing.isFile()) chmodSync(options.spoolPath, 0o600);
   }
   const db = openBetterSqlite3(options.spoolPath);
+  let generation: string;
   try {
     applySchema(db);
     if (options.replay !== undefined) insertReplay(db, options.replay);
+    generation = spoolGeneration(db);
   } catch (error) {
     db.close();
     throw error;
@@ -290,6 +316,7 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
             // persists a non-null cursor, so a final partial page must still
             // return its last id; the follow-up empty page then terminates.
             nextCursor: rows.length > 0 ? String(rows.at(-1)?.id) : null,
+            generation,
           });
         } catch (error) {
           json(response, 400, { error: displayErrorDetail(error) || "invalid_request" });

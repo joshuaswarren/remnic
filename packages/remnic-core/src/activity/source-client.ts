@@ -78,9 +78,11 @@ function responsePage(value: unknown, machine: string): ActivitySnapshotPage {
   if (nextCursor !== null && typeof nextCursor !== "string") {
     throw new TypeError("activity source response has invalid nextCursor");
   }
+  const generation = optionalStringField(value, "generation");
   return {
     snapshots: value.snapshots.map((snapshot) => snapshotFromWire(snapshot, machine)),
     nextCursor,
+    ...(generation === undefined ? {} : { generation }),
   };
 }
 

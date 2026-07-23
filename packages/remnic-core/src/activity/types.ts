@@ -64,6 +64,12 @@ export interface ActivitySourceCheck {
 export interface ActivitySnapshotPage {
   snapshots: ActivitySnapshot[];
   nextCursor: string | null;
+  /**
+   * Opaque identity of the source's spool instance. It changes when the source
+   * rebuilds/replaces its spool (ids reset), letting the sync deterministically
+   * reset a now-stale cursor. Omitted by sources that predate this field.
+   */
+  generation?: string;
 }
 
 /**
