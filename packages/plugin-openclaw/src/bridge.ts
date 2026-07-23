@@ -274,6 +274,10 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
   let mode: BridgeMode;
   if (envMode === "delegate" || envMode === "embedded") {
     mode = envMode;
+  } else if (envMode !== undefined && envMode !== "") {
+    throw new Error(
+      `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`,
+    );
   } else if (
     configBridgeMode === undefined ||
     configBridgeMode === "" ||

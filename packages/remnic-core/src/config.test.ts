@@ -2403,4 +2403,7 @@ test("parseConfig forwards bridgeMode as a raw passthrough (validation is in res
   assert.equal(parseConfig({ bridgeMode: "embedded" }).bridgeMode, "embedded");
   // Invalid values pass through unchanged — resolveBridgeMode rejects them.
   assert.equal(parseConfig({ bridgeMode: "daemon" }).bridgeMode, "daemon");
+  // Non-strings stringify so they REACH the downstream validator instead of
+  // silently defaulting to embedded.
+  assert.equal(parseConfig({ bridgeMode: true }).bridgeMode, "true");
 });

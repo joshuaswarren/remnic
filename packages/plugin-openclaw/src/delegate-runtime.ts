@@ -185,6 +185,7 @@ export function registerDelegateRuntime(
     const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
 
     const recallHandler = async (
+      hook: "before_prompt_build" | "before_agent_start",
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined> => {
@@ -202,7 +203,7 @@ export function registerDelegateRuntime(
         const agentId =
           (typeof ctx?.agentId === "string" ? ctx.agentId : undefined) ??
           (typeof runtimeAgent?.id === "string" ? runtimeAgent.id : undefined) ??
-          "";
+          "main";
         if (await options.resolveSessionDisabled(sessionKey, agentId)) {
           log.debug(`delegate recall skipped: session toggle disables memory for ${sessionKey}`);
           return undefined;
@@ -235,10 +236,13 @@ export function registerDelegateRuntime(
           promptLinesBySession.set(sessionKey, prompt.split("\n"));
           return undefined;
         }
-        // before_prompt_build consumes prependSystemContext; the legacy
-        // before_agent_start path may consume either field, matching the
-        // embedded handler's dual-field return.
-        return { prependSystemContext: prompt, prependContext: prompt };
+        // Embedded parity: before_prompt_build consumes ONLY
+        // prependSystemContext (returning both keys could double-inject on
+        // hosts that honor both); the legacy before_agent_start path returns
+        // the dual-field shape.
+        return hook === "before_prompt_build"
+          ? { prependSystemContext: prompt }
+          : { prependSystemContext: prompt, prependContext: prompt };
       } catch (err) {
         log.warn(`delegate recall failed: ${String(err)}`);
         return undefined;
@@ -246,8 +250,16 @@ export function registerDelegateRuntime(
     };
     // Register on the modern hook AND the legacy hook: gateways emit one or
     // the other, never both, so dual registration cannot double-inject.
-    api.on("before_prompt_build", recallHandler, { timeoutMs: options.hookTimeoutMs });
-    api.on("before_agent_start", recallHandler, { timeoutMs: options.hookTimeoutMs });
+    api.on(
+      "before_prompt_build",
+      (event, ctx) => recallHandler("before_prompt_build", event, ctx),
+      { timeoutMs: options.hookTimeoutMs },
+    );
+    api.on(
+      "before_agent_start",
+      (event, ctx) => recallHandler("before_agent_start", event, ctx),
+      { timeoutMs: options.hookTimeoutMs },
+    );
     if (useSectionBuilder && api.registerMemoryPromptSection) {
       const memoryBuildFn = Object.assign(
         (params: { sessionKey?: string }): string[] | null => {

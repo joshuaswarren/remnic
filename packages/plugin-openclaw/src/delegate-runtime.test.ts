@@ -141,7 +141,11 @@ test("delegate recall injects daemon context under the memory header", async () 
     assert.ok(result, "recall handler returns an injection");
     assert.match(String(result.prependSystemContext), /## Memory Context \(Remnic\)/);
     assert.match(String(result.prependSystemContext), /remembered daemon context/);
-    assert.equal(result.prependContext, result.prependSystemContext);
+    assert.equal(
+      result.prependContext,
+      undefined,
+      "before_prompt_build returns only prependSystemContext (dual keys could double-inject)",
+    );
 
     const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
     assert.ok(recall, "daemon recall route was called");
@@ -262,6 +266,12 @@ test("resolveBridgeMode is explicit-only: config delegate activates, absence sta
     assert.equal(resolveBridgeMode("").mode, "embedded");
     assert.throws(() => resolveBridgeMode("daemon"), /Invalid bridgeMode/);
     assert.throws(() => resolveBridgeMode("DELEGATE"), /Invalid bridgeMode/);
+    process.env.REMNIC_BRIDGE_MODE = "daemon";
+    assert.throws(
+      () => resolveBridgeMode("embedded"),
+      /Invalid REMNIC_BRIDGE_MODE env override/,
+      "an invalid env override is rejected, not silently ignored",
+    );
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
@@ -309,6 +319,7 @@ test("delegate recall trims injected context to recallBudgetChars", async () => 
       injected.length <= 100 + "## Memory Context (Remnic)\n\n".length,
       `injection stays within budget (+header): got ${injected.length}`,
     );
+    assert.match(injected, /x{100}/, "trim retains the leading 100 budget chars of context");
   } finally {
     await stub.close();
   }
@@ -559,5 +570,36 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
+
+test("delegate recall degrades to no injection on a daemon HTTP error response", async () => {
+  const stub = await startDaemonStub(() => {
+    throw new Error("boom"); // startDaemonStub catches nothing: force via 500 below
+  });
+  await stub.close();
+  const errServer = http.createServer((_req, res) => {
+    res.statusCode = 500;
+    res.end("{}");
+  });
+  const listening = Promise.withResolvers<void>();
+  errServer.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = errServer.address();
+  if (address === null || typeof address !== "object") throw new Error("no bind");
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(address.port));
+    const result = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "long enough query text" },
+      { sessionKey: "http-500" },
+    );
+    assert.equal(result, undefined, "HTTP 500 from the daemon must not break the turn");
+  } finally {
+    const closed = Promise.withResolvers<void>();
+    errServer.close(() => closed.resolve());
+    await closed.promise;
   }
 });

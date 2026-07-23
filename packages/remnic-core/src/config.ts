@@ -2345,7 +2345,7 @@ export function parseConfig(
     codingMode,
     heartbeat,
     slotBehavior,
-    bridgeMode: typeof cfg.bridgeMode === "string" ? cfg.bridgeMode : "embedded",
+    bridgeMode: cfg.bridgeMode === undefined ? "embedded" : String(cfg.bridgeMode),
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),
