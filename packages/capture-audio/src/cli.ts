@@ -77,6 +77,8 @@ const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   status: {},
   devices: {},
   logs: { lines: true },
+  "download-model": { model: true },
+  janitor: {},
   help: {},
 };
 

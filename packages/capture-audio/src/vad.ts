@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+
 import { CaptureConfigError } from "./errors.js";
 import { expandTilde } from "./paths.js";
 
@@ -105,11 +107,24 @@ export async function loadSherpaOnnx(
   return resolved;
 }
 
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function createSileroVad(
   input: SileroVadInput,
   load: () => Promise<SherpaOnnxModule> = loadSherpaOnnx,
+  exists: (path: string) => boolean = isRegularFile,
 ): Promise<unknown> {
   const { config, bufferSeconds } = sileroVadConfig(input);
+  const modelPath = expandTilde(input.modelPath);
+  if (!exists(modelPath)) {
+    throw new CaptureConfigError(`Silero VAD model not found at ${modelPath}; set vad.modelPath to a readable model file`);
+  }
   const { Vad } = await load();
   return new Vad(config, bufferSeconds);
 }

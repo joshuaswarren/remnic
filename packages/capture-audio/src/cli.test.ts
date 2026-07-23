@@ -771,6 +771,30 @@ test("janitor applies configured raw-audio retention", async () => {
   assert.equal(existsSync(expired), false);
 });
 
+test("janitor rejects a flag it does not accept instead of silently ignoring it", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const errs: string[] = [];
+  const code = await runCapture({
+    argv: ["janitor", "--port", "5555", "--base-dir", baseDir],
+    stdout: () => undefined,
+    stderr: (l) => errs.push(l),
+  });
+  assert.equal(code, 2);
+  assert.match(errs.join("\n"), /flag --port is not valid for command 'janitor'/);
+});
+
+test("download-model rejects a flag it does not accept", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const errs: string[] = [];
+  const code = await runCapture({
+    argv: ["download-model", "--model", "small", "--replay", "fixtures", "--base-dir", baseDir],
+    stdout: () => undefined,
+    stderr: (l) => errs.push(l),
+  });
+  assert.equal(code, 2);
+  assert.match(errs.join("\n"), /flag --replay is not valid for command 'download-model'/);
+});
+
 test("logs honors a valued --lines flag", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
   const paths = capturePaths(baseDir);

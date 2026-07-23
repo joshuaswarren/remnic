@@ -17,6 +17,7 @@ test("createSileroVad configures the optional Sherpa runtime with audio-safe def
   const vad = await createSileroVad(
     { modelPath: "/models/silero_vad.onnx", minSpeechMs: 500 },
     async () => ({ Vad: FakeVad }),
+    () => true,
   );
 
   assert.ok(vad instanceof FakeVad);
@@ -46,9 +47,20 @@ test("createSileroVad expands a tilde model path", async () => {
     }
   }
 
-  await createSileroVad({ modelPath: "~/models/silero_vad.onnx", minSpeechMs: 500 }, async () => ({ Vad: FakeVad }));
+  await createSileroVad({ modelPath: "~/models/silero_vad.onnx", minSpeechMs: 500 }, async () => ({ Vad: FakeVad }), () => true);
 
   assert.equal(received?.config.sileroVad.model, path.join(os.homedir(), "models/silero_vad.onnx"));
+});
+
+test("createSileroVad rejects a model path that is not a readable file", async () => {
+  await assert.rejects(
+    createSileroVad(
+      { modelPath: "/models/missing_vad.onnx", minSpeechMs: 500 },
+      async () => ({ Vad: class {} }),
+      () => false,
+    ),
+    /Silero VAD model not found/,
+  );
 });
 
 test("createSileroVad requires a positive speech threshold", async () => {
