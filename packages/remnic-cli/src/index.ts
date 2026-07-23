@@ -13309,6 +13309,11 @@ Other:
           stdout: process.stdout,
           stderr: process.stderr,
         });
+        // Standalone one-shot: drain the debounced meeting build the sync scheduled
+        // before this short-lived process exits (mirrors cli.ts forwardWearables; NOT the auto-sync path). #2123.
+        if (wearablesArgs[0] === "sync" && code === 0 && wearablesOrchestrator.config.meetings.enabled) {
+          await (await wearablesOrchestrator.getMeetingsService()).flushBuilds();
+        }
         if (code !== 0) process.exitCode = code;
       } catch (err) {
         // Runner errors are our own constructed messages (connector API

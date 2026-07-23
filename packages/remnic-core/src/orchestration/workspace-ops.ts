@@ -31,6 +31,7 @@ import type { NamespaceMaintenanceSummary } from "../maintenance/namespace-plann
 import { type PatternReinforcementResult, runPatternReinforcement } from "../maintenance/pattern-reinforcement.js";
 import { evaluateMemoryActionPolicy } from "../memory-action-policy.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
+import { namespaceCollectionName } from "../namespaces/search.js";
 import { parseMemoryActionEligibilityContext } from "../schemas.js";
 import type { SearchBackend } from "../search/port.js";
 import { type AccessTrackingEntry, type MemoryActionEvent, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
@@ -680,7 +681,23 @@ export class WorkspaceOpsCoordinator {
           search: async (query, maxResults) => {
             if (!this.deps.qmd.isAvailable()) return null;
             try {
-              const results = await this.deps.qmd.search(query, undefined, maxResults);
+              // Scope the indexed search to the CALLER namespace's collection so a
+              // non-default caller's transcript_search never returns root or
+              // other-namespace transcripts (#2123). Namespaces off, or the
+              // default/machine-owner namespace rooted at memoryDir, resolve to the
+              // base collection (unchanged); every other namespace to its own.
+              let collection: string | undefined;
+              if (resolveNamespaceCapabilities(this.deps.config).namespaces === true) {
+                const storage = await this.deps.getStorageForNamespace(namespace);
+                const useLegacy =
+                  namespace === this.deps.config.defaultNamespace &&
+                  storage.dir === this.deps.config.memoryDir;
+                collection = namespaceCollectionName(this.deps.config.qmdCollection, namespace, {
+                  defaultNamespace: this.deps.config.defaultNamespace,
+                  useLegacyDefaultCollection: useLegacy,
+                });
+              }
+              const results = await this.deps.qmd.search(query, collection, maxResults);
               return results.map((result) => ({
                 path: result.path,
                 score: result.score,
