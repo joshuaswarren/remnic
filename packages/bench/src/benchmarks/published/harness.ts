@@ -505,10 +505,14 @@ function pairedAnswerReplayKey(
           reasoningEffort: systemProvider?.reasoningEffort ?? null,
           responderContextBudgetChars: systemProvider?.responderContextBudgetChars ?? null,
           responderPromptBudgetChars: systemProvider?.responderPromptBudgetChars ?? null,
+          retryOptions: systemProvider?.retryOptions ?? null,
           seed: systemProvider?.seed ?? null,
           temperature: systemProvider?.temperature ?? null,
         },
-        responderPrompt: buildStrictBenchmarkQuestion(trial.question, trial.answerFormat ?? "auto"),
+        responderPrompt: buildStrictBenchmarkQuestion(
+          trial.question,
+          trial.answerFormat ?? "auto"
+        ),
         answerMode: "strict",
         question: trial.question,
         recalledText,
