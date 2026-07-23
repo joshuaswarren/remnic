@@ -245,3 +245,32 @@ test("findings 7+8 — list/show expose a record when enabled, nothing when meet
   assert.doesNotMatch(shown.out, new RegExp(id), "disabled show must not echo the record id");
   assert.match(shown.out, /meetings disabled/);
 });
+
+test("build text output surfaces a SANITIZED memory-generation warning (no raw error text)", async () => {
+  const source: MeetingsDaySource = { loadDayData: () => dayData() };
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const deps: MeetingsCliDeps = {
+    store,
+    builder: new MeetingsBuilder({
+      source,
+      store,
+      config: config(),
+      // The injected generator rejects AFTER records persist; buildDay isolates
+      // it into summary.memoryWarning. The text renderer must surface that line.
+      memoryGenerator: { onRecordsBuilt: async () => { throw new Error("qdrant offline at 10.0.0.9:6333"); } },
+    }),
+    config: config(),
+  };
+  const result = await run(deps, ["build", "--date", DATE]);
+  assert.equal(result.code, 0, "memory-generation failure must not fail the build");
+  assert.match(result.out, /warning: memory generation failed after records were persisted/);
+  assert.doesNotMatch(result.out, /qdrant offline|10\.0\.0\.9|6333/, "raw internal memory-gen error must not leak to CLI stdout");
+});
+
+test("list --date rejects a malformed date even when meetings.enabled is false", async () => {
+  const deps = makeDeps(dayData(), config({ enabled: false }));
+  const bad = await run(deps, ["list", "--date", "nope", "--json"]);
+  assert.equal(bad.code, 1, "a malformed --date must reject regardless of enabled state");
+  assert.match(bad.err, /real YYYY-MM-DD/);
+  assert.doesNotMatch(bad.out, /\[\]/, "malformed --date must not short-circuit to an empty disabled result");
+});

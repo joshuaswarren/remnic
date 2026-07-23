@@ -120,6 +120,9 @@ function renderBuildSummary(summary: MeetingsDayBuildSummary): string {
   if (summary.reindexWarning !== undefined) {
     lines.push(`  warning: ${summary.reindexWarning}`);
   }
+  if (summary.memoryWarning !== undefined) {
+    lines.push(`  warning: ${summary.memoryWarning}`);
+  }
   return lines.join("\n");
 }
 
@@ -142,6 +145,12 @@ export async function runMeetingsCliCommand(
         const parsed = parseFlags(rest);
         const json = parsed.flags.has("--json");
         const dateFlag = parsed.flags.get("--date");
+        // Validate --date regardless of enabled state: a malformed --date is a
+        // caller error on every path, so it must reject before the disabled
+        // list short-circuit returns an empty result.
+        if (typeof dateFlag === "string" && !isValidTranscriptDate(dateFlag)) {
+          throw new MeetingsInputError(`--date must be a real YYYY-MM-DD; got '${dateFlag}'`);
+        }
         if (!deps.config.enabled) {
           if (json) {
             io.stdout.write(typeof dateFlag === "string" ? "[]\n" : "{}\n");
@@ -151,9 +160,6 @@ export async function runMeetingsCliCommand(
           return 0;
         }
         if (typeof dateFlag === "string") {
-          if (!isValidTranscriptDate(dateFlag)) {
-            throw new MeetingsInputError(`--date must be a real YYYY-MM-DD; got '${dateFlag}'`);
-          }
           const summaries = await deps.store.listMeetingSummaries(dateFlag);
           if (json) {
             io.stdout.write(`${JSON.stringify(summaries, null, 2)}\n`);
