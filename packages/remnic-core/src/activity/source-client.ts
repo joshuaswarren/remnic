@@ -57,12 +57,15 @@ function responsePage(value: unknown, machine: string): ActivitySnapshotPage {
   if (!isRecord(value) || !Array.isArray(value.snapshots)) {
     throw new TypeError("activity source response has no snapshots array");
   }
-  if (value.nextCursor !== null && typeof value.nextCursor !== "string") {
+  // A missing/undefined nextCursor (field omitted, not JSON null) is normal
+  // end-of-pagination — only a present non-string value is invalid.
+  const nextCursor = value.nextCursor === undefined ? null : value.nextCursor;
+  if (nextCursor !== null && typeof nextCursor !== "string") {
     throw new TypeError("activity source response has invalid nextCursor");
   }
   return {
     snapshots: value.snapshots.map((snapshot) => snapshotFromWire(snapshot, machine)),
-    nextCursor: value.nextCursor,
+    nextCursor,
   };
 }
 

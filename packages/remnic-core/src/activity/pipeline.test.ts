@@ -270,3 +270,45 @@ test("syncActivitySource isolates a reindex failure: rows, digest, and cursor st
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("syncActivitySource honors an abort before committing the digest and cursor", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-pipeline-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const controller = new AbortController();
+    const client: ActivitySourceClient = {
+      machineLabel: "workstation-a",
+      async verify() {
+        return { ok: true };
+      },
+      async fetchSnapshots() {
+        // Abort fires after the last page returns but before the digest write.
+        controller.abort();
+        return { snapshots: [snapshot()], nextCursor: null };
+      },
+    };
+
+    await assert.rejects(
+      syncActivitySource(client, {
+        date: "2026-07-22",
+        timezone: "UTC",
+        memoryDir,
+        store,
+        signal: controller.signal,
+      }),
+    );
+
+    assert.equal(
+      store.getCursor(activityCursorKey("workstation-a", "2026-07-22")),
+      null,
+      "an aborted tick never advances the cursor",
+    );
+    await assert.rejects(
+      readFile(activityDigestPath(memoryDir, "2026-07-22"), "utf8"),
+      "an aborted tick never writes the digest",
+    );
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

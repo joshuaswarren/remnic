@@ -54,12 +54,12 @@ import {
   shouldFilterLifecycleRecallCandidate,
   computeQmdHybridFetchLimit,
   filterRecallCandidates,
-  isArtifactMemoryPath,
   throwIfRecallAborted,
   tokenizeRecallQuery,
   type QmdRecallSnapshot,
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
+import { isActivityDigestPath, isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -693,7 +693,7 @@ export class RecallSearchPipelineCoordinator {
       : [];
     if (scopedSeedResults.length >= cappedLimit) {
       return scopedSeedResults
-        .filter((result) => !isArtifactMemoryPath(result.path))
+        .filter((result) => !isGenericRecallExcludedPath(result.path))
         .slice(0, cappedLimit);
     }
 
@@ -726,7 +726,7 @@ export class RecallSearchPipelineCoordinator {
       [...scopedSeedResults, ...scored],
       this.deps.namespaceFromPath,
       cappedLimit,
-      { filter: (result) => !isArtifactMemoryPath(result.path) },
+      { filter: (result) => !isGenericRecallExcludedPath(result.path) },
     );
   }
 
@@ -974,8 +974,9 @@ export class RecallSearchPipelineCoordinator {
       }
       results = scopedResults;
     }
-    // Artifact isolation contract: generic recall paths must exclude artifacts.
-    results = results.filter((r) => !isArtifactMemoryPath(r.path));
+    // Dedicated-surface isolation: generic recall must exclude artifacts and
+    // activity digests (both remain readable via explicit search).
+    results = results.filter((r) => !isGenericRecallExcludedPath(r.path));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =
@@ -1351,18 +1352,15 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
-        // Activity day-digests live in the QMD collection root but are a
-        // dedicated searchable surface (explicit activity search), never
-        // generic recall — captured screen text must not auto-inject into
-        // ordinary prompts (issue #1899; codex P2). The digest sets no
-        // memoryKind, so key on its own `kind` frontmatter.
-        const isActivityDigest =
-          "kind" in memory.frontmatter && memory.frontmatter.kind === "activity-digest";
+        // Activity day-digests are a dedicated searchable surface (explicit
+        // activity search), never generic recall — captured screen text must not
+        // auto-inject into ordinary prompts (issue #1899). Keyed on the PATH:
+        // the digest's `kind` frontmatter marker does not survive parseFrontmatter.
         if (
           options?.allowDedicatedSurface !== true &&
           (memory.frontmatter.memoryKind === "dream" ||
             memory.frontmatter.memoryKind === "procedural" ||
-            isActivityDigest)
+            isActivityDigestPath(r.path))
         ) {
           dedicatedSurfaceFilteredCount += 1;
           continue;

@@ -138,7 +138,7 @@ import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
-  isArtifactMemoryPath,
+  isGenericRecallExcludedPath,
   mergeArtifactRecallCandidates,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
@@ -2481,7 +2481,7 @@ export class Orchestrator {
     if (!paths) return null;
     const scoped = new Set<string>();
     for (const memoryPath of paths) {
-      if (!memoryPath || isArtifactMemoryPath(memoryPath)) continue;
+      if (!memoryPath || isGenericRecallExcludedPath(memoryPath)) continue;
       if (
         resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))

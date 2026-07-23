@@ -84,7 +84,6 @@ import {
   computeArtifactRecallLimit,
   computeQmdHybridFetchLimit,
   defaultWorkspaceDir,
-  isArtifactMemoryPath,
   raceRecallAbort,
   resolveRecallModeDecision,
   resolveRecallModeDecisionAsync,
@@ -97,6 +96,7 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "../orchestrator.js";
+import { isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
 
 import type {
   RecallSectionAppendOptions,
@@ -4163,7 +4163,7 @@ export class RecallInternalCoordinator {
       }
       // Artifacts are injected through dedicated verbatim recall flow only.
       memoryResults = memoryResults.filter(
-        (r) => !isArtifactMemoryPath(r.path),
+        (r) => !isGenericRecallExcludedPath(r.path),
       );
 
       const isFullModeGraphAssist =
@@ -4871,7 +4871,7 @@ export class RecallInternalCoordinator {
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
           const activeMemories = memories.filter(
             (m) => {
-              if (isArtifactMemoryPath(m.path)) return false;
+              if (isGenericRecallExcludedPath(m.path)) return false;
               const status = m.frontmatter.status;
               if (!status || status === "active") return true;
               if (status === "superseded") {

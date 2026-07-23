@@ -601,6 +601,25 @@ export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
 
+/**
+ * Activity day-digests live at `<memoryDir>/activity/<date>.md` — a dedicated
+ * searchable surface (explicit activity search), never generic recall. Captured
+ * screen text must not auto-inject into ordinary prompts (issue #1899). Keyed on
+ * the path, not frontmatter: parseFrontmatter drops the digest's `kind` marker.
+ */
+export function isActivityDigestPath(filePath: string): boolean {
+  return /(?:^|[\\/])activity(?:[\\/]|$)/i.test(filePath);
+}
+
+/**
+ * Paths that dedicated surfaces own and generic recall must never inject:
+ * artifacts and activity digests. Explicit search paths (memory_search,
+ * activity search) do not apply this filter, so those surfaces still read them.
+ */
+export function isGenericRecallExcludedPath(filePath: string): boolean {
+  return isArtifactMemoryPath(filePath) || isActivityDigestPath(filePath);
+}
+
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),
@@ -623,7 +642,7 @@ export function filterRecallCandidates(
       )
     : candidates;
   return scopedByNamespace
-    .filter((r) => !isArtifactMemoryPath(r.path))
+    .filter((r) => !isGenericRecallExcludedPath(r.path))
     .slice(0, Math.max(0, options.limit));
 }
 

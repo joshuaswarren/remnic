@@ -169,7 +169,12 @@ export async function syncActivitySource(
     throw new Error(`activity source exceeded ${maxPages} pages`);
   }
 
+  // Re-check abort before the durable write section: stop() may have fired after
+  // the last page returned, or while this date waited behind digestLocks. An
+  // aborted tick must not compose/write a digest or advance the cursor.
+  options.signal?.throwIfAborted();
   const digestWritten = await withDigestLock(`${options.memoryDir}\u0000${options.date}`, async () => {
+    options.signal?.throwIfAborted();
     const { startUtc, endUtc } = activityDayWindow(options.date, options.timezone);
     const snapshots = options.store.listSnapshotsForDay(null, startUtc, endUtc);
     const body = composeActivityDigestBody(options.date, options.timezone, snapshots);
@@ -180,6 +185,7 @@ export async function syncActivitySource(
     return writeDigestIfChanged(options.memoryDir, options.date, serialized);
   });
 
+  options.signal?.throwIfAborted();
   options.store.setCursor(cursorKey, cursor);
 
   // Rows and digest are durable and the cursor has advanced; refresh the search

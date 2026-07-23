@@ -64,6 +64,32 @@ test("ActivityHttpSourceClient authenticates and maps a snapshot page", async ()
   });
 });
 
+test("ActivityHttpSourceClient treats an omitted nextCursor as end-of-pagination", async () => {
+  await withServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    // Daemon omits nextCursor entirely (not JSON null) on the final page.
+    response.end(
+      JSON.stringify({
+        snapshots: [
+          {
+            capturedAtUtc: "2026-07-22T14:00:00.000Z",
+            app: "Browser",
+            windowTitle: "Fixture",
+            text: "synthetic text",
+            textSource: "ax",
+            contentHash: "abc123",
+          },
+        ],
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new ActivityHttpSourceClient({ machineLabel: "fixture-machine", baseUrl });
+    const page = await client.fetchSnapshots({ date: "2026-07-22", timezone: "UTC" });
+    assert.equal(page.nextCursor, null, "a missing nextCursor is normal completion, not an error");
+    assert.equal(page.snapshots.length, 1);
+  });
+});
+
 test("ActivityHttpSourceClient reports an unreachable health probe without treating it as an empty source", async () => {
   await withServer((_request, response) => {
     response.statusCode = 503;

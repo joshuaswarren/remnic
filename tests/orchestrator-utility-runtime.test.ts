@@ -156,7 +156,8 @@ test("boostSearchResults excludes dream, procedural, and activity-digest memorie
             confidenceTier: "explicit",
             tags: [],
             status: "active",
-            kind: "activity-digest",
+            // No `kind` marker: exclusion is by PATH (activity/), since the
+            // digest's kind frontmatter does not survive parseFrontmatter.
           },
         },
       ],
