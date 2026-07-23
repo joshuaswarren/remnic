@@ -136,7 +136,16 @@ export async function listOfflineSyncNamespaces(host: OfflineSyncNamespaceHost):
       // 64-char cap — because getStorage() would throw `unsafe namespace` and 500
       // the whole root snapshot-stream (the offline-sync regression this fixes).
       const dirName = path.basename(namespaceDir);
-      const name = namespaceIdentityFromToken(dirName) ?? dirName;
+      // namespaceIdentityFromToken returns "" for the ns-default token (the
+      // default-namespace identity) — map that to the configured default
+      // namespace instead of skipping the directory as an unsafe empty name.
+      const decoded = namespaceIdentityFromToken(dirName);
+      const name =
+        decoded === null
+          ? dirName
+          : decoded.length > 0
+            ? decoded
+            : host.config.defaultNamespace;
       if (isSafeRouteNamespace(name)) {
         names.add(name);
       }

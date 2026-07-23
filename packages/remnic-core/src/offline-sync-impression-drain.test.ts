@@ -326,7 +326,12 @@ test("listOfflineSyncNamespaces decodes canonical token dirs and skips names the
     const longName = "generalist-project-origin-6d1ad1f2";
     const longToken = namespaceIdentityToken(longName); // ns-<hex>, 71 chars
     assert.ok(longToken.length > 64, "token dir must exceed the route-namespace cap");
-    for (const dir of [longToken, "blend"]) {
+    // A namespace whose DECODED name itself exceeds the 64-char route cap:
+    // decoding succeeds but isSafeRouteNamespace must still reject it.
+    const overCapName = `generalist-project-tag-${"x".repeat(60)}`;
+    const overCapToken = namespaceIdentityToken(overCapName);
+    assert.ok(overCapName.length > 64, "decoded name must exceed the route cap");
+    for (const dir of [longToken, overCapToken, "blend", "ns-default"]) {
       await mkdir(path.join(root, "namespaces", dir, "state"), { recursive: true });
       await writeFile(
         path.join(root, "namespaces", dir, LIFECYCLE_LEDGER_REL),
@@ -350,8 +355,15 @@ test("listOfflineSyncNamespaces decodes canonical token dirs and skips names the
     assert.ok(names.has(longName), "canonical token dir must be decoded to its namespace name");
     // ...never surfaced as the raw >64-char token that getStorage would reject.
     assert.ok(!names.has(longToken), "raw over-cap token must never be enumerated as a namespace");
+    // A decoded name that is ITSELF over the route cap is skipped entirely
+    // (the isSafeRouteNamespace rejection branch).
+    assert.ok(!names.has(overCapName), "over-cap decoded name must be skipped");
+    assert.ok(!names.has(overCapToken), "over-cap raw token must be skipped");
     // A raw plain-named dir is used verbatim.
     assert.ok(names.has("blend"), "plain namespace dir must be enumerated verbatim");
+    // The literal ns-default token decodes to the EMPTY default identity and
+    // must map to the configured default namespace, not be skipped as "".
+    assert.ok(names.has("generalist"), "ns-default dir maps to the configured default namespace");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
