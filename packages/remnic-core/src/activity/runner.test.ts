@@ -261,6 +261,41 @@ test("stop: an aborted run leaves the cursor unadvanced", async () => {
   }
 });
 
+test("abort halts the whole run: later sources never build a client or sync", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const built: string[] = [];
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({
+        sources: [
+          { machineLabel: "workstation-a", baseUrl: "http://127.0.0.1:8760" },
+          { machineLabel: "workstation-b", baseUrl: "http://127.0.0.1:8761" },
+        ],
+      }),
+      memoryDir,
+      store,
+      now: NOW,
+      signal: AbortSignal.abort(),
+      createSourceClient: (source) => {
+        built.push(source.machineLabel);
+        return fixtureClient(source.machineLabel, new Map([[null, { snapshots: [snapshot()], nextCursor: null }]]));
+      },
+    });
+
+    // The first source's fast-failing (aborted) attempt is recorded; the run
+    // then halts — the second source is never even instantiated.
+    assert.deepEqual(built, ["workstation-a"], "abort stops the run before later sources build a client");
+    assert.equal(summary.results.length, 1);
+    assert.equal(summary.ranCount, 0);
+    assert.equal(summary.errorCount, 1);
+    assert.equal(store.getCursor(activityCursorKey("workstation-b", "2026-07-22")), null);
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("restart: a fresh run resumes from the persisted cursor", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
   const store = ActivityStore.open(memoryDir);

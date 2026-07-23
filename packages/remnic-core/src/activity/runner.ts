@@ -216,6 +216,10 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
         item.error = sanitizedSyncError(error);
       }
       results.push(item);
+      // An abort halts the WHOLE run: the in-flight source above is recorded
+      // (its fast-failing attempt reports an error), but no later source builds
+      // a client or contacts a daemon — teardown settles promptly.
+      if (options.signal?.aborted) break;
     }
   } finally {
     if (ownStore) store.close();
