@@ -335,6 +335,43 @@ test("daemon creates an absent spool parent directory as owner-only 0700", { ski
   }
 });
 
+test("daemon rejects a spool under an attacker-writable ancestor directory", { skip: process.platform === "win32" ? "POSIX mode semantics only" : false }, async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const hostile = path.join(base, "hostile");
+  await mkdir(hostile, { mode: 0o700 });
+  await chmod(hostile, 0o777); // world-writable, non-sticky ancestor above the owner-only parent
+  const parent = path.join(hostile, "parent");
+  await mkdir(parent, { mode: 0o700 });
+  try {
+    await assert.rejects(
+      () => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: path.join(parent, "capture.sqlite") }),
+      /ancestor|writable/,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a stale cursor beyond the spool max id is reconciled so a rebuilt spool stays readable", async () => {
+  const daemon = await startCaptureScreenDaemon({
+    authToken: "test-token",
+    spoolPath: ":memory:",
+    replay: [
+      snapshot({ app: "A" }),
+      snapshot({ capturedAtUtc: "2026-07-22T14:01:00.000Z", app: "B" }),
+    ],
+  });
+  try {
+    const { url } = await daemon.start();
+    // Rows are ids 1,2 (max 2). A cursor persisted from a prior, larger spool
+    // generation must not strand the rebuilt spool behind empty pages.
+    const page = await (await fetch(`${url}/v1/snapshots?cursor=999`, { headers: AUTH })).json() as { snapshots: Array<{ app: string }>; nextCursor: string | null };
+    assert.deepEqual(page.snapshots.map((s) => s.app), ["A", "B"]);
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("daemon rejects a symlinked spool path without following it", { skip: process.platform === "win32" ? "POSIX symlink semantics only" : false }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
   const target = path.join(dir, "target.sqlite");

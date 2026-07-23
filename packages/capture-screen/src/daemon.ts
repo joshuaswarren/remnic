@@ -44,14 +44,33 @@ function hostForUrl(host: string): string {
 }
 
 /**
- * Confine the spool to an owner-only directory so no other local user can plant
- * or swap a symlink at the path between our exclusive create and SQLite's own
- * reopen-by-path. The parent must be a real (non-symlink) directory, owner-only
- * (no group/other permission bits) and — on POSIX — owned by this user; an
- * absent parent is created 0700.
+ * Confine the spool to an owner-only directory whose whole ancestry is safe, so
+ * no other local user can plant or swap a symlink/file at the path between our
+ * exclusive create and SQLite's own reopen-by-path. The immediate parent must
+ * be a real (non-symlink) directory, owner-only (no group/other bits) and — on
+ * POSIX — owned by this user (created 0700 when absent). Every existing ancestor
+ * above it must be a non-symlink directory that is not attacker-writable
+ * (group/other-writable without the sticky bit), which still allows standard
+ * root-owned system dirs (e.g. 0755) and sticky world-writable dirs (e.g. /tmp).
  */
 function ensureSecureSpoolParent(spoolPath: string): void {
   const parent = dirname(spoolPath);
+
+  let previous = parent;
+  let current = dirname(parent);
+  while (current !== previous) {
+    const ancestor = lstatSync(current, { throwIfNoEntry: false });
+    if (ancestor !== undefined) {
+      if (ancestor.isSymbolicLink()) throw new RangeError("a spool ancestor directory must not be a symlink");
+      if (!ancestor.isDirectory()) throw new RangeError("a spool ancestor path must be a directory");
+      const groupOtherWritable = (ancestor.mode & 0o022) !== 0;
+      const sticky = (ancestor.mode & 0o1000) !== 0;
+      if (groupOtherWritable && !sticky) throw new RangeError("a spool ancestor directory is writable by other users");
+    }
+    previous = current;
+    current = dirname(current);
+  }
+
   const info = lstatSync(parent, { throwIfNoEntry: false });
   if (info === undefined) {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -241,6 +260,14 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
           if ((date === null) !== (timezone === null)) {
             throw new RangeError("date and timezone must be provided together");
           }
+          // A cursor beyond the current max row id is stale: the spool was
+          // rebuilt/truncated (ids reset to 1) while core still holds the old
+          // high-water mark. Reset to 0 so the rebuilt spool is readable again
+          // instead of returning empty pages forever.
+          // sqlite row shape is fixed by the SELECT; a runtime schema check is meaningless here.
+          const maxRow = db.prepare("SELECT MAX(id) AS maxId FROM capture_snapshots").get() as { maxId: number | null };
+          const maxId = maxRow.maxId ?? 0;
+          const effectiveCursor = cursor > maxId ? 0 : cursor;
           const columns = "id, captured_at_utc AS capturedAtUtc, app, window_title AS windowTitle, text, text_source AS textSource, content_hash AS contentHash";
           let rows: SnapshotRow[];
           if (date !== null && timezone !== null) {
@@ -251,11 +278,11 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
               SELECT ${columns} FROM capture_snapshots
               WHERE id > ? AND captured_at_utc >= ? AND captured_at_utc < ?
               ORDER BY id ASC LIMIT ?
-            `).all(cursor, startUtc, endUtc, limit) as SnapshotRow[];
+            `).all(effectiveCursor, startUtc, endUtc, limit) as SnapshotRow[];
           } else {
             rows = db.prepare(`
               SELECT ${columns} FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
-            `).all(cursor, limit) as SnapshotRow[];
+            `).all(effectiveCursor, limit) as SnapshotRow[];
           }
           json(response, 200, {
             snapshots: rows.map(({ id: _id, ...snapshot }) => snapshot),
