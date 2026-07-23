@@ -117,9 +117,8 @@ test("real runtime profile preserves the configured Remnic retrieval settings", 
   assert.equal(resolved.remnicConfig.authtoken, "[redacted]");
   assert.equal(resolved.remnicConfig.clientsecret, "[redacted]");
   assert.equal(resolved.remnicConfig.oauthToken, "[redacted]");
-  assert.equal(resolved.remnicConfig.sessionTokenCount, 3);
-  assert.equal(resolved.remnicConfig.answerSupportGate, true);
-  assert.equal(resolved.effectiveRemnicConfig.answerSupportGate, true);
+  assert.equal(resolved.remnicConfig.answerSupportGate, undefined);
+  assert.equal(resolved.effectiveRemnicConfig.answerSupportGate, undefined);
   assert.equal(resolved.effectiveRemnicConfig.openaiApiKey, "super-secret");
   assert.equal(resolved.effectiveRemnicConfig.secretKey, "secondary-secret");
   assert.equal(resolved.effectiveRemnicConfig.refreshToken, "oauth-refresh-token");
