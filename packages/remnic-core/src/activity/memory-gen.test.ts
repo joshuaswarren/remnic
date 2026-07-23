@@ -407,3 +407,14 @@ test("activity smart mode keeps the durable duplicate over a higher-confidence r
   assert.equal(writes.length, 1);
   assert.equal(writes[0]?.status, "active");
 });
+
+test("activity smart extraction runs on extractionMode alone, not the enabled ingestion gate", async () => {
+  // enabled gates ingestion; extractionMode independently gates extraction of a
+  // supplied digest, so smart extraction runs even when enabled is false.
+  const { deps, writes } = depsFor([ownDecision]);
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: false, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 1);
+  assert.equal(writes.length, 1);
+});

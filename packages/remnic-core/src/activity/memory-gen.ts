@@ -176,7 +176,9 @@ export async function generateActivityMemories(
     rejectedByJudge: 0,
     skipped: 0,
   };
-  if (!config.enabled || config.extractionMode !== "smart" || digestBody.trim().length === 0) return result;
+  // `extractionMode` is the independent extraction gate (per the config contract);
+  // `enabled` gates source ingestion, not extraction of a supplied digest.
+  if (config.extractionMode !== "smart" || digestBody.trim().length === 0) return result;
 
   // Event-time bound: the digest's local day. Backfilled or delayed digests
   // then land on the day they describe rather than at write time.
