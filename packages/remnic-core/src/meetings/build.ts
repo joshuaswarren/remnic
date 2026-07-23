@@ -15,6 +15,7 @@
 import { detectMeetings } from "./detect.js";
 import { fuseMeeting, type MeetingFusionOptions } from "./fuse.js";
 import { composeMeetingRecord, type MeetingRecordStore } from "./store.js";
+import { generateMeetingEpisodes, type MeetingEpisodeGenResult, type MeetingMemoryWriter } from "./memory-gen.js";
 import type { FusionConversationInput } from "../wearables/fusion/types.js";
 import type {
   DetectedMeeting,
@@ -107,6 +108,11 @@ export interface MeetingsDayBuildSummary {
    * successful with this warning, and the next scheduled index catches up.
    */
   reindexWarning?: string;
+  /**
+   * Deterministic episode-memory counts, present only when a `memoryWriter` was
+   * injected. One recall-anchor episode is written per built record (idempotent).
+   */
+  episodes?: MeetingEpisodeGenResult;
 }
 
 /** Optional side effects the builder fires after a day build. */
@@ -130,6 +136,12 @@ export class MeetingsBuilder {
       config: MeetingsConfig;
       fusionOptions?: MeetingFusionOptions;
       hooks?: MeetingsBuilderHooks;
+      /**
+       * When present, a deterministic recall-anchor episode memory is written
+       * per built record (issue #1900). Omitted → no memory writes (pure
+       * detect+fuse+store). The trust-gated summary/facts layer is separate.
+       */
+      memoryWriter?: MeetingMemoryWriter;
     },
   ) {}
 
@@ -200,6 +212,12 @@ export class MeetingsBuilder {
           err instanceof Error ? err.message : String(err)
         }`;
       }
+    }
+    // Deterministic recall-anchor episode per meeting (issue #1900), when a
+    // writer is injected. Idempotent (skips identical episodes); the trust-gated
+    // summary/facts layer is a separate, LLM-driven step.
+    if (this.opts.memoryWriter !== undefined && records.length > 0) {
+      summary.episodes = await generateMeetingEpisodes(records, this.opts.memoryWriter);
     }
     return summary;
   }

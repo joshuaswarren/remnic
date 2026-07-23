@@ -6,6 +6,9 @@ import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import { MeetingRecordStore, type MeetingRecordFileIo } from "./store.js";
 import type { MeetingActivitySnapshot, MeetingsConfig, MeetingAppSpan, MeetingAudioWindow } from "./types.js";
 import type { FusionConversationInput, FusionSegmentInput } from "../wearables/fusion/types.js";
+import type { MeetingMemoryWriter } from "./memory-gen.js";
+import type { SealedMemoryEnvelope } from "../write-envelope.js";
+import type { MemoryWriteResult } from "../storage.js";
 
 const MEMORY_DIR = "/mem";
 const DATE = "2026-03-10";
@@ -316,4 +319,33 @@ test("buildDay rejects a day source whose detection.date disagrees with the requ
   };
   const builder = new MeetingsBuilder({ source: fixedSource(wrongDay), store, config: config() });
   await assert.rejects(() => builder.buildDay(DATE), /detection\.date "2026-03-11" for requested day "2026-03-10"/);
+});
+
+test("builder writes a deterministic episode memory per built record when a writer is injected", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const seen = new Set<string>();
+  let writes = 0;
+  const memoryWriter: MeetingMemoryWriter = {
+    async writeSealedMemory(_envelope: SealedMemoryEnvelope, extras: { contentHashSource?: string }) {
+      writes++;
+      if (extras.contentHashSource !== undefined) seen.add(extras.contentHashSource);
+      return { id: `m${writes}`, path: `moments/m${writes}.md` } as unknown as MemoryWriteResult;
+    },
+    async hasFactContentHash(content: string) {
+      return seen.has(content);
+    },
+  };
+  const data: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const builder = new MeetingsBuilder({ source: fixedSource(data), store, config: config(), memoryWriter });
+  const first = await builder.buildDay(DATE);
+  assert.equal(first.meetings.length, 1);
+  assert.deepEqual(first.episodes, { written: 1, skipped: 0 });
+  assert.equal(writes, 1);
+  // Rebuild: the episode already exists → skipped, no second write.
+  const second = await builder.buildDay(DATE);
+  assert.deepEqual(second.episodes, { written: 0, skipped: 1 });
+  assert.equal(writes, 1);
 });
