@@ -91,8 +91,11 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
       + `${result.entityMentionRows} entity-mention rows`,
     );
   } catch (err) {
-    // Non-fatal: leave the throttle un-advanced so the next maintenance pass
-    // retries rather than declaring a stale projection cured.
+    // Non-fatal. Advance the throttle to now so a persistently-failing
+    // rebuild retries once per interval (not every maintenance tick, which
+    // would spam) while still self-healing on the next interval — the
+    // projection is already stale, so delaying one interval is safe.
+    state.lastRebuildAtMs = Date.now();
     log.warn(`memory projection scheduled rebuild failed (non-fatal) for ${memoryDir}: ${err}`);
   } finally {
     state.inFlight = false;
