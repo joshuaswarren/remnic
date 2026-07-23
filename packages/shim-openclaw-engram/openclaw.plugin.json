@@ -5620,7 +5620,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Opt-in screen-activity synchronization from trusted local capture daemons.",
+        "description": "Opt-in screen-activity ingestion from trusted local capture daemons, plus optional trust-gated smart extraction of first-person memories.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -5672,6 +5672,27 @@
                 }
               }
             }
+          },
+          "extractionMode": {
+            "type": "string",
+            "enum": ["off", "smart"],
+            "default": "off",
+            "description": "Set smart to extract trust-gated personal activity memories. off keeps digests searchable only."
+          },
+          "sourceTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 },
+          "autoApproveTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
+          "reviewTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
+          "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+          "minImportance": {
+            "type": "string",
+            "enum": ["critical", "high", "normal", "low", "trivial"],
+            "default": "normal"
+          },
+          "maxMemoriesPerDay": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Maximum activity memories written per day. Set to 0 for no count cap."
           }
         }
       },
@@ -5934,37 +5955,6 @@
                 "description": "Max drift (ms) for two segments to align across sources."
               }
             }
-          }
-        }
-      },
-      "activity": {
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "description": "Screen-activity snapshot ingestion. Search-only by default; smart extraction admits only trust-gated first-person decisions, commitments, preferences, and moments.",
-        "properties": {
-          "enabled": { "type": "boolean", "default": false },
-          "extractionMode": {
-            "type": "string",
-            "enum": ["off", "smart"],
-            "default": "off",
-            "description": "Set smart to extract trust-gated personal activity memories. off keeps digests searchable only."
-          },
-          "timezone": { "type": "string", "default": "UTC" },
-          "sourceTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 },
-          "autoApproveTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
-          "reviewTrust": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
-          "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
-          "minImportance": {
-            "type": "string",
-            "enum": ["critical", "high", "normal", "low", "trivial"],
-            "default": "normal"
-          },
-          "maxMemoriesPerDay": {
-            "type": "integer",
-            "minimum": 0,
-            "default": 0,
-            "description": "Maximum activity memories written per day. Set to 0 for no count cap."
           }
         }
       },
