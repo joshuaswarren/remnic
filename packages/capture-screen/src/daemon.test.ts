@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,7 +53,14 @@ test("replay daemon persists snapshots and serves authenticated cursor pages wit
     const secondPage = await second.json() as { snapshots: Array<{ app: string; textSource: string }>; nextCursor: string | null };
     assert.deepEqual(secondPage.snapshots.map((s) => s.app), ["Editor"]);
     assert.equal(secondPage.snapshots[0]?.textSource, "ocr");
-    assert.equal(secondPage.nextCursor, null);
+    // Core persists a non-null cursor, so a non-empty final page still advances
+    // the high-water mark; the follow-up empty page terminates the sync.
+    assert.ok(secondPage.nextCursor);
+    if (secondPage.nextCursor === null) throw new Error("expected an advancing cursor");
+    const third = await fetch(`${url}/v1/snapshots?cursor=${encodeURIComponent(secondPage.nextCursor)}`, { headers: AUTH });
+    const thirdPage = await third.json() as { snapshots: unknown[]; nextCursor: string | null };
+    assert.deepEqual(thirdPage.snapshots, []);
+    assert.equal(thirdPage.nextCursor, null);
   } finally {
     await daemon.close();
     await rm(dir, { recursive: true, force: true });
@@ -199,7 +206,12 @@ test("snapshots are scoped to the requested local day via date + timezone", asyn
     const { url } = await daemon.start();
     const day22 = await (await fetch(`${url}/v1/snapshots?date=2026-07-22&timezone=UTC`, { headers: AUTH })).json() as { snapshots: Array<{ app: string }>; nextCursor: string | null };
     assert.deepEqual(day22.snapshots.map((s) => s.app), ["A", "B"]);
-    assert.equal(day22.nextCursor, null);
+    // Non-empty page advances the cursor; a follow-up fetch for the same day
+    // scoped past it returns no rows and terminates.
+    assert.ok(day22.nextCursor);
+    const day22End = await (await fetch(`${url}/v1/snapshots?date=2026-07-22&timezone=UTC&cursor=${encodeURIComponent(String(day22.nextCursor))}`, { headers: AUTH })).json() as { snapshots: unknown[]; nextCursor: string | null };
+    assert.deepEqual(day22End.snapshots, []);
+    assert.equal(day22End.nextCursor, null);
     const day23 = await (await fetch(`${url}/v1/snapshots?date=2026-07-23&timezone=UTC`, { headers: AUTH })).json() as { snapshots: Array<{ app: string }> };
     assert.deepEqual(day23.snapshots.map((s) => s.app), ["C"]);
   } finally {
@@ -238,6 +250,25 @@ test("daemon rejects a directory spool path without mangling its permissions", {
     await assert.rejects(() => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: dir }));
     // The directory's own permissions (incl. the execute bit) must be intact.
     assert.equal((await stat(dir)).mode & 0o777, before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("daemon rejects a symlinked spool path without following it", { skip: process.platform === "win32" ? "POSIX symlink semantics only" : false }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-screen-"));
+  const target = path.join(dir, "target.sqlite");
+  const link = path.join(dir, "spool.sqlite");
+  await writeFile(target, "not-a-db");
+  const targetMode = (await stat(target)).mode & 0o777;
+  await symlink(target, link);
+  try {
+    await assert.rejects(
+      () => startCaptureScreenDaemon({ authToken: "test-token", spoolPath: link }),
+      /symlink/,
+    );
+    // The link target must be untouched (not chmodded to 0600, not written).
+    assert.equal((await stat(target)).mode & 0o777, targetMode);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

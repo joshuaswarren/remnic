@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, openSync, statSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, openSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { activityDayWindow } from "@remnic/core";
@@ -144,10 +144,14 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
   if (options.spoolPath !== ":memory:") {
     // Screen-capture history is sensitive; keep the on-disk spool owner-only
     // (0600) rather than inheriting a world-readable umask on a shared host.
-    // Only touch a regular file: a path pointing at a directory (or other
-    // non-file) is left alone so openBetterSqlite3 rejects it loudly instead
-    // of us stripping the directory's execute bit.
-    const existing = statSync(options.spoolPath, { throwIfNoEntry: false });
+    // lstat (not stat) so a symlinked spool is rejected instead of silently
+    // redirecting the private capture file to an arbitrary link target; a
+    // directory or other non-file existing path is left for openBetterSqlite3
+    // to reject loudly rather than us mangling its permissions.
+    const existing = lstatSync(options.spoolPath, { throwIfNoEntry: false });
+    if (existing !== undefined && existing.isSymbolicLink()) {
+      throw new RangeError("spool path must not be a symlink");
+    }
     if (existing === undefined) closeSync(openSync(options.spoolPath, "a", 0o600));
     else if (existing.isFile()) chmodSync(options.spoolPath, 0o600);
   }
@@ -218,17 +222,18 @@ export async function startCaptureScreenDaemon(options: CaptureScreenDaemonOptio
               SELECT ${columns} FROM capture_snapshots
               WHERE id > ? AND captured_at_utc >= ? AND captured_at_utc < ?
               ORDER BY id ASC LIMIT ?
-            `).all(cursor, startUtc, endUtc, limit + 1) as SnapshotRow[];
+            `).all(cursor, startUtc, endUtc, limit) as SnapshotRow[];
           } else {
             rows = db.prepare(`
               SELECT ${columns} FROM capture_snapshots WHERE id > ? ORDER BY id ASC LIMIT ?
-            `).all(cursor, limit + 1) as SnapshotRow[];
+            `).all(cursor, limit) as SnapshotRow[];
           }
-          const hasNext = rows.length > limit;
-          const snapshots = hasNext ? rows.slice(0, limit) : rows;
           json(response, 200, {
-            snapshots: snapshots.map(({ id: _id, ...snapshot }) => snapshot),
-            nextCursor: hasNext ? String(snapshots.at(-1)?.id) : null,
+            snapshots: rows.map(({ id: _id, ...snapshot }) => snapshot),
+            // Advance the high-water mark whenever rows were served — core only
+            // persists a non-null cursor, so a final partial page must still
+            // return its last id; the follow-up empty page then terminates.
+            nextCursor: rows.length > 0 ? String(rows.at(-1)?.id) : null,
           });
         } catch (error) {
           json(response, 400, { error: displayErrorDetail(error) || "invalid_request" });
