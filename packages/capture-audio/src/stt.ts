@@ -116,7 +116,7 @@ export function resolveModelPath(
   const modelPath = expandTilde(configuredPath?.trim() || defaultPath);
   if (!exists(modelPath)) {
     throw new CaptureConfigError(
-      `whisper model not found at ${modelPath}; run remnic-capture-audio download-model or set stt.modelPath`,
+      `whisper model not found at ${modelPath}; run 'remnic-capture-audio download-model --model base' or set stt.modelPath`,
     );
   }
   return modelPath;

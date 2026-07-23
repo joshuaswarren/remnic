@@ -56,6 +56,7 @@ test("resolveModelPath prefers a configured readable model", () => {
   const exists = (file: string) => file === "/configured.bin";
   assert.equal(resolveModelPath("/configured.bin", "/default.bin", exists), "/configured.bin");
   assert.throws(() => resolveModelPath("/missing.bin", "/default.bin", exists), /not found/);
+  assert.throws(() => resolveModelPath("/missing.bin", "/default.bin", exists), /download-model --model base/);
   assert.equal(
     resolveModelPath("~/configured.bin", "/default.bin", (file) => file === path.join(process.env.HOME!, "configured.bin")),
     path.join(process.env.HOME!, "configured.bin"),
