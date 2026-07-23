@@ -5745,11 +5745,10 @@ export class EngramAccessService {
 
   /**
    * Caller scope for the wearables + meetings ops (issue #2123). Reads resolve
-   * via resolveReadableNamespace; writes (sync, build) via writableNamespaceFor,
-   * so source transcripts, meeting records, and episode memories land under the
-   * caller's write ns and reads stay scoped to it. Non-default callers are
-   * strictly isolated: no default-ns wearable fallback, no machine-global
-   * activity (activity is machine-scoped and consumed only by the default ns).
+   * via resolveReadableNamespace; sync writes via writableNamespaceFor; build
+   * needs BOTH — it reads transcripts/records to derive, then writes episodes.
+   * Non-default callers are strictly isolated: no default-ns wearable fallback,
+   * no machine-global activity (machine-scoped, consumed only by the default ns).
    */
   private wearablesReadService(scope?: WearablesMeetingsScope): WearablesService {
     return this.orchestrator.getWearablesService(
@@ -5798,7 +5797,10 @@ export class EngramAccessService {
   }
 
   async meetingsBuild(date: string, scope?: WearablesMeetingsScope): Promise<MeetingsDayBuildSummary> {
-    return (await this.orchestrator.getMeetingsService(this.writableNamespaceFor(scope?.namespace, scope?.sessionKey, scope?.authenticatedPrincipal))).meetingsBuild(date);
+    const principal = this.resolveRequestPrincipal(scope?.sessionKey, scope?.authenticatedPrincipal);
+    const namespace = this.writableNamespaceFor(scope?.namespace, scope?.sessionKey, scope?.authenticatedPrincipal);
+    this.resolveReadableNamespace(namespace, principal);
+    return (await this.orchestrator.getMeetingsService(namespace)).meetingsBuild(date);
   }
 
   // ── Admin console surfaces (issue #1502) ────────────────────────────────

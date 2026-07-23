@@ -69,7 +69,9 @@ export function registerFakeWearableConnector(): void {
   });
 }
 
-/** Namespaces enabled; `pA` owns `nsA`, `pB` owns `nsB` (both NON-default); the
+/** Namespaces enabled; `pA` owns `nsA`, `pB` owns `nsB` (both NON-default) with
+ *  full read+write; `pWO` can WRITE `nsWO` but is omitted from its readPrincipals
+ *  (write-only, for the meetingsBuild read-authorization regression, #2123); the
  *  default namespace is writable/readable by any authenticated principal, so
  *  `op` acts as the machine owner. */
 function makeConfig(memoryDir: string): ReturnType<typeof parseConfig> {
@@ -85,6 +87,7 @@ function makeConfig(memoryDir: string): ReturnType<typeof parseConfig> {
     namespacePolicies: [
       { name: "nsA", readPrincipals: ["pA"], writePrincipals: ["pA"] },
       { name: "nsB", readPrincipals: ["pB"], writePrincipals: ["pB"] },
+      { name: "nsWO", readPrincipals: [], writePrincipals: ["pWO"] },
     ],
     wearables: {
       enabled: true,

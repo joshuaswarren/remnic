@@ -21,6 +21,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { EngramAccessInputError } from "../access-service.js";
+
 import { MEETING_SOURCE_PREFIX } from "./memory-gen.js";
 import {
   FAKE_WEARABLE_SOURCE,
@@ -113,6 +115,44 @@ test("namespace isolation: a non-default caller gets neither default-ns wearable
       (buildDefault.meetings[0]?.snapshotCount ?? 0) > 0,
       "default caller consumed machine-global activity (screen context snapshots)",
     );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("namespace isolation: a write-only principal (in writePrincipals, not readPrincipals) is DENIED meetingsBuild, while read+write and the machine owner succeed", async () => {
+  const h = await buildMeetingsNamespaceHarness();
+  const DATE = "2026-07-14";
+  try {
+    // pWO can WRITE nsWO, so the sync (a pure write) is allowed and physically
+    // lands a source transcript under nsWO — the very data meetingsBuild reads
+    // back and derives from.
+    const sync = await h.service.wearablesSync({ date: DATE, ...scope("nsWO", "pWO") });
+    assert.equal(sync[0]?.transcriptsWritten.includes(DATE), true, "write-only principal's sync wrote a transcript");
+
+    // meetingsBuild READS those transcripts + meeting records to derive the day's
+    // meetings. A WRITE grant alone must NOT confer that read: pWO is omitted from
+    // nsWO.readPrincipals, so build is DENIED with the shared read-ACL error.
+    // (Pre-fix, meetingsBuild authorized via writableNamespaceFor only, so pWO
+    // would read nsWO's transcripts back and return meetings — the breach.)
+    await assert.rejects(
+      () => h.service.meetingsBuild(DATE, scope("nsWO", "pWO")),
+      (err: unknown) => err instanceof EngramAccessInputError && /not readable/.test((err as Error).message),
+      "write-only principal is denied meetingsBuild on a namespace it cannot read",
+    );
+
+    // Positive control: a principal with BOTH read and write on its namespace
+    // builds successfully.
+    await h.service.wearablesSync({ date: DATE, ...scope("nsA", "pA") });
+    const buildRW = await h.service.meetingsBuild(DATE, scope("nsA", "pA"));
+    assert.equal(buildRW.enabled, true, "read+write principal builds successfully");
+    assert.equal(buildRW.meetings.length, 1, "read+write principal derives its meeting");
+
+    // The default/machine-owner principal is unaffected (full access to default).
+    await h.service.wearablesSync({ date: DATE, ...scope("default", "op") });
+    const buildDefault = await h.service.meetingsBuild(DATE, scope("default", "op"));
+    assert.equal(buildDefault.enabled, true, "machine owner still builds on the default namespace");
+    assert.equal(buildDefault.meetings.length, 1, "machine owner derives its meeting");
   } finally {
     await h.cleanup();
   }
