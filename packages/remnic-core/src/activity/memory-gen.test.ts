@@ -28,13 +28,27 @@ function depsFor(
   facts: ActFact[],
   opts: { hasContent?: boolean; dayCount?: number; judgeThrows?: boolean; extractThrows?: boolean; extractionFailure?: string } = {},
 ) {
-  const writes: Array<{ status: string; content: string; validAt?: string; importance?: ImportanceScore }> = [];
+  const writes: Array<{
+    status: string;
+    content: string;
+    validAt?: string;
+    confidence?: number;
+    structuredAttributes?: Readonly<Record<string, string>>;
+    importance?: ImportanceScore;
+  }> = [];
   let extractCalls = 0;
   const writer: ActivityMemoryWriter = {
     hasActivityMemoryForContent: async () => opts.hasContent ?? false,
     countActivityMemoriesForDay: async () => opts.dayCount ?? 0,
     writeSealedMemory: async (envelope, extras) => {
-      writes.push({ content: envelope.content, status: extras.status, validAt: envelope.validAt, importance: extras.importance });
+      writes.push({
+        content: envelope.content,
+        status: extras.status,
+        validAt: envelope.validAt,
+        confidence: envelope.confidence,
+        structuredAttributes: envelope.structuredAttributes,
+        importance: extras.importance,
+      });
       return {};
     },
   };
@@ -199,4 +213,20 @@ test("activity smart mode returns a zero result on an in-band extraction failure
   }, deps);
   assert.deepEqual(result, { created: 0, pendingReview: 0, rejectedDisplayedContent: 0, rejectedByJudge: 0, skipped: 0 });
   assert.deepEqual(writes, []);
+});
+
+test("activity smart mode persists trust score, decision, and judge verdict on the write", async () => {
+  const { deps, writes } = depsFor([ownDecision]);
+  await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(writes.length, 1);
+  const w = writes[0];
+  // Decision-derived trust is persisted as confidence (0.95 conf x 1 sourceTrust
+  // + 0.15 judge-accept boost, capped at 1), with the rationale in attributes.
+  assert.equal(w?.confidence, 1);
+  // Structured-attribute keys are canonicalized to lowercase on the envelope.
+  assert.equal(w?.structuredAttributes?.trustscore, "1.000");
+  assert.equal(w?.structuredAttributes?.trustdecision, "auto-approved");
+  assert.equal(w?.structuredAttributes?.judgeverdict, "accept");
 });

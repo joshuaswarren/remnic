@@ -1,5 +1,5 @@
 import { scoreImportance, isAboveImportanceThreshold } from "../importance.js";
-import { getVerdictKind, type JudgeCandidate, type JudgeVerdict } from "../extraction-judge.js";
+import { getVerdictKind, type JudgeCandidate, type JudgeVerdict, type JudgeVerdictKind } from "../extraction-judge.js";
 import { log } from "../logger.js";
 import type { ExtractedFact, ExtractionResult, ImportanceScore, MemoryStatus } from "../types.js";
 import {
@@ -117,6 +117,8 @@ interface WritableCandidate {
   fact: ExtractedFact;
   status: Extract<MemoryStatus, "active" | "pending_review">;
   trust: number;
+  trustDecision: string;
+  judgeVerdict?: JudgeVerdictKind;
   importance: ImportanceScore;
 }
 
@@ -215,6 +217,8 @@ export async function generateActivityMemories(
       fact,
       status: decision.outcome === "active" ? "active" : "pending_review",
       trust,
+      trustDecision: decision.reason,
+      ...(verdictKind !== undefined ? { judgeVerdict: verdictKind } : {}),
       importance: scoreImportance(fact.content, fact.category, fact.tags),
     });
   }
@@ -247,8 +251,16 @@ export async function generateActivityMemories(
         category: entry.fact.category,
         tags: [...entry.fact.tags, "activity"],
         entityRef: entry.fact.entityRef,
-        confidence: entry.fact.confidence,
+        // Persist the decision-derived trust as confidence, with the trust
+        // score/decision and judge verdict in structured attributes, mirroring
+        // the wearable smart path so downstream sees the active/pending rationale.
+        confidence: entry.trust,
         validAt: startUtc,
+        structuredAttributes: {
+          trustScore: entry.trust.toFixed(3),
+          trustDecision: entry.trustDecision,
+          ...(entry.judgeVerdict !== undefined ? { judgeVerdict: entry.judgeVerdict } : {}),
+        },
         sourceConnector: "activity",
         sourceReason: "screen activity digest",
       },
