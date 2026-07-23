@@ -137,6 +137,8 @@ export class MaintenanceScheduler {
 
   // ── Activity (screen-capture) sync scheduler (issue #1900) ──
   private activitySyncScheduler: ActivitySyncScheduler | null = null;
+  /** Latched by dispose() so a draining tick's onRun cannot re-arm maintenance. */
+  private disposed = false;
 
   constructor(private readonly deps: MaintenanceSchedulerDeps) {}
 
@@ -223,7 +225,7 @@ export class MaintenanceScheduler {
         // afterWrites once the digest is unchanged, so queue a QMD maintenance
         // pass (debounced/singleflighted) to retry indexing the stale digest.
         onRun: (summary) => {
-          if (summary.reindexErrorCount > 0) {
+          if (summary.reindexErrorCount > 0 && !this.disposed) {
             log.warn(`activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing QMD maintenance retry`);
             this.requestQmdMaintenanceForTool("activity-reindex-retry");
           }
@@ -1175,6 +1177,9 @@ export class MaintenanceScheduler {
    * teardown. Async: awaits the scheduler's abort+drain before resolving.
    */
   async dispose(): Promise<void> {
+    // Latch first so a draining activity tick's onRun cannot re-arm QMD
+    // maintenance during teardown.
+    this.disposed = true;
     // stop() aborts the in-flight sync and clears its timer synchronously;
     // capture the drain and await it at the end so the rest of teardown runs
     // concurrently while the aborted tick unwinds.
@@ -1185,5 +1190,11 @@ export class MaintenanceScheduler {
     }
     this.qmdMaintenancePending = false;
     await activityDrain;
+    // Belt-and-suspenders: clear anything a late tick armed before the latch.
+    if (this.qmdMaintenanceTimer) {
+      clearTimeout(this.qmdMaintenanceTimer);
+      this.qmdMaintenanceTimer = null;
+    }
+    this.qmdMaintenancePending = false;
   }
 }
