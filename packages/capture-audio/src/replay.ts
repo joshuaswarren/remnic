@@ -179,11 +179,10 @@ interface ParsedReplay {
 }
 
 /**
- * Parse + validate an entire replay directory WITHOUT writing to the spool.
- * Throws on the first invalid record so nothing is ever partially committed
- * (atomic failure semantics live here, before any commit runs).
+ * List the sorted `*.json` fixture files in a replay directory, rejecting a
+ * symlinked directory. Throws when the directory is missing/unreadable or empty.
  */
-function parseReplayDir(dir: string): ParsedReplay {
+function listReplayFixtureFiles(dir: string): string[] {
   let entries: string[];
   try {
     if (lstatSync(dir).isSymbolicLink()) {
@@ -197,50 +196,69 @@ function parseReplayDir(dir: string): ParsedReplay {
   if (entries.length === 0) {
     throw new CaptureConfigError(`replay dir ${dir} contains no *.json fixtures`);
   }
+  return entries;
+}
 
+/**
+ * Parse + validate ONE fixture file into `fixtures`. Rejects symlinked files
+ * and invalid JSON, derives content-hash ids, and guards intra-batch id
+ * collisions via the shared `seenIds` set. Pure w.r.t. the spool (no writes).
+ */
+function parseReplayFile(
+  dir: string,
+  name: string,
+  seenIds: Set<string>,
+  fixtures: ParsedFixture[],
+): void {
+  const filePath = path.join(dir, name);
+  if (lstatSync(filePath).isSymbolicLink()) {
+    throw new CaptureConfigError(`replay fixture ${name} is a symlink; refusing to follow it`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (err) {
+    throw new CaptureConfigError(`replay fixture ${name} is not valid JSON: ${(err as Error).message}`);
+  }
+  const docs = Array.isArray(raw) ? raw : [raw];
+  docs.forEach((doc, i) => {
+    const where = `${name}[${i}]`;
+    const conv = parseConversation(doc, where);
+    if (conv.id === undefined) {
+      // Derive the id from conversation CONTENT so identical fixtures stay
+      // idempotent across replays while distinct conversations that happen to
+      // share a filename/index/start time cannot collide.
+      const material = JSON.stringify({
+        startedAtUtc: conv.startedAtUtc,
+        endedAtUtc: conv.endedAtUtc,
+        state: conv.state,
+        segments: conv.segments,
+      });
+      conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
+    }
+    // Distinct conversations must not share an id within one batch — a silent
+    // delete-then-insert overwrite would drop data. (Cross-call re-ingest of
+    // the same fixture stays idempotent: each call is its own batch.)
+    if (seenIds.has(conv.id as string)) {
+      throw new CaptureConfigError(`${where}: duplicate conversation id '${conv.id}' in this replay batch`);
+    }
+    seenIds.add(conv.id as string);
+    const speakers = parseSpeakers(asObject(doc, where).speakers, where);
+    fixtures.push({ speakers, conv });
+  });
+}
+
+/**
+ * Parse + validate an entire replay directory WITHOUT writing to the spool.
+ * Throws on the first invalid record so nothing is ever partially committed
+ * (atomic failure semantics live here, before any commit runs).
+ */
+function parseReplayDir(dir: string): ParsedReplay {
+  const entries = listReplayFixtureFiles(dir);
   const fixtures: ParsedFixture[] = [];
   const seenIds = new Set<string>();
-  let files = 0;
-  for (const name of entries) {
-    const filePath = path.join(dir, name);
-    if (lstatSync(filePath).isSymbolicLink()) {
-      throw new CaptureConfigError(`replay fixture ${name} is a symlink; refusing to follow it`);
-    }
-    let raw: unknown;
-    try {
-      raw = JSON.parse(readFileSync(filePath, "utf8"));
-    } catch (err) {
-      throw new CaptureConfigError(`replay fixture ${name} is not valid JSON: ${(err as Error).message}`);
-    }
-    files += 1;
-    const docs = Array.isArray(raw) ? raw : [raw];
-    docs.forEach((doc, i) => {
-      const where = `${name}[${i}]`;
-      const conv = parseConversation(doc, where);
-      if (conv.id === undefined) {
-        // Derive the id from conversation CONTENT so identical fixtures stay
-        // idempotent across replays while distinct conversations that happen to
-        // share a filename/index/start time cannot collide.
-        const material = JSON.stringify({
-          startedAtUtc: conv.startedAtUtc,
-          endedAtUtc: conv.endedAtUtc,
-          state: conv.state,
-          segments: conv.segments,
-        });
-        conv.id = `conv_${createHash("sha1").update(material).digest("hex").slice(0, 24)}`;
-      }
-      // Distinct conversations must not share an id within one batch — a silent
-      // delete-then-insert overwrite would drop data. (Cross-call re-ingest of
-      // the same fixture stays idempotent: each call is its own batch.)
-      if (seenIds.has(conv.id as string)) {
-        throw new CaptureConfigError(`${where}: duplicate conversation id '${conv.id}' in this replay batch`);
-      }
-      seenIds.add(conv.id as string);
-      const speakers = parseSpeakers(asObject(doc, where).speakers, where);
-      fixtures.push({ speakers, conv });
-    });
-  }
-  return { fixtures, files };
+  for (const name of entries) parseReplayFile(dir, name, seenIds, fixtures);
+  return { fixtures, files: entries.length };
 }
 
 function commitFixture(spool: Spool, fixture: ParsedFixture, result: ReplayResult): void {
@@ -273,7 +291,23 @@ export async function ingestReplayDirResponsive(
   dir: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<ReplayResult> {
-  const { fixtures, files } = parseReplayDir(dir);
+  const entries = listReplayFixtureFiles(dir);
+  const fixtures: ParsedFixture[] = [];
+  const seenIds = new Set<string>();
+  // Phase 1 — parse + validate with an event-loop yield between files so a
+  // co-hosted HTTP server stays responsive while a large multi-file replay is
+  // read/parsed (not just while it commits). A single very large JSON file
+  // still blocks on its one synchronous JSON.parse — inherent to sync JSON.
+  for (const name of entries) {
+    if (options.signal?.aborted) {
+      return { files: entries.length, conversationsIngested: 0, segmentsIngested: 0, ids: [], aborted: true };
+    }
+    parseReplayFile(dir, name, seenIds, fixtures);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  // Phase 2 — commit the fully-validated set in bounded batches (still atomic:
+  // a parse failure above committed nothing).
+  const files = entries.length;
   const result: ReplayResult = { files, conversationsIngested: 0, segmentsIngested: 0, ids: [], aborted: false };
   for (let i = 0; i < fixtures.length; i += REPLAY_COMMIT_BATCH) {
     // Cooperative cancel: check between batches so no commit runs after a

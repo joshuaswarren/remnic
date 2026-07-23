@@ -666,3 +666,33 @@ test("recordChildPidOrTerminate overwrites a stale full record from a different 
     assert.equal(rec?.port, 6666);
   });
 });
+
+test("a flag the selected command ignores is rejected (no silent drop)", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const errs: string[] = [];
+    // `init` only honors --force; --port belongs to `start`. It must error,
+    // not write the default config while silently dropping the port.
+    const code = await runCapture({
+      argv: ["init", "--port", "5555", "--base-dir", baseDir],
+      stdout: () => undefined,
+      stderr: (l) => errs.push(l),
+    });
+    assert.equal(code, 2);
+    assert.match(errs.join("\n"), /flag --port is not valid for command 'init'/);
+    assert.equal(existsSync(paths.configPath), false);
+  });
+});
+
+test("a valid subcommand flag plus the global --base-dir is accepted", async () => {
+  await withBaseDir(async (baseDir) => {
+    const paths = capturePaths(baseDir);
+    const code = await runCapture({
+      argv: ["init", "--force", "--base-dir", baseDir],
+      stdout: () => undefined,
+      stderr: () => undefined,
+    });
+    assert.equal(code, 0);
+    assert.equal(existsSync(paths.configPath), true);
+  });
+});

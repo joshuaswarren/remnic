@@ -315,10 +315,28 @@ test("ingestReplayDirResponsive stops at a batch boundary on abort (no post-abor
   const spool = new Spool(":memory:");
   const ctrl = new AbortController();
   const pending = ingestReplayDirResponsive(spool, dir, { signal: ctrl.signal });
-  ctrl.abort(); // after the synchronous first batch + first yield
+  // Abort on a later macrotask so it lands during the commit phase (after the
+  // parse-phase yield), proving commits stop on a batch boundary — not partway.
+  setImmediate(() => ctrl.abort());
   const result = await pending;
   assert.equal(result.aborted, true);
   assert.equal(result.conversationsIngested, 25); // exactly one commit batch
   assert.equal(spool.stats().conversations, 25);
   assert.doesNotThrow(() => spool.close()); // safe to close; nothing written after abort
+});
+
+test("ingestReplayDirResponsive commits nothing when aborted before it runs", async () => {
+  const docs = Array.from({ length: 40 }, (_, i) => {
+    const t = `2026-07-20T16:00:${String(i).padStart(2, "0")}.000Z`;
+    return { id: `conv_${i}`, startedAtUtc: t, segments: [{ channel: "mic", text: `t${i}`, startUtc: t, endUtc: t }] };
+  });
+  const dir = fixtureDir({ "big.json": docs });
+  const spool = new Spool(":memory:");
+  const ctrl = new AbortController();
+  ctrl.abort(); // aborted up front: the parse loop must bail before any commit
+  const result = await ingestReplayDirResponsive(spool, dir, { signal: ctrl.signal });
+  assert.equal(result.aborted, true);
+  assert.equal(result.conversationsIngested, 0);
+  assert.equal(spool.stats().conversations, 0);
+  assert.doesNotThrow(() => spool.close());
 });

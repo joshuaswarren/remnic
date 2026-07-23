@@ -227,3 +227,24 @@ test("insertConversation enforces conversation and segment chronology", () => {
   assert.deepEqual(spool.stats(), { conversations: 0, segments: 0, chunks: 0 });
   spool.close();
 });
+
+test("insertConversation requires a canonical instant (rejects date-only / offsetless)", () => {
+  const spool = new Spool(":memory:");
+  for (const bad of ["2026-07-20", "2026-07-20T10:00:00", "2026-07-20 10:00:00Z"]) {
+    assert.throws(
+      () => spool.insertConversation({ id: "c", startedAtUtc: bad, segments: [seg("x")] }),
+      CaptureConfigError,
+      `should reject ${bad}`,
+    );
+  }
+  // Nothing partially written by the rejected inserts.
+  assert.equal(spool.stats().conversations, 0);
+  // A canonical Z instant is accepted.
+  const id = spool.insertConversation({
+    id: "c_ok",
+    startedAtUtc: "2026-07-20T10:00:00.000Z",
+    segments: [seg("x")],
+  });
+  assert.equal(id, "c_ok");
+  spool.close();
+});

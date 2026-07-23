@@ -58,14 +58,28 @@ const VALUE_FLAGS: Record<string, true> = {
 };
 
 /** Standalone boolean flags. Any other `--flag` is rejected loudly. */
-/** How long background start waits for the child daemon to bind before failing. */
-const READINESS_TIMEOUT_MS = 10_000;
-
 const BOOLEAN_FLAGS: Record<string, true> = {
   foreground: true,
   force: true,
   help: true,
 };
+
+/** Non-global flags each subcommand accepts; anything else is rejected. */
+const COMMAND_FLAGS: Record<string, Record<string, true>> = {
+  init: { force: true },
+  start: { foreground: true, replay: true, host: true, port: true, listen: true },
+  stop: { force: true },
+  status: {},
+  devices: {},
+  logs: { lines: true },
+  help: {},
+};
+
+/** Flags accepted regardless of subcommand. */
+const GLOBAL_FLAGS: Record<string, true> = { "base-dir": true, help: true };
+
+/** How long background start waits for the child daemon to bind before failing. */
+const READINESS_TIMEOUT_MS = 10_000;
 
 function parseArgs(argv: string[]): ParsedArgs {
   const tokens: string[] = [];
@@ -597,6 +611,16 @@ export async function runCapture(io: CliIo): Promise<number> {
       stderr(`unexpected argument(s): ${parsed.positionals.join(" ")}`);
       usage(stderr);
       return 2;
+    }
+    const allowedFlags = COMMAND_FLAGS[parsed.command];
+    if (allowedFlags !== undefined) {
+      for (const key of Object.keys(parsed.flags)) {
+        if (!Object.hasOwn(GLOBAL_FLAGS, key) && !Object.hasOwn(allowedFlags, key)) {
+          stderr(`flag --${key} is not valid for command '${parsed.command}'`);
+          usage(stderr);
+          return 2;
+        }
+      }
     }
     switch (parsed.command) {
       case "init":

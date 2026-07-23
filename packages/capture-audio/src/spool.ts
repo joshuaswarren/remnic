@@ -140,14 +140,22 @@ CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
 `;
 
-/** Reject a timestamp that would become an Invalid Date downstream. */
+/**
+ * Canonical instant required at the Spool boundary: a full date + time with a
+ * Z or numeric offset (e.g. `2026-07-20T15:04:05.000Z`). Date-only strings
+ * (`2026-07-20`) and offsetless local timestamps are REJECTED so every value
+ * persisted in a `*_utc` column - and every keyset cursor derived from one -
+ * is an unambiguous, order-stable instant. Replay/connector inputs are already
+ * canonicalized to Z upstream; this guards direct `insertConversation` callers.
+ */
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
 function assertIsoInstant(value: string, label: string): void {
-  if (typeof value !== "string" || value.trim() === "" || !Number.isFinite(Date.parse(value))) {
-    throw new CaptureConfigError(`${label}: expected a valid ISO timestamp`);
-  }
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!match) {
-    throw new CaptureConfigError(`${label}: expected an ISO timestamp with a calendar date`);
+  const match = typeof value === "string" ? ISO_INSTANT.exec(value) : null;
+  if (!match || !Number.isFinite(Date.parse(value))) {
+    throw new CaptureConfigError(
+      `${label}: '${value}' is not a canonical ISO instant (need date, time, and Z or offset)`,
+    );
   }
   const year = Number(match[1]);
   const month = Number(match[2]);
