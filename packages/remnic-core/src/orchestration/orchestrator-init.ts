@@ -45,6 +45,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, loadUtilityRuntimeValues } from "../utility-runtime.js";
 import { WearablesService } from "../wearables/service.js";
+import type { MeetingsService } from "../meetings/service.js";
 import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
   defaultWorkspaceDir,
@@ -65,6 +66,7 @@ export interface OrchestratorInitDeps {
   disposeSearchBackendIfNeeded(): Promise<void>;
   readonly embeddingFallback: EmbeddingFallback;
   getWearablesService(): WearablesService;
+  getMeetingsService(): Promise<MeetingsService>;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly lastRecall: LastRecallStore;
   maintenanceNamespaces(
@@ -562,7 +564,14 @@ export class OrchestratorInitCoordinator {
               : {}),
           },
           {
-            sync: (options) => this.deps.getWearablesService().sync(options),
+            sync: async (options) => {
+              const summaries = await this.deps.getWearablesService().sync(options);
+              // Tail step (issue #1900): a wearable sync changed a day's audio,
+              // so schedule a debounced meeting rebuild for each synced day. The
+              // scheduler coalesces bursts; a failure here never fails the sync.
+              await this.scheduleMeetingBuildsForDays(summaries.flatMap((s) => s.days));
+              return summaries;
+            },
             log: {
               info: (message) => log.info(message),
               warn: (message) => log.warn(message),
@@ -581,6 +590,28 @@ export class OrchestratorInitCoordinator {
     }
 
     log.info("orchestrator initialized (full — deferred steps complete)");
+  }
+
+  /**
+   * Tail step after a sync (issue #1900): schedule a debounced meeting rebuild
+   * for each day the sync touched. A no-op while `meetings.enabled` is off; a
+   * failure to reach the service is logged, never propagated, so the sync path
+   * that called us is never failed by meeting building.
+   */
+  private async scheduleMeetingBuildsForDays(days: readonly string[]): Promise<void> {
+    if (!this.deps.config.meetings.enabled) return;
+    const unique = [...new Set(days)];
+    if (unique.length === 0) return;
+    try {
+      const service = await this.deps.getMeetingsService();
+      for (const day of unique) service.requestBuild(day);
+    } catch (err) {
+      log.warn(
+        `meetings: failed to schedule post-sync build: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**

@@ -107,6 +107,8 @@ import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
 import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
 import type { WearablesService } from "./wearables/service.js";
+import type { MeetingsGetResult, MeetingsListResult } from "./meetings/service.js";
+import type { MeetingsDayBuildSummary } from "./meetings/build.js";
 import {
   computeProcedureStats,
   type ProcedureStatsReport,
@@ -5783,6 +5785,22 @@ export class EngramAccessService {
       date: request.date,
       limit: request.limit,
     });
+  }
+
+  // Meetings (issue #1900). Thin delegations to the orchestrator-owned
+  // MeetingsService — the same instance behind the CLI, so MCP/HTTP callers
+  // observe identical behavior, validation, and `meetings.enabled` gating.
+
+  async meetingsList(date?: string): Promise<MeetingsListResult> {
+    return (await this.orchestrator.getMeetingsService()).meetingsList(date);
+  }
+
+  async meetingsGet(id: string): Promise<MeetingsGetResult> {
+    return (await this.orchestrator.getMeetingsService()).meetingsGet(id);
+  }
+
+  async meetingsBuild(date: string): Promise<MeetingsDayBuildSummary> {
+    return (await this.orchestrator.getMeetingsService()).meetingsBuild(date);
   }
 
   // ── Admin console surfaces (issue #1502) ────────────────────────────────

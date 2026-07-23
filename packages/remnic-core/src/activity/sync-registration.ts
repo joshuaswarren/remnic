@@ -50,6 +50,13 @@ export interface ActivitySyncRegistrarDeps {
   readonly getQmd: () => ActivityIndexRefresher;
   /** Debounced/singleflighted QMD retry used when a tick's reindex fails. */
   readonly requestReindexRetry: () => void;
+  /**
+   * Tail step (issue #1900): observe a completed sync tick so a dependent
+   * subsystem (meeting building) can rebuild the affected day(s). Fired only
+   * after a durable tick and never after teardown. Optional; omitted by hosts
+   * that do not build meetings.
+   */
+  readonly onSynced?: (summary: ActivitySyncRunSummary) => void;
   /** Scheduler factory (injectable for tests); defaults to the real scheduler. */
   readonly createScheduler?: (options: ActivitySyncSchedulerOptions) => ActivitySyncSchedulerLike;
 }
@@ -110,6 +117,12 @@ export class ActivitySyncRegistrar {
               `activity sync: ${summary.reindexErrorCount} source(s) had a failed reindex; queuing a maintenance retry`,
             );
             this.deps.requestReindexRetry();
+          }
+          // Tail step: a durable tick that ingested snapshots may have changed a
+          // meeting's screen context; notify the dependent builder. Never after
+          // teardown.
+          if (summary.enabled && summary.totalInserted > 0 && !this.disposed) {
+            this.deps.onSynced?.(summary);
           }
         },
       });
